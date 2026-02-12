@@ -64,32 +64,39 @@ cargo build --release
 ## Network Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                     moltchain.network DNS                     │
-│                                                              │
-│  rpc.moltchain.network     →  Round-robin to all 3 VPS      │
-│  ws.moltchain.network      →  Round-robin to all 3 VPS      │
-│  seed-eu.moltchain.network →  EU VPS                         │
-│  seed-us.moltchain.network →  US VPS                         │
-│  seed-ap.moltchain.network →  ASIA VPS                       │
-│  custody.moltchain.network →  US VPS (or whichever is seed)  │
-│  faucet.moltchain.network  →  US VPS (testnet only)          │
-│  explorer.moltchain.network→  Any VPS / CDN                  │
-│  moltchain.network         →  Website (CDN or any VPS)       │
-└──────────────────────────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────────────┐
+│                      moltchain.network DNS                        │
+│                                                                   │
+│  rpc.moltchain.network          →  Round-robin to all 3 VPS      │
+│  ws.moltchain.network           →  Round-robin to all 3 VPS      │
+│  seed-eu.moltchain.network      →  EU VPS                        │
+│  seed-us.moltchain.network      →  US VPS                        │
+│  seed-ap.moltchain.network      →  ASIA VPS                      │
+│  custody.moltchain.network      →  US VPS                        │
+│  faucet.moltchain.network       →  US VPS (testnet only)         │
+│  explorer.moltchain.network     →  US VPS (or CDN)               │
+│  wallet.moltchain.network       →  US VPS (or CDN)               │
+│  dex.moltchain.network          →  US VPS (or CDN)               │
+│  marketplace.moltchain.network  →  US VPS (or CDN)               │
+│  programs.moltchain.network     →  US VPS (or CDN)               │
+│  developers.moltchain.network   →  US VPS (or CDN)               │
+│  monitoring.moltchain.network   →  US VPS (or CDN)               │
+│  moltchain.network              →  US VPS (main website)         │
+└───────────────────────────────────────────────────────────────────┘
 
-┌────────────────────┐    ┌────────────────────┐    ┌────────────────────┐
-│   EU VPS           │    │   US VPS (SEED)    │    │   ASIA VPS         │
-│   Frankfurt        │    │   New York         │    │   Singapore        │
-│                    │    │                    │    │                    │
-│ Validator  :8000   │◄──►│ Validator  :8000   │◄──►│ Validator  :8000   │
-│ RPC        :8899   │    │ RPC        :8899   │    │ RPC        :8899   │
-│ WebSocket  :8900   │    │ WebSocket  :8900   │    │ WebSocket  :8900   │
-│ Signer     :9200   │    │ Signer     :9200   │    │ Signer     :9200   │
-│                    │    │ Custody    :9105   │    │                    │
-│                    │    │ Faucet     :8901   │    │                    │
-│ Caddy      :443    │    │ Caddy      :443    │    │ Caddy      :443    │
-└────────────────────┘    └────────────────────┘    └────────────────────┘
+┌────────────────────┐    ┌──────────────────────┐    ┌────────────────────┐
+│   EU VPS           │    │   US VPS (SEED)      │    │   ASIA VPS         │
+│   Frankfurt        │    │   New York           │    │   Singapore        │
+│                    │    │                      │    │                    │
+│ Validator  :8000   │◄──►│ Validator  :8000     │◄──►│ Validator  :8000   │
+│ RPC        :8899   │    │ RPC        :8899     │    │ RPC        :8899   │
+│ WebSocket  :8900   │    │ WebSocket  :8900     │    │ WebSocket  :8900   │
+│ Signer     :9200   │    │ Signer     :9200     │    │ Signer     :9200   │
+│                    │    │ Custody    :9105     │    │                    │
+│                    │    │ Faucet     :8901     │    │                    │
+│                    │    │ Static portals (x9)  │    │                    │
+│ Caddy      :443    │    │ Caddy      :443      │    │ Caddy      :443    │
+└────────────────────┘    └──────────────────────┘    └────────────────────┘
          ▲                         ▲                         ▲
          │                         │                         │
          └─────────────────────────┼─────────────────────────┘
@@ -123,9 +130,17 @@ Set these up on your DNS provider. I recommend Cloudflare for geo-based load bal
 | **A** | `ws` | `<ASIA_VPS_IP>` | DNS only | 300 | WebSocket round-robin |
 | **A** | `custody` | `<US_VPS_IP>` | Proxied | Auto | Custody bridge (single instance) |
 | **A** | `faucet` | `<US_VPS_IP>` | Proxied | Auto | Faucet (testnet only) |
-| **A** | `explorer` | `<US_VPS_IP>` | Proxied | Auto | Explorer (or use CDN) |
+| **A** | `explorer` | `<US_VPS_IP>` | Proxied | Auto | Block explorer |
+| **A** | `wallet` | `<US_VPS_IP>` | Proxied | Auto | Web wallet |
+| **A** | `dex` | `<US_VPS_IP>` | Proxied | Auto | ClawSwap DEX |
+| **A** | `marketplace` | `<US_VPS_IP>` | Proxied | Auto | NFT / skill marketplace |
+| **A** | `programs` | `<US_VPS_IP>` | Proxied | Auto | Programs IDE (browser compiler) |
+| **A** | `developers` | `<US_VPS_IP>` | Proxied | Auto | Developer portal & docs |
+| **A** | `monitoring` | `<US_VPS_IP>` | Proxied | Auto | Public network dashboard |
 | **A** | `@` | `<US_VPS_IP>` | Proxied | Auto | Main website |
 | **CNAME** | `www` | `moltchain.network` | Proxied | Auto | www redirect |
+
+> All portal subdomains (`explorer`, `wallet`, `dex`, `marketplace`, `programs`, `developers`, `monitoring`) can safely be **Proxied** through Cloudflare (orange cloud) — they're standard HTTPS static sites.
 
 **Key points:**
 - `seed-*.moltchain.network` must be **DNS only** (gray cloud) — P2P QUIC needs direct IP, not Cloudflare proxy
@@ -179,6 +194,23 @@ On first boot with no existing state, the validator:
 3. Saves `genesis-wallet.json` in the state directory
 4. Mints 1 billion MOLT to the treasury
 5. Registers itself as the initial validator
+6. **Auto-deploys all 30 genesis contracts** from the `contracts/` directory
+
+Step 6 is important — the validator binary includes a `genesis_auto_deploy` function that reads every compiled `.wasm` from the `contracts/` directory and deploys them into chain state on the first block. This means **no separate deploy script is needed**. The full catalog:
+
+| Category | Contracts deployed |
+|---|---|
+| Core token | MOLT (MoltCoin) |
+| Wrapped tokens | MUSD, WSOL, WETH |
+| DEX | DEX Core, AMM, Router, Margin, Rewards, Governance, Analytics |
+| DeFi | MoltSwap, MoltBridge, LobsterLend |
+| Marketplace | MoltMarket, MoltAuction, MoltOracle, MoltDAO |
+| NFT / Identity | MoltPunks, MoltyID |
+| Infrastructure | ClawPay, ClawPump, ClawVault, BountyBoard, Compute Market, Reef Storage |
+
+Contract addresses are derived deterministically: `SHA-256(deployer_pubkey + dir_name + wasm_bytes)`. The deploy is **idempotent** — if contracts already exist in state, they're skipped.
+
+> **Prerequisite:** The `contracts/` directory with compiled `.wasm` files must be present in the working directory where the validator starts. On VPS, either build locally or include the WASM files in the state tarball.
 
 **Let it run for ~30 seconds** to produce a few blocks, then stop it with Ctrl+C.
 
@@ -456,19 +488,48 @@ WantedBy=multi-user.target
 EOF
 ```
 
-### Static Frontends (Website, Explorer, Wallet, Developers)
+### Static Frontends (All Portals)
 
-These are static HTML/JS files. Deploy them via Caddy's file server or a CDN:
+These are static HTML/CSS/JS files. Deploy them via Caddy's file server or a CDN.
 
 ```bash
-# Copy static sites to the VPS
-sudo mkdir -p /opt/moltchain/www/{website,explorer,wallet,developers,faucet-ui}
-sudo cp -r website/* /opt/moltchain/www/website/
-sudo cp -r explorer/* /opt/moltchain/www/explorer/
-sudo cp -r wallet/* /opt/moltchain/www/wallet/
-sudo cp -r developers/* /opt/moltchain/www/developers/
-sudo cp -r faucet/*.html faucet/*.css faucet/*.js /opt/moltchain/www/faucet-ui/
+# Copy ALL portal sites to the VPS
+sudo mkdir -p /opt/moltchain/www/{website,explorer,wallet,developers,faucet-ui,dex,marketplace,programs,monitoring}
+sudo cp -r website/*      /opt/moltchain/www/website/
+sudo cp -r explorer/*     /opt/moltchain/www/explorer/
+sudo cp -r wallet/*       /opt/moltchain/www/wallet/
+sudo cp -r developers/*   /opt/moltchain/www/developers/
+sudo cp -r dex/*          /opt/moltchain/www/dex/
+sudo cp -r marketplace/*  /opt/moltchain/www/marketplace/
+sudo cp -r programs/*     /opt/moltchain/www/programs/
+sudo cp -r monitoring/*   /opt/moltchain/www/monitoring/
+sudo cp -r faucet/*.html faucet/*.css faucet/*.js /opt/moltchain/www/faucet-ui/ 2>/dev/null
 ```
+
+### Frontend Configuration Checklist
+
+All the portal frontends have RPC/WS endpoint configuration that defaults to `localhost`. Before deploying to production, verify the network configs point to live URLs. Most apps have a multi-network config pattern (stored in `localStorage`) that already includes the production URLs.
+
+| Portal | Config file | Has multi-network? | Production URLs in config? | Notes |
+|---|---|---|---|---|
+| **wallet** | `wallet/js/wallet.js` | YES | YES (`rpc.moltchain.network`) | Gold standard — also has custody endpoints |
+| **explorer** | `explorer/js/explorer.js` | YES | YES | `transaction.js` L110 has hardcoded faucet URL — needs fix |
+| **marketplace** | `marketplace/js/marketplace-config.js` | YES | YES | Clean — mirrors wallet pattern |
+| **website** | `website/script.js` | YES | YES | Works, minor local-mainnet port mismatch |
+| **monitoring** | `monitoring/js/monitoring.js` | YES | YES (RPC) | `VALIDATOR_RPCS` array is hardcoded to local ports — update for prod |
+| **programs** | `programs/js/moltchain-sdk.js` | YES | YES | `landing.js` only has 2-way auto-detect (local vs testnet) |
+| **dex** | `dex/dex.js` | PARTIAL | NO | Uses `window.MOLTCHAIN_RPC` override — network selector not wired up |
+| **faucet UI** | `faucet/faucet.js` | NO | NO | Hardcoded `localhost:4000` — needs full rewrite for prod |
+| **shared** | `shared/wallet-connect.js` | Delegates | — | Fallback port `9000` should be `8899` |
+
+**Config fixes needed before production:**
+
+1. `faucet/faucet.js` — Change `FAUCET_API` from `http://localhost:4000` to auto-detect (`/faucet` relative path when served by Caddy, or `https://faucet.moltchain.network`)
+2. `dex/dex.js` — Wire up the existing `<select id="networkSelect">` to switch `MOLTCHAIN_RPC`/`MOLTCHAIN_WS`
+3. `monitoring/js/monitoring.js` — Make `VALIDATOR_RPCS` configurable per-network (seed-us/eu/ap for prod)
+4. `explorer/js/transaction.js` L110 — Replace hardcoded `localhost:4000` faucet URL
+5. `programs/js/landing.js` — Add mainnet to the auto-detect (currently only local vs testnet)
+6. `shared/wallet-connect.js` — Fix fallback port from `9000` to `8899`
 
 ---
 
@@ -645,9 +706,9 @@ custody.moltchain.network {
     reverse_proxy localhost:9105
 }
 
-# Faucet API
+# Faucet API + UI
 faucet.moltchain.network {
-    # API
+    # API routes
     handle /faucet/* {
         reverse_proxy localhost:8901
     }
@@ -675,9 +736,37 @@ wallet.moltchain.network {
     try_files {path} /index.html
 }
 
-# Developers
+# DEX (ClawSwap)
+dex.moltchain.network {
+    root * /opt/moltchain/www/dex
+    file_server
+    try_files {path} /index.html
+}
+
+# Marketplace
+marketplace.moltchain.network {
+    root * /opt/moltchain/www/marketplace
+    file_server
+    try_files {path} /index.html
+}
+
+# Programs IDE
+programs.moltchain.network {
+    root * /opt/moltchain/www/programs
+    file_server
+    try_files {path} /index.html
+}
+
+# Developer Portal
 developers.moltchain.network {
     root * /opt/moltchain/www/developers
+    file_server
+    try_files {path} /index.html
+}
+
+# Monitoring Dashboard
+monitoring.moltchain.network {
+    root * /opt/moltchain/www/monitoring
     file_server
     try_files {path} /index.html
 }
@@ -883,28 +972,98 @@ curl -s http://<OTHER_VPS_IP>:9200/health
 
 ## Full Startup Checklist
 
+### Infrastructure
+
 ```
 [ ] 1. Build binaries: cargo build --release
-[ ] 2. Generate genesis locally (or on US VPS)
-[ ] 3. Buy 3 VPS (EU/US/ASIA) — Ubuntu 22.04, 4+ CPU, 8+ GB RAM
-[ ] 4. Set up DNS records on Cloudflare (see DNS section)
-[ ] 5. Run system setup on all 3 VPS (user, dirs, binaries)
-[ ] 6. Copy genesis state to all 3 VPS
+[ ] 2. Compile all WASM contracts: cd contracts && cargo build --release --target wasm32-unknown-unknown
+[ ] 3. Generate genesis locally (or on US VPS) — contracts/ dir must be present
+[ ] 4. Verify genesis deployed all 30 contracts: curl localhost:8899 -d '{"method":"getAllContracts"}'
+[ ] 5. Buy 3 VPS (EU/US/ASIA) — Ubuntu 22.04, 4+ CPU, 8+ GB RAM, NVMe
+[ ] 6. Copy genesis state + contracts/ WASM dir to all 3 VPS
 [ ] 7. Delete signer-keypair.json on EU/ASIA (they generate their own)
-[ ] 8. Install Caddy on all 3 VPS + configure Caddyfiles
-[ ] 9. Configure firewall (ufw) on all 3 VPS
-[ ] 10. Start validator on US VPS first → verify blocks producing
-[ ] 11. Start validator on EU VPS → verify it peers with US
-[ ] 12. Start validator on ASIA VPS → verify 3 validators in getValidators
-[ ] 13. Deploy custody service on US VPS (after deploying wrapped token contracts)
-[ ] 14. Deploy faucet on US VPS (testnet only)
-[ ] 15. Deploy static sites (website, explorer, wallet, developers)
-[ ] 16. Update seeds.json with real IPs/domains
-[ ] 17. Test agent connection from local machine:
+```
+
+### DNS (Cloudflare → moltchain.network)
+
+```
+[ ] 8.  A record: seed-us   → <US_IP>     (DNS only, gray cloud)
+[ ] 9.  A record: seed-eu   → <EU_IP>     (DNS only, gray cloud)
+[ ] 10. A record: seed-ap   → <ASIA_IP>   (DNS only, gray cloud)
+[ ] 11. A records: rpc      → all 3 IPs   (Proxied, orange cloud)
+[ ] 12. A records: ws       → all 3 IPs   (DNS only — CF free breaks WS)
+[ ] 13. A record: custody   → <US_IP>     (Proxied)
+[ ] 14. A record: faucet    → <US_IP>     (Proxied)
+[ ] 15. A record: explorer  → <US_IP>     (Proxied)
+[ ] 16. A record: wallet    → <US_IP>     (Proxied)
+[ ] 17. A record: dex       → <US_IP>     (Proxied)
+[ ] 18. A record: marketplace → <US_IP>   (Proxied)
+[ ] 19. A record: programs  → <US_IP>     (Proxied)
+[ ] 20. A record: developers → <US_IP>    (Proxied)
+[ ] 21. A record: monitoring → <US_IP>    (Proxied)
+[ ] 22. A record: @         → <US_IP>     (Proxied — main website)
+[ ] 23. CNAME:    www       → moltchain.network (Proxied)
+```
+
+### VPS Setup
+
+```
+[ ] 24. Run system setup on all 3 VPS (user, dirs, binaries)
+[ ] 25. Install Caddy on all 3 VPS + configure Caddyfiles
+[ ] 26. Configure firewall (ufw) on all 3 VPS
+[ ] 27. Start validator on US VPS first → verify blocks + contracts deployed
+[ ] 28. Start validator on EU VPS → verify it peers with US
+[ ] 29. Start validator on ASIA VPS → verify 3 validators in getValidators
+```
+
+### Services
+
+```
+[ ] 30. Deploy custody service on US VPS
+[ ] 31. Deploy faucet on US VPS (testnet only)
+[ ] 32. Copy ALL portal static sites to /opt/moltchain/www/
+        (website, explorer, wallet, developers, dex, marketplace, programs, monitoring, faucet-ui)
+[ ] 33. Restart Caddy → verify HTTPS certs auto-provision for all subdomains
+```
+
+### Frontend Config
+
+```
+[ ] 34. Fix faucet/faucet.js: FAUCET_API → production URL
+[ ] 35. Fix dex/dex.js: wire network selector dropdown
+[ ] 36. Fix monitoring/js/monitoring.js: VALIDATOR_RPCS → seed-us/eu/ap
+[ ] 37. Fix explorer/js/transaction.js L110: hardcoded localhost:4000
+[ ] 38. Fix programs/js/landing.js: add mainnet to auto-detect
+[ ] 39. Fix shared/wallet-connect.js: fallback port 9000 → 8899
+```
+
+### Verify Portals
+
+```
+[ ] 40. https://moltchain.network          — main website loads
+[ ] 41. https://rpc.moltchain.network       — RPC responds to getHealth
+[ ] 42. https://ws.moltchain.network        — WebSocket connects
+[ ] 43. https://explorer.moltchain.network  — block explorer loads, shows blocks
+[ ] 44. https://wallet.moltchain.network    — wallet loads, can switch to mainnet/testnet
+[ ] 45. https://dex.moltchain.network       — DEX loads, shows trading pairs
+[ ] 46. https://marketplace.moltchain.network — marketplace loads
+[ ] 47. https://programs.moltchain.network  — Programs IDE loads, can compile
+[ ] 48. https://developers.moltchain.network — dev portal loads, all doc links work
+[ ] 49. https://monitoring.moltchain.network — dashboard shows 3 validators
+[ ] 50. https://faucet.moltchain.network    — faucet UI loads, airdrop works
+[ ] 51. https://custody.moltchain.network   — custody /health returns OK
+```
+
+### Post-Launch
+
+```
+[ ] 52. Update seeds.json with real IPs/domains
+[ ] 53. Test agent connection from local machine:
         ./moltchain-validator --bootstrap-peers seed-us.moltchain.network:8000
-[ ] 18. Set up backup cron jobs
-[ ] 19. Set up health check monitoring
-[ ] 20. Copy genesis-keys/ to a secure offline location
+[ ] 54. Set up backup cron jobs
+[ ] 55. Set up health check monitoring
+[ ] 56. Copy genesis-keys/ to a secure offline location (USB / vault)
+[ ] 57. Set up WireGuard VPN between 3 VPS for signer port 9200
 ```
 
 ---
