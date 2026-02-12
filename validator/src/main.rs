@@ -877,6 +877,83 @@ fn revert_block_effects(state: &StateStore, old_block: &Block) {
     );
 }
 
+/// C7 fix: Reverse user transaction effects of a replaced block during fork choice.
+/// For each transaction: reverse transfer instructions, refund fees, remove tx record
+/// so the new block's transactions can be properly replayed.
+fn revert_block_transactions(state: &StateStore, old_block: &Block) {
+    use moltchain_core::SYSTEM_PROGRAM_ID;
+
+    if old_block.header.slot == 0 {
+        return;
+    }
+
+    let fee_config = state
+        .get_fee_config()
+        .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
+
+    for tx in old_block.transactions.iter().rev() {
+        // 1. Reverse each system transfer instruction
+        for ix in &tx.message.instructions {
+            if ix.program_id == SYSTEM_PROGRAM_ID && !ix.data.is_empty() {
+                let ix_type = ix.data[0];
+                // Types 0,2,3,4,5 are all transfers
+                if matches!(ix_type, 0 | 2 | 3 | 4 | 5)
+                    && ix.accounts.len() >= 2
+                    && ix.data.len() >= 9
+                {
+                    let from = ix.accounts[0]; // original sender
+                    let to = ix.accounts[1]; // original receiver
+                    let amount_bytes: [u8; 8] = match ix.data[1..9].try_into() {
+                        Ok(b) => b,
+                        Err(_) => continue,
+                    };
+                    let amount = u64::from_le_bytes(amount_bytes);
+
+                    // Reverse: credit sender, debit receiver
+                    if amount > 0 {
+                        if let Ok(Some(mut receiver)) = state.get_account(&to) {
+                            let debit = amount.min(receiver.spendable);
+                            receiver.shells = receiver.shells.saturating_sub(debit);
+                            receiver.spendable = receiver.spendable.saturating_sub(debit);
+                            state.put_account(&to, &receiver).ok();
+
+                            if let Ok(Some(mut sender)) = state.get_account(&from) {
+                                sender.shells = sender.shells.saturating_add(debit);
+                                sender.spendable = sender.spendable.saturating_add(debit);
+                                state.put_account(&from, &sender).ok();
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Refund fee to fee payer
+        if let Some(first_ix) = tx.message.instructions.first() {
+            if let Some(&fee_payer) = first_ix.accounts.first() {
+                let fee = TxProcessor::compute_transaction_fee(tx, &fee_config);
+                if fee > 0 {
+                    if let Ok(Some(mut payer_account)) = state.get_account(&fee_payer) {
+                        payer_account.shells = payer_account.shells.saturating_add(fee);
+                        payer_account.spendable = payer_account.spendable.saturating_add(fee);
+                        state.put_account(&fee_payer, &payer_account).ok();
+                    }
+                }
+            }
+        }
+
+        // 3. Remove transaction record so new block's txs can be replayed
+        let tx_hash = tx.hash();
+        state.delete_transaction(&tx_hash).ok();
+    }
+
+    info!(
+        "⚖️  Reverted {} user transactions for slot {}",
+        old_block.transactions.len(),
+        old_block.header.slot
+    );
+}
+
 async fn apply_block_effects(
     state: &StateStore,
     validator_set: &Arc<Mutex<ValidatorSet>>,
@@ -1118,12 +1195,16 @@ async fn apply_block_effects(
             }
         };
 
-        let voter_pubkeys: Vec<Pubkey> = voters
+        let mut voter_pubkeys: Vec<Pubkey> = voters
             .iter()
             .map(|vote| vote.validator)
             .collect::<HashSet<_>>()
             .into_iter()
             .collect();
+        // Deterministic ordering is consensus-critical: the last voter
+        // receives the integer-rounding remainder, so all validators
+        // must iterate in the same order.
+        voter_pubkeys.sort_by_key(|pk| pk.0);
 
         if !voter_pubkeys.is_empty() {
             let pool = stake_pool.lock().await;
@@ -2956,6 +3037,8 @@ async fn run_validator() {
                             if incoming_weight > existing_weight || we_are_behind {
                                 // Revert old block's financial effects before replacing
                                 revert_block_effects(&state_for_blocks, &existing);
+                                // C7 fix: Also revert user transaction effects
+                                revert_block_transactions(&state_for_blocks, &existing);
                                 // Replace slot index with the higher-weight block
                                 replay_block_transactions(&processor_for_blocks, &block);
                                 if state_for_blocks.put_block(&block).is_ok() {
@@ -3238,6 +3321,7 @@ async fn run_validator() {
                     }
 
                     // Create bootstrap account for the joining validator if not present locally
+                    // Must deduct from treasury — same as local bootstrap path (L2305-2312)
                     {
                         let existing_account = state_for_validators
                             .get_account(&announcement.pubkey)
@@ -3247,30 +3331,53 @@ async fn run_validator() {
                             Some(acct) => acct.staked == 0,
                         };
                         if needs_bootstrap {
-                            let mut bootstrap_account = Account {
-                                shells: MIN_VALIDATOR_STAKE,
-                                spendable: 0,
-                                staked: MIN_VALIDATOR_STAKE,
-                                locked: 0,
-                                data: Vec::new(),
-                                owner: SYSTEM_ACCOUNT_OWNER,
-                                executable: false,
-                                rent_epoch: 0,
-                            };
-                            // Preserve any existing spendable balance (from block rewards)
-                            if let Some(existing) = &existing_account {
-                                bootstrap_account.shells += existing.spendable;
-                                bootstrap_account.spendable = existing.spendable;
+                            // Deduct from treasury to avoid minting tokens ex nihilo
+                            let mut funded = false;
+                            if let Ok(Some(tpk)) = state_for_validators.get_treasury_pubkey() {
+                                if let Ok(Some(mut treasury)) = state_for_validators.get_account(&tpk) {
+                                    if treasury.spendable >= MIN_VALIDATOR_STAKE {
+                                        treasury.deduct_spendable(MIN_VALIDATOR_STAKE).ok();
+                                        if let Err(e) = state_for_validators.put_account(&tpk, &treasury) {
+                                            warn!("⚠️  Failed to debit treasury for remote bootstrap: {}", e);
+                                        } else {
+                                            funded = true;
+                                        }
+                                    } else {
+                                        warn!("⚠️  Treasury insufficient for remote validator bootstrap ({} < {})",
+                                            treasury.spendable, MIN_VALIDATOR_STAKE);
+                                    }
+                                }
                             }
-                            if let Err(e) = state_for_validators
-                                .put_account(&announcement.pubkey, &bootstrap_account)
-                            {
-                                warn!("⚠️  Failed to create bootstrap account for {}: {}", announcement.pubkey, e);
+
+                            if funded {
+                                let mut bootstrap_account = Account {
+                                    shells: MIN_VALIDATOR_STAKE,
+                                    spendable: 0,
+                                    staked: MIN_VALIDATOR_STAKE,
+                                    locked: 0,
+                                    data: Vec::new(),
+                                    owner: SYSTEM_ACCOUNT_OWNER,
+                                    executable: false,
+                                    rent_epoch: 0,
+                                };
+                                // Preserve any existing spendable balance (from block rewards)
+                                if let Some(existing) = &existing_account {
+                                    bootstrap_account.shells += existing.spendable;
+                                    bootstrap_account.spendable = existing.spendable;
+                                }
+                                if let Err(e) = state_for_validators
+                                    .put_account(&announcement.pubkey, &bootstrap_account)
+                                {
+                                    warn!("⚠️  Failed to create bootstrap account for {}: {}", announcement.pubkey, e);
+                                } else {
+                                    info!(
+                                        "💰 Created bootstrap account for validator {} (10000 MOLT staked, treasury debited)",
+                                        announcement.pubkey.to_base58()
+                                    );
+                                }
                             } else {
-                                info!(
-                                    "💰 Created bootstrap account for validator {} (10000 MOLT staked)",
-                                    announcement.pubkey.to_base58()
-                                );
+                                warn!("⚠️  Skipping bootstrap account for {} — treasury unavailable or insufficient",
+                                    announcement.pubkey.to_base58());
                             }
                         }
                     }
@@ -3458,7 +3565,10 @@ async fn run_validator() {
         let sync_mgr_for_status = sync_manager.clone();
         tokio::spawn(async move {
             while let Some(response) = status_response_rx.recv().await {
-                sync_mgr_for_status.note_seen(response.current_slot).await;
+                // C5 fix: use bounded update to prevent malicious slot inflation
+                // Cap at 500 slots ahead of current highest — enough for legitimate
+                // sync but prevents u64::MAX attacks on fork choice.
+                sync_mgr_for_status.note_seen_bounded(response.current_slot, 500).await;
                 debug!(
                     "📡 Peer {} reports slot {} ({} blocks)",
                     response.requester, response.current_slot, response.total_blocks
@@ -3691,6 +3801,22 @@ async fn run_validator() {
                                         Some(acct) => acct.staked == 0 && entry.amount >= MIN_VALIDATOR_STAKE,
                                     };
                                     if needs_bootstrap {
+                                        // Deduct from treasury — same as announce handler
+                                        let mut funded = false;
+                                        if let Ok(Some(tpk)) = state_for_snapshot_apply.get_treasury_pubkey() {
+                                            if let Ok(Some(mut treasury)) = state_for_snapshot_apply.get_account(&tpk) {
+                                                if treasury.spendable >= entry.amount {
+                                                    treasury.deduct_spendable(entry.amount).ok();
+                                                    if let Err(e) = state_for_snapshot_apply.put_account(&tpk, &treasury) {
+                                                        warn!("⚠️  Failed to debit treasury for snapshot bootstrap: {}", e);
+                                                    } else {
+                                                        funded = true;
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        if funded {
                                         // Construct account directly with staked amount in shells
                                         // (avoids MOLT<->shells rounding issues)
                                         let mut bootstrap_account = Account {
@@ -3714,10 +3840,14 @@ async fn run_validator() {
                                             warn!("⚠️  Failed to create bootstrap account for {}: {}", entry.validator, e);
                                         } else {
                                             info!(
-                                                "💰 Created bootstrap account for validator {} ({:.4} MOLT staked)",
+                                                "💰 Created bootstrap account for validator {} ({:.4} MOLT staked, treasury debited)",
                                                 entry.validator,
                                                 entry.amount as f64 / 1_000_000_000.0
                                             );
+                                        }
+                                        } else {
+                                            warn!("⚠️  Insufficient treasury to bootstrap validator {} from snapshot ({:.4} MOLT needed)",
+                                                entry.validator, entry.amount as f64 / 1_000_000_000.0);
                                         }
                                     }
                                 }

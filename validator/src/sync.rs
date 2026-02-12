@@ -94,6 +94,19 @@ impl SyncManager {
         }
     }
 
+    /// Record the highest slot from an unvalidated source (e.g., peer status).
+    /// Caps the jump to prevent a malicious peer from claiming slot u64::MAX
+    /// and permanently setting `we_are_behind = true` in fork choice.
+    pub async fn note_seen_bounded(&self, slot: u64, max_ahead: u64) {
+        let mut highest = self.highest_seen_slot.lock().await;
+        // Only accept slots up to `max_ahead` beyond current highest
+        let cap = (*highest).saturating_add(max_ahead);
+        let capped = slot.min(cap);
+        if capped > *highest {
+            *highest = capped;
+        }
+    }
+
     /// Check if we need to start syncing (returns next batch to sync)
     pub async fn should_sync(&self, current_slot: u64) -> Option<(u64, u64)> {
         let highest = *self.highest_seen_slot.lock().await;
