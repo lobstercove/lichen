@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Python SDK - MoltChain Developer Portal</title>
+    <link rel="stylesheet" href="../shared-base-styles.css">
+    <link rel="stylesheet" href="../shared-theme.css">
+    <link rel="stylesheet" href="css/developers.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+</head>
+<body>
+    <nav class="nav">
+        <div class="nav-container">
+            <div class="nav-logo">
+                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="Molt Dev">
+                <span class="logo-text">Molt Dev</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="index.html">Hub</a></li>
+                <li><a href="getting-started.html">Get Started</a></li>
+                <li><a href="rpc-reference.html">API</a></li>
+                <li><a href="sdk-js.html" class="active">SDK</a></li>
+                <li><a href="contracts.html">Contracts</a></li>
+                <li><a href="cli-reference.html">CLI</a></li>
+                <li><a href="moltyid.html">MoltyID</a></li>
+            </ul>
+            <div class="nav-actions">
+                <div class="search-container">
+                    <input type="text" id="searchInput" class="search-input" placeholder="Search docs... (⌘K)">
+                    <i class="fas fa-search search-icon"></i>
+                </div>
+                <select id="devNetworkSelect" class="network-select">
+                    <option value="mainnet">Mainnet</option>
+                    <option value="testnet">Testnet</option>
+                    <option value="local-testnet" selected>Local Testnet</option>
+                    <option value="local-mainnet">Local Mainnet</option>
+                </select>
+            </div>
+            <button class="nav-toggle" id="navToggle"><span></span><span></span><span></span></button>
+        </div>
+    </nav>
+    <div class="search-overlay" id="searchOverlay">
+        <div class="search-modal">
+            <input type="text" class="search-modal-input" id="searchModalInput" placeholder="Search documentation...">
+            <div class="search-results" id="searchResults"></div>
+        </div>
+    </div>
+
+    <div class="docs-layout">
+        <aside class="docs-sidebar">
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Getting Started</h3>
+                <a href="#installation" class="sidebar-link active">Installation</a>
+                <a href="#quick-start" class="sidebar-link">Quick Start</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">SDK Languages</h3>
+                <a href="sdk-js.html" class="sidebar-link">JavaScript / TypeScript</a>
+                <a href="sdk-python.html" class="sidebar-link active">Python</a>
+                <a href="sdk-rust.html" class="sidebar-link">Rust</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Connection</h3>
+                <a href="#connection-constructor" class="sidebar-link">Constructor</a>
+                <a href="#connection-chain" class="sidebar-link">Chain Queries</a>
+                <a href="#connection-account" class="sidebar-link">Account Methods</a>
+                <a href="#connection-tx" class="sidebar-link">Transaction Methods</a>
+                <a href="#connection-validator" class="sidebar-link">Validator &amp; Staking</a>
+                <a href="#connection-contract" class="sidebar-link">Contract Methods</a>
+                <a href="#connection-program" class="sidebar-link">Program Methods</a>
+                <a href="#connection-nft" class="sidebar-link">NFT Methods</a>
+                <a href="#connection-ws" class="sidebar-link">WebSocket Subscriptions</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Keypair</h3>
+                <a href="#keypair-generate" class="sidebar-link">generate()</a>
+                <a href="#keypair-from-seed" class="sidebar-link">from_seed()</a>
+                <a href="#keypair-load-save" class="sidebar-link">load() / save()</a>
+                <a href="#keypair-sign" class="sidebar-link">sign()</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">PublicKey</h3>
+                <a href="#publickey-constructor" class="sidebar-link">Constructor</a>
+                <a href="#publickey-methods" class="sidebar-link">Methods</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Transaction</h3>
+                <a href="#transaction-types" class="sidebar-link">Dataclasses</a>
+                <a href="#transaction-builder" class="sidebar-link">TransactionBuilder</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Patterns</h3>
+                <a href="#error-handling" class="sidebar-link">Error Handling</a>
+            </div>
+        </aside>
+
+        <main class="docs-main">
+            <div class="breadcrumbs">
+                <a href="index.html">Developers</a>
+                <span class="separator">/</span>
+                <a href="sdk-js.html">SDK</a>
+                <span class="separator">/</span>
+                <span>Python</span>
+            </div>
+
+            <h1>Python SDK</h1>
+            <p>The official async Python SDK for MoltChain. Built on <code>httpx</code> and <code>websockets</code> with full type hints.</p>
+
+            <!-- Installation -->
+            <section id="installation">
+                <h2>Installation</h2>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">bash</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <code><pre>pip install moltchain</pre></code>
+                </div>
+                <div class="callout callout-info">
+                    <p>Requires Python 3.10+. Dependencies: <code>httpx</code>, <code>websockets</code>, <code>PyNaCl</code>, <code>base58</code>.</p>
+                </div>
+            </section>
+
+            <!-- Quick Start -->
+            <section id="quick-start">
+                <h2>Quick Start</h2>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <code><pre>import asyncio
+from moltchain import Connection, Keypair, PublicKey, TransactionBuilder
+
+async def main():
+    # Connect to a local validator
+    conn = Connection("http://localhost:8899", ws_url="ws://localhost:8900")
+
+    # Generate a keypair
+    kp = Keypair.generate()
+    print(f"Address: {kp.public_key()}")
+
+    # Check balance
+    balance = await conn.get_balance(kp.public_key())
+    print(f"Balance: {balance['shells']} shells")
+
+    # Build and send a transfer
+    recipient = PublicKey("RecipientBase58Address...")
+    blockhash = await conn.get_recent_blockhash()
+
+    tx = (TransactionBuilder()
+        .add(TransactionBuilder.transfer(kp.public_key(), recipient, 1_000_000_000))
+        .set_recent_blockhash(blockhash)
+        .build_and_sign(kp))
+
+    signature = await conn.send_transaction(tx)
+    print(f"TX Signature: {signature}")
+
+    await conn.close()
+
+asyncio.run(main())</pre></code>
+                </div>
+            </section>
+
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <!-- CONNECTION CLASS -->
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <h2>Connection Class</h2>
+
+            <div class="method-card" id="connection-constructor">
+                <h3 class="method-name">Connection(rpc_url, ws_url=None)</h3>
+                <p class="method-desc">Create an async connection to a MoltChain validator node.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead><tr><th>Name</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <tbody>
+                            <tr><td>rpc_url</td><td><span class="param-type">str</span></td><td>Yes</td><td>HTTP JSON-RPC endpoint URL</td></tr>
+                            <tr><td>ws_url</td><td><span class="param-type">Optional[str]</span></td><td>No</td><td>WebSocket endpoint URL (required for subscriptions)</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Python</span></div>
+                    <code><pre>conn = Connection("http://localhost:8899", ws_url="ws://localhost:8900")</pre></code>
+                </div>
+            </div>
+
+            <!-- Chain Queries -->
+            <h3 id="connection-chain">Chain Queries</h3>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_slot() -&gt; int</h3>
+                <p class="method-desc">Get the current slot number.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Python</span></div>
+                    <code><pre>slot = await conn.get_slot()  # 42</pre></code>
+                </div>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_latest_block() -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Get the most recently produced block.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_block(slot: int) -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Get a block by slot number.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_recent_blockhash() -&gt; str</h3>
+                <p class="method-desc">Get a recent blockhash for signing transactions.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_metrics() -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Get chain performance metrics — TPS, total transactions, total blocks, average block time.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_chain_status() -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Get comprehensive chain status.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await health() -&gt; Dict[str, str]</h3>
+                <p class="method-desc">Liveness probe. Returns <code>{"status": "ok"}</code>.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_network_info() -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Get network information — chain ID, network ID, version, slot, validator/peer count.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_peers() -&gt; List[Dict[str, Any]]</h3>
+                <p class="method-desc">Get connected P2P peers.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_total_burned() -&gt; Dict[str, int]</h3>
+                <p class="method-desc">Get total burned MOLT — <code>{"shells": ..., "molt": ...}</code>.</p>
+            </div>
+
+            <!-- Account Methods -->
+            <h3 id="connection-account">Account Methods</h3>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_balance(pubkey: PublicKey) -&gt; Dict[str, int]</h3>
+                <p class="method-desc">Get account balance in shells and MOLT.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <code><pre>balance = await conn.get_balance(PublicKey("7xKXtg2CW87d..."))
+print(balance["shells"])  # 5000000000
+print(balance["molt"])    # 5.0</pre></code>
+                </div>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_account(pubkey: PublicKey) -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Get raw account data — shells, owner, executable, data.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_account_info(pubkey: PublicKey) -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Get enhanced account information with metadata.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_transaction_history(pubkey: PublicKey, limit: int = 10) -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Get paginated transaction history for an account.</p>
+            </div>
+
+            <!-- Transaction Methods -->
+            <h3 id="connection-tx">Transaction Methods</h3>
+
+            <div class="method-card">
+                <h3 class="method-name">await send_transaction(transaction: Transaction) -&gt; str</h3>
+                <p class="method-desc">Serialize and submit a signed transaction. Returns the signature string.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <code><pre>blockhash = await conn.get_recent_blockhash()
+tx = (TransactionBuilder()
+    .add(TransactionBuilder.transfer(kp.public_key(), recipient, 1_000_000_000))
+    .set_recent_blockhash(blockhash)
+    .build_and_sign(kp))
+
+sig = await conn.send_transaction(tx)
+print(f"Signature: {sig}")</pre></code>
+                </div>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_transaction(signature: str) -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Look up a transaction by its signature hash.</p>
+            </div>
+
+            <!-- Validator & Staking -->
+            <h3 id="connection-validator">Validator &amp; Staking</h3>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_validators() -&gt; List[Dict[str, Any]]</h3>
+                <p class="method-desc">Get all registered validators.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_validator_info(pubkey: PublicKey) -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Get detailed validator information.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_validator_performance(pubkey: PublicKey) -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Get validator performance metrics.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await stake(from_keypair: Keypair, validator: PublicKey, amount: int) -&gt; str</h3>
+                <p class="method-desc">Build, sign, and send a stake transaction. Amount in shells.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <code><pre>validator = PublicKey("ValidatorPubkey...")
+sig = await conn.stake(kp, validator, 10_000_000_000)  # 10 MOLT</pre></code>
+                </div>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await unstake(from_keypair: Keypair, validator: PublicKey, amount: int) -&gt; str</h3>
+                <p class="method-desc">Build, sign, and send an unstake request.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_staking_status(pubkey: PublicKey) -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Get staking status for an account.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_staking_rewards(pubkey: PublicKey) -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Get accumulated staking rewards.</p>
+            </div>
+
+            <!-- Contract Methods -->
+            <h3 id="connection-contract">Contract Methods</h3>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_contract_info(contract_id: PublicKey) -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Get information about a deployed smart contract.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_contract_logs(contract_id: PublicKey) -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Get execution logs emitted by a contract.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_all_contracts() -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">List all deployed contracts.</p>
+            </div>
+
+            <!-- Program Methods -->
+            <h3 id="connection-program">Program Methods</h3>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_program(program_id: PublicKey) -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Get program information.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_programs() -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">List all deployed programs.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_program_stats(program_id: PublicKey) -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Get execution statistics for a program.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_program_calls(program_id: PublicKey) -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Get recent call history for a program.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_program_storage(program_id: PublicKey) -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Get on-chain storage summary for a program.</p>
+            </div>
+
+            <!-- NFT Methods -->
+            <h3 id="connection-nft">NFT Methods</h3>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_collection(collection_id: PublicKey) -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Get NFT collection metadata.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_nft(collection_id: PublicKey, token_id: int) -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Get a specific NFT by collection and token ID.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_nfts_by_owner(owner: PublicKey) -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Get all NFTs owned by an address.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_nfts_by_collection(collection_id: PublicKey) -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Get all NFTs in a collection.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await get_nft_activity(collection_id: PublicKey, token_id: int) -&gt; Dict[str, Any]</h3>
+                <p class="method-desc">Get activity history for a specific NFT.</p>
+            </div>
+
+            <!-- WebSocket Subscriptions -->
+            <h3 id="connection-ws">WebSocket Subscriptions</h3>
+            <p>All subscription methods are <code>async</code> and require <code>ws_url</code> in the Connection constructor. Each <code>on_*</code> method returns a subscription ID for unsubscribing with the corresponding <code>off_*</code> method. Callbacks can be sync or async.</p>
+
+            <div class="method-card">
+                <h3 class="method-name">await on_slot(callback: Callable[[int], None]) -&gt; int</h3>
+                <p class="method-desc">Subscribe to slot updates. Unsubscribe with <code>off_slot(sub_id)</code>.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <code><pre>sub_id = await conn.on_slot(lambda slot: print(f"Slot: {slot}"))
+# ... later
+await conn.off_slot(sub_id)</pre></code>
+                </div>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await on_block(callback) -&gt; int</h3>
+                <p class="method-desc">Subscribe to new blocks. Unsubscribe with <code>off_block(sub_id)</code>.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await on_transaction(callback) -&gt; int</h3>
+                <p class="method-desc">Subscribe to all confirmed transactions. Unsubscribe with <code>off_transaction(sub_id)</code>.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await on_account_change(pubkey: PublicKey, callback) -&gt; int</h3>
+                <p class="method-desc">Watch a specific account for balance changes. Unsubscribe with <code>off_account_change(sub_id)</code>.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await on_logs(callback, contract_id: Optional[PublicKey] = None) -&gt; int</h3>
+                <p class="method-desc">Stream contract logs. Optional contract filter. Unsubscribe with <code>off_logs(sub_id)</code>.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await on_program_updates(callback) / on_program_calls(callback, program_id?)</h3>
+                <p class="method-desc">Program deploy/upgrade events and invocations. Unsubscribe with <code>off_program_updates</code> / <code>off_program_calls</code>.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await on_nft_mints(callback, collection_id?) / on_nft_transfers(callback, collection_id?)</h3>
+                <p class="method-desc">NFT mint and transfer events. Optional collection filter. Unsubscribe with <code>off_nft_mints</code> / <code>off_nft_transfers</code>.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await on_market_listings(callback) / on_market_sales(callback)</h3>
+                <p class="method-desc">Marketplace listing and sale events. Unsubscribe with <code>off_market_listings</code> / <code>off_market_sales</code>.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">await close()</h3>
+                <p class="method-desc">Close the WebSocket connection, cancel background tasks, and clear subscriptions.</p>
+            </div>
+
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <!-- KEYPAIR -->
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <h2>Keypair Class</h2>
+            <p>Ed25519 keypair backed by <code>PyNaCl</code>. Implements signing and seed-based derivation.</p>
+
+            <div class="method-card" id="keypair-generate">
+                <h3 class="method-name">Keypair.generate() -&gt; Keypair</h3>
+                <p class="method-desc">Generate a new random keypair.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <code><pre>kp = Keypair.generate()
+print(f"Address: {kp.public_key()}")</pre></code>
+                </div>
+            </div>
+
+            <div class="method-card" id="keypair-from-seed">
+                <h3 class="method-name">Keypair.from_seed(seed: bytes) -&gt; Keypair</h3>
+                <p class="method-desc">Derive a keypair from a 32-byte seed. Raises <code>ValueError</code> if seed is not 32 bytes.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Python</span></div>
+                    <code><pre>seed = b'\x00' * 32
+kp = Keypair.from_seed(seed)</pre></code>
+                </div>
+            </div>
+
+            <div class="method-card" id="keypair-load-save">
+                <h3 class="method-name">Keypair.load(path: Path) -&gt; Keypair / keypair.save(path: Path)</h3>
+                <p class="method-desc">Load a keypair from a JSON file or save it to one. The JSON contains <code>seed</code>, <code>pubkey</code>, and <code>pubkey_base58</code> fields.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <code><pre>from pathlib import Path
+
+kp = Keypair.generate()
+kp.save(Path("my-wallet.json"))
+
+# Later
+kp2 = Keypair.load(Path("my-wallet.json"))
+assert kp.public_key() == kp2.public_key()</pre></code>
+                </div>
+            </div>
+
+            <div class="method-card" id="keypair-sign">
+                <h3 class="method-name">keypair.sign(message: bytes) -&gt; bytes</h3>
+                <p class="method-desc">Sign an arbitrary message. Returns the 64-byte Ed25519 detached signature.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">keypair.public_key() -&gt; PublicKey</h3>
+                <p class="method-desc">Get the public key as a <code>PublicKey</code> object.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">keypair.seed() -&gt; bytes</h3>
+                <p class="method-desc">Get the 32-byte seed for backup/restore.</p>
+            </div>
+
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <!-- PUBLICKEY -->
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <h2>PublicKey Class</h2>
+            <p>A 32-byte public key with base58 encoding. Uses the <code>base58</code> library.</p>
+
+            <div class="method-card" id="publickey-constructor">
+                <h3 class="method-name">PublicKey(value: Union[str, bytes, list])</h3>
+                <p class="method-desc">Create from a base58 string, bytes, or list of ints. Raises <code>ValueError</code> if not 32 bytes.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <code><pre>pk1 = PublicKey("7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU")
+pk2 = PublicKey(b'\x00' * 32)
+pk3 = PublicKey([0] * 32)</pre></code>
+                </div>
+            </div>
+
+            <div class="method-card" id="publickey-methods">
+                <h3 class="method-name">Methods</h3>
+                <table class="param-table">
+                    <thead><tr><th>Method</th><th>Returns</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td>to_base58()</td><td><span class="param-type">str</span></td><td>Base58-encoded string representation</td></tr>
+                        <tr><td>to_bytes()</td><td><span class="param-type">bytes</span></td><td>Raw 32-byte bytes</td></tr>
+                        <tr><td>__str__()</td><td><span class="param-type">str</span></td><td>Same as to_base58()</td></tr>
+                        <tr><td>__eq__(other)</td><td><span class="param-type">bool</span></td><td>Byte-level equality</td></tr>
+                        <tr><td>__hash__()</td><td><span class="param-type">int</span></td><td>Hashable for use in sets/dicts</td></tr>
+                    </tbody>
+                </table>
+                <h4 style="margin-top:1rem;">Class Methods</h4>
+                <table class="param-table">
+                    <thead><tr><th>Method</th><th>Returns</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td>PublicKey.from_base58(s)</td><td><span class="param-type">PublicKey</span></td><td>Create from base58 string</td></tr>
+                        <tr><td>PublicKey.from_bytes(b)</td><td><span class="param-type">PublicKey</span></td><td>Create from bytes</td></tr>
+                        <tr><td>PublicKey.new_unique()</td><td><span class="param-type">PublicKey</span></td><td>Random key (testing only)</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <!-- TRANSACTION -->
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <h2>Transaction Types &amp; Builder</h2>
+
+            <div class="method-card" id="transaction-types">
+                <h3 class="method-name">Dataclasses</h3>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Python</span></div>
+                    <code><pre>@dataclass
+class Instruction:
+    program_id: PublicKey
+    accounts: List[PublicKey]
+    data: bytes
+
+@dataclass
+class Message:
+    instructions: List[Instruction]
+    recent_blockhash: str
+
+@dataclass
+class Transaction:
+    signatures: List[str]  # hex-encoded
+    message: Message</pre></code>
+                </div>
+            </div>
+
+            <div class="method-card" id="transaction-builder">
+                <h3 class="method-name">TransactionBuilder</h3>
+                <p class="method-desc">Fluent builder for constructing and signing transactions.</p>
+                <table class="param-table">
+                    <thead><tr><th>Method</th><th>Returns</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td>add(instruction)</td><td><span class="param-type">TransactionBuilder</span></td><td>Append an instruction</td></tr>
+                        <tr><td>set_recent_blockhash(hash)</td><td><span class="param-type">TransactionBuilder</span></td><td>Set the recent blockhash</td></tr>
+                        <tr><td>build()</td><td><span class="param-type">Message</span></td><td>Build unsigned message</td></tr>
+                        <tr><td>build_and_sign(keypair)</td><td><span class="param-type">Transaction</span></td><td>Build, sign, and return a Transaction</td></tr>
+                    </tbody>
+                </table>
+                <h4 style="margin-top:1rem;">Static Instruction Builders</h4>
+                <table class="param-table">
+                    <thead><tr><th>Method</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td>TransactionBuilder.transfer(from_pubkey, to_pubkey, amount)</td><td>Create a MOLT transfer instruction (type 0). Amount in shells.</td></tr>
+                        <tr><td>TransactionBuilder.stake(from_pubkey, validator, amount)</td><td>Create a stake instruction (type 9)</td></tr>
+                        <tr><td>TransactionBuilder.unstake(from_pubkey, validator, amount)</td><td>Create an unstake instruction (type 10)</td></tr>
+                    </tbody>
+                </table>
+                <div class="callout callout-tip">
+                    <p><strong>Serialization helpers:</strong> <code>TransactionBuilder.message_to_bincode(msg)</code> and <code>TransactionBuilder.transaction_to_bincode(tx)</code> are available for custom serialization workflows.</p>
+                </div>
+            </div>
+
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <!-- ERROR HANDLING -->
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <h2 id="error-handling">Error Handling</h2>
+            <p>All RPC methods raise standard Python <code>Exception</code> with descriptive messages from the server.</p>
+
+            <div class="code-block">
+                <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                <code><pre>try:
+    balance = await conn.get_balance(pubkey)
+except Exception as e:
+    if "Account not found" in str(e):
+        print("Account does not exist yet")
+    elif "Rate limit" in str(e):
+        await asyncio.sleep(1)
+    else:
+        raise</pre></code>
+            </div>
+
+            <div class="callout callout-warning">
+                <p><strong>Common error codes:</strong></p>
+                <ul>
+                    <li><code>-32601</code> — Method not found</li>
+                    <li><code>-32602</code> — Invalid params</li>
+                    <li><code>-32003</code> — Admin auth required</li>
+                    <li><code>-32005</code> — Rate limit / subscription limit exceeded</li>
+                </ul>
+            </div>
+        </main>
+    </div>
+
+    <script>
+    document.querySelectorAll('.sidebar-link').forEach(link => {
+        link.addEventListener('click', () => {
+            document.querySelectorAll('.sidebar-link').forEach(l => l.classList.remove('active'));
+            link.classList.add('active');
+        });
+    });
+    document.addEventListener('keydown', (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+            e.preventDefault();
+            document.getElementById('searchOverlay').classList.toggle('active');
+            document.getElementById('searchModalInput').focus();
+        }
+        if (e.key === 'Escape') document.getElementById('searchOverlay').classList.remove('active');
+    });
+    document.getElementById('searchOverlay')?.addEventListener('click', (e) => {
+        if (e.target === e.currentTarget) e.currentTarget.classList.remove('active');
+    });
+    document.getElementById('navToggle')?.addEventListener('click', () => {
+        document.querySelector('.nav-menu')?.classList.toggle('active');
+    });
+    document.querySelectorAll('.code-copy-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const code = btn.closest('.code-block').querySelector('code').textContent;
+            navigator.clipboard.writeText(code);
+            btn.innerHTML = '<i class="fas fa-check"></i>';
+            setTimeout(() => btn.innerHTML = '<i class="fas fa-copy"></i>', 1500);
+        });
+    });
+    </script>
+</body>
+</html>

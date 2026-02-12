@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Browse NFTs - Molt Market</title>
+    <meta name="description" content="Explore and discover NFTs on MoltChain. Filter by collection, price, rarity, and more.">
+    <link rel="stylesheet" href="../shared-base-styles.css">
+    <link rel="stylesheet" href="../shared-theme.css">
+    <link rel="stylesheet" href="css/marketplace.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="nav">
+        <div class="nav-container">
+            <div class="nav-logo">
+                <img src="MoltMarket_Logo_256.png" class="logo-icon" alt="Molt Market">
+                <span class="logo-text">Molt Market</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="index.html">Home</a></li>
+                <li><a href="browse.html" class="active">Browse</a></li>
+                <li><a href="create.html">Create</a></li>
+            </ul>
+            <div class="nav-actions">
+                <div class="search-container">
+                    <input type="text" id="searchInput" class="search-input" placeholder="Search NFTs, collections...">
+                    <i class="fas fa-search search-icon"></i>
+                </div>
+                <div class="nav-network"><select id="marketNetworkSelect" class="network-select"></select></div>
+                <button class="btn btn-primary" id="connectWallet">
+                    <i class="fas fa-wallet"></i> Connect Wallet
+                </button>
+            </div>
+            <button class="nav-toggle" id="navToggle">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+        </div>
+    </nav>
+
+    <!-- Browse Page -->
+    <section class="section browse-page">
+        <div class="container">
+            <div class="browse-layout">
+                <!-- Sidebar Filters -->
+                <aside class="browse-sidebar">
+                    <div class="filter-section">
+                        <div class="filter-header">
+                            <h3>Filters</h3>
+                            <button class="btn-text" onclick="clearFilters()">Clear All</button>
+                        </div>
+
+                        <!-- Status Filter -->
+                        <div class="filter-group">
+                            <h4 class="filter-title">Status</h4>
+                            <div class="filter-options">
+                                <label class="filter-checkbox">
+                                    <input type="checkbox" value="buy_now" checked>
+                                    <span>Buy Now</span>
+                                </label>
+                                <label class="filter-checkbox">
+                                    <input type="checkbox" value="auction">
+                                    <span>On Auction</span>
+                                </label>
+                                <label class="filter-checkbox">
+                                    <input type="checkbox" value="offers">
+                                    <span>Has Offers</span>
+                                </label>
+                            </div>
+                        </div>
+
+                        <!-- Price Range -->
+                        <div class="filter-group">
+                            <h4 class="filter-title">Price Range (MOLT)</h4>
+                            <div class="price-inputs">
+                                <input type="number" id="minPrice" placeholder="Min" class="price-input">
+                                <span>to</span>
+                                <input type="number" id="maxPrice" placeholder="Max" class="price-input">
+                            </div>
+                            <button class="btn btn-secondary btn-block" onclick="applyPriceFilter()">Apply</button>
+                        </div>
+
+                        <!-- Collections -->
+                        <div class="filter-group">
+                            <h4 class="filter-title">Collections</h4>
+                            <div class="filter-search">
+                                <input type="text" id="collectionSearch" placeholder="Search collections..." class="filter-search-input">
+                                <i class="fas fa-search"></i>
+                            </div>
+                            <div class="filter-options" id="collectionsList">
+                                <!-- Loaded by JS -->
+                            </div>
+                        </div>
+
+                        <!-- Rarity -->
+                        <div class="filter-group">
+                            <h4 class="filter-title">Rarity</h4>
+                            <div class="filter-options">
+                                <label class="filter-checkbox">
+                                    <input type="checkbox" value="common">
+                                    <span>Common</span>
+                                </label>
+                                <label class="filter-checkbox">
+                                    <input type="checkbox" value="uncommon">
+                                    <span>Uncommon</span>
+                                </label>
+                                <label class="filter-checkbox">
+                                    <input type="checkbox" value="rare">
+                                    <span>Rare</span>
+                                </label>
+                                <label class="filter-checkbox">
+                                    <input type="checkbox" value="epic">
+                                    <span>Epic</span>
+                                </label>
+                                <label class="filter-checkbox">
+                                    <input type="checkbox" value="legendary">
+                                    <span>Legendary</span>
+                                </label>
+                            </div>
+                        </div>
+                    </div>
+                </aside>
+
+                <!-- Main Content -->
+                <main class="browse-main">
+                    <!-- Header with Sort -->
+                    <div class="browse-header">
+                        <div class="browse-info">
+                            <h1>Browse NFTs</h1>
+                            <p class="browse-count"><span id="nftCount">0</span> items</p>
+                        </div>
+                        <div class="browse-controls">
+                            <div class="view-toggle">
+                                <button class="view-btn active" data-view="grid">
+                                    <i class="fas fa-th"></i>
+                                </button>
+                                <button class="view-btn" data-view="list">
+                                    <i class="fas fa-list"></i>
+                                </button>
+                            </div>
+                            <select id="sortSelect" class="sort-select">
+                                <option value="recent">Recently Listed</option>
+                                <option value="price_low">Price: Low to High</option>
+                                <option value="price_high">Price: High to Low</option>
+                                <option value="popular">Most Popular</option>
+                                <option value="ending">Ending Soon</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- NFTs Grid -->
+                    <div class="nfts-grid" id="nftsGrid">
+                        <!-- Loaded by JS -->
+                    </div>
+
+                    <!-- Pagination -->
+                    <div class="pagination" id="pagination">
+                        <button class="btn btn-secondary" id="prevPage" disabled>
+                            <i class="fas fa-chevron-left"></i> Previous
+                        </button>
+                        <div class="pagination-info">
+                            Page <span id="currentPage">1</span> of <span id="totalPages">10</span>
+                        </div>
+                        <button class="btn btn-secondary" id="nextPage">
+                            Next <i class="fas fa-chevron-right"></i>
+                        </button>
+                    </div>
+                </main>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-grid">
+                <div class="footer-col">
+                    <div class="footer-logo">
+                        <img src="MoltMarket_Logo_256.png" class="logo-icon" alt="Molt Market">
+                        <span class="logo-text">Molt Market</span>
+                    </div>
+                    <p class="footer-desc">
+                        The first NFT marketplace on MoltChain. Ultra-low fees, instant finality, agent-first design.
+                    </p>
+                </div>
+                <div class="footer-col">
+                    <h4>Marketplace</h4>
+                    <ul class="footer-links">
+                        <li><a href="browse.html">Browse NFTs</a></li>
+                        <li><a href="browse.html?filter=trending">Trending</a></li>
+                        <li><a href="browse.html?filter=collections">Collections</a></li>
+                        <li><a href="create.html">Create NFT</a></li>
+                    </ul>
+                </div>
+                <div class="footer-col">
+                    <h4>Resources</h4>
+                    <ul class="footer-links">
+                        <li><a href="#docs">Documentation</a></li>
+                        <li><a href="#api">API</a></li>
+                        <li><a href="#help">Help Center</a></li>
+                        <li><a href="#terms">Terms of Service</a></li>
+                    </ul>
+                </div>
+                <div class="footer-col">
+                    <h4>Community</h4>
+                    <ul class="footer-links">
+                        <li><a href="#discord">Discord</a></li>
+                        <li><a href="#twitter">Twitter</a></li>
+                        <li><a href="#github">GitHub</a></li>
+                        <li><a href="#blog">Blog</a></li>
+                    </ul>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2026 Molt Market. Built on MoltChain.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="../shared/wallet-connect.js"></script>
+    <script src="js/marketplace-config.js"></script>
+    <script src="js/browse.js"></script>
+</body>
+</html>

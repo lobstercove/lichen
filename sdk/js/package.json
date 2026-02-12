@@ -1,0 +1,38 @@
+{
+  "name": "@moltchain/sdk",
+  "version": "0.1.0",
+  "description": "Official JavaScript/TypeScript SDK for MoltChain blockchain",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "jest",
+    "prepare": "npm run build"
+  },
+  "keywords": [
+    "moltchain",
+    "blockchain",
+    "crypto",
+    "molt",
+    "web3"
+  ],
+  "author": "Trading Lobster <trading.lobster@moltchain.io>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/moltchain/moltchain.git",
+    "directory": "sdk/js"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.32",
+    "@types/ws": "^8.5.10",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "bs58": "^5.0.0",
+    "tweetnacl": "^1.0.3",
+    "ws": "^8.16.0"
+  }
+}

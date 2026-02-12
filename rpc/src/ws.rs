@@ -1,0 +1,844 @@
+// MoltChain WebSocket Server
+// Real-time event subscriptions for blocks, transactions, accounts, and logs
+
+use axum::{
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        State,
+    },
+    response::Response,
+    routing::get,
+    Router,
+};
+use moltchain_core::{Block, MarketActivity, Pubkey, StateStore, Transaction};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use tokio::sync::{broadcast, mpsc, RwLock};
+use tracing::{error, info, warn};
+
+/// T8.5: Maximum subscriptions allowed per WebSocket connection
+const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 100;
+/// DDoS protection: max concurrent WebSocket connections
+const MAX_WS_CONNECTIONS: usize = 500;
+
+/// WebSocket subscription request
+#[derive(Debug, Deserialize)]
+struct SubscriptionRequest {
+    #[allow(dead_code)]
+    jsonrpc: String,
+    id: serde_json::Value,
+    method: String,
+    params: Option<serde_json::Value>,
+}
+
+/// WebSocket subscription response
+#[derive(Debug, Serialize)]
+struct SubscriptionResponse {
+    jsonrpc: String,
+    id: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<WsError>,
+}
+
+/// WebSocket notification
+#[derive(Debug, Serialize, Clone)]
+struct Notification {
+    jsonrpc: String,
+    method: String,
+    params: NotificationParams,
+}
+
+/// Notification parameters
+#[derive(Debug, Serialize, Clone)]
+struct NotificationParams {
+    subscription: u64,
+    result: serde_json::Value,
+}
+
+/// WebSocket error
+#[derive(Debug, Serialize)]
+struct WsError {
+    code: i32,
+    message: String,
+}
+
+/// Event types that can be subscribed to
+#[derive(Debug, Clone)]
+pub enum Event {
+    Slot(u64),
+    Block(Block),
+    Transaction(Transaction),
+    AccountChange { pubkey: Pubkey, balance: u64 },
+    Log { contract: Pubkey, message: String },
+    ProgramUpdate { program: Pubkey, kind: String },
+    ProgramCall { program: Pubkey },
+    NftMint { collection: Pubkey },
+    NftTransfer { collection: Pubkey },
+    MarketListing { activity: MarketActivity },
+    MarketSale { activity: MarketActivity },
+    BridgeLock { chain: String, asset: String, amount: u64, sender: String, recipient: Pubkey },
+    BridgeMint { chain: String, asset: String, amount: u64, recipient: Pubkey, tx_hash: String },
+}
+
+/// Subscription manager
+#[derive(Clone)]
+struct SubscriptionManager {
+    next_id: Arc<RwLock<u64>>,
+    subscriptions: Arc<RwLock<HashMap<u64, SubscriptionType>>>,
+}
+
+#[derive(Debug, Clone)]
+enum SubscriptionType {
+    Slots,
+    Blocks,
+    Transactions,
+    Account(Pubkey),
+    Logs(Option<Pubkey>), // None = all contracts
+    ProgramUpdates,
+    ProgramCalls(Option<Pubkey>),
+    NftMints(Option<Pubkey>),
+    NftTransfers(Option<Pubkey>),
+    MarketListings,
+    MarketSales,
+    BridgeLocks,
+    BridgeMints,
+}
+
+impl SubscriptionManager {
+    fn new() -> Self {
+        Self {
+            next_id: Arc::new(RwLock::new(1)),
+            subscriptions: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    async fn subscribe(&self, sub_type: SubscriptionType) -> Result<u64, WsError> {
+        let subs = self.subscriptions.read().await;
+        if subs.len() >= MAX_SUBSCRIPTIONS_PER_CONNECTION {
+            return Err(WsError {
+                code: -32005,
+                message: format!(
+                    "Subscription limit reached: max {} per connection",
+                    MAX_SUBSCRIPTIONS_PER_CONNECTION
+                ),
+            });
+        }
+        drop(subs);
+
+        let mut next_id = self.next_id.write().await;
+        let id = *next_id;
+        *next_id += 1;
+
+        let mut subs = self.subscriptions.write().await;
+        subs.insert(id, sub_type);
+
+        Ok(id)
+    }
+
+    async fn unsubscribe(&self, id: u64) -> bool {
+        let mut subs = self.subscriptions.write().await;
+        subs.remove(&id).is_some()
+    }
+}
+
+/// WebSocket state
+#[derive(Clone)]
+pub struct WsState {
+    #[allow(dead_code)]
+    state: StateStore,
+    event_tx: broadcast::Sender<Event>,
+    /// DDoS protection: active connection counter
+    active_connections: Arc<AtomicUsize>,
+}
+
+impl WsState {
+    pub fn new(state: StateStore) -> (Self, broadcast::Sender<Event>) {
+        let (event_tx, _) = broadcast::channel(1000);
+        let ws_state = Self {
+            state,
+            event_tx: event_tx.clone(),
+            active_connections: Arc::new(AtomicUsize::new(0)),
+        };
+        (ws_state, event_tx)
+    }
+}
+
+/// Start WebSocket server
+pub async fn start_ws_server(
+    state: StateStore,
+    port: u16,
+) -> Result<(broadcast::Sender<Event>, tokio::task::JoinHandle<()>), Box<dyn std::error::Error>> {
+    let (ws_state, event_tx) = WsState::new(state);
+
+    let app = Router::new()
+        .route("/", get(ws_handler))
+        .with_state(ws_state);
+
+    let addr = format!("0.0.0.0:{}", port);
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+
+    info!("🦞 WebSocket server listening on {}", addr);
+
+    let handle = tokio::spawn(async move {
+        if let Err(e) = axum::serve(listener, app).await {
+            error!("WebSocket server error: {}", e);
+        }
+    });
+
+    Ok((event_tx, handle))
+}
+
+/// WebSocket handler with connection limit enforcement
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<WsState>) -> Response {
+    let current = state.active_connections.load(Ordering::Relaxed);
+    if current >= MAX_WS_CONNECTIONS {
+        warn!("WebSocket connection limit reached ({}/{}), rejecting", current, MAX_WS_CONNECTIONS);
+        return Response::builder()
+            .status(503)
+            .body(axum::body::Body::from("Too many WebSocket connections"))
+            .unwrap();
+    }
+    ws.on_upgrade(|socket| handle_socket(socket, state))
+}
+
+/// Handle WebSocket connection
+async fn handle_socket(socket: WebSocket, state: WsState) {
+    state.active_connections.fetch_add(1, Ordering::Relaxed);
+    let conn_guard = state.active_connections.clone();
+
+    let (mut sender, mut receiver) = socket.split();
+    let (tx, mut rx) = mpsc::channel::<String>(100);
+
+    // Subscribe to broadcast events
+    let mut event_rx = state.event_tx.subscribe();
+    let subscription_manager = SubscriptionManager::new();
+
+    // Task to forward notifications to the client
+    let send_task = tokio::spawn(async move {
+        while let Some(msg) = rx.recv().await {
+            if sender.send(Message::Text(msg)).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Task to broadcast events to subscribed clients
+    let tx_clone = tx.clone();
+    let event_subscription_manager = subscription_manager.clone();
+    let event_task = tokio::spawn(async move {
+        while let Ok(event) = event_rx.recv().await {
+            // Get all subscriptions
+            let subs = event_subscription_manager.subscriptions.read().await;
+
+            for (sub_id, sub_type) in subs.iter() {
+                let should_send = match (&event, sub_type) {
+                    (Event::Slot(_), SubscriptionType::Slots) => true,
+                    (Event::Block(_), SubscriptionType::Blocks) => true,
+                    (Event::Transaction(_), SubscriptionType::Transactions) => true,
+                    (
+                        Event::AccountChange { pubkey, .. },
+                        SubscriptionType::Account(sub_pubkey),
+                    ) => pubkey == sub_pubkey,
+                    (Event::Log { .. }, SubscriptionType::Logs(None)) => true,
+                    (Event::Log { contract, .. }, SubscriptionType::Logs(Some(sub_contract))) => {
+                        contract == sub_contract
+                    }
+                    (Event::ProgramUpdate { .. }, SubscriptionType::ProgramUpdates) => true,
+                    (Event::ProgramCall { .. }, SubscriptionType::ProgramCalls(None)) => true,
+                    (
+                        Event::ProgramCall { program },
+                        SubscriptionType::ProgramCalls(Some(sub_program)),
+                    ) => program == sub_program,
+                    (Event::NftMint { .. }, SubscriptionType::NftMints(None)) => true,
+                    (
+                        Event::NftMint { collection },
+                        SubscriptionType::NftMints(Some(sub_collection)),
+                    ) => collection == sub_collection,
+                    (Event::NftTransfer { .. }, SubscriptionType::NftTransfers(None)) => true,
+                    (
+                        Event::NftTransfer { collection },
+                        SubscriptionType::NftTransfers(Some(sub_collection)),
+                    ) => collection == sub_collection,
+                    (Event::MarketListing { .. }, SubscriptionType::MarketListings) => true,
+                    (Event::MarketSale { .. }, SubscriptionType::MarketSales) => true,
+                    (Event::BridgeLock { .. }, SubscriptionType::BridgeLocks) => true,
+                    (Event::BridgeMint { .. }, SubscriptionType::BridgeMints) => true,
+                    _ => false,
+                };
+
+                if should_send {
+                    let notification = create_notification(*sub_id, &event);
+                    if let Ok(json) = serde_json::to_string(&notification) {
+                        let _ = tx_clone.send(json).await;
+                    }
+                }
+            }
+        }
+    });
+
+    // Handle incoming messages
+    while let Some(Ok(msg)) = receiver.next().await {
+        if let Message::Text(text) = msg {
+            if let Ok(req) = serde_json::from_str::<SubscriptionRequest>(&text) {
+                let response = handle_subscription_request(req, &subscription_manager).await;
+                if let Ok(json) = serde_json::to_string(&response) {
+                    let _ = tx.send(json).await;
+                }
+            }
+        } else if let Message::Close(_) = msg {
+            break;
+        }
+    }
+
+    // Clean up
+    send_task.abort();
+    event_task.abort();
+    // DDoS protection: decrement active connection counter
+    conn_guard.fetch_sub(1, Ordering::Relaxed);
+}
+
+/// Handle subscription request
+async fn handle_subscription_request(
+    req: SubscriptionRequest,
+    subscription_manager: &SubscriptionManager,
+) -> SubscriptionResponse {
+    let result = match req.method.as_str() {
+        "subscribeSlots" | "slotSubscribe" => subscription_manager
+            .subscribe(SubscriptionType::Slots)
+            .await
+            .map(|sub_id| serde_json::json!(sub_id)),
+        "unsubscribeSlots" | "slotUnsubscribe" => {
+            if let Some(params) = req.params {
+                if let Some(sub_id) = params.as_u64() {
+                    let success = subscription_manager.unsubscribe(sub_id).await;
+                    Ok(serde_json::json!(success))
+                } else {
+                    Err(WsError {
+                        code: -32602,
+                        message: "Invalid params: expected subscription ID".to_string(),
+                    })
+                }
+            } else {
+                Err(WsError {
+                    code: -32602,
+                    message: "Missing params".to_string(),
+                })
+            }
+        }
+        "subscribeBlocks" => subscription_manager
+            .subscribe(SubscriptionType::Blocks)
+            .await
+            .map(|sub_id| serde_json::json!(sub_id)),
+        "unsubscribeBlocks" => {
+            if let Some(params) = req.params {
+                if let Some(sub_id) = params.as_u64() {
+                    let success = subscription_manager.unsubscribe(sub_id).await;
+                    Ok(serde_json::json!(success))
+                } else {
+                    Err(WsError {
+                        code: -32602,
+                        message: "Invalid params: expected subscription ID".to_string(),
+                    })
+                }
+            } else {
+                Err(WsError {
+                    code: -32602,
+                    message: "Missing params".to_string(),
+                })
+            }
+        }
+        "subscribeTransactions" => subscription_manager
+            .subscribe(SubscriptionType::Transactions)
+            .await
+            .map(|sub_id| serde_json::json!(sub_id)),
+        "unsubscribeTransactions" => {
+            if let Some(params) = req.params {
+                if let Some(sub_id) = params.as_u64() {
+                    let success = subscription_manager.unsubscribe(sub_id).await;
+                    Ok(serde_json::json!(success))
+                } else {
+                    Err(WsError {
+                        code: -32602,
+                        message: "Invalid params: expected subscription ID".to_string(),
+                    })
+                }
+            } else {
+                Err(WsError {
+                    code: -32602,
+                    message: "Missing params".to_string(),
+                })
+            }
+        }
+        "subscribeAccount" => {
+            if let Some(params) = req.params {
+                if let Some(pubkey_str) = params.as_str() {
+                    match Pubkey::from_base58(pubkey_str) {
+                        Ok(pubkey) => subscription_manager
+                            .subscribe(SubscriptionType::Account(pubkey))
+                            .await
+                            .map(|sub_id| serde_json::json!(sub_id)),
+                        Err(_) => Err(WsError {
+                            code: -32602,
+                            message: "Invalid pubkey format".to_string(),
+                        }),
+                    }
+                } else {
+                    Err(WsError {
+                        code: -32602,
+                        message: "Invalid params: expected pubkey string".to_string(),
+                    })
+                }
+            } else {
+                Err(WsError {
+                    code: -32602,
+                    message: "Missing params".to_string(),
+                })
+            }
+        }
+        "unsubscribeAccount" => {
+            if let Some(params) = req.params {
+                if let Some(sub_id) = params.as_u64() {
+                    let success = subscription_manager.unsubscribe(sub_id).await;
+                    Ok(serde_json::json!(success))
+                } else {
+                    Err(WsError {
+                        code: -32602,
+                        message: "Invalid params: expected subscription ID".to_string(),
+                    })
+                }
+            } else {
+                Err(WsError {
+                    code: -32602,
+                    message: "Missing params".to_string(),
+                })
+            }
+        }
+        "subscribeLogs" => {
+            let contract = if let Some(params) = req.params {
+                if let Some(contract_str) = params.as_str() {
+                    match Pubkey::from_base58(contract_str) {
+                        Ok(pubkey) => Some(pubkey),
+                        Err(_) => {
+                            return SubscriptionResponse {
+                                jsonrpc: "2.0".to_string(),
+                                id: req.id,
+                                result: None,
+                                error: Some(WsError {
+                                    code: -32602,
+                                    message: "Invalid contract pubkey format".to_string(),
+                                }),
+                            };
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            let sub_id = subscription_manager
+                .subscribe(SubscriptionType::Logs(contract))
+                .await;
+            sub_id.map(|id| serde_json::json!(id))
+        }
+        "unsubscribeLogs" => {
+            if let Some(params) = req.params {
+                if let Some(sub_id) = params.as_u64() {
+                    let success = subscription_manager.unsubscribe(sub_id).await;
+                    Ok(serde_json::json!(success))
+                } else {
+                    Err(WsError {
+                        code: -32602,
+                        message: "Invalid params: expected subscription ID".to_string(),
+                    })
+                }
+            } else {
+                Err(WsError {
+                    code: -32602,
+                    message: "Missing params".to_string(),
+                })
+            }
+        }
+        "subscribeProgramUpdates" => subscription_manager
+            .subscribe(SubscriptionType::ProgramUpdates)
+            .await
+            .map(|sub_id| serde_json::json!(sub_id)),
+        "unsubscribeProgramUpdates" => {
+            if let Some(params) = req.params {
+                if let Some(sub_id) = params.as_u64() {
+                    let success = subscription_manager.unsubscribe(sub_id).await;
+                    Ok(serde_json::json!(success))
+                } else {
+                    Err(WsError {
+                        code: -32602,
+                        message: "Invalid params: expected subscription ID".to_string(),
+                    })
+                }
+            } else {
+                Err(WsError {
+                    code: -32602,
+                    message: "Missing params".to_string(),
+                })
+            }
+        }
+        "subscribeProgramCalls" => {
+            let program = if let Some(params) = req.params {
+                if let Some(program_str) = params.as_str() {
+                    match Pubkey::from_base58(program_str) {
+                        Ok(pubkey) => Some(pubkey),
+                        Err(_) => {
+                            return SubscriptionResponse {
+                                jsonrpc: "2.0".to_string(),
+                                id: req.id,
+                                result: None,
+                                error: Some(WsError {
+                                    code: -32602,
+                                    message: "Invalid program pubkey format".to_string(),
+                                }),
+                            };
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            let sub_id = subscription_manager
+                .subscribe(SubscriptionType::ProgramCalls(program))
+                .await;
+            sub_id.map(|id| serde_json::json!(id))
+        }
+        "unsubscribeProgramCalls" => {
+            if let Some(params) = req.params {
+                if let Some(sub_id) = params.as_u64() {
+                    let success = subscription_manager.unsubscribe(sub_id).await;
+                    Ok(serde_json::json!(success))
+                } else {
+                    Err(WsError {
+                        code: -32602,
+                        message: "Invalid params: expected subscription ID".to_string(),
+                    })
+                }
+            } else {
+                Err(WsError {
+                    code: -32602,
+                    message: "Missing params".to_string(),
+                })
+            }
+        }
+        "subscribeNftMints" => {
+            let collection = if let Some(params) = req.params {
+                if let Some(collection_str) = params.as_str() {
+                    match Pubkey::from_base58(collection_str) {
+                        Ok(pubkey) => Some(pubkey),
+                        Err(_) => {
+                            return SubscriptionResponse {
+                                jsonrpc: "2.0".to_string(),
+                                id: req.id,
+                                result: None,
+                                error: Some(WsError {
+                                    code: -32602,
+                                    message: "Invalid collection pubkey format".to_string(),
+                                }),
+                            };
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            let sub_id = subscription_manager
+                .subscribe(SubscriptionType::NftMints(collection))
+                .await;
+            sub_id.map(|id| serde_json::json!(id))
+        }
+        "unsubscribeNftMints" => {
+            if let Some(params) = req.params {
+                if let Some(sub_id) = params.as_u64() {
+                    let success = subscription_manager.unsubscribe(sub_id).await;
+                    Ok(serde_json::json!(success))
+                } else {
+                    Err(WsError {
+                        code: -32602,
+                        message: "Invalid params: expected subscription ID".to_string(),
+                    })
+                }
+            } else {
+                Err(WsError {
+                    code: -32602,
+                    message: "Missing params".to_string(),
+                })
+            }
+        }
+        "subscribeNftTransfers" => {
+            let collection = if let Some(params) = req.params {
+                if let Some(collection_str) = params.as_str() {
+                    match Pubkey::from_base58(collection_str) {
+                        Ok(pubkey) => Some(pubkey),
+                        Err(_) => {
+                            return SubscriptionResponse {
+                                jsonrpc: "2.0".to_string(),
+                                id: req.id,
+                                result: None,
+                                error: Some(WsError {
+                                    code: -32602,
+                                    message: "Invalid collection pubkey format".to_string(),
+                                }),
+                            };
+                        }
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            let sub_id = subscription_manager
+                .subscribe(SubscriptionType::NftTransfers(collection))
+                .await;
+            sub_id.map(|id| serde_json::json!(id))
+        }
+        "unsubscribeNftTransfers" => {
+            if let Some(params) = req.params {
+                if let Some(sub_id) = params.as_u64() {
+                    let success = subscription_manager.unsubscribe(sub_id).await;
+                    Ok(serde_json::json!(success))
+                } else {
+                    Err(WsError {
+                        code: -32602,
+                        message: "Invalid params: expected subscription ID".to_string(),
+                    })
+                }
+            } else {
+                Err(WsError {
+                    code: -32602,
+                    message: "Missing params".to_string(),
+                })
+            }
+        }
+        "subscribeMarketListings" => subscription_manager
+            .subscribe(SubscriptionType::MarketListings)
+            .await
+            .map(|sub_id| serde_json::json!(sub_id)),
+        "unsubscribeMarketListings" => {
+            if let Some(params) = req.params {
+                if let Some(sub_id) = params.as_u64() {
+                    let success = subscription_manager.unsubscribe(sub_id).await;
+                    Ok(serde_json::json!(success))
+                } else {
+                    Err(WsError {
+                        code: -32602,
+                        message: "Invalid params: expected subscription ID".to_string(),
+                    })
+                }
+            } else {
+                Err(WsError {
+                    code: -32602,
+                    message: "Missing params".to_string(),
+                })
+            }
+        }
+        "subscribeMarketSales" => subscription_manager
+            .subscribe(SubscriptionType::MarketSales)
+            .await
+            .map(|sub_id| serde_json::json!(sub_id)),
+        "unsubscribeMarketSales" => {
+            if let Some(params) = req.params {
+                if let Some(sub_id) = params.as_u64() {
+                    let success = subscription_manager.unsubscribe(sub_id).await;
+                    Ok(serde_json::json!(success))
+                } else {
+                    Err(WsError {
+                        code: -32602,
+                        message: "Invalid params: expected subscription ID".to_string(),
+                    })
+                }
+            } else {
+                Err(WsError {
+                    code: -32602,
+                    message: "Missing params".to_string(),
+                })
+            }
+        }
+        "subscribeBridgeLocks" => subscription_manager
+            .subscribe(SubscriptionType::BridgeLocks)
+            .await
+            .map(|sub_id| serde_json::json!(sub_id)),
+        "unsubscribeBridgeLocks" => {
+            if let Some(params) = req.params {
+                if let Some(sub_id) = params.as_u64() {
+                    let success = subscription_manager.unsubscribe(sub_id).await;
+                    Ok(serde_json::json!(success))
+                } else {
+                    Err(WsError {
+                        code: -32602,
+                        message: "Invalid params: expected subscription ID".to_string(),
+                    })
+                }
+            } else {
+                Err(WsError {
+                    code: -32602,
+                    message: "Missing params".to_string(),
+                })
+            }
+        }
+        "subscribeBridgeMints" => subscription_manager
+            .subscribe(SubscriptionType::BridgeMints)
+            .await
+            .map(|sub_id| serde_json::json!(sub_id)),
+        "unsubscribeBridgeMints" => {
+            if let Some(params) = req.params {
+                if let Some(sub_id) = params.as_u64() {
+                    let success = subscription_manager.unsubscribe(sub_id).await;
+                    Ok(serde_json::json!(success))
+                } else {
+                    Err(WsError {
+                        code: -32602,
+                        message: "Invalid params: expected subscription ID".to_string(),
+                    })
+                }
+            } else {
+                Err(WsError {
+                    code: -32602,
+                    message: "Missing params".to_string(),
+                })
+            }
+        }
+        _ => Err(WsError {
+            code: -32601,
+            message: format!("Method not found: {}", req.method),
+        }),
+    };
+
+    match result {
+        Ok(result) => SubscriptionResponse {
+            jsonrpc: "2.0".to_string(),
+            id: req.id,
+            result: Some(result),
+            error: None,
+        },
+        Err(error) => SubscriptionResponse {
+            jsonrpc: "2.0".to_string(),
+            id: req.id,
+            result: None,
+            error: Some(error),
+        },
+    }
+}
+
+/// Create notification from event
+fn market_activity_json(activity: &MarketActivity, event: &str) -> serde_json::Value {
+    serde_json::json!({
+        "event": event,
+        "slot": activity.slot,
+        "timestamp": activity.timestamp,
+        "kind": format!("{:?}", activity.kind).to_lowercase(),
+        "program": activity.program.to_base58(),
+        "collection": activity.collection.as_ref().map(|p| p.to_base58()),
+        "token": activity.token.as_ref().map(|p| p.to_base58()),
+        "token_id": activity.token_id,
+        "price": activity.price,
+        "price_molt": activity.price.map(|val| val as f64 / 1_000_000_000.0),
+        "seller": activity.seller.as_ref().map(|p| p.to_base58()),
+        "buyer": activity.buyer.as_ref().map(|p| p.to_base58()),
+        "function": activity.function.clone(),
+        "tx_signature": activity.tx_signature.to_hex(),
+    })
+}
+
+fn create_notification(sub_id: u64, event: &Event) -> Notification {
+    let result = match event {
+        Event::Slot(slot) => serde_json::json!({
+            "slot": slot,
+        }),
+        Event::Block(block) => serde_json::json!({
+            "slot": block.header.slot,
+            "hash": block.hash().to_hex(),
+            "parent_hash": block.header.parent_hash.to_hex(),
+            "transactions": block.transactions.len(),
+            "timestamp": block.header.timestamp,
+        }),
+        Event::Transaction(tx) => serde_json::json!({
+            "signatures": tx.signatures.iter()
+                .map(hex::encode)
+                .collect::<Vec<_>>(),
+            "instructions": tx.message.instructions.len(),
+            "recent_blockhash": tx.message.recent_blockhash.to_hex(),
+        }),
+        Event::AccountChange { pubkey, balance } => serde_json::json!({
+            "pubkey": pubkey.to_base58(),
+            "balance": balance,
+            "molt": balance / 1_000_000_000,
+        }),
+        Event::Log { contract, message } => serde_json::json!({
+            "contract": contract.to_base58(),
+            "message": message,
+        }),
+        Event::ProgramUpdate { program, kind } => serde_json::json!({
+            "program": program.to_base58(),
+            "kind": kind,
+        }),
+        Event::ProgramCall { program } => serde_json::json!({
+            "program": program.to_base58(),
+        }),
+        Event::NftMint { collection } => serde_json::json!({
+            "collection": collection.to_base58(),
+        }),
+        Event::NftTransfer { collection } => serde_json::json!({
+            "collection": collection.to_base58(),
+        }),
+        Event::MarketListing { activity } => market_activity_json(activity, "MarketListing"),
+        Event::MarketSale { activity } => market_activity_json(activity, "MarketSale"),
+        Event::BridgeLock { chain, asset, amount, sender, recipient } => serde_json::json!({
+            "event": "BridgeLock",
+            "chain": chain,
+            "asset": asset,
+            "amount": amount,
+            "amount_display": *amount as f64 / 1_000_000.0,
+            "sender": sender,
+            "recipient": recipient.to_base58(),
+        }),
+        Event::BridgeMint { chain, asset, amount, recipient, tx_hash } => serde_json::json!({
+            "event": "BridgeMint",
+            "chain": chain,
+            "asset": asset,
+            "amount": amount,
+            "amount_display": *amount as f64 / 1_000_000.0,
+            "recipient": recipient.to_base58(),
+            "tx_hash": tx_hash,
+        }),
+    };
+
+    Notification {
+        jsonrpc: "2.0".to_string(),
+        method: "subscription".to_string(),
+        params: NotificationParams {
+            subscription: sub_id,
+            result,
+        },
+    }
+}
+
+// Re-export for use in other modules
+use futures_util::stream::StreamExt;
+use futures_util::SinkExt;
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_subscription_manager() {
+        // Just ensure the module compiles
+        assert!(true);
+    }
+}

@@ -1,0 +1,1052 @@
+/* ========================================
+   MoltyDEX — JavaScript Engine
+   Trading interface interactivity
+   ======================================== */
+
+document.addEventListener('DOMContentLoaded', () => {
+    'use strict';
+
+    // ===== State =====
+    const state = {
+        activePair: { base: 'MOLT', quote: 'mUSD', id: 'MOLT/mUSD' },
+        orderSide: 'buy',
+        orderType: 'limit',
+        marginSide: 'long',
+        marginType: 'isolated',
+        chartInterval: '15m',
+        chartType: 'candle',
+        currentView: 'trade',
+        leverageValue: 2,
+        lastPrice: 0.4217,
+        orderBook: { asks: [], bids: [] },
+        candles: [],
+        connected: false,
+    };
+
+    // ===== Pairs Data =====
+    const pairs = [
+        // mUSD quote pairs (USD-denominated)
+        { id: 'MOLT/mUSD', base: 'MOLT', quote: 'mUSD', price: 0.4217, change: 5.24 },
+        { id: 'wSOL/mUSD', base: 'wSOL', quote: 'mUSD', price: 178.42, change: 2.14 },
+        { id: 'wETH/mUSD', base: 'wETH', quote: 'mUSD', price: 3521.80, change: -0.42 },
+        { id: 'REEF/mUSD', base: 'REEF', quote: 'mUSD', price: 0.01842, change: -2.1 },
+        // MOLT quote pairs (direct MOLT pricing)
+        { id: 'wSOL/MOLT', base: 'wSOL', quote: 'MOLT', price: 423.05, change: 1.37 },
+        { id: 'wETH/MOLT', base: 'wETH', quote: 'MOLT', price: 8351.20, change: -0.89 },
+        { id: 'REEF/MOLT', base: 'REEF', quote: 'MOLT', price: 0.04368, change: 0.83 },
+    ];
+
+    const balances = {
+        MOLT: { available: 125847.32, usd: 53087.21 },
+        mUSD: { available: 12500.00, usd: 12500.00 },
+        wSOL: { available: 28.45, usd: 5076.15 },
+        wETH: { available: 3.247, usd: 11435.33 },
+        REEF: { available: 45000.00, usd: 828.90 },
+    };
+
+    // ===== Navigation =====
+    const navLinks = document.querySelectorAll('.nav-menu a[data-view]');
+    const views = document.querySelectorAll('.dex-main');
+
+    function switchView(viewName) {
+        state.currentView = viewName;
+        views.forEach(v => { v.classList.toggle('hidden', v.id !== `view-${viewName}`); });
+        navLinks.forEach(l => { l.classList.toggle('active', l.dataset.view === viewName); });
+        if (viewName === 'trade') drawChart();
+    }
+
+    navLinks.forEach(l => l.addEventListener('click', e => {
+        e.preventDefault();
+        switchView(l.dataset.view);
+    }));
+
+    // ===== Pair Selector =====
+    const pairSelector = document.querySelector('.pair-selector');
+    const pairDropdown = document.querySelector('.pair-dropdown');
+    const pairSearch = document.querySelector('.pair-search');
+    const pairList = document.querySelector('.pair-list');
+    const pairActive = document.querySelector('.pair-active');
+
+    if (pairSelector) {
+        pairSelector.addEventListener('click', e => {
+            e.stopPropagation();
+            pairDropdown.classList.toggle('open');
+            if (pairDropdown.classList.contains('open') && pairSearch) pairSearch.focus();
+        });
+    }
+
+    document.addEventListener('click', () => { if (pairDropdown) pairDropdown.classList.remove('open'); });
+
+    function renderPairList(filter = '') {
+        if (!pairList) return;
+        const f = filter.toLowerCase();
+        pairList.innerHTML = pairs
+            .filter(p => !f || p.id.toLowerCase().includes(f))
+            .map(p => `
+                <div class="pair-item ${p.id === state.activePair.id ? 'active' : ''}" data-pair="${p.id}">
+                    <span>${p.id}</span>
+                    <span class="pair-price">${formatPrice(p.price)}</span>
+                </div>
+            `).join('');
+        pairList.querySelectorAll('.pair-item').forEach(el => {
+            el.addEventListener('click', e => {
+                e.stopPropagation();
+                const pair = pairs.find(p => p.id === el.dataset.pair);
+                if (pair) selectPair(pair);
+                pairDropdown.classList.remove('open');
+            });
+        });
+    }
+
+    if (pairSearch) pairSearch.addEventListener('input', e => renderPairList(e.target.value));
+    renderPairList();
+
+    function selectPair(pair) {
+        state.activePair = pair;
+        state.lastPrice = pair.price;
+        if (pairActive) {
+            pairActive.querySelector('.pair-name').textContent = pair.id;
+        }
+        updatePairStats(pair);
+        generateOrderBook();
+        generateCandles();
+        updateTicker(pair);
+        renderPairList();
+        // Fast symbol switch via TradingView API — no widget recreation
+        if (tvWidget && tvWidget.activeChart) {
+            try { tvWidget.activeChart().setSymbol(pair.id, () => {}); } catch (e) { drawChart(); }
+        } else {
+            drawChart();
+        }
+    }
+
+    function updatePairStats(pair) {
+        const statsEl = document.querySelectorAll('.pair-stats .stat-item .stat-value');
+        if (statsEl.length >= 4) {
+            statsEl[0].textContent = formatPrice(pair.price * 1.042);
+            statsEl[0].parentElement.querySelector('.stat-label').textContent = '24h High';
+            statsEl[1].textContent = formatPrice(pair.price * 0.961);
+            statsEl[2].textContent = formatVolume(pair.price * 2847321);
+            statsEl[3].textContent = '12,847';
+        }
+    }
+
+    function updateTicker(pair) {
+        const ticker = document.querySelector('.ticker-price');
+        const change = document.querySelector('.ticker-change');
+        if (ticker) ticker.textContent = formatPrice(pair.price);
+        if (change) {
+            change.textContent = `${pair.change >= 0 ? '+' : ''}${pair.change.toFixed(2)}%`;
+            change.className = `ticker-change ${pair.change >= 0 ? 'positive' : 'negative'}`;
+        }
+    }
+
+    // ===== Order Book =====
+    function generateOrderBook() {
+        const p = state.lastPrice;
+        const spread = p * 0.001;
+        const asks = [], bids = [];
+        for (let i = 0; i < 15; i++) {
+            const ap = p + spread + (Math.random() * p * 0.008 * (i + 1));
+            asks.push({ price: ap, amount: Math.random() * 50000 + 1000, total: 0 });
+        }
+        asks.sort((a, b) => a.price - b.price);
+        let total = 0;
+        asks.forEach(a => { total += a.amount; a.total = total; });
+        for (let i = 0; i < 15; i++) {
+            const bp = p - spread - (Math.random() * p * 0.008 * (i + 1));
+            bids.push({ price: bp, amount: Math.random() * 50000 + 1000, total: 0 });
+        }
+        bids.sort((a, b) => b.price - a.price);
+        total = 0;
+        bids.forEach(b => { total += b.amount; b.total = total; });
+        state.orderBook = { asks, bids };
+        renderOrderBook();
+    }
+
+    function renderOrderBook() {
+        const askContainer = document.querySelector('.book-asks');
+        const bidContainer = document.querySelector('.book-bids');
+        const spreadEl = document.querySelector('.spread-price');
+        const spreadValEl = document.querySelector('.spread-value');
+        if (!askContainer || !bidContainer) return;
+
+        const maxAskTotal = Math.max(...state.orderBook.asks.map(a => a.total));
+        const maxBidTotal = Math.max(...state.orderBook.bids.map(b => b.total));
+
+        askContainer.innerHTML = [...state.orderBook.asks].reverse().map(a => `
+            <div class="book-row ask">
+                <span class="price">${formatPrice(a.price)}</span>
+                <span>${formatAmount(a.amount)}</span>
+                <span>${formatAmount(a.total)}</span>
+                <div class="depth-bar" style="width:${(a.total/maxAskTotal*100).toFixed(1)}%"></div>
+            </div>
+        `).join('');
+
+        if (spreadEl) {
+            const topBid = state.orderBook.bids[0]?.price || 0;
+            const botAsk = state.orderBook.asks[0]?.price || 0;
+            spreadEl.textContent = formatPrice((topBid + botAsk) / 2);
+            if (spreadValEl) {
+                const sp = botAsk - topBid;
+                spreadValEl.textContent = `Spread: ${formatPrice(sp)} (${(sp / botAsk * 100).toFixed(3)}%)`;
+            }
+        }
+
+        bidContainer.innerHTML = state.orderBook.bids.map(b => `
+            <div class="book-row bid">
+                <span class="price">${formatPrice(b.price)}</span>
+                <span>${formatAmount(b.amount)}</span>
+                <span>${formatAmount(b.total)}</span>
+                <div class="depth-bar" style="width:${(b.total/maxBidTotal*100).toFixed(1)}%"></div>
+            </div>
+        `).join('');
+    }
+
+    // ===== Recent Trades =====
+    function generateRecentTrades() {
+        const container = document.querySelector('.trades-list');
+        if (!container) return;
+        const rows = [];
+        const now = Date.now();
+        for (let i = 0; i < 30; i++) {
+            const isBuy = Math.random() > 0.5;
+            const offset = (Math.random() - 0.5) * state.lastPrice * 0.004;
+            const price = state.lastPrice + offset;
+            const amount = Math.random() * 10000 + 100;
+            const time = new Date(now - i * Math.random() * 15000);
+            rows.push(`
+                <div class="trade-row">
+                    <span class="trade-price ${isBuy ? 'buy' : 'sell'}">${formatPrice(price)}</span>
+                    <span>${formatAmount(amount)}</span>
+                    <span class="trade-time">${time.toLocaleTimeString()}</span>
+                </div>
+            `);
+        }
+        container.innerHTML = rows.join('');
+    }
+
+    // ===== TradingView Chart Integration =====
+    let tvWidget = null;
+    let realtimeCallback = null;
+    let lastBarTime = 0;
+
+    function generateCandles() {
+        const candles = [];
+        const count = 300;
+        const now = Math.floor(Date.now() / 1000);
+        // Walk price forward from a historical starting point to current price
+        let price = state.lastPrice * (0.85 + Math.random() * 0.3);
+        for (let i = count; i >= 0; i--) {
+            const open = price;
+            const change = (Math.random() - 0.48) * 0.015;
+            const close = open * (1 + change);
+            const high = Math.max(open, close) * (1 + Math.random() * 0.008);
+            const low = Math.min(open, close) * (1 - Math.random() * 0.008);
+            const vol = Math.random() * 500000 + 50000;
+            candles.push({ time: (now - i * 900) * 1000, open, high, low, close, volume: vol });
+            price = close; // next candle opens where this one closed
+        }
+        // Anchor last candle to current price — no .reverse(), already ascending
+        if (candles.length) candles[candles.length - 1].close = state.lastPrice;
+        state.candles = candles;
+    }
+
+    function createDatafeed() {
+        return {
+            onReady: (callback) => {
+                setTimeout(() => callback({
+                    supported_resolutions: ['1', '5', '15', '30', '60', '240', '1D', '1W', '1M'],
+                    exchanges: [{ value: 'MoltChain', name: 'MoltChain', desc: 'MoltChain DEX' }],
+                    symbols_types: [{ name: 'crypto', value: 'crypto' }],
+                }), 0);
+            },
+            searchSymbols: (userInput, exchange, symbolType, onResult) => {
+                const results = pairs
+                    .filter(p => p.id.toLowerCase().includes(userInput.toLowerCase()))
+                    .map(p => ({
+                        symbol: p.id,
+                        full_name: 'MoltChain:' + p.id,
+                        description: p.base + '/' + p.quote,
+                        exchange: 'MoltChain',
+                        type: 'crypto',
+                    }));
+                onResult(results);
+            },
+            resolveSymbol: (symbolName, onResolve, onError) => {
+                const pair = pairs.find(p => p.id === symbolName) || pairs[0];
+                setTimeout(() => onResolve({
+                    name: pair.id,
+                    ticker: pair.id,
+                    description: pair.base + ' / ' + pair.quote,
+                    type: 'crypto',
+                    session: '24x7',
+                    timezone: 'Etc/UTC',
+                    exchange: 'MoltChain',
+                    listed_exchange: 'MoltChain',
+                    minmov: 1,
+                    pricescale: pair.price < 0.001 ? 100000000 : pair.price < 1 ? 10000 : 100,
+                    has_intraday: true,
+                    has_weekly_and_monthly: true,
+                    supported_resolutions: ['1', '5', '15', '30', '60', '240', '1D', '1W', '1M'],
+                    volume_precision: 2,
+                    data_status: 'streaming',
+                }), 0);
+            },
+            getBars: (symbolInfo, resolution, periodParams, onResult, onError) => {
+                if (!state.candles.length) generateCandles();
+                const resMs = resolutionToMs(resolution);
+                // Re-bucket candles, aggregate duplicates, ensure ascending time
+                const bucketMap = new Map();
+                state.candles
+                    .filter(c => c.time / 1000 >= periodParams.from && c.time / 1000 <= periodParams.to)
+                    .forEach(c => {
+                        const t = Math.floor(c.time / resMs) * resMs;
+                        if (bucketMap.has(t)) {
+                            const b = bucketMap.get(t);
+                            b.high = Math.max(b.high, c.high);
+                            b.low = Math.min(b.low, c.low);
+                            b.close = c.close;
+                            b.volume += c.volume;
+                        } else {
+                            bucketMap.set(t, { time: t, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume });
+                        }
+                    });
+                const bars = [...bucketMap.values()].sort((a, b) => a.time - b.time);
+                if (bars.length) lastBarTime = bars[bars.length - 1].time;
+                onResult(bars, { noData: bars.length === 0 });
+            },
+            subscribeBars: (symbolInfo, resolution, onRealtimeCb, subscriberUID, onResetCacheNeededCallback) => {
+                realtimeCallback = onRealtimeCb;
+            },
+            unsubscribeBars: (subscriberUID) => {
+                realtimeCallback = null;
+            },
+        };
+    }
+
+    function resolutionToMs(res) {
+        const map = { '1': 60000, '5': 300000, '15': 900000, '30': 1800000, '60': 3600000, '240': 14400000, '1D': 86400000, '1W': 604800000, '1M': 2592000000 };
+        return map[res] || 900000;
+    }
+
+    function initTradingView() {
+        const container = document.getElementById('tvChartContainer');
+        if (!container || typeof TradingView === 'undefined') {
+            // Fallback: draw a simple message if TradingView library didn't load
+            if (container) container.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:0.9rem;"><i class="fas fa-chart-line" style="margin-right:8px;"></i> Chart loading...</div>';
+            return;
+        }
+
+        tvWidget = new TradingView.widget({
+            symbol: state.activePair.id,
+            container: container,
+            datafeed: createDatafeed(),
+            library_path: 'charting_library/',
+            locale: 'en',
+            fullscreen: false,
+            autosize: true,
+            theme: 'Dark',
+            interval: '15',
+            toolbar_bg: '#0d1117',
+            loading_screen: { backgroundColor: '#0A0E27', foregroundColor: '#FF6B35' },
+            custom_css_url: '',
+            overrides: {
+                'paneProperties.background': '#0d1117',
+                'paneProperties.backgroundType': 'solid',
+                'paneProperties.vertGridProperties.color': 'rgba(255,255,255,0.04)',
+                'paneProperties.horzGridProperties.color': 'rgba(255,255,255,0.04)',
+                'scalesProperties.textColor': 'rgba(255,255,255,0.5)',
+                'scalesProperties.lineColor': 'rgba(255,255,255,0.08)',
+                'mainSeriesProperties.candleStyle.upColor': '#06d6a0',
+                'mainSeriesProperties.candleStyle.downColor': '#ef4444',
+                'mainSeriesProperties.candleStyle.borderUpColor': '#06d6a0',
+                'mainSeriesProperties.candleStyle.borderDownColor': '#ef4444',
+                'mainSeriesProperties.candleStyle.wickUpColor': '#06d6a0',
+                'mainSeriesProperties.candleStyle.wickDownColor': '#ef4444',
+            },
+            disabled_features: [
+                'header_compare',
+                'header_undo_redo',
+                'go_to_date',
+                'use_localstorage_for_settings',
+            ],
+            enabled_features: [
+                'study_templates',
+                'side_toolbar_in_fullscreen_mode',
+                'header_symbol_search',
+            ],
+        });
+
+        // Handle symbol changes from TradingView search bar
+        tvWidget.onChartReady(() => {
+            tvWidget.activeChart().onSymbolChanged().subscribe(null, () => {
+                const newSymbol = tvWidget.activeChart().symbol();
+                const pair = pairs.find(p => p.id === newSymbol || ('MoltChain:' + p.id) === newSymbol);
+                if (pair && pair.id !== state.activePair.id) {
+                    state.activePair = pair;
+                    state.lastPrice = pair.price;
+                    if (pairActive) pairActive.querySelector('.pair-name').textContent = pair.id;
+                    updatePairStats(pair);
+                    generateOrderBook();
+                    generateCandles();
+                    updateTicker(pair);
+                    renderPairList();
+                }
+            });
+        });
+    }
+
+    function drawChart() {
+        // Update TradingView with latest bar data
+        if (realtimeCallback && state.candles.length) {
+            const last = state.candles[state.candles.length - 1];
+            const barTime = Math.floor(last.time / 900000) * 900000;
+            realtimeCallback({
+                time: barTime,
+                open: last.open,
+                high: last.high,
+                low: last.low,
+                close: last.close,
+                volume: last.volume,
+            });
+        }
+    }
+
+    // Chart interval/type handled by TradingView widget natively
+
+    window.addEventListener('resize', () => {
+        // TradingView handles its own resize with autosize: true
+    });
+
+    // ===== Order Form =====
+    const orderTabs = document.querySelectorAll('.order-tab');
+    const orderTypeBtns = document.querySelectorAll('.order-type-btn');
+    const priceInput = document.getElementById('orderPrice');
+    const amountInput = document.getElementById('orderAmount');
+    const totalInput = document.getElementById('orderTotal');
+    const submitBtn = document.getElementById('submitOrder');
+    const stopGroup = document.querySelector('.stop-price-group');
+
+    orderTabs.forEach(tab => tab.addEventListener('click', () => {
+        orderTabs.forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        state.orderSide = tab.dataset.side;
+        updateSubmitBtn();
+    }));
+
+    orderTypeBtns.forEach(btn => btn.addEventListener('click', () => {
+        orderTypeBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        state.orderType = btn.dataset.type;
+        if (stopGroup) stopGroup.style.display = state.orderType === 'stop-limit' ? 'block' : 'none';
+        if (priceInput) {
+            priceInput.parentElement.parentElement.style.display = state.orderType === 'market' ? 'none' : 'block';
+        }
+    }));
+
+    function updateSubmitBtn() {
+        if (!submitBtn) return;
+        const mode = state.tradeMode === 'margin' ? ` ${state.leverageValue}x` : '';
+        submitBtn.className = `btn-full ${state.orderSide === 'buy' ? 'btn-buy' : 'btn-sell'}`;
+        submitBtn.textContent = `${state.orderSide === 'buy' ? 'Buy' : 'Sell'}${mode} ${state.activePair.base}`;
+    }
+
+    // Spot / Margin mode toggle in order form
+    state.tradeMode = 'spot';
+    document.querySelectorAll('.trade-mode').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.trade-mode').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            state.tradeMode = btn.dataset.mode;
+            const marginInline = document.getElementById('marginInline');
+            if (marginInline) marginInline.classList.toggle('hidden', state.tradeMode !== 'margin');
+            updateSubmitBtn();
+        });
+    });
+    // Inline leverage slider
+    const inlineLeverage = document.getElementById('inlineLeverage');
+    const inlineLeverageTag = document.getElementById('inlineLeverageTag');
+    if (inlineLeverage) {
+        inlineLeverage.addEventListener('input', () => {
+            state.leverageValue = parseFloat(inlineLeverage.value);
+            if (inlineLeverageTag) inlineLeverageTag.textContent = `${state.leverageValue}x`;
+            updateSubmitBtn();
+        });
+    }
+    // Inline margin type
+    document.querySelectorAll('.margin-inline-type').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.margin-inline-type').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            state.marginType = btn.dataset.mtype;
+            if (inlineLeverage) inlineLeverage.max = state.marginType === 'isolated' ? '5' : '3';
+        });
+    });
+
+    function calcTotal() {
+        if (!priceInput || !amountInput || !totalInput) return;
+        const price = parseFloat(priceInput.value) || 0;
+        const amount = parseFloat(amountInput.value) || 0;
+        totalInput.value = (price * amount).toFixed(4);
+        updateFeeEstimate(price, amount);
+    }
+
+    function updateFeeEstimate(price, amount) {
+        const feeEl = document.getElementById('feeEstimate');
+        const routeEl = document.getElementById('routeInfo');
+        if (feeEl) {
+            const fee = price * amount * 0.0005;
+            feeEl.textContent = `~${fee.toFixed(4)} ${state.activePair.quote}`;
+        }
+        if (routeEl) routeEl.textContent = price * amount > 50000 ? 'CLOB + AMM Split' : 'CLOB Direct';
+    }
+
+    if (priceInput) priceInput.addEventListener('input', calcTotal);
+    if (amountInput) amountInput.addEventListener('input', calcTotal);
+    if (totalInput) totalInput.addEventListener('input', () => {
+        if (!priceInput || !amountInput) return;
+        const price = parseFloat(priceInput.value) || 0;
+        const total = parseFloat(totalInput.value) || 0;
+        if (price > 0) amountInput.value = (total / price).toFixed(4);
+    });
+
+    // Preset buttons
+    document.querySelectorAll('.preset-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const pct = parseInt(btn.dataset.pct, 10) / 100;
+            const token = state.orderSide === 'buy' ? state.activePair.quote : state.activePair.base;
+            const bal = balances[token];
+            if (!bal || !amountInput || !priceInput) return;
+            if (state.orderSide === 'buy') {
+                const price = parseFloat(priceInput.value) || state.lastPrice;
+                amountInput.value = ((bal.available * pct) / price).toFixed(4);
+            } else {
+                amountInput.value = (bal.available * pct).toFixed(4);
+            }
+            calcTotal();
+        });
+    });
+
+    // Submit order
+    if (submitBtn) submitBtn.addEventListener('click', () => {
+        if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
+        const price = parseFloat(priceInput?.value) || 0;
+        const amount = parseFloat(amountInput?.value) || 0;
+        if (!amount || (state.orderType !== 'market' && !price)) {
+            showNotification('Enter price and amount', 'warning');
+            return;
+        }
+        showNotification(`${state.orderSide.toUpperCase()} order placed: ${amount} ${state.activePair.base} @ ${state.orderType === 'market' ? 'MARKET' : formatPrice(price)}`, 'success');
+        addOpenOrder(price || state.lastPrice, amount);
+        if (amountInput) amountInput.value = '';
+        if (totalInput) totalInput.value = '';
+    });
+
+    // ===== Open Orders =====
+    let openOrders = [];
+    function addOpenOrder(price, amount) {
+        openOrders.push({
+            id: Math.random().toString(36).slice(2, 8).toUpperCase(),
+            pair: state.activePair.id,
+            side: state.orderSide,
+            type: state.orderType,
+            price, amount,
+            filled: 0,
+            time: new Date(),
+        });
+        renderOpenOrders();
+    }
+
+    function renderOpenOrders() {
+        const tbody = document.getElementById('openOrdersBody');
+        const badge = document.querySelector('.orders-badge');
+        if (!tbody) return;
+        if (badge) badge.textContent = openOrders.length;
+        if (!openOrders.length) {
+            tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:20px;">No open orders</td></tr>';
+            return;
+        }
+        tbody.innerHTML = openOrders.map(o => `
+            <tr class="order-row">
+                <td>${o.pair}</td>
+                <td class="side-${o.side}">${o.side.toUpperCase()}</td>
+                <td style="text-transform:capitalize">${o.type}</td>
+                <td>${formatPrice(o.price)}</td>
+                <td>${formatAmount(o.amount)}</td>
+                <td>${(o.filled * 100).toFixed(0)}%</td>
+                <td>${o.time.toLocaleTimeString()}</td>
+                <td><button class="cancel-btn" data-id="${o.id}"><i class="fas fa-times"></i></button></td>
+            </tr>
+        `).join('');
+        tbody.querySelectorAll('.cancel-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                openOrders = openOrders.filter(o => o.id !== btn.dataset.id);
+                renderOpenOrders();
+                showNotification('Order cancelled', 'info');
+            });
+        });
+    }
+
+    // Position tabs
+    document.querySelectorAll('.pos-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            document.querySelectorAll('.pos-tab').forEach(t => t.classList.remove('active'));
+            tab.classList.add('active');
+            document.querySelectorAll('.positions-content').forEach(c => c.classList.add('hidden'));
+            const target = document.getElementById(tab.dataset.target);
+            if (target) target.classList.remove('hidden');
+        });
+    });
+
+    // ===== Wallet Connect Modal =====
+    const connectBtn = document.getElementById('connectWallet');
+    const walletModal = document.getElementById('walletModal');
+    const closeModalBtn = document.getElementById('closeWalletModal');
+    const wmTabs = document.querySelectorAll('.wm-tab');
+    const wmTabContents = {
+        wallets: document.getElementById('wmTabWallets'),
+        import: document.getElementById('wmTabImport'),
+        create: document.getElementById('wmTabCreate'),
+    };
+    let savedWallets = JSON.parse(localStorage.getItem('dexWallets') || '[]');
+
+    function openWalletModal() {
+        if (walletModal) {
+            walletModal.classList.remove('hidden');
+            renderWalletList();
+            // Show wallets tab if wallets exist, otherwise import
+            const defaultTab = savedWallets.length > 0 ? 'wallets' : 'import';
+            switchWmTab(defaultTab);
+        }
+    }
+
+    function closeWalletModal() {
+        if (walletModal) walletModal.classList.add('hidden');
+    }
+
+    function switchWmTab(tabName) {
+        wmTabs.forEach(t => t.classList.toggle('active', t.dataset.wmTab === tabName));
+        Object.entries(wmTabContents).forEach(([key, el]) => {
+            if (el) el.classList.toggle('hidden', key !== tabName);
+        });
+    }
+
+    if (connectBtn) {
+        connectBtn.addEventListener('click', () => {
+            if (state.connected) {
+                // If connected, clicking opens management modal
+                openWalletModal();
+            } else {
+                openWalletModal();
+            }
+        });
+    }
+
+    if (closeModalBtn) closeModalBtn.addEventListener('click', closeWalletModal);
+    if (walletModal) {
+        walletModal.addEventListener('click', e => {
+            if (e.target === walletModal) closeWalletModal();
+        });
+    }
+    wmTabs.forEach(tab => tab.addEventListener('click', () => switchWmTab(tab.dataset.wmTab)));
+
+    // Import toggle (private key vs mnemonic)
+    document.querySelectorAll('.wm-import-type').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.wm-import-type').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            const keyDiv = document.getElementById('wmImportKey');
+            const mnDiv = document.getElementById('wmImportMnemonic');
+            if (btn.dataset.import === 'key') {
+                if (keyDiv) keyDiv.classList.remove('hidden');
+                if (mnDiv) mnDiv.classList.add('hidden');
+            } else {
+                if (keyDiv) keyDiv.classList.add('hidden');
+                if (mnDiv) mnDiv.classList.remove('hidden');
+            }
+        });
+    });
+
+    // Generate mnemonic grid inputs
+    const mnGrid = document.getElementById('mnemonicGrid');
+    if (mnGrid) {
+        for (let i = 0; i < 12; i++) {
+            const input = document.createElement('input');
+            input.type = 'text';
+            input.placeholder = `Word ${i + 1}`;
+            input.className = 'form-input';
+            mnGrid.appendChild(input);
+        }
+    }
+
+    // Connect button in import tab
+    const wmConnectBtn = document.getElementById('wmConnectBtn');
+    if (wmConnectBtn) {
+        wmConnectBtn.addEventListener('click', () => {
+            const keyInput = document.getElementById('wmPrivateKey');
+            const pwInput = document.getElementById('wmPassword');
+            const key = keyInput?.value?.trim();
+            const pw = pwInput?.value?.trim();
+            if (!key && !pw) {
+                showNotification('Enter private key or mnemonic', 'warning');
+                return;
+            }
+            // Generate a demo address from the key
+            const addr = '0x' + Array.from({ length: 40 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+            const shortAddr = addr.slice(0, 6) + '...' + addr.slice(-4);
+            savedWallets.push({ address: addr, short: shortAddr, added: Date.now() });
+            localStorage.setItem('dexWallets', JSON.stringify(savedWallets));
+            connectWalletTo(addr, shortAddr);
+            closeWalletModal();
+            if (keyInput) keyInput.value = '';
+            if (pwInput) pwInput.value = '';
+            showNotification('Wallet connected: ' + shortAddr, 'success');
+        });
+    }
+
+    // Create new wallet
+    const wmCreateBtn = document.getElementById('wmCreateBtn');
+    if (wmCreateBtn) {
+        wmCreateBtn.addEventListener('click', () => {
+            const addr = '0x' + Array.from({ length: 40 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+            const privKey = '0x' + Array.from({ length: 64 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+            const shortAddr = addr.slice(0, 6) + '...' + addr.slice(-4);
+            const addrEl = document.getElementById('wmNewAddress');
+            const keyEl = document.getElementById('wmNewKey');
+            const createdDiv = document.getElementById('wmCreatedWallet');
+            if (addrEl) addrEl.textContent = addr;
+            if (keyEl) keyEl.textContent = privKey;
+            if (createdDiv) createdDiv.classList.remove('hidden');
+            savedWallets.push({ address: addr, short: shortAddr, added: Date.now() });
+            localStorage.setItem('dexWallets', JSON.stringify(savedWallets));
+            connectWalletTo(addr, shortAddr);
+            showNotification('New wallet created: ' + shortAddr, 'success');
+        });
+    }
+
+    // Copy buttons in create tab
+    document.querySelectorAll('.wm-copy-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const targetId = btn.dataset.copy;
+            const el = document.getElementById(targetId);
+            if (el) {
+                navigator.clipboard.writeText(el.textContent).then(() => showNotification('Copied!', 'success'));
+            }
+        });
+    });
+
+    function connectWalletTo(address, shortAddr) {
+        state.connected = true;
+        state.walletAddress = address;
+        if (connectBtn) {
+            connectBtn.innerHTML = `<i class="fas fa-wallet"></i> ${shortAddr}`;
+            connectBtn.className = 'btn btn-small btn-secondary';
+        }
+        renderBalances();
+    }
+
+    function disconnectWallet() {
+        state.connected = false;
+        state.walletAddress = null;
+        if (connectBtn) {
+            connectBtn.innerHTML = '<i class="fas fa-wallet"></i> Connect Wallet';
+            connectBtn.className = 'btn btn-small btn-primary';
+        }
+        renderBalances();
+    }
+
+    function renderWalletList() {
+        const list = document.getElementById('wmWalletsList');
+        if (!list) return;
+        if (!savedWallets.length) {
+            list.innerHTML = `
+                <div class="wm-empty">
+                    <i class="fas fa-wallet"></i>
+                    <p>No wallets connected</p>
+                    <button class="btn btn-primary btn-small" id="wmEmptyImport">Import Wallet</button>
+                </div>`;
+            const emptyBtn = document.getElementById('wmEmptyImport');
+            if (emptyBtn) emptyBtn.addEventListener('click', () => switchWmTab('import'));
+            return;
+        }
+        list.innerHTML = savedWallets.map((w, i) => `
+            <div class="wm-wallet-item ${state.walletAddress === w.address ? 'active-wallet' : ''}">
+                <span class="wm-wallet-addr">${w.short || w.address.slice(0, 6) + '...' + w.address.slice(-4)}</span>
+                <div class="wm-wallet-actions">
+                    ${state.walletAddress === w.address
+                        ? '<span class="btn btn-small btn-secondary" style="opacity:0.6;cursor:default;">Active</span>'
+                        : `<button class="btn btn-small btn-primary wm-switch-btn" data-idx="${i}">Switch</button>`}
+                    <button class="btn btn-small btn-secondary wm-remove-btn" data-idx="${i}"><i class="fas fa-times"></i></button>
+                </div>
+            </div>
+        `).join('') + `
+            <div class="wm-disconnect-all">
+                <button class="btn btn-small btn-secondary" id="wmDisconnectAll">Disconnect All</button>
+            </div>`;
+        list.querySelectorAll('.wm-switch-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const w = savedWallets[parseInt(btn.dataset.idx)];
+                if (w) { connectWalletTo(w.address, w.short); renderWalletList(); }
+            });
+        });
+        list.querySelectorAll('.wm-remove-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const idx = parseInt(btn.dataset.idx);
+                const removed = savedWallets[idx];
+                savedWallets.splice(idx, 1);
+                localStorage.setItem('dexWallets', JSON.stringify(savedWallets));
+                if (state.walletAddress === removed?.address) disconnectWallet();
+                renderWalletList();
+                showNotification('Wallet removed', 'info');
+            });
+        });
+        const disconnectAll = document.getElementById('wmDisconnectAll');
+        if (disconnectAll) {
+            disconnectAll.addEventListener('click', () => {
+                savedWallets = [];
+                localStorage.removeItem('dexWallets');
+                disconnectWallet();
+                renderWalletList();
+                showNotification('All wallets disconnected', 'info');
+            });
+        }
+    }
+
+    function renderBalances() {
+        const container = document.querySelector('.balance-list');
+        if (!container) return;
+        if (!state.connected) {
+            container.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;">Connect wallet to view balances</div>';
+            return;
+        }
+        container.innerHTML = Object.entries(balances).map(([token, bal]) => `
+            <div class="balance-row">
+                <div class="balance-token">
+                    <div class="token-icon ${token.toLowerCase()}-icon">${token[0]}</div>
+                    <span>${token}</span>
+                </div>
+                <div class="balance-amounts">
+                    <span class="balance-available">${formatAmount(bal.available)}</span>
+                    <span class="balance-usd">≈ $${formatAmount(bal.usd)}</span>
+                </div>
+            </div>
+        `).join('');
+    }
+
+    // ===== Margin View =====
+    const leverageSlider = document.getElementById('leverageSlider');
+    const leverageDisplay = document.querySelector('.leverage-display');
+    if (leverageSlider) {
+        leverageSlider.addEventListener('input', () => {
+            state.leverageValue = parseFloat(leverageSlider.value);
+            if (leverageDisplay) leverageDisplay.textContent = `${state.leverageValue}x`;
+            updateMarginInfo();
+        });
+    }
+
+    document.querySelectorAll('.margin-type').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.margin-type').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            state.marginType = btn.dataset.type;
+            if (leverageSlider) leverageSlider.max = state.marginType === 'isolated' ? '5' : '3';
+            if (state.leverageValue > parseFloat(leverageSlider.max)) {
+                state.leverageValue = parseFloat(leverageSlider.max);
+                leverageSlider.value = state.leverageValue;
+                if (leverageDisplay) leverageDisplay.textContent = `${state.leverageValue}x`;
+            }
+            updateMarginInfo();
+        });
+    });
+
+    document.querySelectorAll('.side-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.side-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            state.marginSide = btn.classList.contains('long-btn') ? 'long' : 'short';
+        });
+    });
+
+    function updateMarginInfo() {
+        const entryEl = document.getElementById('marginEntry');
+        const liqEl = document.getElementById('marginLiqPrice');
+        const ratioEl = document.getElementById('marginRatio');
+        if (entryEl) entryEl.textContent = formatPrice(state.lastPrice);
+        if (liqEl) {
+            const lp = state.marginSide === 'long'
+                ? state.lastPrice * (1 - 1 / state.leverageValue * 0.9)
+                : state.lastPrice * (1 + 1 / state.leverageValue * 0.9);
+            liqEl.textContent = formatPrice(lp);
+        }
+        if (ratioEl) ratioEl.textContent = `${(100 / state.leverageValue).toFixed(1)}%`;
+    }
+
+    // ===== Governance Voting =====
+    document.querySelectorAll('.vote-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            if (!state.connected) { showNotification('Connect wallet to vote', 'warning'); return; }
+            const card = btn.closest('.proposal-card');
+            const title = card?.querySelector('h4')?.textContent || '';
+            showNotification(`Vote submitted on "${title}"`, 'success');
+            btn.disabled = true;
+            btn.style.opacity = '0.5';
+        });
+    });
+
+    // ===== Rewards Claim =====
+    document.querySelectorAll('.claim-btn, .btn-claim').forEach(btn => {
+        btn.addEventListener('click', () => {
+            if (!state.connected) { showNotification('Connect wallet to claim', 'warning'); return; }
+            showNotification('Rewards claimed! 847.21 MOLT sent to wallet', 'success');
+        });
+    });
+
+    // ===== Copy Referral =====
+    const copyBtn = document.querySelector('.copy-btn');
+    if (copyBtn) {
+        copyBtn.addEventListener('click', () => {
+            const code = document.querySelector('.referral-link-box code');
+            if (code) {
+                navigator.clipboard.writeText(code.textContent).then(() => {
+                    showNotification('Referral link copied!', 'success');
+                }).catch(() => {
+                    showNotification('Failed to copy', 'warning');
+                });
+            }
+        });
+    }
+
+    // ===== Notifications =====
+    function showNotification(msg, type = 'info') {
+        const existing = document.querySelector('.dex-notification');
+        if (existing) existing.remove();
+        const el = document.createElement('div');
+        el.className = 'dex-notification';
+        const colors = { success: '#06d6a0', warning: '#ffd166', info: '#4ea8de', error: '#ef4444' };
+        el.style.cssText = `
+            position: fixed; top: 80px; right: 20px; z-index: 10000;
+            padding: 12px 20px; border-radius: 8px;
+            background: var(--bg-card, #1a1f36); color: #fff;
+            border-left: 4px solid ${colors[type] || colors.info};
+            font-size: 0.85rem; box-shadow: 0 4px 24px rgba(0,0,0,0.5);
+            animation: slideIn 0.3s ease;
+        `;
+        el.textContent = msg;
+        document.body.appendChild(el);
+        setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 0.3s'; setTimeout(() => el.remove(), 300); }, 3000);
+    }
+
+    // Notification animation
+    const style = document.createElement('style');
+    style.textContent = `@keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}`;
+    document.head.appendChild(style);
+
+    // ===== Formatting =====
+    function formatPrice(p) {
+        if (p >= 1000) return p.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        if (p >= 1) return p.toFixed(4);
+        if (p >= 0.001) return p.toFixed(6);
+        return p.toFixed(8);
+    }
+
+    function formatAmount(a) {
+        if (a >= 1000000) return (a / 1000000).toFixed(2) + 'M';
+        if (a >= 1000) return a.toLocaleString('en-US', { maximumFractionDigits: 2 });
+        return a.toFixed(4);
+    }
+
+    function formatVolume(v) {
+        if (v >= 1e9) return '$' + (v / 1e9).toFixed(2) + 'B';
+        if (v >= 1e6) return '$' + (v / 1e6).toFixed(2) + 'M';
+        if (v >= 1e3) return '$' + (v / 1e3).toFixed(1) + 'K';
+        return '$' + v.toFixed(2);
+    }
+
+    // ===== Live Simulation =====
+    function simulateTick() {
+        const delta = (Math.random() - 0.49) * state.lastPrice * 0.002;
+        state.lastPrice += delta;
+        // Update ticker
+        const ticker = document.querySelector('.ticker-price');
+        if (ticker) ticker.textContent = formatPrice(state.lastPrice);
+        // Update current pair
+        const pair = pairs.find(p => p.id === state.activePair.id);
+        if (pair) pair.price = state.lastPrice;
+    }
+
+    function simulateOrderBookUpdate() {
+        if (state.currentView !== 'trade') return;
+        // Small mutations
+        state.orderBook.asks.forEach(a => { a.amount += (Math.random() - 0.5) * 500; if (a.amount < 0) a.amount = 100; });
+        state.orderBook.bids.forEach(b => { b.amount += (Math.random() - 0.5) * 500; if (b.amount < 0) b.amount = 100; });
+        let t = 0;
+        state.orderBook.asks.forEach(a => { t += a.amount; a.total = t; });
+        t = 0;
+        state.orderBook.bids.forEach(b => { t += b.amount; b.total = t; });
+        renderOrderBook();
+    }
+
+    function simulateNewTrade() {
+        if (state.currentView !== 'trade') return;
+        const container = document.querySelector('.trades-list');
+        if (!container) return;
+        const isBuy = Math.random() > 0.5;
+        const offset = (Math.random() - 0.5) * state.lastPrice * 0.002;
+        const price = state.lastPrice + offset;
+        const amount = Math.random() * 5000 + 50;
+        const row = document.createElement('div');
+        row.className = 'trade-row';
+        row.innerHTML = `
+            <span class="trade-price ${isBuy ? 'buy' : 'sell'}">${formatPrice(price)}</span>
+            <span>${formatAmount(amount)}</span>
+            <span class="trade-time">${new Date().toLocaleTimeString()}</span>
+        `;
+        container.prepend(row);
+        if (container.children.length > 40) container.lastChild.remove();
+    }
+
+    // Fill open orders randomly
+    function simulateOrderFills() {
+        openOrders.forEach(o => {
+            if (o.filled < 1 && Math.random() > 0.85) {
+                o.filled = Math.min(1, o.filled + Math.random() * 0.3);
+                if (o.filled >= 1) showNotification(`Order filled: ${formatAmount(o.amount)} ${state.activePair.base}`, 'success');
+            }
+        });
+        openOrders = openOrders.filter(o => o.filled < 1);
+        renderOpenOrders();
+    }
+
+    // ===== Initialize =====
+    generateCandles();
+    generateOrderBook();
+    generateRecentTrades();
+    renderBalances();
+    renderOpenOrders();
+    updateSubmitBtn();
+    updatePairStats(pairs[0]);
+    updateTicker(pairs[0]);
+    updateMarginInfo();
+
+    if (priceInput) priceInput.value = formatPrice(state.lastPrice);
+
+    // Initialize TradingView chart
+    setTimeout(initTradingView, 200);
+
+    // Live update intervals
+    setInterval(simulateTick, 2000);
+    setInterval(simulateOrderBookUpdate, 1500);
+    setInterval(simulateNewTrade, 3000);
+    setInterval(simulateOrderFills, 5000);
+    // Stream real-time bar updates to TradingView
+    setInterval(() => {
+        if (state.currentView !== 'trade') return;
+        const last = state.candles[state.candles.length - 1];
+        if (!last) return;
+        last.close = state.lastPrice;
+        last.high = Math.max(last.high, state.lastPrice);
+        last.low = Math.min(last.low, state.lastPrice);
+        drawChart();
+    }, 5000);
+});

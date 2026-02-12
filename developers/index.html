@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Developer Hub - MoltChain Developer Portal</title>
+    <link rel="stylesheet" href="../shared-base-styles.css">
+    <link rel="stylesheet" href="../shared-theme.css">
+    <link rel="stylesheet" href="css/developers.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+    <style>
+        .nav-menu a.active { color: var(--primary); }
+        .search-input { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; color: #fff; padding: 0.5rem 0.75rem 0.5rem 2rem; font-size: 0.85rem; width: 180px; font-family: inherit; }
+        .search-input:focus { outline: none; border-color: var(--primary); }
+        .search-container { position: relative; }
+        .search-icon { position: absolute; left: 0.65rem; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 0.8rem; pointer-events: none; }
+        .network-select { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); padding: 0.5rem 0.75rem; font-size: 0.85rem; font-weight: 600; cursor: pointer; }
+        .network-select:focus { outline: none; border-color: var(--primary); }
+        .nav-actions { display: flex; align-items: center; gap: 1rem; }
+        .dev-hero { padding: 10rem 0 4rem; text-align: center; position: relative; overflow: hidden; }
+        .dev-hero-bg { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: radial-gradient(circle at 30% 40%, rgba(255,107,53,0.12) 0%, transparent 50%), radial-gradient(circle at 70% 60%, rgba(6,214,160,0.08) 0%, transparent 50%), radial-gradient(circle at 50% 80%, rgba(0,78,137,0.1) 0%, transparent 50%); }
+        .dev-hero-content { position: relative; z-index: 1; }
+        .dev-hero h1 { font-size: 4rem; font-weight: 900; margin-bottom: 1rem; line-height: 1.1; }
+        .dev-hero p { font-size: 1.25rem; color: var(--text-secondary); max-width: 640px; margin: 0 auto 2.5rem; line-height: 1.7; }
+        .dev-hero-cta { display: flex; gap: 1rem; justify-content: center; }
+        .stats-bar { padding: 3rem 0; background: var(--bg-darker); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+        .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.5rem; }
+        .stat-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 12px; padding: 1.5rem; text-align: center; transition: all 0.3s ease; }
+        .stat-card:hover { border-color: var(--primary); transform: translateY(-2px); }
+        .stat-card .stat-value { font-size: 2rem; font-weight: 800; color: var(--primary); margin-bottom: 0.25rem; font-family: 'JetBrains Mono', monospace; }
+        .stat-card .stat-label { font-size: 0.85rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; }
+        .hub-section { padding: 4rem 0; }
+        .hub-section-title { font-size: 1.5rem; font-weight: 700; margin-bottom: 1.5rem; color: #fff; }
+        .quick-code { padding: 4rem 0; background: var(--bg-darker); }
+        .quick-code h2 { font-size: 1.5rem; font-weight: 700; margin-bottom: 0.5rem; color: #fff; }
+        .quick-code .subtitle { color: var(--text-muted); margin-bottom: 1.5rem; font-size: 0.95rem; }
+        .dev-footer { padding: 3rem 0; border-top: 1px solid var(--border); text-align: center; }
+        .dev-footer-links { display: flex; gap: 2rem; justify-content: center; margin-bottom: 1rem; }
+        .dev-footer-links a { color: var(--text-secondary); font-weight: 500; transition: color 0.2s; }
+        .dev-footer-links a:hover { color: var(--primary); }
+        .dev-footer-copy { color: var(--text-muted); font-size: 0.85rem; }
+        @media (max-width: 768px) {
+            .dev-hero h1 { font-size: 2.5rem; }
+            .stats-grid { grid-template-columns: repeat(2, 1fr); }
+            .dev-hero-cta { flex-direction: column; align-items: center; }
+        }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <div class="nav-container">
+            <div class="nav-logo">
+                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="Molt Dev">
+                <span class="logo-text">Molt Dev</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="index.html" class="active">Hub</a></li>
+                <li><a href="getting-started.html">Get Started</a></li>
+                <li><a href="rpc-reference.html">API</a></li>
+                <li><a href="sdk-js.html">SDK</a></li>
+                <li><a href="contracts.html">Contracts</a></li>
+                <li><a href="cli-reference.html">CLI</a></li>
+                <li><a href="moltyid.html">MoltyID</a></li>
+            </ul>
+            <div class="nav-actions">
+                <div class="search-container">
+                    <input type="text" id="searchInput" class="search-input" placeholder="Search docs... (⌘K)">
+                    <i class="fas fa-search search-icon"></i>
+                </div>
+                <select id="devNetworkSelect" class="network-select">
+                    <option value="mainnet">Mainnet</option>
+                    <option value="testnet">Testnet</option>
+                    <option value="local-testnet" selected>Local Testnet</option>
+                    <option value="local-mainnet">Local Mainnet</option>
+                </select>
+            </div>
+            <button class="nav-toggle" id="navToggle">
+                <span></span><span></span><span></span>
+            </button>
+        </div>
+    </nav>
+
+    <!-- SEARCH OVERLAY -->
+    <div class="search-overlay" id="searchOverlay">
+        <div class="search-modal">
+            <input type="text" class="search-modal-input" id="searchModalInput" placeholder="Search documentation...">
+            <div class="search-results" id="searchResults"></div>
+        </div>
+    </div>
+
+    <!-- ===================== HERO ===================== -->
+    <section class="dev-hero">
+        <div class="dev-hero-bg"></div>
+        <div class="container dev-hero-content">
+            <h1><span class="gradient-text">Build on MoltChain</span></h1>
+            <p>The developer portal for the agent-first blockchain. Everything you need to build, deploy, and scale.</p>
+            <div class="dev-hero-cta">
+                <a href="getting-started.html" class="btn btn-primary btn-large">Get Started →</a>
+                <a href="rpc-reference.html" class="btn btn-secondary btn-large">API Reference →</a>
+            </div>
+        </div>
+    </section>
+
+    <!-- ===================== LIVE STATS BAR ===================== -->
+    <section class="stats-bar">
+        <div class="container">
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-value">$0.00001</div>
+                    <div class="stat-label">Per Transaction</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value">400ms</div>
+                    <div class="stat-label">Finality</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="statBlockHeight">—</div>
+                    <div class="stat-label">Latest Block</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value" id="statValidators">—</div>
+                    <div class="stat-label">Validators</div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ===================== HUB CARDS ===================== -->
+    <section class="hub-section">
+        <div class="container">
+            <div class="hub-section-title">Explore the Developer Portal</div>
+            <div class="hub-grid">
+
+                <a href="getting-started.html" class="hub-card">
+                    <div class="hub-card-icon primary"><i class="fas fa-rocket"></i></div>
+                    <div class="hub-card-title">Quick Start</div>
+                    <div class="hub-card-desc">Set up your dev environment, create a wallet, and send your first transaction in minutes.</div>
+                </a>
+
+                <a href="rpc-reference.html" class="hub-card">
+                    <div class="hub-card-icon blue"><i class="fas fa-plug"></i></div>
+                    <div class="hub-card-title">JSON-RPC API</div>
+                    <div class="hub-card-desc">Complete reference for all RPC methods — query state, submit transactions, subscribe to events.</div>
+                </a>
+
+                <a href="ws-reference.html" class="hub-card">
+                    <div class="hub-card-icon green"><i class="fas fa-bolt"></i></div>
+                    <div class="hub-card-title">WebSocket API</div>
+                    <div class="hub-card-desc">Real-time subscriptions for blocks, transactions, logs, and account changes over WebSocket.</div>
+                </a>
+
+                <a href="sdk-js.html" class="hub-card">
+                    <div class="hub-card-icon primary"><i class="fab fa-js"></i></div>
+                    <div class="hub-card-title">JavaScript SDK</div>
+                    <div class="hub-card-desc">Full-featured client for Node.js and browsers. Wallet management, signing, and contract interaction.</div>
+                </a>
+
+                <a href="sdk-python.html" class="hub-card">
+                    <div class="hub-card-icon green"><i class="fab fa-python"></i></div>
+                    <div class="hub-card-title">Python SDK</div>
+                    <div class="hub-card-desc">Pythonic client for data analysis, automation, and backend integration with MoltChain.</div>
+                </a>
+
+                <a href="sdk-rust.html" class="hub-card">
+                    <div class="hub-card-icon blue"><i class="fas fa-gear"></i></div>
+                    <div class="hub-card-title">Rust SDK</div>
+                    <div class="hub-card-desc">Native async Rust client for high-performance applications and on-chain program development.</div>
+                </a>
+
+                <a href="contracts.html" class="hub-card">
+                    <div class="hub-card-icon purple"><i class="fas fa-file-code"></i></div>
+                    <div class="hub-card-title">Smart Contracts</div>
+                    <div class="hub-card-desc">Write, test, and deploy WASM smart contracts with Rust. Guides, patterns, and best practices.</div>
+                </a>
+
+                <a href="moltyid.html" class="hub-card">
+                    <div class="hub-card-icon primary"><i class="fas fa-fingerprint"></i></div>
+                    <div class="hub-card-title">MoltyID Identity</div>
+                    <div class="hub-card-desc">On-chain reputation and identity layer. Trust tiers, fee discounts, and priority transaction lanes.</div>
+                </a>
+
+                <a href="contract-reference.html" class="hub-card">
+                    <div class="hub-card-icon blue"><i class="fas fa-book"></i></div>
+                    <div class="hub-card-title">Contract Reference</div>
+                    <div class="hub-card-desc">Host functions, storage API, event emission, cross-contract calls, and gas metering reference.</div>
+                </a>
+
+                <a href="cli-reference.html" class="hub-card">
+                    <div class="hub-card-icon green"><i class="fas fa-terminal"></i></div>
+                    <div class="hub-card-title">CLI Reference</div>
+                    <div class="hub-card-desc">Complete command-line tool docs — wallet management, deployments, queries, and validator ops.</div>
+                </a>
+
+                <a href="validator.html" class="hub-card">
+                    <div class="hub-card-icon purple"><i class="fas fa-server"></i></div>
+                    <div class="hub-card-title">Validator Guide</div>
+                    <div class="hub-card-desc">Run a validator node. Hardware requirements, staking, monitoring, and Proof of Contribution scoring.</div>
+                </a>
+
+                <a href="../programs/index.html" class="hub-card">
+                    <div class="hub-card-icon primary"><i class="fas fa-code"></i></div>
+                    <div class="hub-card-title">Programs IDE</div>
+                    <div class="hub-card-desc">Browser-based IDE for writing, compiling, and deploying MoltChain smart contracts instantly.</div>
+                </a>
+
+            </div>
+        </div>
+    </section>
+
+    <!-- ===================== QUICK CODE EXAMPLE ===================== -->
+    <section class="quick-code">
+        <div class="container">
+            <h2>Connect &amp; Get Balance</h2>
+            <p class="subtitle">A quick example in every supported language.</p>
+
+            <div class="lang-tabs">
+                <button class="lang-tab active" data-lang="js">JavaScript</button>
+                <button class="lang-tab" data-lang="python">Python</button>
+                <button class="lang-tab" data-lang="rust">Rust</button>
+                <button class="lang-tab" data-lang="cli">CLI</button>
+            </div>
+
+            <!-- JavaScript -->
+            <div class="lang-tab-content active" data-lang="js">
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">JavaScript</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>import { Connection, PublicKey } from '@moltchain/sdk';
+
+// Connect to the network (local testnet by default)
+const connection = new Connection('http://localhost:8899');
+
+// Get balance for an address
+const pubkey = new PublicKey('Mo1t...YourAddress');
+const balance = await connection.getBalance(pubkey);
+
+console.log(`Balance: ${balance / 1e9} MOLT`);
+// → Balance: 42.500000000 MOLT</code></pre>
+                </div>
+            </div>
+
+            <!-- Python -->
+            <div class="lang-tab-content" data-lang="python">
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Python</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>from moltchain import Client, PublicKey
+
+# Connect to the network
+client = Client("http://localhost:8899")
+
+# Get balance for an address
+pubkey = PublicKey("Mo1t...YourAddress")
+balance = client.get_balance(pubkey)
+
+print(f"Balance: {balance / 1e9:.9f} MOLT")
+# → Balance: 42.500000000 MOLT</code></pre>
+                </div>
+            </div>
+
+            <!-- Rust -->
+            <div class="lang-tab-content" data-lang="rust">
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Rust</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>use moltchain_sdk::{Client, Pubkey};
+use std::str::FromStr;
+
+#[tokio::main]
+async fn main() -> Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
+    // Connect to the network
+    let client = Client::new("http://localhost:8899");
+
+    // Get balance for an address
+    let pubkey = Pubkey::from_str("Mo1t...YourAddress")?;
+    let balance = client.get_balance(&amp;pubkey).await?;
+
+    println!("Balance: {:.9} MOLT", balance as f64 / 1e9);
+    Ok(())
+}</code></pre>
+                </div>
+            </div>
+
+            <!-- CLI -->
+            <div class="lang-tab-content" data-lang="cli">
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">CLI</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code># Check balance of the current wallet
+$ molt balance
+42.500000000 MOLT
+
+# Check balance of a specific address
+$ molt balance Mo1t...YourAddress
+42.500000000 MOLT
+
+# Use a specific RPC endpoint
+$ molt balance --url https://testnet-rpc.moltchain.io Mo1t...YourAddress
+42.500000000 MOLT</code></pre>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ===================== FOOTER ===================== -->
+    <footer class="dev-footer">
+        <div class="container">
+            <div class="dev-footer-links">
+                <a href="https://github.com/moltchain" target="_blank"><i class="fab fa-github"></i> GitHub</a>
+                <a href="../explorer/index.html"><i class="fas fa-cube"></i> Explorer</a>
+                <a href="../marketplace/index.html"><i class="fas fa-store"></i> Marketplace</a>
+                <a href="../programs/index.html"><i class="fas fa-code"></i> Programs</a>
+            </div>
+            <div class="dev-footer-copy">© 2026 MoltChain Contributors. Built for the agent economy.</div>
+        </div>
+    </footer>
+
+    <script src="js/developers.js"></script>
+    <script>
+    (function() {
+        // Determine RPC endpoint from network selector
+        const ENDPOINTS = {
+            'mainnet': 'https://rpc.moltchain.io',
+            'testnet': 'https://testnet-rpc.moltchain.io',
+            'local-testnet': 'http://localhost:8899',
+            'local-mainnet': 'http://localhost:8899'
+        };
+        const WS_ENDPOINTS = {
+            'mainnet': 'wss://rpc.moltchain.io/ws',
+            'testnet': 'wss://testnet-rpc.moltchain.io/ws',
+            'local-testnet': 'ws://localhost:8900',
+            'local-mainnet': 'ws://localhost:8900'
+        };
+
+        function getNetwork() {
+            const sel = document.getElementById('devNetworkSelect');
+            return sel ? sel.value : 'local-testnet';
+        }
+        function getEndpoint() { return ENDPOINTS[getNetwork()] || 'http://localhost:8899'; }
+        function getWsEndpoint() { return WS_ENDPOINTS[getNetwork()] || 'ws://localhost:8900'; }
+
+        function fmt(n) {
+            if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+            if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+            return n.toLocaleString();
+        }
+
+        async function rpcCall(method, params) {
+            const res = await fetch(getEndpoint(), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params: params || [] })
+            });
+            const json = await res.json();
+            return json.result;
+        }
+
+        // Live stats — only Latest Block + Validators
+        async function fetchStats() {
+            try {
+                const [slot, validators] = await Promise.allSettled([
+                    rpcCall('getSlot'),
+                    rpcCall('getValidators')
+                ]);
+
+                if (slot.status === 'fulfilled' && slot.value != null) {
+                    document.getElementById('statBlockHeight').textContent = fmt(slot.value);
+                }
+
+                if (validators.status === 'fulfilled' && validators.value) {
+                    const count = validators.value.count || validators.value.validators?.length || 0;
+                    document.getElementById('statValidators').textContent = fmt(count);
+                }
+            } catch (e) {
+                // Silently fail — stats will show "—"
+            }
+        }
+
+        // WebSocket for live block updates
+        let devWs = null;
+        let devWsReconnect = null;
+
+        function connectDevWS() {
+            if (devWs) try { devWs.close(); } catch(e) {}
+            clearTimeout(devWsReconnect);
+            try {
+                devWs = new WebSocket(getWsEndpoint());
+                devWs.onopen = () => {
+                    devWs.send(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'slotSubscribe', params: [] }));
+                };
+                devWs.onmessage = (ev) => {
+                    try {
+                        const data = JSON.parse(ev.data);
+                        if (data.params?.result?.slot !== undefined) {
+                            document.getElementById('statBlockHeight').textContent = fmt(data.params.result.slot);
+                        }
+                    } catch(e) {}
+                };
+                devWs.onclose = () => { devWsReconnect = setTimeout(connectDevWS, 5000); };
+                devWs.onerror = () => { devWs.close(); };
+            } catch(e) {
+                devWsReconnect = setTimeout(connectDevWS, 5000);
+            }
+        }
+
+        // Initial fetch + polling every 5s + WebSocket
+        fetchStats();
+        setInterval(fetchStats, 5000);
+        connectDevWS();
+
+        // Re-fetch + reconnect on network change
+        const sel = document.getElementById('devNetworkSelect');
+        if (sel) sel.addEventListener('change', () => {
+            fetchStats();
+            connectDevWS();
+        });
+
+        // Open search overlay from nav input
+        const navInput = document.getElementById('searchInput');
+        if (navInput) {
+            navInput.addEventListener('focus', () => {
+                if (typeof window.openDevSearch === 'function') window.openDevSearch();
+                navInput.blur();
+            });
+        }
+    })();
+    </script>
+</body>
+</html>

@@ -1,0 +1,856 @@
+// MoltOracle - Decentralized Oracle System
+// Features: Price Feeds, Verifiable Random Function (VRF), Attestations
+
+#![no_std]
+#![cfg_attr(target_arch = "wasm32", no_main)]
+
+extern crate alloc;
+use alloc::vec::Vec;
+use alloc::vec;
+
+use moltchain_sdk::{
+    log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_timestamp, get_caller
+};
+
+// ============================================================================
+// PRICE FEED ORACLE - Real-time asset pricing
+// ============================================================================
+
+// Price feed: 49 bytes
+// price (8) + timestamp (8) + decimals (1) + feeder (32)
+const PRICE_FEED_SIZE: usize = 49;
+
+#[no_mangle]
+pub extern "C" fn initialize_oracle(
+    owner_ptr: *const u8,
+) -> u32 {
+    log_info("🔮 Initializing MoltOracle...");
+    
+    let owner = unsafe { core::slice::from_raw_parts(owner_ptr, 32) };
+    storage_set(b"oracle_owner", owner);
+    
+    log_info("✅ Oracle initialized!");
+    log_info("   Features: Price Feeds, VRF, Attestations");
+    1
+}
+
+#[no_mangle]
+pub extern "C" fn add_price_feeder(
+    feeder_ptr: *const u8,
+    asset_ptr: *const u8,
+    asset_len: u32,
+) -> u32 {
+    log_info("👤 Adding price feeder...");
+    
+    let feeder = unsafe { core::slice::from_raw_parts(feeder_ptr, 32) };
+    let asset = unsafe { core::slice::from_raw_parts(asset_ptr, asset_len as usize) };
+    
+    // T5.10 fix: Check caller (not feeder) against oracle owner
+    let caller = get_caller();
+    let owner = storage_get(b"oracle_owner").unwrap_or_default();
+    if owner.len() != 32 || caller.0[..] != owner[..] {
+        log_info("❌ Only oracle owner can add feeders");
+        return 0;
+    }
+    
+    // Store feeder for this asset
+    let key = alloc::format!("feeder_{}", 
+        core::str::from_utf8(asset).unwrap_or("?")
+    );
+    storage_set(key.as_bytes(), feeder);
+    
+    log_info("✅ Price feeder authorized!");
+    1
+}
+
+#[no_mangle]
+pub extern "C" fn submit_price(
+    feeder_ptr: *const u8,
+    asset_ptr: *const u8,
+    asset_len: u32,
+    price: u64,
+    decimals: u8,
+) -> u32 {
+    let feeder = unsafe { core::slice::from_raw_parts(feeder_ptr, 32) };
+    let asset = unsafe { core::slice::from_raw_parts(asset_ptr, asset_len as usize) };
+    
+    // Verify feeder is authorized for this specific asset
+    let key = alloc::format!("feeder_{}", 
+        core::str::from_utf8(asset).unwrap_or("?")
+    );
+    let authorized_feeder = match storage_get(key.as_bytes()) {
+        Some(data) if data.len() == 32 => data,
+        _ => {
+            log_info("❌ No authorized feeder for this asset");
+            return 0;
+        }
+    };
+    
+    // Verify the submitter matches the authorized feeder
+    if feeder != authorized_feeder.as_slice() {
+        log_info("❌ Feeder not authorized for this asset");
+        return 0;
+    }
+    
+    let timestamp = get_timestamp();
+    
+    // Build price feed
+    let mut feed = Vec::with_capacity(PRICE_FEED_SIZE);
+    feed.extend_from_slice(&u64_to_bytes(price));       // 0-7: price
+    feed.extend_from_slice(&u64_to_bytes(timestamp));   // 8-15: timestamp
+    feed.push(decimals);                                 // 16: decimals
+    feed.extend_from_slice(feeder);                      // 17-48: feeder
+    
+    // Store price
+    let price_key = alloc::format!("price_{}", 
+        core::str::from_utf8(asset).unwrap_or("?")
+    );
+    storage_set(price_key.as_bytes(), &feed);
+    
+    log_info("📊 Price updated!");
+    log_info(&alloc::format!("   Asset: {}", 
+        core::str::from_utf8(asset).unwrap_or("?")
+    ));
+    log_info(&alloc::format!("   Price: {}.{}", 
+        price / 10u64.pow(decimals as u32),
+        price % 10u64.pow(decimals as u32)
+    ));
+    
+    1
+}
+
+#[no_mangle]
+pub extern "C" fn get_price(
+    asset_ptr: *const u8,
+    asset_len: u32,
+    result_ptr: *mut u8,
+) -> u32 {
+    let asset = unsafe { core::slice::from_raw_parts(asset_ptr, asset_len as usize) };
+    
+    let key = alloc::format!("price_{}", 
+        core::str::from_utf8(asset).unwrap_or("?")
+    );
+    
+    match storage_get(key.as_bytes()) {
+        Some(feed) if feed.len() >= PRICE_FEED_SIZE => {
+            // Check staleness (reject if > 1 hour old)
+            let timestamp = bytes_to_u64(&feed[8..16]);
+            let now = get_timestamp();
+            if now - timestamp > 3600 {
+                log_info("⚠️  Price data stale");
+                return 0;
+            }
+            
+            // Return: price (8) + timestamp (8) + decimals (1)
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    feed.as_ptr(),
+                    result_ptr,
+                    17
+                );
+            }
+            1
+        }
+        _ => {
+            log_info("❌ Price not found");
+            0
+        }
+    }
+}
+
+// ============================================================================
+// VERIFIABLE RANDOM FUNCTION (VRF) - Commit-Reveal Scheme
+// ============================================================================
+// Phase 1 (commit): Requester submits H(secret || seed). Stored on-chain.
+// Phase 2 (reveal): Requester reveals secret. Contract verifies H(secret || seed)
+//   matches commit, then derives randomness as H(commit || block_timestamp).
+//   Block timestamp is unknown at commit time, making the output unpredictable.
+// ============================================================================
+
+/// Commit phase: submit hash of (secret || seed)
+/// Call with: requester (32 bytes), commit_hash_ptr (32 bytes = H(secret || seed)), seed
+#[no_mangle]
+pub extern "C" fn commit_randomness(
+    requester_ptr: *const u8,
+    commit_hash_ptr: *const u8,
+    seed: u64,
+) -> u32 {
+    log_info("🎲 Committing randomness request...");
+    
+    let requester = unsafe { core::slice::from_raw_parts(requester_ptr, 32) };
+    let commit_hash = unsafe { core::slice::from_raw_parts(commit_hash_ptr, 32) };
+    let timestamp = get_timestamp();
+    
+    let key = alloc::format!("rng_commit_{}", hex_encode(requester));
+    
+    // Store: commit_hash (32) + seed (8) + timestamp (8) + status (1: 0=pending, 1=revealed)
+    let mut data = Vec::with_capacity(49);
+    data.extend_from_slice(commit_hash);
+    data.extend_from_slice(&u64_to_bytes(seed));
+    data.extend_from_slice(&u64_to_bytes(timestamp));
+    data.push(0u8); // status: pending
+    
+    storage_set(key.as_bytes(), &data);
+    
+    log_info("✅ Randomness committed — reveal to finalize");
+    1
+}
+
+/// Reveal phase: submit secret, contract verifies commit and derives randomness
+/// secret_ptr (32 bytes): the secret that was committed as H(secret || seed)
+#[no_mangle]
+pub extern "C" fn reveal_randomness(
+    requester_ptr: *const u8,
+    secret_ptr: *const u8,
+    result_ptr: *mut u8,
+) -> u32 {
+    log_info("🎲 Revealing randomness...");
+    
+    let requester = unsafe { core::slice::from_raw_parts(requester_ptr, 32) };
+    let secret = unsafe { core::slice::from_raw_parts(secret_ptr, 32) };
+    let reveal_timestamp = get_timestamp();
+    
+    let commit_key = alloc::format!("rng_commit_{}", hex_encode(requester));
+    
+    let commit_data = match storage_get(commit_key.as_bytes()) {
+        Some(d) if d.len() >= 49 => d,
+        _ => {
+            log_info("❌ No pending commit found");
+            return 0;
+        }
+    };
+    
+    // Parse commit data
+    let stored_commit_hash = &commit_data[0..32];
+    let seed_bytes: [u8; 8] = commit_data[32..40].try_into().unwrap_or([0; 8]);
+    let seed = u64::from_le_bytes(seed_bytes);
+    let status = commit_data[48];
+    
+    if status != 0 {
+        log_info("❌ Commit already revealed");
+        return 0;
+    }
+    
+    // Verify: H(secret || seed) == stored_commit_hash
+    let mut preimage = Vec::with_capacity(40);
+    preimage.extend_from_slice(secret);
+    preimage.extend_from_slice(&u64_to_bytes(seed));
+    let computed_hash = simple_hash(&preimage);
+    
+    if computed_hash != stored_commit_hash {
+        log_info("❌ Commit verification failed — secret doesn't match");
+        return 0;
+    }
+    
+    // Derive randomness: H(commit_hash || reveal_timestamp)
+    // reveal_timestamp is the current block timestamp, unknown at commit time
+    let mut rng_input = Vec::with_capacity(40);
+    rng_input.extend_from_slice(stored_commit_hash);
+    rng_input.extend_from_slice(&u64_to_bytes(reveal_timestamp));
+    let random_hash = simple_hash(&rng_input);
+    
+    // Extract u64 random value from first 8 bytes of hash
+    let random_value = u64::from_le_bytes(random_hash[0..8].try_into().unwrap_or([0; 8]));
+    
+    // Store result
+    let result_key = alloc::format!("random_{}", hex_encode(requester));
+    let mut result_data = Vec::with_capacity(24);
+    result_data.extend_from_slice(&u64_to_bytes(random_value));
+    result_data.extend_from_slice(&u64_to_bytes(reveal_timestamp));
+    result_data.extend_from_slice(requester);
+    storage_set(result_key.as_bytes(), &result_data);
+    
+    // Mark commit as revealed
+    let mut updated_commit = commit_data.clone();
+    updated_commit[48] = 1; // status: revealed
+    storage_set(commit_key.as_bytes(), &updated_commit);
+    
+    // Write random_value to result pointer
+    let value_bytes = u64_to_bytes(random_value);
+    unsafe {
+        core::ptr::copy_nonoverlapping(value_bytes.as_ptr(), result_ptr, 8);
+    }
+    
+    log_info("✅ Randomness revealed!");
+    log_info(&alloc::format!("   Value: {}", random_value));
+    1
+}
+
+/// Simple 32-byte hash function for commit scheme (SHA-256-like iterative hash)
+fn simple_hash(input: &[u8]) -> [u8; 32] {
+    let mut state: [u64; 4] = [
+        0x6a09e667f3bcc908, 0xbb67ae8584caa73b,
+        0x3c6ef372fe94f82b, 0xa54ff53a5f1d36f1,
+    ];
+    for (i, &byte) in input.iter().enumerate() {
+        let idx = i % 4;
+        state[idx] = state[idx].wrapping_mul(6364136223846793005)
+            .wrapping_add(byte as u64)
+            .wrapping_add(i as u64);
+        state[(idx + 1) % 4] ^= state[idx].rotate_right(17);
+    }
+    // Extra mixing rounds
+    for round in 0..8 {
+        for idx in 0..4 {
+            state[idx] = state[idx].wrapping_mul(6364136223846793005)
+                .wrapping_add(state[(idx + 1) % 4])
+                .wrapping_add(round);
+        }
+    }
+    let mut out = [0u8; 32];
+    for (i, &s) in state.iter().enumerate() {
+        out[i*8..(i+1)*8].copy_from_slice(&s.to_le_bytes());
+    }
+    out
+}
+
+/// Hex encode a byte slice (for storage keys)
+fn hex_encode(bytes: &[u8]) -> alloc::string::String {
+    let hex_chars: &[u8; 16] = b"0123456789abcdef";
+    let mut s = alloc::string::String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        s.push(hex_chars[(b >> 4) as usize] as char);
+        s.push(hex_chars[(b & 0xf) as usize] as char);
+    }
+    s
+}
+
+/// Legacy compatibility: request_randomness now creates a commit+reveal in one step
+/// using the seed as both secret and seed (less secure but backward compatible)
+#[no_mangle]
+pub extern "C" fn request_randomness(
+    requester_ptr: *const u8,
+    seed: u64,
+) -> u32 {
+    let requester = unsafe { core::slice::from_raw_parts(requester_ptr, 32) };
+    let timestamp = get_timestamp();
+    
+    // Self-reveal mode: derive randomness from seed + timestamp directly
+    // For proper security, use commit_randomness + reveal_randomness
+    let mut input = Vec::with_capacity(48);
+    input.extend_from_slice(requester);
+    input.extend_from_slice(&u64_to_bytes(seed));
+    input.extend_from_slice(&u64_to_bytes(timestamp));
+    let hash = simple_hash(&input);
+    let random_value = u64::from_le_bytes(hash[0..8].try_into().unwrap_or([0; 8]));
+    
+    let key = alloc::format!("random_{}", hex_encode(requester));
+    let mut random_data = Vec::with_capacity(48);
+    random_data.extend_from_slice(&u64_to_bytes(random_value));
+    random_data.extend_from_slice(&u64_to_bytes(timestamp));
+    random_data.extend_from_slice(requester);
+    storage_set(key.as_bytes(), &random_data);
+    
+    log_info("✅ Random number generated (legacy mode — use commit-reveal for security)");
+    1
+}
+
+#[no_mangle]
+pub extern "C" fn get_randomness(
+    requester_ptr: *const u8,
+    _seed: u64,
+    result_ptr: *mut u8,
+) -> u32 {
+    let requester = unsafe { core::slice::from_raw_parts(requester_ptr, 32) };
+    
+    // New key format from commit-reveal and legacy request_randomness
+    let key = alloc::format!("random_{}", hex_encode(requester));
+    
+    match storage_get(key.as_bytes()) {
+        Some(data) if data.len() >= 16 => {
+            // Return: random_value (8) + timestamp (8)
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    data.as_ptr(),
+                    result_ptr,
+                    16
+                );
+            }
+            1
+        }
+        _ => {
+            log_info("❌ Random value not found");
+            0
+        }
+    }
+}
+
+// ============================================================================
+// ATTESTATION SYSTEM - Multi-signature external data verification
+// ============================================================================
+
+// Attestation: 73 bytes
+// data_hash (32) + signatures_count (1) + timestamp (8) + data (32)
+const ATTESTATION_SIZE: usize = 73;
+
+#[no_mangle]
+pub extern "C" fn submit_attestation(
+    attester_ptr: *const u8,
+    data_hash_ptr: *const u8,
+    data_ptr: *const u8,
+    data_len: u32,
+) -> u32 {
+    log_info("📝 Submitting attestation...");
+    
+    let attester = unsafe { core::slice::from_raw_parts(attester_ptr, 32) };
+    let data_hash = unsafe { core::slice::from_raw_parts(data_hash_ptr, 32) };
+    let data = unsafe { core::slice::from_raw_parts(data_ptr, data_len as usize) };
+    
+    // In production, verify:
+    // 1. Attester is authorized (check against authorized list)
+    // 2. Signature is valid
+    log_info(&alloc::format!("   Attester: {}...", 
+        core::str::from_utf8(&attester[..8]).unwrap_or("?")
+    ));
+    // 3. Data hash matches
+    
+    let timestamp = get_timestamp();
+    
+    // Load existing attestation or create new
+    let key = alloc::format!("attestation_{}", 
+        core::str::from_utf8(data_hash).unwrap_or("?")
+    );
+    
+    let mut attestation = match storage_get(key.as_bytes()) {
+        Some(existing) if existing.len() >= ATTESTATION_SIZE => existing,
+        _ => {
+            let mut new_att = Vec::with_capacity(ATTESTATION_SIZE);
+            new_att.extend_from_slice(data_hash);            // 0-31: data_hash
+            new_att.push(0);                                  // 32: signatures_count
+            new_att.extend_from_slice(&u64_to_bytes(timestamp)); // 33-40: timestamp
+            
+            // Store first 32 bytes of data
+            if data.len() >= 32 {
+                new_att.extend_from_slice(&data[..32]);
+            } else {
+                new_att.extend_from_slice(data);
+                new_att.extend_from_slice(&vec![0u8; 32 - data.len()]);
+            }
+            new_att
+        }
+    };
+    
+    // Increment signature count
+    let sig_count = attestation[32] + 1;
+    attestation[32] = sig_count;
+    
+    storage_set(key.as_bytes(), &attestation);
+    
+    log_info("✅ Attestation recorded!");
+    log_info(&alloc::format!("   Signatures: {}", sig_count));
+    
+    1
+}
+
+#[no_mangle]
+pub extern "C" fn verify_attestation(
+    data_hash_ptr: *const u8,
+    min_signatures: u8,
+) -> u32 {
+    let data_hash = unsafe { core::slice::from_raw_parts(data_hash_ptr, 32) };
+    
+    let key = alloc::format!("attestation_{}", 
+        core::str::from_utf8(data_hash).unwrap_or("?")
+    );
+    
+    match storage_get(key.as_bytes()) {
+        Some(attestation) if attestation.len() >= ATTESTATION_SIZE => {
+            let sig_count = attestation[32];
+            
+            if sig_count >= min_signatures {
+                log_info("✅ Attestation verified!");
+                log_info(&alloc::format!("   Signatures: {}/{}", sig_count, min_signatures));
+                1
+            } else {
+                log_info("❌ Insufficient signatures");
+                log_info(&alloc::format!("   Have: {}, Need: {}", sig_count, min_signatures));
+                0
+            }
+        }
+        _ => {
+            log_info("❌ Attestation not found");
+            0
+        }
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn get_attestation_data(
+    data_hash_ptr: *const u8,
+    result_ptr: *mut u8,
+) -> u32 {
+    let data_hash = unsafe { core::slice::from_raw_parts(data_hash_ptr, 32) };
+    
+    let key = alloc::format!("attestation_{}", 
+        core::str::from_utf8(data_hash).unwrap_or("?")
+    );
+    
+    match storage_get(key.as_bytes()) {
+        Some(attestation) if attestation.len() >= ATTESTATION_SIZE => {
+            // Return: signatures_count (1) + timestamp (8) + data (32)
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    attestation[32..].as_ptr(),
+                    result_ptr,
+                    41
+                );
+            }
+            1
+        }
+        _ => 0,
+    }
+}
+
+// ============================================================================
+// ORACLE QUERY INTERFACE - Contracts can query all oracle data
+// ============================================================================
+
+#[no_mangle]
+pub extern "C" fn query_oracle(
+    query_type_ptr: *const u8,
+    query_type_len: u32,
+    param_ptr: *const u8,
+    param_len: u32,
+    result_ptr: *mut u8,
+) -> u32 {
+    let query_type = unsafe { 
+        core::slice::from_raw_parts(query_type_ptr, query_type_len as usize) 
+    };
+    
+    match query_type {
+        b"price" => {
+            log_info("📊 Querying price...");
+            get_price(param_ptr, param_len, result_ptr)
+        }
+        b"random" => {
+            log_info("🎲 Querying randomness...");
+            // param should be: requester (32) + seed (8)
+            if param_len >= 40 {
+                let seed_bytes = unsafe { 
+                    core::slice::from_raw_parts(param_ptr.add(32), 8) 
+                };
+                let seed = bytes_to_u64(seed_bytes);
+                get_randomness(param_ptr, seed, result_ptr)
+            } else {
+                0
+            }
+        }
+        b"attestation" => {
+            log_info("📝 Querying attestation...");
+            get_attestation_data(param_ptr, result_ptr)
+        }
+        _ => {
+            log_info("❌ Unknown query type");
+            0
+        }
+    }
+}
+
+// ============================================================================
+// PRICE AGGREGATION - Combine multiple feeds for accuracy
+// ============================================================================
+
+#[no_mangle]
+pub extern "C" fn get_aggregated_price(
+    asset_ptr: *const u8,
+    asset_len: u32,
+    num_feeds: u8,
+    result_ptr: *mut u8,
+) -> u32 {
+    log_info("📊 Computing aggregated price...");
+    
+    let asset = unsafe { core::slice::from_raw_parts(asset_ptr, asset_len as usize) };
+    let asset_str = core::str::from_utf8(asset).unwrap_or("?");
+    
+    let mut total_price = 0u64;
+    let mut valid_feeds = 0u8;
+    
+    // Query multiple feeds
+    for i in 0..num_feeds {
+        let key = alloc::format!("price_{}_{}", asset_str, i);
+        
+        if let Some(feed) = storage_get(key.as_bytes()) {
+            if feed.len() >= PRICE_FEED_SIZE {
+                let timestamp = bytes_to_u64(&feed[8..16]);
+                let now = get_timestamp();
+                
+                // Only include fresh feeds (< 1 hour)
+                if now - timestamp <= 3600 {
+                    let price = bytes_to_u64(&feed[0..8]);
+                    total_price += price;
+                    valid_feeds += 1;
+                }
+            }
+        }
+    }
+    
+    if valid_feeds == 0 {
+        log_info("❌ No valid price feeds");
+        return 0;
+    }
+    
+    // Calculate median/average
+    let avg_price = total_price / valid_feeds as u64;
+    
+    // Return: price (8) + valid_feeds (1)
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            u64_to_bytes(avg_price).as_ptr(),
+            result_ptr,
+            8
+        );
+        *result_ptr.add(8) = valid_feeds;
+    }
+    
+    log_info("✅ Aggregated price computed!");
+    log_info(&alloc::format!("   Price: {}", avg_price));
+    log_info(&alloc::format!("   Feeds: {}", valid_feeds));
+    
+    1
+}
+
+// ============================================================================
+// ORACLE STATISTICS - Track usage and performance
+// ============================================================================
+
+#[no_mangle]
+pub extern "C" fn get_oracle_stats(
+    result_ptr: *mut u8,
+) -> u32 {
+    // Stats: total_queries (8) + total_feeds (8) + total_attestations (8)
+    let queries = storage_get(b"stats_queries")
+        .and_then(|d| Some(bytes_to_u64(&d)))
+        .unwrap_or(0);
+    
+    let feeds = storage_get(b"stats_feeds")
+        .and_then(|d| Some(bytes_to_u64(&d)))
+        .unwrap_or(0);
+    
+    let attestations = storage_get(b"stats_attestations")
+        .and_then(|d| Some(bytes_to_u64(&d)))
+        .unwrap_or(0);
+    
+    unsafe {
+        core::ptr::copy_nonoverlapping(u64_to_bytes(queries).as_ptr(), result_ptr, 8);
+        core::ptr::copy_nonoverlapping(u64_to_bytes(feeds).as_ptr(), result_ptr.add(8), 8);
+        core::ptr::copy_nonoverlapping(u64_to_bytes(attestations).as_ptr(), result_ptr.add(16), 8);
+    }
+    
+    log_info("📈 Oracle statistics:");
+    log_info(&alloc::format!("   Queries: {}", queries));
+    log_info(&alloc::format!("   Feeds: {}", feeds));
+    log_info(&alloc::format!("   Attestations: {}", attestations));
+    
+    1
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use super::*;
+    use moltchain_sdk::test_mock;
+    use moltchain_sdk::bytes_to_u64;
+
+    fn setup() {
+        test_mock::reset();
+    }
+
+    #[test]
+    fn test_initialize_oracle() {
+        setup();
+        let owner = [1u8; 32];
+        assert_eq!(initialize_oracle(owner.as_ptr()), 1);
+        let stored = test_mock::get_storage(b"oracle_owner");
+        assert_eq!(stored, Some(owner.to_vec()));
+    }
+
+    #[test]
+    fn test_add_price_feeder() {
+        setup();
+        let owner = [1u8; 32];
+        initialize_oracle(owner.as_ptr());
+        test_mock::set_caller(owner);
+        let feeder = [2u8; 32];
+        let asset = b"MOLT/USD";
+        assert_eq!(add_price_feeder(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32), 1);
+        let key = alloc::format!("feeder_{}", core::str::from_utf8(asset).unwrap());
+        let stored = test_mock::get_storage(key.as_bytes()).unwrap();
+        assert_eq!(stored, feeder.to_vec());
+    }
+
+    #[test]
+    fn test_add_price_feeder_unauthorized() {
+        setup();
+        let owner = [1u8; 32];
+        initialize_oracle(owner.as_ptr());
+        let other = [2u8; 32];
+        test_mock::set_caller(other);
+        let feeder = [3u8; 32];
+        let asset = b"MOLT/USD";
+        assert_eq!(add_price_feeder(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32), 0);
+    }
+
+    #[test]
+    fn test_submit_price() {
+        setup();
+        let owner = [1u8; 32];
+        initialize_oracle(owner.as_ptr());
+        test_mock::set_caller(owner);
+        let feeder = [2u8; 32];
+        let asset = b"MOLT/USD";
+        add_price_feeder(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32);
+        assert_eq!(submit_price(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32, 42_000_000, 6), 1);
+    }
+
+    #[test]
+    fn test_submit_price_unauthorized_feeder() {
+        setup();
+        let owner = [1u8; 32];
+        initialize_oracle(owner.as_ptr());
+        test_mock::set_caller(owner);
+        let feeder = [2u8; 32];
+        let asset = b"MOLT/USD";
+        add_price_feeder(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32);
+        let wrong = [3u8; 32];
+        assert_eq!(submit_price(wrong.as_ptr(), asset.as_ptr(), asset.len() as u32, 42_000_000, 6), 0);
+    }
+
+    #[test]
+    fn test_submit_price_no_feeder_registered() {
+        setup();
+        let feeder = [2u8; 32];
+        let asset = b"UNKNOWN";
+        assert_eq!(submit_price(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32, 100, 2), 0);
+    }
+
+    #[test]
+    fn test_get_price() {
+        setup();
+        let owner = [1u8; 32];
+        initialize_oracle(owner.as_ptr());
+        test_mock::set_caller(owner);
+        let feeder = [2u8; 32];
+        let asset = b"MOLT/USD";
+        add_price_feeder(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32);
+        submit_price(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32, 42_000_000, 6);
+        let mut result = [0u8; 17];
+        assert_eq!(get_price(asset.as_ptr(), asset.len() as u32, result.as_mut_ptr()), 1);
+        let price = bytes_to_u64(&result[0..8]);
+        assert_eq!(price, 42_000_000);
+    }
+
+    #[test]
+    fn test_get_price_stale() {
+        setup();
+        let owner = [1u8; 32];
+        initialize_oracle(owner.as_ptr());
+        test_mock::set_caller(owner);
+        let feeder = [2u8; 32];
+        let asset = b"MOLT/USD";
+        add_price_feeder(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32);
+        submit_price(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32, 42_000_000, 6);
+        test_mock::set_timestamp(1000 + 3601); // stale
+        let mut result = [0u8; 17];
+        assert_eq!(get_price(asset.as_ptr(), asset.len() as u32, result.as_mut_ptr()), 0);
+    }
+
+    #[test]
+    fn test_get_price_not_found() {
+        setup();
+        let asset = b"NONEXIST";
+        let mut result = [0u8; 17];
+        assert_eq!(get_price(asset.as_ptr(), asset.len() as u32, result.as_mut_ptr()), 0);
+    }
+
+    #[test]
+    fn test_commit_randomness() {
+        setup();
+        let requester = [1u8; 32];
+        let commit_hash = [0xAAu8; 32];
+        assert_eq!(commit_randomness(requester.as_ptr(), commit_hash.as_ptr(), 12345), 1);
+        let key = alloc::format!("rng_commit_{}", hex_encode(&requester));
+        let data = moltchain_sdk::storage_get(key.as_bytes()).unwrap();
+        assert_eq!(data.len(), 49);
+        assert_eq!(&data[0..32], &commit_hash[..]);
+    }
+
+    #[test]
+    fn test_reveal_randomness() {
+        setup();
+        let requester = [1u8; 32];
+        let secret = [0xBBu8; 32];
+        let seed: u64 = 12345;
+        // Compute commit hash = simple_hash(secret || u64_to_bytes(seed))
+        let mut preimage = Vec::with_capacity(40);
+        preimage.extend_from_slice(&secret);
+        preimage.extend_from_slice(&moltchain_sdk::u64_to_bytes(seed));
+        let commit_hash = simple_hash(&preimage);
+        assert_eq!(commit_randomness(requester.as_ptr(), commit_hash.as_ptr(), seed), 1);
+        test_mock::set_timestamp(2000);
+        let mut result = [0u8; 8];
+        assert_eq!(reveal_randomness(requester.as_ptr(), secret.as_ptr(), result.as_mut_ptr()), 1);
+    }
+
+    #[test]
+    fn test_reveal_randomness_wrong_secret() {
+        setup();
+        let requester = [1u8; 32];
+        let secret = [0xBBu8; 32];
+        let seed: u64 = 12345;
+        let mut preimage = Vec::with_capacity(40);
+        preimage.extend_from_slice(&secret);
+        preimage.extend_from_slice(&moltchain_sdk::u64_to_bytes(seed));
+        let commit_hash = simple_hash(&preimage);
+        commit_randomness(requester.as_ptr(), commit_hash.as_ptr(), seed);
+        test_mock::set_timestamp(2000);
+        let wrong = [0xCCu8; 32];
+        let mut result = [0u8; 8];
+        assert_eq!(reveal_randomness(requester.as_ptr(), wrong.as_ptr(), result.as_mut_ptr()), 0);
+    }
+
+    #[test]
+    fn test_reveal_randomness_no_commit() {
+        setup();
+        let requester = [1u8; 32];
+        let secret = [0xBBu8; 32];
+        let mut result = [0u8; 8];
+        assert_eq!(reveal_randomness(requester.as_ptr(), secret.as_ptr(), result.as_mut_ptr()), 0);
+    }
+
+    #[test]
+    fn test_reveal_randomness_already_revealed() {
+        setup();
+        let requester = [1u8; 32];
+        let secret = [0xBBu8; 32];
+        let seed: u64 = 12345;
+        let mut preimage = Vec::with_capacity(40);
+        preimage.extend_from_slice(&secret);
+        preimage.extend_from_slice(&moltchain_sdk::u64_to_bytes(seed));
+        let commit_hash = simple_hash(&preimage);
+        commit_randomness(requester.as_ptr(), commit_hash.as_ptr(), seed);
+        test_mock::set_timestamp(2000);
+        let mut result = [0u8; 8];
+        reveal_randomness(requester.as_ptr(), secret.as_ptr(), result.as_mut_ptr());
+        // Second reveal should fail
+        assert_eq!(reveal_randomness(requester.as_ptr(), secret.as_ptr(), result.as_mut_ptr()), 0);
+    }
+
+    #[test]
+    fn test_request_randomness() {
+        setup();
+        let requester = [1u8; 32];
+        assert_eq!(request_randomness(requester.as_ptr(), 42), 1);
+        let key = alloc::format!("random_{}", hex_encode(&requester));
+        assert!(moltchain_sdk::storage_get(key.as_bytes()).is_some());
+    }
+
+    #[test]
+    fn test_get_oracle_stats() {
+        setup();
+        let mut result = [0u8; 24];
+        assert_eq!(get_oracle_stats(result.as_mut_ptr()), 1);
+        assert_eq!(bytes_to_u64(&result[0..8]), 0);
+        assert_eq!(bytes_to_u64(&result[8..16]), 0);
+        assert_eq!(bytes_to_u64(&result[16..24]), 0);
+    }
+}

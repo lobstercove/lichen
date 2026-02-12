@@ -1,0 +1,47 @@
+[Unit]
+Description=MoltChain Validator Node
+Documentation=https://docs.moltchain.io
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=moltchain
+Group=moltchain
+
+# Network is set via /etc/moltchain/env (MOLTCHAIN_NETWORK=testnet|mainnet)
+# Port assignments: testnet → RPC=8899 WS=8900 P2P=7001
+#                   mainnet → RPC=9899 WS=9900 P2P=8001
+ExecStart=/usr/local/bin/moltchain-validator \
+    --network ${MOLTCHAIN_NETWORK} \
+    --listen-addr 0.0.0.0 \
+    --rpc-port ${MOLTCHAIN_RPC_PORT} \
+    --ws-port ${MOLTCHAIN_WS_PORT} \
+    --p2p-port ${MOLTCHAIN_P2P_PORT} \
+    --db-path /var/lib/moltchain/state-${MOLTCHAIN_NETWORK}
+
+Restart=on-failure
+RestartSec=10
+LimitNOFILE=65536
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/moltchain /var/log/moltchain
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+# Environment
+Environment=RUST_LOG=info
+EnvironmentFile=/etc/moltchain/env
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=moltchain-validator
+
+[Install]
+WantedBy=multi-user.target

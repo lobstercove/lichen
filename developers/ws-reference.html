@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket Reference - MoltChain Developer Portal</title>
+    <link rel="stylesheet" href="../shared-base-styles.css">
+    <link rel="stylesheet" href="../shared-theme.css">
+    <link rel="stylesheet" href="css/developers.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+</head>
+<body>
+    <nav class="nav">
+        <div class="nav-container">
+            <div class="nav-logo">
+                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="Molt Dev">
+                <span class="logo-text">Molt Dev</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="index.html">Hub</a></li>
+                <li><a href="getting-started.html">Get Started</a></li>
+                <li><a href="rpc-reference.html" class="active">API</a></li>
+                <li><a href="sdk-js.html">SDK</a></li>
+                <li><a href="contracts.html">Contracts</a></li>
+                <li><a href="cli-reference.html">CLI</a></li>
+                <li><a href="moltyid.html">MoltyID</a></li>
+            </ul>
+            <div class="nav-actions">
+                <div class="search-container">
+                    <input type="text" id="searchInput" class="search-input" placeholder="Search docs... (⌘K)">
+                    <i class="fas fa-search search-icon"></i>
+                </div>
+                <select id="devNetworkSelect" class="network-select">
+                    <option value="mainnet">Mainnet</option>
+                    <option value="testnet">Testnet</option>
+                    <option value="local-testnet" selected>Local Testnet</option>
+                    <option value="local-mainnet">Local Mainnet</option>
+                </select>
+            </div>
+            <button class="nav-toggle" id="navToggle"><span></span><span></span><span></span></button>
+        </div>
+    </nav>
+    <div class="search-overlay" id="searchOverlay">
+        <div class="search-modal">
+            <input type="text" class="search-modal-input" id="searchModalInput" placeholder="Search documentation...">
+            <div class="search-results" id="searchResults"></div>
+        </div>
+    </div>
+
+    <div class="docs-layout">
+        <aside class="docs-sidebar">
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Overview</h3>
+                <a href="#connection" class="sidebar-link active">Connection</a>
+                <a href="#protocol" class="sidebar-link">Protocol Format</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Subscriptions</h3>
+                <a href="#subscribeSlots" class="sidebar-link">subscribeSlots</a>
+                <a href="#subscribeBlocks" class="sidebar-link">subscribeBlocks</a>
+                <a href="#subscribeTransactions" class="sidebar-link">subscribeTransactions</a>
+                <a href="#subscribeAccount" class="sidebar-link">subscribeAccount</a>
+                <a href="#subscribeLogs" class="sidebar-link">subscribeLogs</a>
+                <a href="#subscribeProgramUpdates" class="sidebar-link">subscribeProgramUpdates</a>
+                <a href="#subscribeProgramCalls" class="sidebar-link">subscribeProgramCalls</a>
+                <a href="#subscribeNftMints" class="sidebar-link">subscribeNftMints</a>
+                <a href="#subscribeNftTransfers" class="sidebar-link">subscribeNftTransfers</a>
+                <a href="#subscribeMarketListings" class="sidebar-link">subscribeMarketListings</a>
+                <a href="#subscribeMarketSales" class="sidebar-link">subscribeMarketSales</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Events</h3>
+                <a href="#event-slot" class="sidebar-link">Slot Event</a>
+                <a href="#event-block" class="sidebar-link">Block Event</a>
+                <a href="#event-transaction" class="sidebar-link">Transaction Event</a>
+                <a href="#event-account" class="sidebar-link">AccountChange Event</a>
+                <a href="#event-log" class="sidebar-link">Log Event</a>
+                <a href="#event-market" class="sidebar-link">Market Events</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Best Practices</h3>
+                <a href="#reconnection" class="sidebar-link">Reconnection</a>
+                <a href="#limits" class="sidebar-link">Rate Limits</a>
+            </div>
+        </aside>
+
+        <main class="docs-main">
+            <div class="breadcrumbs">
+                <a href="index.html">Developers</a>
+                <span class="separator">/</span>
+                <a href="rpc-reference.html">API Reference</a>
+                <span class="separator">/</span>
+                <span>WebSocket</span>
+            </div>
+
+            <h1>WebSocket Reference</h1>
+            <p>MoltChain provides a WebSocket server for real-time event streaming. Subscribe to chain events — slots, blocks, transactions, account changes, contract logs, NFT activity, and marketplace events — and receive push notifications as they happen.</p>
+
+            <!-- Connection -->
+            <section id="connection">
+                <h2>Connection</h2>
+                <div class="callout callout-info">
+                    <p><strong>Default endpoint:</strong> <code>ws://localhost:8900</code></p>
+                    <p>The WebSocket server accepts standard WebSocket connections. All messages use JSON-RPC 2.0 format.</p>
+                </div>
+
+                <div class="lang-tabs">
+                    <button class="lang-tab active" data-lang="js">JavaScript</button>
+                    <button class="lang-tab" data-lang="python">Python</button>
+                    <button class="lang-tab" data-lang="curl">wscat</button>
+                </div>
+
+                <div class="lang-tab-content active" data-lang="js">
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">JavaScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                        <code><pre>import { Connection } from '@moltchain/sdk';
+
+const conn = new Connection(
+  'http://localhost:8899',  // RPC
+  'ws://localhost:8900'     // WebSocket
+);
+
+// Subscribe to new slots
+const subId = await conn.onSlot((slot) => {
+  console.log('New slot:', slot);
+});
+
+// Later: unsubscribe
+await conn.offSlot(subId);</pre></code>
+                    </div>
+                </div>
+
+                <div class="lang-tab-content" data-lang="python">
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">Python</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                        <code><pre>import asyncio
+from moltchain import Connection
+
+async def main():
+    conn = Connection(
+        'http://localhost:8899',
+        ws_url='ws://localhost:8900'
+    )
+
+    sub_id = await conn.on_slot(lambda slot: print(f'New slot: {slot}'))
+
+    # Keep running to receive events
+    await asyncio.sleep(60)
+
+    await conn.off_slot(sub_id)
+    await conn.close()
+
+asyncio.run(main())</pre></code>
+                    </div>
+                </div>
+
+                <div class="lang-tab-content" data-lang="curl">
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">wscat</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                        <code><pre># Install: npm install -g wscat
+wscat -c ws://localhost:8900
+
+# Subscribe to slots
+&gt; {"jsonrpc":"2.0","id":1,"method":"subscribeSlots","params":null}
+&lt; {"jsonrpc":"2.0","id":1,"result":1}
+
+# Receive notifications
+&lt; {"jsonrpc":"2.0","method":"subscription","params":{"subscription":1,"result":{"slot":43}}}</pre></code>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Protocol Format -->
+            <section id="protocol">
+                <h2>Protocol Format</h2>
+                <h3>Subscribe Request</h3>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">JSON</span></div>
+                    <code><pre>{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "subscribeSlots",
+  "params": null
+}</pre></code>
+                </div>
+                <h3>Subscribe Response</h3>
+                <p>Returns the subscription ID (integer) used to identify future notifications and to unsubscribe.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">JSON</span></div>
+                    <code><pre>{"jsonrpc": "2.0", "id": 1, "result": 1}</pre></code>
+                </div>
+                <h3>Notification</h3>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">JSON</span></div>
+                    <code><pre>{
+  "jsonrpc": "2.0",
+  "method": "subscription",
+  "params": {
+    "subscription": 1,
+    "result": { /* event-specific payload */ }
+  }
+}</pre></code>
+                </div>
+                <h3>Unsubscribe Request</h3>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">JSON</span></div>
+                    <code><pre>{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "method": "unsubscribeSlots",
+  "params": 1
+}</pre></code>
+                </div>
+            </section>
+
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <!-- SUBSCRIPTIONS -->
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <h2>Subscription Methods</h2>
+
+            <!-- subscribeSlots -->
+            <div class="method-card" id="subscribeSlots">
+                <h3 class="method-name">subscribeSlots / unsubscribeSlots</h3>
+                <p class="method-desc">Receive a notification each time a new slot is produced.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p>None</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Notification Payload</h4>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">JSON</span></div>
+                        <code><pre>{ "slot": 43 }</pre></code>
+                    </div>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">SDK Usage</h4>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">JavaScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                        <code><pre>const subId = await conn.onSlot((slot) => {
+  console.log('Slot:', slot);
+});
+await conn.offSlot(subId);</pre></code>
+                    </div>
+                </div>
+            </div>
+
+            <!-- subscribeBlocks -->
+            <div class="method-card" id="subscribeBlocks">
+                <h3 class="method-name">subscribeBlocks / unsubscribeBlocks</h3>
+                <p class="method-desc">Receive a notification for every new block with header summary.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p>None</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Notification Payload</h4>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">JSON</span></div>
+                        <code><pre>{
+  "slot": 43,
+  "hash": "a1b2c3...",
+  "parent_hash": "d4e5f6...",
+  "transactions": 5,
+  "timestamp": 1738800000
+}</pre></code>
+                    </div>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">SDK Usage</h4>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">JavaScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                        <code><pre>const subId = await conn.onBlock((block) => {
+  console.log(`Block #${block.slot} — ${block.transactions} txs`);
+});
+await conn.offBlock(subId);</pre></code>
+                    </div>
+                </div>
+            </div>
+
+            <!-- subscribeTransactions -->
+            <div class="method-card" id="subscribeTransactions">
+                <h3 class="method-name">subscribeTransactions / unsubscribeTransactions</h3>
+                <p class="method-desc">Stream every confirmed transaction in real-time.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p>None</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Notification Payload</h4>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">JSON</span></div>
+                        <code><pre>{
+  "signatures": ["a1b2c3..."],
+  "instructions": 2,
+  "recent_blockhash": "d4e5f6..."
+}</pre></code>
+                    </div>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">SDK Usage</h4>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">JavaScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                        <code><pre>const subId = await conn.onTransaction((tx) => {
+  console.log('TX:', tx.signatures[0]);
+});
+await conn.offTransaction(subId);</pre></code>
+                    </div>
+                </div>
+            </div>
+
+            <!-- subscribeAccount -->
+            <div class="method-card" id="subscribeAccount">
+                <h3 class="method-name">subscribeAccount / unsubscribeAccount</h3>
+                <p class="method-desc">Receive a notification whenever an account's balance changes.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead><tr><th>Name</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <tbody>
+                            <tr><td>pubkey</td><td><span class="param-type">string</span></td><td>Yes</td><td>Base58-encoded public key to watch</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Notification Payload</h4>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">JSON</span></div>
+                        <code><pre>{
+  "pubkey": "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU",
+  "balance": 5000000000,
+  "molt": 5
+}</pre></code>
+                    </div>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">SDK Usage</h4>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">JavaScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                        <code><pre>const pubkey = new PublicKey('7xKXtg2CW87d...');
+const subId = await conn.onAccountChange(pubkey, (account) => {
+  console.log('New balance:', account.molt, 'MOLT');
+});
+await conn.offAccountChange(subId);</pre></code>
+                    </div>
+                </div>
+            </div>
+
+            <!-- subscribeLogs -->
+            <div class="method-card" id="subscribeLogs">
+                <h3 class="method-name">subscribeLogs / unsubscribeLogs</h3>
+                <p class="method-desc">Stream contract execution logs. Optionally filter by a specific contract address; pass <code>null</code> for all contracts.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead><tr><th>Name</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <tbody>
+                            <tr><td>contractId</td><td><span class="param-type">string | null</span></td><td>No</td><td>Contract pubkey to filter, or null for all</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Notification Payload</h4>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">JSON</span></div>
+                        <code><pre>{
+  "contract": "ContractPubkey...",
+  "message": "Transfer completed: 100 MOLT"
+}</pre></code>
+                    </div>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">SDK Usage</h4>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">JavaScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                        <code><pre>// All logs
+const subId = await conn.onLogs((log) => {
+  console.log(`[${log.contract}] ${log.message}`);
+});
+
+// Single contract
+const contractKey = new PublicKey('ContractPub...');
+const subId2 = await conn.onLogs((log) => {
+  console.log(log.message);
+}, contractKey);</pre></code>
+                    </div>
+                </div>
+            </div>
+
+            <!-- subscribeProgramUpdates -->
+            <div class="method-card" id="subscribeProgramUpdates">
+                <h3 class="method-name">subscribeProgramUpdates / unsubscribeProgramUpdates</h3>
+                <p class="method-desc">Receive notifications when programs are deployed or upgraded.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p>None</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Notification Payload</h4>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">JSON</span></div>
+                        <code><pre>{ "program": "ProgramPubkey...", "kind": "deploy" }</pre></code>
+                    </div>
+                </div>
+            </div>
+
+            <!-- subscribeProgramCalls -->
+            <div class="method-card" id="subscribeProgramCalls">
+                <h3 class="method-name">subscribeProgramCalls / unsubscribeProgramCalls</h3>
+                <p class="method-desc">Stream program invocations. Optionally filter by a specific program.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead><tr><th>Name</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <tbody>
+                            <tr><td>programId</td><td><span class="param-type">string | null</span></td><td>No</td><td>Program pubkey to filter, or null for all</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Notification Payload</h4>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">JSON</span></div>
+                        <code><pre>{ "program": "ProgramPubkey..." }</pre></code>
+                    </div>
+                </div>
+            </div>
+
+            <!-- subscribeNftMints -->
+            <div class="method-card" id="subscribeNftMints">
+                <h3 class="method-name">subscribeNftMints / unsubscribeNftMints</h3>
+                <p class="method-desc">Receive a notification each time an NFT is minted. Optionally filter by collection.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead><tr><th>Name</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <tbody>
+                            <tr><td>collectionId</td><td><span class="param-type">string | null</span></td><td>No</td><td>Collection pubkey to filter, or null for all</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Notification Payload</h4>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">JSON</span></div>
+                        <code><pre>{ "collection": "CollectionPubkey..." }</pre></code>
+                    </div>
+                </div>
+            </div>
+
+            <!-- subscribeNftTransfers -->
+            <div class="method-card" id="subscribeNftTransfers">
+                <h3 class="method-name">subscribeNftTransfers / unsubscribeNftTransfers</h3>
+                <p class="method-desc">Stream NFT transfer events. Optionally filter by collection.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table">
+                        <thead><tr><th>Name</th><th>Type</th><th>Required</th><th>Description</th></tr></thead>
+                        <tbody>
+                            <tr><td>collectionId</td><td><span class="param-type">string | null</span></td><td>No</td><td>Collection pubkey to filter, or null for all</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Notification Payload</h4>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">JSON</span></div>
+                        <code><pre>{ "collection": "CollectionPubkey..." }</pre></code>
+                    </div>
+                </div>
+            </div>
+
+            <!-- subscribeMarketListings -->
+            <div class="method-card" id="subscribeMarketListings">
+                <h3 class="method-name">subscribeMarketListings / unsubscribeMarketListings</h3>
+                <p class="method-desc">Receive a notification each time an item is listed on the marketplace.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p>None</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Notification Payload</h4>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">JSON</span></div>
+                        <code><pre>{
+  "event": "MarketListing",
+  "slot": 100,
+  "timestamp": 1738800000,
+  "kind": "list",
+  "program": "ProgramPub...",
+  "collection": "CollectionPub...",
+  "token_id": 42,
+  "price": 5000000000,
+  "price_molt": 5.0,
+  "seller": "SellerPub...",
+  "tx_signature": "abc123..."
+}</pre></code>
+                    </div>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">SDK Usage</h4>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">JavaScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                        <code><pre>const subId = await conn.onMarketListings((event) => {
+  console.log(`Listed: token #${event.token_id} for ${event.price_molt} MOLT`);
+});
+await conn.offMarketListings(subId);</pre></code>
+                    </div>
+                </div>
+            </div>
+
+            <!-- subscribeMarketSales -->
+            <div class="method-card" id="subscribeMarketSales">
+                <h3 class="method-name">subscribeMarketSales / unsubscribeMarketSales</h3>
+                <p class="method-desc">Receive a notification each time a marketplace sale is completed.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p>None</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Notification Payload</h4>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">JSON</span></div>
+                        <code><pre>{
+  "event": "MarketSale",
+  "slot": 101,
+  "timestamp": 1738800400,
+  "kind": "sale",
+  "program": "ProgramPub...",
+  "collection": "CollectionPub...",
+  "token_id": 42,
+  "price": 5000000000,
+  "price_molt": 5.0,
+  "seller": "SellerPub...",
+  "buyer": "BuyerPub...",
+  "tx_signature": "def456..."
+}</pre></code>
+                    </div>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">SDK Usage</h4>
+                    <div class="code-block">
+                        <div class="code-block-header"><span class="code-lang">JavaScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                        <code><pre>const subId = await conn.onMarketSales((event) => {
+  console.log(`Sold: token #${event.token_id} for ${event.price_molt} MOLT`);
+});
+await conn.offMarketSales(subId);</pre></code>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <!-- EVENT PAYLOADS -->
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <h2>Event Payloads</h2>
+
+            <div class="method-card" id="event-slot">
+                <h3 class="method-name">Slot Event</h3>
+                <p class="method-desc">Emitted on each new slot.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">JSON</span></div>
+                    <code><pre>{ "slot": 43 }</pre></code>
+                </div>
+            </div>
+
+            <div class="method-card" id="event-block">
+                <h3 class="method-name">Block Event</h3>
+                <p class="method-desc">Emitted on each new block.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">JSON</span></div>
+                    <code><pre>{
+  "slot": 43,
+  "hash": "a1b2c3d4e5f6...",
+  "parent_hash": "f6e5d4c3b2a1...",
+  "transactions": 5,
+  "timestamp": 1738800000
+}</pre></code>
+                </div>
+            </div>
+
+            <div class="method-card" id="event-transaction">
+                <h3 class="method-name">Transaction Event</h3>
+                <p class="method-desc">Emitted for each confirmed transaction.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">JSON</span></div>
+                    <code><pre>{
+  "signatures": ["a1b2c3d4..."],
+  "instructions": 2,
+  "recent_blockhash": "d4e5f6..."
+}</pre></code>
+                </div>
+            </div>
+
+            <div class="method-card" id="event-account">
+                <h3 class="method-name">AccountChange Event</h3>
+                <p class="method-desc">Emitted when a watched account's balance changes.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">JSON</span></div>
+                    <code><pre>{
+  "pubkey": "7xKXtg2CW87d...",
+  "balance": 5000000000,
+  "molt": 5
+}</pre></code>
+                </div>
+            </div>
+
+            <div class="method-card" id="event-log">
+                <h3 class="method-name">Log Event</h3>
+                <p class="method-desc">Emitted when a contract emits a log message.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">JSON</span></div>
+                    <code><pre>{
+  "contract": "ContractPubkey...",
+  "message": "Transfer completed: 100 MOLT"
+}</pre></code>
+                </div>
+            </div>
+
+            <div class="method-card" id="event-market">
+                <h3 class="method-name">MarketListing / MarketSale Event</h3>
+                <p class="method-desc">Emitted for marketplace activity. Both events share the same structure with an <code>event</code> discriminator field.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">JSON</span></div>
+                    <code><pre>{
+  "event": "MarketListing" | "MarketSale",
+  "slot": 100,
+  "timestamp": 1738800000,
+  "kind": "list" | "sale",
+  "program": "ProgramPub...",
+  "collection": "CollectionPub...",
+  "token": "TokenPub...",
+  "token_id": 42,
+  "price": 5000000000,
+  "price_molt": 5.0,
+  "seller": "SellerPub...",
+  "buyer": "BuyerPub...",
+  "function": "buyNow",
+  "tx_signature": "abc123..."
+}</pre></code>
+                </div>
+            </div>
+
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <!-- BEST PRACTICES -->
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <h2>Best Practices</h2>
+
+            <section id="reconnection">
+                <h3>Reconnection Handling</h3>
+                <p>WebSocket connections can drop due to network issues, server restarts, or idle timeouts. Implement automatic reconnection with exponential backoff:</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">JavaScript</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <code><pre>class ResilientConnection {
+  constructor(rpcUrl, wsUrl) {
+    this.rpcUrl = rpcUrl;
+    this.wsUrl = wsUrl;
+    this.conn = null;
+    this.subscriptions = [];
+    this.retryDelay = 1000;
+  }
+
+  async connect() {
+    this.conn = new Connection(this.rpcUrl, this.wsUrl);
+    // Re-subscribe after reconnection
+    for (const sub of this.subscriptions) {
+      await sub.resubscribe(this.conn);
+    }
+    this.retryDelay = 1000; // reset on success
+  }
+
+  async reconnect() {
+    console.log(`Reconnecting in ${this.retryDelay}ms...`);
+    await new Promise(r => setTimeout(r, this.retryDelay));
+    this.retryDelay = Math.min(this.retryDelay * 2, 30000);
+    try {
+      await this.connect();
+    } catch (e) {
+      await this.reconnect();
+    }
+  }
+}</pre></code>
+                </div>
+                <div class="callout callout-tip">
+                    <p><strong>Tip:</strong> Store subscription parameters so you can restore them after reconnection. The SDK's <code>Connection</code> class will automatically reconnect the WebSocket when you call an <code>on*</code> method.</p>
+                </div>
+            </section>
+
+            <section id="limits">
+                <h3>Rate Limits &amp; Subscription Limits</h3>
+                <div class="callout callout-warning">
+                    <p><strong>Max subscriptions per connection:</strong> 100</p>
+                    <p>If you exceed this limit, the server returns error code <code>-32005</code>: <em>"Subscription limit reached"</em>.</p>
+                </div>
+                <p>Best practices:</p>
+                <ul>
+                    <li>Unsubscribe from channels you no longer need.</li>
+                    <li>Use filtered subscriptions (e.g., <code>subscribeLogs</code> with a contract ID) instead of subscribing to all events and filtering client-side.</li>
+                    <li>For high-throughput scenarios, consider using multiple WebSocket connections and distributing subscriptions across them.</li>
+                    <li>The broadcast channel has a buffer of 1000 events. If your consumer falls behind, events may be dropped.</li>
+                </ul>
+            </section>
+        </main>
+    </div>
+
+    <script>
+    // Lang tab switching
+    document.querySelectorAll('.lang-tab').forEach(tab => {
+        tab.addEventListener('click', () => {
+            const lang = tab.dataset.lang;
+            const parent = tab.closest('.docs-main') || document;
+            parent.querySelectorAll('.lang-tab').forEach(t => t.classList.remove('active'));
+            parent.querySelectorAll('.lang-tab-content').forEach(c => c.classList.remove('active'));
+            parent.querySelectorAll(`.lang-tab[data-lang="${lang}"]`).forEach(t => t.classList.add('active'));
+            parent.querySelectorAll(`.lang-tab-content[data-lang="${lang}"]`).forEach(c => c.classList.add('active'));
+        });
+    });
+    // Sidebar active link tracking
+    document.querySelectorAll('.sidebar-link').forEach(link => {
+        link.addEventListener('click', () => {
+            document.querySelectorAll('.sidebar-link').forEach(l => l.classList.remove('active'));
+            link.classList.add('active');
+        });
+    });
+    // Search shortcut
+    document.addEventListener('keydown', (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+            e.preventDefault();
+            document.getElementById('searchOverlay').classList.toggle('active');
+            document.getElementById('searchModalInput').focus();
+        }
+        if (e.key === 'Escape') document.getElementById('searchOverlay').classList.remove('active');
+    });
+    document.getElementById('searchOverlay')?.addEventListener('click', (e) => {
+        if (e.target === e.currentTarget) e.currentTarget.classList.remove('active');
+    });
+    document.getElementById('navToggle')?.addEventListener('click', () => {
+        document.querySelector('.nav-menu')?.classList.toggle('active');
+    });
+    document.querySelectorAll('.code-copy-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const code = btn.closest('.code-block').querySelector('code').textContent;
+            navigator.clipboard.writeText(code);
+            btn.innerHTML = '<i class="fas fa-check"></i>';
+            setTimeout(() => btn.innerHTML = '<i class="fas fa-copy"></i>', 1500);
+        });
+    });
+    </script>
+</body>
+</html>

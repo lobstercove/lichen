@@ -1,0 +1,137 @@
+# ============================================================
+# MoltChain — Public Open-Source Repository
+# ============================================================
+# This .gitignore is tuned for a PUBLIC repo.
+# Anything security-sensitive or machine-local MUST be listed.
+# ============================================================
+
+# ── Rust build artifacts ────────────────────────────────────
+/target/
+**/target/
+Cargo.lock
+**/*.rs.bk
+*.pdb
+**/incremental/
+**/.fingerprint/
+**/deps/
+
+# ── RocksDB / validator state (machine-local) ──────────────
+/data/
+data/
+data-*/
+state-*/
+/tmp/moltchain-*
+/tmp/validator-*
+**/*.db
+**/*.db-shm
+**/*.db-wal
+
+# ── Security-sensitive runtime files ────────────────────────
+# Keypairs, genesis secrets, network topology, airdrop lists
+keypairs/
+genesis.json
+genesis-wallet.json
+genesis-keys/
+validator-*.json
+signer-keypair.json
+known-peers.json
+seeds.json
+config.toml
+airdrops.json
+~/.moltchain/
+
+# ── Environment / secrets ──────────────────────────────────
+.env
+.env.*
+*.secret
+*.key
+*.pem
+
+# ── Node / JS ──────────────────────────────────────────────
+node_modules/
+**/node_modules/
+package-lock.json
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ── Python ─────────────────────────────────────────────────
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# ── IDEs and editors ──────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.iml
+
+# ── Logs & temp ────────────────────────────────────────────
+*.log
+logs/
+*.tmp
+.temp/
+temp/
+tmp/
+
+# ── Backups ────────────────────────────────────────────────
+*.bak
+*.backup
+*.old
+*.orig
+*.md.backup
+*.md.old
+
+# ── Test coverage ──────────────────────────────────────────
+coverage/
+*.lcov
+
+# ── Contract build artifacts (keep release WASMs) ─────────
+contracts/*/target/debug/
+contracts/*/target/rls/
+
+# ── Internal-only dev docs (not for public) ────────────────
+internal-docs/
+FIX_PLAN.md
+FIX_PLAN_V2.md
+REPOSITORY_STATUS_FEB8.md
+PRODUCTION_AUDIT_COMPLETE.md
+DEBUGGING_GUIDE.md
+validator_genesis_section.txt
+Cargo.toml.integration
+
+# ── Temp test artefacts ───────────────────────────────────
+test1
+test2
+test3
+playground/test-*
+
+# ── Archives ───────────────────────────────────────────────
+archive/
+docs/archive/
+
+# ── Browser automation data ────────────────────────────────
+browser/
+moltchain/

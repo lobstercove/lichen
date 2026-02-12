@@ -1,0 +1,2390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CLI Reference - MoltChain Developer Portal</title>
+    <link rel="stylesheet" href="../shared-base-styles.css">
+    <link rel="stylesheet" href="../shared-theme.css">
+    <link rel="stylesheet" href="css/developers.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+    <style>
+        .nav-menu a.active { color: var(--primary); }
+        .search-input { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; color: #fff; padding: 0.5rem 0.75rem 0.5rem 2rem; font-size: 0.85rem; width: 180px; font-family: inherit; }
+        .search-input:focus { outline: none; border-color: var(--primary); }
+        .search-container { position: relative; }
+        .search-icon { position: absolute; left: 0.65rem; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 0.8rem; pointer-events: none; }
+        .network-select { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); padding: 0.5rem 0.75rem; font-size: 0.85rem; font-weight: 600; cursor: pointer; }
+        .network-select:focus { outline: none; border-color: var(--primary); }
+        .nav-actions { display: flex; align-items: center; gap: 1rem; }
+        .flags-table { width: 100%; border-collapse: collapse; margin: 1rem 0 1.5rem; font-size: 0.9rem; }
+        .flags-table th { text-align: left; padding: 0.6rem 0.75rem; border-bottom: 2px solid var(--border); color: var(--text-muted); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+        .flags-table td { padding: 0.55rem 0.75rem; border-bottom: 1px solid var(--border); }
+        .flags-table td code { background: rgba(255,255,255,0.06); padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.85em; }
+        .flags-table tr:last-child td { border-bottom: none; }
+        .cmd-section { margin-bottom: 3rem; padding-bottom: 2rem; border-bottom: 1px solid var(--border); }
+        .cmd-section:last-child { border-bottom: none; }
+        .global-flag { color: var(--text-muted); font-style: italic; }
+    </style>
+</head>
+<body>
+    <nav class="nav">
+        <div class="nav-container">
+            <div class="nav-logo">
+                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="Molt Dev">
+                <span class="logo-text">Molt Dev</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="index.html">Hub</a></li>
+                <li><a href="getting-started.html">Get Started</a></li>
+                <li><a href="rpc-reference.html">API</a></li>
+                <li><a href="sdk-js.html">SDK</a></li>
+                <li><a href="contracts.html">Contracts</a></li>
+                <li><a href="cli-reference.html" class="active">CLI</a></li>
+                <li><a href="moltyid.html">MoltyID</a></li>
+            </ul>
+            <div class="nav-actions">
+                <div class="search-container">
+                    <input type="text" id="searchInput" class="search-input" placeholder="Search docs... (⌘K)">
+                    <i class="fas fa-search search-icon"></i>
+                </div>
+                <select id="devNetworkSelect" class="network-select">
+                    <option value="mainnet">Mainnet</option>
+                    <option value="testnet">Testnet</option>
+                    <option value="local-testnet" selected>Local Testnet</option>
+                    <option value="local-mainnet">Local Mainnet</option>
+                </select>
+            </div>
+            <button class="nav-toggle" id="navToggle">
+                <span></span><span></span><span></span>
+            </button>
+        </div>
+    </nav>
+
+    <!-- SEARCH OVERLAY -->
+    <div class="search-overlay" id="searchOverlay">
+        <div class="search-modal">
+            <input type="text" class="search-modal-input" id="searchModalInput" placeholder="Search documentation...">
+            <div class="search-results" id="searchResults"></div>
+        </div>
+    </div>
+
+    <!-- SIDEBAR TOGGLE (mobile) -->
+    <button class="sidebar-toggle" id="sidebarToggle"><i class="fas fa-bars"></i></button>
+    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+
+    <div class="docs-layout">
+        <aside class="docs-sidebar">
+            <div class="sidebar-section">
+                <div class="sidebar-heading">Global Options</div>
+                <a href="#global-options" class="sidebar-link">--rpc-url</a>
+            </div>
+            <div class="sidebar-divider"></div>
+            <div class="sidebar-section">
+                <div class="sidebar-heading">Wallet</div>
+                <a href="#wallet-create" class="sidebar-link">wallet create</a>
+                <a href="#wallet-import" class="sidebar-link">wallet import</a>
+                <a href="#wallet-list" class="sidebar-link">wallet list</a>
+                <a href="#wallet-show" class="sidebar-link">wallet show</a>
+                <a href="#wallet-balance" class="sidebar-link">wallet balance</a>
+                <a href="#wallet-remove" class="sidebar-link">wallet remove</a>
+            </div>
+            <div class="sidebar-divider"></div>
+            <div class="sidebar-section">
+                <div class="sidebar-heading">Identity</div>
+                <a href="#identity-new" class="sidebar-link">identity new</a>
+                <a href="#identity-show" class="sidebar-link">identity show</a>
+            </div>
+            <div class="sidebar-divider"></div>
+            <div class="sidebar-section">
+                <div class="sidebar-heading">Validator</div>
+                <a href="#validator-info" class="sidebar-link">validator info</a>
+                <a href="#validator-performance" class="sidebar-link">validator performance</a>
+                <a href="#validator-list" class="sidebar-link">validator list</a>
+            </div>
+            <div class="sidebar-divider"></div>
+            <div class="sidebar-section">
+                <div class="sidebar-heading">Staking</div>
+                <a href="#stake-add" class="sidebar-link">stake add</a>
+                <a href="#stake-remove" class="sidebar-link">stake remove</a>
+                <a href="#stake-status" class="sidebar-link">stake status</a>
+                <a href="#stake-rewards" class="sidebar-link">stake rewards</a>
+            </div>
+            <div class="sidebar-divider"></div>
+            <div class="sidebar-section">
+                <div class="sidebar-heading">Contracts</div>
+                <a href="#deploy" class="sidebar-link">deploy</a>
+                <a href="#call" class="sidebar-link">call</a>
+                <a href="#contract-info" class="sidebar-link">contract info</a>
+                <a href="#contract-logs" class="sidebar-link">contract logs</a>
+                <a href="#contract-list" class="sidebar-link">contract list</a>
+            </div>
+            <div class="sidebar-divider"></div>
+            <div class="sidebar-section">
+                <div class="sidebar-heading">Query</div>
+                <a href="#balance" class="sidebar-link">balance</a>
+                <a href="#block" class="sidebar-link">block</a>
+                <a href="#latest" class="sidebar-link">latest</a>
+                <a href="#slot" class="sidebar-link">slot</a>
+                <a href="#blockhash" class="sidebar-link">blockhash</a>
+                <a href="#burned" class="sidebar-link">burned</a>
+                <a href="#validators" class="sidebar-link">validators</a>
+                <a href="#status" class="sidebar-link">status</a>
+                <a href="#metrics" class="sidebar-link">metrics</a>
+                <a href="#account-info" class="sidebar-link">account info</a>
+                <a href="#account-history" class="sidebar-link">account history</a>
+            </div>
+            <div class="sidebar-divider"></div>
+            <div class="sidebar-section">
+                <div class="sidebar-heading">Network</div>
+                <a href="#network-status" class="sidebar-link">network status</a>
+                <a href="#network-peers" class="sidebar-link">network peers</a>
+                <a href="#network-info" class="sidebar-link">network info</a>
+            </div>
+            <div class="sidebar-divider"></div>
+            <div class="sidebar-section">
+                <div class="sidebar-heading">Token</div>
+                <a href="#token-create" class="sidebar-link">token create</a>
+                <a href="#token-info" class="sidebar-link">token info</a>
+                <a href="#token-mint" class="sidebar-link">token mint</a>
+                <a href="#token-send" class="sidebar-link">token send</a>
+                <a href="#token-balance" class="sidebar-link">token balance</a>
+                <a href="#token-list" class="sidebar-link">token list</a>
+            </div>
+            <div class="sidebar-divider"></div>
+            <div class="sidebar-section">
+                <div class="sidebar-heading">Governance</div>
+                <a href="#gov-propose" class="sidebar-link">gov propose</a>
+                <a href="#gov-vote" class="sidebar-link">gov vote</a>
+                <a href="#gov-list" class="sidebar-link">gov list</a>
+                <a href="#gov-info" class="sidebar-link">gov info</a>
+                <a href="#gov-execute" class="sidebar-link">gov execute</a>
+                <a href="#gov-veto" class="sidebar-link">gov veto</a>
+            </div>
+        </aside>
+
+        <main class="docs-main">
+            <!-- BREADCRUMBS -->
+            <div class="breadcrumbs">
+                <a href="index.html">Dev Hub</a>
+                <span class="separator">›</span>
+                <span class="current">CLI Reference</span>
+            </div>
+
+            <h1>CLI Reference</h1>
+            <p>Complete reference for the <code>molt</code> command-line interface. The CLI is the primary tool for interacting with the MoltChain network — managing wallets, deploying contracts, querying state, and operating validators.</p>
+
+            <div class="callout callout-info">
+                <div class="callout-title"><i class="fas fa-info-circle"></i> Installation</div>
+                Install with <code>cargo install moltchain-cli</code> or build from source. See the <a href="getting-started.html#install-cli">Getting Started</a> guide for full setup instructions.
+            </div>
+
+            <!-- ========== GLOBAL OPTIONS ========== -->
+            <h2 id="global-options">Global Options</h2>
+
+            <p>These flags apply to every <code>molt</code> command.</p>
+
+            <table class="flags-table">
+                <thead>
+                    <tr><th>Flag</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>--rpc-url</code></td>
+                        <td>string</td>
+                        <td><code>http://localhost:8899</code></td>
+                        <td>RPC server URL to connect to</td>
+                    </tr>
+                    <tr>
+                        <td><code>--help</code></td>
+                        <td>flag</td>
+                        <td>—</td>
+                        <td>Print help information</td>
+                    </tr>
+                    <tr>
+                        <td><code>--version</code></td>
+                        <td>flag</td>
+                        <td>—</td>
+                        <td>Print version information</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>$ molt --rpc-url https://testnet-rpc.moltchain.io balance
+$ molt --version
+molt-cli 0.9.2 (moltchain)</code></pre>
+            </div>
+
+            <!-- ================================================================ -->
+            <!--                          WALLET                                  -->
+            <!-- ================================================================ -->
+            <h2>Wallet Commands</h2>
+            <p>Multi-wallet management — create, import, inspect, and remove wallets. Wallet keypairs are stored in <code>~/.moltchain/wallets/</code>.</p>
+
+            <!-- wallet create -->
+            <div class="cmd-section" id="wallet-create">
+                <h3><code>molt wallet create</code></h3>
+                <p>Create a new wallet with a fresh Ed25519 keypair. If no name is given, an auto-incrementing name (<code>wallet-1</code>, <code>wallet-2</code>, …) is used.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt wallet create [name]</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Argument</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>name</code></td>
+                            <td>string</td>
+                            <td>auto</td>
+                            <td>Optional wallet name (must be unique)</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt wallet create my-agent
+
+🦞 Created wallet 'my-agent'
+📍 Address:  Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab
+💾 Keypair:  ~/.moltchain/wallets/my-agent.json
+
+✓ Done! Fund with: molt airdrop 100</code></pre>
+                </div>
+            </div>
+
+            <!-- wallet import -->
+            <div class="cmd-section" id="wallet-import">
+                <h3><code>molt wallet import</code></h3>
+                <p>Import an existing keypair file as a named wallet.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt wallet import &lt;name&gt; --keypair &lt;path&gt;</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Flag / Arg</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>name</code></td>
+                            <td>string</td>
+                            <td><em>required</em></td>
+                            <td>Wallet name to assign</td>
+                        </tr>
+                        <tr>
+                            <td><code>--keypair, -k</code></td>
+                            <td>path</td>
+                            <td><em>required</em></td>
+                            <td>Path to the keypair JSON file</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt wallet import treasury --keypair ~/keys/treasury.json
+
+🦞 Imported wallet 'treasury'
+📍 Address: Mo1tTreasury12345abcdefghijklmnopqrs
+💾 Stored in: ~/.moltchain/wallets/treasury.json</code></pre>
+                </div>
+            </div>
+
+            <!-- wallet list -->
+            <div class="cmd-section" id="wallet-list">
+                <h3><code>molt wallet list</code></h3>
+                <p>List all wallets stored locally with their addresses.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt wallet list</code></pre>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt wallet list
+
+🦞 Wallets
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  my-agent    Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ...
+  treasury    Mo1tTreasury12345abcdefghijklmno...
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Total: 2 wallets</code></pre>
+                </div>
+            </div>
+
+            <!-- wallet show -->
+            <div class="cmd-section" id="wallet-show">
+                <h3><code>molt wallet show</code></h3>
+                <p>Display detailed information for a specific wallet, including its full address and keypair file path.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt wallet show &lt;name&gt;</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Argument</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>name</code></td>
+                            <td>string</td>
+                            <td><em>required</em></td>
+                            <td>Wallet name</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt wallet show my-agent
+
+🦞 Wallet: my-agent
+📍 Address:  Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab
+📄 Keypair:  ~/.moltchain/wallets/my-agent.json
+📅 Created:  2026-02-10 14:32:01 UTC</code></pre>
+                </div>
+            </div>
+
+            <!-- wallet balance -->
+            <div class="cmd-section" id="wallet-balance">
+                <h3><code>molt wallet balance</code></h3>
+                <p>Query the on-chain balance for a named wallet, broken down by spendable, staked, and locked amounts.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt wallet balance &lt;name&gt;</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Argument</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>name</code></td>
+                            <td>string</td>
+                            <td><em>required</em></td>
+                            <td>Wallet name</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt wallet balance my-agent
+
+🦞 Wallet: my-agent
+📍 Address: Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab
+─────────────────────────────────────────────────────────
+💰 Total:       100.0000 MOLT
+   Spendable:   90.0000 MOLT
+   Staked:       10.0000 MOLT
+   Locked:        0.0000 MOLT
+─────────────────────────────────────────────────────────</code></pre>
+                </div>
+            </div>
+
+            <!-- wallet remove -->
+            <div class="cmd-section" id="wallet-remove">
+                <h3><code>molt wallet remove</code></h3>
+                <p>Remove a wallet from local storage. This deletes the keypair file — make sure you have a backup.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt wallet remove &lt;name&gt;</code></pre>
+                </div>
+
+                <div class="callout callout-warning">
+                    <div class="callout-title"><i class="fas fa-exclamation-triangle"></i> Warning</div>
+                    This permanently deletes the local keypair. If you don't have the mnemonic or a separate backup, the funds in this wallet will be unrecoverable.
+                </div>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt wallet remove old-wallet
+
+⚠️  Removing wallet 'old-wallet' — this cannot be undone.
+✓ Wallet removed.</code></pre>
+                </div>
+            </div>
+
+            <!-- ================================================================ -->
+            <!--                          IDENTITY                                -->
+            <!-- ================================================================ -->
+            <h2>Identity Commands</h2>
+            <p>Manage your on-chain identity. Your identity is based on an Ed25519 keypair stored at <code>~/.moltchain/keypairs/id.json</code> by default.</p>
+
+            <!-- identity new -->
+            <div class="cmd-section" id="identity-new">
+                <h3><code>molt identity new</code></h3>
+                <p>Generate a new identity keypair. This creates your public key (MoltChain address) and a corresponding EVM-compatible address.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt identity new [--output &lt;path&gt;]</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Flag</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>--output, -o</code></td>
+                            <td>path</td>
+                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td>Output file for the keypair</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt identity new
+
+🦞 Generated new identity!
+📍 Pubkey:      Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab
+🔐 EVM Address: 0x7a3b...9f2e
+💾 Saved to:    ~/.moltchain/keypairs/id.json
+
+💡 Get test tokens: molt airdrop 100</code></pre>
+                </div>
+
+                <div class="callout callout-tip">
+                    <div class="callout-title"><i class="fas fa-lightbulb"></i> Keypair Encryption</div>
+                    Set the <code>MOLTCHAIN_KEYPAIR_PASSWORD</code> environment variable before generating to encrypt the keypair file at rest with <strong>AES-256-GCM</strong> authenticated encryption (12-byte random nonce, password-derived key). Legacy keypairs (v1) are auto-detected and upgraded on next use.
+                </div>
+            </div>
+
+            <!-- identity show -->
+            <div class="cmd-section" id="identity-show">
+                <h3><code>molt identity show</code></h3>
+                <p>Display your MoltChain identity — public key, EVM address, and keypair file location.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt identity show [--keypair &lt;path&gt;]</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Flag</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>--keypair, -k</code></td>
+                            <td>path</td>
+                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td>Keypair file to read</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt identity show
+
+🦞 Your MoltChain Identity
+📍 Pubkey:      Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab
+🔐 EVM Address: 0x7a3b...9f2e
+📄 Keypair:     ~/.moltchain/keypairs/id.json</code></pre>
+                </div>
+            </div>
+
+            <!-- ================================================================ -->
+            <!--                          VALIDATOR                               -->
+            <!-- ================================================================ -->
+            <h2>Validator Commands</h2>
+            <p>Inspect validator status, performance, and the active validator set.</p>
+
+            <!-- validator info -->
+            <div class="cmd-section" id="validator-info">
+                <h3><code>molt validator info</code></h3>
+                <p>Show detailed information for a specific validator: stake, reputation, activity status, and blocks produced.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt validator info &lt;address&gt;</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Argument</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>address</code></td>
+                            <td>Base58</td>
+                            <td><em>required</em></td>
+                            <td>Validator public key</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt validator info Mo1tVa1iDatoR12345abcdef
+
+🦞 Validator Information
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📍 Pubkey:          Mo1tVa1iDatoR12345abcdef
+💰 Stake:           50000.0000 MOLT
+⭐ Reputation:      98
+📊 Status:          Active
+📦 Blocks produced: 12,847</code></pre>
+                </div>
+            </div>
+
+            <!-- validator performance -->
+            <div class="cmd-section" id="validator-performance">
+                <h3><code>molt validator performance</code></h3>
+                <p>Show epoch-level performance metrics for a validator: block production rate, average block time, and uptime.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt validator performance &lt;address&gt;</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Argument</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>address</code></td>
+                            <td>Base58</td>
+                            <td><em>required</em></td>
+                            <td>Validator public key</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt validator performance Mo1tVa1iDatoR12345abcdef
+
+🦞 Validator Performance
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📍 Validator: Mo1tVa1iDatoR12345abcdef
+
+📊 Epoch Performance:
+   Blocks produced: 432
+   Blocks expected: 440
+   Success rate:    98.18%
+   Average block time: 412ms
+
+⏰ Uptime: 99.87%</code></pre>
+                </div>
+            </div>
+
+            <!-- validator list -->
+            <div class="cmd-section" id="validator-list">
+                <h3><code>molt validator list</code></h3>
+                <p>List all active validators with their stake and reputation scores.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt validator list</code></pre>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt validator list
+
+🦞 Active Validators
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#1 Mo1tVa1iDatoR12345abcdef
+   Stake: 50000.0 MOLT
+   Reputation: 98
+
+#2 Mo1tVa1iDatoR67890ghijkl
+   Stake: 25000.0 MOLT
+   Reputation: 95
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Total: 2 validators, 75000.0 MOLT staked</code></pre>
+                </div>
+            </div>
+
+            <!-- ================================================================ -->
+            <!--                          STAKING                                 -->
+            <!-- ================================================================ -->
+            <h2>Staking Commands</h2>
+            <p>Stake and unstake MOLT to participate in consensus. Staked tokens are locked and earn rewards each epoch.</p>
+
+            <!-- stake add -->
+            <div class="cmd-section" id="stake-add">
+                <h3><code>molt stake add</code></h3>
+                <p>Stake MOLT to register as a validator or increase your existing stake. Amount is in shells (1 MOLT = 1,000,000,000 shells).</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt stake add &lt;amount&gt; [--keypair &lt;path&gt;]</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Flag / Arg</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>amount</code></td>
+                            <td>u64</td>
+                            <td><em>required</em></td>
+                            <td>Amount in shells to stake</td>
+                        </tr>
+                        <tr>
+                            <td><code>--keypair, -k</code></td>
+                            <td>path</td>
+                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td>Keypair file for the staking account</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt stake add 10000000000000
+
+🦞 Staking MOLT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💰 Amount:    10000.0 MOLT
+👤 Validator: Mo1tABcDeFgH1jK2LmNoPqRsTuVw...
+✅ Stake transaction confirmed!</code></pre>
+                </div>
+            </div>
+
+            <!-- stake remove -->
+            <div class="cmd-section" id="stake-remove">
+                <h3><code>molt stake remove</code></h3>
+                <p>Unstake MOLT from your validator. Unstaked tokens become spendable after a cooldown period.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt stake remove &lt;amount&gt; [--keypair &lt;path&gt;]</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Flag / Arg</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>amount</code></td>
+                            <td>u64</td>
+                            <td><em>required</em></td>
+                            <td>Amount in shells to unstake</td>
+                        </tr>
+                        <tr>
+                            <td><code>--keypair, -k</code></td>
+                            <td>path</td>
+                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td>Keypair file</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt stake remove 5000000000000
+
+🦞 Unstaking 5000.0 MOLT...
+✅ Unstake transaction confirmed!
+⏳ Cooldown: tokens will be spendable in ~2 epochs</code></pre>
+                </div>
+            </div>
+
+            <!-- stake status -->
+            <div class="cmd-section" id="stake-status">
+                <h3><code>molt stake status</code></h3>
+                <p>Show current staking status for an account — how much is staked and current validator standing.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt stake status [--address &lt;addr&gt;] [--keypair &lt;path&gt;]</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Flag</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>--address, -a</code></td>
+                            <td>Base58</td>
+                            <td>your identity</td>
+                            <td>Account to query</td>
+                        </tr>
+                        <tr>
+                            <td><code>--keypair, -k</code></td>
+                            <td>path</td>
+                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td>Keypair file (used if no address given)</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt stake status
+
+🦞 Staking Status
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📍 Account:   Mo1tABcDeFgH1jK2LmNoPqRsTuVw...
+💰 Staked:    10000.0000 MOLT
+📊 Status:    Active Validator
+⭐ Reputation: 98</code></pre>
+                </div>
+            </div>
+
+            <!-- stake rewards -->
+            <div class="cmd-section" id="stake-rewards">
+                <h3><code>molt stake rewards</code></h3>
+                <p>Show accumulated staking rewards for an account.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt stake rewards [--address &lt;addr&gt;] [--keypair &lt;path&gt;]</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Flag</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>--address, -a</code></td>
+                            <td>Base58</td>
+                            <td>your identity</td>
+                            <td>Account to query</td>
+                        </tr>
+                        <tr>
+                            <td><code>--keypair, -k</code></td>
+                            <td>path</td>
+                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td>Keypair file</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt stake rewards
+
+🦞 Staking Rewards
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📍 Account:        Mo1tABcDeFgH1jK2LmNoPqRsTuVw...
+💰 Total earned:   42.7500 MOLT
+📅 Current epoch:  127
+💎 This epoch:     0.3200 MOLT</code></pre>
+                </div>
+            </div>
+
+            <!-- ================================================================ -->
+            <!--                          CONTRACTS                               -->
+            <!-- ================================================================ -->
+            <h2>Contract Commands</h2>
+            <p>Deploy WASM smart contracts and interact with on-chain programs.</p>
+
+            <!-- deploy -->
+            <div class="cmd-section" id="deploy">
+                <h3><code>molt deploy</code></h3>
+                <p>Deploy a compiled WASM contract binary to the chain. Cost is approximately 0.001 MOLT per byte.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt deploy &lt;contract.wasm&gt; [--keypair &lt;path&gt;]</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Flag / Arg</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>contract</code></td>
+                            <td>path</td>
+                            <td><em>required</em></td>
+                            <td>Path to the compiled WASM file</td>
+                        </tr>
+                        <tr>
+                            <td><code>--keypair, -k</code></td>
+                            <td>path</td>
+                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td>Deployer keypair</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt deploy target/wasm32-unknown-unknown/release/my_contract.wasm
+
+🦞 Deploying contract...
+
+  Program ID:  Mo1tProg1D12345abcdefghijklmnop
+  Size:        14,832 bytes
+  Deploy tx:   9kR7...sWmN
+  Fee:         0.014832000 MOLT
+  Status:      Finalized
+
+✓ Contract deployed successfully!</code></pre>
+                </div>
+            </div>
+
+            <!-- call -->
+            <div class="cmd-section" id="call">
+                <h3><code>molt call</code></h3>
+                <p>Invoke a function on a deployed smart contract. Arguments are passed as a JSON array.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt call &lt;contract&gt; &lt;function&gt; [--args &lt;json&gt;] [--keypair &lt;path&gt;]</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Flag / Arg</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>contract</code></td>
+                            <td>Base58</td>
+                            <td><em>required</em></td>
+                            <td>Contract address</td>
+                        </tr>
+                        <tr>
+                            <td><code>function</code></td>
+                            <td>string</td>
+                            <td><em>required</em></td>
+                            <td>Function name to call</td>
+                        </tr>
+                        <tr>
+                            <td><code>--args, -a</code></td>
+                            <td>JSON</td>
+                            <td><code>[]</code></td>
+                            <td>Arguments as a JSON array</td>
+                        </tr>
+                        <tr>
+                            <td><code>--keypair, -k</code></td>
+                            <td>path</td>
+                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td>Caller keypair</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt call Mo1tProg1D12345abcdefghijklmnop set_greeting \
+    --args '["Hello, MoltChain!"]'
+
+🦞 Calling set_greeting on Mo1tProg1D...
+📝 Tx: 4xK9...mNpQ
+✅ Success — 1 event emitted
+   Event: GreetingSet("Hello, MoltChain!")</code></pre>
+                </div>
+            </div>
+
+            <!-- contract info -->
+            <div class="cmd-section" id="contract-info">
+                <h3><code>molt contract info</code></h3>
+                <p>Show on-chain metadata for a deployed contract: owner, size, and deployment details.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt contract info &lt;address&gt;</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Argument</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>address</code></td>
+                            <td>Base58</td>
+                            <td><em>required</em></td>
+                            <td>Contract address</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt contract info Mo1tProg1D12345abcdefghijklmnop
+
+🦞 Contract Information
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📍 Address:  Mo1tProg1D12345abcdefghijklmnop
+👤 Owner:    Mo1tABcDeFgH1jK2LmNoPqRsTuVw...
+📦 Size:     14,832 bytes
+📅 Deployed: slot 482,100</code></pre>
+                </div>
+            </div>
+
+            <!-- contract logs -->
+            <div class="cmd-section" id="contract-logs">
+                <h3><code>molt contract logs</code></h3>
+                <p>Retrieve recent log entries (events) emitted by a contract.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt contract logs &lt;address&gt; [--limit &lt;n&gt;]</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Flag / Arg</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>address</code></td>
+                            <td>Base58</td>
+                            <td><em>required</em></td>
+                            <td>Contract address</td>
+                        </tr>
+                        <tr>
+                            <td><code>--limit, -l</code></td>
+                            <td>integer</td>
+                            <td><code>20</code></td>
+                            <td>Number of log entries to show</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt contract logs Mo1tProg1D12345abcdefghijklmnop --limit 5
+
+🦞 Contract Logs (last 5)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[slot 482917] GreetingSet("Hello, MoltChain!")
+[slot 482850] GreetingSet("Testing 1-2-3")
+[slot 482790] GreetingSet("First message")</code></pre>
+                </div>
+            </div>
+
+            <!-- contract list -->
+            <div class="cmd-section" id="contract-list">
+                <h3><code>molt contract list</code></h3>
+                <p>List all contracts deployed on the connected network.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt contract list</code></pre>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt contract list
+
+🦞 Deployed Contracts
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#1 Mo1tProg1D12345abcdefghijklmnop  (14,832 bytes)
+#2 Mo1tTokenFact0ry9876zyxwvuts     (22,104 bytes)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Total: 2 contracts</code></pre>
+                </div>
+            </div>
+
+            <!-- ================================================================ -->
+            <!--                          QUERY                                   -->
+            <!-- ================================================================ -->
+            <h2>Query Commands</h2>
+            <p>Read-only commands for querying chain state — balances, blocks, accounts, and network health.</p>
+
+            <!-- balance -->
+            <div class="cmd-section" id="balance">
+                <h3><code>molt balance</code></h3>
+                <p>Check the MOLT balance for any address. Shows total, spendable, staked, and locked breakdowns.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt balance [address] [--keypair &lt;path&gt;]</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Flag / Arg</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>address</code></td>
+                            <td>Base58</td>
+                            <td>your identity</td>
+                            <td>Account address to query (optional)</td>
+                        </tr>
+                        <tr>
+                            <td><code>--keypair, -k</code></td>
+                            <td>path</td>
+                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td>Keypair to derive address from (if no address given)</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt balance
+
+🦞 Balance for Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💰 Total:       100.0000 MOLT (100000000000 shells)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   Spendable:    90.0000 MOLT (available for transfers)
+   Staked:        10.0000 MOLT (locked in validation)
+   Locked:         0.0000 MOLT (locked in contracts)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</code></pre>
+                </div>
+            </div>
+
+            <!-- transfer -->
+            <div class="cmd-section" id="transfer">
+                <h3><code>molt transfer</code></h3>
+                <p>Send MOLT to another address. The fee is deducted from the sender's spendable balance (50% of the fee is burned).</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt transfer &lt;to&gt; &lt;amount&gt; [--keypair &lt;path&gt;]</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Flag / Arg</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>to</code></td>
+                            <td>Base58</td>
+                            <td><em>required</em></td>
+                            <td>Destination address</td>
+                        </tr>
+                        <tr>
+                            <td><code>amount</code></td>
+                            <td>f64</td>
+                            <td><em>required</em></td>
+                            <td>Amount in MOLT</td>
+                        </tr>
+                        <tr>
+                            <td><code>--keypair, -k</code></td>
+                            <td>path</td>
+                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td>Sender keypair</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt transfer Mo1tRecipientAddress123456789abcdefghijk 1.5
+
+🦞 Transferring 1.5 MOLT (1500000000 shells)
+📤 From: Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab
+📥 To:   Mo1tRecipientAddress123456789abcdefghijk
+✅ Transaction sent!
+📝 Signature: 7zQ3...bRtW</code></pre>
+                </div>
+            </div>
+
+            <!-- airdrop -->
+            <div class="cmd-section" id="airdrop">
+                <h3><code>molt airdrop</code></h3>
+                <p>Request free test tokens from the faucet. Only available on testnet and local networks.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt airdrop [amount] [--pubkey &lt;addr&gt;] [--keypair &lt;path&gt;]</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Flag / Arg</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>amount</code></td>
+                            <td>f64</td>
+                            <td><code>100.0</code></td>
+                            <td>Amount in MOLT to request</td>
+                        </tr>
+                        <tr>
+                            <td><code>--pubkey, -p</code></td>
+                            <td>Base58</td>
+                            <td>your identity</td>
+                            <td>Recipient address</td>
+                        </tr>
+                        <tr>
+                            <td><code>--keypair, -k</code></td>
+                            <td>path</td>
+                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td>Keypair to derive address from</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt airdrop 50
+
+🦞 Requesting 50 MOLT airdrop...
+
+  Transaction: 4xK9...mNpQ
+  New balance: 50.000000000 MOLT
+
+✓ Airdrop successful!</code></pre>
+                </div>
+            </div>
+
+            <!-- block -->
+            <div class="cmd-section" id="block">
+                <h3><code>molt block</code></h3>
+                <p>Retrieve block information by slot number — hash, parent, state root, validator, timestamp, and transaction count.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt block &lt;slot&gt;</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Argument</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>slot</code></td>
+                            <td>u64</td>
+                            <td><em>required</em></td>
+                            <td>Block slot number</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt block 482917
+
+🧊 Block #482917
+🔗 Hash:         a3f8...7b2c
+⬅️  Parent:       d1e9...4a5f
+🌳 State Root:   8c7d...3e1a
+🦞 Validator:    Mo1tVa1iDatoR12345abcdef
+⏰ Timestamp:    2026-02-10T14:32:01Z
+📦 Transactions: 12</code></pre>
+                </div>
+            </div>
+
+            <!-- latest -->
+            <div class="cmd-section" id="latest">
+                <h3><code>molt latest</code></h3>
+                <p>Get the most recent finalized block.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt latest</code></pre>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt latest
+
+🧊 Latest Block #483201
+🔗 Hash:         f2a1...8d4e
+⬅️  Parent:       a3f8...7b2c
+🌳 State Root:   9b3e...1f7c
+🦞 Validator:    Mo1tVa1iDatoR67890ghijkl
+⏰ Timestamp:    2026-02-10T14:35:22Z
+📦 Transactions: 8</code></pre>
+                </div>
+            </div>
+
+            <!-- slot -->
+            <div class="cmd-section" id="slot">
+                <h3><code>molt slot</code></h3>
+                <p>Print the current slot number.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt slot</code></pre>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt slot
+🦞 Current slot: 483201</code></pre>
+                </div>
+            </div>
+
+            <!-- blockhash -->
+            <div class="cmd-section" id="blockhash">
+                <h3><code>molt blockhash</code></h3>
+                <p>Retrieve the most recent blockhash. Useful for constructing transactions client-side.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt blockhash</code></pre>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt blockhash
+🦞 Recent blockhash: f2a1b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0</code></pre>
+                </div>
+            </div>
+
+            <!-- burned -->
+            <div class="cmd-section" id="burned">
+                <h3><code>molt burned</code></h3>
+                <p>Show the total amount of MOLT permanently burned via the deflationary fee mechanism (50% of all transaction fees).</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt burned</code></pre>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt burned
+
+🔥 Total MOLT Burned
+💰 1,247.832000000 MOLT (1247832000000 shells)
+
+Deflationary mechanism: 50% of all transaction fees are burned forever! 🦞⚡</code></pre>
+                </div>
+            </div>
+
+            <!-- validators (top-level) -->
+            <div class="cmd-section" id="validators">
+                <h3><code>molt validators</code></h3>
+                <p>List all active validators on the network (shorthand for <code>molt validator list</code>).</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt validators</code></pre>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt validators
+
+🦞 Active Validators
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#1 Mo1tVa1iDatoR12345abcdef
+   Stake: 50000.0 MOLT    Reputation: 98
+
+#2 Mo1tVa1iDatoR67890ghijkl
+   Stake: 25000.0 MOLT    Reputation: 95
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Total: 2 validators, 75000.0 MOLT staked</code></pre>
+                </div>
+            </div>
+
+            <!-- status -->
+            <div class="cmd-section" id="status">
+                <h3><code>molt status</code></h3>
+                <p>Show a comprehensive overview of the chain: current slot, validator count, TPS, block and transaction totals.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt status</code></pre>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt status
+
+🦞 MoltChain Status
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 Current slot:        483,201
+👥 Active validators:   2
+⚡ TPS:                 1,247
+📦 Total blocks:        483,201
+📝 Total transactions:  2,491,832
+✅ Network is healthy</code></pre>
+                </div>
+            </div>
+
+            <!-- metrics -->
+            <div class="cmd-section" id="metrics">
+                <h3><code>molt metrics</code></h3>
+                <p>Display real-time performance metrics for the connected node.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt metrics</code></pre>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt metrics
+
+🦞 Performance Metrics
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚡ TPS:                 1,247
+📦 Total blocks:        483,201
+📝 Total transactions:  2,491,832
+⏱️  Avg block time:      412ms</code></pre>
+                </div>
+            </div>
+
+            <!-- account info -->
+            <div class="cmd-section" id="account-info">
+                <h3><code>molt account info</code></h3>
+                <p>Show detailed account information for any on-chain address.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt account info &lt;address&gt;</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Argument</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>address</code></td>
+                            <td>Base58</td>
+                            <td><em>required</em></td>
+                            <td>Account address</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt account info Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab
+
+🦞 Account Details
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📍 Address:     Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab
+💰 Balance:     100.0000 MOLT
+📝 Nonce:       47
+🏷️  Type:        User Account</code></pre>
+                </div>
+            </div>
+
+            <!-- account history -->
+            <div class="cmd-section" id="account-history">
+                <h3><code>molt account history</code></h3>
+                <p>Show recent transaction history for an account.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt account history &lt;address&gt; [--limit &lt;n&gt;]</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Flag / Arg</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>address</code></td>
+                            <td>Base58</td>
+                            <td><em>required</em></td>
+                            <td>Account address</td>
+                        </tr>
+                        <tr>
+                            <td><code>--limit, -l</code></td>
+                            <td>integer</td>
+                            <td><code>10</code></td>
+                            <td>Number of transactions to show</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt account history Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab --limit 3
+
+🦞 Transaction History (last 3)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+[slot 482917] Transfer  -1.5000 MOLT → Mo1tRecip...
+[slot 482800] Airdrop  +50.0000 MOLT
+[slot 482750] Stake    -10.0000 MOLT (staked)</code></pre>
+                </div>
+            </div>
+
+            <!-- ================================================================ -->
+            <!--                          NETWORK                                 -->
+            <!-- ================================================================ -->
+            <h2>Network Commands</h2>
+            <p>Inspect network health, connected peers, and chain metadata.</p>
+
+            <!-- network status -->
+            <div class="cmd-section" id="network-status">
+                <h3><code>molt network status</code></h3>
+                <p>Show overall network health — current slot, validator count, TPS, and block/transaction totals.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt network status</code></pre>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt network status
+
+🦞 Network Status
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 Current slot:        483,201
+👥 Active validators:   2
+⚡ TPS:                 1,247
+📦 Total blocks:        483,201
+📝 Total transactions:  2,491,832
+
+✅ Network is healthy</code></pre>
+                </div>
+            </div>
+
+            <!-- network peers -->
+            <div class="cmd-section" id="network-peers">
+                <h3><code>molt network peers</code></h3>
+                <p>List all connected P2P peers on the local node.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt network peers</code></pre>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt network peers
+
+🦞 Connected Peers
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#1 12D3Koo...abc (Connected)
+   Address: /ip4/192.168.1.10/tcp/8001
+
+#2 12D3Koo...def (Connected)
+   Address: /ip4/192.168.1.11/tcp/8001
+
+Total: 2 peers</code></pre>
+                </div>
+            </div>
+
+            <!-- network info -->
+            <div class="cmd-section" id="network-info">
+                <h3><code>molt network info</code></h3>
+                <p>Display network metadata — network ID, chain ID, RPC endpoint, and basic statistics.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt network info</code></pre>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt network info
+
+🦞 Network Information
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🌐 Network ID:  moltchain-mainnet-1
+⛓️  Chain ID:    1337
+🔗 RPC Endpoint: http://localhost:8899
+
+📊 Statistics:
+   Current slot: 483,201
+   Validators:   2
+   TPS:          1,247</code></pre>
+                </div>
+            </div>
+
+            <!-- ================================================================ -->
+            <!--                          TOKEN                                   -->
+            <!-- ================================================================ -->
+            <h2>Token Commands</h2>
+            <p>Create custom tokens, mint, transfer, and query token balances on MoltChain.</p>
+
+            <!-- token create -->
+            <div class="cmd-section" id="token-create">
+                <h3><code>molt token create</code></h3>
+                <p>Create a new fungible token with a name, symbol, initial supply, and decimal precision.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt token create &lt;name&gt; &lt;symbol&gt; [--supply &lt;n&gt;] [--decimals &lt;n&gt;] [--keypair &lt;path&gt;]</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Flag / Arg</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>name</code></td>
+                            <td>string</td>
+                            <td><em>required</em></td>
+                            <td>Token display name</td>
+                        </tr>
+                        <tr>
+                            <td><code>symbol</code></td>
+                            <td>string</td>
+                            <td><em>required</em></td>
+                            <td>Token symbol (3-5 characters)</td>
+                        </tr>
+                        <tr>
+                            <td><code>--supply, -s</code></td>
+                            <td>u64</td>
+                            <td><code>1000000</code></td>
+                            <td>Initial supply (in whole tokens)</td>
+                        </tr>
+                        <tr>
+                            <td><code>--decimals, -d</code></td>
+                            <td>u8</td>
+                            <td><code>9</code></td>
+                            <td>Decimal precision</td>
+                        </tr>
+                        <tr>
+                            <td><code>--keypair, -k</code></td>
+                            <td>path</td>
+                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td>Token owner keypair</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt token create "Reef Token" REEF --supply 500000 --decimals 6
+
+🦞 Creating token...
+  Name:     Reef Token
+  Symbol:   REEF
+  Supply:   500,000
+  Decimals: 6
+  Address:  Mo1tToken1234567890abcdefghijk
+✅ Token created!</code></pre>
+                </div>
+            </div>
+
+            <!-- token info -->
+            <div class="cmd-section" id="token-info">
+                <h3><code>molt token info</code></h3>
+                <p>Show metadata and supply information for a token.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt token info &lt;token&gt;</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Argument</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>token</code></td>
+                            <td>string</td>
+                            <td><em>required</em></td>
+                            <td>Token address or symbol</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt token info REEF
+
+🦞 Token: Reef Token (REEF)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📍 Address:   Mo1tToken1234567890abcdefghijk
+👤 Owner:     Mo1tABcDeFgH1jK2LmNoPqRsTuVw...
+💰 Supply:    500,000 REEF
+🔢 Decimals:  6</code></pre>
+                </div>
+            </div>
+
+            <!-- token mint -->
+            <div class="cmd-section" id="token-mint">
+                <h3><code>molt token mint</code></h3>
+                <p>Mint additional tokens (owner only). Tokens are sent to yourself unless <code>--to</code> is specified.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt token mint &lt;token&gt; &lt;amount&gt; [--to &lt;address&gt;] [--keypair &lt;path&gt;]</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Flag / Arg</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>token</code></td>
+                            <td>string</td>
+                            <td><em>required</em></td>
+                            <td>Token address</td>
+                        </tr>
+                        <tr>
+                            <td><code>amount</code></td>
+                            <td>u64</td>
+                            <td><em>required</em></td>
+                            <td>Amount to mint (whole tokens)</td>
+                        </tr>
+                        <tr>
+                            <td><code>--to</code></td>
+                            <td>Base58</td>
+                            <td>self</td>
+                            <td>Recipient address</td>
+                        </tr>
+                        <tr>
+                            <td><code>--keypair, -k</code></td>
+                            <td>path</td>
+                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td>Token owner keypair</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt token mint Mo1tToken1234567890abcdefghijk 10000
+
+🦞 Minting 10,000 REEF...
+✅ Minted! New supply: 510,000 REEF</code></pre>
+                </div>
+            </div>
+
+            <!-- token send -->
+            <div class="cmd-section" id="token-send">
+                <h3><code>molt token send</code></h3>
+                <p>Transfer custom tokens to another address.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt token send &lt;token&gt; &lt;to&gt; &lt;amount&gt; [--keypair &lt;path&gt;]</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Flag / Arg</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>token</code></td>
+                            <td>string</td>
+                            <td><em>required</em></td>
+                            <td>Token address</td>
+                        </tr>
+                        <tr>
+                            <td><code>to</code></td>
+                            <td>Base58</td>
+                            <td><em>required</em></td>
+                            <td>Recipient address</td>
+                        </tr>
+                        <tr>
+                            <td><code>amount</code></td>
+                            <td>u64</td>
+                            <td><em>required</em></td>
+                            <td>Amount to send (whole tokens)</td>
+                        </tr>
+                        <tr>
+                            <td><code>--keypair, -k</code></td>
+                            <td>path</td>
+                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td>Sender keypair</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt token send Mo1tToken1234567890abcdefghijk Mo1tRecipient... 500
+
+🦞 Sending 500 REEF → Mo1tRecipient...
+✅ Transfer confirmed!
+📝 Tx: 8bN2...kLm4</code></pre>
+                </div>
+            </div>
+
+            <!-- token balance -->
+            <div class="cmd-section" id="token-balance">
+                <h3><code>molt token balance</code></h3>
+                <p>Query the token balance for a given account.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt token balance &lt;token&gt; [--address &lt;addr&gt;] [--keypair &lt;path&gt;]</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Flag / Arg</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>token</code></td>
+                            <td>string</td>
+                            <td><em>required</em></td>
+                            <td>Token address</td>
+                        </tr>
+                        <tr>
+                            <td><code>--address, -a</code></td>
+                            <td>Base58</td>
+                            <td>your identity</td>
+                            <td>Account to query</td>
+                        </tr>
+                        <tr>
+                            <td><code>--keypair, -k</code></td>
+                            <td>path</td>
+                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td>Keypair (used if no address)</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt token balance Mo1tToken1234567890abcdefghijk
+
+🦞 Token Balance
+   REEF: 499,500</code></pre>
+                </div>
+            </div>
+
+            <!-- token list -->
+            <div class="cmd-section" id="token-list">
+                <h3><code>molt token list</code></h3>
+                <p>List all registered tokens on the network.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt token list</code></pre>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt token list
+
+🦞 Registered Tokens
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  REEF    Reef Token      Supply: 510,000
+  CLAW    Claw Credits    Supply: 1,000,000
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Total: 2 tokens</code></pre>
+                </div>
+            </div>
+
+            <!-- ================================================================ -->
+            <!--                         GOVERNANCE                               -->
+            <!-- ================================================================ -->
+            <h2>Governance Commands</h2>
+            <p>On-chain governance — create proposals, vote, and execute passed governance actions.</p>
+
+            <!-- gov propose -->
+            <div class="cmd-section" id="gov-propose">
+                <h3><code>molt gov propose</code></h3>
+                <p>Submit a new governance proposal. Proposal types: <code>fast-track</code>, <code>standard</code>, <code>constitutional</code>.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt gov propose &lt;title&gt; &lt;description&gt; [--proposal-type &lt;type&gt;] [--keypair &lt;path&gt;]</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Flag / Arg</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>title</code></td>
+                            <td>string</td>
+                            <td><em>required</em></td>
+                            <td>Proposal title</td>
+                        </tr>
+                        <tr>
+                            <td><code>description</code></td>
+                            <td>string</td>
+                            <td><em>required</em></td>
+                            <td>Proposal description</td>
+                        </tr>
+                        <tr>
+                            <td><code>--proposal-type, -t</code></td>
+                            <td>string</td>
+                            <td><code>standard</code></td>
+                            <td>Proposal type: fast-track, standard, constitutional</td>
+                        </tr>
+                        <tr>
+                            <td><code>--keypair, -k</code></td>
+                            <td>path</td>
+                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td>Proposer keypair</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt gov propose "Increase block size" "Raise max block size to 2MB" \
+    --proposal-type standard
+
+🦞 Governance Proposal Created
+  ID:    7
+  Title: Increase block size
+  Type:  standard
+  Status: Voting (ends epoch 135)
+✅ Proposal submitted!</code></pre>
+                </div>
+            </div>
+
+            <!-- gov vote -->
+            <div class="cmd-section" id="gov-vote">
+                <h3><code>molt gov vote</code></h3>
+                <p>Cast a vote on an active proposal. Vote options: <code>yes</code>, <code>no</code>, <code>abstain</code>.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt gov vote &lt;proposal_id&gt; &lt;vote&gt; [--keypair &lt;path&gt;]</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Flag / Arg</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>proposal_id</code></td>
+                            <td>u64</td>
+                            <td><em>required</em></td>
+                            <td>Proposal ID</td>
+                        </tr>
+                        <tr>
+                            <td><code>vote</code></td>
+                            <td>string</td>
+                            <td><em>required</em></td>
+                            <td>Vote: yes, no, or abstain</td>
+                        </tr>
+                        <tr>
+                            <td><code>--keypair, -k</code></td>
+                            <td>path</td>
+                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td>Voter keypair</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt gov vote 7 yes
+
+🦞 Vote Cast
+  Proposal: #7 — Increase block size
+  Vote:     YES
+✅ Vote recorded!</code></pre>
+                </div>
+            </div>
+
+            <!-- gov list -->
+            <div class="cmd-section" id="gov-list">
+                <h3><code>molt gov list</code></h3>
+                <p>List governance proposals. By default shows only active proposals; use <code>--all</code> to include executed and cancelled.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt gov list [--all]</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Flag</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>--all, -a</code></td>
+                            <td>flag</td>
+                            <td><code>false</code></td>
+                            <td>Include executed and cancelled proposals</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt gov list
+
+🦞 Active Proposals
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+#7  Increase block size      [Voting]    yes: 3  no: 1
+#6  Add token burn events    [Timelock]  yes: 5  no: 0
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Total: 2 active proposals</code></pre>
+                </div>
+            </div>
+
+            <!-- gov info -->
+            <div class="cmd-section" id="gov-info">
+                <h3><code>molt gov info</code></h3>
+                <p>Show full details for a governance proposal.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt gov info &lt;proposal_id&gt;</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Argument</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>proposal_id</code></td>
+                            <td>u64</td>
+                            <td><em>required</em></td>
+                            <td>Proposal ID</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt gov info 7
+
+🦞 Proposal #7
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Title:       Increase block size
+  Description: Raise max block size to 2MB
+  Type:        standard
+  Status:      Voting
+  Proposer:    Mo1tABcDeFgH1jK2LmNoPqRsTuVw...
+  Votes:       yes: 3  no: 1  abstain: 0
+  Ends:        epoch 135</code></pre>
+                </div>
+            </div>
+
+            <!-- gov execute -->
+            <div class="cmd-section" id="gov-execute">
+                <h3><code>molt gov execute</code></h3>
+                <p>Execute a proposal that has passed voting and completed its time-lock period.</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt gov execute &lt;proposal_id&gt; [--keypair &lt;path&gt;]</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Flag / Arg</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>proposal_id</code></td>
+                            <td>u64</td>
+                            <td><em>required</em></td>
+                            <td>Proposal ID</td>
+                        </tr>
+                        <tr>
+                            <td><code>--keypair, -k</code></td>
+                            <td>path</td>
+                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td>Executor keypair</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt gov execute 6
+
+🦞 Executing Proposal #6 — Add token burn events
+✅ Proposal executed successfully!
+📝 Tx: 3mK8...qWn2</code></pre>
+                </div>
+            </div>
+
+            <!-- gov veto -->
+            <div class="cmd-section" id="gov-veto">
+                <h3><code>molt gov veto</code></h3>
+                <p>Veto a proposal during its time-lock period (requires sufficient stake or governance authority).</p>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>molt gov veto &lt;proposal_id&gt; [--keypair &lt;path&gt;]</code></pre>
+                </div>
+
+                <table class="flags-table">
+                    <thead>
+                        <tr><th>Flag / Arg</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>proposal_id</code></td>
+                            <td>u64</td>
+                            <td><em>required</em></td>
+                            <td>Proposal ID</td>
+                        </tr>
+                        <tr>
+                            <td><code>--keypair, -k</code></td>
+                            <td>path</td>
+                            <td><code>~/.moltchain/keypairs/id.json</code></td>
+                            <td>Authority keypair</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-block-header">
+                        <span class="code-lang">Shell</span>
+                        <button class="code-copy-btn">Copy</button>
+                    </div>
+                    <pre><code>$ molt gov veto 7
+
+🦞 Vetoing Proposal #7 — Increase block size
+✅ Proposal vetoed!
+📝 Tx: 5nR1...pTx7</code></pre>
+                </div>
+            </div>
+
+            <!-- ================================================================ -->
+            <!--                          FOOTER                                  -->
+            <!-- ================================================================ -->
+            <div class="hub-grid two-col" style="margin-top: 3rem;">
+                <a href="getting-started.html" class="hub-card">
+                    <div class="hub-card-icon primary"><i class="fas fa-rocket"></i></div>
+                    <div class="hub-card-title">Getting Started</div>
+                    <div class="hub-card-desc">Walkthrough: install CLI, create wallet, send a transfer, deploy your first contract.</div>
+                </a>
+
+                <a href="rpc-reference.html" class="hub-card">
+                    <div class="hub-card-icon blue"><i class="fas fa-plug"></i></div>
+                    <div class="hub-card-title">RPC API Reference</div>
+                    <div class="hub-card-desc">Full JSON-RPC endpoint docs for programmatic access to the MoltChain network.</div>
+                </a>
+
+                <a href="contracts.html" class="hub-card">
+                    <div class="hub-card-icon purple"><i class="fas fa-file-code"></i></div>
+                    <div class="hub-card-title">Smart Contracts</div>
+                    <div class="hub-card-desc">Write, test, and deploy WASM contracts on MoltChain with the Rust SDK.</div>
+                </a>
+
+                <a href="https://github.com/moltchain" class="hub-card" target="_blank">
+                    <div class="hub-card-icon primary"><i class="fab fa-github"></i></div>
+                    <div class="hub-card-title">GitHub</div>
+                    <div class="hub-card-desc">Source code, issues, and contributions — moltchain-cli, validator, SDK, and contracts.</div>
+                </a>
+            </div>
+
+        </main>
+
+        <div class="toc"></div>
+    </div>
+
+    <script src="js/developers.js"></script>
+    <script>
+    (function() {
+        // Wire up nav search input to open ⌘K overlay
+        const navInput = document.getElementById('searchInput');
+        if (navInput) {
+            navInput.addEventListener('focus', () => {
+                if (typeof window.openDevSearch === 'function') window.openDevSearch();
+                navInput.blur();
+            });
+        }
+    })();
+    </script>
+</body>
+</html>

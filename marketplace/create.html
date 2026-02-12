@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Create NFT - Molt Market</title>
+    <meta name="description" content="Create and mint your NFT on MoltChain. Upload your art, set properties, and deploy to the blockchain.">
+    <link rel="stylesheet" href="../shared-base-styles.css">
+    <link rel="stylesheet" href="../shared-theme.css">
+    <link rel="stylesheet" href="css/marketplace.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="nav">
+        <div class="nav-container">
+            <div class="nav-logo">
+                <img src="MoltMarket_Logo_256.png" class="logo-icon" alt="Molt Market">
+                <span class="logo-text">Molt Market</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="index.html">Home</a></li>
+                <li><a href="browse.html">Browse</a></li>
+                <li><a href="create.html" class="active">Create</a></li>
+            </ul>
+            <div class="nav-actions">
+                <div class="search-container">
+                    <input type="text" id="searchInput" class="search-input" placeholder="Search NFTs, collections...">
+                    <i class="fas fa-search search-icon"></i>
+                </div>
+                <div class="nav-network"><select id="marketNetworkSelect" class="network-select"></select></div>
+                <button class="btn btn-primary" id="connectWallet">
+                    <i class="fas fa-wallet"></i> Connect Wallet
+                </button>
+            </div>
+            <button class="nav-toggle" id="navToggle">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+        </div>
+    </nav>
+
+    <!-- Create Page -->
+    <section class="section create-page">
+        <div class="container">
+            <div class="create-layout">
+                <!-- Form -->
+                <div class="create-form">
+                    <h1>Create New NFT</h1>
+                    <p class="create-subtitle">Upload your artwork and mint it on MoltChain</p>
+
+                    <!-- Upload Section -->
+                    <div class="form-section">
+                        <label class="form-label">
+                            Upload File <span class="required">*</span>
+                        </label>
+                        <div class="upload-area" id="uploadArea">
+                            <div class="upload-content">
+                                <i class="fas fa-cloud-upload-alt upload-icon"></i>
+                                <p class="upload-text">Drag and drop your file here, or click to browse</p>
+                                <p class="upload-hint">Supported: JPG, PNG, GIF, MP4, WEBM (Max 100MB)</p>
+                            </div>
+                            <input type="file" id="fileInput" accept="image/*,video/*" hidden>
+                        </div>
+                        <div id="filePreview" class="file-preview" style="display: none;"></div>
+                    </div>
+
+                    <!-- Name -->
+                    <div class="form-section">
+                        <label class="form-label" for="nftName">
+                            Name <span class="required">*</span>
+                        </label>
+                        <input type="text" id="nftName" class="form-input" placeholder="Enter NFT name" required>
+                    </div>
+
+                    <!-- Description -->
+                    <div class="form-section">
+                        <label class="form-label" for="nftDescription">
+                            Description
+                        </label>
+                        <textarea id="nftDescription" class="form-textarea" rows="4" placeholder="Tell collectors about your NFT..."></textarea>
+                        <p class="form-hint">Markdown syntax is supported</p>
+                    </div>
+
+                    <!-- Collection -->
+                    <div class="form-section">
+                        <label class="form-label" for="nftCollection">
+                            Collection
+                        </label>
+                        <select id="nftCollection" class="form-select">
+                            <option value="">Select collection</option>
+                            <option value="new">+ Create New Collection</option>
+                            <option value="moltpunks">MoltPunks</option>
+                            <option value="agentapes">Agent Apes</option>
+                        </select>
+                    </div>
+
+                    <!-- Properties -->
+                    <div class="form-section">
+                        <div class="form-label-row">
+                            <label class="form-label">Properties</label>
+                            <button type="button" class="btn-text" onclick="addProperty()">
+                                <i class="fas fa-plus"></i> Add Property
+                            </button>
+                        </div>
+                        <div id="propertiesList" class="properties-list">
+                            <!-- Properties added by JS -->
+                        </div>
+                    </div>
+
+                    <!-- Supply -->
+                    <div class="form-section">
+                        <label class="form-label" for="nftSupply">
+                            Supply <span class="required">*</span>
+                        </label>
+                        <input type="number" id="nftSupply" class="form-input" value="1" min="1" max="1000">
+                        <p class="form-hint">Number of copies to mint</p>
+                    </div>
+
+                    <!-- Royalty -->
+                    <div class="form-section">
+                        <label class="form-label" for="nftRoyalty">
+                            Royalty (%)
+                        </label>
+                        <input type="number" id="nftRoyalty" class="form-input" value="10" min="0" max="50" step="0.5">
+                        <p class="form-hint">Creator earnings on secondary sales (max 50%)</p>
+                    </div>
+
+                    <!-- Blockchain -->
+                    <div class="form-section">
+                        <label class="form-label">Blockchain</label>
+                        <div class="blockchain-select">
+                            <div class="blockchain-option selected">
+                                <img src="MoltMarket_Logo_256.png" class="logo-icon" alt="MoltChain">
+                                <div>
+                                    <strong>MoltChain</strong>
+                                    <p>Ultra-low fees, instant finality</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Actions -->
+                    <div class="form-actions">
+                        <button type="button" class="btn btn-large btn-primary" id="createBtn">
+                            <i class="fas fa-rocket"></i> Create & Mint NFT
+                        </button>
+                        <p class="form-hint">
+                            Minting fee: <strong>0.001 MOLT</strong>
+                        </p>
+                    </div>
+                </div>
+
+                <!-- Preview -->
+                <div class="create-preview">
+                    <div class="preview-sticky">
+                        <h3>Preview</h3>
+                        <div class="nft-card preview-card">
+                            <div class="nft-image" id="previewImage">
+                                <div class="preview-placeholder">
+                                    <i class="fas fa-image"></i>
+                                    <p>Upload file to preview</p>
+                                </div>
+                            </div>
+                            <div class="nft-info">
+                                <div class="nft-collection" id="previewCollection">Collection</div>
+                                <div class="nft-name" id="previewName">NFT Name</div>
+                                <div class="nft-footer">
+                                    <div class="nft-price">
+                                        Price
+                                        <span class="nft-price-value">-- MOLT</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="preview-details">
+                            <div class="detail-row">
+                                <span>Supply</span>
+                                <strong id="previewSupply">1</strong>
+                            </div>
+                            <div class="detail-row">
+                                <span>Royalty</span>
+                                <strong id="previewRoyalty">10%</strong>
+                            </div>
+                            <div class="detail-row">
+                                <span>Blockchain</span>
+                                <strong>MoltChain</strong>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-grid">
+                <div class="footer-col">
+                    <div class="footer-logo">
+                        <img src="MoltMarket_Logo_256.png" class="logo-icon" alt="Molt Market">
+                        <span class="logo-text">Molt Market</span>
+                    </div>
+                    <p class="footer-desc">
+                        The first NFT marketplace on MoltChain. Ultra-low fees, instant finality, agent-first design.
+                    </p>
+                </div>
+                <div class="footer-col">
+                    <h4>Marketplace</h4>
+                    <ul class="footer-links">
+                        <li><a href="browse.html">Browse NFTs</a></li>
+                        <li><a href="browse.html?filter=trending">Trending</a></li>
+                        <li><a href="browse.html?filter=collections">Collections</a></li>
+                        <li><a href="create.html">Create NFT</a></li>
+                    </ul>
+                </div>
+                <div class="footer-col">
+                    <h4>Resources</h4>
+                    <ul class="footer-links">
+                        <li><a href="#docs">Documentation</a></li>
+                        <li><a href="#api">API</a></li>
+                        <li><a href="#help">Help Center</a></li>
+                        <li><a href="#terms">Terms of Service</a></li>
+                    </ul>
+                </div>
+                <div class="footer-col">
+                    <h4>Community</h4>
+                    <ul class="footer-links">
+                        <li><a href="#discord">Discord</a></li>
+                        <li><a href="#twitter">Twitter</a></li>
+                        <li><a href="#github">GitHub</a></li>
+                        <li><a href="#blog">Blog</a></li>
+                    </ul>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2026 Molt Market. Built on MoltChain.</p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="../shared/wallet-connect.js"></script>
+    <script src="js/marketplace-config.js"></script>
+    <script src="js/create.js"></script>
+</body>
+</html>

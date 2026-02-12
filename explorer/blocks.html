@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Blocks - Reef Explorer 🦞</title>
+    <link rel="stylesheet" href="../shared-base-styles.css">
+    <link rel="stylesheet" href="../shared-theme.css">
+    <link rel="stylesheet" href="explorer.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="nav">
+        <div class="nav-container">
+            <div class="nav-logo">
+                <img src="MoltExplorer_Logo_256.png" class="logo-icon" alt="Molt Explorer">
+                <span class="logo-text">Reef Explorer</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="index.html">Dashboard</a></li>
+                <li><a href="blocks.html" class="active">Blocks</a></li>
+                <li><a href="transactions.html">Transactions</a></li>
+                <li><a href="validators.html">Validators</a></li>
+                <li><a href="contracts.html">Contracts</a></li>
+            </ul>
+            <div class="nav-actions">
+                <div class="search-container">
+                    <input type="text" id="searchInput" class="search-input" placeholder="Search blocks, txs, accounts...">
+                    <i class="fas fa-search search-icon"></i>
+                </div>
+                <div class="nav-network">
+                    <select id="explorerNetworkSelect" class="network-select">
+                        <option value="mainnet" selected>Mainnet</option>
+                        <option value="testnet">Testnet</option>
+                        <option value="local-testnet">Local Testnet</option>
+                        <option value="local-mainnet">Local Mainnet</option>
+                    </select>
+                </div>
+            </div>
+            <button class="nav-toggle" id="navToggle">
+                <span></span>
+                <span></span>
+                <span></span>
+            </button>
+        </div>
+    </nav>
+    <section class="section section-alt">
+        <div class="container">
+            <div class="page-header">
+                <h1><i class="fas fa-cubes"></i> Blocks</h1>
+                <p class="page-description">Complete history of all blocks produced on MoltChain</p>
+            </div>
+
+            <!-- Filters -->
+            <div class="filters-bar">
+                <div class="filter-group">
+                    <label for="slotFilter">Slot Range</label>
+                    <input type="number" id="slotFromFilter" placeholder="From slot" class="filter-input">
+                    <input type="number" id="slotToFilter" placeholder="To slot" class="filter-input">
+                </div>
+                <button class="btn btn-primary" onclick="applyFilters()">
+                    <i class="fas fa-filter"></i> Apply Filters
+                </button>
+                <button class="btn btn-secondary" onclick="clearFilters()">
+                    <i class="fas fa-times"></i> Clear
+                </button>
+            </div>
+
+            <!-- Blocks Table -->
+            <div class="explorer-section">
+                <div class="table-container">
+                    <table class="explorer-table">
+                        <thead>
+                            <tr>
+                                <th>Slot</th>
+                                <th>Block Hash</th>
+                                <th>Parent Hash</th>
+                                <th>Transactions</th>
+                                <th>Validator</th>
+                                <th>Time</th>
+                            </tr>
+                        </thead>
+                        <tbody id="blocksTableFull">
+                            <tr class="loading-row">
+                                <td colspan="6">
+                                    <div class="loading-spinner"></div>
+                                    Loading blocks...
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Pagination -->
+                <div class="pagination">
+                    <button class="btn btn-secondary" id="prevPage" onclick="previousPage()" disabled>
+                        <i class="fas fa-chevron-left"></i> Newer
+                    </button>
+                    <span class="pagination-info" id="paginationInfo">Page 1</span>
+                    <button class="btn btn-secondary" id="nextPage" onclick="nextPage()">
+                        Older <i class="fas fa-chevron-right"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer-grid">
+                <div class="footer-col">
+                    <div class="footer-logo">
+                        <img src="MoltExplorer_Logo_256.png" class="logo-icon" alt="Molt Explorer">
+                        <span class="logo-text">Reef Explorer</span>
+                    </div>
+                    <p class="footer-desc">
+                        Real-time MoltChain blockchain explorer.
+                    </p>
+                </div>
+                <div class="footer-col">
+                    <h4>Explorer</h4>
+                    <ul class="footer-links">
+                        <li><a href="index.html">Dashboard</a></li>
+                        <li><a href="blocks.html">Blocks</a></li>
+                        <li><a href="transactions.html">Transactions</a></li>
+                        <li><a href="validators.html">Validators</a></li>
+                    </ul>
+                </div>
+                <div class="footer-col">
+                    <h4>Tools</h4>
+                    <ul class="footer-links">
+                        <li><a href="../website/index.html">Website</a></li>
+                        <li><a href="#" data-molt-app="wallet">Wallet</a></li>
+                        <li><a href="#" data-molt-app="faucet">Faucet</a></li>
+                        <li><a href="https://github.com/moltchain/moltchain">GitHub</a></li>
+                    </ul>
+                </div>
+                <div class="footer-col">
+                    <h4>Resources</h4>
+                    <ul class="footer-links">
+                        <li><a href="../docs/GETTING_STARTED.md">Getting Started</a></li>
+                        <li><a href="../docs/ARCHITECTURE.md">Architecture</a></li>
+                        <li><a href="../docs/API.md">API Docs</a></li>
+                        <li><a href="https://discord.gg/moltchain">Support</a></li>
+                    </ul>
+                </div>
+            </div>
+            <div class="footer-bottom">
+                <p>&copy; 2026 MoltChain. Open source under MIT License.</p>
+                <p>Reef Explorer powered by RPC <i class="fas fa-bolt"></i></p>
+            </div>
+        </div>
+    </footer>
+
+    <script src="../shared-config.js"></script>
+    <script src="js/utils.js?v=20260211"></script>
+    <script src="js/explorer.js?v=20260211"></script>
+    <script src="js/blocks.js?v=20260211"></script>
+</body>
+</html>

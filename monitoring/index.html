@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MoltChain Mission Control</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="stylesheet" href="css/monitoring.css">
+</head>
+<body>
+    <!-- Navigation -->
+    <nav class="nav">
+        <div class="nav-container">
+            <a href="/" class="nav-logo">
+                <i class="fas fa-shield-halved"></i>
+                <span>MoltChain <strong>Mission Control</strong></span>
+            </a>
+            <div class="nav-actions">
+                <div class="status-beacon" id="statusBeacon">
+                    <span class="beacon-dot"></span>
+                    <span class="beacon-text" id="beaconText">Connecting...</span>
+                </div>
+                <select class="network-select" id="networkSelect" onchange="switchNetwork(this.value)">
+                    <option value="local-testnet">Local Testnet</option>
+                    <option value="local-mainnet">Local Mainnet</option>
+                    <option value="testnet">Testnet</option>
+                    <option value="mainnet">Mainnet</option>
+                </select>
+                <span class="nav-clock" id="navClock"></span>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Alert Banner -->
+    <div class="alert-banner" id="alertBanner" style="display:none;">
+        <i class="fas fa-exclamation-triangle"></i>
+        <span id="alertText"></span>
+        <button class="alert-dismiss" onclick="dismissAlert()"><i class="fas fa-times"></i></button>
+    </div>
+
+    <main class="dashboard">
+        <!-- Top Bar: Key Vitals -->
+        <section class="vitals-bar">
+            <div class="vital-item">
+                <span class="vital-label">SLOT</span>
+                <span class="vital-value" id="vitalSlot">--</span>
+            </div>
+            <div class="vital-item">
+                <span class="vital-label">TPS</span>
+                <span class="vital-value" id="vitalTPS">--</span>
+            </div>
+            <div class="vital-item">
+                <span class="vital-label">BLOCK TIME</span>
+                <span class="vital-value" id="vitalBlockTime">--</span>
+            </div>
+            <div class="vital-item">
+                <span class="vital-label">VALIDATORS</span>
+                <span class="vital-value" id="vitalValidators">--</span>
+            </div>
+            <div class="vital-item">
+                <span class="vital-label">TOTAL TX</span>
+                <span class="vital-value" id="vitalTotalTx">--</span>
+            </div>
+            <div class="vital-item">
+                <span class="vital-label">UPTIME</span>
+                <span class="vital-value" id="vitalUptime">--</span>
+            </div>
+        </section>
+
+        <!-- Row 1: Validator Status + Network Health -->
+        <div class="grid grid-2">
+            <!-- Validator Panel -->
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <i class="fas fa-server"></i> Validator Cluster
+                    </div>
+                    <span class="panel-badge" id="valClusterBadge">--</span>
+                </div>
+                <div class="panel-body">
+                    <div class="validator-grid" id="validatorGrid">
+                        <!-- Filled by JS -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Network Health -->
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <i class="fas fa-heartbeat"></i> Network Health
+                    </div>
+                    <span class="panel-badge health-badge" id="healthBadge">--</span>
+                </div>
+                <div class="panel-body">
+                    <div class="health-grid">
+                        <div class="health-item">
+                            <span class="health-label">Consensus</span>
+                            <div class="health-bar-wrap">
+                                <div class="health-bar" id="healthConsensus" style="width:0%"></div>
+                            </div>
+                            <span class="health-pct" id="healthConsensusPct">--</span>
+                        </div>
+                        <div class="health-item">
+                            <span class="health-label">Block Production</span>
+                            <div class="health-bar-wrap">
+                                <div class="health-bar success" id="healthBlocks" style="width:0%"></div>
+                            </div>
+                            <span class="health-pct" id="healthBlocksPct">--</span>
+                        </div>
+                        <div class="health-item">
+                            <span class="health-label">Transaction Rate</span>
+                            <div class="health-bar-wrap">
+                                <div class="health-bar info" id="healthTxRate" style="width:0%"></div>
+                            </div>
+                            <span class="health-pct" id="healthTxRatePct">--</span>
+                        </div>
+                        <div class="health-item">
+                            <span class="health-label">P2P Connectivity</span>
+                            <div class="health-bar-wrap">
+                                <div class="health-bar accent" id="healthP2P" style="width:0%"></div>
+                            </div>
+                            <span class="health-pct" id="healthP2PPct">--</span>
+                        </div>
+                        <div class="health-item">
+                            <span class="health-label">Memory Usage</span>
+                            <div class="health-bar-wrap">
+                                <div class="health-bar warning" id="healthMemory" style="width:0%"></div>
+                            </div>
+                            <span class="health-pct" id="healthMemoryPct">--</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Row 2: Supply Economics + Contract Status -->
+        <div class="grid grid-2">
+            <!-- Supply Panel -->
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <i class="fas fa-coins"></i> Supply Economics
+                    </div>
+                </div>
+                <div class="panel-body">
+                    <div class="supply-grid">
+                        <div class="supply-item">
+                            <span class="supply-label">Total Supply</span>
+                            <span class="supply-value" id="supplyTotal">--</span>
+                        </div>
+                        <div class="supply-item">
+                            <span class="supply-label">Circulating</span>
+                            <span class="supply-value" id="supplyCirculating">--</span>
+                        </div>
+                        <div class="supply-item">
+                            <span class="supply-label">Total Staked</span>
+                            <span class="supply-value accent" id="supplyStaked">--</span>
+                        </div>
+                        <div class="supply-item">
+                            <span class="supply-label">Total Burned</span>
+                            <span class="supply-value warning" id="supplyBurned">--</span>
+                        </div>
+                        <div class="supply-item">
+                            <span class="supply-label">Treasury</span>
+                            <span class="supply-value info" id="supplyTreasury">--</span>
+                        </div>
+                        <div class="supply-item">
+                            <span class="supply-label">Genesis Wallet</span>
+                            <span class="supply-value accent" id="supplyGenesis">--</span>
+                        </div>
+                    </div>
+                    <div class="supply-bar-container">
+                        <div class="supply-bar">
+                            <div class="supply-segment genesis" id="segGenesis" style="width:85%"></div>
+                            <div class="supply-segment treasury" id="segTreasury" style="width:15%"></div>
+                            <div class="supply-segment staked" id="segStaked" style="width:0%"></div>
+                            <div class="supply-segment circulating" id="segCirculating" style="width:0%"></div>
+                            <div class="supply-segment burned" id="segBurned" style="width:0%"></div>
+                        </div>
+                        <div class="supply-legend">
+                            <span class="legend-item"><span class="legend-dot genesis"></span>Genesis</span>
+                            <span class="legend-item"><span class="legend-dot treasury"></span>Treasury</span>
+                            <span class="legend-item"><span class="legend-dot staked"></span>Staked</span>
+                            <span class="legend-item"><span class="legend-dot circulating"></span>Active</span>
+                            <span class="legend-item"><span class="legend-dot burned"></span>Burned</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Contract Status -->
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <i class="fas fa-file-contract"></i> Contract Registry
+                    </div>
+                    <span class="panel-badge" id="contractCount">--</span>
+                </div>
+                <div class="panel-body">
+                    <div class="contract-list" id="contractList">
+                        <!-- Filled by JS -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Row 3: Recent Blocks + Live Event Feed -->
+        <div class="grid grid-2">
+            <!-- Recent Blocks -->
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <i class="fas fa-cubes"></i> Recent Blocks
+                    </div>
+                </div>
+                <div class="panel-body">
+                    <div class="block-list" id="blockList">
+                        <!-- Filled by JS -->
+                    </div>
+                </div>
+            </div>
+
+            <!-- Live Event Feed -->
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <i class="fas fa-rss"></i> Live Event Feed
+                    </div>
+                    <button class="btn-sm" onclick="clearEvents()">
+                        <i class="fas fa-trash-alt"></i> Clear
+                    </button>
+                </div>
+                <div class="panel-body">
+                    <div class="event-feed" id="eventFeed">
+                        <div class="event-item info">
+                            <span class="event-time">--:--:--</span>
+                            <span class="event-icon"><i class="fas fa-plug"></i></span>
+                            <span class="event-text">Waiting for connection...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Row 4: TPS History Chart + Performance Metrics -->
+        <div class="grid grid-2">
+            <!-- TPS History -->
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <i class="fas fa-chart-line"></i> TPS History
+                    </div>
+                    <div class="panel-controls">
+                        <button class="btn-sm active" onclick="setTPSRange('1m')">1m</button>
+                        <button class="btn-sm" onclick="setTPSRange('5m')">5m</button>
+                        <button class="btn-sm" onclick="setTPSRange('15m')">15m</button>
+                    </div>
+                </div>
+                <div class="panel-body">
+                    <canvas id="tpsChart" height="200"></canvas>
+                </div>
+            </div>
+
+            <!-- Performance Metrics -->
+            <div class="panel">
+                <div class="panel-header">
+                    <div class="panel-title">
+                        <i class="fas fa-gauge-high"></i> Performance
+                    </div>
+                </div>
+                <div class="panel-body">
+                    <div class="perf-grid">
+                        <div class="perf-item">
+                            <div class="perf-ring" id="perfCPU">
+                                <svg viewBox="0 0 36 36">
+                                    <path class="ring-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                                    <path class="ring-fill" stroke-dasharray="0, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                                </svg>
+                                <span class="ring-value">--%</span>
+                            </div>
+                            <span class="perf-label">CPU</span>
+                        </div>
+                        <div class="perf-item">
+                            <div class="perf-ring" id="perfMem">
+                                <svg viewBox="0 0 36 36">
+                                    <path class="ring-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                                    <path class="ring-fill info" stroke-dasharray="0, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                                </svg>
+                                <span class="ring-value">--%</span>
+                            </div>
+                            <span class="perf-label">Memory</span>
+                        </div>
+                        <div class="perf-item">
+                            <div class="perf-ring" id="perfDisk">
+                                <svg viewBox="0 0 36 36">
+                                    <path class="ring-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                                    <path class="ring-fill success" stroke-dasharray="0, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                                </svg>
+                                <span class="ring-value">--%</span>
+                            </div>
+                            <span class="perf-label">Disk</span>
+                        </div>
+                        <div class="perf-item">
+                            <div class="perf-ring" id="perfNet">
+                                <svg viewBox="0 0 36 36">
+                                    <path class="ring-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                                    <path class="ring-fill accent" stroke-dasharray="0, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+                                </svg>
+                                <span class="ring-value">--%</span>
+                            </div>
+                            <span class="perf-label">Network</span>
+                        </div>
+                    </div>
+                    <div class="perf-stats">
+                        <div class="perf-stat">
+                            <span class="perf-stat-label">Avg Block Time</span>
+                            <span class="perf-stat-value" id="perfAvgBlock">--</span>
+                        </div>
+                        <div class="perf-stat">
+                            <span class="perf-stat-label">Avg TX/Block</span>
+                            <span class="perf-stat-value" id="perfAvgTxBlock">--</span>
+                        </div>
+                        <div class="perf-stat">
+                            <span class="perf-stat-label">Total Accounts</span>
+                            <span class="perf-stat-value" id="perfAccounts">--</span>
+                        </div>
+                        <div class="perf-stat">
+                            <span class="perf-stat-label">Active Accounts</span>
+                            <span class="perf-stat-value" id="perfActive">--</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Row 5: Security Monitor -->
+        <div class="panel full-width">
+            <div class="panel-header">
+                <div class="panel-title">
+                    <i class="fas fa-shield-virus"></i> Security Monitor
+                </div>
+                <span class="panel-badge success" id="securityBadge">SECURE</span>
+            </div>
+            <div class="panel-body">
+                <div class="security-grid">
+                    <div class="security-item">
+                        <div class="security-icon success"><i class="fas fa-lock"></i></div>
+                        <div class="security-info">
+                            <span class="security-label">Rate Limiter</span>
+                            <span class="security-status" id="secRateLimit">Active</span>
+                        </div>
+                    </div>
+                    <div class="security-item">
+                        <div class="security-icon success"><i class="fas fa-fingerprint"></i></div>
+                        <div class="security-info">
+                            <span class="security-label">TX Validation</span>
+                            <span class="security-status" id="secTxValidation">Active</span>
+                        </div>
+                    </div>
+                    <div class="security-item">
+                        <div class="security-icon success"><i class="fas fa-network-wired"></i></div>
+                        <div class="security-info">
+                            <span class="security-label">WS Limit</span>
+                            <span class="security-status" id="secWSLimit">500 max</span>
+                        </div>
+                    </div>
+                    <div class="security-item">
+                        <div class="security-icon success"><i class="fas fa-ban"></i></div>
+                        <div class="security-info">
+                            <span class="security-label">XFF Spoofing</span>
+                            <span class="security-status" id="secXFF">Blocked</span>
+                        </div>
+                    </div>
+                    <div class="security-item">
+                        <div class="security-icon success"><i class="fas fa-weight-hanging"></i></div>
+                        <div class="security-info">
+                            <span class="security-label">Body Limit</span>
+                            <span class="security-status" id="secBodyLimit">2MB</span>
+                        </div>
+                    </div>
+                    <div class="security-item">
+                        <div class="security-icon success"><i class="fas fa-link"></i></div>
+                        <div class="security-info">
+                            <span class="security-label">Chain Integrity</span>
+                            <span class="security-status" id="secChain">Verified</span>
+                        </div>
+                    </div>
+                    <div class="security-item">
+                        <div class="security-icon" id="secRejectedIcon"><i class="fas fa-hand"></i></div>
+                        <div class="security-info">
+                            <span class="security-label">Rejected TXs</span>
+                            <span class="security-status" id="secRejected">0</span>
+                        </div>
+                    </div>
+                    <div class="security-item">
+                        <div class="security-icon" id="secAlertsIcon"><i class="fas fa-bell"></i></div>
+                        <div class="security-info">
+                            <span class="security-label">Alerts</span>
+                            <span class="security-status" id="secAlerts">0</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Incident Response Center -->
+    <section class="dashboard">
+        <div class="panel full-width incident-panel">
+            <div class="panel-header">
+                <div class="panel-title">
+                    <i class="fas fa-crosshairs"></i> Incident Response Center
+                </div>
+                <div class="panel-controls">
+                    <span class="panel-badge success" id="threatLevel">CLEAR</span>
+                    <button class="btn-sm danger" onclick="clearThreats()">
+                        <i class="fas fa-trash-alt"></i> Clear
+                    </button>
+                </div>
+            </div>
+            <div class="panel-body">
+                <!-- Threat Summary Counters -->
+                <div class="threat-summary">
+                    <div class="threat-counter critical">
+                        <span class="threat-count" id="threatCritical">0</span>
+                        <span class="threat-label">CRITICAL</span>
+                    </div>
+                    <div class="threat-counter high">
+                        <span class="threat-count" id="threatHigh">0</span>
+                        <span class="threat-label">HIGH</span>
+                    </div>
+                    <div class="threat-counter medium">
+                        <span class="threat-count" id="threatMedium">0</span>
+                        <span class="threat-label">MEDIUM</span>
+                    </div>
+                    <div class="threat-counter low">
+                        <span class="threat-count" id="threatLow">0</span>
+                        <span class="threat-label">LOW</span>
+                    </div>
+                </div>
+
+                <!-- Attack Detection Log -->
+                <div class="attack-log-header">
+                    <span>Time</span>
+                    <span>Severity</span>
+                    <span>Attack Type</span>
+                    <span>Source</span>
+                    <span>Method</span>
+                    <span>Details</span>
+                    <span>Action</span>
+                </div>
+                <div class="attack-log" id="attackLog">
+                    <div class="ir-empty">No threats detected - system clear</div>
+                </div>
+
+                <!-- Active Restrictions -->
+                <div class="ir-section">
+                    <h4 class="ir-section-title"><i class="fas fa-gavel"></i> Active Restrictions</h4>
+                    <div class="ban-list" id="banList">
+                        <div class="ir-empty">No active restrictions</div>
+                    </div>
+                </div>
+
+                <!-- Kill Switch Controls -->
+                <div class="ir-section">
+                    <h4 class="ir-section-title"><i class="fas fa-skull-crossbones"></i> Kill Switches</h4>
+                    <div class="killswitch-grid">
+                        <button class="killswitch" onclick="killswitchBanIP()">
+                            <i class="fas fa-ban"></i>
+                            <span>Ban IP</span>
+                        </button>
+                        <button class="killswitch" onclick="killswitchRateLimit()">
+                            <i class="fas fa-tachometer-alt"></i>
+                            <span>Throttle</span>
+                        </button>
+                        <button class="killswitch" onclick="killswitchBlockMethod()">
+                            <i class="fas fa-lock"></i>
+                            <span>Block Method</span>
+                        </button>
+                        <button class="killswitch" onclick="killswitchFreezeAccount()">
+                            <i class="fas fa-snowflake"></i>
+                            <span>Freeze Account</span>
+                        </button>
+                        <button class="killswitch emergency" onclick="killswitchEmergencyShutdown()">
+                            <i class="fas fa-power-off"></i>
+                            <span>Emergency Stop</span>
+                        </button>
+                        <button class="killswitch emergency" onclick="killswitchDenyAll()">
+                            <i class="fas fa-shield-alt"></i>
+                            <span>Deny All</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+        <span>MoltChain Mission Control v1.0</span>
+        <span class="footer-sep">|</span>
+        <span>Refresh: <span id="refreshRate">3s</span></span>
+        <span class="footer-sep">|</span>
+        <span>Last update: <span id="lastUpdate">--</span></span>
+    </footer>
+
+    <script src="js/monitoring.js"></script>
+</body>
+</html>
