@@ -8,15 +8,17 @@
 
 ## Executive Summary
 
-| Severity | Count | Status |
-|----------|-------|--------|
-| CRITICAL | 10 | New — must fix before mainnet |
-| HIGH     | 18 | New — should fix before mainnet |
-| MEDIUM   | 20 | New — fix or accept with justification |
-| LOW      | 7  | Informational / low risk |
-| **Total** | **55** | |
+| Severity | Count | Fixed | False Positive | Deferred | Status |
+|----------|-------|-------|----------------|----------|--------|
+| CRITICAL | 10 | **10** | 0 | 0 | **ALL FIXED** (cb4f947, 38832cd) |
+| HIGH     | 18 | **12** | 4 | 2 | ALL RESOLVED |
+| MEDIUM   | 20 | **15** | 3 | 2 | ALL RESOLVED |
+| LOW      | 7  | **5** | 0 | 2 (documented) | ALL RESOLVED |
+| **Total** | **55** | **42 fixed** | **7 FP** | **4 deferred** | **2 documented** |
 
 Previous audits resolved 188 issues. This final pass found **55 new issues** missed by earlier reviews, predominantly in cross-component interactions, serialization consistency, and economic invariant enforcement.
+
+**Resolution**: 42 fixed in code, 7 confirmed false positives, 4 deferred (complex/architectural), 2 low-severity documented with comments. **All 301 tests passing** after all changes (commits: a4e8f9e, cb4f947, 38832cd, f449583).
 
 ---
 
@@ -372,3 +374,78 @@ Fallback linear scan from `last_slot` to 0 for non-existent transactions.
 ```
 
 All findings above are **code-verified** with exact line numbers from the current codebase.
+
+---
+
+## Resolution Status (per finding)
+
+### CRITICAL — All 10 Fixed (commits cb4f947, 38832cd)
+| ID | Status | Commit | Notes |
+|----|--------|--------|-------|
+| C1 | **FIXED** | cb4f947 | Sorted voter_pubkeys by `.0` bytes |
+| C2 | **FIXED** | cb4f947 | delegate/undelegate update total_staked |
+| C3 | **FIXED** | cb4f947 | EVM batch uses bincode consistently |
+| C4 | **FIXED** | cb4f947 | ValidatorAnnounce deducts from treasury |
+| C5 | **FIXED** | cb4f947 | highest_seen only from validated blocks |
+| C6 | **FIXED** | cb4f947 | HashSet dedup in multisig verify |
+| C7 | **FIXED** | cb4f947 | delete_transaction + revert_block_transactions |
+| C8 | **FIXED** | 38832cd | HMAC-SHA512 with master seed from env |
+| C9 | **FIXED** | 38832cd | Auth header on signing requests |
+| C10 | **FIXED** | 38832cd | Privacy proofs disabled by default |
+
+### HIGH — 12 Fixed, 4 False Positive, 2 Deferred (commit f449583)
+| ID | Status | Notes |
+|----|--------|-------|
+| H1 | **FIXED** | Fee-free types require treasury/genesis authority |
+| H2 | **FIXED** | EVM fee charged in batch |
+| H3 | **DEFERRED** | EVM atomicity — requires REVM transact() refactor (tracked as T7.1) |
+| H4 | **FALSE POSITIVE** | Single-threaded block processing, no concurrency risk |
+| H5 | **FIXED** | WriteBatch for transfer() with serde_json consistency |
+| H6 | **FALSE POSITIVE** | In-memory counters dropped on batch rollback, no persistence risk |
+| H7 | **FALSE POSITIVE** | Dirty markers are metadata only, pruning has no state effect |
+| H8 | **FIXED** | Vote equivocation prevention (slot+validator dedup) |
+| H9 | **FIXED** | Commission credited to validator account |
+| H10 | **FIXED** | base_weight * reputation / 100 preserves granularity |
+| H11 | **FIXED** | UNSTAKE_COOLDOWN_SLOTS = 1_512_000 |
+| H12 | **FIXED** | Block production state-machine guard |
+| H13 | **FIXED** | Vote processing dedup |
+| H14 | **FIXED** | CORS exact host matching via URL parse |
+| H15 | **FIXED** | TX cache insert only after successful submit |
+| H16 | **DEFERRED** | Needs mempool routing for state-mutating RPCs (architectural) |
+| H17 | **FALSE POSITIVE** | Staleness cleanup already exists in peer management |
+| H18 | **FIXED** | Deser failure counter + disconnect after threshold |
+
+### MEDIUM — 15 Fixed, 3 False Positive, 2 Deferred (commit f449583)
+| ID | Status | Notes |
+|----|--------|-------|
+| M1 | **FALSE POSITIVE** | reconcile does full DB scan via count_active_accounts_full_scan |
+| M2 | **FIXED** | register_symbol calls normalize_symbol (validates alphanumeric + length) |
+| M3 | **FIXED** | Reverse EVM address mapping written in non-batch path |
+| M4 | **FIXED** | charge_fee_direct() before batch; failed TXs still pay fees |
+| M5 | **FIXED** | UnstakeRequest.staker field; identity verified in claim_unstake |
+| M6 | **FIXED** | NFT token_id indexed via batch wrapper b_index_nft_token_id() |
+| M7 | **FIXED** | Downtime evidence deduplicated (missed_slots comparison) |
+| M8 | **FALSE POSITIVE** | Denominator already includes delegations via C2 fix |
+| M9 | **FIXED** | EVM shell overflow → commit_errors push + continue |
+| M10 | **FIXED** | total_molt_staked decremented at request_unstake time |
+| M11 | **FIXED** | fixup_legacy() on Account deserialization |
+| M12 | **FIXED** | F32/F64 AbiType variants for WASM float params |
+| M13 | **FIXED** | LazyLock static mutex serializes reserve read-modify-write |
+| M14 | **DEFERRED** | Swap slippage — needs real DEX output parsing |
+| M15 | **FIXED** | Solana signature fetch limit: 1 → 10, iterate all |
+| M16 | **DEFERRED** | ERC-20 gas funding — needs treasury gas grant mechanism |
+| M17 | **FIXED** | Withdrawal endpoint requires Bearer auth token |
+| M18 | **FIXED** | DashMap guard cloned+dropped before async I/O |
+| M19 | **FALSE POSITIVE** | Block range validated at handler layer (network.rs) |
+| M20 | **FIXED** | Reverse block scan capped at 1000 slots |
+
+### LOW — 5 Fixed, 2 Documented (commit f449583)
+| ID | Status | Notes |
+|----|--------|-------|
+| L1 | **FIXED** | Merkle odd-leaf rehashed with itself (CVE-2012-2459 class) |
+| L2 | **FIXED** | PartialEq compares hash, not priority |
+| L3 | **DOCUMENTED** | Code comment added — dust is tracking-only, value in exchange rate |
+| L4 | **DOCUMENTED** | Code comment added — timestamps advisory, not used for critical decisions |
+| L5 | **FIXED** | Peer store data collected under lock, file I/O outside lock |
+| L6 | **FIXED** | cleanup_stale() evicts >24h entries; airdrops vec capped at 10K |
+| L7 | **FIXED** | Supervisor resets backoff after 180s uptime |
