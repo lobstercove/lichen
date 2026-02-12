@@ -57,6 +57,11 @@ struct CustodyConfig {
     jupiter_api_url: Option<String>,    // Solana DEX aggregator for USDT↔USDC swaps
     uniswap_router: Option<String>,     // Ethereum DEX router for USDT↔USDC swaps
     deposit_ttl_secs: i64,              // Expire unfunded deposits after this many seconds (default: 24h)
+    /// C8 fix: Secret master seed for key derivation (HMAC-SHA256 instead of plain SHA256).
+    /// Load from CUSTODY_MASTER_SEED env var. Required for production.
+    master_seed: String,
+    /// C9 fix: Auth token for threshold signer requests
+    signer_auth_token: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -370,7 +375,7 @@ async fn create_deposit(
         if is_solana_stablecoin(&asset) {
             let mint = solana_mint_for_asset(&state.config, &asset)
                 .map_err(|e| Json(ErrorResponse::invalid(&e)))?;
-            let owner = derive_solana_owner_pubkey(&derivation_path)
+            let owner = derive_solana_owner_pubkey(&derivation_path, &state.config.master_seed)
                 .map_err(|e| Json(ErrorResponse::invalid(&e)))?;
             let ata = derive_associated_token_address(&owner, &mint)
                 .map_err(|e| Json(ErrorResponse::invalid(&e)))?;
@@ -379,11 +384,11 @@ async fn create_deposit(
                 .map_err(|e| Json(ErrorResponse::invalid(&e)))?;
             ata
         } else {
-            derive_deposit_address(&chain, &asset, &derivation_path)
+            derive_deposit_address(&chain, &asset, &derivation_path, &state.config.master_seed)
                 .map_err(|e| Json(ErrorResponse::invalid(&e)))?
         }
     } else {
-        derive_deposit_address(&chain, &asset, &derivation_path)
+        derive_deposit_address(&chain, &asset, &derivation_path, &state.config.master_seed)
             .map_err(|e| Json(ErrorResponse::invalid(&e)))?
     };
 
@@ -546,16 +551,16 @@ fn set_last_u64_index(db: &DB, key: &str, value: u64) -> Result<(), String> {
         .map_err(|e| format!("db put: {}", e))
 }
 
-fn derive_deposit_address(chain: &str, asset: &str, path: &str) -> Result<String, String> {
+fn derive_deposit_address(chain: &str, asset: &str, path: &str, master_seed: &str) -> Result<String, String> {
     match (chain, asset) {
-        ("sol", _) | ("solana", _) => derive_solana_address(path),
-        ("eth", _) | ("ethereum", _) => derive_evm_address(path),
+        ("sol", _) | ("solana", _) => derive_solana_address(path, master_seed),
+        ("eth", _) | ("ethereum", _) => derive_evm_address(path, master_seed),
         _ => Err(format!("Unsupported chain: {}", chain)),
     }
 }
 
-fn derive_solana_owner_pubkey(path: &str) -> Result<String, String> {
-    derive_solana_address(path)
+fn derive_solana_owner_pubkey(path: &str, master_seed: &str) -> Result<String, String> {
+    derive_solana_address(path, master_seed)
 }
 
 fn is_solana_stablecoin(asset: &str) -> bool {
@@ -788,6 +793,14 @@ fn load_config() -> CustodyConfig {
         jupiter_api_url,
         uniswap_router,
         deposit_ttl_secs,
+        // C8 fix: secret master seed (required for production key derivation)
+        master_seed: std::env::var("CUSTODY_MASTER_SEED")
+            .unwrap_or_else(|_| {
+                tracing::warn!("⚠️  CUSTODY_MASTER_SEED not set — using insecure default! Set this in production!");
+                "INSECURE_DEFAULT_SEED_DO_NOT_USE_IN_PRODUCTION".to_string()
+            }),
+        // C9 fix: auth token for threshold signers
+        signer_auth_token: std::env::var("CUSTODY_SIGNER_AUTH_TOKEN").ok(),
     }
 }
 
@@ -1766,7 +1779,12 @@ async fn collect_signatures(state: &CustodyState, job: &mut SweepJob) -> Result<
 
     for endpoint in &state.config.signer_endpoints {
         let url = format!("{}/sign", endpoint.trim_end_matches('/'));
-        let response = match state.http.post(url).json(&request).send().await {
+        // C9 fix: Include auth header so threshold signer accepts the request
+        let mut req = state.http.post(url).json(&request);
+        if let Some(ref token) = state.config.signer_auth_token {
+            req = req.bearer_auth(token);
+        }
+        let response = match req.send().await {
             Ok(response) => response,
             Err(err) => {
                 warn!("signer request failed: {}", err);
@@ -1855,7 +1873,7 @@ async fn broadcast_solana_sweep(
     };
 
     let recent_blockhash = solana_get_latest_blockhash(&state.http, url).await?;
-    let (signing_key, from_pubkey) = derive_solana_signer(&deposit.derivation_path)?;
+    let (signing_key, from_pubkey) = derive_solana_signer(&deposit.derivation_path, &state.config.master_seed)?;
     let to_pubkey = decode_solana_pubkey(&job.to_treasury)?;
 
     let message =
@@ -1972,7 +1990,7 @@ async fn broadcast_evm_sweep(
     let value = amount - fee;
 
     let chain_id = evm_get_chain_id(&state.http, url).await?;
-    let signing_key = derive_evm_signing_key(&deposit.derivation_path)?;
+    let signing_key = derive_evm_signing_key(&deposit.derivation_path, &state.config.master_seed)?;
     let raw_tx = build_evm_signed_transaction(
         &signing_key,
         nonce,
@@ -2022,7 +2040,7 @@ async fn broadcast_evm_token_sweep(
     }
 
     let chain_id = evm_get_chain_id(&state.http, url).await?;
-    let signing_key = derive_evm_signing_key(&deposit.derivation_path)?;
+    let signing_key = derive_evm_signing_key(&deposit.derivation_path, &state.config.master_seed)?;
     let data = evm_encode_erc20_transfer(&to_address, amount)?;
     let raw_tx = build_evm_signed_transaction_with_data(
         &signing_key,
@@ -2431,22 +2449,32 @@ fn update_deposit_status(db: &DB, deposit_id: &str, status: &str) -> Result<(), 
     store_deposit(db, &record)
 }
 
-fn derive_solana_address(path: &str) -> Result<String, String> {
+fn derive_solana_address(path: &str, master_seed: &str) -> Result<String, String> {
     use ed25519_dalek::SigningKey;
-    use sha2::{Digest, Sha256};
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
 
-    let seed = Sha256::digest(path.as_bytes());
+    // C8 fix: HMAC-SHA256(master_seed, path) instead of plain SHA256(path)
+    let mut mac = Hmac::<Sha256>::new_from_slice(master_seed.as_bytes())
+        .map_err(|_| "HMAC key error")?;
+    mac.update(path.as_bytes());
+    let seed = mac.finalize().into_bytes();
     let seed_bytes: [u8; 32] = seed.as_slice().try_into().map_err(|_| "seed")?;
     let signing_key = SigningKey::from_bytes(&seed_bytes);
     let verifying_key = signing_key.verifying_key();
     Ok(bs58::encode(verifying_key.to_bytes()).into_string())
 }
 
-fn derive_solana_signer(path: &str) -> Result<(ed25519_dalek::SigningKey, [u8; 32]), String> {
+fn derive_solana_signer(path: &str, master_seed: &str) -> Result<(ed25519_dalek::SigningKey, [u8; 32]), String> {
     use ed25519_dalek::SigningKey;
-    use sha2::{Digest, Sha256};
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
 
-    let seed = Sha256::digest(path.as_bytes());
+    // C8 fix: HMAC-SHA256(master_seed, path)
+    let mut mac = Hmac::<Sha256>::new_from_slice(master_seed.as_bytes())
+        .map_err(|_| "HMAC key error")?;
+    mac.update(path.as_bytes());
+    let seed = mac.finalize().into_bytes();
     let seed_bytes: [u8; 32] = seed.as_slice().try_into().map_err(|_| "seed")?;
     let signing_key = SigningKey::from_bytes(&seed_bytes);
     let verifying_key = signing_key.verifying_key();
@@ -2517,12 +2545,18 @@ fn find_program_address(seeds: &[&[u8]], program_id: &[u8; 32]) -> Result<[u8; 3
     Err("no viable program address".to_string())
 }
 
-fn derive_evm_address(path: &str) -> Result<String, String> {
+fn derive_evm_address(path: &str, master_seed: &str) -> Result<String, String> {
     use k256::ecdsa::SigningKey;
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
     use sha3::{Digest, Keccak256};
 
-    let digest = Keccak256::digest(path.as_bytes());
-    let key = SigningKey::from_bytes(&digest).map_err(|_| "invalid seed")?;
+    // C8 fix: HMAC-SHA256(master_seed, path) instead of Keccak256(path)
+    let mut mac = Hmac::<Sha256>::new_from_slice(master_seed.as_bytes())
+        .map_err(|_| "HMAC key error")?;
+    mac.update(path.as_bytes());
+    let seed = mac.finalize().into_bytes();
+    let key = SigningKey::from_bytes(&seed.into()).map_err(|_| "invalid seed")?;
     let verifying_key = key.verifying_key();
     let encoded = verifying_key.to_encoded_point(false);
     let pubkey = encoded.as_bytes();
@@ -2531,11 +2565,16 @@ fn derive_evm_address(path: &str) -> Result<String, String> {
     Ok(format!("0x{}", hex::encode(addr)))
 }
 
-fn derive_evm_signing_key(path: &str) -> Result<k256::ecdsa::SigningKey, String> {
-    use sha3::{Digest, Keccak256};
+fn derive_evm_signing_key(path: &str, master_seed: &str) -> Result<k256::ecdsa::SigningKey, String> {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
 
-    let digest = Keccak256::digest(path.as_bytes());
-    k256::ecdsa::SigningKey::from_bytes(&digest).map_err(|_| "invalid seed".to_string())
+    // C8 fix: HMAC-SHA256(master_seed, path) instead of Keccak256(path)
+    let mut mac = Hmac::<Sha256>::new_from_slice(master_seed.as_bytes())
+        .map_err(|_| "HMAC key error")?;
+    mac.update(path.as_bytes());
+    let seed = mac.finalize().into_bytes();
+    k256::ecdsa::SigningKey::from_bytes(&seed.into()).map_err(|_| "invalid seed".to_string())
 }
 
 async fn solana_get_latest_blockhash(
@@ -3572,7 +3611,7 @@ async fn execute_ethereum_rebalance_swap(
 
     // Step 1: Approve the from_token to the Uniswap router
     let approve_data = evm_encode_erc20_approve(_router, job.amount as u128)?;
-    let signing_key = derive_evm_signing_key("custody-treasury-evm")?;
+    let signing_key = derive_evm_signing_key("custody-treasury-evm", &state.config.master_seed)?;
     let approve_tx = build_evm_signed_transaction_with_data(
         &signing_key,
         nonce,
@@ -4061,6 +4100,8 @@ mod tests {
             jupiter_api_url: None,
             uniswap_router: None,
             deposit_ttl_secs: 86400,
+            master_seed: "test_master_seed_for_unit_tests".to_string(),
+            signer_auth_token: Some("test_token".to_string()),
         }
     }
 
@@ -4122,7 +4163,7 @@ mod tests {
 
     #[test]
     fn test_derive_deposit_address_unsupported_chain() {
-        let result = derive_deposit_address("bitcoin", "btc", "m/44'/0'/0'/0/0");
+        let result = derive_deposit_address("bitcoin", "btc", "m/44'/0'/0'/0/0", "test_seed");
         assert!(result.is_err());
     }
 

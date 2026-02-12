@@ -13,6 +13,7 @@ bs58 = "0.5"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 hex = "0.4"
 hkdf = "0.12"
+hmac = "0.12"
 k256 = { version = "0.13", features = ["ecdsa"] }
 reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
 rocksdb = "0.21"

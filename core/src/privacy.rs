@@ -47,6 +47,10 @@ pub struct ShieldedPool {
     pub nullifier_set: Vec<[u8; 32]>,
     /// Total shielded balance (sum of all unspent notes)
     pub total_shielded: u64,
+    /// C10 fix: ZK proof verification is placeholder — disabled by default.
+    /// Set to true ONLY for unit tests. Real ZK proofs must be implemented
+    /// before enabling in production.
+    pub allow_placeholder_proofs: bool,
 }
 
 impl ShieldedPool {
@@ -55,12 +59,21 @@ impl ShieldedPool {
             commitment_root: [0u8; 32],
             nullifier_set: Vec::new(),
             total_shielded: 0,
+            allow_placeholder_proofs: false,
         }
     }
 
-    /// Verify a zero-knowledge proof using HMAC-SHA256 against the pool's commitment root.
-    /// Proof structure: type_tag (1) + commitment_hash (32) + nonce (16) + hmac (32) = 81 bytes min.
+    /// Verify a zero-knowledge proof.
+    ///
+    /// C10 fix: This is a PLACEHOLDER that uses HMAC-SHA256 keyed with public data.
+    /// It is NOT a real ZK proof and is forgeable by anyone who can read chain state.
+    /// Returns false by default unless `allow_placeholder_proofs` is explicitly set.
+    /// Replace with Groth16/PLONK verification before enabling shielded transactions.
     pub fn verify_proof(&self, proof: &ZkProof) -> bool {
+        // C10 fix: reject all proofs by default — placeholder is forgeable
+        if !self.allow_placeholder_proofs {
+            return false;
+        }
         // Minimum proof size: 1 (type) + 32 (commitment) + 16 (nonce) + 32 (hmac) = 81
         if proof.data.len() < 81 || proof.data.len() > 512 {
             return false;
@@ -206,9 +219,16 @@ mod tests {
         }
     }
 
+    /// Create a test pool with placeholder proofs enabled (tests only)
+    fn test_pool() -> ShieldedPool {
+        let mut pool = ShieldedPool::new();
+        pool.allow_placeholder_proofs = true;
+        pool
+    }
+
     #[test]
     fn test_shield_tokens() {
-        let mut pool = ShieldedPool::new();
+        let mut pool = test_pool();
         assert_eq!(pool.total_shielded, 0);
 
         let note = make_note([1u8; 32], [2u8; 32]);
@@ -221,7 +241,7 @@ mod tests {
 
     #[test]
     fn test_unshield_tokens() {
-        let mut pool = ShieldedPool::new();
+        let mut pool = test_pool();
         let note = make_note([1u8; 32], [2u8; 32]);
         let proof = make_proof(ProofType::Shield, &pool.commitment_root);
         pool.shield(1000, note, &proof).unwrap();
@@ -235,7 +255,7 @@ mod tests {
 
     #[test]
     fn test_double_spend_prevention() {
-        let mut pool = ShieldedPool::new();
+        let mut pool = test_pool();
         let note = make_note([1u8; 32], [2u8; 32]);
         let proof = make_proof(ProofType::Shield, &pool.commitment_root);
         pool.shield(1000, note, &proof).unwrap();
@@ -255,7 +275,7 @@ mod tests {
 
     #[test]
     fn test_shielded_transfer() {
-        let mut pool = ShieldedPool::new();
+        let mut pool = test_pool();
         let note = make_note([1u8; 32], [2u8; 32]);
         let proof = make_proof(ProofType::Shield, &pool.commitment_root);
         pool.shield(1000, note, &proof).unwrap();
