@@ -13,15 +13,16 @@
 5. [Phase 1 — Genesis on Local Machine](#phase-1--genesis-on-local-machine)
 6. [Phase 2 — Deploy VPS Seed Validators](#phase-2--deploy-vps-seed-validators)
 7. [Phase 3 — Custody Bridge](#phase-3--custody-bridge)
-8. [Phase 4 — Faucet & Frontend Services](#phase-4--faucet--frontend-services)
-9. [Phase 5 — Agent Validators Join](#phase-5--agent-validators-join)
-10. [seeds.json — Production Version](#seedsjson--production-version)
-11. [DNS Load Balancing](#dns-load-balancing)
-12. [Reverse Proxy (Caddy)](#reverse-proxy-caddy)
-13. [Firewall Rules](#firewall-rules)
-14. [Monitoring](#monitoring)
-15. [Backup & Recovery](#backup--recovery)
-16. [Troubleshooting](#troubleshooting)
+8. [Phase 4 — Faucet Service](#phase-4--faucet-service)
+9. [Phase 5 — Cloudflare Pages (Static Portals)](#phase-5--cloudflare-pages-static-portals)
+10. [Phase 6 — Agent Validators Join](#phase-6--agent-validators-join)
+11. [seeds.json — Production Version](#seedsjson--production-version)
+12. [DNS Load Balancing](#dns-load-balancing)
+13. [Reverse Proxy (Caddy)](#reverse-proxy-caddy)
+14. [Firewall Rules](#firewall-rules)
+15. [Monitoring](#monitoring)
+16. [Backup & Recovery](#backup--recovery)
+17. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -67,36 +68,48 @@ cargo build --release
 ┌───────────────────────────────────────────────────────────────────┐
 │                      moltchain.network DNS                        │
 │                                                                   │
+│  BACKEND (VPS)                                                    │
+│  ──────────────────────────────────────────────────────────       │
 │  rpc.moltchain.network          →  Round-robin to all 3 VPS      │
 │  ws.moltchain.network           →  Round-robin to all 3 VPS      │
-│  seed-eu.moltchain.network      →  EU VPS                        │
-│  seed-us.moltchain.network      →  US VPS                        │
-│  seed-ap.moltchain.network      →  ASIA VPS                      │
+│  seed-eu.moltchain.network      →  EU VPS (direct IP)            │
+│  seed-us.moltchain.network      →  US VPS (direct IP)            │
+│  seed-ap.moltchain.network      →  ASIA VPS (direct IP)          │
 │  custody.moltchain.network      →  US VPS                        │
 │  faucet.moltchain.network       →  US VPS (testnet only)         │
-│  explorer.moltchain.network     →  US VPS (or CDN)               │
-│  wallet.moltchain.network       →  US VPS (or CDN)               │
-│  dex.moltchain.network          →  US VPS (or CDN)               │
-│  marketplace.moltchain.network  →  US VPS (or CDN)               │
-│  programs.moltchain.network     →  US VPS (or CDN)               │
-│  developers.moltchain.network   →  US VPS (or CDN)               │
-│  monitoring.moltchain.network   →  US VPS (or CDN)               │
-│  moltchain.network              →  US VPS (main website)         │
+│                                                                   │
+│  STATIC PORTALS (Cloudflare Pages — global CDN edge)              │
+│  ──────────────────────────────────────────────────────────       │
+│  moltchain.network              →  CF Pages (main website)        │
+│  explorer.moltchain.network     →  CF Pages                      │
+│  wallet.moltchain.network       →  CF Pages                      │
+│  dex.moltchain.network          →  CF Pages                      │
+│  marketplace.moltchain.network  →  CF Pages                      │
+│  programs.moltchain.network     →  CF Pages                      │
+│  developers.moltchain.network   →  CF Pages                      │
+│  monitoring.moltchain.network   →  CF Pages                      │
 └───────────────────────────────────────────────────────────────────┘
 
-┌────────────────────┐    ┌──────────────────────┐    ┌────────────────────┐
-│   EU VPS           │    │   US VPS (SEED)      │    │   ASIA VPS         │
-│   Frankfurt        │    │   New York           │    │   Singapore        │
-│                    │    │                      │    │                    │
-│ Validator  :8000   │◄──►│ Validator  :8000     │◄──►│ Validator  :8000   │
-│ RPC        :8899   │    │ RPC        :8899     │    │ RPC        :8899   │
-│ WebSocket  :8900   │    │ WebSocket  :8900     │    │ WebSocket  :8900   │
-│ Signer     :9200   │    │ Signer     :9200     │    │ Signer     :9200   │
-│                    │    │ Custody    :9105     │    │                    │
-│                    │    │ Faucet     :8901     │    │                    │
-│                    │    │ Static portals (x9)  │    │                    │
-│ Caddy      :443    │    │ Caddy      :443      │    │ Caddy      :443    │
-└────────────────────┘    └──────────────────────┘    └────────────────────┘
+┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐
+│  Cloudflare Pages (300+ edge locations)                         │
+│  Static HTML/CSS/JS — auto-deploy on git push                   │
+│  website · explorer · wallet · dex · marketplace                │
+│  programs · developers · monitoring                             │
+└ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┘
+        ▲ users worldwide (~20ms latency)
+        │
+┌────────────────────┐    ┌────────────────────┐    ┌────────────────────┐
+│   EU VPS           │    │   US VPS (SEED)    │    │   ASIA VPS         │
+│   Frankfurt        │    │   New York         │    │   Singapore        │
+│                    │    │                    │    │                    │
+│ Validator  :8000   │◄──►│ Validator  :8000   │◄──►│ Validator  :8000   │
+│ RPC        :8899   │    │ RPC        :8899   │    │ RPC        :8899   │
+│ WebSocket  :8900   │    │ WebSocket  :8900   │    │ WebSocket  :8900   │
+│ Signer     :9200   │    │ Signer     :9200   │    │ Signer     :9200   │
+│                    │    │ Custody    :9105   │    │                    │
+│                    │    │ Faucet     :8901   │    │                    │
+│ Caddy      :443    │    │ Caddy      :443    │    │ Caddy      :443    │
+└────────────────────┘    └────────────────────┘    └────────────────────┘
          ▲                         ▲                         ▲
          │                         │                         │
          └─────────────────────────┼─────────────────────────┘
@@ -117,6 +130,8 @@ cargo build --release
 
 Set these up on your DNS provider. I recommend Cloudflare for geo-based load balancing.
 
+### Backend Services (A records → VPS)
+
 | Type | Name | Value | Proxy | TTL | Notes |
 |---|---|---|---|---|---|
 | **A** | `seed-us` | `<US_VPS_IP>` | DNS only | 300 | US seed validator |
@@ -130,22 +145,35 @@ Set these up on your DNS provider. I recommend Cloudflare for geo-based load bal
 | **A** | `ws` | `<ASIA_VPS_IP>` | DNS only | 300 | WebSocket round-robin |
 | **A** | `custody` | `<US_VPS_IP>` | Proxied | Auto | Custody bridge (single instance) |
 | **A** | `faucet` | `<US_VPS_IP>` | Proxied | Auto | Faucet (testnet only) |
-| **A** | `explorer` | `<US_VPS_IP>` | Proxied | Auto | Block explorer |
-| **A** | `wallet` | `<US_VPS_IP>` | Proxied | Auto | Web wallet |
-| **A** | `dex` | `<US_VPS_IP>` | Proxied | Auto | ClawSwap DEX |
-| **A** | `marketplace` | `<US_VPS_IP>` | Proxied | Auto | NFT / skill marketplace |
-| **A** | `programs` | `<US_VPS_IP>` | Proxied | Auto | Programs IDE (browser compiler) |
-| **A** | `developers` | `<US_VPS_IP>` | Proxied | Auto | Developer portal & docs |
-| **A** | `monitoring` | `<US_VPS_IP>` | Proxied | Auto | Public network dashboard |
-| **A** | `@` | `<US_VPS_IP>` | Proxied | Auto | Main website |
-| **CNAME** | `www` | `moltchain.network` | Proxied | Auto | www redirect |
 
-> All portal subdomains (`explorer`, `wallet`, `dex`, `marketplace`, `programs`, `developers`, `monitoring`) can safely be **Proxied** through Cloudflare (orange cloud) — they're standard HTTPS static sites.
+### Static Portals (CNAME → Cloudflare Pages)
+
+All frontend portals are **pure static HTML/CSS/JS** — no server process required. Deploy them to **Cloudflare Pages** for global CDN edge delivery (~20 ms worldwide), zero maintenance, automatic HTTPS, and no VPS dependency.
+
+| Type | Name | Value | Proxy | Notes |
+|---|---|---|---|---|
+| **CNAME** | `@` | `moltchain-website.pages.dev` | Proxied | Main website |
+| **CNAME** | `www` | `moltchain.network` | Proxied | www redirect |
+| **CNAME** | `explorer` | `moltchain-explorer.pages.dev` | Proxied | Block explorer |
+| **CNAME** | `wallet` | `moltchain-wallet.pages.dev` | Proxied | Web wallet |
+| **CNAME** | `dex` | `moltchain-dex.pages.dev` | Proxied | ClawSwap DEX |
+| **CNAME** | `marketplace` | `moltchain-marketplace.pages.dev` | Proxied | NFT / skill marketplace |
+| **CNAME** | `programs` | `moltchain-programs.pages.dev` | Proxied | Programs IDE |
+| **CNAME** | `developers` | `moltchain-developers.pages.dev` | Proxied | Developer portal & docs |
+| **CNAME** | `monitoring` | `moltchain-monitoring.pages.dev` | Proxied | Public network dashboard |
+
+> **Why Cloudflare Pages over VPS?**
+> - Free tier, unlimited bandwidth, 500 builds/month
+> - Served from 300+ edge locations (vs 1 VPS in NYC)
+> - Auto-deploy on `git push` — no SSH/scp needed
+> - If the VPS goes down, all portals stay live (they don't depend on VPS)
+> - Automatic HTTPS, HTTP/3, Brotli compression
 
 **Key points:**
 - `seed-*.moltchain.network` must be **DNS only** (gray cloud) — P2P QUIC needs direct IP, not Cloudflare proxy
 - `ws.moltchain.network` must be **DNS only** — Cloudflare free plan doesn't support arbitrary WebSocket
 - `rpc.moltchain.network` can be **Proxied** (orange cloud) — standard HTTPS works through CF
+- All portal CNAMEs point to `*.pages.dev` — Cloudflare auto-provisions SSL for the custom domain
 - Multiple A records for the same subdomain = DNS round-robin load balancing
 
 ### Geo-Steering (Cloudflare Pro, optional)
@@ -459,9 +487,11 @@ The custody service calls each validator's threshold signer on port 9200. These 
 
 ---
 
-## Phase 4 — Faucet & Frontend Services
+## Phase 4 — Faucet Service
 
 ### Faucet (US VPS, testnet only)
+
+The faucet is the only "frontend" that runs as a server process (Rust binary). It serves both the API and its own static UI.
 
 ```bash
 sudo tee /etc/systemd/system/moltchain-faucet.service <<'EOF'
@@ -488,27 +518,117 @@ WantedBy=multi-user.target
 EOF
 ```
 
-### Static Frontends (All Portals)
-
-These are static HTML/CSS/JS files. Deploy them via Caddy's file server or a CDN.
+The faucet UI files should still be copied to the VPS since Caddy serves them alongside the API:
 
 ```bash
-# Copy ALL portal sites to the VPS
-sudo mkdir -p /opt/moltchain/www/{website,explorer,wallet,developers,faucet-ui,dex,marketplace,programs,monitoring}
-sudo cp -r website/*      /opt/moltchain/www/website/
-sudo cp -r explorer/*     /opt/moltchain/www/explorer/
-sudo cp -r wallet/*       /opt/moltchain/www/wallet/
-sudo cp -r developers/*   /opt/moltchain/www/developers/
-sudo cp -r dex/*          /opt/moltchain/www/dex/
-sudo cp -r marketplace/*  /opt/moltchain/www/marketplace/
-sudo cp -r programs/*     /opt/moltchain/www/programs/
-sudo cp -r monitoring/*   /opt/moltchain/www/monitoring/
+sudo mkdir -p /opt/moltchain/www/faucet-ui
 sudo cp -r faucet/*.html faucet/*.css faucet/*.js /opt/moltchain/www/faucet-ui/ 2>/dev/null
+```
+
+---
+
+## Phase 5 — Cloudflare Pages (Static Portals)
+
+All frontend portals (website, explorer, wallet, DEX, marketplace, programs, developers, monitoring) are **pure static HTML/CSS/JS**. Instead of hosting them on the VPS, deploy them to **Cloudflare Pages** for global edge delivery.
+
+### Why Cloudflare Pages
+
+| | VPS (Caddy file_server) | Cloudflare Pages |
+|---|---|---|
+| Latency for Asia users | ~200 ms to NYC | ~20 ms to nearest edge |
+| VPS goes down | All portals down | Portals stay live |
+| SSL certificates | Caddy manages Let's Encrypt | Automatic, zero config |
+| Deploy workflow | `scp` files to VPS via SSH | `git push` (auto-deploy) |
+| Cost | Uses VPS bandwidth | Free (unlimited sites, 500 builds/mo) |
+| Scaling | Limited to VPS capacity | Unlimited (Cloudflare CDN) |
+
+### Step 1: Create Cloudflare Pages Projects
+
+In the Cloudflare dashboard → **Workers & Pages** → **Create**:
+
+| Project name | Git repo | Build output directory | Custom domain |
+|---|---|---|---|
+| `moltchain-website` | `MoltChain/moltchain` | `website` | `moltchain.network` |
+| `moltchain-explorer` | `MoltChain/moltchain` | `explorer` | `explorer.moltchain.network` |
+| `moltchain-wallet` | `MoltChain/moltchain` | `wallet` | `wallet.moltchain.network` |
+| `moltchain-dex` | `MoltChain/moltchain` | `dex` | `dex.moltchain.network` |
+| `moltchain-marketplace` | `MoltChain/moltchain` | `marketplace` | `marketplace.moltchain.network` |
+| `moltchain-programs` | `MoltChain/moltchain` | `programs` | `programs.moltchain.network` |
+| `moltchain-developers` | `MoltChain/moltchain` | `developers` | `developers.moltchain.network` |
+| `moltchain-monitoring` | `MoltChain/moltchain` | `monitoring` | `monitoring.moltchain.network` |
+
+For each project:
+
+1. **Connect to Git** → Select the `MoltChain/moltchain` repo
+2. **Framework preset** → `None` (these are plain static files, no build step)
+3. **Build command** → *(leave empty)*
+4. **Build output directory** → Set to the subdirectory (e.g. `wallet`)
+5. **Deploy** → Cloudflare builds and publishes to `<project>.pages.dev`
+
+### Step 2: Add Custom Domains
+
+For each Pages project, go to **Custom domains** → **Set up a custom domain** → enter the subdomain (e.g. `wallet.moltchain.network`). Cloudflare automatically:
+- Creates the CNAME DNS record
+- Provisions an SSL certificate
+- Routes traffic to the Pages deployment
+
+If you prefer to set DNS manually:
+
+```
+# In Cloudflare DNS → moltchain.network zone
+CNAME  explorer     moltchain-explorer.pages.dev     (Proxied)
+CNAME  wallet       moltchain-wallet.pages.dev       (Proxied)
+CNAME  dex          moltchain-dex.pages.dev          (Proxied)
+CNAME  marketplace  moltchain-marketplace.pages.dev  (Proxied)
+CNAME  programs     moltchain-programs.pages.dev     (Proxied)
+CNAME  developers   moltchain-developers.pages.dev   (Proxied)
+CNAME  monitoring   moltchain-monitoring.pages.dev   (Proxied)
+```
+
+For the apex domain (`moltchain.network`):
+```
+# Cloudflare supports CNAME flattening at the apex
+CNAME  @            moltchain-website.pages.dev      (Proxied)
+CNAME  www          moltchain.network                (Proxied)
+```
+
+### Step 3: Auto-Deploy on Git Push
+
+Once connected, every push to `main` triggers a rebuild of all Pages projects. Cloudflare detects which files changed and only rebuilds affected projects.
+
+To deploy manually (e.g. from CI or local):
+
+```bash
+# Install Wrangler CLI
+npm install -g wrangler
+
+# Authenticate (one-time)
+wrangler login
+
+# Deploy a specific portal
+wrangler pages deploy wallet/ --project-name=moltchain-wallet
+wrangler pages deploy explorer/ --project-name=moltchain-explorer
+wrangler pages deploy website/ --project-name=moltchain-website
+# ... etc for each portal
+```
+
+### Step 4: Verify Deployments
+
+After deploying, each portal is available at both the `*.pages.dev` URL and the custom domain:
+
+```bash
+# Check Pages URLs (available immediately)
+curl -sI https://moltchain-wallet.pages.dev | head -3
+curl -sI https://moltchain-explorer.pages.dev | head -3
+
+# Check custom domains (may take a few minutes for DNS + SSL)
+curl -sI https://wallet.moltchain.network | head -3
+curl -sI https://explorer.moltchain.network | head -3
 ```
 
 ### Frontend Configuration Checklist
 
-All the portal frontends have RPC/WS endpoint configuration that defaults to `localhost`. Before deploying to production, verify the network configs point to live URLs. Most apps have a multi-network config pattern (stored in `localStorage`) that already includes the production URLs.
+All portal frontends have RPC/WS endpoint configuration that defaults to `localhost`. Before deploying to production, verify the network configs point to live URLs. Most apps have a multi-network config pattern (stored in `localStorage`) that already includes the production URLs.
 
 | Portal | Config file | Has multi-network? | Production URLs in config? | Notes |
 |---|---|---|---|---|
@@ -533,7 +653,7 @@ All the portal frontends have RPC/WS endpoint configuration that defaults to `lo
 
 ---
 
-## Phase 5 — Agent Validators Join
+## Phase 6 — Agent Validators Join
 
 When an agent on a human's machine wants to run a validator:
 
@@ -686,7 +806,9 @@ curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo 
 sudo apt update && sudo apt install caddy
 ```
 
-### Caddyfile — US VPS (Full Stack)
+### Caddyfile — US VPS (Backend Services Only)
+
+Since all static portals are served by Cloudflare Pages, the US VPS Caddy only handles **backend services** (RPC, WebSocket, custody, faucet):
 
 ```
 # /etc/caddy/Caddyfile
@@ -715,69 +837,15 @@ faucet.moltchain.network {
     handle /health {
         reverse_proxy localhost:8901
     }
-    # Static UI
+    # Static UI (faucet is special — served from VPS because it needs its API co-located)
     handle {
         root * /opt/moltchain/www/faucet-ui
         file_server
     }
 }
-
-# Explorer
-explorer.moltchain.network {
-    root * /opt/moltchain/www/explorer
-    file_server
-    try_files {path} /index.html
-}
-
-# Wallet
-wallet.moltchain.network {
-    root * /opt/moltchain/www/wallet
-    file_server
-    try_files {path} /index.html
-}
-
-# DEX (ClawSwap)
-dex.moltchain.network {
-    root * /opt/moltchain/www/dex
-    file_server
-    try_files {path} /index.html
-}
-
-# Marketplace
-marketplace.moltchain.network {
-    root * /opt/moltchain/www/marketplace
-    file_server
-    try_files {path} /index.html
-}
-
-# Programs IDE
-programs.moltchain.network {
-    root * /opt/moltchain/www/programs
-    file_server
-    try_files {path} /index.html
-}
-
-# Developer Portal
-developers.moltchain.network {
-    root * /opt/moltchain/www/developers
-    file_server
-    try_files {path} /index.html
-}
-
-# Monitoring Dashboard
-monitoring.moltchain.network {
-    root * /opt/moltchain/www/monitoring
-    file_server
-    try_files {path} /index.html
-}
-
-# Main website
-moltchain.network, www.moltchain.network {
-    root * /opt/moltchain/www/website
-    file_server
-    try_files {path} /index.html
-}
 ```
+
+> **Note:** No static portal blocks needed — explorer, wallet, DEX, marketplace, programs, developers, monitoring, and the main website are all served by Cloudflare Pages.
 
 ### Caddyfile — EU & ASIA VPS (Validator Only)
 
@@ -984,7 +1052,7 @@ curl -s http://<OTHER_VPS_IP>:9200/health
 [ ] 7. Delete signer-keypair.json on EU/ASIA (they generate their own)
 ```
 
-### DNS (Cloudflare → moltchain.network)
+### DNS — Backend (A records → VPS)
 
 ```
 [ ] 8.  A record: seed-us   → <US_IP>     (DNS only, gray cloud)
@@ -994,22 +1062,27 @@ curl -s http://<OTHER_VPS_IP>:9200/health
 [ ] 12. A records: ws       → all 3 IPs   (DNS only — CF free breaks WS)
 [ ] 13. A record: custody   → <US_IP>     (Proxied)
 [ ] 14. A record: faucet    → <US_IP>     (Proxied)
-[ ] 15. A record: explorer  → <US_IP>     (Proxied)
-[ ] 16. A record: wallet    → <US_IP>     (Proxied)
-[ ] 17. A record: dex       → <US_IP>     (Proxied)
-[ ] 18. A record: marketplace → <US_IP>   (Proxied)
-[ ] 19. A record: programs  → <US_IP>     (Proxied)
-[ ] 20. A record: developers → <US_IP>    (Proxied)
-[ ] 21. A record: monitoring → <US_IP>    (Proxied)
-[ ] 22. A record: @         → <US_IP>     (Proxied — main website)
-[ ] 23. CNAME:    www       → moltchain.network (Proxied)
+```
+
+### DNS — Portals (CNAME → Cloudflare Pages)
+
+```
+[ ] 15. CNAME: @            → moltchain-website.pages.dev       (Proxied)
+[ ] 16. CNAME: www          → moltchain.network                 (Proxied)
+[ ] 17. CNAME: explorer     → moltchain-explorer.pages.dev      (Proxied)
+[ ] 18. CNAME: wallet       → moltchain-wallet.pages.dev        (Proxied)
+[ ] 19. CNAME: dex          → moltchain-dex.pages.dev           (Proxied)
+[ ] 20. CNAME: marketplace  → moltchain-marketplace.pages.dev   (Proxied)
+[ ] 21. CNAME: programs     → moltchain-programs.pages.dev      (Proxied)
+[ ] 22. CNAME: developers   → moltchain-developers.pages.dev    (Proxied)
+[ ] 23. CNAME: monitoring   → moltchain-monitoring.pages.dev    (Proxied)
 ```
 
 ### VPS Setup
 
 ```
 [ ] 24. Run system setup on all 3 VPS (user, dirs, binaries)
-[ ] 25. Install Caddy on all 3 VPS + configure Caddyfiles
+[ ] 25. Install Caddy on all 3 VPS + configure Caddyfiles (backend services only)
 [ ] 26. Configure firewall (ufw) on all 3 VPS
 [ ] 27. Start validator on US VPS first → verify blocks + contracts deployed
 [ ] 28. Start validator on EU VPS → verify it peers with US
@@ -1021,49 +1094,65 @@ curl -s http://<OTHER_VPS_IP>:9200/health
 ```
 [ ] 30. Deploy custody service on US VPS
 [ ] 31. Deploy faucet on US VPS (testnet only)
-[ ] 32. Copy ALL portal static sites to /opt/moltchain/www/
-        (website, explorer, wallet, developers, dex, marketplace, programs, monitoring, faucet-ui)
-[ ] 33. Restart Caddy → verify HTTPS certs auto-provision for all subdomains
+[ ] 32. Copy faucet UI files to /opt/moltchain/www/faucet-ui/
+[ ] 33. Restart Caddy → verify HTTPS certs for rpc/ws/custody/faucet subdomains
 ```
 
-### Frontend Config
+### Cloudflare Pages
 
 ```
-[ ] 34. Fix faucet/faucet.js: FAUCET_API → production URL
-[ ] 35. Fix dex/dex.js: wire network selector dropdown
-[ ] 36. Fix monitoring/js/monitoring.js: VALIDATOR_RPCS → seed-us/eu/ap
-[ ] 37. Fix explorer/js/transaction.js L110: hardcoded localhost:4000
-[ ] 38. Fix programs/js/landing.js: add mainnet to auto-detect
-[ ] 39. Fix shared/wallet-connect.js: fallback port 9000 → 8899
+[ ] 34. Install Wrangler CLI: npm install -g wrangler && wrangler login
+[ ] 35. Create CF Pages project: moltchain-website     (output dir: website)
+[ ] 36. Create CF Pages project: moltchain-explorer     (output dir: explorer)
+[ ] 37. Create CF Pages project: moltchain-wallet       (output dir: wallet)
+[ ] 38. Create CF Pages project: moltchain-dex          (output dir: dex)
+[ ] 39. Create CF Pages project: moltchain-marketplace  (output dir: marketplace)
+[ ] 40. Create CF Pages project: moltchain-programs     (output dir: programs)
+[ ] 41. Create CF Pages project: moltchain-developers   (output dir: developers)
+[ ] 42. Create CF Pages project: moltchain-monitoring   (output dir: monitoring)
+[ ] 43. Attach custom domains to each Pages project (auto-creates CNAME records)
+[ ] 44. Deploy all portals: wrangler pages deploy <dir> --project-name=<name>
 ```
 
-### Verify Portals
+### Frontend Config (fix before deploying to Pages)
 
 ```
-[ ] 40. https://moltchain.network          — main website loads
-[ ] 41. https://rpc.moltchain.network       — RPC responds to getHealth
-[ ] 42. https://ws.moltchain.network        — WebSocket connects
-[ ] 43. https://explorer.moltchain.network  — block explorer loads, shows blocks
-[ ] 44. https://wallet.moltchain.network    — wallet loads, can switch to mainnet/testnet
-[ ] 45. https://dex.moltchain.network       — DEX loads, shows trading pairs
-[ ] 46. https://marketplace.moltchain.network — marketplace loads
-[ ] 47. https://programs.moltchain.network  — Programs IDE loads, can compile
-[ ] 48. https://developers.moltchain.network — dev portal loads, all doc links work
-[ ] 49. https://monitoring.moltchain.network — dashboard shows 3 validators
-[ ] 50. https://faucet.moltchain.network    — faucet UI loads, airdrop works
-[ ] 51. https://custody.moltchain.network   — custody /health returns OK
+[ ] 45. Fix faucet/faucet.js: FAUCET_API → production URL
+[ ] 46. Fix dex/dex.js: wire network selector dropdown
+[ ] 47. Fix monitoring/js/monitoring.js: VALIDATOR_RPCS → seed-us/eu/ap
+[ ] 48. Fix explorer/js/transaction.js L110: hardcoded localhost:4000
+[ ] 49. Fix programs/js/landing.js: add mainnet to auto-detect
+[ ] 50. Fix shared/wallet-connect.js: fallback port 9000 → 8899
+```
+
+### Verify Everything
+
+```
+[ ] 51. https://moltchain.network            — main website loads (CF Pages)
+[ ] 52. https://rpc.moltchain.network         — RPC responds to getHealth (VPS)
+[ ] 53. https://ws.moltchain.network          — WebSocket connects (VPS)
+[ ] 54. https://explorer.moltchain.network    — block explorer loads (CF Pages)
+[ ] 55. https://wallet.moltchain.network      — wallet loads, network switcher works (CF Pages)
+[ ] 56. https://dex.moltchain.network         — DEX loads (CF Pages)
+[ ] 57. https://marketplace.moltchain.network — marketplace loads (CF Pages)
+[ ] 58. https://programs.moltchain.network    — Programs IDE loads (CF Pages)
+[ ] 59. https://developers.moltchain.network  — dev portal loads (CF Pages)
+[ ] 60. https://monitoring.moltchain.network  — dashboard shows 3 validators (CF Pages)
+[ ] 61. https://faucet.moltchain.network      — faucet UI loads, airdrop works (VPS)
+[ ] 62. https://custody.moltchain.network     — custody /health returns OK (VPS)
 ```
 
 ### Post-Launch
 
 ```
-[ ] 52. Update seeds.json with real IPs/domains
-[ ] 53. Test agent connection from local machine:
+[ ] 63. Update seeds.json with real IPs/domains
+[ ] 64. Test agent connection from local machine:
         ./moltchain-validator --bootstrap-peers seed-us.moltchain.network:8000
-[ ] 54. Set up backup cron jobs
-[ ] 55. Set up health check monitoring
-[ ] 56. Copy genesis-keys/ to a secure offline location (USB / vault)
-[ ] 57. Set up WireGuard VPN between 3 VPS for signer port 9200
+[ ] 65. Set up backup cron jobs
+[ ] 66. Set up health check monitoring
+[ ] 67. Copy genesis-keys/ to a secure offline location (USB / vault)
+[ ] 68. Set up WireGuard VPN between 3 VPS for signer port 9200
+[ ] 69. Connect git repo to CF Pages for auto-deploy on push
 ```
 
 ---
