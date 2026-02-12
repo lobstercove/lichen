@@ -608,6 +608,10 @@ impl StakePool {
             stake_info.delegated_amount += amount;
         }
 
+        // Delegations contribute to total active stake (used as denominator
+        // in reward distribution and voting power calculations).
+        self.total_staked += amount;
+
         // Track individual delegation
         let validator_delegations = self.delegations.entry(*validator).or_default();
         let entry = validator_delegations.entry(delegator).or_insert(0);
@@ -646,6 +650,9 @@ impl StakePool {
         } else {
             return Err("Validator not found".to_string());
         }
+
+        // Mirror delegate(): remove delegated amount from total active stake
+        self.total_staked = self.total_staked.saturating_sub(amount);
 
         // Update individual delegation tracking
         if let Some(validator_delegations) = self.delegations.get_mut(validator) {

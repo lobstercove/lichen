@@ -38,12 +38,14 @@ impl MultiSigConfig {
 
     /// Verify that enough signers have signed
     pub fn verify_threshold(&self, signed_by: &[Pubkey]) -> bool {
-        if signed_by.len() < self.threshold as usize {
+        // C6 fix: deduplicate to prevent same key counted multiple times
+        let unique: std::collections::HashSet<&Pubkey> = signed_by.iter().collect();
+        if unique.len() < self.threshold as usize {
             return false;
         }
 
         // Check all signers are authorized
-        signed_by.iter().all(|signer| self.signers.contains(signer))
+        unique.iter().all(|signer| self.signers.contains(signer))
     }
 }
 

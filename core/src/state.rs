@@ -739,6 +739,18 @@ impl StateStore {
         }
     }
 
+    /// Delete transaction record (used during fork choice to allow re-replay)
+    pub fn delete_transaction(&self, sig: &Hash) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_TRANSACTIONS)
+            .ok_or_else(|| "Transactions CF not found".to_string())?;
+
+        self.db
+            .delete_cf(&cf, sig.0)
+            .map_err(|e| format!("Failed to delete transaction: {}", e))
+    }
+
     /// Get account by pubkey
     pub fn get_account(&self, pubkey: &Pubkey) -> Result<Option<Account>, String> {
         let cf = self
@@ -2514,8 +2526,9 @@ impl StateBatch {
             .cf_handle(CF_EVM_TXS)
             .ok_or_else(|| "EVM txs CF not found".to_string())?;
         let key = record.evm_hash.as_slice();
+        // Must use bincode to match StateStore::get_evm_tx reader
         let value =
-            serde_json::to_vec(record).map_err(|e| format!("Failed to serialize EVM tx: {}", e))?;
+            bincode::serialize(record).map_err(|e| format!("Failed to serialize EVM tx: {}", e))?;
         self.batch.put_cf(&cf, key, &value);
         Ok(())
     }
@@ -2527,7 +2540,8 @@ impl StateBatch {
             .cf_handle(CF_EVM_RECEIPTS)
             .ok_or_else(|| "EVM receipts CF not found".to_string())?;
         let key = receipt.evm_hash.as_slice();
-        let value = serde_json::to_vec(receipt)
+        // Must use bincode to match StateStore::get_evm_receipt reader
+        let value = bincode::serialize(receipt)
             .map_err(|e| format!("Failed to serialize EVM receipt: {}", e))?;
         self.batch.put_cf(&cf, key, &value);
         Ok(())
