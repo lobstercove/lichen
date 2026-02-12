@@ -382,6 +382,22 @@ impl TxProcessor {
         }
     }
 
+    /// M6 fix: index NFT token_id through batch for atomicity
+    fn b_index_nft_token_id(
+        &self,
+        collection: &Pubkey,
+        token_id: u64,
+        token_account: &Pubkey,
+    ) -> Result<(), String> {
+        let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_mut() {
+            batch.index_nft_token_id(collection, token_id, token_account)
+        } else {
+            self.state
+                .index_nft_token_id(collection, token_id, token_account)
+        }
+    }
+
     fn b_index_program(&self, program: &Pubkey) -> Result<(), String> {
         let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(batch) = guard.as_mut() {
@@ -574,13 +590,11 @@ impl TxProcessor {
         let payer_reputation = self.state.get_reputation(&fee_payer).unwrap_or(0);
         let total_fee = Self::apply_reputation_fee_discount(base_fee, payer_reputation);
 
-        // Begin atomic batch — all state mutations go through WriteBatch
-        self.begin_batch();
-
-        // Skip fee charging for fee-free system transactions (types 2-5)
+        // M4 fix: charge fee BEFORE beginning the instruction batch.
+        // This ensures fees are always collected even when instructions fail,
+        // preventing free-compute DoS attacks via intentionally-failing TXs.
         if total_fee > 0 {
-            if let Err(e) = self.charge_fee(&fee_payer, total_fee) {
-                self.rollback_batch();
+            if let Err(e) = self.charge_fee_direct(&fee_payer, total_fee) {
                 return TxResult {
                     success: false,
                     fee_paid: 0,
@@ -589,12 +603,15 @@ impl TxProcessor {
             }
         }
 
+        // Begin atomic batch — all state mutations go through WriteBatch
+        self.begin_batch();
+
         // 3. Apply rent for involved accounts
         if let Err(e) = self.apply_rent(tx) {
             self.rollback_batch();
             return TxResult {
                 success: false,
-                fee_paid: 0, // batch rolled back — fee was never committed
+                fee_paid: total_fee, // M4: fee already charged directly
                 error: Some(format!("Rent error: {}", e)),
             };
         }
@@ -605,7 +622,7 @@ impl TxProcessor {
                 self.rollback_batch();
                 return TxResult {
                     success: false,
-                    fee_paid: 0, // batch rolled back — fee was never committed
+                    fee_paid: total_fee, // M4: fee already charged directly
                     error: Some(format!("Execution error: {}", e)),
                 };
             }
@@ -615,7 +632,7 @@ impl TxProcessor {
             self.rollback_batch();
             return TxResult {
                 success: false,
-                fee_paid: 0, // batch rolled back — fee was never committed
+                fee_paid: total_fee, // M4: fee already charged directly
                 error: Some(format!("Transaction storage error: {}", e)),
             };
         }
@@ -624,7 +641,7 @@ impl TxProcessor {
             self.rollback_batch();
             return TxResult {
                 success: false,
-                fee_paid: 0, // batch rolled back — fee was never committed
+                fee_paid: total_fee, // M4: fee already charged directly
                 error: Some(format!("Atomic commit failed: {}", e)),
             };
         }
@@ -1057,6 +1074,20 @@ impl TxProcessor {
             };
         }
 
+        // H2 fix: Charge native fee from EVM sender's mapped account within the batch
+        let fee_paid = u256_to_shells(&(evm_tx.gas_price * U256::from(result.gas_used)));
+        if fee_paid > 0 {
+            let native_payer = mapping.unwrap(); // guaranteed Some from earlier check
+            if let Err(e) = self.charge_fee(&native_payer, fee_paid) {
+                self.rollback_batch();
+                return TxResult {
+                    success: false,
+                    fee_paid: 0,
+                    error: Some(format!("EVM fee charge error: {}", e)),
+                };
+            }
+        }
+
         if let Err(e) = self.commit_batch() {
             self.rollback_batch();
             return TxResult {
@@ -1065,8 +1096,6 @@ impl TxProcessor {
                 error: Some(format!("Atomic commit failed: {}", e)),
             };
         }
-
-        let fee_paid = u256_to_shells(&(evm_tx.gas_price * U256::from(result.gas_used)));
 
         TxResult {
             success: result.success,
@@ -1128,6 +1157,50 @@ impl TxProcessor {
         Ok(())
     }
 
+    /// M4 fix: charge fee directly to state (not through batch), so it persists
+    /// even if the instruction batch is later rolled back. This prevents
+    /// free-compute DoS via intentionally-failing transactions.
+    fn charge_fee_direct(&self, payer: &Pubkey, fee: u64) -> Result<(), String> {
+        let mut payer_account = self
+            .state
+            .get_account(payer)?
+            .ok_or_else(|| "Payer account not found".to_string())?;
+
+        payer_account.deduct_spendable(fee)?;
+        self.state.put_account(payer, &payer_account)?;
+
+        // Split fee according to configured percentages
+        let fee_config = self
+            .state
+            .get_fee_config()
+            .unwrap_or_else(|_| FeeConfig::default_from_constants());
+
+        let burn_amount = fee * fee_config.fee_burn_percent / 100;
+        let producer_amount = fee * fee_config.fee_producer_percent / 100;
+        let voters_amount = fee * fee_config.fee_voters_percent / 100;
+        let treasury_amount = fee - burn_amount - producer_amount - voters_amount;
+
+        if burn_amount > 0 {
+            self.state.add_burned(burn_amount)?;
+        }
+
+        let total_to_treasury = treasury_amount + producer_amount + voters_amount;
+        if total_to_treasury > 0 {
+            let treasury_pubkey = self
+                .state
+                .get_treasury_pubkey()?
+                .ok_or_else(|| "Treasury pubkey not set".to_string())?;
+            let mut treasury_account = self
+                .state
+                .get_account(&treasury_pubkey)?
+                .unwrap_or_else(|| Account::new(0, treasury_pubkey));
+            treasury_account.add_spendable(total_to_treasury)?;
+            self.state.put_account(&treasury_pubkey, &treasury_account)?;
+        }
+
+        Ok(())
+    }
+
     /// Execute a single instruction
     fn execute_instruction(&self, ix: &Instruction) -> Result<(), String> {
         if ix.program_id == SYSTEM_PROGRAM_ID {
@@ -1148,10 +1221,23 @@ impl TxProcessor {
         let instruction_type = ix.data[0];
         match instruction_type {
             0 => self.system_transfer(ix),
-            2 => self.system_transfer(ix),
-            3 => self.system_transfer(ix),
-            4 => self.system_transfer(ix),
-            5 => self.system_transfer(ix),
+            // H1 fix: types 2-5 are fee-free internal txs — verify sender is treasury
+            2 | 3 | 4 | 5 => {
+                if let Some(sender) = ix.accounts.first() {
+                    let is_treasury = self.state.get_treasury_pubkey()
+                        .ok()
+                        .flatten()
+                        .map(|t| t == *sender)
+                        .unwrap_or(false);
+                    if !is_treasury {
+                        return Err(format!(
+                            "Instruction type {} restricted to treasury account",
+                            instruction_type
+                        ));
+                    }
+                }
+                self.system_transfer(ix)
+            }
             1 => self.system_create_account(ix),
             6 => self.system_create_collection(ix),
             7 => self.system_mint_nft(ix),
@@ -1340,8 +1426,8 @@ impl TxProcessor {
         self.b_put_account(&collection_account, &updated_collection)?;
         self.b_put_account(&token_account, &token_account_data)?;
         self.b_index_nft_mint(&collection_account, &token_account, &owner)?;
-        // Index token_id for future uniqueness checks
-        if let Err(e) = self.state.index_nft_token_id(
+        // M6 fix: index token_id through batch for atomicity (was direct state write before)
+        if let Err(e) = self.b_index_nft_token_id(
             &collection_account, mint_data.token_id, &token_account
         ) {
             eprintln!("Warning: failed to index NFT token_id: {}", e);
@@ -1439,7 +1525,7 @@ impl TxProcessor {
 
         let current_slot = self.b_get_last_slot().unwrap_or(0);
         let mut pool = self.b_get_stake_pool()?;
-        pool.request_unstake(&validator, amount, current_slot)?;
+        pool.request_unstake(&validator, amount, current_slot, staker)?;
         self.b_put_stake_pool(&pool)?;
 
         account.unstake(amount)?;
@@ -1463,7 +1549,7 @@ impl TxProcessor {
 
         let current_slot = self.b_get_last_slot().unwrap_or(0);
         let mut pool = self.b_get_stake_pool()?;
-        let amount = pool.claim_unstake(&validator, current_slot)?;
+        let amount = pool.claim_unstake(&validator, current_slot, &staker)?;
         self.b_put_stake_pool(&pool)?;
 
         let mut account = self

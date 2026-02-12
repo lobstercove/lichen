@@ -126,6 +126,10 @@ impl GossipManager {
         }
 
         // Create peer info list (M12 fix: cap at 50 peers to bound message size)
+        // L4 note: last_seen is set to local clock. A malicious peer could relay
+        // fabricated timestamps in incoming PeerInfoMsg to inflate reputation of
+        // stale peers. Receivers should treat last_seen as untrusted advisory data
+        // and not use it for critical decisions without independent verification.
         let peer_infos: Vec<PeerInfoMsg> = peers
             .iter()
             .take(50)

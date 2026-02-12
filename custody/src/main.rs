@@ -23,6 +23,8 @@ struct HealthResponse {
 struct CustodyState {
     db: Arc<DB>,
     next_index_lock: Arc<Mutex<()>>,
+    /// M13 fix: serialize reserve ledger read-modify-write to prevent concurrent race conditions
+    reserve_lock: Arc<Mutex<()>>,
     config: CustodyConfig,
     http: reqwest::Client,
 }
@@ -62,6 +64,9 @@ struct CustodyConfig {
     master_seed: String,
     /// C9 fix: Auth token for threshold signer requests
     signer_auth_token: Option<String>,
+    /// M17 fix: API auth token for withdrawal and other write endpoints
+    /// Load from CUSTODY_API_AUTH_TOKEN env var. Required for production.
+    api_auth_token: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -261,6 +266,7 @@ async fn main() {
     let state = CustodyState {
         db: Arc::new(db),
         next_index_lock: Arc::new(Mutex::new(())),
+        reserve_lock: Arc::new(Mutex::new(())),
         config: config.clone(),
         http: reqwest::Client::new(),
     };
@@ -801,6 +807,8 @@ fn load_config() -> CustodyConfig {
             }),
         // C9 fix: auth token for threshold signers
         signer_auth_token: std::env::var("CUSTODY_SIGNER_AUTH_TOKEN").ok(),
+        // M17 fix: API auth token for withdrawal endpoint
+        api_auth_token: std::env::var("CUSTODY_API_AUTH_TOKEN").ok(),
     }
 }
 
@@ -843,56 +851,60 @@ async fn process_solana_deposits(state: &CustodyState, url: &str) -> Result<(), 
         }
         let signatures =
             solana_get_signatures_for_address(&state.http, url, &deposit.address).await?;
-        let Some(sig) = signatures.into_iter().next() else {
-            continue;
-        };
-
-        let status = solana_get_signature_status(&state.http, url, &sig).await?;
-        let confirmed = status.confirmation_status == Some("finalized".to_string())
-            || status.confirmations.unwrap_or(0) >= state.config.solana_confirmations;
-
-        if !confirmed {
+        // M15 fix: process all new signatures, not just the first
+        if signatures.is_empty() {
             continue;
         }
 
-        store_deposit_event(
-            &state.db,
-            &DepositEvent {
-                event_id: Uuid::new_v4().to_string(),
-                deposit_id: deposit.deposit_id.clone(),
-                tx_hash: sig.clone(),
-                confirmations: status.confirmations.unwrap_or(0),
-                amount: None,
-                status: "confirmed".to_string(),
-                observed_at: chrono::Utc::now().timestamp(),
-            },
-        )?;
+        for sig in &signatures {
+            let status = solana_get_signature_status(&state.http, url, sig).await?;
+            let confirmed = status.confirmation_status == Some("finalized".to_string())
+                || status.confirmations.unwrap_or(0) >= state.config.solana_confirmations;
 
-        update_deposit_status(&state.db, &deposit.deposit_id, "confirmed")?;
+            if !confirmed {
+                continue;
+            }
 
-        if let Some(treasury) = state.config.treasury_solana_address.clone() {
-            let balance = solana_get_balance(&state.http, url, &deposit.address).await?;
-            enqueue_sweep_job(
+            store_deposit_event(
                 &state.db,
-                &SweepJob {
-                    job_id: Uuid::new_v4().to_string(),
+                &DepositEvent {
+                    event_id: Uuid::new_v4().to_string(),
                     deposit_id: deposit.deposit_id.clone(),
-                    chain: deposit.chain.clone(),
-                    asset: deposit.asset.clone(),
-                    from_address: deposit.address.clone(),
-                    to_treasury: treasury,
-                    tx_hash: sig,
-                    amount: Some(balance.to_string()),
-                    signatures: Vec::new(),
-                    sweep_tx_hash: None,
-                    attempts: 0,
-                    last_error: None,
-                    next_attempt_at: None,
-                    status: "queued".to_string(),
-                    created_at: chrono::Utc::now().timestamp(),
+                    tx_hash: sig.clone(),
+                    confirmations: status.confirmations.unwrap_or(0),
+                    amount: None,
+                    status: "confirmed".to_string(),
+                    observed_at: chrono::Utc::now().timestamp(),
                 },
             )?;
-            update_deposit_status(&state.db, &deposit.deposit_id, "sweep_queued")?;
+
+            update_deposit_status(&state.db, &deposit.deposit_id, "confirmed")?;
+
+            if let Some(treasury) = state.config.treasury_solana_address.clone() {
+                let balance = solana_get_balance(&state.http, url, &deposit.address).await?;
+                enqueue_sweep_job(
+                    &state.db,
+                    &SweepJob {
+                        job_id: Uuid::new_v4().to_string(),
+                        deposit_id: deposit.deposit_id.clone(),
+                        chain: deposit.chain.clone(),
+                        asset: deposit.asset.clone(),
+                        from_address: deposit.address.clone(),
+                        to_treasury: treasury,
+                        tx_hash: sig.clone(),
+                        amount: Some(balance.to_string()),
+                        signatures: Vec::new(),
+                        sweep_tx_hash: None,
+                        attempts: 0,
+                        last_error: None,
+                        next_attempt_at: None,
+                        status: "queued".to_string(),
+                        created_at: chrono::Utc::now().timestamp(),
+                    },
+                )?;
+                update_deposit_status(&state.db, &deposit.deposit_id, "sweep_queued")?;
+            }
+            break; // process first confirmed signature per deposit per poll cycle
         }
     }
 
@@ -1117,7 +1129,8 @@ async fn solana_get_signatures_for_address(
     url: &str,
     address: &str,
 ) -> Result<Vec<String>, String> {
-    let params = json!([address, { "limit": 1 }]);
+    // M15 fix: fetch up to 10 signatures to handle multiple deposits between polls
+    let params = json!([address, { "limit": 10 }]);
     let result = solana_rpc_call(client, url, "getSignaturesForAddress", params).await?;
     let mut signatures = Vec::new();
     if let Some(array) = result.as_array() {
@@ -2875,8 +2888,25 @@ fn to_be_bytes(value: u64) -> Vec<u8> {
 ///   5. Custody uses threshold signatures to send native assets on the destination chain
 async fn create_withdrawal(
     State(state): State<CustodyState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<WithdrawalRequest>,
 ) -> Json<Value> {
+    // M17 fix: require API auth token for withdrawal requests
+    if let Some(expected_token) = &state.config.api_auth_token {
+        let provided = headers
+            .get("authorization")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.strip_prefix("Bearer "));
+        match provided {
+            Some(token) if token == expected_token => {} // OK
+            _ => {
+                return Json(json!({
+                    "error": "unauthorized: missing or invalid API auth token"
+                }));
+            }
+        }
+    }
+
     let asset_lower = req.asset.to_lowercase();
     let (dest_asset, _) = match asset_lower.as_str() {
         "musd" => ("stablecoin", "stablecoin"),
@@ -3065,6 +3095,7 @@ fn get_reserve_balance(db: &DB, chain: &str, asset: &str) -> Result<u64, String>
 
 /// Adjust reserve balance: increment (deposit/rebalance in) or decrement (withdrawal/rebalance out).
 /// If decrementing would go below zero, clamps to 0 and logs a warning.
+/// M13 fix: uses internal Mutex to serialize concurrent read-modify-write operations.
 fn adjust_reserve_balance(
     db: &DB,
     chain: &str,
@@ -3072,6 +3103,11 @@ fn adjust_reserve_balance(
     amount: u64,
     increment: bool,
 ) -> Result<(), String> {
+    use std::sync::Mutex as StdMutex;
+    static RESERVE_LOCK: std::sync::LazyLock<StdMutex<()>> =
+        std::sync::LazyLock::new(|| StdMutex::new(()));
+    let _guard = RESERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
     let cf = db
         .cf_handle(CF_RESERVE_LEDGER)
         .ok_or_else(|| "missing reserve_ledger cf".to_string())?;
@@ -4102,6 +4138,7 @@ mod tests {
             deposit_ttl_secs: 86400,
             master_seed: "test_master_seed_for_unit_tests".to_string(),
             signer_auth_token: Some("test_token".to_string()),
+            api_auth_token: Some("test_api_token".to_string()),
         }
     }
 

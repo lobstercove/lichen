@@ -233,6 +233,13 @@ impl ReefStakePool {
 
         // Update pool (stMOLT burned, but MOLT still locked for 7 days)
         self.st_molt_token.total_supply -= st_molt_amount;
+        // M10 fix: decrement total_molt_staked at request time to prevent
+        // exchange rate inflation during cooldown period
+        self.st_molt_token.total_molt_staked = self
+            .st_molt_token
+            .total_molt_staked
+            .saturating_sub(molt_to_receive);
+        self.st_molt_token.exchange_rate_fp = self.st_molt_token.calculate_exchange_rate_fp();
 
         // Create unstake request (7 days at 400ms/slot = 86400*7/0.4 = 1,512,000 slots)
         let cooldown_slots = 1_512_000; // 7 days
@@ -286,8 +293,8 @@ impl ReefStakePool {
             self.unstake_requests.insert(user, remaining_requests);
         }
 
-        // Update pool (MOLT now released)
-        self.st_molt_token.total_molt_staked -= total_claimable;
+        // Update pool (MOLT now released — total_molt_staked already decremented at request time)
+        // M10 fix: removed redundant decrement that was here before
         self.st_molt_token.exchange_rate_fp = self.st_molt_token.calculate_exchange_rate_fp();
 
         Ok(total_claimable)
@@ -376,6 +383,8 @@ impl ReefStakePool {
         self.st_molt_token.exchange_rate_fp = self.st_molt_token.calculate_exchange_rate_fp();
 
         // Update each user's rewards_earned for tracking (integer proportional math)
+        // L3 note: integer division dust is lost in the tracking field only.
+        // The actual MOLT value is preserved in total_molt_staked / exchange rate.
         for position in self.positions.values_mut() {
             // share = (position.st_molt * total_rewards) / total_supply  (integer division)
             let reward_share = ((position.st_molt_amount as u128 * total_rewards as u128)

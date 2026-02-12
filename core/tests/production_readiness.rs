@@ -816,7 +816,7 @@ fn test_stakepool_unstake_request() {
     let mut pool = StakePool::new();
     let v1 = Keypair::new();
     pool.stake(v1.pubkey(), MIN_VALIDATOR_STAKE * 2, 0).unwrap();
-    let result = pool.request_unstake(&v1.pubkey(), MIN_VALIDATOR_STAKE / 2, 10);
+    let result = pool.request_unstake(&v1.pubkey(), MIN_VALIDATOR_STAKE / 2, 10, v1.pubkey());
     assert!(result.is_ok(), "Unstake should succeed");
     let req = result.unwrap();
     assert_eq!(req.amount, MIN_VALIDATOR_STAKE / 2);
@@ -827,7 +827,7 @@ fn test_stakepool_unstake_more_than_staked() {
     let mut pool = StakePool::new();
     let v1 = Keypair::new();
     pool.stake(v1.pubkey(), MIN_VALIDATOR_STAKE, 0).unwrap();
-    let result = pool.request_unstake(&v1.pubkey(), MIN_VALIDATOR_STAKE * 2, 10);
+    let result = pool.request_unstake(&v1.pubkey(), MIN_VALIDATOR_STAKE * 2, 10, v1.pubkey());
     assert!(result.is_err(), "Cannot unstake more than staked");
 }
 

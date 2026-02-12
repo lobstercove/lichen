@@ -746,14 +746,18 @@ pub fn build_rpc_router(
     };
 
     // T2.7: Restrictive CORS — allow localhost and configured origins only
+    // H14 fix: use exact host matching to prevent subdomain bypass
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(|origin: &HeaderValue, _| {
             let origin_str = origin.to_str().unwrap_or("");
-            origin_str.starts_with("http://localhost")
-                || origin_str.starts_with("http://127.0.0.1")
-                || origin_str.starts_with("https://localhost")
-                || origin_str.starts_with("https://127.0.0.1")
-                || origin_str.starts_with("https://moltchain")
+            // Parse scheme://host:port — only allow exact localhost/127.0.0.1 hosts
+            if let Some(rest) = origin_str.strip_prefix("http://").or_else(|| origin_str.strip_prefix("https://")) {
+                let host = rest.split('/').next().unwrap_or("");
+                let host_only = host.split(':').next().unwrap_or("");
+                host_only == "localhost" || host_only == "127.0.0.1" || host_only.ends_with(".moltchain.io")
+            } else {
+                false
+            }
         }))
         .allow_methods([Method::POST, Method::GET, Method::OPTIONS])
         .allow_headers([axum::http::header::CONTENT_TYPE]);
@@ -1565,9 +1569,13 @@ async fn handle_get_transaction(
         }
         _ => {
             // Fallback: reverse scan (for txs indexed before the reverse index existed)
+            // M20 fix: cap fallback scan to prevent DoS via non-existent tx lookups
             if let Ok(last_slot) = state.state.get_last_slot() {
                 let mut found = None;
-                for slot in (0..=last_slot).rev() {
+                let scan_limit = 1000u64; // max slots to scan backwards
+                let start_slot = last_slot;
+                let end_slot = start_slot.saturating_sub(scan_limit);
+                for slot in (end_slot..=start_slot).rev() {
                     if let Ok(Some(block)) = state.state.get_block_by_slot(slot) {
                         if block
                             .transactions
@@ -2671,17 +2679,18 @@ async fn handle_solana_send_transaction(
         .map(|block| block.header.timestamp)
         .unwrap_or(0);
 
+    // H15 fix: submit first, cache only on success (was caching before submit)
+    submit_transaction(state, tx.clone())?;
+
     state.solana_tx_cache.lock().await.put(
         signature_hash,
         SolanaTxRecord {
-            tx: tx.clone(),
+            tx,
             slot,
             timestamp,
             fee: 0,
         },
     );
-
-    submit_transaction(state, tx)?;
 
     Ok(serde_json::json!(signature_base58))
 }

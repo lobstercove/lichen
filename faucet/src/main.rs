@@ -80,6 +80,17 @@ impl RateLimiter {
         }
     }
 
+    /// L6 fix: evict stale entries older than 24 hours to prevent unbounded memory growth
+    fn cleanup_stale(&mut self) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let day_seconds: u64 = 86400;
+        self.ip_usage.retain(|_, (last_req, _, _)| now - *last_req < day_seconds);
+        self.address_requests.retain(|_, last_req| now - *last_req < day_seconds);
+    }
+
     fn check_and_record(
         &mut self,
         ip: &str,
@@ -88,6 +99,9 @@ impl RateLimiter {
         cooldown: u64,
         daily_limit: u64,
     ) -> Result<(), String> {
+        // L6 fix: periodic cleanup of stale entries
+        self.cleanup_stale();
+
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
@@ -324,6 +338,11 @@ async fn faucet_request_handler(
                 };
                 let mut airdrops = state.airdrops.write().await;
                 airdrops.push(record);
+                // L6 fix: cap in-memory airdrops to last 10000 entries
+                if airdrops.len() > 10_000 {
+                    let drain_count = airdrops.len() - 10_000;
+                    airdrops.drain(..drain_count);
+                }
                 // Persist to file (best effort)
                 if let Ok(data) = serde_json::to_string(&*airdrops) {
                     let _ = std::fs::write(&state.config.airdrops_file, data);

@@ -46,26 +46,30 @@ impl PeerStore {
     }
 
     pub fn record_peer(&self, addr: SocketAddr) {
-        let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
-        if peers.contains(&addr) {
-            return;
-        }
+        // L5 fix: minimize lock scope — collect data under lock, then write file outside lock
+        let data_to_write = {
+            let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
+            if peers.contains(&addr) {
+                return;
+            }
 
-        peers.push(addr);
-        if peers.len() > self.max_peers {
-            peers.rotate_left(1);
-            peers.truncate(self.max_peers);
-        }
+            peers.push(addr);
+            if peers.len() > self.max_peers {
+                peers.rotate_left(1);
+                peers.truncate(self.max_peers);
+            }
 
-        let data = PeerStoreData {
-            peers: peers.iter().map(|peer| peer.to_string()).collect(),
-        };
+            PeerStoreData {
+                peers: peers.iter().map(|peer| peer.to_string()).collect(),
+            }
+        }; // lock dropped here
 
+        // File I/O outside the lock
         if let Some(parent) = self.path.parent() {
             let _ = fs::create_dir_all(parent);
         }
 
-        if let Ok(json) = serde_json::to_string_pretty(&data) {
+        if let Ok(json) = serde_json::to_string_pretty(&data_to_write) {
             let _ = fs::write(&self.path, json);
         }
     }

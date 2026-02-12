@@ -161,6 +161,14 @@ pub struct Account {
 }
 
 impl Account {
+    /// M11 fix: repair legacy accounts where spendable/staked/locked are all 0 but shells > 0.
+    /// This happens when deserializing accounts created before the balance separation fields existed.
+    pub fn fixup_legacy(&mut self) {
+        if self.shells > 0 && self.spendable == 0 && self.staked == 0 && self.locked == 0 {
+            self.spendable = self.shells;
+        }
+    }
+
     /// Convert MOLT to shells
     pub const fn molt_to_shells(molt: u64) -> u64 {
         molt.saturating_mul(1_000_000_000)

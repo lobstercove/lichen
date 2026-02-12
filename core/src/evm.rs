@@ -458,7 +458,17 @@ impl DatabaseCommit for StateEvmDb {
                 let balance = alloy_u256_from_revm(account.info.balance);
                 let divisor = U256::from(1_000_000_000u64);
                 let shells = balance / divisor;
-                let shells_u64: u64 = shells.try_into().unwrap_or(u64::MAX);
+                // M9 fix: reject overflow instead of saturating to u64::MAX (prevents silent inflation)
+                let shells_u64: u64 = match shells.try_into() {
+                    Ok(v) => v,
+                    Err(_) => {
+                        self.commit_errors.push(format!(
+                            "EVM balance overflow for {:?}: shells {} exceeds u64::MAX",
+                            address_bytes, shells
+                        ));
+                        continue;
+                    }
+                };
                 if let Err(e) = self.state.set_spendable_balance(&pubkey, shells_u64) {
                     self.commit_errors.push(format!(
                         "commit native balance for {:?}: {}",

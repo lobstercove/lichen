@@ -145,8 +145,9 @@ pub enum BootstrapStatus {
 /// Maximum stake per validator (100,000 MOLT)
 pub const MAX_VALIDATOR_STAKE: u64 = 100_000 * 1_000_000_000; // 100k MOLT in lamports
 
-/// Unstake cooldown period (7 days in slots, ~604,800 slots)
-pub const UNSTAKE_COOLDOWN_SLOTS: u64 = 604_800;
+/// Unstake cooldown period (7 days in slots at 400ms/slot)
+/// H11 fix: was 604,800 (=seconds in 7 days, only 2.8 days at 400ms/slot)
+pub const UNSTAKE_COOLDOWN_SLOTS: u64 = 1_512_000; // 7 * 24 * 60 * 60 * 1000 / 400
 
 // ============================================================================
 // EPOCH BOUNDARY HANDLING (T4.2)
@@ -198,6 +199,8 @@ impl EpochInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnstakeRequest {
     pub validator: Pubkey,
+    /// M5 fix: staker identity to prevent cross-user claims
+    pub staker: Pubkey,
     pub amount: u64,
     pub unlock_slot: u64, // When unstake completes
 }
@@ -373,6 +376,7 @@ impl StakeInfo {
         &self,
         amount: u64,
         current_slot: u64,
+        staker: Pubkey,
     ) -> Result<UnstakeRequest, String> {
         if !self.is_fully_vested() {
             return Err("Must be fully vested to unstake".to_string());
@@ -384,6 +388,7 @@ impl StakeInfo {
 
         Ok(UnstakeRequest {
             validator: self.validator,
+            staker, // M5 fix: track staker identity
             amount,
             unlock_slot: current_slot + UNSTAKE_COOLDOWN_SLOTS,
         })
@@ -691,6 +696,7 @@ impl StakePool {
         validator: &Pubkey,
         amount: u64,
         current_slot: u64,
+        staker: Pubkey,
     ) -> Result<UnstakeRequest, String> {
         let stake_info = self
             .stakes
@@ -703,7 +709,7 @@ impl StakePool {
         }
 
         // Create unstake request
-        let request = stake_info.request_unstake(amount, current_slot)?;
+        let request = stake_info.request_unstake(amount, current_slot, staker)?;
         self.unstake_requests.insert(*validator, request.clone());
 
         // Deactivate validator immediately (can't produce blocks during cooldown)
@@ -718,11 +724,16 @@ impl StakePool {
     }
 
     /// Claim unstake after cooldown completes
-    pub fn claim_unstake(&mut self, validator: &Pubkey, current_slot: u64) -> Result<u64, String> {
+    pub fn claim_unstake(&mut self, validator: &Pubkey, current_slot: u64, staker: &Pubkey) -> Result<u64, String> {
         let request = self
             .unstake_requests
             .get(validator)
             .ok_or_else(|| "No unstake request found".to_string())?;
+
+        // M5 fix: verify the claimer is the original staker
+        if &request.staker != staker {
+            return Err("Only the original staker can claim this unstake".to_string());
+        }
 
         // Check if cooldown completed
         if current_slot < request.unlock_slot {
@@ -857,6 +868,10 @@ impl StakePool {
         };
 
         let mut rewards = Vec::new();
+        // H9 fix: Credit commission to the validator (was silently burned before)
+        if commission > 0 {
+            rewards.push((*validator, commission));
+        }
         for (delegator, amount) in &delegator_map {
             if delegated > 0 {
                 let share = (distributable as u128 * *amount as u128 / delegated as u128) as u64;
@@ -1117,8 +1132,9 @@ impl ValidatorSet {
                     .unwrap_or_else(|| v.stake.min(MAX_VALIDATOR_STAKE));
 
                 let base = integer_sqrt(stake.max(1));
-                let reputation_multiplier = (v.reputation.max(100) as u128) / 100u128;
-                (base as u128).saturating_mul(reputation_multiplier) as u64
+                // H10 fix: multiply before divide to preserve granularity
+                let reputation = v.reputation.max(100) as u128;
+                ((base as u128).saturating_mul(reputation) / 100u128 + 1) as u64 // +1 avoids zero weight
             })
             .collect();
 
@@ -1199,14 +1215,18 @@ impl VoteAggregator {
             return false;
         }
 
-        let key = (vote.slot, vote.block_hash);
-        let votes = self.votes.entry(key).or_default();
-
-        // Check for duplicate vote from same validator
-        if votes.iter().any(|v| v.validator == vote.validator) {
-            return false;
+        // H8 fix: Prevent equivocation — reject second vote from same validator
+        // at the same slot, regardless of block hash.
+        for ((slot, _hash), votes) in &self.votes {
+            if *slot == vote.slot {
+                if votes.iter().any(|v| v.validator == vote.validator) {
+                    return false; // equivocation attempt
+                }
+            }
         }
 
+        let key = (vote.slot, vote.block_hash);
+        let votes = self.votes.entry(key).or_default();
         votes.push(vote);
         true
     }
@@ -1567,6 +1587,11 @@ impl SlashingTracker {
                     SlashingOffense::Collusion { slot: s1, .. },
                     SlashingOffense::Collusion { slot: s2, .. },
                 ) => s1 == s2,
+                // M7 fix: deduplicate Downtime evidence by missed_slots
+                (
+                    SlashingOffense::Downtime { missed_slots: m1, .. },
+                    SlashingOffense::Downtime { missed_slots: m2, .. },
+                ) => m1 == m2,
                 _ => false,
             })
         {
@@ -1971,15 +1996,15 @@ mod tests {
             si.bootstrap_debt = 0;
         }
 
-        pool.request_unstake(&pk, 5_000_000_000_000, 100).unwrap();
+        pool.request_unstake(&pk, 5_000_000_000_000, 100, pk).unwrap();
 
         // Claim too early → error
-        let err = pool.claim_unstake(&pk, 200).unwrap_err();
+        let err = pool.claim_unstake(&pk, 200, &pk).unwrap_err();
         assert!(err.contains("Cooldown not complete"));
 
         // Claim after cooldown → success
         let amount = pool
-            .claim_unstake(&pk, 100 + UNSTAKE_COOLDOWN_SLOTS)
+            .claim_unstake(&pk, 100 + UNSTAKE_COOLDOWN_SLOTS, &pk)
             .unwrap();
         assert_eq!(amount, 5_000_000_000_000);
     }
@@ -2051,7 +2076,7 @@ mod tests {
         }
 
         // A requests unstake of 10k (keeping 10k active)
-        pool.request_unstake(&pk_a, 10_000_000_000_000, 100)
+        pool.request_unstake(&pk_a, 10_000_000_000_000, 100, pk_a)
             .unwrap();
 
         // Verify: total active stake is 30k (A=10k, B=20k), 10k pending
@@ -2079,11 +2104,11 @@ mod tests {
         }
 
         assert_eq!(pool.pending_unstake_total(), 0);
-        pool.request_unstake(&pk, 5_000_000_000_000, 100).unwrap();
+        pool.request_unstake(&pk, 5_000_000_000_000, 100, pk).unwrap();
         assert_eq!(pool.pending_unstake_total(), 5_000_000_000_000);
 
         // Claim after cooldown clears the pending amount
-        pool.claim_unstake(&pk, 100 + UNSTAKE_COOLDOWN_SLOTS)
+        pool.claim_unstake(&pk, 100 + UNSTAKE_COOLDOWN_SLOTS, &pk)
             .unwrap();
         assert_eq!(pool.pending_unstake_total(), 0);
     }
@@ -2107,7 +2132,7 @@ mod tests {
             si.status = BootstrapStatus::FullyVested;
             si.bootstrap_debt = 0;
         }
-        pool.request_unstake(&pk_a, 10_000_000_000_000, 100)
+        pool.request_unstake(&pk_a, 10_000_000_000_000, 100, pk_a)
             .unwrap();
 
         // A now has 10k/30k = 33.3%, B has 20k/30k = 66.6%

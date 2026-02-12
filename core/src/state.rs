@@ -760,8 +760,9 @@ impl StateStore {
 
         match self.db.get_cf(&cf, pubkey.0) {
             Ok(Some(data)) => {
-                let account: Account = serde_json::from_slice(&data)
+                let mut account: Account = serde_json::from_slice(&data)
                     .map_err(|e| format!("Failed to deserialize account: {}", e))?;
+                account.fixup_legacy(); // M11 fix: repair legacy accounts missing balance separation
                 Ok(Some(account))
             }
             Ok(None) => Ok(None),
@@ -1035,8 +1036,12 @@ impl StateStore {
                     combined[32..].copy_from_slice(&pair[1].0);
                     next_level.push(Hash::hash(&combined));
                 } else {
-                    // Odd leaf: promote to next level
-                    next_level.push(pair[0]);
+                    // L1 fix: rehash odd leaf with itself instead of promoting verbatim
+                    // Prevents CVE-2012-2459 class attacks (Merkle 2nd preimage)
+                    let mut combined = [0u8; 64];
+                    combined[..32].copy_from_slice(&pair[0].0);
+                    combined[32..].copy_from_slice(&pair[0].0);
+                    next_level.push(Hash::hash(&combined));
                 }
             }
             level = next_level;
@@ -1247,9 +1252,25 @@ impl StateStore {
         // Credit spendable balance
         to_account.add_spendable(shells)?;
 
-        // Save both accounts
-        self.put_account(from, &from_account)?;
-        self.put_account(to, &to_account)?;
+        // Save both accounts atomically (H5 fix: use WriteBatch for crash safety)
+        let cf = self
+            .db
+            .cf_handle(CF_ACCOUNTS)
+            .ok_or_else(|| "Accounts CF not found".to_string())?;
+        let mut batch = rocksdb::WriteBatch::default();
+        let from_bytes =
+            serde_json::to_vec(&from_account).map_err(|e| format!("Serialize from: {}", e))?;
+        let to_bytes =
+            serde_json::to_vec(&to_account).map_err(|e| format!("Serialize to: {}", e))?;
+        batch.put_cf(&cf, from.0, &from_bytes);
+        batch.put_cf(&cf, to.0, &to_bytes);
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Atomic transfer write failed: {}", e))?;
+
+        // Mark both accounts dirty for incremental Merkle
+        self.mark_account_dirty_with_key(from);
+        self.mark_account_dirty_with_key(to);
 
         Ok(())
     }
@@ -2055,7 +2076,7 @@ impl StateStore {
         }
     }
 
-    fn normalize_symbol(raw: &str) -> Result<String, String> {
+    pub(crate) fn normalize_symbol(raw: &str) -> Result<String, String> {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
             return Err("Symbol is required".to_string());
@@ -2242,8 +2263,9 @@ impl StateBatch {
             .ok_or_else(|| "Accounts CF not found".to_string())?;
         match self.db.get_cf(&cf, pubkey.0) {
             Ok(Some(data)) => {
-                let account: Account = serde_json::from_slice(&data)
+                let mut account: Account = serde_json::from_slice(&data)
                     .map_err(|e| format!("Failed to deserialize account: {}", e))?;
+                account.fixup_legacy(); // M11 fix
                 Ok(Some(account))
             }
             Ok(None) => Ok(None),
@@ -2439,6 +2461,27 @@ impl StateBatch {
         Ok(())
     }
 
+    /// M6 fix: index NFT token_id within the batch for atomicity
+    pub fn index_nft_token_id(
+        &mut self,
+        collection: &Pubkey,
+        token_id: u64,
+        token_account: &Pubkey,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_NFT_BY_COLLECTION)
+            .ok_or_else(|| "NFT collection index CF not found".to_string())?;
+
+        let mut key = Vec::with_capacity(44); // 4 + 32 + 8
+        key.extend_from_slice(b"tid:");
+        key.extend_from_slice(&collection.0);
+        key.extend_from_slice(&token_id.to_le_bytes());
+
+        self.batch.put_cf(&cf, &key, token_account.0);
+        Ok(())
+    }
+
     /// Index NFT transfer in the batch.
     pub fn index_nft_transfer(
         &mut self,
@@ -2563,7 +2606,8 @@ impl StateBatch {
         symbol: &str,
         entry: &crate::state::SymbolRegistryEntry,
     ) -> Result<(), String> {
-        let normalized = symbol.trim().to_ascii_uppercase();
+        // M2 fix: apply same validation as non-batch path
+        let normalized = StateStore::normalize_symbol(symbol)?;
         let cf = self
             .db
             .cf_handle(CF_SYMBOL_REGISTRY)
@@ -3427,7 +3471,17 @@ impl StateStore {
         // Store: 20-byte EVM address → 32-byte native pubkey
         self.db
             .put_cf(&cf, evm_address, native_pubkey.0)
-            .map_err(|e| format!("Failed to register EVM address: {}", e))
+            .map_err(|e| format!("Failed to register EVM address: {}", e))?;
+
+        // M3 fix: also write reverse mapping (native → EVM) for consistency with batch path
+        let mut reverse_key = Vec::with_capacity(52);
+        reverse_key.extend_from_slice(b"reverse:");
+        reverse_key.extend_from_slice(&native_pubkey.0);
+        self.db
+            .put_cf(&cf, &reverse_key, evm_address)
+            .map_err(|e| format!("Failed to register reverse EVM mapping: {}", e))?;
+
+        Ok(())
     }
 
     /// Lookup native pubkey from EVM address

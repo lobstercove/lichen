@@ -29,6 +29,9 @@ pub enum AbiType {
     U64,
     I32,
     I64,
+    // M12 fix: proper float types instead of mapping to U32/U64
+    F32,
+    F64,
     Bool,
     String,
     Bytes,
@@ -202,8 +205,8 @@ fn wasm_valtype_to_abi(vt: &wasmer::Type) -> AbiType {
     match vt {
         wasmer::Type::I32 => AbiType::I32,
         wasmer::Type::I64 => AbiType::I64,
-        wasmer::Type::F32 => AbiType::U32,
-        wasmer::Type::F64 => AbiType::U64,
+        wasmer::Type::F32 => AbiType::F32,
+        wasmer::Type::F64 => AbiType::F64,
         _ => AbiType::I32,
     }
 }

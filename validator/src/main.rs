@@ -985,6 +985,15 @@ async fn apply_block_effects(
             val_info.last_active_slot = slot;
             val_info.update_reputation(true);
         } else {
+            // H13 fix: require minimum stake before accepting new validator
+            if stake_amount < MIN_VALIDATOR_STAKE {
+                warn!(
+                    "⚠️  Ignoring unregistered block producer {} with insufficient stake ({} < {})",
+                    producer.to_base58(),
+                    stake_amount,
+                    MIN_VALIDATOR_STAKE
+                );
+            } else {
             let new_validator = ValidatorInfo {
                 pubkey: producer,
                 stake: stake_amount,
@@ -996,6 +1005,7 @@ async fn apply_block_effects(
                 last_active_slot: slot,
             };
             vs.add_validator(new_validator);
+            }
         }
 
         if let Err(e) = state.save_validator_set(&vs) {
@@ -1073,7 +1083,8 @@ async fn apply_block_effects(
 
                         // Debit treasury: only the liquid portion leaves treasury
                         // Debt repayment is internal bookkeeping (reclassifies existing stake)
-                        let debit_amount = if liquid > 0 { liquid } else { reward_total };
+                        // H12 fix: when liquid==0, no treasury debit or producer credit needed
+                        let debit_amount = liquid;
                         treasury_account.shells = treasury_account.shells.saturating_sub(debit_amount);
                         treasury_account.spendable = treasury_account.spendable.saturating_sub(debit_amount);
                         if let Err(e) = state.put_account(treasury_pubkey, &treasury_account) {
@@ -1083,7 +1094,8 @@ async fn apply_block_effects(
                         // Credit producer: only liquid portion to spendable
                         // During vesting: 50% liquid to spendable, 50% debt repayment (no new coins)
                         // Fully vested: 100% liquid
-                        let credit_amount = if liquid > 0 { liquid } else { reward_total };
+                        // H12 fix: when liquid==0, credit nothing (was falling through to reward_total)
+                        let credit_amount = liquid;
                         let mut producer_account = state.get_account(&producer)
                             .ok().flatten()
                             .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
@@ -1492,6 +1504,7 @@ fn main() {
     loop {
         info!("🚀 Launching validator (attempt {}/{})", restart_count + 1, max_restarts);
 
+        let child_start = std::time::Instant::now();
         let mut child = std::process::Command::new(&exe)
             .args(&child_args)
             .arg("--supervised")
@@ -1500,6 +1513,14 @@ fn main() {
             .expect("Failed to spawn validator process");
 
         let status = child.wait().expect("Failed to wait on validator process");
+
+        // L7 fix: reset backoff if child ran successfully for >3 minutes
+        let runtime = child_start.elapsed();
+        if runtime > Duration::from_secs(180) {
+            backoff_secs = 1;
+            restart_count = 0;
+            info!("🔄 Validator ran for {}s — resetting backoff", runtime.as_secs());
+        }
 
         match status.code() {
             Some(0) => {

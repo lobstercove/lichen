@@ -45,7 +45,8 @@ impl PrioritizedTransaction {
 
 impl PartialEq for PrioritizedTransaction {
     fn eq(&self, other: &Self) -> bool {
-        self.effective_priority() == other.effective_priority() && self.timestamp == other.timestamp
+        // L2 fix: compare by transaction hash (identity), not priority
+        self.hash == other.hash
     }
 }
 

@@ -198,9 +198,14 @@ impl PeerManager {
         peer_addr: &SocketAddr,
         message: P2PMessage,
     ) -> Result<(), String> {
-        let peer = self.peers.get(peer_addr).ok_or("Peer not found")?;
+        // M18 fix: clone connection handle and drop DashMap guard before async I/O
+        // to prevent holding shard read lock across .await points
+        let connection = {
+            let peer = self.peers.get(peer_addr).ok_or("Peer not found")?;
+            peer.connection.clone()
+        }; // guard dropped here
 
-        if let Some(connection) = &peer.connection {
+        if let Some(connection) = connection {
             let bytes = message.serialize()?;
 
             let mut send_stream = connection
@@ -345,6 +350,9 @@ async fn handle_connection(
     peers: Arc<DashMap<SocketAddr, PeerInfo>>,
     message_tx: mpsc::Sender<(SocketAddr, P2PMessage)>,
 ) -> Result<(), String> {
+    let mut deser_failures: u32 = 0;
+    const MAX_DESER_FAILURES: u32 = 10;
+
     loop {
         let mut stream = connection
             .accept_uni()
@@ -359,6 +367,7 @@ async fn handle_connection(
         // Deserialize message
         match P2PMessage::deserialize(&bytes) {
             Ok(message) => {
+                deser_failures = 0; // reset on success
                 // Update last seen
                 if let Some(mut peer) = peers.get_mut(&peer_addr) {
                     peer.update_last_seen();
@@ -370,10 +379,19 @@ async fn handle_connection(
                 }
             }
             Err(e) => {
+                deser_failures += 1;
                 warn!(
-                    "P2P: Failed to deserialize message from {}: {}",
-                    peer_addr, e
+                    "P2P: Failed to deserialize message from {} ({}/{}): {}",
+                    peer_addr, deser_failures, MAX_DESER_FAILURES, e
                 );
+                // H18 fix: disconnect after too many consecutive failures
+                if deser_failures >= MAX_DESER_FAILURES {
+                    warn!("P2P: Disconnecting {} — too many deserialization failures", peer_addr);
+                    if let Some(mut peer) = peers.get_mut(&peer_addr) {
+                        peer.score -= 20;
+                    }
+                    return Err(format!("Too many deserialization failures from {}", peer_addr));
+                }
             }
         }
     }
