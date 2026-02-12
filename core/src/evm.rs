@@ -7,7 +7,7 @@ use alloy_rlp::Decodable;
 use revm::context::{BlockEnv, CfgEnv, Context, TxEnv};
 use revm::context_interface::result::{ExecutionResult, Output};
 use revm::database_interface::DBErrorMarker;
-use revm::handler::{ExecuteCommitEvm, ExecuteEvm, MainBuilder};
+use revm::handler::{ExecuteEvm, MainBuilder};
 use revm::primitives::HashMap as RevmHashMap;
 use revm::primitives::{
     hardfork::SpecId, Address as RevmAddress, Bytes as RevmBytes, TxKind, B256 as RevmB256,
@@ -22,6 +22,25 @@ use std::fmt;
 
 /// EVM program ID (all 0xEE)
 pub const EVM_PROGRAM_ID: Pubkey = Pubkey([0xEEu8; 32]);
+
+/// Represents a single deferred EVM state change (H3 fix: atomic with StateBatch).
+#[derive(Debug, Clone)]
+pub struct EvmStateChange {
+    pub evm_address: [u8; 20],
+    /// `Some(account)` = put, `None` = clear (self-destruct)
+    pub account: Option<EvmAccount>,
+    /// Storage changes: `(slot, Some(value))` = set, `(slot, None)` = delete
+    pub storage_changes: Vec<([u8; 32], Option<U256>)>,
+    /// Native account balance sync: `Some((pubkey, spendable_shells))`
+    pub native_balance_update: Option<(Pubkey, u64)>,
+}
+
+/// Collection of deferred EVM state changes returned from `execute_evm_transaction`.
+#[derive(Debug, Clone, Default)]
+pub struct EvmStateChanges {
+    pub changes: Vec<EvmStateChange>,
+    pub errors: Vec<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvmAccount {
@@ -492,7 +511,7 @@ pub fn execute_evm_transaction(
     state: StateStore,
     tx: &EvmTx,
     chain_id: u64,
-) -> Result<EvmExecutionResult, String> {
+) -> Result<(EvmExecutionResult, EvmStateChanges), String> {
     // T3.10 fix: Reject pre-EIP-155 transactions (chain_id=0) and wrong chain IDs
     if let Some(tx_chain_id) = tx.chain_id {
         if tx_chain_id != chain_id {
@@ -548,17 +567,24 @@ pub fn execute_evm_transaction(
     let tx_env = build_revm_tx_env(tx, chain_id)?;
     let mut evm = context.build_mainnet();
 
-    let result = evm
-        .transact_commit(tx_env)
+    // H3 fix: Use `transact()` (non-commit) so EVM state changes are NOT persisted
+    // until the caller commits them atomically through StateBatch.
+    let result_and_state = evm
+        .transact(tx_env)
         .map_err(|e| format!("EVM execution error: {}", e))?;
 
-    // C7 fix: Check if DatabaseCommit::commit() encountered any state write failures
-    if !evm.ctx.journaled_state.database.commit_errors.is_empty() {
-        let errors = evm.ctx.journaled_state.database.commit_errors.join("; ");
-        return Err(format!("EVM state commit failed: {}", errors));
+    // Convert REVM state changes to our deferred format
+    let evm_changes = convert_revm_state_to_deferred(
+        &evm.ctx.journaled_state.database.state,
+        result_and_state.state,
+    );
+
+    // If conversion produced hard errors, fail
+    if !evm_changes.errors.is_empty() {
+        return Err(format!("EVM state conversion failed: {}", evm_changes.errors.join("; ")));
     }
 
-    match result {
+    match result_and_state.result {
         ExecutionResult::Success {
             gas_used,
             output,
@@ -571,7 +597,7 @@ pub fn execute_evm_transaction(
                     (data.to_vec(), address.map(revm_address_to_array))
                 }
             };
-            Ok(EvmExecutionResult {
+            Ok((EvmExecutionResult {
                 success: true,
                 gas_used,
                 output: output_bytes,
@@ -580,23 +606,113 @@ pub fn execute_evm_transaction(
                     .iter()
                     .map(|log| log.data.data.clone().into())
                     .collect(),
-            })
+            }, evm_changes))
         }
-        ExecutionResult::Revert { gas_used, output } => Ok(EvmExecutionResult {
+        ExecutionResult::Revert { gas_used, output } => Ok((EvmExecutionResult {
             success: false,
             gas_used,
             output: output.to_vec(),
             created_address: None,
             logs: Vec::new(),
-        }),
-        ExecutionResult::Halt { gas_used, .. } => Ok(EvmExecutionResult {
+        }, evm_changes)),
+        ExecutionResult::Halt { gas_used, .. } => Ok((EvmExecutionResult {
             success: false,
             gas_used,
             output: Vec::new(),
             created_address: None,
             logs: Vec::new(),
-        }),
+        }, evm_changes)),
     }
+}
+
+/// Convert REVM state changes to our deferred format for atomic commit through StateBatch.
+/// The `state_db` reference is needed to lookup native ↔ EVM address mappings.
+fn convert_revm_state_to_deferred(
+    state_db: &StateStore,
+    revm_state: RevmHashMap<RevmAddress, Account>,
+) -> EvmStateChanges {
+    let mut changes = Vec::with_capacity(revm_state.len());
+    let mut errors = Vec::new();
+
+    for (address, account) in revm_state {
+        let address_bytes = revm_address_to_array(address);
+
+        if account.is_empty() {
+            // Account destroyed — clear account + storage
+            changes.push(EvmStateChange {
+                evm_address: address_bytes,
+                account: None,
+                storage_changes: Vec::new(), // on-disk storage cleared by StateBatch
+                native_balance_update: None,
+            });
+            continue;
+        }
+
+        // Build EVM account data
+        let mut stored = EvmAccount::new();
+        stored.nonce = account.info.nonce;
+        stored.set_balance_u256(alloy_u256_from_revm(account.info.balance));
+        if let Some(code) = account.info.code {
+            stored.code = code.bytes().to_vec();
+        }
+
+        // Build storage changes
+        let mut storage_changes = Vec::with_capacity(account.storage.len());
+        for (slot, value) in account.storage {
+            let slot_bytes = alloy_u256_from_revm(slot).to_be_bytes::<32>();
+            let present_value = alloy_u256_from_revm(value.present_value);
+            if present_value == U256::ZERO {
+                storage_changes.push((slot_bytes, None));
+            } else {
+                storage_changes.push((slot_bytes, Some(present_value)));
+            }
+        }
+
+        // Check for native account mapping
+        let native_balance_update = match state_db.lookup_evm_address(&address_bytes) {
+            Ok(Some(pubkey)) => {
+                let balance = alloy_u256_from_revm(account.info.balance);
+                let divisor = U256::from(1_000_000_000u64);
+                let shells = balance / divisor;
+                match shells.try_into() {
+                    Ok(shells_u64) => {
+                        let remainder = balance % divisor;
+                        if remainder != U256::ZERO {
+                            eprintln!(
+                                "H3: EVM balance for {:?} has sub-shell remainder {} wei (dropped)",
+                                address_bytes, remainder
+                            );
+                        }
+                        Some((pubkey, shells_u64))
+                    }
+                    Err(_) => {
+                        errors.push(format!(
+                            "EVM balance overflow for {:?}: shells {} exceeds u64::MAX",
+                            address_bytes, shells
+                        ));
+                        None
+                    }
+                }
+            }
+            Ok(None) => None,
+            Err(e) => {
+                errors.push(format!(
+                    "Failed to lookup EVM mapping for {:?}: {}",
+                    address_bytes, e
+                ));
+                None
+            }
+        };
+
+        changes.push(EvmStateChange {
+            evm_address: address_bytes,
+            account: Some(stored),
+            storage_changes,
+            native_balance_update,
+        });
+    }
+
+    EvmStateChanges { changes, errors }
 }
 
 pub fn simulate_evm_call(
@@ -801,6 +917,53 @@ mod tests {
         assert_ne!(
             balance_u256, total_u256,
             "EVM balance should NOT equal total shells"
+        );
+    }
+
+    // ── H3 tests: deferred EVM state types ──
+
+    #[test]
+    fn test_evm_state_change_default() {
+        let changes = EvmStateChanges::default();
+        assert!(changes.changes.is_empty());
+        assert!(changes.errors.is_empty());
+    }
+
+    #[test]
+    fn test_evm_state_change_construction() {
+        let change = EvmStateChange {
+            evm_address: [0xAB; 20],
+            account: Some(EvmAccount {
+                nonce: 1,
+                balance: [0u8; 32],
+                code: vec![],
+            }),
+            storage_changes: vec![([0x01; 32], Some(U256::from(42)))],
+            native_balance_update: None,
+        };
+        assert_eq!(change.evm_address[0], 0xAB);
+        assert!(change.account.is_some());
+        assert_eq!(change.storage_changes.len(), 1);
+        assert!(change.native_balance_update.is_none());
+    }
+
+    #[test]
+    fn test_evm_state_changes_with_native_balance() {
+        let pk = crate::Pubkey([0x01; 32]);
+        let change = EvmStateChange {
+            evm_address: [0xCC; 20],
+            account: None,
+            storage_changes: vec![],
+            native_balance_update: Some((pk, 500)),
+        };
+        let changes = EvmStateChanges {
+            changes: vec![change],
+            errors: vec![],
+        };
+        assert_eq!(changes.changes.len(), 1);
+        assert_eq!(
+            changes.changes[0].native_balance_update.as_ref().unwrap().1,
+            500
         );
     }
 }

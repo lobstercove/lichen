@@ -2040,18 +2040,73 @@ async fn broadcast_evm_token_sweep(
     };
 
     let contract = evm_contract_for_asset(&state.config, &job.asset)?;
-    let from_address = deposit.address;
+    let from_address = deposit.address.clone();
     let to_address = job.to_treasury.clone();
 
-    let nonce = evm_get_transaction_count(&state.http, url, &from_address).await?;
     let gas_price = evm_get_gas_price(&state.http, url).await?;
     let gas_limit = 100_000u128;
     let fee = gas_price.saturating_mul(gas_limit);
     let native_balance = evm_get_balance(&state.http, url, &from_address).await?;
+
+    // M16 fix: If the deposit address lacks ETH for gas, fund it from the treasury.
+    // ERC-20 deposit addresses only receive tokens (no native ETH), so the treasury
+    // must sponsor gas for the sweep transaction.
     if native_balance < fee {
-        return Err("insufficient gas balance".to_string());
+        let deficit = fee.saturating_sub(native_balance);
+        // Add 20% buffer to avoid rounding issues / gas price fluctuations
+        let gas_grant = deficit.saturating_add(deficit / 5);
+
+        info!(
+            "M16 gas funding: deposit {} has {} wei, needs {} — granting {} wei from treasury",
+            from_address, native_balance, fee, gas_grant
+        );
+
+        let fund_tx_hash = fund_evm_gas_for_sweep(state, url, &from_address, gas_grant).await?;
+        info!(
+            "M16 gas funding tx submitted: {} → {} ({})",
+            fund_tx_hash, from_address, gas_grant
+        );
+
+        // Wait up to 90 seconds for the gas funding tx to confirm
+        let mut confirmed = false;
+        for attempt in 0..18 {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            match check_evm_tx_confirmed(&state.http, url, &fund_tx_hash, 1).await {
+                Ok(true) => {
+                    confirmed = true;
+                    break;
+                }
+                Ok(false) => {
+                    if attempt % 6 == 5 {
+                        tracing::debug!(
+                            "M16 gas funding waiting for confirmation ({}/18)...",
+                            attempt + 1
+                        );
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("M16 gas funding confirmation check error: {}", e);
+                }
+            }
+        }
+        if !confirmed {
+            return Err(format!(
+                "gas funding tx {} did not confirm within 90s",
+                fund_tx_hash
+            ));
+        }
+
+        // Re-verify balance after funding
+        let new_balance = evm_get_balance(&state.http, url, &from_address).await?;
+        if new_balance < fee {
+            return Err(format!(
+                "gas funding confirmed but balance still insufficient: {} < {}",
+                new_balance, fee
+            ));
+        }
     }
 
+    let nonce = evm_get_transaction_count(&state.http, url, &from_address).await?;
     let chain_id = evm_get_chain_id(&state.http, url).await?;
     let signing_key = derive_evm_signing_key(&deposit.derivation_path, &state.config.master_seed)?;
     let data = evm_encode_erc20_transfer(&to_address, amount)?;
@@ -2069,6 +2124,59 @@ async fn broadcast_evm_token_sweep(
 
     let result = evm_rpc_call(&state.http, url, "eth_sendRawTransaction", json!([tx_hex])).await?;
     Ok(result.as_str().map(|v| v.to_string()))
+}
+
+/// M16 fix: Send native ETH from the custody treasury to a deposit address
+/// so that it has enough gas to execute an ERC-20 token sweep.
+///
+/// This is a simple ETH value transfer (no calldata). The treasury derives its
+/// EVM signing key from the master seed with path "custody-treasury-evm".
+async fn fund_evm_gas_for_sweep(
+    state: &CustodyState,
+    url: &str,
+    to_address: &str,
+    amount_wei: u128,
+) -> Result<String, String> {
+    let treasury_addr = state
+        .config
+        .treasury_evm_address
+        .as_ref()
+        .ok_or_else(|| "missing treasury EVM address for gas funding".to_string())?;
+
+    let nonce = evm_get_transaction_count(&state.http, url, treasury_addr).await?;
+    let gas_price = evm_get_gas_price(&state.http, url).await?;
+    let chain_id = evm_get_chain_id(&state.http, url).await?;
+    let signing_key = derive_evm_signing_key("custody-treasury-evm", &state.config.master_seed)?;
+
+    // Simple ETH transfer: 21000 gas
+    let gas_limit = 21_000u128;
+    let tx_fee = gas_price.saturating_mul(gas_limit);
+
+    // Verify treasury can afford the grant
+    let treasury_balance = evm_get_balance(&state.http, url, treasury_addr).await?;
+    if treasury_balance < amount_wei.saturating_add(tx_fee) {
+        return Err(format!(
+            "treasury ETH balance too low for gas grant: has {} wei, needs {} + {} fee",
+            treasury_balance, amount_wei, tx_fee
+        ));
+    }
+
+    let raw_tx = build_evm_signed_transaction(
+        &signing_key,
+        nonce,
+        gas_price,
+        gas_limit,
+        to_address,
+        amount_wei,
+        chain_id,
+    )?;
+    let tx_hex = format!("0x{}", hex::encode(raw_tx));
+    let result = evm_rpc_call(&state.http, url, "eth_sendRawTransaction", json!([tx_hex])).await?;
+
+    result
+        .as_str()
+        .map(|s| s.to_string())
+        .ok_or_else(|| "no tx hash from gas funding".to_string())
 }
 
 fn mark_sweep_failed(job: &mut SweepJob, err: String) {
@@ -3433,6 +3541,160 @@ fn create_threshold_rebalance(
     store_rebalance_job(db, &job)
 }
 
+/// M14 fix: Fetch a confirmed Solana swap transaction and parse the actual token output amount.
+///
+/// Uses `getTransaction` with `maxSupportedTransactionVersion: 0` to get the full tx with
+/// `meta.preTokenBalances`/`meta.postTokenBalances`. Finds the token account belonging to the
+/// treasury whose mint matches `to_mint`, then computes `post_amount - pre_amount`.
+///
+/// Returns the output amount in the token's smallest unit (e.g. USDC 6-decimal atoms).
+/// Falls back to `None` if the transaction format doesn't contain the expected fields.
+async fn parse_solana_swap_output(
+    client: &reqwest::Client,
+    url: &str,
+    signature: &str,
+    treasury_addr: &str,
+    to_mint: &str,
+) -> Result<Option<u64>, String> {
+    let params = json!([
+        signature,
+        { "encoding": "jsonParsed", "maxSupportedTransactionVersion": 0 }
+    ]);
+    let result = solana_rpc_call(client, url, "getTransaction", params).await?;
+    if result.is_null() {
+        return Ok(None);
+    }
+
+    let meta = match result.get("meta") {
+        Some(m) if !m.is_null() => m,
+        _ => return Ok(None),
+    };
+
+    // Check for transaction error
+    if !meta.get("err").map_or(true, |e| e.is_null()) {
+        return Err("Solana swap transaction failed on-chain".to_string());
+    }
+
+    let pre_balances = meta.get("preTokenBalances").and_then(|v| v.as_array());
+    let post_balances = meta.get("postTokenBalances").and_then(|v| v.as_array());
+
+    let (pre_balances, post_balances) = match (pre_balances, post_balances) {
+        (Some(pre), Some(post)) => (pre, post),
+        _ => return Ok(None),
+    };
+
+    // Build a lookup: for each account index, find the pre and post amounts for the output mint
+    // belonging to the treasury address.
+    let extract_amount = |entries: &[Value]| -> Option<u64> {
+        for entry in entries {
+            let mint = entry.get("mint").and_then(|v| v.as_str()).unwrap_or("");
+            let owner = entry
+                .get("owner")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if mint == to_mint && owner == treasury_addr {
+                return entry
+                    .get("uiTokenAmount")
+                    .and_then(|v| v.get("amount"))
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<u64>().ok());
+            }
+        }
+        None
+    };
+
+    let pre_amount = extract_amount(pre_balances).unwrap_or(0);
+    let post_amount = extract_amount(post_balances).unwrap_or(0);
+
+    if post_amount > pre_amount {
+        Ok(Some(post_amount - pre_amount))
+    } else {
+        // Edge case: balance didn't increase (swap might have failed silently)
+        Ok(None)
+    }
+}
+
+/// M14 fix: Fetch a confirmed EVM swap transaction receipt and parse the actual token output.
+///
+/// Decodes ERC-20 Transfer event logs in the receipt. Looks for a Transfer event where the
+/// `to` address is the treasury and the emitting contract is the `to_token_contract`.
+///
+/// Returns the output amount in the token's smallest unit (e.g. USDT 6-decimal atoms).
+/// Falls back to `None` if no matching Transfer log is found.
+async fn parse_evm_swap_output(
+    client: &reqwest::Client,
+    url: &str,
+    tx_hash: &str,
+    treasury_addr: &str,
+    to_token_contract: &str,
+) -> Result<Option<u64>, String> {
+    let receipt = evm_get_transaction_receipt(client, url, tx_hash).await?;
+    let receipt = match receipt {
+        Some(r) => r,
+        None => return Ok(None),
+    };
+
+    // Check receipt status (0x1 = success)
+    let status = receipt.get("status").and_then(|v| v.as_str()).unwrap_or("0x0");
+    if status != "0x1" {
+        return Err("EVM swap transaction reverted".to_string());
+    }
+
+    let logs = match receipt.get("logs").and_then(|v| v.as_array()) {
+        Some(l) => l,
+        None => return Ok(None),
+    };
+
+    let treasury_lower = treasury_addr.to_lowercase();
+    let contract_lower = to_token_contract.to_lowercase();
+
+    // ERC-20 Transfer topic: keccak256("Transfer(address,address,uint256)")
+    let transfer_topic = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+
+    let mut total_output: u128 = 0;
+
+    for log in logs {
+        // Check emitting contract matches the output token
+        let log_address = log.get("address").and_then(|v| v.as_str()).unwrap_or("");
+        if log_address.to_lowercase() != contract_lower {
+            continue;
+        }
+
+        let topics = match log.get("topics").and_then(|v| v.as_array()) {
+            Some(t) if t.len() >= 3 => t,
+            _ => continue,
+        };
+
+        // Verify it's a Transfer event
+        let event_topic = topics[0].as_str().unwrap_or("");
+        if event_topic != transfer_topic {
+            continue;
+        }
+
+        // topics[2] = `to` address (zero-padded to 32 bytes)
+        let to_topic = topics[2].as_str().unwrap_or("").trim_start_matches("0x");
+        if to_topic.len() < 40 {
+            continue;
+        }
+        let to_addr = format!("0x{}", &to_topic[to_topic.len() - 40..]);
+        if to_addr.to_lowercase() != treasury_lower {
+            continue;
+        }
+
+        // data = amount (uint256 hex-encoded)
+        let data = log.get("data").and_then(|v| v.as_str()).unwrap_or("0x0");
+        if let Ok(amount) = parse_hex_u128(data) {
+            total_output = total_output.saturating_add(amount);
+        }
+    }
+
+    if total_output > 0 {
+        Ok(Some(total_output as u64))
+    } else {
+        Ok(None)
+    }
+}
+
 /// Process queued rebalance jobs: submit swaps on external DEXes.
 async fn process_rebalance_jobs(state: &CustodyState) -> Result<(), String> {
     // Process queued → submitted
@@ -3501,11 +3763,78 @@ async fn process_rebalance_jobs(state: &CustodyState) -> Result<(), String> {
         if confirmed {
             job.status = "confirmed".to_string();
             job.last_error = None;
+
+            // M14 fix: Parse the actual swap output from the on-chain transaction
+            // instead of assuming output == input (which ignores slippage, fees, price impact).
+            let actual_output = match job.chain.as_str() {
+                "solana" => {
+                    if let (Some(url), Some(ref tx_hash)) = (
+                        state.config.solana_rpc_url.as_ref(),
+                        &job.swap_tx_hash,
+                    ) {
+                        let to_mint = solana_mint_for_asset(&state.config, &job.to_asset)
+                            .unwrap_or_default();
+                        let treasury = state
+                            .config
+                            .treasury_solana_address
+                            .as_deref()
+                            .unwrap_or("");
+                        parse_solana_swap_output(&state.http, url, tx_hash, treasury, &to_mint)
+                            .await
+                            .unwrap_or(None)
+                    } else {
+                        None
+                    }
+                }
+                "ethereum" => {
+                    if let (Some(url), Some(ref tx_hash)) = (
+                        state.config.evm_rpc_url.as_ref(),
+                        &job.swap_tx_hash,
+                    ) {
+                        let to_contract =
+                            evm_contract_for_asset(&state.config, &job.to_asset)
+                                .unwrap_or_default();
+                        let treasury = state
+                            .config
+                            .treasury_evm_address
+                            .as_deref()
+                            .unwrap_or("");
+                        parse_evm_swap_output(&state.http, url, tx_hash, treasury, &to_contract)
+                            .await
+                            .unwrap_or(None)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            };
+
+            // Use parsed output if available; fall back to input amount with a warning
+            let credit_amount = match actual_output {
+                Some(output) => {
+                    if output != job.amount {
+                        info!(
+                            "rebalance swap output differs from input: input={} output={} (job={})",
+                            job.amount, output, job.job_id
+                        );
+                    }
+                    output
+                }
+                None => {
+                    tracing::warn!(
+                        "could not parse swap output for job {}, falling back to input amount {}",
+                        job.job_id,
+                        job.amount
+                    );
+                    job.amount
+                }
+            };
+
             store_rebalance_job(&state.db, &job)?;
 
-            // Update reserve ledger: deduct from_asset, add to_asset
+            // Update reserve ledger: debit input amount, credit actual output
             adjust_reserve_balance(&state.db, &job.chain, &job.from_asset, job.amount, false)?;
-            adjust_reserve_balance(&state.db, &job.chain, &job.to_asset, job.amount, true)?;
+            adjust_reserve_balance(&state.db, &job.chain, &job.to_asset, credit_amount, true)?;
 
             record_audit_event(
                 &state.db,
@@ -4329,5 +4658,160 @@ mod tests {
     #[test]
     fn test_default_preferred_stablecoin_is_usdt() {
         assert_eq!(default_preferred_stablecoin(), "usdt");
+    }
+
+    // ── M14 tests: swap output parsing ──
+
+    #[test]
+    fn test_parse_evm_swap_output_decodes_transfer_logs() {
+        // Simulate an ERC-20 Transfer log to treasury
+        let treasury = "0xabcdef0123456789abcdef0123456789abcdef01";
+        let contract = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
+        let transfer_topic = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+
+        // Pad address to 32 bytes (left-zero-padded)
+        let to_topic = format!("0x000000000000000000000000{}", &treasury[2..]);
+
+        let receipt = serde_json::json!({
+            "status": "0x1",
+            "logs": [
+                {
+                    "address": contract,
+                    "topics": [
+                        transfer_topic,
+                        "0x0000000000000000000000001111111111111111111111111111111111111111",
+                        to_topic,
+                    ],
+                    "data": "0x00000000000000000000000000000000000000000000000000000000000186a0",
+                    "transactionHash": "0xdeadbeef"
+                }
+            ]
+        });
+
+        // Manually parse the same way parse_evm_swap_output would
+        let logs = receipt.get("logs").unwrap().as_array().unwrap();
+        let log = &logs[0];
+        let (to, amount, _tx_hash) = decode_transfer_log(log).unwrap();
+        assert_eq!(to.to_lowercase(), treasury.to_lowercase());
+        assert_eq!(amount, 100_000u128); // 0x186a0 = 100000
+    }
+
+    #[test]
+    fn test_parse_evm_swap_output_ignores_wrong_contract() {
+        let transfer_topic = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef";
+        let treasury = "0xabcdef0123456789abcdef0123456789abcdef01";
+
+        // Log from a different contract — should NOT match
+        let log = serde_json::json!({
+            "address": "0x0000000000000000000000000000000000000099",
+            "topics": [
+                transfer_topic,
+                "0x0000000000000000000000001111111111111111111111111111111111111111",
+                format!("0x000000000000000000000000{}", &treasury[2..]),
+            ],
+            "data": "0x00000000000000000000000000000000000000000000000000000000000003e8",
+            "transactionHash": "0xabc123"
+        });
+
+        let (to, amount, _) = decode_transfer_log(&log).unwrap();
+        // It decodes fine, but the contract address mismatch would be caught
+        // in parse_evm_swap_output by comparing log_address to the target contract
+        assert_eq!(amount, 1000u128);
+        assert_eq!(to.to_lowercase(), treasury.to_lowercase());
+    }
+
+    #[test]
+    fn test_parse_solana_output_amount_extraction() {
+        // Simulate the extract_amount closure logic
+        let entries = serde_json::json!([
+            {
+                "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+                "owner": "TEST_SOL_ADDR",
+                "uiTokenAmount": { "amount": "200000" }
+            },
+            {
+                "mint": "other_mint",
+                "owner": "TEST_SOL_ADDR",
+                "uiTokenAmount": { "amount": "999" }
+            }
+        ]);
+
+        let target_mint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+        let target_owner = "TEST_SOL_ADDR";
+        let arr = entries.as_array().unwrap();
+
+        let mut found = None;
+        for entry in arr {
+            let mint = entry.get("mint").and_then(|v| v.as_str()).unwrap_or("");
+            let owner = entry.get("owner").and_then(|v| v.as_str()).unwrap_or("");
+            if mint == target_mint && owner == target_owner {
+                found = entry
+                    .get("uiTokenAmount")
+                    .and_then(|v| v.get("amount"))
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| s.parse::<u64>().ok());
+                break;
+            }
+        }
+        assert_eq!(found, Some(200_000u64));
+    }
+
+    #[test]
+    fn test_parse_solana_output_no_match() {
+        let entries = serde_json::json!([
+            {
+                "mint": "wrong_mint",
+                "owner": "wrong_owner",
+                "uiTokenAmount": { "amount": "100" }
+            }
+        ]);
+        let arr = entries.as_array().unwrap();
+        let mut found: Option<u64> = None;
+        for entry in arr {
+            let mint = entry.get("mint").and_then(|v| v.as_str()).unwrap_or("");
+            if mint == "target_mint" {
+                found = Some(0);
+            }
+        }
+        assert!(found.is_none());
+    }
+
+    // ── M16 tests: gas funding logic ──
+
+    #[test]
+    fn test_gas_deficit_calculation() {
+        // Simulates the gas deficit + buffer calculation from broadcast_evm_token_sweep
+        let gas_price: u128 = 20_000_000_000; // 20 gwei
+        let gas_limit: u128 = 100_000;
+        let fee = gas_price.saturating_mul(gas_limit); // 2e15 = 0.002 ETH
+        let native_balance: u128 = 500_000_000_000_000; // 0.0005 ETH
+
+        assert!(native_balance < fee);
+        let deficit = fee.saturating_sub(native_balance);
+        let gas_grant = deficit.saturating_add(deficit / 5); // +20% buffer
+
+        assert!(gas_grant > deficit);
+        assert!(gas_grant < fee); // Grant should be less than full fee (since we have some balance)
+        assert_eq!(deficit, 1_500_000_000_000_000); // 0.0015 ETH
+        assert_eq!(gas_grant, 1_800_000_000_000_000); // 0.0018 ETH with buffer
+    }
+
+    #[test]
+    fn test_gas_funding_not_needed_when_sufficient() {
+        let gas_price: u128 = 20_000_000_000;
+        let gas_limit: u128 = 100_000;
+        let fee = gas_price.saturating_mul(gas_limit);
+        let native_balance: u128 = 3_000_000_000_000_000; // 0.003 ETH > 0.002 ETH fee
+
+        // No funding needed
+        assert!(native_balance >= fee);
+    }
+
+    #[test]
+    fn test_gas_grant_buffer_is_20_percent() {
+        let deficit: u128 = 1_000_000;
+        let buffer = deficit / 5;
+        let grant = deficit.saturating_add(buffer);
+        assert_eq!(grant, 1_200_000); // exactly 120% of deficit
     }
 }

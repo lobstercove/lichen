@@ -340,6 +340,18 @@ impl TxProcessor {
         }
     }
 
+    /// H3 fix: Apply deferred EVM state changes through the active batch.
+    fn b_apply_evm_state_changes(
+        &self,
+        changes: &crate::evm::EvmStateChanges,
+    ) -> Result<(), String> {
+        let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        let batch = guard
+            .as_mut()
+            .ok_or("No active batch for b_apply_evm_state_changes")?;
+        batch.apply_evm_changes(&changes.changes)
+    }
+
     fn b_register_evm_address(
         &self,
         evm_address: &[u8; 20],
@@ -945,14 +957,10 @@ impl TxProcessor {
 
     /// Process an EVM transaction.
     ///
-    /// ATOMICITY NOTE: REVM's `transact_commit` writes EVM state changes
-    /// (balances, storage, contract code) directly through `DatabaseCommit`
-    /// before we reach the record-storage batch below. If the batch commit
-    /// for tx/receipt records fails, EVM state is already persisted. In
-    /// practice this only happens during catastrophic RocksDB failures
-    /// where the whole node is non-functional. A full fix requires
-    /// refactoring REVM to use a deferred-commit model, tracked as a
-    /// future improvement (T7.1).
+    /// H3 fix: EVM state changes are now deferred — `execute_evm_transaction`
+    /// uses `transact()` (not `transact_commit`) and returns the state changes.
+    /// All writes (EVM accounts, storage, native balances, tx/receipt records,
+    /// fees) go through a single `StateBatch` and commit atomically.
     fn process_evm_transaction(&self, tx: &Transaction) -> TxResult {
         if tx.message.instructions.len() != 1 {
             return TxResult {
@@ -1005,7 +1013,7 @@ impl TxProcessor {
         }
 
         let chain_id = evm_tx.chain_id.unwrap_or(0);
-        let result = match execute_evm_transaction(self.state.clone(), &evm_tx, chain_id) {
+        let (result, evm_state_changes) = match execute_evm_transaction(self.state.clone(), &evm_tx, chain_id) {
             Ok(res) => res,
             Err(err) => {
                 return TxResult {
@@ -1086,6 +1094,17 @@ impl TxProcessor {
                     error: Some(format!("EVM fee charge error: {}", e)),
                 };
             }
+        }
+
+        // H3 fix: Apply deferred EVM state changes (accounts, storage, native balances)
+        // through the same atomic batch. This guarantees all-or-nothing commit.
+        if let Err(e) = self.b_apply_evm_state_changes(&evm_state_changes) {
+            self.rollback_batch();
+            return TxResult {
+                success: false,
+                fee_paid: 0,
+                error: Some(format!("EVM state apply error: {}", e)),
+            };
         }
 
         if let Err(e) = self.commit_batch() {
@@ -1250,6 +1269,10 @@ impl TxProcessor {
             14 => self.system_reefstake_unstake(ix),
             15 => self.system_reefstake_claim(ix),
             16 => self.system_reefstake_transfer(ix),
+            // H16 fix: consensus-safe instruction types for state-mutating operations
+            17 => self.system_deploy_contract(ix),
+            18 => self.system_set_contract_abi(ix),
+            19 => self.system_faucet_airdrop(ix),
             _ => Err(format!("Unknown system instruction: {}", instruction_type)),
         }
     }
@@ -1686,6 +1709,241 @@ impl TxProcessor {
         let mut pool = self.b_get_reefstake_pool()?;
         pool.transfer(from, to, st_molt_amount, current_slot)?;
         self.b_put_reefstake_pool(&pool)?;
+
+        Ok(())
+    }
+
+    /// H16 fix: Deploy contract through consensus (instruction type 17).
+    /// Instruction data: [17 | code_length(4 LE) | code_bytes | init_data_bytes]
+    /// Accounts: [deployer, treasury]
+    /// The deployer must be a transaction signer. Deploy fee charged from deployer.
+    fn system_deploy_contract(&self, ix: &Instruction) -> Result<(), String> {
+        use sha2::{Digest, Sha256};
+
+        if ix.accounts.len() < 2 {
+            return Err("DeployContract requires [deployer, treasury] accounts".to_string());
+        }
+        if ix.data.len() < 6 {
+            return Err("DeployContract instruction data too short".to_string());
+        }
+
+        let deployer = ix.accounts[0];
+        let treasury = ix.accounts[1];
+
+        // Parse code length and code bytes
+        let code_len = u32::from_le_bytes(
+            ix.data[1..5]
+                .try_into()
+                .map_err(|_| "Invalid code length encoding".to_string())?,
+        ) as usize;
+        if ix.data.len() < 5 + code_len {
+            return Err("DeployContract: instruction data shorter than declared code_length".to_string());
+        }
+        let code_bytes = &ix.data[5..5 + code_len];
+        let init_data_bytes = if ix.data.len() > 5 + code_len {
+            &ix.data[5 + code_len..]
+        } else {
+            &[]
+        };
+
+        if code_bytes.is_empty() {
+            return Err("DeployContract: code cannot be empty".to_string());
+        }
+
+        // Verify treasury is correct
+        let actual_treasury = self.state.get_treasury_pubkey()?
+            .ok_or_else(|| "Treasury pubkey not set".to_string())?;
+        if treasury != actual_treasury {
+            return Err("DeployContract: incorrect treasury account".to_string());
+        }
+
+        // Derive program address: SHA-256(deployer + optional_name + code)
+        let contract_name: Option<String> = if !init_data_bytes.is_empty() {
+            serde_json::from_slice::<serde_json::Value>(init_data_bytes)
+                .ok()
+                .and_then(|v| {
+                    v.get("name")
+                        .or_else(|| v.get("symbol"))
+                        .and_then(|n| n.as_str().map(|s| s.to_string()))
+                })
+        } else {
+            None
+        };
+
+        let mut addr_hasher = Sha256::new();
+        addr_hasher.update(&deployer.0);
+        if let Some(ref name) = contract_name {
+            addr_hasher.update(name.as_bytes());
+        }
+        addr_hasher.update(code_bytes);
+        let addr_hash = addr_hasher.finalize();
+        let mut addr_bytes = [0u8; 32];
+        addr_bytes.copy_from_slice(&addr_hash[..32]);
+        let program_pubkey = crate::Pubkey(addr_bytes);
+
+        // Reject if already deployed
+        if self.b_get_account(&program_pubkey)?.is_some() {
+            return Err(format!(
+                "Contract already exists at {}",
+                program_pubkey.to_base58()
+            ));
+        }
+
+        // Charge deploy fee
+        let deploy_fee = crate::CONTRACT_DEPLOY_FEE;
+        let mut deployer_account = self
+            .b_get_account(&deployer)?
+            .ok_or_else(|| "Deployer account not found".to_string())?;
+        deployer_account
+            .deduct_spendable(deploy_fee)
+            .map_err(|e| format!("Failed to deduct deploy fee: {}", e))?;
+        self.b_put_account(&deployer, &deployer_account)?;
+
+        // Credit fee to treasury
+        let mut treasury_account = self
+            .b_get_account(&treasury)?
+            .unwrap_or_else(|| crate::Account::new(0, treasury));
+        treasury_account
+            .add_spendable(deploy_fee)
+            .map_err(|e| format!("Treasury balance overflow: {}", e))?;
+        self.b_put_account(&treasury, &treasury_account)?;
+
+        // Create contract account
+        let contract = crate::ContractAccount::new(code_bytes.to_vec(), deployer);
+        let mut account = crate::Account::new(0, program_pubkey);
+        account.data = serde_json::to_vec(&contract)
+            .map_err(|e| format!("Failed to serialize contract: {}", e))?;
+        account.executable = true;
+        self.b_put_account(&program_pubkey, &account)?;
+
+        // Index program
+        if let Err(e) = self.state.index_program(&program_pubkey) {
+            eprintln!("system_deploy_contract: index_program failed: {}", e);
+        }
+
+        // Process init_data for symbol registry
+        if !init_data_bytes.is_empty() {
+            if let Ok(raw) = std::str::from_utf8(init_data_bytes) {
+                if let Ok(registry_data) = serde_json::from_str::<serde_json::Value>(raw) {
+                    if let Some(symbol) = registry_data.get("symbol").and_then(|s| s.as_str()) {
+                        let entry = crate::SymbolRegistryEntry {
+                            symbol: symbol.to_string(),
+                            program: program_pubkey,
+                            owner: deployer,
+                            name: registry_data.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()),
+                            template: registry_data.get("template").and_then(|t| t.as_str()).map(|s| s.to_string()),
+                            metadata: registry_data.get("metadata").cloned(),
+                        };
+                        if let Err(e) = self.state.register_symbol(symbol, entry) {
+                            eprintln!("system_deploy_contract: register_symbol failed: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// H16 fix: Set contract ABI through consensus (instruction type 18).
+    /// Instruction data: [18 | abi_json_bytes]
+    /// Accounts: [contract_owner, contract_id]
+    /// Only the contract owner/deployer can set the ABI.
+    fn system_set_contract_abi(&self, ix: &Instruction) -> Result<(), String> {
+        if ix.accounts.len() < 2 {
+            return Err("SetContractAbi requires [owner, contract_id] accounts".to_string());
+        }
+        if ix.data.len() < 2 {
+            return Err("SetContractAbi: missing ABI data".to_string());
+        }
+
+        let owner = ix.accounts[0];
+        let contract_id = ix.accounts[1];
+        let abi_bytes = &ix.data[1..];
+
+        let abi: crate::ContractAbi = serde_json::from_slice(abi_bytes)
+            .map_err(|e| format!("Invalid ABI format: {}", e))?;
+
+        let mut account = self
+            .b_get_account(&contract_id)?
+            .ok_or_else(|| "Contract not found".to_string())?;
+        if !account.executable {
+            return Err("Account is not a contract".to_string());
+        }
+
+        let mut contract: crate::ContractAccount = serde_json::from_slice(&account.data)
+            .map_err(|e| format!("Failed to decode contract: {}", e))?;
+
+        // Verify caller is the contract deployer/owner
+        if contract.owner != owner {
+            return Err(format!(
+                "Only the contract deployer ({}) can set the ABI",
+                contract.owner.to_base58()
+            ));
+        }
+
+        contract.abi = Some(abi);
+        account.data = serde_json::to_vec(&contract)
+            .map_err(|e| format!("Failed to serialize contract: {}", e))?;
+        self.b_put_account(&contract_id, &account)?;
+
+        Ok(())
+    }
+
+    /// H16 fix: Faucet airdrop through consensus (instruction type 19).
+    /// Instruction data: [19 | amount_shells(8 LE)]
+    /// Accounts: [treasury, recipient]
+    /// Treasury must be a signer. Amount capped at 100 MOLT.
+    fn system_faucet_airdrop(&self, ix: &Instruction) -> Result<(), String> {
+        if ix.accounts.len() < 2 {
+            return Err("FaucetAirdrop requires [treasury, recipient] accounts".to_string());
+        }
+        if ix.data.len() < 9 {
+            return Err("FaucetAirdrop: missing amount data".to_string());
+        }
+
+        let treasury = ix.accounts[0];
+        let recipient = ix.accounts[1];
+
+        // Verify sender is treasury
+        let actual_treasury = self.state.get_treasury_pubkey()?
+            .ok_or_else(|| "Treasury pubkey not set".to_string())?;
+        if treasury != actual_treasury {
+            return Err("FaucetAirdrop: sender must be treasury".to_string());
+        }
+
+        let amount_shells = u64::from_le_bytes(
+            ix.data[1..9]
+                .try_into()
+                .map_err(|_| "Invalid amount encoding".to_string())?,
+        );
+
+        // Cap at 100 MOLT
+        let max_airdrop = 100u64 * 1_000_000_000;
+        if amount_shells == 0 || amount_shells > max_airdrop {
+            return Err(format!(
+                "FaucetAirdrop: amount must be between 1 shell and {} shells (100 MOLT)",
+                max_airdrop
+            ));
+        }
+
+        // Debit treasury
+        let mut treasury_account = self
+            .b_get_account(&treasury)?
+            .ok_or_else(|| "Treasury account not found".to_string())?;
+        treasury_account
+            .deduct_spendable(amount_shells)
+            .map_err(|e| format!("Insufficient treasury balance: {}", e))?;
+        self.b_put_account(&treasury, &treasury_account)?;
+
+        // Credit recipient
+        let mut recipient_account = self
+            .b_get_account(&recipient)?
+            .unwrap_or_else(|| crate::Account::new(0, SYSTEM_PROGRAM_ID));
+        recipient_account
+            .add_spendable(amount_shells)
+            .map_err(|e| format!("Recipient balance overflow: {}", e))?;
+        self.b_put_account(&recipient, &recipient_account)?;
 
         Ok(())
     }
@@ -2543,5 +2801,266 @@ mod tests {
         let tx = make_reefstake_unstake_tx(&alice_kp, alice, too_much, genesis_hash);
         let result = processor.process_transaction(&tx, &validator);
         assert!(!result.success, "Unstaking more than staked should fail");
+    }
+
+    // ── H16 tests: system instruction types 17, 18, 19 ──
+
+    #[test]
+    fn test_system_deploy_contract_success() {
+        let (processor, state, alice_kp, alice, treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        // Fund treasury for test
+        let mut treasury_acct = state.get_account(&treasury).unwrap().unwrap();
+        treasury_acct.add_spendable(Account::molt_to_shells(100)).unwrap();
+        state.put_account(&treasury, &treasury_acct).unwrap();
+
+        // Build deploy instruction: [17 | code_length(4 LE) | code_bytes]
+        let code = vec![0x00, 0x61, 0x73, 0x6D]; // fake WASM magic
+        let mut data = vec![17u8];
+        data.extend_from_slice(&(code.len() as u32).to_le_bytes());
+        data.extend_from_slice(&code);
+
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, treasury],
+            data,
+        };
+        let message = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(message);
+        let sig = alice_kp.sign(&tx.message.serialize());
+        tx.signatures.push(sig);
+
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(result.success, "Deploy should succeed: {:?}", result.error);
+    }
+
+    #[test]
+    fn test_system_deploy_contract_insufficient_funds() {
+        let (processor, _state, alice_kp, alice, treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        // Alice has 1000 MOLT but we drain her to 1 MOLT
+        let low_alice = Account::new(1, alice);
+        _state.put_account(&alice, &low_alice).unwrap();
+
+        let code = vec![0x00; 100];
+        let mut data = vec![17u8];
+        data.extend_from_slice(&(code.len() as u32).to_le_bytes());
+        data.extend_from_slice(&code);
+
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, treasury],
+            data,
+        };
+        let message = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(message);
+        let sig = alice_kp.sign(&tx.message.serialize());
+        tx.signatures.push(sig);
+
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success, "Deploy with insufficient funds should fail");
+    }
+
+    #[test]
+    fn test_system_set_contract_abi() {
+        let (processor, state, alice_kp, alice, treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        // First deploy a contract
+        let code = vec![0x00, 0x61, 0x73, 0x6D];
+        let mut deploy_data = vec![17u8];
+        deploy_data.extend_from_slice(&(code.len() as u32).to_le_bytes());
+        deploy_data.extend_from_slice(&code);
+
+        let deploy_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, treasury],
+            data: deploy_data.clone(),
+        };
+        let msg = crate::transaction::Message::new(vec![deploy_ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        let sig = alice_kp.sign(&tx.message.serialize());
+        tx.signatures.push(sig);
+        let r = processor.process_transaction(&tx, &validator);
+        assert!(r.success, "Deploy for ABI test should succeed: {:?}", r.error);
+
+        // Find the deployed program address
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&alice.0);
+        hasher.update(&code);
+        let hash = hasher.finalize();
+        let mut addr_bytes = [0u8; 32];
+        addr_bytes.copy_from_slice(&hash[..32]);
+        let program_pubkey = Pubkey(addr_bytes);
+
+        // Now set ABI
+        let abi = serde_json::json!({
+            "version": "1.0",
+            "name": "TestContract",
+            "functions": []
+        });
+        let abi_bytes = serde_json::to_vec(&abi).unwrap();
+        let mut abi_data = vec![18u8];
+        abi_data.extend_from_slice(&abi_bytes);
+
+        let abi_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, program_pubkey],
+            data: abi_data,
+        };
+        let msg2 = crate::transaction::Message::new(vec![abi_ix], genesis_hash);
+        let mut tx2 = Transaction::new(msg2);
+        let sig2 = alice_kp.sign(&tx2.message.serialize());
+        tx2.signatures.push(sig2);
+        let result = processor.process_transaction(&tx2, &validator);
+        assert!(result.success, "SetContractAbi should succeed: {:?}", result.error);
+
+        // Verify ABI is stored
+        let acct = state.get_account(&program_pubkey).unwrap().unwrap();
+        let contract: crate::ContractAccount = serde_json::from_slice(&acct.data).unwrap();
+        assert!(contract.abi.is_some());
+    }
+
+    #[test]
+    fn test_system_set_contract_abi_wrong_owner_fails() {
+        let (processor, state, alice_kp, alice, treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        // Deploy a contract as alice
+        let code = vec![0x00, 0x61, 0x73, 0x6E];
+        let mut deploy_data = vec![17u8];
+        deploy_data.extend_from_slice(&(code.len() as u32).to_le_bytes());
+        deploy_data.extend_from_slice(&code);
+        let deploy_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, treasury],
+            data: deploy_data,
+        };
+        let msg = crate::transaction::Message::new(vec![deploy_ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+        assert!(processor.process_transaction(&tx, &validator).success);
+
+        // Compute program address
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&alice.0);
+        hasher.update(&code);
+        let hash = hasher.finalize();
+        let mut addr_bytes = [0u8; 32];
+        addr_bytes.copy_from_slice(&hash[..32]);
+        let program_pubkey = Pubkey(addr_bytes);
+
+        // Try setting ABI as a different user (bob)
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        state.put_account(&bob, &Account::new(100, bob)).unwrap();
+
+        let abi_bytes = b"{\"version\":\"1.0\"}";
+        let mut abi_data = vec![18u8];
+        abi_data.extend_from_slice(abi_bytes);
+        let abi_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob, program_pubkey],
+            data: abi_data,
+        };
+        let msg2 = crate::transaction::Message::new(vec![abi_ix], genesis_hash);
+        let mut tx2 = Transaction::new(msg2);
+        tx2.signatures.push(bob_kp.sign(&tx2.message.serialize()));
+        let r = processor.process_transaction(&tx2, &validator);
+        assert!(!r.success, "SetContractAbi by non-owner should fail");
+    }
+
+    #[test]
+    fn test_system_faucet_airdrop() {
+        let (processor, state, _alice_kp, _alice, treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        // Fund treasury
+        let mut t = state.get_account(&treasury).unwrap().unwrap();
+        t.add_spendable(Account::molt_to_shells(1000)).unwrap();
+        state.put_account(&treasury, &t).unwrap();
+
+        let recipient = Pubkey([0x99; 32]);
+        let amount: u64 = Account::molt_to_shells(10);
+
+        let mut data = vec![19u8];
+        data.extend_from_slice(&amount.to_le_bytes());
+
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![treasury, recipient],
+            data,
+        };
+        // Faucet airdrop needs to be signed by treasury — we use a keypair for the test
+        let treasury_kp = Keypair::from_seed(&[3u8; 32]);
+        // Re-set treasury pubkey to match the keyed treasury
+        state.set_treasury_pubkey(&treasury_kp.pubkey()).unwrap();
+        let treasury_pk = treasury_kp.pubkey();
+        let mut tacct = state.get_account(&treasury).unwrap().unwrap();
+        state.put_account(&treasury_pk, &tacct).unwrap();
+
+        let ix2 = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![treasury_pk, recipient],
+            data: {
+                let mut d = vec![19u8];
+                d.extend_from_slice(&amount.to_le_bytes());
+                d
+            },
+        };
+        let msg = crate::transaction::Message::new(vec![ix2], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(treasury_kp.sign(&tx.message.serialize()));
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(result.success, "Faucet airdrop should succeed: {:?}", result.error);
+
+        let r = state.get_account(&recipient).unwrap();
+        assert!(r.is_some());
+        assert_eq!(r.unwrap().spendable, amount);
+    }
+
+    #[test]
+    fn test_system_faucet_airdrop_cap_exceeded() {
+        let (processor, state, _alice_kp, _alice, treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        let mut t = state.get_account(&treasury).unwrap().unwrap();
+        t.add_spendable(Account::molt_to_shells(10000)).unwrap();
+        state.put_account(&treasury, &t).unwrap();
+
+        let recipient = Pubkey([0xBB; 32]);
+        // 200 MOLT exceeds 100 MOLT cap
+        let amount: u64 = 200u64 * 1_000_000_000;
+
+        let mut data = vec![19u8];
+        data.extend_from_slice(&amount.to_le_bytes());
+
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![treasury, recipient],
+            data,
+        };
+        let treasury_kp = Keypair::from_seed(&[3u8; 32]);
+        state.set_treasury_pubkey(&treasury_kp.pubkey()).unwrap();
+        state.put_account(&treasury_kp.pubkey(), &t).unwrap();
+
+        let ix2 = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![treasury_kp.pubkey(), recipient],
+            data: {
+                let mut d = vec![19u8];
+                d.extend_from_slice(&amount.to_le_bytes());
+                d
+            },
+        };
+        let msg = crate::transaction::Message::new(vec![ix2], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(treasury_kp.sign(&tx.message.serialize()));
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success, "Airdrop > 100 MOLT should fail");
     }
 }

@@ -94,6 +94,7 @@ where
 pub const MAX_INSTRUCTIONS_PER_TX: usize = 64;
 /// Maximum data bytes per instruction (T1.7)
 pub const MAX_INSTRUCTION_DATA: usize = 10_240; // 10KB
+pub const MAX_DEPLOY_INSTRUCTION_DATA: usize = 4_194_304; // 4MB — WASM deploys via instruction type 17
 /// Maximum accounts per instruction
 pub const MAX_ACCOUNTS_PER_IX: usize = 64;
 
@@ -135,12 +136,21 @@ impl Transaction {
             ));
         }
         for (i, ix) in self.message.instructions.iter().enumerate() {
-            if ix.data.len() > MAX_INSTRUCTION_DATA {
+            // Deploy contract (system program, instruction type 17) allows up to 4MB for WASM code
+            let is_deploy = ix.program_id == crate::Pubkey([0u8; 32])
+                && !ix.data.is_empty()
+                && ix.data[0] == 17;
+            let data_limit = if is_deploy {
+                MAX_DEPLOY_INSTRUCTION_DATA
+            } else {
+                MAX_INSTRUCTION_DATA
+            };
+            if ix.data.len() > data_limit {
                 return Err(format!(
                     "Instruction {} data too large: {} bytes (max {})",
                     i,
                     ix.data.len(),
-                    MAX_INSTRUCTION_DATA
+                    data_limit
                 ));
             }
             if ix.accounts.len() > MAX_ACCOUNTS_PER_IX {
@@ -177,5 +187,69 @@ mod tests {
 
         println!("Transaction signature: {}", tx.signature());
         assert_eq!(tx.signatures.len(), 0); // Not signed yet
+    }
+
+    // ── H16 tests: deploy instruction data limit exemption ──
+
+    #[test]
+    fn test_validate_structure_normal_instruction_10kb_limit() {
+        let ix = Instruction {
+            program_id: Pubkey([1u8; 32]),
+            accounts: vec![Pubkey([2u8; 32])],
+            data: vec![0u8; MAX_INSTRUCTION_DATA + 1],
+        };
+        let msg = Message::new(vec![ix], Hash::default());
+        let tx = Transaction::new(msg);
+        assert!(tx.validate_structure().is_err());
+    }
+
+    #[test]
+    fn test_validate_structure_deploy_instruction_allows_large_data() {
+        // System program (all zeros), instruction type 17 = DeployContract
+        let mut data = vec![17u8]; // type byte
+        data.extend_from_slice(&(100_000u32).to_le_bytes()); // code_length
+        data.extend(vec![0u8; 100_000]); // fake WASM code (100KB > 10KB limit)
+
+        let ix = Instruction {
+            program_id: Pubkey([0u8; 32]), // system program
+            accounts: vec![Pubkey([2u8; 32]), Pubkey([3u8; 32])],
+            data,
+        };
+        let msg = Message::new(vec![ix], Hash::default());
+        let tx = Transaction::new(msg);
+        assert!(
+            tx.validate_structure().is_ok(),
+            "Deploy instruction should allow >10KB data"
+        );
+    }
+
+    #[test]
+    fn test_validate_structure_deploy_instruction_4mb_limit() {
+        // Even deploy instructions have a 4MB cap
+        let mut data = vec![17u8];
+        data.extend(vec![0u8; MAX_DEPLOY_INSTRUCTION_DATA - 1]); // total = limit (type byte + payload)
+        let ix = Instruction {
+            program_id: Pubkey([0u8; 32]),
+            accounts: vec![Pubkey([2u8; 32])],
+            data,
+        };
+        let msg = Message::new(vec![ix], Hash::default());
+        let tx = Transaction::new(msg);
+        assert!(tx.validate_structure().is_ok());
+
+        // Over limit
+        let mut data2 = vec![17u8];
+        data2.extend(vec![0u8; MAX_DEPLOY_INSTRUCTION_DATA + 1]);
+        let ix2 = Instruction {
+            program_id: Pubkey([0u8; 32]),
+            accounts: vec![Pubkey([2u8; 32])],
+            data: data2,
+        };
+        let msg2 = Message::new(vec![ix2], Hash::default());
+        let tx2 = Transaction::new(msg2);
+        assert!(
+            tx2.validate_structure().is_err(),
+            "Deploy instruction over 4MB should be rejected"
+        );
     }
 }

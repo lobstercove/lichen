@@ -42,7 +42,7 @@ pub use contract_instruction::ContractInstruction;
 pub use evm::{
     decode_evm_transaction, evm_tx_hash, execute_evm_transaction, shells_to_u256,
     simulate_evm_call, u256_is_multiple_of_shell, u256_to_shells, EvmAccount, EvmExecutionResult,
-    EvmReceipt, EvmTx, EvmTxRecord, EVM_PROGRAM_ID,
+    EvmReceipt, EvmStateChange, EvmStateChanges, EvmTx, EvmTxRecord, EVM_PROGRAM_ID,
 };
 pub use genesis::{
     ConsensusParams, FeatureFlags, GenesisAccount, GenesisConfig, GenesisValidator, NetworkConfig,

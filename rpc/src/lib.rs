@@ -125,6 +125,26 @@ struct RpcState {
     rate_limiter: Arc<RateLimiter>,
 }
 
+/// H16 fix: Guard state-mutating RPC endpoints in multi-validator mode.
+/// Direct state writes bypass consensus and cause divergence when >1 validator.
+/// In multi-validator mode, callers must submit proper signed transactions
+/// via `sendTransaction` instead.
+fn require_single_validator(state: &RpcState, endpoint: &str) -> Result<(), RpcError> {
+    let validators = state.state.get_all_validators().unwrap_or_default();
+    if validators.len() > 1 {
+        return Err(RpcError {
+            code: -32003,
+            message: format!(
+                "{} is disabled in multi-validator mode ({} validators active). \
+                 Submit a signed transaction via sendTransaction instead.",
+                endpoint,
+                validators.len()
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Verify admin authorization from params
 fn verify_admin_auth(state: &RpcState, params: &Option<serde_json::Value>) -> Result<(), RpcError> {
     let required_token = state.admin_token.as_ref().ok_or_else(|| RpcError {
@@ -3825,6 +3845,8 @@ async fn handle_set_contract_abi(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
+    // H16 fix: reject in multi-validator mode (direct state write bypasses consensus)
+    require_single_validator(state, "setContractAbi")?;
     verify_admin_auth(state, &params)?;
 
     let params = params.ok_or_else(|| RpcError {
@@ -3944,6 +3966,9 @@ async fn handle_deploy_contract(
     use base64::{engine::general_purpose, Engine as _};
     use moltchain_core::account::Keypair as MoltKeypair;
     use sha2::{Digest, Sha256};
+
+    // H16 fix: reject in multi-validator mode (direct state write bypasses consensus)
+    require_single_validator(state, "deployContract")?;
 
     // Admin-gate: contract deployment requires admin authentication
     verify_admin_auth(state, &params)?;
@@ -5826,6 +5851,9 @@ async fn handle_request_airdrop(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
+    // H16 fix: reject in multi-validator mode (direct state write bypasses consensus)
+    require_single_validator(state, "requestAirdrop")?;
+
     // Only allow on testnet / devnet (not mainnet)
     if state.network_id.contains("mainnet") || (!state.network_id.contains("testnet") && !state.network_id.contains("devnet") && !state.network_id.contains("local")) {
         return Err(RpcError {

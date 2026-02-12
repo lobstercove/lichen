@@ -2249,6 +2249,91 @@ impl StateBatch {
         self.burned_delta = self.burned_delta.saturating_add(amount);
     }
 
+    /// H3 fix: Apply deferred EVM state changes atomically through this WriteBatch.
+    /// All EVM account, storage, and native balance writes go through the batch,
+    /// guaranteeing atomicity with tx/receipt/fee writes.
+    pub fn apply_evm_changes(
+        &mut self,
+        changes: &[crate::evm::EvmStateChange],
+    ) -> Result<(), String> {
+        use rocksdb::Direction;
+
+        // Collect native balance updates to apply after EVM writes
+        // (avoids borrow conflict between cf_handle refs and put_account)
+        let mut native_updates: Vec<(Pubkey, u64)> = Vec::new();
+
+        // Phase 1: EVM account + storage writes (immutable borrows only)
+        {
+            let cf_accounts = self
+                .db
+                .cf_handle(CF_EVM_ACCOUNTS)
+                .ok_or_else(|| "EVM Accounts CF not found".to_string())?;
+            let cf_storage = self
+                .db
+                .cf_handle(CF_EVM_STORAGE)
+                .ok_or_else(|| "EVM Storage CF not found".to_string())?;
+
+            for change in changes {
+                if let Some(ref account) = change.account {
+                    let data = bincode::serialize(account)
+                        .map_err(|e| format!("Failed to serialize EVM account: {}", e))?;
+                    self.batch.put_cf(&cf_accounts, &change.evm_address, &data);
+                } else {
+                    // Clear EVM account (self-destruct)
+                    self.batch.delete_cf(&cf_accounts, &change.evm_address);
+
+                    // Clear all on-disk storage slots for this address
+                    let prefix = &change.evm_address[..];
+                    let iter = self.db.iterator_cf(
+                        &cf_storage,
+                        rocksdb::IteratorMode::From(prefix, Direction::Forward),
+                    );
+                    for item in iter.flatten() {
+                        let (key, _) = item;
+                        if !key.starts_with(prefix) {
+                            break;
+                        }
+                        self.batch.delete_cf(&cf_storage, &key);
+                    }
+                }
+
+                // Apply storage changes
+                for (slot, value) in &change.storage_changes {
+                    let mut key = Vec::with_capacity(52);
+                    key.extend_from_slice(&change.evm_address);
+                    key.extend_from_slice(slot);
+
+                    if let Some(val) = value {
+                        self.batch
+                            .put_cf(&cf_storage, &key, val.to_be_bytes::<32>());
+                    } else {
+                        self.batch.delete_cf(&cf_storage, &key);
+                    }
+                }
+
+                // Collect native balance updates for phase 2
+                if let Some((pubkey, shells)) = change.native_balance_update {
+                    native_updates.push((pubkey, shells));
+                }
+            }
+        }
+
+        // Phase 2: Native account balance syncs (requires mutable self)
+        for (pubkey, shells) in native_updates {
+            let mut account = self
+                .get_account(&pubkey)?
+                .unwrap_or_else(|| Account::new(0, pubkey));
+            account.spendable = shells;
+            account.shells = account
+                .spendable
+                .saturating_add(account.staked)
+                .saturating_add(account.locked);
+            self.put_account(&pubkey, &account)?;
+        }
+
+        Ok(())
+    }
+
     /// Get an account — checks the in-memory overlay first, then falls through
     /// to on-disk state.
     pub fn get_account(&self, pubkey: &Pubkey) -> Result<Option<Account>, String> {
@@ -2803,6 +2888,109 @@ mod tests {
             recent.contains(&block2.hash()),
             "Should contain block2's hash"
         );
+    }
+
+    // ── H3 tests: StateBatch::apply_evm_changes ──
+
+    #[test]
+    fn test_apply_evm_changes_writes_account_and_storage() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let changes = vec![crate::evm::EvmStateChange {
+            evm_address: [0xAA; 20],
+            account: Some(crate::evm::EvmAccount {
+                nonce: 5,
+                balance: [0u8; 32],
+                code: vec![0xAB, 0xCD],
+            }),
+            storage_changes: vec![
+                ([0x01; 32], Some(alloy_primitives::U256::from(42u64))),
+                ([0x02; 32], Some(alloy_primitives::U256::from(99u64))),
+            ],
+            native_balance_update: None,
+        }];
+
+        let mut batch = state.begin_batch();
+        batch.apply_evm_changes(&changes).unwrap();
+        state.commit_batch(batch).unwrap();
+
+        // Verify the EVM account was written
+        let stored = state.get_evm_account(&[0xAA; 20]).unwrap();
+        assert!(stored.is_some());
+        let acct = stored.unwrap();
+        assert_eq!(acct.nonce, 5);
+        assert_eq!(acct.code, vec![0xABu8, 0xCD]);
+
+        // Verify storage (returns U256::ZERO for missing, non-zero for present)
+        let val1 = state.get_evm_storage(&[0xAA; 20], &[0x01; 32]).unwrap();
+        assert_ne!(val1, alloy_primitives::U256::ZERO);
+        let val2 = state.get_evm_storage(&[0xAA; 20], &[0x02; 32]).unwrap();
+        assert_ne!(val2, alloy_primitives::U256::ZERO);
+    }
+
+    #[test]
+    fn test_apply_evm_changes_clears_account() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        // First write an account
+        let create = vec![crate::evm::EvmStateChange {
+            evm_address: [0xBB; 20],
+            account: Some(crate::evm::EvmAccount {
+                nonce: 1,
+                balance: [0u8; 32],
+                code: vec![],
+            }),
+            storage_changes: vec![([0x01; 32], Some(alloy_primitives::U256::from(10u64)))],
+            native_balance_update: None,
+        }];
+        let mut batch = state.begin_batch();
+        batch.apply_evm_changes(&create).unwrap();
+        state.commit_batch(batch).unwrap();
+        assert!(state.get_evm_account(&[0xBB; 20]).unwrap().is_some());
+
+        // Now clear it (account = None → self-destruct)
+        let clear = vec![crate::evm::EvmStateChange {
+            evm_address: [0xBB; 20],
+            account: None,
+            storage_changes: vec![],
+            native_balance_update: None,
+        }];
+        let mut batch2 = state.begin_batch();
+        batch2.apply_evm_changes(&clear).unwrap();
+        state.commit_batch(batch2).unwrap();
+
+        // Account and storage should be gone
+        assert!(state.get_evm_account(&[0xBB; 20]).unwrap().is_none());
+        assert_eq!(state.get_evm_storage(&[0xBB; 20], &[0x01; 32]).unwrap(), alloy_primitives::U256::ZERO);
+    }
+
+    #[test]
+    fn test_apply_evm_changes_native_balance_update() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let pk = Pubkey([0x77; 32]);
+        state.put_account(&pk, &Account::new(100, pk)).unwrap();
+
+        let new_spendable = 500_000_000u64; // 0.5 MOLT in shells
+        let changes = vec![crate::evm::EvmStateChange {
+            evm_address: [0xCC; 20],
+            account: Some(crate::evm::EvmAccount {
+                nonce: 0,
+                balance: [0u8; 32],
+                code: vec![],
+            }),
+            storage_changes: vec![],
+            native_balance_update: Some((pk, new_spendable)),
+        }];
+
+        let mut batch = state.begin_batch();
+        batch.apply_evm_changes(&changes).unwrap();
+        state.commit_batch(batch).unwrap();
+
+        let acct = state.get_account(&pk).unwrap().unwrap();
+        assert_eq!(acct.spendable, new_spendable);
     }
 }
 
