@@ -11,14 +11,14 @@
 | Severity | Count | Fixed | False Positive | Deferred | Status |
 |----------|-------|-------|----------------|----------|--------|
 | CRITICAL | 10 | **10** | 0 | 0 | **ALL FIXED** (cb4f947, 38832cd) |
-| HIGH     | 18 | **12** | 4 | 2 | ALL RESOLVED |
-| MEDIUM   | 20 | **15** | 3 | 2 | ALL RESOLVED |
+| HIGH     | 18 | **14** | 4 | 0 | **ALL FIXED** |
+| MEDIUM   | 20 | **17** | 3 | 0 | **ALL FIXED** |
 | LOW      | 7  | **5** | 0 | 2 (documented) | ALL RESOLVED |
-| **Total** | **55** | **42 fixed** | **7 FP** | **4 deferred** | **2 documented** |
+| **Total** | **55** | **46 fixed** | **7 FP** | **0 deferred** | **2 documented** |
 
 Previous audits resolved 188 issues. This final pass found **55 new issues** missed by earlier reviews, predominantly in cross-component interactions, serialization consistency, and economic invariant enforcement.
 
-**Resolution**: 42 fixed in code, 7 confirmed false positives, 4 deferred (complex/architectural), 2 low-severity documented with comments. **All 301 tests passing** after all changes (commits: a4e8f9e, cb4f947, 38832cd, f449583).
+**Resolution**: 46 fixed in code, 7 confirmed false positives, 0 deferred, 2 low-severity documented with comments. **All 323 tests passing** after all changes (commits: a4e8f9e, cb4f947, 38832cd, f449583, 8d60687, ebba4e6).
 
 ---
 
@@ -393,12 +393,12 @@ All findings above are **code-verified** with exact line numbers from the curren
 | C9 | **FIXED** | 38832cd | Auth header on signing requests |
 | C10 | **FIXED** | 38832cd | Privacy proofs disabled by default |
 
-### HIGH — 12 Fixed, 4 False Positive, 2 Deferred (commit f449583)
+### HIGH — 14 Fixed, 4 False Positive (commits f449583, ebba4e6)
 | ID | Status | Notes |
 |----|--------|-------|
 | H1 | **FIXED** | Fee-free types require treasury/genesis authority |
 | H2 | **FIXED** | EVM fee charged in batch |
-| H3 | **DEFERRED** | EVM atomicity — requires REVM transact() refactor (tracked as T7.1) |
+| H3 | **FIXED** (ebba4e6) | EVM atomicity — transact() + deferred EvmStateChanges through StateBatch |
 | H4 | **FALSE POSITIVE** | Single-threaded block processing, no concurrency risk |
 | H5 | **FIXED** | WriteBatch for transfer() with serde_json consistency |
 | H6 | **FALSE POSITIVE** | In-memory counters dropped on batch rollback, no persistence risk |
@@ -411,11 +411,11 @@ All findings above are **code-verified** with exact line numbers from the curren
 | H13 | **FIXED** | Vote processing dedup |
 | H14 | **FIXED** | CORS exact host matching via URL parse |
 | H15 | **FIXED** | TX cache insert only after successful submit |
-| H16 | **DEFERRED** | Needs mempool routing for state-mutating RPCs (architectural) |
+| H16 | **FIXED** (ebba4e6) | Single-validator guard + instruction types 17/18/19 for consensus path |
 | H17 | **FALSE POSITIVE** | Staleness cleanup already exists in peer management |
 | H18 | **FIXED** | Deser failure counter + disconnect after threshold |
 
-### MEDIUM — 15 Fixed, 3 False Positive, 2 Deferred (commit f449583)
+### MEDIUM — 17 Fixed, 3 False Positive (commits f449583, ebba4e6)
 | ID | Status | Notes |
 |----|--------|-------|
 | M1 | **FALSE POSITIVE** | reconcile does full DB scan via count_active_accounts_full_scan |
@@ -431,9 +431,9 @@ All findings above are **code-verified** with exact line numbers from the curren
 | M11 | **FIXED** | fixup_legacy() on Account deserialization |
 | M12 | **FIXED** | F32/F64 AbiType variants for WASM float params |
 | M13 | **FIXED** | LazyLock static mutex serializes reserve read-modify-write |
-| M14 | **DEFERRED** | Swap slippage — needs real DEX output parsing |
+| M14 | **FIXED** (ebba4e6) | parse_solana_swap_output/parse_evm_swap_output for actual DEX output |
 | M15 | **FIXED** | Solana signature fetch limit: 1 → 10, iterate all |
-| M16 | **DEFERRED** | ERC-20 gas funding — needs treasury gas grant mechanism |
+| M16 | **FIXED** (ebba4e6) | fund_evm_gas_for_sweep auto-funds deposit addresses from treasury |
 | M17 | **FIXED** | Withdrawal endpoint requires Bearer auth token |
 | M18 | **FIXED** | DashMap guard cloned+dropped before async I/O |
 | M19 | **FALSE POSITIVE** | Block range validated at handler layer (network.rs) |
