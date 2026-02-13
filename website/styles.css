@@ -227,7 +227,7 @@ ul {
     justify-content: center;
     position: relative;
     padding-top: 10px;
-    padding-bottom: 40px;
+    padding-bottom: 10px;
     overflow: hidden;
 }
 
@@ -374,7 +374,7 @@ ul {
 }
 
 .scroll-indicator {
-    margin-top: 1.5rem;
+    margin-top: 2.5rem;
     display: flex;
     justify-content: center;
     animation: bounce 2s infinite;
