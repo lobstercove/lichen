@@ -119,6 +119,9 @@ pub enum MessageType {
         pubkey: Pubkey,
         stake: u64,
         current_slot: u64,
+        /// Semver version string of the running validator binary (e.g. "0.2.0")
+        #[serde(default)]
+        version: String,
         /// Ed25519 signature over (pubkey.0 || stake.to_le_bytes() || current_slot.to_le_bytes())
         #[serde(with = "signature_serde")]
         signature: [u8; 64],

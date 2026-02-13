@@ -5,6 +5,7 @@
 mod keypair_loader;
 mod sync;
 mod threshold_signer;
+pub mod updater;
 
 use moltchain_core::nft::decode_token_state;
 use moltchain_core::{
@@ -1856,11 +1857,12 @@ async fn run_validator() {
             }
             "--rpc-port" | "--ws-port" | "--p2p-port" | "--db-path" | "--genesis" | "--keypair"
             | "--network" | "--admin-token" | "--watchdog-timeout" | "--max-restarts"
-            | "--listen-addr" => {
+            | "--listen-addr" | "--auto-update" | "--update-check-interval"
+            | "--update-channel" => {
                 skip_next = true;
             }
-            "--supervised" | "--no-watchdog" => {
-                // Supervisor flags — skip without consuming next arg
+            "--supervised" | "--no-watchdog" | "--no-auto-restart" => {
+                // Supervisor flags / boolean flags — skip without consuming next arg
                 continue;
             }
             _ => {
@@ -1881,6 +1883,42 @@ async fn run_validator() {
         .and_then(|pos| args.get(pos + 1))
         .map(|s| s.to_string())
         .unwrap_or_else(|| "127.0.0.1".to_string());
+
+    // ── Auto-Update Configuration ───────────────────────────────────────
+    let auto_update_mode = args
+        .iter()
+        .position(|arg| arg == "--auto-update")
+        .and_then(|pos| args.get(pos + 1))
+        .map(|s| updater::UpdateMode::from_str(s))
+        .unwrap_or(updater::UpdateMode::Off);
+
+    let update_check_interval = args
+        .iter()
+        .position(|arg| arg == "--update-check-interval")
+        .and_then(|pos| args.get(pos + 1))
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(300);
+
+    let update_channel = args
+        .iter()
+        .position(|arg| arg == "--update-channel")
+        .and_then(|pos| args.get(pos + 1))
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "stable".to_string());
+
+    let no_auto_restart = args.iter().any(|a| a == "--no-auto-restart");
+
+    let update_config = updater::UpdateConfig {
+        mode: auto_update_mode,
+        check_interval_secs: update_check_interval,
+        channel: update_channel,
+        no_auto_restart,
+        jitter_max_secs: 60,
+    };
+
+    // Spawn auto-updater background task
+    info!("🔄 Validator version: v{}", updater::VERSION);
+    let _updater_handle = updater::spawn_update_checker(update_config);
 
     let data_dir_path = Path::new(&data_dir);
     let peer_store_path = data_dir_path.join("known-peers.json");
@@ -4292,6 +4330,7 @@ async fn run_validator() {
                         pubkey: validator_pubkey_for_announce,
                         stake: validator_stake,
                         current_slot,
+                        version: updater::VERSION.to_string(),
                         signature,
                     },
                     local_addr,

@@ -41,6 +41,7 @@ pub struct ValidatorAnnouncement {
     pub pubkey: Pubkey,
     pub stake: u64,
     pub current_slot: u64,
+    pub version: String,
     pub signature: [u8; 64],
 }
 
@@ -431,6 +432,7 @@ impl P2PNetwork {
                 pubkey,
                 stake,
                 current_slot,
+                version,
                 signature,
             } => {
                 // T2.3 fix: Verify Ed25519 signature before forwarding
@@ -448,16 +450,18 @@ impl P2PNetwork {
                 }
 
                 info!(
-                    "🦞 P2P: Verified validator announcement from {}: {} (stake: {}, slot: {})",
+                    "🦞 P2P: Verified validator announcement from {}: {} (stake: {}, slot: {}, version: {})",
                     peer_addr,
                     pubkey.to_base58(),
                     stake,
-                    current_slot
+                    current_slot,
+                    if version.is_empty() { "unknown" } else { &version }
                 );
                 let announcement = ValidatorAnnouncement {
                     pubkey,
                     stake,
                     current_slot,
+                    version,
                     signature,
                 };
                 self.validator_announce_tx

@@ -23,6 +23,10 @@
 15. [Monitoring](#monitoring)
 16. [Backup & Recovery](#backup--recovery)
 17. [Troubleshooting](#troubleshooting)
+18. [Release Signing Setup](#release-signing-setup)
+19. [Creating a Release](#creating-a-release)
+20. [Auto-Update System](#auto-update-system)
+21. [Validator CLI Reference](#validator-cli-reference)
 
 ---
 
@@ -1153,6 +1157,270 @@ curl -s http://<OTHER_VPS_IP>:9200/health
 [ ] 67. Copy genesis-keys/ to a secure offline location (USB / vault)
 [ ] 68. Set up WireGuard VPN between 3 VPS for signer port 9200
 [ ] 69. Connect git repo to CF Pages for auto-deploy on push
+```
+
+---
+
+## Release Signing Setup
+
+Before pushing your first release, generate an Ed25519 keypair for signing release artifacts. This is a **one-time** operation.
+
+### 1. Generate the Signing Keypair
+
+```bash
+./scripts/generate-release-keys.sh
+
+# Output:
+# ✅ Keypair generated successfully!
+# 📁 Keypair file: ./release-signing-keypair.json
+#    ⚠️  KEEP THIS FILE SECRET AND OFFLINE!
+#
+# 🔑 Public key (embed in validator/src/updater.rs):
+# a1b2c3d4e5f6...  (64 hex chars)
+```
+
+### 2. Embed the Public Key
+
+Copy the public key hex output and paste it into `validator/src/updater.rs`:
+
+```rust
+const RELEASE_SIGNING_PUBKEY_HEX: &str =
+    "a1b2c3d4e5f6...your_actual_public_key_hex...";
+```
+
+Then rebuild the validator binary.
+
+### 3. Secure the Private Key
+
+- **Move** `release-signing-keypair.json` to a secure offline location (USB drive, vault)
+- **Never** commit it to git
+- **Never** store it on any VPS or CI server
+- Add `release-signing-keypair.json` to `.gitignore` (already included)
+- You'll need it only when signing releases (step performed offline by a maintainer)
+
+---
+
+## Creating a Release
+
+### First Release (v0.1.0)
+
+```bash
+# 1. Ensure everything is committed and tested
+cargo test
+cargo build --release
+
+# 2. Tag the release
+git tag -a v0.1.0 -m "MoltChain v0.1.0 - Initial release"
+git push origin v0.1.0
+```
+
+This triggers the GitHub Actions release workflow (`.github/workflows/release.yml`):
+- Builds binaries for Linux x86_64/aarch64 + macOS x86_64/aarch64
+- Creates SHA256SUMS
+- Publishes a **draft** GitHub Release with all artifacts
+
+### Sign the Release
+
+After CI completes:
+
+```bash
+# 1. Download SHA256SUMS from the draft release
+curl -LO https://github.com/lobstercove/moltchain/releases/download/v0.1.0/SHA256SUMS
+
+# 2. Sign it offline with your private key
+./scripts/sign-release.sh SHA256SUMS /path/to/release-signing-keypair.json
+
+# Output: SHA256SUMS.sig
+
+# 3. Upload SHA256SUMS.sig to the GitHub Release
+# (use the GitHub UI or gh CLI)
+gh release upload v0.1.0 SHA256SUMS.sig
+
+# 4. Publish the release (remove draft status)
+gh release edit v0.1.0 --draft=false
+```
+
+### Subsequent Releases
+
+```bash
+# 1. Bump version in validator/Cargo.toml
+# 2. Commit and tag
+git tag -a v0.2.0 -m "MoltChain v0.2.0 - <description>"
+git push origin v0.2.0
+
+# 3. Wait for CI to build (~10 min)
+# 4. Sign and publish (same steps as above)
+```
+
+### Manual Binary Distribution (Without CI)
+
+If you need to distribute binaries before CI is set up:
+
+```bash
+# Build locally
+cargo build --release
+
+# Create archive
+cd target/release
+tar czf moltchain-validator-darwin-aarch64.tar.gz moltchain-validator
+cd ../..
+
+# Compute SHA256
+sha256sum target/release/moltchain-validator-darwin-aarch64.tar.gz > SHA256SUMS
+
+# Sign
+./scripts/sign-release.sh SHA256SUMS /path/to/release-signing-keypair.json
+
+# Create GitHub release manually and upload:
+#   - moltchain-validator-darwin-aarch64.tar.gz
+#   - SHA256SUMS
+#   - SHA256SUMS.sig
+```
+
+---
+
+## Auto-Update System
+
+The validator includes a built-in auto-update system that can check for, download, verify, and apply new releases from GitHub.
+
+### How It Works
+
+1. **Check**: Periodically queries GitHub Releases API for a newer version
+2. **Download**: Downloads the platform-specific archive (`.tar.gz`)
+3. **Verify**: Checks Ed25519 signature (SHA256SUMS.sig → SHA256SUMS) + SHA256 hash of archive
+4. **Apply**: Atomic binary swap (current → `.rollback`, staging → current)
+5. **Restart**: Exits with code 75 → supervisor picks up the new binary
+
+### Security
+
+- **Ed25519 signature verification** — the release signing public key is compiled into the binary
+- **SHA256 hash verification** — archive integrity is verified against signed SHA256SUMS
+- **Rollback guard** — if the validator crashes 3 times within 60 seconds of an update, it automatically rolls back to the previous binary
+- **Staggered updates** — random jitter (0–60s) prevents all validators from restarting simultaneously
+
+### Enable Auto-Update on a Validator
+
+```bash
+# Check-only mode (logs new versions, doesn't download)
+./moltchain-validator \
+  --auto-update check \
+  --p2p-port 8000
+
+# Download + verify, but don't apply (manual restart needed)
+./moltchain-validator \
+  --auto-update download \
+  --p2p-port 8000
+
+# Full automatic updates (recommended for testnet)
+./moltchain-validator \
+  --auto-update apply \
+  --p2p-port 8000
+
+# Customize check interval and channel
+./moltchain-validator \
+  --auto-update apply \
+  --update-check-interval 600 \
+  --update-channel stable \
+  --p2p-port 8000
+```
+
+### Production Recommendations
+
+| Environment | Recommended Mode | Reasoning |
+|---|---|---|
+| **Testnet** | `--auto-update apply` | Fast iteration, rollback guard protects against bad releases |
+| **Mainnet (seed validators)** | `--auto-update download` | Stage updates, verify manually, then restart on your schedule |
+| **Mainnet (community validators)** | `--auto-update apply --update-check-interval 600` | Automatic with longer check interval for stability |
+
+### Monitoring Updates
+
+The validator logs all update activity:
+```
+INFO  🔄 Auto-updater: enabled (mode=apply, interval=300s, channel=stable)
+INFO  🔄 Up to date (current: v0.1.0, latest: v0.1.0)
+INFO  🆕 New version available: v0.2.0 (current: v0.1.0)
+INFO  📦 Downloading moltchain-validator-linux-x86_64.tar.gz (24MB)...
+INFO  ✅ SHA256SUMS signature verified
+INFO  ✅ SHA256 verified for moltchain-validator-linux-x86_64.tar.gz
+INFO  ✅ Binary swapped: v0.1.0 → v0.2.0
+INFO  🔄 Requesting supervisor restart to pick up new binary...
+```
+
+### Version Gossip
+
+Validators broadcast their version in P2P `ValidatorAnnounce` messages. This means:
+- The explorer/monitoring can show what version each validator is running
+- You can verify all validators have picked up a new release
+- The `getClusterInfo` RPC endpoint includes version data
+
+### Rollback
+
+If an update goes wrong:
+
+```bash
+# Manual rollback (if auto-rollback didn't trigger)
+cd /path/to/validator
+cp moltchain-validator.rollback moltchain-validator
+# Restart the validator
+```
+
+The auto-rollback triggers automatically if the validator crashes 3 times within 60 seconds of an update.
+
+---
+
+## Validator CLI Reference
+
+Complete reference for all `moltchain-validator` CLI flags:
+
+### Core Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--p2p-port <port>` | `8000` | P2P QUIC listen port |
+| `--rpc-port <port>` | `8899` | JSON-RPC HTTP port (derived from p2p: +899) |
+| `--ws-port <port>` | `8900` | WebSocket port (derived from p2p: +900) |
+| `--db-path <path>` | `./data/state-<p2p_port>` | RocksDB state directory |
+| `--genesis <file>` | auto | Path to genesis config JSON |
+| `--keypair <file>` | auto | Path to validator keypair JSON |
+| `--network <name>` | `testnet` | Network: `testnet` or `mainnet` |
+| `--listen-addr <ip>` | `127.0.0.1` | P2P bind address (`0.0.0.0` for VPS) |
+| `--admin-token <token>` | none | Admin API bearer token |
+
+### P2P Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--bootstrap <host:port>` | none | Single bootstrap peer |
+| `--bootstrap-peers <h1:p1,h2:p2>` | none | Comma-separated bootstrap peers |
+
+### Supervisor Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--no-watchdog` | false | Disable supervisor/watchdog (run single process) |
+| `--watchdog-timeout <secs>` | `120` | Seconds without blocks before stall restart |
+| `--max-restarts <n>` | `50` | Max supervisor restarts before giving up |
+
+### Auto-Update Flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--auto-update <mode>` | `off` | Update mode: `off`, `check`, `download`, `apply` |
+| `--update-check-interval <secs>` | `300` | Seconds between update checks |
+| `--update-channel <channel>` | `stable` | Release channel: `stable`, `beta`, `edge` |
+| `--no-auto-restart` | false | Download + verify but don't apply (manual restart) |
+
+### Example: Production VPS Validator
+
+```bash
+./moltchain-validator \
+  --p2p-port 8000 \
+  --listen-addr 0.0.0.0 \
+  --network testnet \
+  --genesis genesis-testnet.json \
+  --bootstrap-peers seed-us.moltchain.network:8000,seed-eu.moltchain.network:8000 \
+  --auto-update apply \
+  --admin-token "$(cat /etc/moltchain/admin-token)"
 ```
 
 ---
