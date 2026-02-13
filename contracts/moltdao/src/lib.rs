@@ -491,17 +491,44 @@ pub extern "C" fn execute_proposal(
 /// Veto a proposal during its time-lock period.
 /// Any voter can submit a veto with their quadratic voting power.
 /// If cumulative veto votes reach 20% of total governance power, proposal is cancelled.
+/// AUDIT-FIX 1.9: Query on-chain balance instead of trusting caller-provided values
 #[no_mangle]
 pub extern "C" fn veto_proposal(
     voter_ptr: *const u8,
     proposal_id: u64,
-    token_balance: u64,
-    reputation: u64,
+    _token_balance: u64,
+    _reputation: u64,
 ) -> u32 {
     log_info("🚫 Vetoing proposal...");
     
     let voter = unsafe { core::slice::from_raw_parts(voter_ptr, 32) };
     
+    // AUDIT-FIX 1.9: Query actual on-chain token balance instead of trusting caller
+    let token_addr_data = storage_get(b"governance_token")
+        .unwrap_or_default();
+    let actual_balance = if token_addr_data.len() >= 32 {
+        let mut addr_bytes = [0u8; 32];
+        addr_bytes.copy_from_slice(&token_addr_data[..32]);
+        let token_address = Address(addr_bytes);
+        let voter_address = Address({
+            let mut a = [0u8; 32];
+            a.copy_from_slice(voter);
+            a
+        });
+        match call_token_balance(token_address, voter_address) {
+            Ok(balance) => balance,
+            Err(_) => {
+                log_info("⚠️  Token balance lookup failed — using 0");
+                0
+            }
+        }
+    } else {
+        log_info("⚠️  No governance token configured — using 0 balance");
+        0
+    };
+    // Use on-chain balance; reputation defaults to 0 (cannot be verified cross-contract)
+    let actual_reputation: u64 = 0;
+
     let key = alloc::format!("proposal_{}", proposal_id);
     let mut proposal = match storage_get(key.as_bytes()) {
         Some(data) if data.len() >= PROPOSAL_SIZE => data,
@@ -536,7 +563,7 @@ pub extern "C" fn veto_proposal(
         return 0;
     }
     
-    let veto_power = governance_voting_power(token_balance, reputation);
+    let veto_power = governance_voting_power(actual_balance, actual_reputation);
     storage_set(veto_key.as_bytes(), &u64_to_bytes(veto_power));
     
     // Accumulate veto votes

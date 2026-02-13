@@ -260,8 +260,9 @@ impl StakeInfo {
     }
 
     /// Get total stake including delegations
+    /// AUDIT-FIX 1.2c: saturating_add to prevent overflow
     pub fn total_stake(&self) -> u64 {
-        self.amount + self.delegated_amount
+        self.amount.saturating_add(self.delegated_amount)
     }
 
     /// Check if stake meets minimum requirement
@@ -288,8 +289,9 @@ impl StakeInfo {
     }
 
     /// Add block reward to accumulated rewards
+    /// AUDIT-FIX 1.2a: saturating_add to prevent overflow
     pub fn add_reward(&mut self, reward: u64, slot: u64) {
-        self.rewards_earned += reward;
+        self.rewards_earned = self.rewards_earned.saturating_add(reward);
         self.last_reward_slot = slot;
     }
 
@@ -306,14 +308,15 @@ impl StakeInfo {
             // Apply debt payment (capped at remaining debt)
             let paid = debt_payment.min(self.bootstrap_debt);
             self.bootstrap_debt -= paid;
-            self.earned_amount += paid;
-            self.total_debt_repaid += paid;
+            // AUDIT-FIX 1.2b: saturating_add to prevent overflow
+            self.earned_amount = self.earned_amount.saturating_add(paid);
+            self.total_debt_repaid = self.total_debt_repaid.saturating_add(paid);
 
             // Liquid = everything not going to debt (includes excess if debt < half reward)
             let liquid = total_reward - paid;
 
             // Track total claimed (liquid + debt payment = full reward)
-            self.total_claimed += total_reward;
+            self.total_claimed = self.total_claimed.saturating_add(total_reward);
 
             // Check for graduation
             if self.bootstrap_debt == 0 {
@@ -324,7 +327,7 @@ impl StakeInfo {
             (liquid, paid) // (spendable, locked_for_debt)
         } else {
             // Fully vested: 100% liquid
-            self.total_claimed += total_reward;
+            self.total_claimed = self.total_claimed.saturating_add(total_reward);
             (total_reward, 0)
         }
     }
@@ -404,7 +407,8 @@ pub struct StakePool {
     stakes: HashMap<Pubkey, StakeInfo>,
     total_staked: u64,
     total_slashed: u64,
-    unstake_requests: HashMap<Pubkey, UnstakeRequest>,
+    /// AUDIT-FIX 1.4: Keyed by (validator, staker) to support concurrent unstakes
+    unstake_requests: HashMap<(Pubkey, Pubkey), UnstakeRequest>,
     /// Per-validator map of delegator -> amount
     #[serde(default)]
     delegations: HashMap<Pubkey, HashMap<Pubkey, u64>>,
@@ -707,13 +711,16 @@ impl StakePool {
             .ok_or_else(|| "Validator not found".to_string())?;
 
         // Check if already unstaking
-        if self.unstake_requests.contains_key(validator) {
+        // AUDIT-FIX 1.4: Key by (validator, staker) so different stakers can
+        // unstake from the same validator concurrently.
+        let unstake_key = (*validator, staker);
+        if self.unstake_requests.contains_key(&unstake_key) {
             return Err("Unstake already in progress".to_string());
         }
 
         // Create unstake request
         let request = stake_info.request_unstake(amount, current_slot, staker)?;
-        self.unstake_requests.insert(*validator, request.clone());
+        self.unstake_requests.insert(unstake_key, request.clone());
 
         // Deactivate validator immediately (can't produce blocks during cooldown)
         if let Some(stake_info) = self.stakes.get_mut(validator) {
@@ -733,15 +740,15 @@ impl StakePool {
         current_slot: u64,
         staker: &Pubkey,
     ) -> Result<u64, String> {
+        // AUDIT-FIX 1.4: Look up by (validator, staker) composite key
+        let unstake_key = (*validator, *staker);
         let request = self
             .unstake_requests
-            .get(validator)
+            .get(&unstake_key)
             .ok_or_else(|| "No unstake request found".to_string())?;
 
-        // M5 fix: verify the claimer is the original staker
-        if &request.staker != staker {
-            return Err("Only the original staker can claim this unstake".to_string());
-        }
+        // AUDIT-FIX 1.4: staker identity is implicit in the composite key —
+        // no need for separate staker check.
 
         // Check if cooldown completed
         if current_slot < request.unlock_slot {
@@ -755,14 +762,18 @@ impl StakePool {
 
         let amount = request.amount;
 
-        self.unstake_requests.remove(validator);
+        // AUDIT-FIX 1.4: remove by composite key
+        self.unstake_requests.remove(&unstake_key);
 
         Ok(amount)
     }
 
-    /// Get unstake request for validator
+    /// Get unstake request for validator+staker pair
     pub fn get_unstake_request(&self, validator: &Pubkey) -> Option<&UnstakeRequest> {
-        self.unstake_requests.get(validator)
+        // Backward-compat: search for any request matching this validator
+        self.unstake_requests.iter()
+            .find(|((v, _), _)| v == validator)
+            .map(|(_, req)| req)
     }
 
     /// Get total unclaimed rewards in pool
@@ -1277,7 +1288,8 @@ impl VoteAggregator {
                 .sum();
 
             let total_weight = validator_set.total_voting_weight();
-            return vote_weight * 3 >= total_weight * 2;
+            // AUDIT-FIX 1.2d: u128 cast to prevent overflow on multiplication
+            return (vote_weight as u128) * 3 >= (total_weight as u128) * 2;
         }
 
         // Calculate stake-weighted voting power
@@ -1288,7 +1300,8 @@ impl VoteAggregator {
             .sum();
 
         // Need 66% (2/3) of stake for supermajority
-        vote_stake * 3 >= total_stake * 2
+        // AUDIT-FIX 1.2d: u128 cast to prevent overflow on multiplication
+        (vote_stake as u128) * 3 >= (total_stake as u128) * 2
     }
 
     /// Get vote count for block

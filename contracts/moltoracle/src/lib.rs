@@ -69,6 +69,35 @@ pub extern "C" fn add_price_feeder(
     1
 }
 
+/// AUDIT-FIX 1.14: Admin function to add/remove authorized attesters
+#[no_mangle]
+pub extern "C" fn set_authorized_attester(
+    attester_ptr: *const u8,
+    authorized: u32,
+) -> u32 {
+    let attester = unsafe { core::slice::from_raw_parts(attester_ptr, 32) };
+    
+    // Only oracle owner can manage attester whitelist
+    let caller = get_caller();
+    let owner = storage_get(b"oracle_owner").unwrap_or_default();
+    if owner.len() != 32 || caller.0[..] != owner[..] {
+        log_info("❌ Only oracle owner can manage attesters");
+        return 0;
+    }
+    
+    let auth_key = alloc::format!("authorized_attester_{}", 
+        attester.iter().map(|b| alloc::format!("{:02x}", b)).collect::<alloc::string::String>()
+    );
+    if authorized != 0 {
+        storage_set(auth_key.as_bytes(), &[1u8]);
+        log_info("✅ Attester authorized");
+    } else {
+        storage_set(auth_key.as_bytes(), &[0u8]);
+        log_info("✅ Attester deauthorized");
+    }
+    1
+}
+
 #[no_mangle]
 pub extern "C" fn submit_price(
     feeder_ptr: *const u8,
@@ -489,9 +518,27 @@ pub extern "C" fn submit_attestation(
     let data_hash = unsafe { core::slice::from_raw_parts(data_hash_ptr, 32) };
     let data = unsafe { core::slice::from_raw_parts(data_ptr, data_len as usize) };
     
-    // In production, verify:
-    // 1. Attester is authorized (check against authorized list)
-    // 2. Signature is valid
+    // AUDIT-FIX 1.14: Verify caller == attester (prevent impersonation)
+    let caller = get_caller();
+    if caller.0[..] != attester[..] {
+        log_info("❌ Caller does not match attester — rejected");
+        return 0;
+    }
+
+    // AUDIT-FIX 1.14: Check attester is in authorized-attesters whitelist
+    let auth_key = alloc::format!("authorized_attester_{}", 
+        attester.iter().map(|b| alloc::format!("{:02x}", b)).collect::<alloc::string::String>()
+    );
+    match storage_get(auth_key.as_bytes()) {
+        Some(data) if !data.is_empty() && data[0] == 1 => {
+            // Authorized — proceed
+        }
+        _ => {
+            log_info("❌ Attester not in authorized whitelist");
+            return 0;
+        }
+    }
+
     log_info(&alloc::format!("   Attester: {}...", 
         core::str::from_utf8(&attester[..8]).unwrap_or("?")
     ));

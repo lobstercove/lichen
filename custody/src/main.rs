@@ -813,8 +813,20 @@ fn load_config() -> CustodyConfig {
         }),
         // C9 fix: auth token for threshold signers
         signer_auth_token: std::env::var("CUSTODY_SIGNER_AUTH_TOKEN").ok(),
-        // M17 fix: API auth token for withdrawal endpoint
-        api_auth_token: std::env::var("CUSTODY_API_AUTH_TOKEN").ok(),
+        // AUDIT-FIX 0.10: API auth token is MANDATORY — running without it
+        // leaves the withdrawal endpoint completely unauthenticated.
+        api_auth_token: {
+            let token = std::env::var("CUSTODY_API_AUTH_TOKEN")
+                .ok()
+                .filter(|t| !t.is_empty());
+            if token.is_none() {
+                panic!(
+                    "CRITICAL: CUSTODY_API_AUTH_TOKEN must be set and non-empty. \
+                     The withdrawal endpoint is unauthenticated without it."
+                );
+            }
+            token
+        },
     }
 }
 
@@ -863,6 +875,12 @@ async fn process_solana_deposits(state: &CustodyState, url: &str) -> Result<(), 
         }
 
         for sig in &signatures {
+            // AUDIT-FIX 0.11: Skip already-processed signatures to prevent
+            // duplicate sweep jobs and double-crediting.
+            if deposit_event_already_processed(&state.db, &deposit.deposit_id, sig) {
+                continue;
+            }
+
             let status = solana_get_signature_status(&state.http, url, sig).await?;
             let confirmed = status.confirmation_status == Some("finalized".to_string())
                 || status.confirmations.unwrap_or(0) >= state.config.solana_confirmations;
@@ -935,12 +953,18 @@ async fn process_solana_token_deposit(
 
     set_last_balance_with_key(&state.db, &last_key, balance)?;
 
+    // AUDIT-FIX 0.11: Dedup check for SPL token deposits too
+    let synthetic_tx_hash = format!("spl_balance:{}", balance);
+    if deposit_event_already_processed(&state.db, &deposit.deposit_id, &synthetic_tx_hash) {
+        return Ok(());
+    }
+
     store_deposit_event(
         &state.db,
         &DepositEvent {
             event_id: Uuid::new_v4().to_string(),
             deposit_id: deposit.deposit_id.clone(),
-            tx_hash: format!("spl_balance:{}", balance),
+            tx_hash: synthetic_tx_hash.clone(),
             confirmations: state.config.solana_confirmations,
             amount: Some(balance as u64),
             status: "confirmed".to_string(),
@@ -964,7 +988,7 @@ async fn process_solana_token_deposit(
                 asset: deposit.asset.clone(),
                 from_address: deposit.address.clone(),
                 to_treasury: treasury_ata,
-                tx_hash: format!("spl_balance:{}", balance),
+                tx_hash: synthetic_tx_hash,
                 amount: Some(balance.to_string()),
                 signatures: Vec::new(),
                 sweep_tx_hash: None,
@@ -1935,7 +1959,7 @@ async fn broadcast_solana_token_sweep(
         .as_ref()
         .ok_or_else(|| "missing CUSTODY_SOLANA_FEE_PAYER".to_string())?;
 
-    let owner_keypair = derive_solana_keypair(&deposit.derivation_path)?;
+    let owner_keypair = derive_solana_keypair(&deposit.derivation_path, &state.config.master_seed)?;
     let fee_payer = load_solana_keypair(fee_payer_path)?;
 
     let from_account = decode_solana_pubkey(&job.from_address)?;
@@ -2565,7 +2589,25 @@ fn store_deposit_event(db: &DB, event: &DepositEvent) -> Result<(), String> {
         .ok_or_else(|| "missing deposit_events cf".to_string())?;
     let bytes = serde_json::to_vec(event).map_err(|e| format!("encode: {}", e))?;
     db.put_cf(cf, event.event_id.as_bytes(), bytes)
-        .map_err(|e| format!("db put: {}", e))
+        .map_err(|e| format!("db put: {}", e))?;
+    // AUDIT-FIX 0.11: Store a dedup marker keyed by deposit_id + tx_hash so we
+    // can detect and skip duplicate deposit events in subsequent poll cycles.
+    let dedup_key = format!("dedup:{}:{}", event.deposit_id, event.tx_hash);
+    db.put_cf(cf, dedup_key.as_bytes(), b"1")
+        .map_err(|e| format!("dedup marker: {}", e))?;
+    Ok(())
+}
+
+/// AUDIT-FIX 0.11: Check whether a deposit event for this (deposit_id, tx_hash)
+/// combination was already processed. Prevents duplicate sweep jobs from
+/// repeated poll cycles seeing the same confirmed signature.
+fn deposit_event_already_processed(db: &DB, deposit_id: &str, tx_hash: &str) -> bool {
+    let cf = match db.cf_handle(CF_DEPOSIT_EVENTS) {
+        Some(cf) => cf,
+        None => return false,
+    };
+    let dedup_key = format!("dedup:{}:{}", deposit_id, tx_hash);
+    matches!(db.get_cf(cf, dedup_key.as_bytes()), Ok(Some(_)))
 }
 
 fn enqueue_sweep_job(db: &DB, job: &SweepJob) -> Result<(), String> {
@@ -2631,10 +2673,17 @@ impl SimpleSolanaKeypair {
     }
 }
 
-fn derive_solana_keypair(path: &str) -> Result<SimpleSolanaKeypair, String> {
-    use sha2::{Digest, Sha256};
+fn derive_solana_keypair(path: &str, master_seed: &str) -> Result<SimpleSolanaKeypair, String> {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
 
-    let seed = Sha256::digest(path.as_bytes());
+    // AUDIT-FIX 0.9: HMAC-SHA256(master_seed, path) instead of plain SHA256(path).
+    // Plain SHA256 allowed anyone who knew the derivation path format to
+    // reconstruct the private key without any secret.
+    let mut mac = Hmac::<Sha256>::new_from_slice(master_seed.as_bytes())
+        .map_err(|_| "HMAC key error".to_string())?;
+    mac.update(path.as_bytes());
+    let seed = mac.finalize().into_bytes();
     let seed_bytes: [u8; 32] = seed.as_slice().try_into().map_err(|_| "seed")?;
     let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed_bytes);
     let pubkey = signing_key.verifying_key().to_bytes();
@@ -3027,7 +3076,11 @@ async fn create_withdrawal(
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.strip_prefix("Bearer "));
         match provided {
-            Some(token) if token == expected_token => {} // OK
+            // AUDIT-FIX 0.12: constant-time comparison to prevent timing attacks
+            Some(token) if {
+                use subtle::ConstantTimeEq;
+                token.as_bytes().ct_eq(expected_token.as_bytes()).into()
+            } => {} // OK
             _ => {
                 return Json(json!({
                     "error": "unauthorized: missing or invalid API auth token"
