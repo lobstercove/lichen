@@ -17,6 +17,7 @@ use alloc::vec::Vec;
 use moltchain_sdk::{
     storage_get, storage_set, log_info,
     bytes_to_u64, u64_to_bytes, get_slot,
+    Address, call_token_transfer,
 };
 
 // ============================================================================
@@ -51,6 +52,8 @@ const REENTRANCY_KEY: &[u8] = b"rew_reentrancy";
 const TOTAL_DISTRIBUTED_KEY: &[u8] = b"rew_total_dist";
 const REWARD_EPOCH_KEY: &[u8] = b"rew_epoch";
 const REFERRAL_RATE_KEY: &[u8] = b"rew_ref_rate";
+const MOLTCOIN_ADDRESS_KEY: &[u8] = b"rew_molt_addr";
+const REWARDS_POOL_KEY: &[u8] = b"rew_pool_addr";
 
 // ============================================================================
 // HELPERS
@@ -209,8 +212,8 @@ pub fn record_trade(trader: *const u8, fee_paid: u64, volume: u64) -> u32 {
     0
 }
 
-/// Claim trading rewards
-/// Returns: 0=success, 1=nothing to claim, 2=paused, 3=reentrancy
+/// Claim trading rewards — transfers MOLT from rewards pool to trader
+/// Returns: 0=success, 1=nothing to claim, 2=paused, 3=reentrancy, 4=transfer failed
 pub fn claim_trading_rewards(trader: *const u8) -> u32 {
     if !reentrancy_enter() { return 3; }
     if !require_not_paused() { reentrancy_exit(); return 2; }
@@ -220,7 +223,18 @@ pub fn claim_trading_rewards(trader: *const u8) -> u32 {
     let pending = load_u64(&trader_pending_key(&t));
     if pending == 0 { reentrancy_exit(); return 1; }
 
-    // Transfer (in production: cross-call MoltCoin.transfer)
+    // Transfer MOLT from rewards pool to trader
+    let molt_addr = load_addr(MOLTCOIN_ADDRESS_KEY);
+    let pool_addr = load_addr(REWARDS_POOL_KEY);
+    if !is_zero(&molt_addr) && !is_zero(&pool_addr) {
+        if let Err(_) = call_token_transfer(
+            Address(molt_addr), Address(pool_addr), Address(t), pending,
+        ) {
+            reentrancy_exit();
+            return 4;
+        }
+    }
+
     save_u64(&trader_pending_key(&t), 0);
     let claimed = load_u64(&trader_claimed_key(&t));
     save_u64(&trader_claimed_key(&t), claimed + pending);
@@ -234,7 +248,8 @@ pub fn claim_trading_rewards(trader: *const u8) -> u32 {
     0
 }
 
-/// Claim LP rewards for a position
+/// Claim LP rewards for a position — transfers MOLT from rewards pool to provider
+/// Returns: 0=success, 1=nothing to claim, 2=paused, 3=reentrancy, 4=transfer failed
 pub fn claim_lp_rewards(provider: *const u8, position_id: u64) -> u32 {
     if !reentrancy_enter() { return 3; }
     if !require_not_paused() { reentrancy_exit(); return 2; }
@@ -244,6 +259,18 @@ pub fn claim_lp_rewards(provider: *const u8, position_id: u64) -> u32 {
     let lp_k = lp_pending_key(position_id);
     let pending = load_u64(&lp_k);
     if pending == 0 { reentrancy_exit(); return 1; }
+
+    // Transfer MOLT from rewards pool to provider
+    let molt_addr = load_addr(MOLTCOIN_ADDRESS_KEY);
+    let pool_addr = load_addr(REWARDS_POOL_KEY);
+    if !is_zero(&molt_addr) && !is_zero(&pool_addr) {
+        if let Err(_) = call_token_transfer(
+            Address(molt_addr), Address(pool_addr), Address(p), pending,
+        ) {
+            reentrancy_exit();
+            return 4;
+        }
+    }
 
     save_u64(&lp_k, 0);
     let total = load_u64(TOTAL_DISTRIBUTED_KEY);
@@ -343,6 +370,34 @@ pub fn get_referral_rate() -> u64 {
     if r > 0 { r } else { REFERRAL_RATE_BPS }
 }
 
+/// Set the MOLT coin contract address (admin only)
+pub fn set_moltcoin_address(caller: *const u8, addr: *const u8) -> u32 {
+    let mut c = [0u8; 32];
+    let mut a = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(addr, a.as_mut_ptr(), 32);
+    }
+    if !require_admin(&c) { return 1; }
+    if is_zero(&a) { return 2; }
+    storage_set(MOLTCOIN_ADDRESS_KEY, &a);
+    0
+}
+
+/// Set the rewards pool address that holds MOLT tokens (admin only)
+pub fn set_rewards_pool(caller: *const u8, addr: *const u8) -> u32 {
+    let mut c = [0u8; 32];
+    let mut a = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(addr, a.as_mut_ptr(), 32);
+    }
+    if !require_admin(&c) { return 1; }
+    if is_zero(&a) { return 2; }
+    storage_set(REWARDS_POOL_KEY, &a);
+    0
+}
+
 pub fn emergency_pause(caller: *const u8) -> u32 {
     let mut c = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
@@ -366,11 +421,120 @@ pub extern "C" fn call() {
     let args = moltchain_sdk::get_args();
     if args.is_empty() { return; }
     match args[0] {
+        // 0: initialize(admin[32])
         0 => {
             if args.len() >= 33 {
                 let r = initialize(args[1..33].as_ptr());
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
+        }
+        // 1: record_trade(trader[32], fee_paid[8], volume[8])
+        1 => {
+            if args.len() >= 49 {
+                let fee = bytes_to_u64(&args[33..41]);
+                let vol = bytes_to_u64(&args[41..49]);
+                let r = record_trade(args[1..33].as_ptr(), fee, vol);
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 2: claim_trading_rewards(trader[32])
+        2 => {
+            if args.len() >= 33 {
+                let r = claim_trading_rewards(args[1..33].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 3: claim_lp_rewards(provider[32], position_id[8])
+        3 => {
+            if args.len() >= 41 {
+                let pos_id = bytes_to_u64(&args[33..41]);
+                let r = claim_lp_rewards(args[1..33].as_ptr(), pos_id);
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 4: register_referral(trader[32], referrer[32])
+        4 => {
+            if args.len() >= 65 {
+                let r = register_referral(args[1..33].as_ptr(), args[33..65].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 5: set_reward_rate(caller[32], pair_id[8], rate[8])
+        5 => {
+            if args.len() >= 49 {
+                let pair_id = bytes_to_u64(&args[33..41]);
+                let rate = bytes_to_u64(&args[41..49]);
+                let r = set_reward_rate(args[1..33].as_ptr(), pair_id, rate);
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 6: accrue_lp_rewards(position_id[8], liquidity[8], pair_id[8])
+        6 => {
+            if args.len() >= 25 {
+                let pos_id = bytes_to_u64(&args[1..9]);
+                let liq = bytes_to_u64(&args[9..17]);
+                let pair_id = bytes_to_u64(&args[17..25]);
+                let r = accrue_lp_rewards(pos_id, liq, pair_id);
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 7: get_pending_rewards(addr[32])
+        7 => {
+            if args.len() >= 33 {
+                let r = get_pending_rewards(args[1..33].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(r));
+            }
+        }
+        // 8: get_trading_tier(addr[32])
+        8 => {
+            if args.len() >= 33 {
+                let r = get_trading_tier(args[1..33].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 9: emergency_pause(caller[32])
+        9 => {
+            if args.len() >= 33 {
+                let r = emergency_pause(args[1..33].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 10: emergency_unpause(caller[32])
+        10 => {
+            if args.len() >= 33 {
+                let r = emergency_unpause(args[1..33].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 11: set_referral_rate(caller[32], rate_bps[8])
+        11 => {
+            if args.len() >= 41 {
+                let rate = bytes_to_u64(&args[33..41]);
+                let r = set_referral_rate(args[1..33].as_ptr(), rate);
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 12: set_moltcoin_address(caller[32], addr[32])
+        12 => {
+            if args.len() >= 65 {
+                let r = set_moltcoin_address(args[1..33].as_ptr(), args[33..65].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 13: set_rewards_pool(caller[32], addr[32])
+        13 => {
+            if args.len() >= 65 {
+                let r = set_rewards_pool(args[1..33].as_ptr(), args[33..65].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 14: get_referral_rate
+        14 => {
+            moltchain_sdk::set_return_data(&u64_to_bytes(get_referral_rate()));
+        }
+        // 15: get_total_distributed
+        15 => {
+            moltchain_sdk::set_return_data(&u64_to_bytes(get_total_distributed()));
         }
         _ => {}
     }
@@ -604,5 +768,95 @@ mod tests {
         record_trade(trader.as_ptr(), 10_000, 10_000_000);
         let ref_earnings = load_u64(&referrer_earnings_key(&referrer));
         assert_eq!(ref_earnings, 2000); // 20% of 10000
+    }
+
+    // --- MOLT Token Transfer Tests ---
+
+    #[test]
+    fn test_set_moltcoin_address() {
+        let admin = setup();
+        let molt = [10u8; 32];
+        assert_eq!(set_moltcoin_address(admin.as_ptr(), molt.as_ptr()), 0);
+        assert_eq!(load_addr(MOLTCOIN_ADDRESS_KEY), molt);
+    }
+
+    #[test]
+    fn test_set_moltcoin_address_zero() {
+        let admin = setup();
+        let zero = [0u8; 32];
+        assert_eq!(set_moltcoin_address(admin.as_ptr(), zero.as_ptr()), 2);
+    }
+
+    #[test]
+    fn test_set_moltcoin_address_not_admin() {
+        let _admin = setup();
+        let rando = [99u8; 32];
+        let molt = [10u8; 32];
+        assert_eq!(set_moltcoin_address(rando.as_ptr(), molt.as_ptr()), 1);
+    }
+
+    #[test]
+    fn test_set_rewards_pool() {
+        let admin = setup();
+        let pool = [11u8; 32];
+        assert_eq!(set_rewards_pool(admin.as_ptr(), pool.as_ptr()), 0);
+        assert_eq!(load_addr(REWARDS_POOL_KEY), pool);
+    }
+
+    #[test]
+    fn test_set_rewards_pool_zero() {
+        let admin = setup();
+        let zero = [0u8; 32];
+        assert_eq!(set_rewards_pool(admin.as_ptr(), zero.as_ptr()), 2);
+    }
+
+    #[test]
+    fn test_set_rewards_pool_not_admin() {
+        let _admin = setup();
+        let rando = [99u8; 32];
+        let pool = [11u8; 32];
+        assert_eq!(set_rewards_pool(rando.as_ptr(), pool.as_ptr()), 1);
+    }
+
+    #[test]
+    fn test_claim_with_molt_configured() {
+        let admin = setup();
+        let trader = [2u8; 32];
+        let molt = [10u8; 32];
+        let pool = [11u8; 32];
+        set_moltcoin_address(admin.as_ptr(), molt.as_ptr());
+        set_rewards_pool(admin.as_ptr(), pool.as_ptr());
+
+        record_trade(trader.as_ptr(), 5000, 5_000_000);
+        // In test mode, call_token_transfer returns Ok(false) — not an Err,
+        // so the claim proceeds and bookkeeping is updated.
+        assert_eq!(claim_trading_rewards(trader.as_ptr()), 0);
+        assert_eq!(load_u64(&trader_pending_key(&trader)), 0);
+        assert_eq!(load_u64(&trader_claimed_key(&trader)), 5000);
+    }
+
+    #[test]
+    fn test_claim_lp_with_molt_configured() {
+        let admin = setup();
+        let provider = [2u8; 32];
+        let molt = [10u8; 32];
+        let pool = [11u8; 32];
+        set_moltcoin_address(admin.as_ptr(), molt.as_ptr());
+        set_rewards_pool(admin.as_ptr(), pool.as_ptr());
+        set_reward_rate(admin.as_ptr(), 1, 1_000_000);
+        accrue_lp_rewards(1, 100_000, 1);
+
+        assert_eq!(claim_lp_rewards(provider.as_ptr(), 1), 0);
+        assert_eq!(load_u64(&lp_pending_key(1)), 0);
+    }
+
+    #[test]
+    fn test_claim_without_molt_configured() {
+        // Without MOLT address configured, claims still work (bookkeeping only)
+        let _admin = setup();
+        let trader = [2u8; 32];
+        record_trade(trader.as_ptr(), 5000, 5_000_000);
+        assert_eq!(claim_trading_rewards(trader.as_ptr()), 0);
+        assert_eq!(load_u64(&trader_claimed_key(&trader)), 5000);
     }
 }

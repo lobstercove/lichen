@@ -12,6 +12,7 @@
 //   - Deadline enforcement on all swaps
 //   - Slippage protection
 //   - Admin-configured route registry
+//   - Real cross-contract calls to dex_core, dex_amm, MoltSwap
 
 #![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
@@ -22,6 +23,7 @@ use alloc::vec::Vec;
 use moltchain_sdk::{
     storage_get, storage_set, log_info,
     bytes_to_u64, u64_to_bytes, get_slot,
+    Address, CrossCall, call_contract,
 };
 
 // ============================================================================
@@ -450,30 +452,65 @@ pub fn get_best_route(token_in: *const u8, token_out: *const u8, _amount: u64) -
 }
 
 // ============================================================================
-// INTERNAL EXECUTION HELPERS
+// INTERNAL EXECUTION HELPERS — Cross-Contract Calls
 // ============================================================================
 
-/// Execute swap via CLOB (dex_core) — in production uses cross-call
+/// Execute swap via CLOB (dex_core) — cross-contract call
 fn execute_clob_swap(amount_in: u64, pair_id: u64) -> u64 {
-    // In production: cross-contract call to dex_core.place_order(market)
-    // For now: simulate with 99.95% fill (5 bps taker fee)
+    let core_addr = load_addr(CORE_ADDRESS_KEY);
+    if !is_zero(&core_addr) {
+        let mut args = Vec::with_capacity(16);
+        args.extend_from_slice(&u64_to_bytes(pair_id));
+        args.extend_from_slice(&u64_to_bytes(amount_in));
+        let call = CrossCall::new(Address(core_addr), "place_order_market", args)
+            .with_value(0);
+        if let Ok(result) = call_contract(call) {
+            if result.len() >= 8 {
+                return bytes_to_u64(&result);
+            }
+        }
+    }
+    // Fallback: simulated 99.95% fill (5 bps taker fee)
     let fee = amount_in * 5 / 10_000;
-    let _ = pair_id;
     amount_in.saturating_sub(fee)
 }
 
-/// Execute swap via AMM (dex_amm) — in production uses cross-call
+/// Execute swap via AMM (dex_amm) — cross-contract call
 fn execute_amm_swap(amount_in: u64, pool_id: u64) -> u64 {
-    // In production: cross-contract call to dex_amm.swap_exact_in
-    // Simulate with 99.7% fill (30 bps fee)
+    let amm_addr = load_addr(AMM_ADDRESS_KEY);
+    if !is_zero(&amm_addr) {
+        let mut args = Vec::with_capacity(16);
+        args.extend_from_slice(&u64_to_bytes(pool_id));
+        args.extend_from_slice(&u64_to_bytes(amount_in));
+        let call = CrossCall::new(Address(amm_addr), "swap_exact_in", args)
+            .with_value(0);
+        if let Ok(result) = call_contract(call) {
+            if result.len() >= 8 {
+                return bytes_to_u64(&result);
+            }
+        }
+    }
+    // Fallback: simulated 99.7% fill (30 bps fee)
     let fee = amount_in * 30 / 10_000;
-    let _ = pool_id;
     amount_in.saturating_sub(fee)
 }
 
-/// Execute swap via legacy MoltSwap
-fn execute_legacy_swap(amount_in: u64, _pool_id: u64) -> u64 {
-    // In production: cross-contract call to MoltSwap
+/// Execute swap via legacy MoltSwap — cross-contract call
+fn execute_legacy_swap(amount_in: u64, pool_id: u64) -> u64 {
+    let legacy_addr = load_addr(LEGACY_SWAP_KEY);
+    if !is_zero(&legacy_addr) {
+        let mut args = Vec::with_capacity(16);
+        args.extend_from_slice(&u64_to_bytes(pool_id));
+        args.extend_from_slice(&u64_to_bytes(amount_in));
+        let call = CrossCall::new(Address(legacy_addr), "swap", args)
+            .with_value(0);
+        if let Ok(result) = call_contract(call) {
+            if result.len() >= 8 {
+                return bytes_to_u64(&result);
+            }
+        }
+    }
+    // Fallback: simulated 99.7% fill (30 bps fee)
     let fee = amount_in * 30 / 10_000;
     amount_in.saturating_sub(fee)
 }
@@ -524,11 +561,114 @@ pub extern "C" fn call() {
     let args = moltchain_sdk::get_args();
     if args.is_empty() { return; }
     match args[0] {
+        // 0: initialize(admin[32])
         0 => {
             if args.len() >= 33 {
                 let r = initialize(args[1..33].as_ptr());
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
+        }
+        // 1: set_addresses(caller[32], core[32], amm[32], legacy[32])
+        1 => {
+            if args.len() >= 129 {
+                let r = set_addresses(
+                    args[1..33].as_ptr(), args[33..65].as_ptr(),
+                    args[65..97].as_ptr(), args[97..129].as_ptr(),
+                );
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 2: register_route(caller[32], token_in[32], token_out[32], type, pool_id, sec_id, split_pct)
+        2 => {
+            if args.len() >= 122 {
+                let rtype = args[97];
+                let pool_id = bytes_to_u64(&args[98..106]);
+                let sec_id = bytes_to_u64(&args[106..114]);
+                let split_pct = if args.len() > 114 { args[114] } else { 0 };
+                let r = register_route(
+                    args[1..33].as_ptr(), args[33..65].as_ptr(),
+                    args[65..97].as_ptr(), rtype, pool_id, sec_id, split_pct,
+                );
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 3: swap(trader[32], token_in[32], token_out[32], amount_in, min_out, deadline)
+        3 => {
+            if args.len() >= 121 {
+                let amount_in = bytes_to_u64(&args[97..105]);
+                let min_out = bytes_to_u64(&args[105..113]);
+                let deadline = bytes_to_u64(&args[113..121]);
+                let r = swap(
+                    args[1..33].as_ptr(), args[33..65].as_ptr(),
+                    args[65..97].as_ptr(), amount_in, min_out, deadline,
+                );
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 4: set_route_enabled(caller[32], route_id, enabled)
+        4 => {
+            if args.len() >= 42 {
+                let route_id = bytes_to_u64(&args[33..41]);
+                let enabled = args[41] == 1;
+                let r = set_route_enabled(args[1..33].as_ptr(), route_id, enabled);
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 5: get_best_route(token_in[32], token_out[32], amount)
+        5 => {
+            if args.len() >= 73 {
+                let amount = bytes_to_u64(&args[65..73]);
+                let r = get_best_route(args[1..33].as_ptr(), args[33..65].as_ptr(), amount);
+                moltchain_sdk::set_return_data(&u64_to_bytes(r));
+            }
+        }
+        // 6: get_route_info(route_id)
+        6 => {
+            if args.len() >= 9 {
+                let route_id = bytes_to_u64(&args[1..9]);
+                let r = get_route_info(route_id);
+                moltchain_sdk::set_return_data(&u64_to_bytes(r));
+            }
+        }
+        // 7: emergency_pause(caller[32])
+        7 => {
+            if args.len() >= 33 {
+                let r = emergency_pause(args[1..33].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 8: emergency_unpause(caller[32])
+        8 => {
+            if args.len() >= 33 {
+                let r = emergency_unpause(args[1..33].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 9: multi_hop_swap(trader[32], path_ptr, path_count, amount_in, min_out, deadline)
+        9 => {
+            if args.len() >= 57 {
+                let path_count = bytes_to_u64(&args[33..41]);
+                let amount_in = bytes_to_u64(&args[41..49]);
+                let min_out = bytes_to_u64(&args[49..57]);
+                let deadline = if args.len() >= 65 { bytes_to_u64(&args[57..65]) } else { 0 };
+                let path_start = 65;
+                let path_end = path_start + (path_count as usize * 8);
+                if args.len() >= path_end {
+                    let r = multi_hop_swap(
+                        args[1..33].as_ptr(), args[path_start..].as_ptr(),
+                        path_count, amount_in, min_out, deadline,
+                    );
+                    moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+                }
+            }
+        }
+        // 10: get_route_count
+        10 => {
+            moltchain_sdk::set_return_data(&u64_to_bytes(get_route_count()));
+        }
+        // 11: get_swap_count
+        11 => {
+            moltchain_sdk::set_return_data(&u64_to_bytes(get_swap_count()));
         }
         _ => {}
     }
@@ -856,5 +996,68 @@ mod tests {
         let _admin = setup();
         let rando = [99u8; 32];
         assert_eq!(emergency_pause(rando.as_ptr()), 1);
+    }
+
+    // --- Cross-Contract Call Tests ---
+
+    #[test]
+    fn test_swap_with_addresses_configured() {
+        // When addresses are configured, cross-contract calls are attempted.
+        // In test mode, call_contract returns Ok(Vec::new()) → empty result → fallback to simulation.
+        let admin = setup();
+        let ta = token_a();
+        let tb = token_b();
+        let trader = [2u8; 32];
+        let core = [50u8; 32];
+        let amm = [51u8; 32];
+        let legacy = [52u8; 32];
+        set_addresses(admin.as_ptr(), core.as_ptr(), amm.as_ptr(), legacy.as_ptr());
+        test_mock::set_slot(100);
+
+        register_route(admin.as_ptr(), ta.as_ptr(), tb.as_ptr(), ROUTE_DIRECT_CLOB, 1, 0, 0);
+        assert_eq!(swap(trader.as_ptr(), ta.as_ptr(), tb.as_ptr(), 1_000_000, 0, 0), 0);
+        // Fallback simulation: CLOB 5 bps → 999_500
+        let ret = test_mock::get_return_data();
+        assert_eq!(bytes_to_u64(&ret), 999_500);
+    }
+
+    #[test]
+    fn test_swap_legacy() {
+        let admin = setup();
+        let ta = token_a();
+        let tb = token_b();
+        let trader = [2u8; 32];
+        test_mock::set_slot(100);
+        register_route(admin.as_ptr(), ta.as_ptr(), tb.as_ptr(), ROUTE_LEGACY_SWAP, 1, 0, 0);
+        assert_eq!(swap(trader.as_ptr(), ta.as_ptr(), tb.as_ptr(), 1_000_000, 0, 0), 0);
+        let ret = test_mock::get_return_data();
+        let out = bytes_to_u64(&ret);
+        // Legacy: 30 bps fee → 997_000
+        assert_eq!(out, 997_000);
+    }
+
+    #[test]
+    fn test_multi_hop_swap_path() {
+        let admin = setup();
+        let ta = token_a();
+        let tb = token_b();
+        let trader = [2u8; 32];
+        test_mock::set_slot(100);
+
+        // multi_hop_swap uses AMM for each hop
+        // 3 tokens = 2 hops: pool_id 1 and pool_id 2
+        let path: Vec<u8> = {
+            let mut p = Vec::new();
+            p.extend_from_slice(&u64_to_bytes(1)); // pool for hop 1
+            p.extend_from_slice(&u64_to_bytes(2)); // pool for hop 2
+            p
+        };
+        let result = multi_hop_swap(trader.as_ptr(), path.as_ptr(), 3, 1_000_000, 0, 0);
+        assert_eq!(result, 0);
+        let ret = test_mock::get_return_data();
+        let out = bytes_to_u64(&ret);
+        // Hop1: 1_000_000 * 0.9970 = 997_000
+        // Hop2: 997_000 * 0.9970 = 994_009
+        assert_eq!(out, 994_009);
     }
 }

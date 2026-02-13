@@ -4,7 +4,7 @@
 // Prices and volumes are therefore expressed in mUSD units (6 decimals).
 //
 // Features:
-//   - OHLCV candle aggregation (1m, 5m, 15m, 1h, 4h, 1d)
+//   - OHLCV candle aggregation (1m, 5m, 15m, 1h, 4h, 1d, 3d, 1w, 1y)
 //   - 24h rolling stats per pair (volume, high, low, price change)
 //   - Trader stats: volume, trade count, PnL
 //   - Leaderboard tracking (top traders by volume/PnL)
@@ -35,23 +35,32 @@ const INTERVAL_15M: u64 = 900;
 const INTERVAL_1H: u64 = 3_600;
 const INTERVAL_4H: u64 = 14_400;
 const INTERVAL_1D: u64 = 86_400;
+const INTERVAL_3D: u64 = 259_200;
+const INTERVAL_1W: u64 = 604_800;
+const INTERVAL_1Y: u64 = 31_536_000;
 
-// Max candles to keep per interval per pair
-const MAX_CANDLES_1M: u64 = 1_440; // 24h
-const MAX_CANDLES_5M: u64 = 288; // 24h
-const MAX_CANDLES_15M: u64 = 96; // 24h
-const MAX_CANDLES_1H: u64 = 168; // 7d
-const MAX_CANDLES_4H: u64 = 180; // 30d
-const MAX_CANDLES_1D: u64 = 365; // 1 year
+// Max candles to keep per interval per pair (retention policy per milestone spec)
+const MAX_CANDLES_1M: u64 = 1_440;       // 24 hours
+const MAX_CANDLES_5M: u64 = 2_016;       // 7 days
+const MAX_CANDLES_15M: u64 = 2_880;      // 30 days
+const MAX_CANDLES_1H: u64 = 2_160;       // 90 days
+const MAX_CANDLES_4H: u64 = 2_190;       // 365 days
+const MAX_CANDLES_1D: u64 = 1_095;       // 3 years
+const MAX_CANDLES_3D: u64 = 243;         // 2 years
+const MAX_CANDLES_1W: u64 = 260;         // 5 years
+const MAX_CANDLES_1Y: u64 = u64::MAX;    // unlimited (forever)
 
 const MAX_LEADERBOARD: u64 = 100;
-const INTERVALS: [u64; 6] = [
+const INTERVALS: [u64; 9] = [
     INTERVAL_1M,
     INTERVAL_5M,
     INTERVAL_15M,
     INTERVAL_1H,
     INTERVAL_4H,
     INTERVAL_1D,
+    INTERVAL_3D,
+    INTERVAL_1W,
+    INTERVAL_1Y,
 ];
 
 // Storage keys
@@ -116,6 +125,22 @@ fn is_paused() -> bool {
     storage_get(PAUSED_KEY)
         .map(|v| v.first().copied() == Some(1))
         .unwrap_or(false)
+}
+
+/// Return the maximum number of candles retained for a given interval.
+fn get_retention(interval: u64) -> u64 {
+    match interval {
+        INTERVAL_1M => MAX_CANDLES_1M,
+        INTERVAL_5M => MAX_CANDLES_5M,
+        INTERVAL_15M => MAX_CANDLES_15M,
+        INTERVAL_1H => MAX_CANDLES_1H,
+        INTERVAL_4H => MAX_CANDLES_4H,
+        INTERVAL_1D => MAX_CANDLES_1D,
+        INTERVAL_3D => MAX_CANDLES_3D,
+        INTERVAL_1W => MAX_CANDLES_1W,
+        INTERVAL_1Y => MAX_CANDLES_1Y,
+        _ => 365, // safe default
+    }
 }
 
 // Key helpers
@@ -555,9 +580,76 @@ pub extern "C" fn call() {
         return;
     }
     match args[0] {
+        // 0 = initialize(admin[32])
         0 => {
             if args.len() >= 33 {
                 let r = initialize(args[1..33].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 1 = record_trade(pair_id[8], price[8], volume[8], trader[32])
+        1 => {
+            if args.len() >= 57 {
+                let pair_id = bytes_to_u64(&args[1..9]);
+                let price = bytes_to_u64(&args[9..17]);
+                let volume = bytes_to_u64(&args[17..25]);
+                let r = record_trade(pair_id, price, volume, args[25..57].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 2 = get_ohlcv(pair_id[8], interval[8], count[8])
+        2 => {
+            if args.len() >= 25 {
+                let pair_id = bytes_to_u64(&args[1..9]);
+                let interval = bytes_to_u64(&args[9..17]);
+                let count = bytes_to_u64(&args[17..25]);
+                let n = get_ohlcv(pair_id, interval, count);
+                moltchain_sdk::set_return_data(&u64_to_bytes(n));
+            }
+        }
+        // 3 = get_24h_stats(pair_id[8])
+        3 => {
+            if args.len() >= 9 {
+                let pair_id = bytes_to_u64(&args[1..9]);
+                let r = get_24h_stats(pair_id);
+                if r == 0 {
+                    moltchain_sdk::set_return_data(&u64_to_bytes(0));
+                }
+            }
+        }
+        // 4 = get_trader_stats(addr[32])
+        4 => {
+            if args.len() >= 33 {
+                let r = get_trader_stats(args[1..33].as_ptr());
+                if r == 0 {
+                    moltchain_sdk::set_return_data(&u64_to_bytes(0));
+                }
+            }
+        }
+        // 5 = get_last_price(pair_id[8])
+        5 => {
+            if args.len() >= 9 {
+                let pair_id = bytes_to_u64(&args[1..9]);
+                let p = get_last_price(pair_id);
+                moltchain_sdk::set_return_data(&u64_to_bytes(p));
+            }
+        }
+        // 6 = get_record_count()
+        6 => {
+            let c = get_record_count();
+            moltchain_sdk::set_return_data(&u64_to_bytes(c));
+        }
+        // 7 = emergency_pause(caller[32])
+        7 => {
+            if args.len() >= 33 {
+                let r = emergency_pause(args[1..33].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 8 = emergency_unpause(caller[32])
+        8 => {
+            if args.len() >= 33 {
+                let r = emergency_unpause(args[1..33].as_ptr());
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
@@ -768,5 +860,143 @@ mod tests {
         let _admin = setup();
         let rando = [99u8; 32];
         assert_eq!(emergency_pause(rando.as_ptr()), 1);
+    }
+
+    #[test]
+    fn test_intervals_count() {
+        // Verify we have exactly 9 intervals
+        assert_eq!(INTERVALS.len(), 9);
+        assert_eq!(INTERVALS[0], INTERVAL_1M);
+        assert_eq!(INTERVALS[6], INTERVAL_3D);
+        assert_eq!(INTERVALS[7], INTERVAL_1W);
+        assert_eq!(INTERVALS[8], INTERVAL_1Y);
+    }
+
+    #[test]
+    fn test_get_retention() {
+        assert_eq!(get_retention(INTERVAL_1M), 1_440);
+        assert_eq!(get_retention(INTERVAL_5M), 2_016);
+        assert_eq!(get_retention(INTERVAL_15M), 2_880);
+        assert_eq!(get_retention(INTERVAL_1H), 2_160);
+        assert_eq!(get_retention(INTERVAL_4H), 2_190);
+        assert_eq!(get_retention(INTERVAL_1D), 1_095);
+        assert_eq!(get_retention(INTERVAL_3D), 243);
+        assert_eq!(get_retention(INTERVAL_1W), 260);
+        assert_eq!(get_retention(INTERVAL_1Y), u64::MAX);
+        // Unknown interval defaults to 365
+        assert_eq!(get_retention(999), 365);
+    }
+
+    #[test]
+    fn test_candle_3d_creation() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+        // 3d = 259_200 slots; place trade at start of a 3d bucket
+        test_mock::set_slot(259_200);
+        record_trade(1, 2_000_000_000, 10_000, trader.as_ptr());
+
+        let count = load_u64(&candle_count_key(1, INTERVAL_3D));
+        assert_eq!(count, 1);
+
+        let ck = candle_key(1, INTERVAL_3D, 1);
+        let data = storage_get(&ck).unwrap();
+        assert_eq!(decode_candle_open(&data), 2_000_000_000);
+        assert_eq!(decode_candle_close(&data), 2_000_000_000);
+        assert_eq!(decode_candle_volume(&data), 10_000);
+    }
+
+    #[test]
+    fn test_candle_1w_creation() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+        // 1w = 604_800 slots
+        test_mock::set_slot(604_800);
+        record_trade(1, 3_000_000_000, 7_500, trader.as_ptr());
+
+        let count = load_u64(&candle_count_key(1, INTERVAL_1W));
+        assert_eq!(count, 1);
+
+        let ck = candle_key(1, INTERVAL_1W, 1);
+        let data = storage_get(&ck).unwrap();
+        assert_eq!(decode_candle_open(&data), 3_000_000_000);
+        assert_eq!(decode_candle_volume(&data), 7_500);
+    }
+
+    #[test]
+    fn test_candle_1y_creation() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+        // 1y = 31_536_000 slots
+        test_mock::set_slot(31_536_000);
+        record_trade(1, 5_000_000_000, 50_000, trader.as_ptr());
+
+        let count = load_u64(&candle_count_key(1, INTERVAL_1Y));
+        assert_eq!(count, 1);
+
+        let ck = candle_key(1, INTERVAL_1Y, 1);
+        let data = storage_get(&ck).unwrap();
+        assert_eq!(decode_candle_open(&data), 5_000_000_000);
+        assert_eq!(decode_candle_volume(&data), 50_000);
+    }
+
+    #[test]
+    fn test_candle_3d_update_same_period() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_slot(259_200);
+        record_trade(1, 1_000_000_000, 5_000, trader.as_ptr());
+        test_mock::set_slot(259_200 + 100_000); // still in same 3d bucket
+        record_trade(1, 1_500_000_000, 3_000, trader.as_ptr());
+
+        let count = load_u64(&candle_count_key(1, INTERVAL_3D));
+        assert_eq!(count, 1); // still one candle
+
+        let ck = candle_key(1, INTERVAL_3D, 1);
+        let data = storage_get(&ck).unwrap();
+        assert_eq!(decode_candle_open(&data), 1_000_000_000);
+        assert_eq!(decode_candle_high(&data), 1_500_000_000);
+        assert_eq!(decode_candle_close(&data), 1_500_000_000);
+        assert_eq!(decode_candle_volume(&data), 8_000);
+    }
+
+    #[test]
+    fn test_candle_1w_new_period() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_slot(604_800);
+        record_trade(1, 1_000_000_000, 5_000, trader.as_ptr());
+        test_mock::set_slot(604_800 * 2); // next week
+        record_trade(1, 1_100_000_000, 4_000, trader.as_ptr());
+
+        let count = load_u64(&candle_count_key(1, INTERVAL_1W));
+        assert_eq!(count, 2); // two candles
+    }
+
+    #[test]
+    fn test_get_ohlcv_3d() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_slot(259_200);
+        record_trade(1, 1_000_000_000, 5_000, trader.as_ptr());
+        test_mock::set_slot(259_200 * 2);
+        record_trade(1, 1_100_000_000, 3_000, trader.as_ptr());
+
+        let count = get_ohlcv(1, INTERVAL_3D, 10);
+        assert_eq!(count, 2);
+    }
+
+    #[test]
+    fn test_all_intervals_get_candles_on_trade() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+        // Use slot that's a multiple of all intervals (lcm-like)
+        test_mock::set_slot(31_536_000); // multiple of all intervals
+        record_trade(1, 1_000_000_000, 5_000, trader.as_ptr());
+
+        // Every interval should have at least 1 candle
+        for &interval in &INTERVALS {
+            let count = load_u64(&candle_count_key(1, interval));
+            assert!(count >= 1, "Interval {} should have candles", interval);
+        }
     }
 }
