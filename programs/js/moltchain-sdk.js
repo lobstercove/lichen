@@ -33,7 +33,7 @@ const MOLTCHAIN_CONFIG = {
         },
         local: {
             rpc: 'http://localhost:8899',
-            ws: 'ws://localhost:8899/ws',
+            ws: 'ws://localhost:8900',
             explorer: 'http://localhost:8080',
             chainId: 999
         }

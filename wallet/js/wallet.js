@@ -12,8 +12,8 @@ const NETWORKS = {
 const WS_ENDPOINTS = {
     'mainnet': 'wss://rpc.moltchain.network/ws',
     'testnet': 'wss://testnet-rpc.moltchain.network/ws',
-    'local-testnet': 'ws://localhost:8899/ws',
-    'local-mainnet': 'ws://localhost:8899/ws'
+    'local-testnet': 'ws://localhost:8900',
+    'local-mainnet': 'ws://localhost:8900'
 };
 
 const CUSTODY_ENDPOINTS = {
@@ -1114,7 +1114,7 @@ async function loadActivity() {
         // Fetch airdrops from faucet backend API (cross-origin safe via CORS)
         let airdrops = [];
         try {
-            const resp = await fetch(`http://localhost:4000/faucet/airdrops?address=${encodeURIComponent(wallet.address)}&limit=50`);
+            const resp = await fetch(`http://localhost:8901/faucet/airdrops?address=${encodeURIComponent(wallet.address)}&limit=50`);
             if (resp.ok) {
                 const records = await resp.json();
                 airdrops = records.map(a => ({

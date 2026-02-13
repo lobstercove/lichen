@@ -107,7 +107,7 @@ async function displayAirdrop(txHash) {
     // Try fetching from faucet backend API (has airdrop history)
     if (!recipient || !amountMolt) {
         try {
-            const resp = await fetch(`http://localhost:4000/faucet/airdrop/${encodeURIComponent(txHash)}`);
+            const resp = await fetch(`http://localhost:8901/faucet/airdrop/${encodeURIComponent(txHash)}`);
             if (resp.ok) {
                 const record = await resp.json();
                 if (!recipient && record.recipient) recipient = record.recipient;
