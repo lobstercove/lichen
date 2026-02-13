@@ -27,6 +27,32 @@ struct CustodyState {
     _reserve_lock: Arc<Mutex<()>>,
     config: CustodyConfig,
     http: reqwest::Client,
+    /// AUDIT-FIX 1.20: Global withdrawal rate limiter
+    withdrawal_rate: Arc<Mutex<WithdrawalRateState>>,
+}
+
+/// AUDIT-FIX 1.20: Withdrawal rate limiting state
+#[derive(Clone, Debug)]
+struct WithdrawalRateState {
+    /// (timestamp, count) for rolling window
+    window_start: std::time::Instant,
+    count_this_minute: u64,
+    value_this_hour: u64,
+    hour_start: std::time::Instant,
+    /// Per-address: last withdrawal time
+    per_address: std::collections::HashMap<String, std::time::Instant>,
+}
+
+impl WithdrawalRateState {
+    fn new() -> Self {
+        Self {
+            window_start: std::time::Instant::now(),
+            count_this_minute: 0,
+            value_this_hour: 0,
+            hour_start: std::time::Instant::now(),
+            per_address: std::collections::HashMap::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -62,8 +88,12 @@ struct CustodyConfig {
     /// C8 fix: Secret master seed for key derivation (HMAC-SHA256 instead of plain SHA256).
     /// Load from CUSTODY_MASTER_SEED env var. Required for production.
     master_seed: String,
-    /// C9 fix: Auth token for threshold signer requests
+    /// C9 fix: Auth token for threshold signer requests (global fallback)
     signer_auth_token: Option<String>,
+    /// AUDIT-FIX 1.22: Per-signer auth tokens (one per signer_endpoint, same order).
+    /// Set via CUSTODY_SIGNER_AUTH_TOKENS=token1,token2,...
+    /// Falls back to signer_auth_token if not set for a given index.
+    signer_auth_tokens: Vec<Option<String>>,
     /// M17 fix: API auth token for withdrawal and other write endpoints
     /// Load from CUSTODY_API_AUTH_TOKEN env var. Required for production.
     api_auth_token: Option<String>,
@@ -262,13 +292,39 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     let config = load_config();
+
+    // AUDIT-FIX 1.21: Threshold signature assembly is a stub — assert exactly 1 signer at startup.
+    // Multi-signer mode silently produces invalid transactions. Until proper MPC assembly is
+    // implemented, we must reject configurations with >1 signer.
+    if config.signer_endpoints.len() > 1 {
+        panic!(
+            "FATAL: {} signer endpoints configured but threshold signature assembly is not implemented. \
+             Only single-signer mode is supported. Use exactly 0 or 1 signer endpoints.",
+            config.signer_endpoints.len()
+        );
+    }
+    if config.signer_threshold > 1 {
+        panic!(
+            "FATAL: signer_threshold={} but multi-signer assembly is not implemented. \
+             Set CUSTODY_SIGNER_THRESHOLD=1 or leave unset.",
+            config.signer_threshold
+        );
+    }
+
     let db = open_db(&config.db_path).expect("open custody db");
     let state = CustodyState {
         db: Arc::new(db),
         next_index_lock: Arc::new(Mutex::new(())),
         _reserve_lock: Arc::new(Mutex::new(())),
         config: config.clone(),
-        http: reqwest::Client::new(),
+        // AUDIT-FIX 1.19: HTTP client with timeouts to prevent hung RPC freezing custody
+        http: reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .build()
+            .expect("Failed to build HTTP client"),
+        // AUDIT-FIX 1.20: Withdrawal rate limiter
+        withdrawal_rate: Arc::new(Mutex::new(WithdrawalRateState::new())),
     };
 
     if let Some(url) = config.solana_rpc_url.clone() {
@@ -804,15 +860,41 @@ fn load_config() -> CustodyConfig {
         jupiter_api_url,
         uniswap_router,
         deposit_ttl_secs,
-        // C8 fix: secret master seed (required for production key derivation)
-        master_seed: std::env::var("CUSTODY_MASTER_SEED").unwrap_or_else(|_| {
-            tracing::warn!(
-                "⚠️  CUSTODY_MASTER_SEED not set — using insecure default! Set this in production!"
-            );
-            "INSECURE_DEFAULT_SEED_DO_NOT_USE_IN_PRODUCTION".to_string()
-        }),
+        // AUDIT-FIX 1.17: Master seed MUST be set — hardcoded fallback removed.
+        // Set CUSTODY_ALLOW_INSECURE_SEED=1 only for local development.
+        master_seed: {
+            match std::env::var("CUSTODY_MASTER_SEED") {
+                Ok(seed) if !seed.is_empty() => seed,
+                _ => {
+                    if std::env::var("CUSTODY_ALLOW_INSECURE_SEED").unwrap_or_default() == "1" {
+                        tracing::warn!(
+                            "⚠️  CUSTODY_MASTER_SEED not set — using insecure default (dev mode)!"
+                        );
+                        "INSECURE_DEFAULT_SEED_DO_NOT_USE_IN_PRODUCTION".to_string()
+                    } else {
+                        panic!(
+                            "FATAL: CUSTODY_MASTER_SEED not set. All custody keys would be derivable from source code. \
+                             Set CUSTODY_MASTER_SEED to a secure random value, or set CUSTODY_ALLOW_INSECURE_SEED=1 for dev."
+                        );
+                    }
+                }
+            }
+        },
         // C9 fix: auth token for threshold signers
         signer_auth_token: std::env::var("CUSTODY_SIGNER_AUTH_TOKEN").ok(),
+        // AUDIT-FIX 1.22: Per-signer auth tokens
+        signer_auth_tokens: std::env::var("CUSTODY_SIGNER_AUTH_TOKENS")
+            .ok()
+            .map(|value| {
+                value
+                    .split(',')
+                    .map(|t| {
+                        let t = t.trim();
+                        if t.is_empty() { None } else { Some(t.to_string()) }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
         // AUDIT-FIX 0.10: API auth token is MANDATORY — running without it
         // leaves the withdrawal endpoint completely unauthenticated.
         api_auth_token: {
@@ -1825,11 +1907,17 @@ async fn collect_signatures(state: &CustodyState, job: &mut SweepJob) -> Result<
         tx_hash: Some(job.tx_hash.clone()),
     };
 
-    for endpoint in &state.config.signer_endpoints {
+    for (idx, endpoint) in state.config.signer_endpoints.iter().enumerate() {
         let url = format!("{}/sign", endpoint.trim_end_matches('/'));
-        // C9 fix: Include auth header so threshold signer accepts the request
+        // AUDIT-FIX 1.22: Use per-signer auth token if available, fall back to global token
         let mut req = state.http.post(url).json(&request);
-        if let Some(ref token) = state.config.signer_auth_token {
+        let token = state
+            .config
+            .signer_auth_tokens
+            .get(idx)
+            .and_then(|t| t.as_ref())
+            .or(state.config.signer_auth_token.as_ref());
+        if let Some(token) = token {
             req = req.bearer_auth(token);
         }
         let response = match req.send().await {
@@ -3089,6 +3177,48 @@ async fn create_withdrawal(
         }
     }
 
+    // AUDIT-FIX 1.20: Global and per-address withdrawal rate limiting
+    {
+        let mut rl = state.withdrawal_rate.lock().await;
+        let now = std::time::Instant::now();
+
+        // Reset per-minute counter
+        if now.duration_since(rl.window_start) >= std::time::Duration::from_secs(60) {
+            rl.window_start = now;
+            rl.count_this_minute = 0;
+        }
+        // Reset per-hour value counter
+        if now.duration_since(rl.hour_start) >= std::time::Duration::from_secs(3600) {
+            rl.hour_start = now;
+            rl.value_this_hour = 0;
+        }
+
+        // Global: max 20 withdrawals per minute
+        const MAX_WITHDRAWALS_PER_MIN: u64 = 20;
+        if rl.count_this_minute >= MAX_WITHDRAWALS_PER_MIN {
+            tracing::warn!("⚠️  Withdrawal rate limit exceeded: {} this minute", rl.count_this_minute);
+            return Json(json!({ "error": "rate_limited: too many withdrawals, try again later" }));
+        }
+
+        // Global: max 10M value per hour (in smallest units)
+        const MAX_VALUE_PER_HOUR: u64 = 10_000_000_000_000_000; // 10M with 9 decimals
+        if rl.value_this_hour.saturating_add(req.amount) > MAX_VALUE_PER_HOUR {
+            tracing::warn!("⚠️  Withdrawal value limit exceeded: {} this hour", rl.value_this_hour);
+            return Json(json!({ "error": "rate_limited: hourly withdrawal value limit reached" }));
+        }
+
+        // Per-address: max 1 withdrawal per 30 seconds
+        if let Some(last) = rl.per_address.get(&req.dest_address) {
+            if now.duration_since(*last) < std::time::Duration::from_secs(30) {
+                return Json(json!({ "error": "rate_limited: wait 30s between withdrawals" }));
+            }
+        }
+
+        rl.count_this_minute += 1;
+        rl.value_this_hour = rl.value_this_hour.saturating_add(req.amount);
+        rl.per_address.insert(req.dest_address.clone(), now);
+    }
+
     let asset_lower = req.asset.to_lowercase();
     let (dest_asset, _) = match asset_lower.as_str() {
         "musd" => ("stablecoin", "stablecoin"),
@@ -4318,9 +4448,20 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
         };
 
         let mut sig_count = job.signatures.len();
-        for endpoint in &state.config.signer_endpoints {
+        for (idx, endpoint) in state.config.signer_endpoints.iter().enumerate() {
             let url = format!("{}/sign", endpoint.trim_end_matches('/'));
-            match state.http.post(&url).json(&signer_request).send().await {
+            // AUDIT-FIX 1.22: Per-signer auth tokens
+            let mut req = state.http.post(&url).json(&signer_request);
+            let token = state
+                .config
+                .signer_auth_tokens
+                .get(idx)
+                .and_then(|t| t.as_ref())
+                .or(state.config.signer_auth_token.as_ref());
+            if let Some(token) = token {
+                req = req.bearer_auth(token);
+            }
+            match req.send().await {
                 Ok(response) => {
                     if let Ok(payload) = response.json::<SignerResponse>().await {
                         if payload.status == "signed" {
@@ -4570,25 +4711,50 @@ fn assemble_signed_evm_tx(
 }
 
 /// Check if a Solana transaction is confirmed with enough confirmations
+/// AUDIT-FIX 1.18: Properly check confirmationStatus and confirmation count
 async fn check_solana_tx_confirmed(
     client: &reqwest::Client,
     url: &str,
     tx_hash: &str,
     required_confirmations: u64,
 ) -> Result<bool, String> {
-    let result = solana_rpc_call(
+    // Use getSignatureStatuses for proper confirmation info
+    let statuses = solana_rpc_call(
         client,
         url,
-        "getTransaction",
-        json!([tx_hash, {"encoding": "json"}]),
+        "getSignatureStatuses",
+        json!([[tx_hash], {"searchTransactionHistory": true}]),
     )
     .await?;
-    if result.is_null() {
+
+    let status = statuses
+        .get("value")
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+
+    if status.is_null() {
         return Ok(false);
     }
-    // Check confirmation count from the slot
-    let confirmations = result.get("slot").map(|_| required_confirmations); // simplified: if tx found, consider confirmed
-    Ok(confirmations.unwrap_or(0) >= required_confirmations)
+
+    // Check confirmationStatus — "finalized" is the safest
+    let confirmation_status = status
+        .get("confirmationStatus")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+
+    if confirmation_status == "finalized" {
+        return Ok(true);
+    }
+
+    // Fall back to numeric confirmations count
+    let confirmations = status
+        .get("confirmations")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    Ok(confirmations >= required_confirmations)
 }
 
 /// Check if an EVM transaction is confirmed with enough confirmations
@@ -4655,6 +4821,7 @@ mod tests {
             deposit_ttl_secs: 86400,
             master_seed: "test_master_seed_for_unit_tests".to_string(),
             signer_auth_token: Some("test_token".to_string()),
+            signer_auth_tokens: vec![],
             api_auth_token: Some("test_api_token".to_string()),
         }
     }

@@ -1,6 +1,16 @@
 // MoltChain Validator with BFT Consensus + P2P Network + RPC Server
 // Week 4: Multi-validator networking with QUIC transport + RPC integration
 // Week 5: Block broadcasting, mempool, and multi-validator consensus
+//
+// AUDIT-FIX 1.23: Global Lock Ordering Contract
+// All async code MUST acquire locks in this order to prevent deadlocks:
+//   1. vote_aggregator (VoteAggregator)
+//   2. validator_set   (ValidatorSet)
+//   3. stake_pool      (StakePool)
+//   4. slashing_tracker (SlashingTracker)
+//   5. mempool         (Mempool)
+// NEVER acquire a lower-numbered lock while holding a higher-numbered one.
+// If only a subset is needed, the relative order must still be respected.
 
 mod keypair_loader;
 mod sync;
