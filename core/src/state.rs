@@ -2873,10 +2873,33 @@ impl StateStore {
         Ok(set)
     }
 
-    /// Save entire validator set to state
+    /// Save entire validator set to state (replaces all existing entries)
     pub fn save_validator_set(&self, set: &crate::consensus::ValidatorSet) -> Result<(), String> {
+        // Clear stale validators first to prevent ghost entries from old keypairs
+        self.clear_all_validators()?;
         for validator in set.validators() {
             self.put_validator(validator)?;
+        }
+        Ok(())
+    }
+
+    /// Remove ALL validators from the CF (used before full re-save)
+    pub fn clear_all_validators(&self) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_VALIDATORS)
+            .ok_or_else(|| "Validators CF not found".to_string())?;
+
+        let keys: Vec<Box<[u8]>> = self
+            .db
+            .iterator_cf(&cf, rocksdb::IteratorMode::Start)
+            .filter_map(|item| item.ok().map(|(k, _)| k))
+            .collect();
+
+        for key in keys {
+            self.db
+                .delete_cf(&cf, &key)
+                .map_err(|e| format!("Failed to delete validator: {}", e))?;
         }
         Ok(())
     }

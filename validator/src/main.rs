@@ -1724,14 +1724,28 @@ async fn run_validator() {
         .and_then(|s| s.parse::<u16>().ok())
         .unwrap_or(8000);
 
-    // Parse --db-path / --db flag or use default based on port
+    // Parse --db-path / --db / --data-dir flag or use default based on port
     let data_dir = args
         .iter()
-        .position(|arg| arg == "--db-path" || arg == "--db")
+        .position(|arg| arg == "--db-path" || arg == "--db" || arg == "--data-dir")
         .and_then(|pos| args.get(pos + 1))
         .map(|s| s.to_string())
         .unwrap_or_else(|| format!("./data/state-{}", p2p_port));
-    let data_dir_path = PathBuf::from(&data_dir);
+    // Canonicalize to absolute path to prevent CWD-dependent state location
+    let data_dir_path = std::fs::canonicalize(&data_dir)
+        .unwrap_or_else(|_| {
+            // Directory doesn't exist yet — resolve parent + leaf
+            let p = PathBuf::from(&data_dir);
+            if p.is_absolute() {
+                p
+            } else {
+                std::env::current_dir()
+                    .unwrap_or_else(|_| PathBuf::from("."))
+                    .join(&p)
+            }
+        });
+    let data_dir = data_dir_path.to_string_lossy().to_string();
+    info!("📂 Data directory: {}", data_dir);
 
     let signer_bind = match env::var("MOLTCHAIN_SIGNER_BIND") {
         Ok(value) if value.eq_ignore_ascii_case("off") => None,
@@ -2476,11 +2490,12 @@ async fn run_validator() {
         }
     }
 
-    // Save validator set to RocksDB only on first boot (avoid resetting reputation/metrics)
-    if !genesis_exists {
-        if let Err(e) = state.save_validator_set(&*validator_set.lock().await) {
-            eprintln!("Failed to save validator set: {e}");
-        }
+    // Save validator set to RocksDB on EVERY boot.
+    // clear_all_validators() inside save_validator_set removes ghost entries from old
+    // keypairs while preserving reputation/metrics for current validators via the
+    // in-memory set that was loaded from DB above.
+    if let Err(e) = state.save_validator_set(&*validator_set.lock().await) {
+        eprintln!("Failed to save validator set: {e}");
     }
 
     info!(

@@ -11,9 +11,8 @@ const NETWORKS = {
 };
 
 const VALIDATOR_RPCS = [
-    { name: 'V1', rpc: 'http://localhost:8899', ws: 8900, p2p: 8000 },
-    { name: 'V2', rpc: 'http://localhost:8901', ws: 8902, p2p: 8001 },
-    { name: 'V3', rpc: 'http://localhost:8903', ws: 8904, p2p: 8002 },
+    // Legacy fallback: only used if getClusterInfo is unavailable.
+    // In production, the monitoring is fully dynamic via getClusterInfo.
 ];
 
 const SYMBOLS = [
@@ -379,35 +378,63 @@ async function refresh() {
     }
 }
 
-// ── Validator Rendering ─────────────────────────────────────
+// ── Validator Rendering (DYNAMIC — queries cluster, no hardcoded ports) ──
 
 async function renderValidators() {
     const grid = document.getElementById('validatorGrid');
     const badge = document.getElementById('valClusterBadge');
 
-    // Probe each validator RPC for identity, slot AND stake
-    const probes = await Promise.all(VALIDATOR_RPCS.map(async (v) => {
-        try {
-            const [s, vals] = await Promise.all([
-                rpc('getSlot', [], v.rpc),
-                rpc('getValidators', [], v.rpc)
-            ]);
-            const vl = vals?.validators || (Array.isArray(vals) ? vals : []);
-            const nodeVal = vl[0] || {};
-            return {
-                ...v,
-                slot: s,
-                online: s !== null,
-                pubkey: nodeVal.pubkey || null,
-                stake: nodeVal.stake || 0,
-                reputation: nodeVal.reputation || 0,
-                blocks_proposed: nodeVal.blocks_proposed || 0,
-                last_active_slot: nodeVal.last_active_slot || 0
-            };
-        } catch {
-            return { ...v, slot: null, online: false, pubkey: null, stake: 0 };
+    // Query the single RPC endpoint for live cluster info
+    const cluster = await rpc('getClusterInfo');
+    const currentSlot = await rpc('getSlot');
+
+    let probes = [];
+
+    if (cluster && cluster.cluster_nodes && cluster.cluster_nodes.length > 0) {
+        // Dynamic path: build probe list from live cluster data
+        probes = cluster.cluster_nodes.map((node, idx) => ({
+            name: `V${idx + 1}`,
+            rpc: rpcUrl,
+            pubkey: node.pubkey || null,
+            slot: currentSlot,
+            online: node.active !== false,
+            stake: node.stake || 0,
+            reputation: node.reputation || 0,
+            blocks_proposed: node.blocks_proposed || 0,
+            last_active_slot: node.last_active_slot || 0,
+        }));
+    } else {
+        // Fallback: if getClusterInfo not available, use getValidators
+        const vals = await rpc('getValidators');
+        if (vals && vals.validators) {
+            probes = vals.validators.map((v, idx) => ({
+                name: `V${idx + 1}`,
+                rpc: rpcUrl,
+                pubkey: v.pubkey || null,
+                slot: currentSlot,
+                online: currentSlot !== null,
+                stake: v.stake || 0,
+                reputation: v.reputation || 0,
+                blocks_proposed: v.blocks_proposed || 0,
+                last_active_slot: v.last_active_slot || 0,
+            }));
         }
-    }));
+    }
+
+    // If still nothing, show a single "this node" entry
+    if (probes.length === 0) {
+        probes = [{
+            name: 'Node',
+            rpc: rpcUrl,
+            pubkey: null,
+            slot: currentSlot,
+            online: currentSlot !== null,
+            stake: 0,
+            reputation: 0,
+            blocks_proposed: 0,
+            last_active_slot: 0,
+        }];
+    }
 
     const onlineCount = probes.filter(p => p.online).length;
     badge.textContent = `${onlineCount}/${probes.length} Online`;
@@ -426,7 +453,7 @@ async function renderValidators() {
             <div class="val-meta">
                 <span><i class="fas fa-cube"></i> ${p.slot !== null ? formatNum(p.slot) : 'N/A'}</span>
                 <span><i class="fas fa-coins"></i> ${p.stake ? formatMolt(p.stake) : '--'}</span>
-                <span><i class="fas fa-plug"></i> :${p.rpc.split(':').pop()}</span>
+                <span title="Blocks proposed"><i class="fas fa-hammer"></i> ${formatNum(p.blocks_proposed)}</span>
             </div>
         </div>`).join('');
 
