@@ -69,7 +69,7 @@ pub enum UpdateMode {
 }
 
 impl UpdateMode {
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse_mode(s: &str) -> Self {
         match s.to_lowercase().as_str() {
             "check" => Self::Check,
             "download" => Self::Download,
@@ -237,7 +237,7 @@ async fn check_and_update(config: &UpdateConfig) -> Result<Option<String>> {
     let sig_hex = download_text(&sig_asset.browser_download_url).await?;
 
     // 4. Verify Ed25519 signature on SHA256SUMS
-    verify_signature(&sha256sums, &sig_hex.trim())?;
+    verify_signature(&sha256sums, sig_hex.trim())?;
     info!("✅ SHA256SUMS signature verified");
 
     // 5. Find platform-specific archive
@@ -305,8 +305,7 @@ async fn check_and_update(config: &UpdateConfig) -> Result<Option<String>> {
     let rollback_path = exe_path.with_extension("rollback");
 
     // Back up current binary
-    fs::copy(&exe_path, &rollback_path)
-        .context("Failed to back up current binary to .rollback")?;
+    fs::copy(&exe_path, &rollback_path).context("Failed to back up current binary to .rollback")?;
 
     // Swap staging → current
     fs::rename(&staging_path, &exe_path).context("Failed to swap in new binary")?;
@@ -354,9 +353,7 @@ async fn check_rollback_guard() -> Result<()> {
         update_state.crash_count += 1;
         info!(
             "⚠️  Fast restart detected after update to v{} (crash {}/{})",
-            update_state.last_update_version,
-            update_state.crash_count,
-            ROLLBACK_CRASH_THRESHOLD
+            update_state.last_update_version, update_state.crash_count, ROLLBACK_CRASH_THRESHOLD
         );
 
         if update_state.crash_count >= ROLLBACK_CRASH_THRESHOLD {
@@ -365,8 +362,7 @@ async fn check_rollback_guard() -> Result<()> {
                 "🔙 Rolling back from v{} — too many fast crashes",
                 update_state.last_update_version
             );
-            fs::copy(&rollback_path, &exe_path)
-                .context("Failed to restore rollback binary")?;
+            fs::copy(&rollback_path, &exe_path).context("Failed to restore rollback binary")?;
             update_state.rolled_back = true;
             save_update_state(&exe_path, &update_state)?;
 
@@ -497,10 +493,7 @@ fn verify_signature(sha256sums_content: &str, sig_hex: &str) -> Result<()> {
     // Decode the signature
     let sig_bytes = hex::decode(sig_hex).context("Invalid signature hex encoding")?;
     if sig_bytes.len() != 64 {
-        bail!(
-            "Signature must be 64 bytes, got {} bytes",
-            sig_bytes.len()
-        );
+        bail!("Signature must be 64 bytes, got {} bytes", sig_bytes.len());
     }
     let mut sig_arr = [0u8; 64];
     sig_arr.copy_from_slice(&sig_bytes);
@@ -534,15 +527,12 @@ fn extract_binary_from_archive(archive_data: &[u8], output_path: &Path) -> Resul
         let path = entry.path()?.to_path_buf();
 
         // Look for the binary — either at root or in a subdirectory
-        let file_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
         if file_name == binary_name {
             // Extract to output path
-            let mut output_file = fs::File::create(output_path)
-                .context("Failed to create staging file")?;
+            let mut output_file =
+                fs::File::create(output_path).context("Failed to create staging file")?;
 
             io::copy(&mut entry, &mut output_file)
                 .context("Failed to extract binary from archive")?;
@@ -553,10 +543,7 @@ fn extract_binary_from_archive(archive_data: &[u8], output_path: &Path) -> Resul
         }
     }
 
-    bail!(
-        "Binary '{}' not found in archive",
-        binary_name
-    )
+    bail!("Binary '{}' not found in archive", binary_name)
 }
 
 // ── Platform Detection ──────────────────────────────────────────────────────
@@ -608,8 +595,7 @@ fn find_hash_in_sums(sums_content: &str, filename: &str) -> Option<String> {
 /// Parse version from tag name (strips leading 'v')
 fn parse_version(tag: &str) -> Result<semver::Version> {
     let clean = tag.strip_prefix('v').unwrap_or(tag);
-    semver::Version::parse(clean)
-        .with_context(|| format!("Invalid semver: {}", tag))
+    semver::Version::parse(clean).with_context(|| format!("Invalid semver: {}", tag))
 }
 
 /// Generate a random jitter duration
@@ -708,10 +694,7 @@ mod tests {
             find_hash_in_sums(sums, "moltchain-validator-darwin-aarch64.tar.gz"),
             Some("def456".to_string())
         );
-        assert_eq!(
-            find_hash_in_sums(sums, "nonexistent.tar.gz"),
-            None
-        );
+        assert_eq!(find_hash_in_sums(sums, "nonexistent.tar.gz"), None);
     }
 
     #[test]
@@ -723,11 +706,11 @@ mod tests {
 
     #[test]
     fn test_update_mode_from_str() {
-        assert_eq!(UpdateMode::from_str("off"), UpdateMode::Off);
-        assert_eq!(UpdateMode::from_str("check"), UpdateMode::Check);
-        assert_eq!(UpdateMode::from_str("download"), UpdateMode::Download);
-        assert_eq!(UpdateMode::from_str("apply"), UpdateMode::Apply);
-        assert_eq!(UpdateMode::from_str("anything_else"), UpdateMode::Off);
+        assert_eq!(UpdateMode::parse_mode("off"), UpdateMode::Off);
+        assert_eq!(UpdateMode::parse_mode("check"), UpdateMode::Check);
+        assert_eq!(UpdateMode::parse_mode("download"), UpdateMode::Download);
+        assert_eq!(UpdateMode::parse_mode("apply"), UpdateMode::Apply);
+        assert_eq!(UpdateMode::parse_mode("anything_else"), UpdateMode::Off);
     }
 
     #[test]

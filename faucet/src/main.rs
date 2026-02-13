@@ -415,7 +415,8 @@ fn load_or_generate_keypair() -> Keypair {
                 }
                 // Format 2: JSON object with secret_key or privateKey (hex)
                 if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&data) {
-                    let hex_key = obj.get("secret_key")
+                    let hex_key = obj
+                        .get("secret_key")
                         .or_else(|| obj.get("privateKey"))
                         .and_then(|v| v.as_str());
                     if let Some(hex_str) = hex_key {
@@ -455,10 +456,7 @@ fn load_or_generate_keypair() -> Keypair {
                 let mut seed = [0u8; 32];
                 seed.copy_from_slice(&seed_bytes[..32]);
                 let kp = Keypair::from_seed(&seed);
-                info!(
-                    "🔑 Loaded existing faucet keypair from {}",
-                    default_path
-                );
+                info!("🔑 Loaded existing faucet keypair from {}", default_path);
                 return kp;
             }
         }
@@ -467,7 +465,10 @@ fn load_or_generate_keypair() -> Keypair {
     let kp = Keypair::generate();
     let seed_json = serde_json::to_string(&kp.secret_key().to_vec()).unwrap();
     if let Err(e) = std::fs::write(default_path, &seed_json) {
-        warn!("⚠️  Could not save faucet keypair to {}: {}", default_path, e);
+        warn!(
+            "⚠️  Could not save faucet keypair to {}: {}",
+            default_path, e
+        );
     } else {
         info!("🔑 Generated new faucet keypair → {}", default_path);
     }
@@ -480,8 +481,8 @@ async fn send_faucet_transfer(
     recipient_address: &str,
     amount_molt: u64,
 ) -> Result<String, String> {
-    let recipient = Pubkey::from_base58(recipient_address)
-        .map_err(|e| format!("Invalid recipient: {}", e))?;
+    let recipient =
+        Pubkey::from_base58(recipient_address).map_err(|e| format!("Invalid recipient: {}", e))?;
 
     let amount_shells = amount_molt * 1_000_000_000;
 
@@ -510,8 +511,8 @@ async fn send_faucet_transfer(
     let blockhash_hex = block_data["result"]["hash"]
         .as_str()
         .ok_or("Missing blockhash in getLatestBlock response")?;
-    let blockhash = Hash::from_hex(blockhash_hex)
-        .map_err(|e| format!("Invalid blockhash: {}", e))?;
+    let blockhash =
+        Hash::from_hex(blockhash_hex).map_err(|e| format!("Invalid blockhash: {}", e))?;
 
     // 2. Build transfer instruction (opcode 0 = native transfer)
     let from_pubkey = state.keypair.pubkey();
@@ -560,7 +561,11 @@ async fn send_faucet_transfer(
         .unwrap_or("unknown")
         .to_string();
 
-    Ok(format!("{} MOLT sent. Tx: {}", amount_molt, &tx_sig[..tx_sig.len().min(16)]))
+    Ok(format!(
+        "{} MOLT sent. Tx: {}",
+        amount_molt,
+        &tx_sig[..tx_sig.len().min(16)]
+    ))
 }
 
 /// List airdrops (optionally filtered by address)

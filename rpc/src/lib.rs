@@ -3005,7 +3005,7 @@ async fn handle_get_genesis_accounts(state: &RpcState) -> Result<serde_json::Val
         let acc = state.state.get_account(pubkey).ok().flatten();
         let bal = acc.as_ref().map(|a| a.shells).unwrap_or(0);
         let label = match role.as_str() {
-            "validator_rewards" => "Validator Rewards (Treasury)",
+            "validator_rewards" => "Validator Treasury",
             "community_treasury" => "Community Treasury",
             "builder_grants" => "Builder Grants",
             "founding_moltys" => "Founding Moltys",

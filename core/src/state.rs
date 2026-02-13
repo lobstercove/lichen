@@ -205,7 +205,10 @@ impl MetricsStore {
         {
             let today = Self::today_utc();
             let mut daily_date = self.daily_date.lock().unwrap_or_else(|e| e.into_inner());
-            let mut daily_txs = self.daily_transactions.lock().unwrap_or_else(|e| e.into_inner());
+            let mut daily_txs = self
+                .daily_transactions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if *daily_date != today {
                 *daily_date = today;
                 *daily_txs = tx_count;
@@ -3093,7 +3096,10 @@ impl StateStore {
 
     /// Store all genesis distribution accounts (role → pubkey mapping)
     /// Serialized as JSON array: [{"role":"...","pubkey":"...","amount_molt":N,"percentage":N}]
-    pub fn set_genesis_accounts(&self, accounts: &[(String, Pubkey, u64, u8)]) -> Result<(), String> {
+    pub fn set_genesis_accounts(
+        &self,
+        accounts: &[(String, Pubkey, u64, u8)],
+    ) -> Result<(), String> {
         let cf = self
             .db
             .cf_handle(CF_STATS)

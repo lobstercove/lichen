@@ -1733,18 +1733,17 @@ async fn run_validator() {
         .map(|s| s.to_string())
         .unwrap_or_else(|| format!("./data/state-{}", p2p_port));
     // Canonicalize to absolute path to prevent CWD-dependent state location
-    let data_dir_path = std::fs::canonicalize(&data_dir)
-        .unwrap_or_else(|_| {
-            // Directory doesn't exist yet — resolve parent + leaf
-            let p = PathBuf::from(&data_dir);
-            if p.is_absolute() {
-                p
-            } else {
-                std::env::current_dir()
-                    .unwrap_or_else(|_| PathBuf::from("."))
-                    .join(&p)
-            }
-        });
+    let data_dir_path = std::fs::canonicalize(&data_dir).unwrap_or_else(|_| {
+        // Directory doesn't exist yet — resolve parent + leaf
+        let p = PathBuf::from(&data_dir);
+        if p.is_absolute() {
+            p
+        } else {
+            std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from("."))
+                .join(&p)
+        }
+    });
     let data_dir = data_dir_path.to_string_lossy().to_string();
     info!("📂 Data directory: {}", data_dir);
 
@@ -1855,9 +1854,19 @@ async fn run_validator() {
                 }
                 skip_next = true;
             }
-            "--rpc-port" | "--ws-port" | "--p2p-port" | "--db-path" | "--genesis" | "--keypair"
-            | "--network" | "--admin-token" | "--watchdog-timeout" | "--max-restarts"
-            | "--listen-addr" | "--auto-update" | "--update-check-interval"
+            "--rpc-port"
+            | "--ws-port"
+            | "--p2p-port"
+            | "--db-path"
+            | "--genesis"
+            | "--keypair"
+            | "--network"
+            | "--admin-token"
+            | "--watchdog-timeout"
+            | "--max-restarts"
+            | "--listen-addr"
+            | "--auto-update"
+            | "--update-check-interval"
             | "--update-channel" => {
                 skip_next = true;
             }
@@ -1889,7 +1898,7 @@ async fn run_validator() {
         .iter()
         .position(|arg| arg == "--auto-update")
         .and_then(|pos| args.get(pos + 1))
-        .map(|s| updater::UpdateMode::from_str(s))
+        .map(|s| updater::UpdateMode::parse_mode(s))
         .unwrap_or(updater::UpdateMode::Off);
 
     let update_check_interval = args
@@ -2030,9 +2039,18 @@ async fn run_validator() {
 
         // Log whitepaper distribution
         if let Some(ref dist) = wallet.distribution_wallets {
-            info!("  📊 Whitepaper genesis distribution ({} wallets):", dist.len());
+            info!(
+                "  📊 Whitepaper genesis distribution ({} wallets):",
+                dist.len()
+            );
             for dw in dist {
-                info!("    - {} ({}%): {} MOLT → {}", dw.role, dw.percentage, dw.amount_molt, dw.pubkey.to_base58());
+                info!(
+                    "    - {} ({}%): {} MOLT → {}",
+                    dw.role,
+                    dw.percentage,
+                    dw.amount_molt,
+                    dw.pubkey.to_base58()
+                );
             }
         }
 
@@ -2072,7 +2090,10 @@ async fn run_validator() {
         for path in &keypair_paths {
             info!("    - {}", path);
         }
-        info!("  ✓ Saved {} distribution keypair(s):", dist_keypair_paths.len());
+        info!(
+            "  ✓ Saved {} distribution keypair(s):",
+            dist_keypair_paths.len()
+        );
         for path in &dist_keypair_paths {
             info!("    - {}", path);
         }
@@ -2113,7 +2134,11 @@ async fn run_validator() {
             }
         }
         // Backfill genesis accounts from wallet if missing in DB
-        if state.get_genesis_accounts().map(|v| v.is_empty()).unwrap_or(true) {
+        if state
+            .get_genesis_accounts()
+            .map(|v| v.is_empty())
+            .unwrap_or(true)
+        {
             if let Some(ref gw) = genesis_wallet {
                 if let Some(ref dist_wallets) = gw.distribution_wallets {
                     let ga_entries: Vec<(String, Pubkey, u64, u8)> = dist_wallets
@@ -2123,7 +2148,10 @@ async fn run_validator() {
                     if let Err(e) = state.set_genesis_accounts(&ga_entries) {
                         warn!("⚠️  Migration: failed to store genesis accounts: {}", e);
                     } else {
-                        info!("  ✓ Migration: stored {} genesis accounts in DB", ga_entries.len());
+                        info!(
+                            "  ✓ Migration: stored {} genesis accounts in DB",
+                            ga_entries.len()
+                        );
                     }
                 }
             }
@@ -2132,7 +2160,10 @@ async fn run_validator() {
 
     // --- Fetch genesis accounts from bootstrap peer if still missing ---
     // This handles V2/V3 joining the network without genesis-wallet.json
-    if state.get_genesis_accounts().map(|v| v.is_empty()).unwrap_or(true)
+    if state
+        .get_genesis_accounts()
+        .map(|v| v.is_empty())
+        .unwrap_or(true)
         && !explicit_seed_peer_strings.is_empty()
     {
         info!("  🔄 Fetching genesis accounts from bootstrap peer...");
@@ -2145,7 +2176,9 @@ async fn run_validator() {
                         8899
                     } else {
                         let offset = peer_p2p % 1000;
-                        8900u16.saturating_add(offset.saturating_mul(2)).saturating_add(1)
+                        8900u16
+                            .saturating_add(offset.saturating_mul(2))
+                            .saturating_add(1)
                     };
                     let url = format!("http://{}:{}/", host, peer_rpc);
                     let body = serde_json::json!({
@@ -2163,25 +2196,23 @@ async fn run_validator() {
                                 if let Some(accounts) = json["result"]["accounts"].as_array() {
                                     let mut ga_entries = Vec::new();
                                     for acc in accounts {
-                                        let role =
-                                            acc["role"].as_str().unwrap_or("").to_string();
+                                        let role = acc["role"].as_str().unwrap_or("").to_string();
                                         if role == "genesis" {
                                             continue; // Skip the genesis signer entry
                                         }
                                         let pk_str = acc["pubkey"].as_str().unwrap_or("");
                                         if let Ok(pk) = Pubkey::from_base58(pk_str) {
-                                            let amt =
-                                                acc["amount_molt"].as_u64().unwrap_or(0);
-                                            let pct =
-                                                acc["percentage"].as_u64().unwrap_or(0) as u8;
+                                            let amt = acc["amount_molt"].as_u64().unwrap_or(0);
+                                            let pct = acc["percentage"].as_u64().unwrap_or(0) as u8;
                                             ga_entries.push((role, pk, amt, pct));
                                         }
                                     }
                                     if !ga_entries.is_empty() {
-                                        if let Err(e) =
-                                            state.set_genesis_accounts(&ga_entries)
-                                        {
-                                            warn!("⚠️  Failed to store fetched genesis accounts: {}", e);
+                                        if let Err(e) = state.set_genesis_accounts(&ga_entries) {
+                                            warn!(
+                                                "⚠️  Failed to store fetched genesis accounts: {}",
+                                                e
+                                            );
                                         } else {
                                             info!(
                                                 "  ✓ Fetched {} genesis accounts from {}",
@@ -2311,12 +2342,18 @@ async fn run_validator() {
                     }
                     info!(
                         "  ✓ {} ({}%): {} MOLT → {} [TREASURY]",
-                        dw.role, dw.percentage, dw.amount_molt, dw.pubkey.to_base58()
+                        dw.role,
+                        dw.percentage,
+                        dw.amount_molt,
+                        dw.pubkey.to_base58()
                     );
                 } else {
                     info!(
                         "  ✓ {} ({}%): {} MOLT → {}",
-                        dw.role, dw.percentage, dw.amount_molt, dw.pubkey.to_base58()
+                        dw.role,
+                        dw.percentage,
+                        dw.amount_molt,
+                        dw.pubkey.to_base58()
                     );
                 }
             }
@@ -2333,7 +2370,10 @@ async fn run_validator() {
             if let Err(e) = state.set_genesis_accounts(&ga_entries) {
                 error!("Failed to store genesis accounts in DB: {e}");
             } else {
-                info!("  ✓ Stored {} genesis accounts in state DB", ga_entries.len());
+                info!(
+                    "  ✓ Stored {} genesis accounts in state DB",
+                    ga_entries.len()
+                );
             }
 
             info!("  ✓ Genesis distribution complete — 1B MOLT allocated per whitepaper");
@@ -3184,9 +3224,7 @@ async fn run_validator() {
 
                                         // tx[1] = treasury (validator_rewards) — works for both old and new genesis
                                         if i == 1 {
-                                            state_for_blocks
-                                                .set_treasury_pubkey(&recipient)
-                                                .ok();
+                                            state_for_blocks.set_treasury_pubkey(&recipient).ok();
                                             info!(
                                                 "  ✓ [network genesis] Treasury: {} ({} MOLT)",
                                                 recipient.to_base58(),
