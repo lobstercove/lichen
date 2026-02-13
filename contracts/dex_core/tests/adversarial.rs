@@ -18,7 +18,17 @@ fn setup_with_pair() -> ([u8; 32], u64) {
     let quote = [20u8; 32];
     // tick=1_000_000, lot=100, min_order=1000
     // notional = price * qty / 1e9. Need notional >= 1000.
-    assert_eq!(create_pair(admin.as_ptr(), base.as_ptr(), quote.as_ptr(), 1_000_000, 100, 1000), 0);
+    assert_eq!(
+        create_pair(
+            admin.as_ptr(),
+            base.as_ptr(),
+            quote.as_ptr(),
+            1_000_000,
+            100,
+            1000
+        ),
+        0
+    );
     (admin, 1)
 }
 
@@ -45,7 +55,8 @@ fn test_place_order_quantity_exceeds_max() {
     let (_admin, pair_id) = setup_with_pair();
     let trader = [2u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
-    let result = place_order(trader.as_ptr(), pair_id, 0, 0, P, 1_000_000_000_100, 0);
+    // MAX_ORDER_SIZE is 10_000_000_000_000_000 (10M MOLT at 9 decimals)
+    let result = place_order(trader.as_ptr(), pair_id, 0, 0, P, 10_000_000_000_000_001, 0);
     assert_eq!(result, 4, "quantity exceeding MAX should be rejected");
 }
 
@@ -56,7 +67,11 @@ fn test_place_order_extreme_price_no_panic() {
     moltchain_sdk::test_mock::set_slot(100);
     let high_price = (u64::MAX / 1_000_000) * 1_000_000;
     let result = place_order(trader.as_ptr(), pair_id, 0, 0, high_price, 100, 0);
-    assert!(result == 0 || result == 4, "extreme price: result={}", result);
+    assert!(
+        result == 0 || result == 4,
+        "extreme price: result={}",
+        result
+    );
 }
 
 #[test]
@@ -72,7 +87,11 @@ fn test_fee_treasury_accumulation() {
     assert_eq!(place_order(seller.as_ptr(), pair_id, 1, 0, P, big_q, 0), 0);
     assert_eq!(place_order(buyer.as_ptr(), pair_id, 0, 0, P, big_q, 0), 0);
     let treasury = get_fee_treasury();
-    assert!(treasury > 0, "fees should have been collected, got {}", treasury);
+    assert!(
+        treasury > 0,
+        "fees should have been collected, got {}",
+        treasury
+    );
 }
 
 // ============================================================================
@@ -86,7 +105,12 @@ fn test_user_order_count_at_limit() {
     moltchain_sdk::test_mock::set_slot(100);
     for i in 0..100u64 {
         let price = P + (i + 1) * 1_000_000;
-        assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, price, Q, 0), 0, "order {}", i);
+        assert_eq!(
+            place_order(trader.as_ptr(), pair_id, 0, 0, price, Q, 0),
+            0,
+            "order {}",
+            i
+        );
     }
     let result = place_order(trader.as_ptr(), pair_id, 0, 0, P + 101_000_000, Q, 0);
     assert_eq!(result, 5, "should reject at max open orders");
@@ -103,7 +127,11 @@ fn test_user_order_count_after_cancel() {
     }
     assert_eq!(cancel_order(trader.as_ptr(), 1), 0);
     let result = place_order(trader.as_ptr(), pair_id, 0, 0, P + 101_000_000, Q, 0);
-    assert!(result == 0 || result == 5, "cancel count: result={}", result);
+    assert!(
+        result == 0 || result == 5,
+        "cancel count: result={}",
+        result
+    );
 }
 
 // ============================================================================
@@ -131,7 +159,10 @@ fn test_order_expiry_max_duration() {
     let (_admin, pair_id) = setup_with_pair();
     let trader = [2u8; 32];
     moltchain_sdk::test_mock::set_slot(1000);
-    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, P, Q, 1000 + 2_592_001), 4);
+    assert_eq!(
+        place_order(trader.as_ptr(), pair_id, 0, 0, P, Q, 1000 + 2_592_001),
+        4
+    );
 }
 
 #[test]
@@ -192,7 +223,17 @@ fn test_create_pair_non_admin() {
     let rando = [99u8; 32];
     let base = [10u8; 32];
     let quote = [20u8; 32];
-    assert_eq!(create_pair(rando.as_ptr(), base.as_ptr(), quote.as_ptr(), 1_000_000, 100, 1000), 1);
+    assert_eq!(
+        create_pair(
+            rando.as_ptr(),
+            base.as_ptr(),
+            quote.as_ptr(),
+            1_000_000,
+            100,
+            1000
+        ),
+        1
+    );
 }
 
 #[test]
@@ -263,7 +304,11 @@ fn test_quantity_not_lot_aligned() {
 fn test_update_fees_extreme_maker_rebate() {
     let (admin, pair_id) = setup_with_pair();
     let result = update_pair_fees(admin.as_ptr(), pair_id, i16::MIN, 5);
-    assert!(result == 0 || result == 3, "extreme negative fee: result={}", result);
+    assert!(
+        result == 0 || result == 3,
+        "extreme negative fee: result={}",
+        result
+    );
 }
 
 #[test]
@@ -367,7 +412,11 @@ fn test_matching_many_orders() {
     let (_admin, pair_id) = setup_with_pair();
     moltchain_sdk::test_mock::set_slot(100);
     for i in 2u8..12 {
-        let seller = { let mut a = [0u8; 32]; a[0] = i; a };
+        let seller = {
+            let mut a = [0u8; 32];
+            a[0] = i;
+            a
+        };
         assert_eq!(place_order(seller.as_ptr(), pair_id, 1, 0, P, Q, 0), 0);
     }
     let buyer = [50u8; 32];
