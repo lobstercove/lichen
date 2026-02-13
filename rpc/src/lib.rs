@@ -3565,16 +3565,17 @@ async fn handle_get_staking_rewards(
             let pending = stake_info.rewards_earned;
             let claimed = stake_info.total_claimed;
 
-            // Reward rate: MOLT per block for this validator
+            // Reward rate: MOLT per block for this validator (computed from constants)
+            let base_rate_molt = TRANSACTION_BLOCK_REWARD as f64 / 1_000_000_000.0;
             let reward_rate = if stake_info.is_active {
                 if stake_info.bootstrap_debt > 0 {
-                    // During vesting: 50% goes to debt, 50% liquid
-                    "0.09" // half of 0.18 MOLT (heartbeat avg)
+                    // During vesting: 50% goes to debt repayment, 50% liquid
+                    format!("{:.4}", base_rate_molt / 2.0)
                 } else {
-                    "0.18"
+                    format!("{:.4}", base_rate_molt)
                 }
             } else {
-                "0"
+                "0".to_string()
             };
 
             return Ok(serde_json::json!({
