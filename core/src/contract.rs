@@ -490,6 +490,12 @@ const COMPUTE_STORAGE_DELETE: u64 = 100;
 const COMPUTE_LOG: u64 = 10;
 /// Compute cost for emitting an event
 const COMPUTE_EVENT: u64 = 50;
+// AUDIT-FIX 2.1: Additional compute constants for previously uncharged host functions
+const COMPUTE_GET_CALLER: u64 = 100;
+const COMPUTE_GET_ARGS: u64 = 50;  // + per-byte cost
+const COMPUTE_SET_RETURN_DATA: u64 = 50;  // + per-byte cost
+const COMPUTE_READ_RESULT: u64 = 50;  // + per-byte cost
+const COMPUTE_BYTE_COST: u64 = 1;
 
 /// Contract runtime - executes WASM bytecode with compute metering
 ///
@@ -697,6 +703,24 @@ impl ContractRuntime {
         let host_compute_used = initial_compute.saturating_sub(final_ctx.compute_remaining);
         let compute_used = host_compute_used.saturating_add(wasm_compute_used);
 
+        // AUDIT-FIX 2.3: Unified compute budget — total (WASM + host) must not exceed the limit.
+        // Previously WASM got 1.4M and host got 1M independently (~2.4M effective).
+        // Now the combined total is capped at DEFAULT_COMPUTE_LIMIT.
+        if compute_used > DEFAULT_COMPUTE_LIMIT {
+            return Ok(ContractResult {
+                return_data: vec![],
+                logs: final_ctx.logs.clone(),
+                events: Vec::new(),
+                storage_changes: HashMap::new(),
+                success: false,
+                error: Some(format!(
+                    "Contract exceeded unified compute budget: {} > {} (WASM: {}, host: {})",
+                    compute_used, DEFAULT_COMPUTE_LIMIT, wasm_compute_used, host_compute_used
+                )),
+                compute_used,
+            });
+        }
+
         match exec_result {
             Ok(_) => Ok(ContractResult {
                 return_data: final_ctx.return_data.clone(),
@@ -820,10 +844,18 @@ fn host_storage_read(
 /// Backward-compat for 2-phase read pattern.
 /// Returns: number of bytes actually written (min of value length and out_len).
 fn host_storage_read_result(
-    env: FunctionEnvMut<ContractContext>,
+    mut env: FunctionEnvMut<ContractContext>,
     out_ptr: u32,
     out_len: u32,
 ) -> u32 {
+    // AUDIT-FIX 2.1: Charge compute for read_result
+    {
+        let ctx = env.data_mut();
+        let cost = COMPUTE_READ_RESULT + (out_len as u64) * COMPUTE_BYTE_COST;
+        if !deduct_compute(ctx, cost) {
+            return 0;
+        }
+    }
     let ctx = env.data();
     let value = ctx.last_read_value.clone();
     let memory = match &ctx.memory {
@@ -883,6 +915,11 @@ fn host_storage_write(
     // Update live storage and track the change
     let ctx = env.data_mut();
     deduct_compute(ctx, COMPUTE_STORAGE_WRITE);
+    // AUDIT-FIX 2.2: Enforce storage entry limit per contract
+    const MAX_STORAGE_ENTRIES: usize = 10_000;
+    if !ctx.storage.contains_key(&key) && ctx.storage.len() >= MAX_STORAGE_ENTRIES {
+        return 0; // reject — storage full
+    }
     ctx.storage.insert(key.clone(), val.clone());
     ctx.storage_changes.insert(key, Some(val));
     1
@@ -1020,7 +1057,14 @@ fn host_get_timestamp(env: FunctionEnvMut<ContractContext>) -> u64 {
 }
 
 /// Write the 32-byte caller pubkey into WASM memory at `out_ptr`.
-fn host_get_caller(env: FunctionEnvMut<ContractContext>, out_ptr: u32) -> u32 {
+fn host_get_caller(mut env: FunctionEnvMut<ContractContext>, out_ptr: u32) -> u32 {
+    // AUDIT-FIX 2.1: Charge compute for get_caller
+    {
+        let ctx = env.data_mut();
+        if !deduct_compute(ctx, COMPUTE_GET_CALLER) {
+            return 1;
+        }
+    }
     let ctx = env.data();
     let caller_bytes = ctx.caller.0;
     let memory = match &ctx.memory {
@@ -1051,7 +1095,15 @@ fn host_get_args_len(env: FunctionEnvMut<ContractContext>) -> u32 {
 
 /// Copy function args into WASM memory at `[out_ptr..out_ptr+out_len]`.
 /// Returns: number of bytes written.
-fn host_get_args(env: FunctionEnvMut<ContractContext>, out_ptr: u32, out_len: u32) -> u32 {
+fn host_get_args(mut env: FunctionEnvMut<ContractContext>, out_ptr: u32, out_len: u32) -> u32 {
+    // AUDIT-FIX 2.1: Charge compute for get_args
+    {
+        let ctx = env.data_mut();
+        let cost = COMPUTE_GET_ARGS + (out_len as u64) * COMPUTE_BYTE_COST;
+        if !deduct_compute(ctx, cost) {
+            return 0;
+        }
+    }
     let ctx = env.data();
     let args = ctx.args.clone();
     let memory = match &ctx.memory {
@@ -1080,6 +1132,14 @@ fn host_set_return_data(
     let data_len_usize = data_len as usize;
     if data_len_usize > MAX_RETURN_DATA {
         return 1;
+    }
+    // AUDIT-FIX 2.1: Charge compute for set_return_data
+    {
+        let ctx = env.data_mut();
+        let cost = COMPUTE_SET_RETURN_DATA + (data_len as u64) * COMPUTE_BYTE_COST;
+        if !deduct_compute(ctx, cost) {
+            return 1;
+        }
     }
 
     let data = {

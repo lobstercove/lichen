@@ -325,6 +325,16 @@ pub extern "C" fn remove_bridge_validator(
     let count = storage_get(b"bridge_validator_count")
         .map(|d| bytes_to_u64(&d))
         .unwrap_or(1);
+
+    // AUDIT-FIX 2.8: Prevent removal if it drops below confirmation threshold
+    let required = storage_get(b"bridge_required_confirmations")
+        .map(|d| bytes_to_u64(&d))
+        .unwrap_or(1);
+    if count > 0 && (count - 1) < required {
+        log_info("❌ Cannot remove validator: would drop below confirmation threshold");
+        return 4;
+    }
+
     if count > 0 {
         storage_set(b"bridge_validator_count", &u64_to_bytes(count - 1));
     }

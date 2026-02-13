@@ -83,6 +83,31 @@ pub extern "C" fn initialize_dao(
 // PROPOSAL SYSTEM (per whitepaper: 3 proposal types + quadratic voting)
 // ============================================================================
 
+/// AUDIT-FIX 2.21: Simple 32-byte hash for proposal fields (replaces truncation).
+/// Uses FNV-1a-inspired iterative mixing to produce a deterministic 32-byte digest.
+fn simple_hash_32(data: &[u8]) -> [u8; 32] {
+    let mut hash = [0u8; 32];
+    // Initialize with a non-zero pattern
+    for i in 0..32 {
+        hash[i] = (i as u8).wrapping_mul(0x9E).wrapping_add(0x37);
+    }
+    for (j, &byte) in data.iter().enumerate() {
+        let idx = j % 32;
+        hash[idx] ^= byte;
+        // Mix: rotate and multiply-like mixing
+        let mixed = hash[idx].wrapping_mul(0x6D).wrapping_add((j as u8).wrapping_mul(0x53));
+        hash[(idx + 1) % 32] = hash[(idx + 1) % 32].wrapping_add(mixed);
+        hash[(idx + 7) % 32] ^= hash[idx].wrapping_add(byte);
+    }
+    // Final mixing pass
+    for i in 0..32 {
+        hash[i] = hash[i]
+            .wrapping_mul(0xC3)
+            .wrapping_add(hash[(i + 13) % 32]);
+    }
+    hash
+}
+
 /// Helper: integer square root for quadratic voting (T5.1: no f64)
 fn isqrt(n: u64) -> u64 {
     if n == 0 { return 0; }
@@ -172,21 +197,10 @@ pub extern "C" fn create_proposal_typed(
     
     proposal_count += 1;
     
-    // Hash title and description
-    let mut title_hash = [0u8; 32];
-    for (i, &byte) in title.iter().take(32).enumerate() {
-        title_hash[i] = byte;
-    }
-    
-    let mut description_hash = [0u8; 32];
-    for (i, &byte) in description.iter().take(32).enumerate() {
-        description_hash[i] = byte;
-    }
-    
-    let mut action_hash = [0u8; 32];
-    for (i, &byte) in action.iter().take(32).enumerate() {
-        action_hash[i] = byte;
-    }
+    // AUDIT-FIX 2.21: Proper hashing instead of truncation
+    let title_hash = simple_hash_32(title);
+    let description_hash = simple_hash_32(description);
+    let action_hash = simple_hash_32(action);
     
     let now = get_timestamp();
     let voting_period = match proposal_type {

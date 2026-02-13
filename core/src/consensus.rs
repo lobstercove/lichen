@@ -1547,7 +1547,8 @@ impl SlashingEvidence {
 }
 
 /// Slashing tracker - manages evidence and penalties
-#[derive(Debug, Clone)]
+/// AUDIT-FIX 2.6: Made serializable for persistence to RocksDB
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SlashingTracker {
     /// Evidence by validator
     evidence: std::collections::HashMap<Pubkey, Vec<SlashingEvidence>>,

@@ -1846,7 +1846,8 @@ impl TxProcessor {
         self.b_put_account(&program_pubkey, &account)?;
 
         // Index program
-        if let Err(e) = self.state.index_program(&program_pubkey) {
+        // AUDIT-FIX 2.5: Route through batch to prevent phantom entries on rollback
+        if let Err(e) = self.b_index_program(&program_pubkey) {
             eprintln!("system_deploy_contract: index_program failed: {}", e);
         }
 
@@ -1869,7 +1870,8 @@ impl TxProcessor {
                                 .map(|s| s.to_string()),
                             metadata: registry_data.get("metadata").cloned(),
                         };
-                        if let Err(e) = self.state.register_symbol(symbol, entry) {
+                        // AUDIT-FIX 2.5: Route through batch
+                        if let Err(e) = self.b_register_symbol(symbol, entry) {
                             eprintln!("system_deploy_contract: register_symbol failed: {}", e);
                         }
                     }
