@@ -428,25 +428,27 @@ function showUnlockScreen() {
     showScreen('welcomeScreen');
     const container = document.querySelector('.welcome-container');
     container.innerHTML = `
-        <div class="welcome-logo">
-            <img src="MoltWallet_Logo_256.png" class="logo-icon" alt="MoltWallet">
-            <h1>MoltWallet</h1>
-        </div>
-        <p class="welcome-subtitle">Welcome back!</p>
-        
-        <div class="form-group" style="max-width: 400px; margin: 2rem auto;">
-            <label>Enter Password</label>
-            <input type="password" id="unlockPassword" class="form-input" placeholder="Password" 
-                   onkeypress="if(event.key==='Enter') unlockWallet()">
-        </div>
-        
-        <button class="btn btn-primary btn-large" onclick="unlockWallet()">
-            <i class="fas fa-unlock"></i> Unlock Wallet
-        </button>
-        <div style="margin-top: 1.5rem;">
-            <button class="btn btn-small btn-danger" onclick="logoutWallet()" style="opacity: 0.8;">
-                <i class="fas fa-sign-out-alt"></i> Logout
+        <div class="unlock-card">
+            <div class="welcome-logo">
+                <img src="MoltWallet_Logo_256.png" class="logo-icon" alt="MoltWallet">
+                <h1>MoltWallet</h1>
+            </div>
+            <p class="unlock-greeting">Welcome back!</p>
+            
+            <div class="unlock-form">
+                <label class="unlock-label">Enter Password</label>
+                <input type="password" id="unlockPassword" class="form-input unlock-input" placeholder="Password" 
+                       onkeypress="if(event.key==='Enter') unlockWallet()" autofocus>
+            </div>
+            
+            <button class="btn btn-primary unlock-btn" onclick="unlockWallet()">
+                <i class="fas fa-unlock"></i> Unlock Wallet
             </button>
+            <div class="unlock-logout">
+                <button class="btn btn-danger btn-small" onclick="logoutWallet()">
+                    <i class="fas fa-sign-out-alt"></i> Logout
+                </button>
+            </div>
         </div>
     `;
 }
@@ -2582,8 +2584,12 @@ async function exportMnemonicWithPassword(password) {
         
         const words = mnemonic.split(' ');
         const escapedMnemonic = mnemonic.replace(/'/g, "\\'");
+        
+        closeModal('settingsModal');
+        
         const modal = document.createElement('div');
         modal.className = 'modal';
+        modal.id = 'seedPhraseExportModal';
         modal.innerHTML = `
             <div class="modal-content">
                 <div class="modal-header">
@@ -2593,7 +2599,7 @@ async function exportMnemonicWithPassword(password) {
                     </button>
                 </div>
                 <div class="modal-body">
-                    <div class="warning-box" style="margin-bottom: 1.5rem;">
+                    <div class="warning-box" style="margin-bottom: 1rem;">
                         <i class="fas fa-exclamation-triangle"></i>
                         <strong>⚠️ Never share your seed phrase!</strong>
                     </div>
@@ -2607,11 +2613,11 @@ async function exportMnemonicWithPassword(password) {
                         `).join('')}
                     </div>
                     
-                    <div class="seed-phrase-actions">
-                        <button class="btn btn-sm btn-primary" onclick="navigator.clipboard.writeText('${escapedMnemonic}').then(() => showToast('✅ Seed phrase copied!')); this.closest('.modal').classList.remove('show'); setTimeout(() => this.closest('.modal').remove(), 300);">
+                    <div style="display: flex; gap: 0.75rem; margin-top: 1rem;">
+                        <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${escapedMnemonic}').then(() => showToast('✅ Seed phrase copied!')); this.closest('.modal').classList.remove('show'); setTimeout(() => this.closest('.modal').remove(), 300);">
                             <i class="fas fa-copy"></i> Copy
                         </button>
-                        <button class="btn btn-sm btn-secondary" onclick="downloadMnemonicExport('${escapedMnemonic}', '${wallet.name}');">
+                        <button class="btn btn-secondary" onclick="downloadMnemonicExport('${escapedMnemonic}', '${wallet.name}');">
                             <i class="fas fa-download"></i> Download
                         </button>
                     </div>
@@ -2644,8 +2650,8 @@ function downloadMnemonicExport(mnemonic, walletName) {
     a.click();
     URL.revokeObjectURL(url);
     showToast('✅ Seed phrase downloaded!');
-    const openModal = document.querySelector('.modal.show');
-    if (openModal) { openModal.classList.remove('show'); setTimeout(() => openModal.remove(), 300); }
+    const seedModal = document.getElementById('seedPhraseExportModal');
+    if (seedModal) { seedModal.classList.remove('show'); setTimeout(() => seedModal.remove(), 300); }
 }
 
 // ===== UTILITIES =====

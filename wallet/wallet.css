@@ -157,6 +157,76 @@
     color: var(--text-primary);
 }
 
+/* ── Unlock / Lock Screen ───────────────────────────────────── */
+.unlock-card {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border);
+    border-radius: 24px;
+    padding: 2.5rem 2rem 2rem;
+    max-width: 380px;
+    width: 100%;
+    margin: 0 auto;
+    text-align: center;
+    box-shadow: 0 8px 40px rgba(0, 0, 0, 0.3);
+    backdrop-filter: blur(12px);
+    animation: fadeInUp 0.5s ease-out;
+}
+.unlock-card .welcome-logo {
+    margin-bottom: 0.6rem;
+}
+.unlock-greeting {
+    font-size: 1.05rem;
+    color: var(--text-secondary);
+    margin-bottom: 1.8rem;
+}
+.unlock-form {
+    margin-bottom: 1.5rem;
+    text-align: left;
+}
+.unlock-label {
+    display: block;
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-bottom: 0.5rem;
+    text-align: center;
+}
+.unlock-input {
+    font-size: 1rem;
+    padding: 0.9rem 1.1rem;
+    text-align: center;
+    letter-spacing: 0.1em;
+}
+.unlock-btn {
+    width: 100%;
+    padding: 0.9rem 1.5rem;
+    font-size: 1.05rem;
+    border-radius: 14px;
+}
+.unlock-logout {
+    margin-top: 1.2rem;
+}
+.unlock-logout .btn-danger {
+    font-size: 0.78rem;
+    padding: 0.45rem 1rem;
+    opacity: 0.75;
+    transition: opacity 0.2s, transform 0.2s, box-shadow 0.2s;
+}
+.unlock-logout .btn-danger:hover {
+    opacity: 1;
+}
+
+@media (max-width: 480px) {
+    .unlock-card {
+        margin: 0 0.75rem;
+        padding: 2rem 1.5rem 1.5rem;
+        border-radius: 20px;
+    }
+    .unlock-input {
+        font-size: 16px; /* Prevent iOS zoom */
+    }
+}
+
 /* Welcome overrides on top of .wallet-screen / .wallet-container */
 .welcome-screen {
     justify-content: center;
