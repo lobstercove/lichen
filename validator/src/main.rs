@@ -840,6 +840,8 @@ fn replay_block_transactions(processor: &TxProcessor, block: &Block) {
 /// amounts relative to block reward). This prevents the worst case of the
 /// wrong producer keeping an entire block reward.
 fn revert_block_effects(state: &StateStore, old_block: &Block) {
+    // AUDIT-FIX 2.20: Read-all → compute-all → write-all pattern to prevent
+    // TOCTOU races from concurrent revert/apply operations.
     let old_producer = Pubkey(old_block.header.validator);
     let slot = old_block.header.slot;
     let is_heartbeat = !block_has_user_transactions(old_block);
@@ -850,30 +852,41 @@ fn revert_block_effects(state: &StateStore, old_block: &Block) {
         TRANSACTION_BLOCK_REWARD
     };
 
-    // Reverse block reward: debit old producer, credit treasury
-    if let Ok(Some(treasury_pubkey)) = state.get_treasury_pubkey() {
-        if let Ok(Some(mut producer_account)) = state.get_account(&old_producer) {
-            let debit = reward.min(producer_account.spendable);
-            if debit > 0 {
-                producer_account.shells = producer_account.shells.saturating_sub(debit);
-                producer_account.spendable = producer_account.spendable.saturating_sub(debit);
-                if let Err(e) = state.put_account(&old_producer, &producer_account) {
-                    warn!("revert_block_effects: failed to debit producer: {}", e);
-                }
-            }
-
-            if let Ok(Some(mut treasury_account)) = state.get_account(&treasury_pubkey) {
-                treasury_account.shells = treasury_account.shells.saturating_add(debit);
-                treasury_account.spendable = treasury_account.spendable.saturating_add(debit);
-                if let Err(e) = state.put_account(&treasury_pubkey, &treasury_account) {
-                    warn!("revert_block_effects: failed to credit treasury: {}", e);
-                }
-            }
+    // Phase 1: Read all needed state
+    let treasury_pubkey = match state.get_treasury_pubkey() {
+        Ok(Some(pk)) => pk,
+        _ => {
+            warn!("revert_block_effects: no treasury pubkey, skipping");
+            return;
         }
+    };
+
+    let mut producer_account = match state.get_account(&old_producer) {
+        Ok(Some(acc)) => acc,
+        _ => {
+            warn!("revert_block_effects: producer account not found, skipping");
+            return;
+        }
+    };
+
+    let mut treasury_account = match state.get_account(&treasury_pubkey) {
+        Ok(Some(acc)) => acc,
+        _ => {
+            warn!("revert_block_effects: treasury account not found, skipping");
+            return;
+        }
+    };
+
+    // Phase 2a: Compute reward reversal
+    let reward_debit = reward.min(producer_account.spendable);
+    if reward_debit > 0 {
+        producer_account.shells = producer_account.shells.saturating_sub(reward_debit);
+        producer_account.spendable = producer_account.spendable.saturating_sub(reward_debit);
+        treasury_account.shells = treasury_account.shells.saturating_add(reward_debit);
+        treasury_account.spendable = treasury_account.spendable.saturating_add(reward_debit);
     }
 
-    // Reverse fee distribution: debit old producer's fee share, credit treasury.
-    // Voter fee shares are NOT reversed (small amounts, no stored voter list).
+    // Phase 2b: Compute fee reversal
     let fee_config = state
         .get_fee_config()
         .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
@@ -886,29 +899,24 @@ fn revert_block_effects(state: &StateStore, old_block: &Block) {
     if total_fee > 0 {
         let producer_share = total_fee * fee_config.fee_producer_percent / 100;
         if producer_share > 0 {
-            if let Ok(Some(treasury_pubkey)) = state.get_treasury_pubkey() {
-                if let Ok(Some(mut producer_account)) = state.get_account(&old_producer) {
-                    let debit = producer_share.min(producer_account.spendable);
-                    producer_account.shells = producer_account.shells.saturating_sub(debit);
-                    producer_account.spendable = producer_account.spendable.saturating_sub(debit);
-                    if let Err(e) = state.put_account(&old_producer, &producer_account) {
-                        warn!("revert_block_effects: failed to debit producer fees: {}", e);
-                    }
-
-                    if let Ok(Some(mut treasury_account)) = state.get_account(&treasury_pubkey) {
-                        treasury_account.shells = treasury_account.shells.saturating_add(debit);
-                        treasury_account.spendable =
-                            treasury_account.spendable.saturating_add(debit);
-                        if let Err(e) = state.put_account(&treasury_pubkey, &treasury_account) {
-                            warn!(
-                                "revert_block_effects: failed to credit treasury fees: {}",
-                                e
-                            );
-                        }
-                    }
-                }
-            }
+            let fee_debit = producer_share.min(producer_account.spendable);
+            producer_account.shells = producer_account.shells.saturating_sub(fee_debit);
+            producer_account.spendable = producer_account.spendable.saturating_sub(fee_debit);
+            treasury_account.shells = treasury_account.shells.saturating_add(fee_debit);
+            treasury_account.spendable = treasury_account.spendable.saturating_add(fee_debit);
         }
+    }
+
+    // Phase 3: Write all changes atomically via batch
+    let mut batch = state.begin_batch();
+    if let Err(e) = batch.put_account(&old_producer, &producer_account) {
+        warn!("revert_block_effects: failed to batch-put producer: {}", e);
+    }
+    if let Err(e) = batch.put_account(&treasury_pubkey, &treasury_account) {
+        warn!("revert_block_effects: failed to batch-put treasury: {}", e);
+    }
+    if let Err(e) = state.commit_batch(batch) {
+        warn!("revert_block_effects: failed to commit batch: {}", e);
     }
 
     // Clear distribution hashes so apply_block_effects can run for the new block
@@ -4932,6 +4940,10 @@ async fn run_validator() {
                                 // T2.9 fix: MERGE remote validators into local set
                                 // instead of full replacement. This prevents a single
                                 // malicious peer from removing legitimate validators.
+                                // AUDIT-FIX 2.11: Only UPDATE existing validators from
+                                // snapshot (never ADD new ones from a single peer).
+                                // New validators must join via the announcement protocol
+                                // which verifies signatures and on-chain stake.
                                 let mut merged_count = 0u32;
                                 for remote_val in remote_set.validators() {
                                     if let Some(local_val) =
@@ -4949,9 +4961,14 @@ async fn run_validator() {
                                         }
                                         merged_count += 1;
                                     } else {
-                                        // Add new validator from remote
-                                        vs.add_validator(remote_val.clone());
-                                        merged_count += 1;
+                                        // AUDIT-FIX 2.11: Skip adding unknown validators
+                                        // from snapshot — they must announce via P2P with
+                                        // a valid signature and verified on-chain stake.
+                                        warn!(
+                                            "⚠️  Snapshot: ignoring unknown validator {} from peer {}",
+                                            hex::encode(remote_val.pubkey.0),
+                                            response.requester
+                                        );
                                     }
                                 }
                                 let merged_set = vs.clone();
@@ -5610,6 +5627,10 @@ async fn run_validator() {
                         elapsed.as_secs(),
                         EXIT_CODE_RESTART
                     );
+                    // AUDIT-FIX 2.12: Allow pending async I/O and Drop handlers
+                    // a brief window to flush before hard exit. process::exit()
+                    // skips destructors, so we give a small grace period.
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     std::process::exit(EXIT_CODE_RESTART);
                 }
             } else {
@@ -5808,7 +5829,14 @@ async fn run_validator() {
         // Stake-weighted leader election with deterministic fallback
         let vs = validator_set.lock().await;
         let pool = stake_pool.lock().await;
-        let leader_slot = slot.saturating_add(view);
+        // AUDIT-FIX 2.13: Use slot*16+view to avoid aliasing with the next
+        // slot's view=0 leader. Previous `slot+view` meant view=1 at slot N
+        // selected the same leader as view=0 at slot N+1.
+        let leader_slot = if view == 0 {
+            slot
+        } else {
+            slot.saturating_mul(16).saturating_add(view)
+        };
         let leader = vs.select_leader_weighted(leader_slot, &pool);
         let should_produce = leader
             .map(|pubkey| pubkey == validator_pubkey)

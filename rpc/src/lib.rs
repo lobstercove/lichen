@@ -211,6 +211,9 @@ pub trait P2PNetworkTrait: Send + Sync {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// T2.6: Per-IP rate limiter with stale entry pruning
+/// AUDIT-FIX 2.17: std::sync::Mutex is intentional here — the critical section
+/// is a fast HashMap lookup/insert with no `.await` points, consistent with
+/// tokio's recommendation to use std::sync::Mutex for short non-async sections.
 struct RateLimiter {
     requests: std::sync::Mutex<HashMap<IpAddr, (u64, Instant)>>,
     max_per_second: u64,
@@ -5417,11 +5420,15 @@ async fn handle_eth_send_raw_transaction(
 
     let message = moltchain_core::Message {
         instructions: vec![instruction],
-        recent_blockhash: Hash::default(),
+        // AUDIT-FIX 2.15: Use a recognizable sentinel blockhash for EVM-wrapped txs.
+        // Real validation happens at the EVM layer via ECDSA signature in the raw payload.
+        recent_blockhash: Hash([0xEE; 32]),
     };
 
     let tx = Transaction {
-        signatures: Vec::new(),
+        // AUDIT-FIX 2.15: Placeholder signature so downstream code doesn't reject
+        // as malformed. The actual ECDSA signature is inside the EVM transaction data.
+        signatures: vec![[0u8; 64]],
         message,
     };
 

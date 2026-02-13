@@ -37,7 +37,8 @@ pub extern "C" fn initialize_oracle(
     
     log_info("✅ Oracle initialized!");
     log_info("   Features: Price Feeds, VRF, Attestations");
-    1
+    // AUDIT-FIX 2.22: Return 0 for success (consistent with all other functions)
+    0
 }
 
 #[no_mangle]

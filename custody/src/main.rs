@@ -19,12 +19,14 @@ struct HealthResponse {
     status: &'static str,
 }
 
+/// AUDIT-FIX 2.18: Single-instance enforcement is handled by RocksDB's exclusive
+/// file lock on the DB directory. Multi-instance access to the same DB is prevented
+/// at the storage layer. The RESERVE_LOCK static in adjust_reserve_balance()
+/// serializes within-process concurrent access.
 #[derive(Clone)]
 struct CustodyState {
     db: Arc<DB>,
     next_index_lock: Arc<Mutex<()>>,
-    /// M13 fix: serialize reserve ledger read-modify-write to prevent concurrent race conditions
-    _reserve_lock: Arc<Mutex<()>>,
     config: CustodyConfig,
     http: reqwest::Client,
     /// AUDIT-FIX 1.20: Global withdrawal rate limiter
@@ -315,7 +317,6 @@ async fn main() {
     let state = CustodyState {
         db: Arc::new(db),
         next_index_lock: Arc::new(Mutex::new(())),
-        _reserve_lock: Arc::new(Mutex::new(())),
         config: config.clone(),
         // AUDIT-FIX 1.19: HTTP client with timeouts to prevent hung RPC freezing custody
         http: reqwest::Client::builder()
@@ -3649,15 +3650,31 @@ async fn deposit_cleanup_loop(state: CustodyState) {
                     }
                 }
             }
-            // Prune deposit events for this deposit
+            // Prune deposit events and dedup markers for this deposit
+            // AUDIT-FIX 2.19: Use correct prefix for dedup markers (dedup:{deposit_id}:)
+            // and scan events by deserializing to match deposit_id field.
             if let Some(evt_cf) = state.db.cf_handle(CF_DEPOSIT_EVENTS) {
-                let prefix = format!("{}:", deposit_id);
-                let iter = state.db.prefix_iterator_cf(&evt_cf, prefix.as_bytes());
+                // Delete dedup markers (keyed as "dedup:{deposit_id}:{tx_hash}")
+                let dedup_prefix = format!("dedup:{}:", deposit_id);
+                let iter = state.db.prefix_iterator_cf(&evt_cf, dedup_prefix.as_bytes());
                 for (key, _) in iter.flatten() {
-                    if key.starts_with(prefix.as_bytes()) {
+                    if key.starts_with(dedup_prefix.as_bytes()) {
                         let _ = state.db.delete_cf(&evt_cf, &key);
                     } else {
                         break;
+                    }
+                }
+                // Delete event entries (keyed by event_id, need full scan of CF)
+                let iter = state.db.iterator_cf(&evt_cf, rocksdb::IteratorMode::Start);
+                for (key, value) in iter.flatten() {
+                    // Skip dedup markers (they start with "dedup:")
+                    if key.starts_with(b"dedup:") {
+                        continue;
+                    }
+                    if let Ok(evt) = serde_json::from_slice::<DepositEvent>(&value) {
+                        if evt.deposit_id == *deposit_id {
+                            let _ = state.db.delete_cf(&evt_cf, &key);
+                        }
                     }
                 }
             }

@@ -406,6 +406,11 @@ pub extern "C" fn transfer(from: *const u8, to: *const u8, amount: u64) -> u32 {
 
 #[no_mangle]
 pub extern "C" fn approve(owner: *const u8, spender: *const u8, amount: u64) -> u32 {
+    // AUDIT-FIX 2.23: Reentrancy guard for consistency with transfer/transfer_from
+    if !reentrancy_enter() {
+        return 100;
+    }
+
     let mut owner_addr = [0u8; 32];
     let mut spender_addr = [0u8; 32];
     unsafe {
@@ -414,14 +419,17 @@ pub extern "C" fn approve(owner: *const u8, spender: *const u8, amount: u64) -> 
     }
 
     if is_zero(&spender_addr) {
+        reentrancy_exit();
         return 3;
     }
     if owner_addr == spender_addr {
+        reentrancy_exit();
         return 6;
     }
 
     let ak = allowance_key(&owner_addr, &spender_addr);
     save_u64(&ak, amount);
+    reentrancy_exit();
     0
 }
 
