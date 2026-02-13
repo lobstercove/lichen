@@ -1,5 +1,6 @@
 // MoltChain Faucet Service
 // Airdrop testnet/local MOLT tokens with rate limiting
+// Uses signed transactions (sendTransaction) — works with any number of validators
 
 use axum::{
     extract::{Json, Path, Query, State},
@@ -8,14 +9,14 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use moltchain_core::Pubkey;
+use moltchain_core::{Hash, Instruction, Keypair, Message, Pubkey, Transaction, SYSTEM_PROGRAM_ID};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tower_http::cors::CorsLayer;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 #[derive(Debug, Deserialize)]
 struct FaucetRequest {
@@ -52,6 +53,7 @@ struct FaucetState {
     config: FaucetConfig,
     rate_limiter: Arc<RwLock<RateLimiter>>,
     airdrops: Arc<RwLock<Vec<AirdropRecord>>>,
+    keypair: Arc<Keypair>,
 }
 
 #[derive(Clone)]
@@ -187,6 +189,10 @@ async fn main() {
         panic!("❌ Faucet cannot run on mainnet!");
     }
 
+    // Load or generate faucet keypair
+    let keypair = load_or_generate_keypair();
+    let faucet_address = keypair.pubkey().to_base58();
+
     // Load persisted airdrops
     let airdrops: Vec<AirdropRecord> = std::fs::read_to_string(&airdrops_file)
         .ok()
@@ -198,6 +204,7 @@ async fn main() {
         config,
         rate_limiter: Arc::new(RwLock::new(RateLimiter::new())),
         airdrops: Arc::new(RwLock::new(airdrops)),
+        keypair: Arc::new(keypair),
     };
 
     let port = std::env::var("PORT")
@@ -222,6 +229,7 @@ async fn main() {
     let addr = format!("0.0.0.0:{}", port);
     info!("💧 MoltChain Faucet Service starting on {}", addr);
     info!("   Network: {}", state.config.network);
+    info!("   Faucet wallet: {}", faucet_address);
     info!("   Max per request: {} MOLT", state.config.max_per_request);
     info!(
         "   Daily limit per IP: {} MOLT",
@@ -229,6 +237,7 @@ async fn main() {
     );
     info!("   Cooldown: {} seconds", state.config.cooldown_seconds);
     info!("   RPC URL: {}", state.config.rpc_url);
+    info!("   ℹ️  Fund the faucet wallet with MOLT before use");
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
@@ -325,8 +334,8 @@ async fn faucet_request_handler(
         }
     }
 
-    // Airdrop via RPC (treasury-funded, testnet only)
-    match request_airdrop(&state.config.rpc_url, &req.address, req.amount).await {
+    // Send a signed transfer transaction from the faucet wallet
+    match send_faucet_transfer(&state, &req.address, req.amount).await {
         Ok(result) => {
             info!("✅ Airdropped {} MOLT to {}", req.amount, req.address);
 
@@ -388,38 +397,170 @@ async fn faucet_request_handler(
     }
 }
 
-/// Request airdrop via RPC
-async fn request_airdrop(rpc_url: &str, address: &str, amount_molt: u64) -> Result<String, String> {
-    use serde_json::json;
+/// Load faucet keypair from FAUCET_KEYPAIR env (path to JSON seed file),
+/// or generate one and save to `faucet-keypair.json` in the working directory.
+fn load_or_generate_keypair() -> Keypair {
+    if let Ok(path) = std::env::var("FAUCET_KEYPAIR") {
+        match std::fs::read_to_string(&path) {
+            Ok(data) => {
+                // Format 1: JSON byte array [u8, u8, ...]
+                if let Ok(seed_bytes) = serde_json::from_str::<Vec<u8>>(&data) {
+                    if seed_bytes.len() >= 32 {
+                        let mut seed = [0u8; 32];
+                        seed.copy_from_slice(&seed_bytes[..32]);
+                        let kp = Keypair::from_seed(&seed);
+                        info!("🔑 Loaded faucet keypair from {}", path);
+                        return kp;
+                    }
+                }
+                // Format 2: JSON object with secret_key or privateKey (hex)
+                if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&data) {
+                    let hex_key = obj.get("secret_key")
+                        .or_else(|| obj.get("privateKey"))
+                        .and_then(|v| v.as_str());
+                    if let Some(hex_str) = hex_key {
+                        if let Ok(bytes) = hex::decode(hex_str.trim()) {
+                            if bytes.len() >= 32 {
+                                let mut seed = [0u8; 32];
+                                seed.copy_from_slice(&bytes[..32]);
+                                let kp = Keypair::from_seed(&seed);
+                                info!("🔑 Loaded faucet keypair from {} (JSON object)", path);
+                                return kp;
+                            }
+                        }
+                    }
+                }
+                // Format 3: raw hex string
+                let hex_str = data.trim().trim_matches('"');
+                if let Ok(bytes) = hex::decode(hex_str) {
+                    if bytes.len() >= 32 {
+                        let mut seed = [0u8; 32];
+                        seed.copy_from_slice(&bytes[..32]);
+                        let kp = Keypair::from_seed(&seed);
+                        info!("🔑 Loaded faucet keypair from {} (hex)", path);
+                        return kp;
+                    }
+                }
+                panic!("❌ Invalid keypair file format at {}", path);
+            }
+            Err(e) => panic!("❌ Cannot read FAUCET_KEYPAIR at {}: {}", path, e),
+        }
+    }
 
+    // Auto-generate and persist
+    let default_path = "faucet-keypair.json";
+    if let Ok(data) = std::fs::read_to_string(default_path) {
+        if let Ok(seed_bytes) = serde_json::from_str::<Vec<u8>>(&data) {
+            if seed_bytes.len() >= 32 {
+                let mut seed = [0u8; 32];
+                seed.copy_from_slice(&seed_bytes[..32]);
+                let kp = Keypair::from_seed(&seed);
+                info!(
+                    "🔑 Loaded existing faucet keypair from {}",
+                    default_path
+                );
+                return kp;
+            }
+        }
+    }
+
+    let kp = Keypair::generate();
+    let seed_json = serde_json::to_string(&kp.secret_key().to_vec()).unwrap();
+    if let Err(e) = std::fs::write(default_path, &seed_json) {
+        warn!("⚠️  Could not save faucet keypair to {}: {}", default_path, e);
+    } else {
+        info!("🔑 Generated new faucet keypair → {}", default_path);
+    }
+    kp
+}
+
+/// Build, sign, and send a native MOLT transfer from the faucet wallet.
+async fn send_faucet_transfer(
+    state: &FaucetState,
+    recipient_address: &str,
+    amount_molt: u64,
+) -> Result<String, String> {
+    let recipient = Pubkey::from_base58(recipient_address)
+        .map_err(|e| format!("Invalid recipient: {}", e))?;
+
+    let amount_shells = amount_molt * 1_000_000_000;
+
+    // 1. Get latest blockhash
     let client = reqwest::Client::new();
-    let response = client
-        .post(rpc_url)
-        .json(&json!({
+    let block_resp = client
+        .post(&state.config.rpc_url)
+        .json(&serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
-            "method": "requestAirdrop",
-            "params": [address, amount_molt]
+            "method": "getLatestBlock",
+            "params": []
         }))
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("RPC request failed: {}", e))?;
 
-    let data: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
-
-    if let Some(error) = data.get("error") {
+    let block_data: serde_json::Value = block_resp.json().await.map_err(|e| e.to_string())?;
+    if let Some(error) = block_data.get("error") {
         return Err(format!(
-            "RPC error: {}",
+            "getLatestBlock error: {}",
             error["message"].as_str().unwrap_or("unknown")
         ));
     }
 
-    let result = &data["result"];
-    let msg = result["message"]
+    let blockhash_hex = block_data["result"]["hash"]
         .as_str()
-        .unwrap_or("Airdrop completed")
+        .ok_or("Missing blockhash in getLatestBlock response")?;
+    let blockhash = Hash::from_hex(blockhash_hex)
+        .map_err(|e| format!("Invalid blockhash: {}", e))?;
+
+    // 2. Build transfer instruction (opcode 0 = native transfer)
+    let from_pubkey = state.keypair.pubkey();
+    let mut data = vec![0u8]; // opcode 0 = Transfer
+    data.extend_from_slice(&amount_shells.to_le_bytes());
+
+    let instruction = Instruction {
+        program_id: SYSTEM_PROGRAM_ID,
+        accounts: vec![from_pubkey, recipient],
+        data,
+    };
+
+    // 3. Build, sign, serialize
+    let message = Message::new(vec![instruction], blockhash);
+    let mut tx = Transaction::new(message);
+    let sig = state.keypair.sign(&tx.message.serialize());
+    tx.signatures.push(sig);
+
+    let tx_bytes = bincode::serialize(&tx).map_err(|e| format!("Serialize error: {}", e))?;
+    use base64::{engine::general_purpose, Engine as _};
+    let tx_base64 = general_purpose::STANDARD.encode(&tx_bytes);
+
+    // 4. Send via sendTransaction
+    let send_resp = client
+        .post(&state.config.rpc_url)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "sendTransaction",
+            "params": [tx_base64]
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("sendTransaction failed: {}", e))?;
+
+    let send_data: serde_json::Value = send_resp.json().await.map_err(|e| e.to_string())?;
+    if let Some(error) = send_data.get("error") {
+        return Err(format!(
+            "Transaction rejected: {}",
+            error["message"].as_str().unwrap_or("unknown")
+        ));
+    }
+
+    let tx_sig = send_data["result"]
+        .as_str()
+        .unwrap_or("unknown")
         .to_string();
-    Ok(msg)
+
+    Ok(format!("{} MOLT sent. Tx: {}", amount_molt, &tx_sig[..tx_sig.len().min(16)]))
 }
 
 /// List airdrops (optionally filtered by address)
