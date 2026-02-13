@@ -17,7 +17,7 @@ use alloc::vec::Vec;
 use moltchain_sdk::{
     storage_get, storage_set, log_info,
     bytes_to_u64, u64_to_bytes, get_slot,
-    Address, call_token_transfer,
+    Address, call_token_transfer, get_caller,
 };
 
 // ============================================================================
@@ -54,6 +54,7 @@ const REWARD_EPOCH_KEY: &[u8] = b"rew_epoch";
 const REFERRAL_RATE_KEY: &[u8] = b"rew_ref_rate";
 const MOLTCOIN_ADDRESS_KEY: &[u8] = b"rew_molt_addr";
 const REWARDS_POOL_KEY: &[u8] = b"rew_pool_addr";
+const AUTHORIZED_CALLER_PREFIX: &[u8] = b"rew_auth_";
 
 // ============================================================================
 // HELPERS
@@ -134,6 +135,12 @@ fn require_not_paused() -> bool { !is_paused() }
 fn require_admin(caller: &[u8; 32]) -> bool {
     let admin = load_addr(ADMIN_KEY); !is_zero(&admin) && *caller == admin
 }
+fn is_authorized_caller() -> bool {
+    let caller = get_caller();
+    let mut key = Vec::from(AUTHORIZED_CALLER_PREFIX);
+    key.extend_from_slice(&caller.0);
+    storage_get(&key).map(|v| v.first().copied() == Some(1)).unwrap_or(false)
+}
 
 // ============================================================================
 // TIER SYSTEM
@@ -174,8 +181,12 @@ pub fn initialize(admin: *const u8) -> u32 {
 }
 
 /// Record a trade for reward calculation (called by dex_core)
-/// Returns: 0=success
+/// Returns: 0=success, 5=unauthorized caller
 pub fn record_trade(trader: *const u8, fee_paid: u64, volume: u64) -> u32 {
+    if !is_authorized_caller() {
+        log_info("record_trade: unauthorized caller");
+        return 5;
+    }
     let mut t = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(trader, t.as_mut_ptr(), 32); }
 
@@ -318,8 +329,13 @@ pub fn set_reward_rate(caller: *const u8, pair_id: u64, rate_per_slot: u64) -> u
     0
 }
 
-/// Accrue LP rewards for a position (called periodically)
+/// Accrue LP rewards for a position (called by dex_amm)
+/// Returns: 0=success, 1=zero rate, 5=unauthorized caller
 pub fn accrue_lp_rewards(position_id: u64, liquidity: u64, pair_id: u64) -> u32 {
+    if !is_authorized_caller() {
+        log_info("accrue_lp_rewards: unauthorized caller");
+        return 5;
+    }
     let rate = load_u64(&pair_reward_rate_key(pair_id));
     if rate == 0 { return 1; }
     let reward = liquidity * rate / 1_000_000_000;
@@ -411,6 +427,24 @@ pub fn emergency_unpause(caller: *const u8) -> u32 {
     unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
     if !require_admin(&c) { return 1; }
     storage_set(PAUSED_KEY, &[0u8]);
+    0
+}
+
+/// Add an authorized caller contract (admin only).
+/// Only authorized callers can invoke record_trade / accrue_lp_rewards.
+pub fn set_authorized_caller(caller: *const u8, contract_addr: *const u8, enabled: u8) -> u32 {
+    let mut c = [0u8; 32];
+    let mut a = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(contract_addr, a.as_mut_ptr(), 32);
+    }
+    if !require_admin(&c) { return 1; }
+    if is_zero(&a) { return 2; }
+    let mut key = Vec::from(AUTHORIZED_CALLER_PREFIX);
+    key.extend_from_slice(&a);
+    storage_set(&key, &[enabled]);
+    log_info("Authorized caller updated");
     0
 }
 
