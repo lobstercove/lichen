@@ -2641,9 +2641,12 @@ async fn handle_solana_get_transaction(
         }
         _ => {
             // Fallback: reverse scan (for txs indexed before the reverse index existed)
+            // AUDIT-FIX 0.13: Cap fallback scan to 1000 slots to prevent DoS
             if let Ok(last_slot) = state.state.get_last_slot() {
                 let mut found = None;
-                for slot in (0..=last_slot).rev() {
+                let scan_limit = 1000u64;
+                let end_slot = last_slot.saturating_sub(scan_limit);
+                for slot in (end_slot..=last_slot).rev() {
                     if let Ok(Some(block)) = state.state.get_block_by_slot(slot) {
                         if block
                             .transactions
