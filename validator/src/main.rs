@@ -1929,8 +1929,9 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey) {
 
 // ========================================================================
 //  GENESIS PHASE 3 — Create trading pairs and AMM pools at genesis.
-//  Auto-lists MOLT/mUSD, WSOL/mUSD, WETH/mUSD pairs on dex_core and
-//  creates corresponding AMM pools on dex_amm.
+//  Auto-lists MOLT/mUSD pair on dex_core and creates the corresponding
+//  AMM pool on dex_amm.  WSOL/mUSD and WETH/mUSD are deferred until the
+//  bridge & custody systems are live and tokens have real supply.
 // ========================================================================
 
 fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey) {
@@ -1956,17 +1957,11 @@ fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey) {
         }
     };
 
-    // Resolve token addresses
+    // Resolve token addresses (only MOLT/mUSD at genesis)
     let molt_addr = derive_contract_address(deployer_pubkey, "moltcoin")
         .map(|p| p.0)
         .unwrap_or([0u8; 32]);
     let musd_addr = derive_contract_address(deployer_pubkey, "musd_token")
-        .map(|p| p.0)
-        .unwrap_or([0u8; 32]);
-    let wsol_addr = derive_contract_address(deployer_pubkey, "wsol_token")
-        .map(|p| p.0)
-        .unwrap_or([0u8; 32]);
-    let weth_addr = derive_contract_address(deployer_pubkey, "weth_token")
         .map(|p| p.0)
         .unwrap_or([0u8; 32]);
 
@@ -1978,10 +1973,10 @@ fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey) {
     let lot_size: u64 = 1_000_000;
     let min_order: u64 = 1_000;
 
-    let pairs: [(&str, [u8; 32], [u8; 32]); 3] = [
+    // Only MOLT/mUSD at genesis. WSOL/mUSD and WETH/mUSD will be created
+    // when the bridge + custody go live and wrapped tokens have real supply.
+    let pairs: [(&str, [u8; 32], [u8; 32]); 1] = [
         ("MOLT/mUSD", molt_addr, musd_addr),
-        ("WSOL/mUSD", wsol_addr, musd_addr),
-        ("WETH/mUSD", weth_addr, musd_addr),
     ];
 
     let mut created_pairs: usize = 0;
@@ -3253,7 +3248,7 @@ async fn run_validator() {
                     info!("⚠️  This validator not in genesis set, adding dynamically");
                     set.add_validator(ValidatorInfo {
                         pubkey: validator_pubkey,
-                        stake: Account::molt_to_shells(10_000), // 10K MOLT stake (bootstrap grant)
+                        stake: MIN_VALIDATOR_STAKE, // 100K MOLT stake — matches V2/V3 join grant
                         reputation: 100,
                         blocks_proposed: 0,
                         votes_cast: 0,
@@ -3273,7 +3268,7 @@ async fn run_validator() {
             info!("⚠️  This validator not in genesis set, adding dynamically");
             set.add_validator(ValidatorInfo {
                 pubkey: validator_pubkey,
-                stake: Account::molt_to_shells(10_000), // 10K MOLT stake (bootstrap grant)
+                stake: MIN_VALIDATOR_STAKE, // 100K MOLT stake — matches V2/V3 join grant
                 reputation: 100,
                 blocks_proposed: 0,
                 votes_cast: 0,
@@ -3320,8 +3315,8 @@ async fn run_validator() {
     });
     if validator_account.is_none() {
         // H13 fix: Bootstrap grant must come from treasury, not ex nihilo
-        let bootstrap_molt = 10_000u64;
-        let bootstrap_shells = Account::molt_to_shells(bootstrap_molt);
+        let bootstrap_molt = MIN_VALIDATOR_STAKE / 1_000_000_000; // 100K MOLT — same as V2/V3 joining grant
+        let bootstrap_shells = MIN_VALIDATOR_STAKE;
         let treasury_pk = state.get_treasury_pubkey().ok().flatten();
         let mut funded = false;
 
@@ -3348,28 +3343,28 @@ async fn run_validator() {
             warn!("⚠️  No treasury available — bootstrap grant skipped. Validator needs manual funding.");
         }
 
-        let mut bootstrap_account = if funded {
-            let mut acct = Account::new(0, SYSTEM_ACCOUNT_OWNER);
-            acct.shells = bootstrap_shells;
-            acct.spendable = bootstrap_shells;
-            acct
+        let bootstrap_account = if funded {
+            // Set shells + staked directly — matches V2/V3 account creation pattern
+            Account {
+                shells: bootstrap_shells,
+                spendable: 0,
+                staked: bootstrap_shells,
+                locked: 0,
+                data: Vec::new(),
+                owner: SYSTEM_ACCOUNT_OWNER,
+                executable: false,
+                rent_epoch: 0,
+            }
         } else {
             // Create empty account — validator needs external funding
             Account::new(0, SYSTEM_ACCOUNT_OWNER)
         };
 
-        if funded {
-            // Move the bootstrap MOLT from spendable to staked (validator bootstrap)
-            if let Err(e) = bootstrap_account.stake(MIN_VALIDATOR_STAKE) {
-                error!("Failed to stake bootstrap amount: {e}");
-            }
-        }
-
         if let Err(e) = state.put_account(&validator_pubkey, &bootstrap_account) {
             eprintln!("Failed to create validator account: {e}");
         }
         info!(
-            "✓ Validator account created: {} MOLT total (0 spendable, 10K staked)",
+            "✓ Validator account created: {} MOLT total (0 spendable, 100K staked)",
             bootstrap_account.balance_molt()
         );
         info!(
