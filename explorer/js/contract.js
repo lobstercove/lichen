@@ -222,6 +222,14 @@ function renderAbi(abi) {
         return;
     }
 
+    // Heuristic: functions that are read-only (no state mutation)
+    const VIEW_FN = new Set(['balance_of','total_supply','allowance','name','symbol','decimals','owner','supply','uri','token_uri','metadata','nonce']);
+    const VIEW_PREFIX = ['get_','is_','has_','can_','check_','query_','view_','read_','count_','list_'];
+    function isViewFn(name) {
+        if (VIEW_FN.has(name)) return true;
+        return VIEW_PREFIX.some(p => name.startsWith(p));
+    }
+
     tbody.innerHTML = abi.functions.map(fn => {
         const params = fn.params && fn.params.length > 0
             ? fn.params.map(p => '<span style="color:var(--accent);">' + (p.param_type || p.type) + '</span> ' + p.name).join(', ')
@@ -231,7 +239,7 @@ function renderAbi(abi) {
             ? '<span style="color:var(--accent);">' + (fn.returns.return_type || fn.returns.type || fn.returns) + '</span>'
             : '<span style="color:var(--text-muted);">void</span>';
 
-        const readOnly = fn.readonly
+        const readOnly = fn.readonly || isViewFn(fn.name)
             ? '<span class="badge info" style="font-size:0.75rem;"><i class="fas fa-eye"></i> View</span>'
             : '<span class="badge" style="background:rgba(255,170,0,0.15);color:#ffaa00;font-size:0.75rem;"><i class="fas fa-pen"></i> Write</span>';
 
@@ -289,7 +297,7 @@ function renderCalls(calls) {
     const tbody = document.getElementById('callsTable');
     const list = calls?.calls || calls?.activities || [];
     if (list.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" class="empty-state"><i class="fas fa-phone-alt"></i><div>No calls recorded</div></td></tr>';
+        tbody.innerHTML = '<tr><td colspan="5" class="empty-state"><i class="fas fa-terminal"></i><div>No calls recorded yet</div></td></tr>';
         return;
     }
 
