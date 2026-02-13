@@ -221,6 +221,13 @@ pub struct ContractAccount {
     /// WASM bytecode
     pub code: Vec<u8>,
     /// Contract state storage (key-value)
+    /// Keys are byte arrays from WASM but must serialize as strings for JSON.
+    /// We try UTF-8 first (most keys are valid UTF-8 like "admin", "pair:X_Y"),
+    /// falling back to hex encoding with a "0x" prefix for binary keys.
+    #[serde(
+        serialize_with = "serialize_byte_map",
+        deserialize_with = "deserialize_byte_map"
+    )]
     pub storage: HashMap<Vec<u8>, Vec<u8>>,
     /// Owner who deployed the contract
     pub owner: Pubkey,
@@ -229,6 +236,43 @@ pub struct ContractAccount {
     /// Machine-readable ABI (optional, set at deploy or updated later)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub abi: Option<ContractAbi>,
+}
+
+/// Serialize HashMap<Vec<u8>, Vec<u8>> as a JSON object with string keys.
+/// Keys that are valid UTF-8 are stored as-is; binary keys get hex-encoded with "0x" prefix.
+fn serialize_byte_map<S>(map: &HashMap<Vec<u8>, Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeMap;
+    let mut ser_map = serializer.serialize_map(Some(map.len()))?;
+    for (key, value) in map {
+        let key_str = match std::str::from_utf8(key) {
+            Ok(s) if !s.starts_with("0x") => s.to_string(),
+            _ => format!("0x{}", hex::encode(key)),
+        };
+        ser_map.serialize_entry(&key_str, value)?;
+    }
+    ser_map.end()
+}
+
+/// Deserialize a JSON object with string keys back into HashMap<Vec<u8>, Vec<u8>>.
+/// Keys prefixed with "0x" are hex-decoded; all others are treated as raw UTF-8 bytes.
+fn deserialize_byte_map<'de, D>(deserializer: D) -> Result<HashMap<Vec<u8>, Vec<u8>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let str_map: HashMap<String, Vec<u8>> = HashMap::deserialize(deserializer)?;
+    let mut result = HashMap::with_capacity(str_map.len());
+    for (key_str, value) in str_map {
+        let key_bytes = if let Some(hex_part) = key_str.strip_prefix("0x") {
+            hex::decode(hex_part).map_err(serde::de::Error::custom)?
+        } else {
+            key_str.into_bytes()
+        };
+        result.insert(key_bytes, value);
+    }
+    Ok(result)
 }
 
 impl ContractAccount {
