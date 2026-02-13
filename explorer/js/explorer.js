@@ -353,23 +353,11 @@ async function updateDashboardStats() {
 
                 const txsTodayEl = document.getElementById('txsToday');
                 if (txsTodayEl) {
-                    const now = new Date();
-                    const dateKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-                    const storedDate = localStorage.getItem('txsTodayDate');
-                    if (storedDate !== dateKey) {
-                        localStorage.setItem('txsTodayDate', dateKey);
-                        localStorage.setItem('txsTodayBaseline', String(metrics.total_transactions));
-                    }
-
-                    const baselineRaw = localStorage.getItem('txsTodayBaseline');
-                    let baseline = baselineRaw ? Number(baselineRaw) : 0;
-                    // Handle chain reset: baseline exceeds current total
-                    if (baseline > metrics.total_transactions) {
-                        baseline = 0;
-                        localStorage.setItem('txsTodayBaseline', '0');
-                    }
-                    const delta = Math.max(0, metrics.total_transactions - baseline);
-                    txsTodayEl.textContent = `+${formatNumber(delta)} today`;
+                    // Use server-side daily counter (same for all visitors)
+                    const dailyTxs = metrics.daily_transactions !== undefined
+                        ? metrics.daily_transactions
+                        : 0;
+                    txsTodayEl.textContent = `+${formatNumber(dailyTxs)} today`;
                 }
             }
             if (metrics.total_accounts !== undefined) {
