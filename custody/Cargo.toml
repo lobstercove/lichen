@@ -26,4 +26,5 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 uuid = { version = "1.7", features = ["v4"] }
 ed25519-dalek = "2.1"
+subtle = "2"
 moltchain-core = { path = "../core" }

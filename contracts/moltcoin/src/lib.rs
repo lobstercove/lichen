@@ -8,7 +8,7 @@
 #![allow(dead_code)]
 #![allow(unused_imports)]
 
-use moltchain_sdk::{Token, Address, log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes};
+use moltchain_sdk::{Token, Address, log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_caller};
 
 /// Read the contract owner from persistent storage.
 fn get_owner() -> Address {
@@ -74,6 +74,7 @@ pub extern "C" fn balance_of(account_ptr: *const u8) -> u64 {
 }
 
 /// Transfer tokens
+/// AUDIT-FIX 1.8a: verify caller == from to prevent unauthorized transfers
 #[no_mangle]
 pub extern "C" fn transfer(from_ptr: *const u8, to_ptr: *const u8, amount: u64) -> u32 {
     let from_bytes = unsafe { core::slice::from_raw_parts(from_ptr, 32) };
@@ -83,6 +84,13 @@ pub extern "C" fn transfer(from_ptr: *const u8, to_ptr: *const u8, amount: u64) 
     let mut to_array = [0u8; 32];
     from_array.copy_from_slice(from_bytes);
     to_array.copy_from_slice(to_bytes);
+
+    // AUDIT-FIX 1.8a: Only the account owner can initiate transfers
+    let caller = get_caller();
+    if caller.0 != from_array {
+        log_info("Transfer rejected: caller is not the sender");
+        return 0;
+    }
 
     let from = Address::new(from_array);
     let to = Address::new(to_array);
@@ -128,11 +136,20 @@ pub extern "C" fn mint(caller_ptr: *const u8, to_ptr: *const u8, amount: u64) ->
 }
 
 /// Burn tokens
+/// AUDIT-FIX 1.8b: verify caller == from to prevent unauthorized burns
 #[no_mangle]
 pub extern "C" fn burn(from_ptr: *const u8, amount: u64) -> u32 {
     let from_bytes = unsafe { core::slice::from_raw_parts(from_ptr, 32) };
     let mut from_array = [0u8; 32];
     from_array.copy_from_slice(from_bytes);
+
+    // AUDIT-FIX 1.8b: Only the account owner can burn their tokens
+    let caller = get_caller();
+    if caller.0 != from_array {
+        log_info("Burn rejected: caller is not the token owner");
+        return 0;
+    }
+
     let from = Address::new(from_array);
 
     let mut token = make_token();

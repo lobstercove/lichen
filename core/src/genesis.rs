@@ -335,9 +335,11 @@ impl GenesisConfig {
             genesis_time: chrono::Utc::now().to_rfc3339(),
             consensus: ConsensusParams {
                 slot_duration_ms: 400,
-                epoch_slots: 216000,                      // ~24 hours at 400ms
+                // AUDIT-FIX 1.3: match SLOTS_PER_EPOCH constant (432_000)
+                epoch_slots: 432000,                      // ~2 days at 400ms
                 min_validator_stake: 100_000_000_000_000, // 100,000 MOLT
-                validator_reward_per_block: 10_000_000,   // 0.01 MOLT
+                // AUDIT-FIX 1.3: match TRANSACTION_BLOCK_REWARD constant (0.9 MOLT)
+                validator_reward_per_block: 900_000_000,   // 0.9 MOLT
                 slashing_percentage_double_sign: 50,
                 slashing_percentage_downtime: 5,
                 slashing_percentage_invalid_state: 100,
@@ -376,9 +378,11 @@ impl GenesisConfig {
             genesis_time: chrono::Utc::now().to_rfc3339(),
             consensus: ConsensusParams {
                 slot_duration_ms: 400,
-                epoch_slots: 216000,
+                // AUDIT-FIX 1.3: match SLOTS_PER_EPOCH constant (432_000)
+                epoch_slots: 432000,
                 min_validator_stake: 100_000_000_000_000, // 100,000 MOLT
-                validator_reward_per_block: 10_000_000,
+                // AUDIT-FIX 1.3: match TRANSACTION_BLOCK_REWARD constant (0.9 MOLT)
+                validator_reward_per_block: 900_000_000,
                 slashing_percentage_double_sign: 50,
                 slashing_percentage_downtime: 5,
                 slashing_percentage_invalid_state: 100,

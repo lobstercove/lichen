@@ -157,46 +157,58 @@ pub extern "C" fn buy_nft(
         let fee_amount = (price * fee) / 10000;
         let seller_amount = price - fee_amount;
         
-        log_info("Executing purchase with cross-contract calls...");
+        log_info("Executing purchase with escrow pattern...");
         
-        // CROSS-CONTRACT CALL 1: Transfer payment tokens from buyer to seller
-        match call_token_transfer(payment_token, buyer, seller, seller_amount) {
-            Ok(true) => log_info("Payment transferred to seller"),
+        // AUDIT-FIX 1.12: Escrow pattern — hold payment in marketplace until
+        // NFT transfer confirms. Prevents buyer losing funds if NFT transfer fails.
+        let fee_addr_bytes = storage_get(b"marketplace_fee_addr")
+            .unwrap_or_else(|| alloc::vec![0x4Du8; 32]); // fallback
+        let marketplace_addr = Address(fee_addr_bytes.as_slice().try_into().unwrap_or([0x4D; 32]));
+
+        // STEP 1: Transfer full payment from buyer to marketplace (escrow)
+        match call_token_transfer(payment_token, buyer, marketplace_addr, price) {
+            Ok(true) => log_info("Payment escrowed in marketplace"),
             _ => {
-                log_info("Payment transfer failed");
+                log_info("Payment escrow failed — aborting purchase");
                 return 0;
             }
         }
         
-        // CROSS-CONTRACT CALL 2: Transfer marketplace fee to marketplace
-        let fee_addr_bytes = storage_get(b"marketplace_fee_addr")
-            .unwrap_or_else(|| alloc::vec![0x4Du8; 32]); // fallback
-        let marketplace_addr = Address(fee_addr_bytes.as_slice().try_into().unwrap_or([0x4D; 32]));
-        if fee_amount > 0 {
-            match call_token_transfer(payment_token, buyer, marketplace_addr, fee_amount) {
-                Ok(true) => log_info("Marketplace fee collected"),
-                _ => log_info("Fee collection failed (non-critical)"),
-            }
-        }
-        
-        // CROSS-CONTRACT CALL 3: Transfer NFT from seller to buyer
+        // STEP 2: Transfer NFT from seller to buyer
         match call_nft_transfer(nft_contract, seller, buyer, token_id) {
             Ok(true) => {
                 log_info("NFT transferred to buyer");
-                
-                // Mark listing as inactive
-                let mut updated_data = listing_data.clone();
-                updated_data[144] = 0; // active = false
-                storage_set(&listing_key, &updated_data);
-                
-                log_info("Purchase complete! 3 cross-contract calls executed successfully!");
-                1
             }
             _ => {
-                log_info("NFT transfer failed");
-                0
+                // NFT transfer failed — refund buyer from escrow
+                log_info("NFT transfer failed — refunding buyer from escrow");
+                match call_token_transfer(payment_token, marketplace_addr, buyer, price) {
+                    Ok(true) => log_info("Buyer refunded from escrow"),
+                    _ => log_info("⚠️  CRITICAL: Escrow refund failed — funds in marketplace"),
+                }
+                return 0;
             }
         }
+        
+        // STEP 3: Release escrowed funds — seller gets their share
+        match call_token_transfer(payment_token, marketplace_addr, seller, seller_amount) {
+            Ok(true) => log_info("Seller payment released from escrow"),
+            _ => log_info("⚠️  Seller payment release failed"),
+        }
+        
+        // STEP 4: Marketplace fee stays in marketplace_addr (already there)
+        // The remaining (price - seller_amount = fee_amount) stays in escrow as the fee.
+        if fee_amount > 0 {
+            log_info(&alloc::format!("Marketplace fee retained: {}", fee_amount));
+        }
+        
+        // Mark listing as inactive
+        let mut updated_data = listing_data.clone();
+        updated_data[144] = 0; // active = false
+        storage_set(&listing_key, &updated_data);
+        
+        log_info("Purchase complete with escrow pattern!");
+        1
     }
 }
 

@@ -212,7 +212,13 @@ pub extern "C" fn place_bid(
             current_highest
         ) {
             Ok(true) => log_info("💸 Refunded previous bidder"),
-            _ => log_info("⚠️  Refund failed (non-critical)"),
+            // AUDIT-FIX 1.13: If refund fails, REVERT the entire bid.
+            // Previously, the new bid was accepted while the previous
+            // bidder's funds were permanently lost.
+            _ => {
+                log_info("❌ Refund to previous bidder failed — reverting bid");
+                return 0;
+            }
         }
     }
     

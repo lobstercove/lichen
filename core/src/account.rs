@@ -196,15 +196,16 @@ impl Account {
 
     /// Stake some balance (moves from spendable to staked)
     /// T3.3 fix: shells total is unchanged (just a reclassification)
+    /// AUDIT-FIX 1.1a: checked arithmetic, compute-before-mutate
     pub fn stake(&mut self, amount: u64) -> Result<(), String> {
-        if amount > self.spendable {
-            return Err(format!(
-                "Insufficient spendable balance: {} < {}",
-                self.spendable, amount
-            ));
-        }
-        self.spendable -= amount;
-        self.staked += amount;
+        let new_spendable = self.spendable.checked_sub(amount).ok_or_else(|| {
+            format!("Insufficient spendable balance: {} < {}", self.spendable, amount)
+        })?;
+        let new_staked = self.staked.checked_add(amount).ok_or_else(|| {
+            format!("Overflow adding {} to staked balance {}", amount, self.staked)
+        })?;
+        self.spendable = new_spendable;
+        self.staked = new_staked;
         if self.shells != self.spendable + self.staked + self.locked {
             return Err("Account invariant violated after stake".to_string());
         }
@@ -212,15 +213,16 @@ impl Account {
     }
 
     /// Unstake balance (moves from staked to spendable)
+    /// AUDIT-FIX 1.1b: checked arithmetic, compute-before-mutate
     pub fn unstake(&mut self, amount: u64) -> Result<(), String> {
-        if amount > self.staked {
-            return Err(format!(
-                "Insufficient staked balance: {} < {}",
-                self.staked, amount
-            ));
-        }
-        self.staked -= amount;
-        self.spendable += amount;
+        let new_staked = self.staked.checked_sub(amount).ok_or_else(|| {
+            format!("Insufficient staked balance: {} < {}", self.staked, amount)
+        })?;
+        let new_spendable = self.spendable.checked_add(amount).ok_or_else(|| {
+            format!("Overflow adding {} to spendable balance {}", amount, self.spendable)
+        })?;
+        self.staked = new_staked;
+        self.spendable = new_spendable;
         if self.shells != self.spendable + self.staked + self.locked {
             return Err("Account invariant violated after unstake".to_string());
         }
@@ -228,15 +230,16 @@ impl Account {
     }
 
     /// Lock balance (moves from spendable to locked)
+    /// AUDIT-FIX 1.1c: checked arithmetic, compute-before-mutate
     pub fn lock(&mut self, amount: u64) -> Result<(), String> {
-        if amount > self.spendable {
-            return Err(format!(
-                "Insufficient spendable balance: {} < {}",
-                self.spendable, amount
-            ));
-        }
-        self.spendable -= amount;
-        self.locked += amount;
+        let new_spendable = self.spendable.checked_sub(amount).ok_or_else(|| {
+            format!("Insufficient spendable balance: {} < {}", self.spendable, amount)
+        })?;
+        let new_locked = self.locked.checked_add(amount).ok_or_else(|| {
+            format!("Overflow adding {} to locked balance {}", amount, self.locked)
+        })?;
+        self.spendable = new_spendable;
+        self.locked = new_locked;
         if self.shells != self.spendable + self.staked + self.locked {
             return Err("Account invariant violated after lock".to_string());
         }
@@ -244,15 +247,16 @@ impl Account {
     }
 
     /// Unlock balance (moves from locked to spendable)
+    /// AUDIT-FIX 1.1d: checked arithmetic, compute-before-mutate
     pub fn unlock(&mut self, amount: u64) -> Result<(), String> {
-        if amount > self.locked {
-            return Err(format!(
-                "Insufficient locked balance: {} < {}",
-                self.locked, amount
-            ));
-        }
-        self.locked -= amount;
-        self.spendable += amount;
+        let new_locked = self.locked.checked_sub(amount).ok_or_else(|| {
+            format!("Insufficient locked balance: {} < {}", self.locked, amount)
+        })?;
+        let new_spendable = self.spendable.checked_add(amount).ok_or_else(|| {
+            format!("Overflow adding {} to spendable balance {}", amount, self.spendable)
+        })?;
+        self.locked = new_locked;
+        self.spendable = new_spendable;
         if self.shells != self.spendable + self.staked + self.locked {
             return Err("Account invariant violated after unlock".to_string());
         }
@@ -279,15 +283,16 @@ impl Account {
     }
 
     /// Deduct from spendable balance (for transfers, fees)
+    /// AUDIT-FIX 1.1e: checked arithmetic, compute-before-mutate
     pub fn deduct_spendable(&mut self, amount: u64) -> Result<(), String> {
-        if amount > self.spendable {
-            return Err(format!(
-                "Insufficient spendable balance: {} < {}",
-                self.spendable, amount
-            ));
-        }
-        self.shells -= amount;
-        self.spendable -= amount;
+        let new_spendable = self.spendable.checked_sub(amount).ok_or_else(|| {
+            format!("Insufficient spendable balance: {} < {}", self.spendable, amount)
+        })?;
+        let new_shells = self.shells.checked_sub(amount).ok_or_else(|| {
+            format!("Underflow subtracting {} from shells balance {}", amount, self.shells)
+        })?;
+        self.spendable = new_spendable;
+        self.shells = new_shells;
         Ok(())
     }
 

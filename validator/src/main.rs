@@ -16,7 +16,7 @@ use moltchain_core::{
     StateStore, SymbolRegistryEntry, Transaction, TxProcessor, ValidatorInfo, ValidatorSet, Vote,
     VoteAggregator, BASE_FEE, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID,
     HEARTBEAT_BLOCK_REWARD, MIN_VALIDATOR_STAKE, NFT_COLLECTION_FEE, NFT_MINT_FEE,
-    SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID, TRANSACTION_BLOCK_REWARD,
+    SLOTS_PER_EPOCH, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID, TRANSACTION_BLOCK_REWARD,
 };
 use moltchain_p2p::{
     ConsistencyReportMsg, MessageType, P2PConfig, P2PMessage, P2PNetwork, SnapshotKind,
@@ -3672,6 +3672,10 @@ async fn run_validator() {
         let genesis_config_for_blocks = genesis_config.clone();
         tokio::spawn(async move {
             info!("🔄 Block receiver started");
+            // 1.7: Track (slot, validator) → block_hash to detect double-block equivocation
+            let mut seen_blocks: HashMap<(u64, [u8; 32]), Hash> = HashMap::new();
+            // Periodically prune old entries (keep last 1000 slots)
+            let mut prune_below_slot: u64 = 0;
             while let Some(block) = block_rx.recv().await {
                 let block_slot = block.header.slot;
 
@@ -3689,6 +3693,35 @@ async fn run_validator() {
                 if let Err(e) = block.validate_structure() {
                     warn!("⚠️  Rejecting block {} — {}", block_slot, e);
                     continue;
+                }
+
+                // 1.7: Double-block equivocation detection
+                {
+                    let key = (block_slot, block.header.validator);
+                    let block_hash = block.hash();
+                    if let Some(prev_hash) = seen_blocks.get(&key) {
+                        if *prev_hash != block_hash {
+                            error!(
+                                "🚨 CRITICAL: Double-block equivocation detected! Validator {} produced two different blocks for slot {} (hash1={}, hash2={})",
+                                Pubkey(block.header.validator).to_base58(),
+                                block_slot,
+                                prev_hash.to_hex(),
+                                block_hash.to_hex(),
+                            );
+                            // Reject the conflicting block
+                            continue;
+                        } else {
+                            // Duplicate of same block — ignore silently
+                            continue;
+                        }
+                    }
+                    seen_blocks.insert(key, block_hash);
+
+                    // Prune entries older than 1000 slots to bound memory
+                    if block_slot > prune_below_slot + 2000 {
+                        prune_below_slot = block_slot.saturating_sub(1000);
+                        seen_blocks.retain(|&(slot, _), _| slot >= prune_below_slot);
+                    }
                 }
 
                 sync_mgr.note_seen(block_slot).await;
@@ -4161,13 +4194,36 @@ async fn run_validator() {
 
         // Start incoming transaction handler
         let mempool_for_txs = mempool.clone();
+        let state_for_p2p_txs = state.clone();
         tokio::spawn(async move {
             info!("🔄 Transaction receiver started");
             while let Some(tx) = transaction_rx.recv().await {
                 info!("📥 Received transaction from P2P");
-                // Add to mempool (fee calculation would be more sophisticated in production)
+                // AUDIT-FIX 1.6: Validate transaction before adding to mempool
+                // 1. Verify signature — fee payer signs the serialized message
+                let sender_pubkey = tx.message.instructions.first().and_then(|ix| ix.accounts.first()).copied();
+                let sig_valid = match (&sender_pubkey, tx.signatures.first()) {
+                    (Some(sender), Some(sig)) => {
+                        let msg_bytes = tx.message.serialize();
+                        Keypair::verify(sender, &msg_bytes, sig)
+                    }
+                    _ => false,
+                };
+                if !sig_valid {
+                    info!("❌ P2P transaction rejected: invalid or missing signature");
+                    continue;
+                }
+                // 2. Verify sender exists with minimum balance for fee
+                if let Some(sender) = &sender_pubkey {
+                    match state_for_p2p_txs.get_account(sender) {
+                        Ok(Some(acct)) if acct.spendable >= BASE_FEE => {}
+                        _ => {
+                            info!("❌ P2P transaction rejected: sender missing or insufficient balance");
+                            continue;
+                        }
+                    }
+                }
                 let mut pool = mempool_for_txs.lock().await;
-                // TODO: look up sender reputation from state for priority boost
                 if let Err(e) = pool.add_transaction(tx, BASE_FEE, 0u64) {
                     info!("Mempool: {}", e);
                 }
@@ -4299,11 +4355,29 @@ async fn run_validator() {
         let validator_pubkey_for_announce_handler = validator_pubkey;
         tokio::spawn(async move {
             info!("🔄 Validator announcement receiver started");
+            // 1.5c+d: Rate limiting — per-epoch bootstrap cap and per-minute announcement limit
+            let mut bootstrap_epoch: u64 = 0;
+            let mut bootstrap_count: u64 = 0;
+            let mut last_announce_times: std::collections::HashMap<moltchain_core::account::Pubkey, std::time::Instant> =
+                std::collections::HashMap::new();
             while let Some(announcement) = validator_announce_rx.recv().await {
                 // Skip our own announcements
                 if announcement.pubkey == validator_pubkey_for_announce_handler {
                     continue;
                 }
+
+                // 1.5d: Rate limit — at most one announcement per pubkey per 60s
+                let now = std::time::Instant::now();
+                if let Some(last) = last_announce_times.get(&announcement.pubkey) {
+                    if now.duration_since(*last) < std::time::Duration::from_secs(60) {
+                        debug!(
+                            "⚠️  Rate-limited announcement from {} (< 60s since last)",
+                            announcement.pubkey.to_base58()
+                        );
+                        continue;
+                    }
+                }
+                last_announce_times.insert(announcement.pubkey, now);
 
                 info!(
                     "🦞 Received validator announcement: {}",
@@ -4333,14 +4407,67 @@ async fn run_validator() {
                         continue;
                     }
 
-                    // Add new validator (accept unconditionally, like committed version)
+                    // 1.5a: Defense-in-depth — re-verify announcement signature
+                    {
+                        let mut msg = Vec::with_capacity(48);
+                        msg.extend_from_slice(&announcement.pubkey.0);
+                        msg.extend_from_slice(&announcement.stake.to_le_bytes());
+                        msg.extend_from_slice(&announcement.current_slot.to_le_bytes());
+                        if !moltchain_core::account::Keypair::verify(
+                            &announcement.pubkey,
+                            &msg,
+                            &announcement.signature,
+                        ) {
+                            warn!(
+                                "⚠️  Rejecting announcement from {} — invalid signature at handler",
+                                announcement.pubkey.to_base58()
+                            );
+                            drop(vs);
+                            continue;
+                        }
+                    }
+
+                    // 1.5b: Check on-chain staked balance before granting bootstrap
+                    let existing_account = state_for_validators
+                        .get_account(&announcement.pubkey)
+                        .unwrap_or(None);
+                    let already_staked = existing_account
+                        .as_ref()
+                        .map(|a| a.staked)
+                        .unwrap_or(0);
+
+                    // 1.5c: Per-epoch cap on bootstrap grants (max 10 per epoch)
+                    const MAX_BOOTSTRAPS_PER_EPOCH: u64 = 10;
+                    let current_epoch = announcement.current_slot / SLOTS_PER_EPOCH;
+                    if current_epoch != bootstrap_epoch {
+                        bootstrap_epoch = current_epoch;
+                        bootstrap_count = 0;
+                    }
+
+                    let needs_bootstrap = already_staked < MIN_VALIDATOR_STAKE;
+
+                    if needs_bootstrap && bootstrap_count >= MAX_BOOTSTRAPS_PER_EPOCH {
+                        warn!(
+                            "⚠️  Bootstrap cap reached for epoch {} — rejecting {}",
+                            current_epoch,
+                            announcement.pubkey.to_base58()
+                        );
+                        drop(vs);
+                        continue;
+                    }
+
+                    // Add new validator
                     let new_validator = ValidatorInfo {
                         pubkey: announcement.pubkey,
                         reputation: 500,
                         blocks_proposed: 0,
                         votes_cast: 0,
                         correct_votes: 0,
-                        stake: MIN_VALIDATOR_STAKE,
+                        stake: if already_staked >= MIN_VALIDATOR_STAKE {
+                            already_staked
+                        } else {
+                            MIN_VALIDATOR_STAKE
+                        },
                         joined_slot: announcement.current_slot,
                         last_active_slot: announcement.current_slot,
                     };
@@ -4350,9 +4477,14 @@ async fn run_validator() {
                     {
                         let mut pool = stake_pool_for_announce.lock().await;
                         if pool.get_stake(&announcement.pubkey).is_none() {
+                            let stake_amount = if already_staked >= MIN_VALIDATOR_STAKE {
+                                already_staked
+                            } else {
+                                MIN_VALIDATOR_STAKE
+                            };
                             if let Err(e) = pool.stake(
                                 announcement.pubkey,
-                                MIN_VALIDATOR_STAKE,
+                                stake_amount,
                                 announcement.current_slot,
                             ) {
                                 warn!(
@@ -4364,78 +4496,77 @@ async fn run_validator() {
                             info!(
                                 "💰 Staked joining validator {} in local pool ({} MOLT)",
                                 announcement.pubkey.to_base58(),
-                                MIN_VALIDATOR_STAKE / 1_000_000_000
+                                stake_amount / 1_000_000_000
                             );
                         }
                     }
 
-                    // Create bootstrap account for the joining validator if not present locally
-                    // Must deduct from treasury — same as local bootstrap path (L2305-2312)
-                    {
-                        let existing_account = state_for_validators
-                            .get_account(&announcement.pubkey)
-                            .unwrap_or(None);
-                        let needs_bootstrap = match &existing_account {
-                            None => true,
-                            Some(acct) => acct.staked == 0,
-                        };
-                        if needs_bootstrap {
-                            // Deduct from treasury to avoid minting tokens ex nihilo
-                            let mut funded = false;
-                            if let Ok(Some(tpk)) = state_for_validators.get_treasury_pubkey() {
-                                if let Ok(Some(mut treasury)) =
-                                    state_for_validators.get_account(&tpk)
-                                {
-                                    if treasury.spendable >= MIN_VALIDATOR_STAKE {
-                                        treasury.deduct_spendable(MIN_VALIDATOR_STAKE).ok();
-                                        if let Err(e) =
-                                            state_for_validators.put_account(&tpk, &treasury)
-                                        {
-                                            warn!("⚠️  Failed to debit treasury for remote bootstrap: {}", e);
-                                        } else {
-                                            funded = true;
-                                        }
+                    // Bootstrap account only if the validator doesn't already have sufficient stake
+                    if needs_bootstrap {
+                        // Deduct from treasury to avoid minting tokens ex nihilo
+                        let mut funded = false;
+                        if let Ok(Some(tpk)) = state_for_validators.get_treasury_pubkey() {
+                            if let Ok(Some(mut treasury)) =
+                                state_for_validators.get_account(&tpk)
+                            {
+                                if treasury.spendable >= MIN_VALIDATOR_STAKE {
+                                    treasury.deduct_spendable(MIN_VALIDATOR_STAKE).ok();
+                                    if let Err(e) =
+                                        state_for_validators.put_account(&tpk, &treasury)
+                                    {
+                                        warn!("⚠️  Failed to debit treasury for remote bootstrap: {}", e);
                                     } else {
-                                        warn!("⚠️  Treasury insufficient for remote validator bootstrap ({} < {})",
-                                            treasury.spendable, MIN_VALIDATOR_STAKE);
+                                        funded = true;
                                     }
-                                }
-                            }
-
-                            if funded {
-                                let mut bootstrap_account = Account {
-                                    shells: MIN_VALIDATOR_STAKE,
-                                    spendable: 0,
-                                    staked: MIN_VALIDATOR_STAKE,
-                                    locked: 0,
-                                    data: Vec::new(),
-                                    owner: SYSTEM_ACCOUNT_OWNER,
-                                    executable: false,
-                                    rent_epoch: 0,
-                                };
-                                // Preserve any existing spendable balance (from block rewards)
-                                if let Some(existing) = &existing_account {
-                                    bootstrap_account.shells += existing.spendable;
-                                    bootstrap_account.spendable = existing.spendable;
-                                }
-                                if let Err(e) = state_for_validators
-                                    .put_account(&announcement.pubkey, &bootstrap_account)
-                                {
-                                    warn!(
-                                        "⚠️  Failed to create bootstrap account for {}: {}",
-                                        announcement.pubkey, e
-                                    );
                                 } else {
-                                    info!(
-                                        "💰 Created bootstrap account for validator {} (10000 MOLT staked, treasury debited)",
-                                        announcement.pubkey.to_base58()
-                                    );
+                                    warn!("⚠️  Treasury insufficient for remote validator bootstrap ({} < {})",
+                                        treasury.spendable, MIN_VALIDATOR_STAKE);
                                 }
-                            } else {
-                                warn!("⚠️  Skipping bootstrap account for {} — treasury unavailable or insufficient",
-                                    announcement.pubkey.to_base58());
                             }
                         }
+
+                        if funded {
+                            let mut bootstrap_account = Account {
+                                shells: MIN_VALIDATOR_STAKE,
+                                spendable: 0,
+                                staked: MIN_VALIDATOR_STAKE,
+                                locked: 0,
+                                data: Vec::new(),
+                                owner: SYSTEM_ACCOUNT_OWNER,
+                                executable: false,
+                                rent_epoch: 0,
+                            };
+                            // Preserve any existing spendable balance (from block rewards)
+                            if let Some(existing) = &existing_account {
+                                bootstrap_account.shells += existing.spendable;
+                                bootstrap_account.spendable = existing.spendable;
+                            }
+                            if let Err(e) = state_for_validators
+                                .put_account(&announcement.pubkey, &bootstrap_account)
+                            {
+                                warn!(
+                                    "⚠️  Failed to create bootstrap account for {}: {}",
+                                    announcement.pubkey, e
+                                );
+                            } else {
+                                bootstrap_count += 1;
+                                info!(
+                                    "💰 Created bootstrap account for validator {} (10000 MOLT staked, treasury debited) [{}/{}]",
+                                    announcement.pubkey.to_base58(),
+                                    bootstrap_count,
+                                    MAX_BOOTSTRAPS_PER_EPOCH,
+                                );
+                            }
+                        } else {
+                            warn!("⚠️  Skipping bootstrap account for {} — treasury unavailable or insufficient",
+                                announcement.pubkey.to_base58());
+                        }
+                    } else {
+                        info!(
+                            "✅ Validator {} already has sufficient on-chain stake ({}), skipping bootstrap",
+                            announcement.pubkey.to_base58(),
+                            already_staked
+                        );
                     }
                 }
 

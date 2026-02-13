@@ -168,7 +168,8 @@ fn accrue_protocol_fee(amount_out: u64, is_token_a: bool) -> u64 {
         .map(|d| bytes_to_u64(&d))
         .unwrap_or(0);
     storage_set(fee_key, &u64_to_bytes(accrued + protocol_cut));
-    amount_out
+    // AUDIT-FIX 1.11: Return amount MINUS protocol cut — was returning full amount_out
+    amount_out - protocol_cut
 }
 
 /// Initialize the liquidity pool
@@ -208,6 +209,11 @@ pub extern "C" fn add_liquidity(
     amount_b: u64,
     min_liquidity: u64,
 ) -> u64 {
+    // AUDIT-FIX 1.10: Add reentrancy_enter() — was missing, causing
+    // reentrancy_exit() to clear the guard for concurrent operations.
+    if !reentrancy_enter() {
+        return 0;
+    }
     unsafe {
         let provider_slice = core::slice::from_raw_parts(provider_ptr, 32);
         let mut provider_addr = [0u8; 32];
@@ -297,8 +303,8 @@ pub extern "C" fn swap_a_for_b(amount_a_in: u64, min_amount_b_out: u64) -> u64 {
     match pool.swap_a_for_b(amount_a_in, min_amount_b_out) {
         Ok(amount_b_out) => {
             log_info("Swap A->B successful");
-            // v2: Protocol fee accrual
-            accrue_protocol_fee(amount_b_out, false);
+            // AUDIT-FIX 1.11: Use the fee-deducted amount
+            let amount_b_out = accrue_protocol_fee(amount_b_out, false);
 
             let bonus = get_reputation_bonus(amount_b_out);
             let final_out = if bonus > 0 {
@@ -348,8 +354,8 @@ pub extern "C" fn swap_b_for_a(amount_b_in: u64, min_amount_a_out: u64) -> u64 {
     match pool.swap_b_for_a(amount_b_in, min_amount_a_out) {
         Ok(amount_a_out) => {
             log_info("Swap B->A successful");
-            // v2: Protocol fee accrual
-            accrue_protocol_fee(amount_a_out, true);
+            // AUDIT-FIX 1.11: Use the fee-deducted amount
+            let amount_a_out = accrue_protocol_fee(amount_a_out, true);
 
             let bonus = get_reputation_bonus(amount_a_out);
             let final_out = if bonus > 0 {
