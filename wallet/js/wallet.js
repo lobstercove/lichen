@@ -720,6 +720,9 @@ async function finishCreateWallet() {
     
     showToast('Wallet created successfully!');
     showDashboard();
+    
+    // Auto-register EVM address for MetaMask compatibility (non-blocking)
+    registerEvmAddress(wallet, password);
 }
 
 // ===== IMPORT WALLET =====
@@ -784,6 +787,9 @@ async function importWalletSeed() {
     
     showToast('Wallet imported successfully!');
     showDashboard();
+    
+    // Auto-register EVM address for MetaMask compatibility (non-blocking)
+    registerEvmAddress(wallet, password);
 }
 
 async function importWalletPrivateKey() {
@@ -820,6 +826,9 @@ async function importWalletPrivateKey() {
     
     showToast('Wallet imported successfully!');
     showDashboard();
+    
+    // Auto-register EVM address for MetaMask compatibility (non-blocking)
+    registerEvmAddress(wallet, password);
 }
 
 async function importWalletJson() {
@@ -882,6 +891,9 @@ async function importWalletJson() {
             
             showToast('✅ Wallet imported from JSON keystore!');
             showDashboard();
+            
+            // Auto-register EVM address for MetaMask compatibility (non-blocking)
+            registerEvmAddress(wallet, password);
         } catch (error) {
             alert('Invalid JSON file: ' + error.message);
         }
@@ -1919,6 +1931,58 @@ function generateEVMAddress(base58Address) {
         
         // Return error placeholder instead of broken fallback
         return '0x' + '0'.repeat(40);
+    }
+}
+
+// Auto-register EVM address on-chain for seamless MetaMask compatibility
+// Sends system instruction opcode 12 with the 20-byte EVM address
+async function registerEvmAddress(wallet, password) {
+    try {
+        const evmAddress = generateEVMAddress(wallet.address);
+        if (!evmAddress || evmAddress === '0x' + '0'.repeat(40)) {
+            console.warn('EVM address generation failed, skipping registration');
+            return;
+        }
+
+        // Strip 0x prefix and decode hex to 20 bytes
+        const evmHex = evmAddress.slice(2);
+        const evmBytes = new Uint8Array(20);
+        for (let i = 0; i < 20; i++) {
+            evmBytes[i] = parseInt(evmHex.substr(i * 2, 2), 16);
+        }
+
+        // Build instruction: opcode 12 + 20-byte EVM address = 21 bytes
+        const instructionData = new Uint8Array(21);
+        instructionData[0] = 12;
+        instructionData.set(evmBytes, 1);
+
+        const systemProgram = new Uint8Array(32).fill(1);
+        const fromPubkey = MoltCrypto.hexToBytes(wallet.publicKey);
+        const latestBlock = await rpc.getLatestBlock();
+
+        const message = {
+            instructions: [{
+                program_id: Array.from(systemProgram),
+                accounts: [Array.from(fromPubkey)],
+                data: Array.from(instructionData)
+            }],
+            blockhash: latestBlock.hash
+        };
+
+        const privateKey = await MoltCrypto.decryptPrivateKey(wallet.encryptedKey, password);
+        const messageBytes = new TextEncoder().encode(JSON.stringify(message));
+        const signature = await MoltCrypto.signTransaction(privateKey, messageBytes);
+
+        const transaction = { signatures: [Array.from(signature)], message };
+        const txBytes = new TextEncoder().encode(JSON.stringify(transaction));
+        const txBase64 = btoa(String.fromCharCode(...txBytes));
+
+        await rpc.sendTransaction(txBase64);
+        console.log('EVM address registered:', evmAddress, '→', wallet.address);
+    } catch (error) {
+        // Don't block wallet creation on registration failure
+        // (e.g. network down, account not funded yet)
+        console.warn('EVM address registration deferred:', error.message);
     }
 }
 
