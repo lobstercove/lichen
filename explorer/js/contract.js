@@ -132,12 +132,27 @@ async function loadContract() {
         const regMeta = registry?.metadata || {};
         const infoMeta = info?.token_metadata || {};
         const decimals = regMeta.decimals ?? infoMeta.decimals ?? 9;
-        const supply = regMeta.total_supply ?? regMeta.supply ?? infoMeta.total_supply ?? null;
+        let supply = regMeta.total_supply ?? regMeta.supply ?? infoMeta.total_supply ?? null;
 
         document.getElementById('tokenDecimals').textContent = decimals;
         document.getElementById('tokenTemplate').textContent = template || 'mt20';
 
-        if (supply !== null) {
+        // For native MOLT token, fetch live supply from getMetrics
+        const isNative = info?.is_native || regMeta.is_native || (symbol === 'MOLT');
+        if (isNative) {
+            try {
+                const metrics = await rpc.call('getMetrics');
+                if (metrics?.total_supply) {
+                    supply = metrics.total_supply;
+                }
+                // Holders = total accounts for native token
+                if (metrics?.total_accounts !== undefined) {
+                    document.getElementById('tokenHolders').textContent = formatNumber(metrics.total_accounts);
+                }
+            } catch (e) {}
+        }
+
+        if (supply !== null && supply !== undefined) {
             document.getElementById('tokenSupply').textContent =
                 formatNumber(supply / Math.pow(10, decimals)) + (symbol ? ' ' + symbol : '');
         }
@@ -157,13 +172,15 @@ async function loadContract() {
             : burnable === false ? '<span style="color:var(--text-muted);"><i class="fas fa-times"></i> No</span>'
             : '<span style="color:var(--text-muted);">--</span>';
 
-        // Token holders
-        try {
-            const holders = await rpc.call('getTokenHolders', [contractAddress, { limit: 1 }]).catch(() => null);
-            if (holders?.count !== undefined) {
-                document.getElementById('tokenHolders').textContent = formatNumber(holders.count);
-            }
-        } catch (e) {}
+        // Token holders (non-native tokens: use getTokenHolders RPC)
+        if (!isNative) {
+            try {
+                const holders = await rpc.call('getTokenHolders', [contractAddress, 1]).catch(() => null);
+                if (holders?.count !== undefined) {
+                    document.getElementById('tokenHolders').textContent = formatNumber(holders.count);
+                }
+            } catch (e) {}
+        }
     }
 
     // Contract metadata section (for non-tokens or any contract with extra metadata)

@@ -1494,17 +1494,37 @@ fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey) {
             warn!("  WARN {}: index_program error: {}", symbol, e);
         }
 
-        // Register in symbol registry
+        // Register in symbol registry with rich token metadata
+        let mut meta = serde_json::json!({
+            "genesis_deploy": true,
+            "wasm_size": account.data.len(),
+        });
+        // Enrich token/wrapped contracts with MT-20 metadata
+        match template {
+            "token" => {
+                // MOLT native token: 1B supply, 9 decimals
+                meta["total_supply"] = serde_json::json!(1_000_000_000_u64 * 1_000_000_000_u64);
+                meta["decimals"] = serde_json::json!(9);
+                meta["mintable"] = serde_json::json!(true);
+                meta["burnable"] = serde_json::json!(true);
+                meta["is_native"] = serde_json::json!(true);
+            }
+            "wrapped" => {
+                // Wrapped tokens start at 0 supply, 9 decimals
+                meta["total_supply"] = serde_json::json!(0);
+                meta["decimals"] = serde_json::json!(9);
+                meta["mintable"] = serde_json::json!(true);
+                meta["burnable"] = serde_json::json!(true);
+            }
+            _ => {}
+        }
         let entry = SymbolRegistryEntry {
             symbol: symbol.to_string(),
             program: program_pubkey,
             owner: *deployer_pubkey,
             name: Some(display_name.to_string()),
             template: Some(template.to_string()),
-            metadata: Some(serde_json::json!({
-                "genesis_deploy": true,
-                "wasm_size": account.data.len(),
-            })),
+            metadata: Some(meta),
         };
         if let Err(e) = state.register_symbol(symbol, entry) {
             warn!("  WARN {}: register_symbol error: {}", symbol, e);

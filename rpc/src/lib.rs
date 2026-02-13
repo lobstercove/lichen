@@ -3929,6 +3929,51 @@ async fn handle_get_contract_info(
             .unwrap()
             .insert("token_metadata".to_string(), tm);
     }
+
+    // Enrich with registry metadata fallback (for supply, decimals, etc.)
+    if let Ok(Some(reg)) = state.state.get_symbol_registry_by_program(&contract_id) {
+        if let Some(reg_meta) = &reg.metadata {
+            let rm = result.as_object_mut().unwrap();
+            // If token_metadata doesn't exist yet, create it from registry
+            if !rm.contains_key("token_metadata") {
+                let mut tmeta = serde_json::Map::new();
+                if let Some(v) = reg_meta.get("total_supply") {
+                    tmeta.insert("total_supply".to_string(), v.clone());
+                }
+                if let Some(v) = reg_meta.get("decimals") {
+                    tmeta.insert("decimals".to_string(), v.clone());
+                }
+                if let Some(v) = reg_meta.get("mintable") {
+                    tmeta.insert("mintable".to_string(), v.clone());
+                }
+                if let Some(v) = reg_meta.get("burnable") {
+                    tmeta.insert("burnable".to_string(), v.clone());
+                }
+                if !tmeta.is_empty() {
+                    rm.insert(
+                        "token_metadata".to_string(),
+                        serde_json::Value::Object(tmeta),
+                    );
+                }
+            } else if let Some(tm) = rm.get_mut("token_metadata") {
+                // Merge missing fields from registry into existing token_metadata
+                if let Some(tm_obj) = tm.as_object_mut() {
+                    for key in &["total_supply", "decimals", "mintable", "burnable"] {
+                        if !tm_obj.contains_key(*key) {
+                            if let Some(v) = reg_meta.get(*key) {
+                                tm_obj.insert(key.to_string(), v.clone());
+                            }
+                        }
+                    }
+                }
+            }
+            // Add is_native flag if present
+            if reg_meta.get("is_native").and_then(|v| v.as_bool()) == Some(true) {
+                rm.insert("is_native".to_string(), serde_json::json!(true));
+            }
+        }
+    }
+
     Ok(result)
 }
 
