@@ -2930,6 +2930,7 @@ async fn handle_get_metrics(state: &RpcState) -> Result<serde_json::Value, RpcEr
     Ok(serde_json::json!({
         "tps": metrics.tps,
         "total_transactions": metrics.total_transactions,
+        "daily_transactions": metrics.daily_transactions,
         "total_blocks": metrics.total_blocks,
         "average_block_time": metrics.average_block_time,
         "avg_block_time_ms": metrics.average_block_time * 1000.0,

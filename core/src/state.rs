@@ -94,6 +94,8 @@ pub struct Metrics {
     pub active_accounts: u64, // Accounts with non-zero balance
     pub total_supply: u64,
     pub total_burned: u64,
+    /// Transactions counted since midnight UTC (server-side, same for all)
+    pub daily_transactions: u64,
 }
 
 /// Metrics tracker with rolling window for TPS
@@ -107,6 +109,10 @@ pub struct MetricsStore {
     // Track block times for average calculation
     last_block_time: Mutex<u64>,
     block_times: Mutex<VecDeque<u64>>, // Last 100 block times
+    /// Daily transaction counter (resets at midnight UTC)
+    daily_transactions: Mutex<u64>,
+    /// Date string (YYYY-MM-DD) for daily counter reset detection
+    daily_date: Mutex<String>,
 }
 
 impl Default for MetricsStore {
@@ -117,6 +123,7 @@ impl Default for MetricsStore {
 
 impl MetricsStore {
     pub fn new() -> Self {
+        let today = Self::today_utc();
         MetricsStore {
             window: Mutex::new(VecDeque::new()),
             total_transactions: Mutex::new(0),
@@ -125,7 +132,37 @@ impl MetricsStore {
             active_accounts: Mutex::new(0),
             last_block_time: Mutex::new(0),
             block_times: Mutex::new(VecDeque::new()),
+            daily_transactions: Mutex::new(0),
+            daily_date: Mutex::new(today),
         }
+    }
+
+    /// Get current UTC date as YYYY-MM-DD
+    fn today_utc() -> String {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let days = secs / 86400;
+        // Simple date calc from days since epoch
+        let (y, m, d) = Self::days_to_ymd(days);
+        format!("{:04}-{:02}-{:02}", y, m, d)
+    }
+
+    /// Convert days since Unix epoch to (year, month, day)
+    fn days_to_ymd(days: u64) -> (u64, u64, u64) {
+        // Civil calendar from days since epoch (Gregorian)
+        let z = days + 719468;
+        let era = z / 146097;
+        let doe = z - era * 146097;
+        let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+        let y = yoe + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y = if m <= 2 { y + 1 } else { y };
+        (y, m, d)
     }
 
     /// Track a new block
@@ -162,6 +199,19 @@ impl MetricsStore {
         {
             let mut total_blocks = self.total_blocks.lock().unwrap_or_else(|e| e.into_inner());
             *total_blocks += 1;
+        }
+
+        // Update daily transaction counter (reset at midnight UTC)
+        {
+            let today = Self::today_utc();
+            let mut daily_date = self.daily_date.lock().unwrap_or_else(|e| e.into_inner());
+            let mut daily_txs = self.daily_transactions.lock().unwrap_or_else(|e| e.into_inner());
+            if *daily_date != today {
+                *daily_date = today;
+                *daily_txs = tx_count;
+            } else {
+                *daily_txs += tx_count;
+            }
         }
 
         // Track block time
@@ -234,6 +284,10 @@ impl MetricsStore {
             active_accounts, // Use provided active count from DB
             total_supply,
             total_burned,
+            daily_transactions: *self
+                .daily_transactions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
         }
     }
 
@@ -286,6 +340,32 @@ impl MetricsStore {
                     .unwrap_or_else(|e| e.into_inner());
                 *total = count;
             }
+        }
+
+        // Load daily transactions + date (reset if date changed)
+        let today = Self::today_utc();
+        let stored_date = db
+            .get_cf(&cf, b"daily_date")
+            .ok()
+            .flatten()
+            .and_then(|d| String::from_utf8(d).ok())
+            .unwrap_or_default();
+        if stored_date == today {
+            if let Ok(Some(data)) = db.get_cf(&cf, b"daily_transactions") {
+                if let Ok(bytes) = data.as_slice().try_into() {
+                    let count = u64::from_le_bytes(bytes);
+                    let mut daily = self
+                        .daily_transactions
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    *daily = count;
+                }
+            }
+        }
+        // If stored_date != today, daily_transactions stays at 0 (already default)
+        {
+            let mut dd = self.daily_date.lock().unwrap_or_else(|e| e.into_inner());
+            *dd = today;
         }
 
         Ok(())
@@ -376,6 +456,21 @@ impl MetricsStore {
             .unwrap_or_else(|e| e.into_inner());
         db.put_cf(&cf, b"active_accounts", active_accounts.to_le_bytes())
             .map_err(|e| format!("Failed to save active accounts: {}", e))?;
+
+        // Save daily transactions + date
+        let daily_txs = *self
+            .daily_transactions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        db.put_cf(&cf, b"daily_transactions", daily_txs.to_le_bytes())
+            .map_err(|e| format!("Failed to save daily transactions: {}", e))?;
+        let daily_date = self
+            .daily_date
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        db.put_cf(&cf, b"daily_date", daily_date.as_bytes())
+            .map_err(|e| format!("Failed to save daily date: {}", e))?;
 
         Ok(())
     }
