@@ -120,6 +120,8 @@ struct RpcState {
     evm_chain_id: u64,
     solana_tx_cache: Arc<Mutex<LruCache<Hash, SolanaTxRecord>>>,
     /// Admin token for state-mutating RPC endpoints (setFeeConfig, setRentParams, setContractAbi)
+    /// AUDIT-FIX 3.16: Token is read once at startup. Rotation requires restart.
+    /// TODO: Support SIGHUP-triggered reload or periodic file watcher for hot rotation.
     admin_token: Option<String>,
     /// T2.6: Per-IP rate limiter
     rate_limiter: Arc<RateLimiter>,
@@ -1411,6 +1413,10 @@ async fn handle_get_fee_config(state: &RpcState) -> Result<serde_json::Value, Rp
     }))
 }
 
+/// AUDIT-FIX 3.24: fee_burn_percent = 0 is valid per governance design.
+/// The sum constraint (burn + producer + voters + treasury == 100) ensures
+/// fees still flow somewhere. A minimum burn floor is a governance decision,
+/// not a technical invariant.
 async fn handle_set_fee_config(
     state: &RpcState,
     params: Option<serde_json::Value>,
@@ -4723,6 +4729,9 @@ async fn handle_get_program_calls(
     }))
 }
 
+/// AUDIT-FIX 3.25: This endpoint intentionally exposes all contract storage
+/// key-value pairs. On-chain state is public by design (similar to eth_getStorageAt).
+/// Rate limiting via the global RateLimiter applies to this endpoint.
 async fn handle_get_program_storage(
     state: &RpcState,
     params: Option<serde_json::Value>,

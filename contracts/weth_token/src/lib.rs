@@ -289,10 +289,10 @@ pub extern "C" fn mint(caller: *const u8, to: *const u8, amount: u64) -> u32 {
     );
 
     let evt_count = load_u64(MINT_EVENT_COUNT_KEY);
-    save_u64(MINT_EVENT_COUNT_KEY, evt_count + 1);
+    save_u64(MINT_EVENT_COUNT_KEY, evt_count.saturating_add(1));
 
     let mut msg = Vec::from(&b"MINT wETH #"[..]);
-    msg.extend_from_slice(&u64_to_decimal(evt_count + 1));
+    msg.extend_from_slice(&u64_to_decimal(evt_count.saturating_add(1)));
     msg.extend_from_slice(b": ");
     msg.extend_from_slice(&u64_to_decimal(amount));
     msg.extend_from_slice(b" wei to 0x");
@@ -341,10 +341,10 @@ pub extern "C" fn burn(caller: *const u8, amount: u64) -> u32 {
     );
 
     let evt_count = load_u64(BURN_EVENT_COUNT_KEY);
-    save_u64(BURN_EVENT_COUNT_KEY, evt_count + 1);
+    save_u64(BURN_EVENT_COUNT_KEY, evt_count.saturating_add(1));
 
     let mut msg = Vec::from(&b"BURN wETH #"[..]);
-    msg.extend_from_slice(&u64_to_decimal(evt_count + 1));
+    msg.extend_from_slice(&u64_to_decimal(evt_count.saturating_add(1)));
     msg.extend_from_slice(b": ");
     msg.extend_from_slice(&u64_to_decimal(amount));
     msg.extend_from_slice(b" wei from 0x");
@@ -398,7 +398,7 @@ pub extern "C" fn transfer(from: *const u8, to: *const u8, amount: u64) -> u32 {
     save_u64(&from_bk, from_bal - amount);
     save_u64(&to_bk, to_bal.saturating_add(amount));
 
-    save_u64(TRANSFER_COUNT_KEY, load_u64(TRANSFER_COUNT_KEY) + 1);
+    save_u64(TRANSFER_COUNT_KEY, load_u64(TRANSFER_COUNT_KEY).saturating_add(1));
 
     reentrancy_exit();
     0
@@ -487,7 +487,7 @@ pub extern "C" fn transfer_from(
     save_u64(&to_bk, to_bal.saturating_add(amount));
     save_u64(&ak, allowed - amount);
 
-    save_u64(TRANSFER_COUNT_KEY, load_u64(TRANSFER_COUNT_KEY) + 1);
+    save_u64(TRANSFER_COUNT_KEY, load_u64(TRANSFER_COUNT_KEY).saturating_add(1));
 
     reentrancy_exit();
     0
@@ -525,10 +525,10 @@ pub extern "C" fn attest_reserves(
     record.extend_from_slice(&u64_to_bytes(get_slot()));
     record.extend_from_slice(&hash);
     storage_set(&ak, &record);
-    save_u64(ATTESTATION_COUNT_KEY, count + 1);
+    save_u64(ATTESTATION_COUNT_KEY, count.saturating_add(1));
 
     let mut msg = Vec::from(&b"wETH RESERVE ATTESTATION #"[..]);
-    msg.extend_from_slice(&u64_to_decimal(count + 1));
+    msg.extend_from_slice(&u64_to_decimal(count.saturating_add(1)));
     msg.extend_from_slice(b": ");
     msg.extend_from_slice(&u64_to_decimal(reserve_amount));
     msg.extend_from_slice(b" wei backing declared");

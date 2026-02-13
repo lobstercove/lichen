@@ -5,6 +5,7 @@ use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use tracing::warn;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PeerStoreData {
@@ -70,7 +71,20 @@ impl PeerStore {
         }
 
         if let Ok(json) = serde_json::to_string_pretty(&data_to_write) {
-            let _ = fs::write(&self.path, json);
+            // AUDIT-FIX 3.15: Write + fsync to prevent data loss on power failure
+            match fs::File::create(&self.path) {
+                Ok(mut file) => {
+                    use std::io::Write;
+                    if let Err(e) = file.write_all(json.as_bytes()) {
+                        warn!("peer_store: write failed: {}", e);
+                    } else if let Err(e) = file.sync_all() {
+                        warn!("peer_store: fsync failed: {}", e);
+                    }
+                }
+                Err(e) => {
+                    warn!("peer_store: create failed: {}", e);
+                }
+            }
         }
     }
 

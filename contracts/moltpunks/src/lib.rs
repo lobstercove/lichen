@@ -27,6 +27,12 @@ fn make_nft() -> NFT {
 /// Initialize the NFT collection
 #[no_mangle]
 pub extern "C" fn initialize(minter_ptr: *const u8) {
+    // AUDIT-FIX 3.18: Re-initialization guard
+    if storage_get(b"collection_name").is_some() {
+        log_info("MoltPunks already initialized — ignoring");
+        return;
+    }
+
     unsafe {
         // Parse minter address
         let minter_slice = core::slice::from_raw_parts(minter_ptr, 32);

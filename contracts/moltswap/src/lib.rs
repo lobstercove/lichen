@@ -118,6 +118,10 @@ fn twap_update() {
         let price_a_scaled = ((last_rb as u128) << 32) / (last_ra as u128);
         let price_b_scaled = ((last_ra as u128) << 32) / (last_rb as u128);
 
+        // AUDIT-FIX 3.19: wrapping_add is intentional — Uniswap V2 TWAP design.
+        // Cumulative prices are meant to overflow; consumers compute the delta
+        // between two snapshots using wrapping_sub to derive the average price
+        // over an interval. The `as u64` truncation is also by design.
         let new_cum_a = (cum_a as u128).wrapping_add(price_a_scaled * elapsed as u128) as u64;
         let new_cum_b = (cum_b as u128).wrapping_add(price_b_scaled * elapsed as u128) as u64;
 
@@ -290,7 +294,8 @@ pub extern "C" fn swap_a_for_b(amount_a_in: u64, min_amount_b_out: u64) -> u64 {
     // v2: TWAP oracle update before reserve change
     twap_update();
 
-    let pool = load_pool();
+    // AUDIT-FIX 3.20: Load pool once, use for both price impact check and swap
+    let mut pool = load_pool();
 
     // v2: Price impact guard
     if !check_price_impact(pool.reserve_a, pool.reserve_b, amount_a_in) {
@@ -299,7 +304,6 @@ pub extern "C" fn swap_a_for_b(amount_a_in: u64, min_amount_b_out: u64) -> u64 {
         return 0;
     }
 
-    let mut pool = load_pool();
     match pool.swap_a_for_b(amount_a_in, min_amount_b_out) {
         Ok(amount_b_out) => {
             log_info("Swap A->B successful");
@@ -341,7 +345,8 @@ pub extern "C" fn swap_b_for_a(amount_b_in: u64, min_amount_a_out: u64) -> u64 {
     // v2: TWAP oracle update before reserve change
     twap_update();
 
-    let pool = load_pool();
+    // AUDIT-FIX 3.20: Load pool once, use for both price impact check and swap
+    let mut pool = load_pool();
 
     // v2: Price impact guard
     if !check_price_impact(pool.reserve_b, pool.reserve_a, amount_b_in) {
@@ -350,7 +355,6 @@ pub extern "C" fn swap_b_for_a(amount_b_in: u64, min_amount_a_out: u64) -> u64 {
         return 0;
     }
 
-    let mut pool = load_pool();
     match pool.swap_b_for_a(amount_b_in, min_amount_a_out) {
         Ok(amount_a_out) => {
             log_info("Swap B->A successful");

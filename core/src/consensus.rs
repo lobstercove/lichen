@@ -75,6 +75,9 @@ impl RewardConfig {
     /// Calculate adjusted reward based on current price
     /// Formula: reward = base_reward * (reference_price / current_price)
     /// Maintains consistent USD value regardless of MOLT price
+    /// AUDIT-FIX 3.3: f64 is used because price inputs are inherently floating-point.
+    /// This is acceptable for oracle-driven reward adjustment; the base rewards
+    /// (HEARTBEAT_BLOCK_REWARD, TRANSACTION_BLOCK_REWARD) used in consensus are u64 constants.
     pub fn get_adjusted_transaction_reward(&self, current_price_usd: f64) -> u64 {
         if current_price_usd <= 0.0 {
             return self.base_transaction_reward;
@@ -168,8 +171,9 @@ pub fn epoch_start_slot(epoch: u64) -> u64 {
 }
 
 /// Check if a slot is the first slot of a new epoch
+/// AUDIT-FIX 3.21: Use modulo instead of nightly-only is_multiple_of
 pub fn is_epoch_boundary(slot: u64) -> bool {
-    slot > 0 && slot.is_multiple_of(SLOTS_PER_EPOCH)
+    slot > 0 && slot % SLOTS_PER_EPOCH == 0
 }
 
 /// Summary of an epoch's parameters
@@ -271,6 +275,10 @@ impl StakeInfo {
     }
 
     /// Slash stake by amount (returns amount actually slashed)
+    /// AUDIT-FIX 3.4: Design is additive slashing on principal with proportional
+    /// vesting adjustment. amount is absolute shells to slash (not a percentage).
+    /// Vesting fields (earned_amount, bootstrap_debt) are scaled proportionally
+    /// to maintain consistent vesting ratios after the principal is reduced.
     pub fn slash(&mut self, amount: u64) -> u64 {
         let slashed = amount.min(self.amount);
         if slashed == 0 || self.amount == 0 {
@@ -356,6 +364,7 @@ impl StakeInfo {
         }
         // APY = (annual_inflation / total_staked) * 100
         // Higher stake concentration = lower individual APY
+        // AUDIT-FIX 3.3: APY is display-only (not consensus-critical), f64 is acceptable
         let annual_rewards = (BLOCK_REWARD * SLOTS_PER_YEAR) as f64;
         (annual_rewards / total_staked as f64) * 100.0
     }
@@ -1182,13 +1191,17 @@ impl ValidatorSet {
     }
 }
 
+// AUDIT-FIX 3.3: Use Newton's method with pure integer arithmetic
+// instead of f64 intermediate for deterministic consensus results.
 fn integer_sqrt(value: u64) -> u64 {
-    let mut x = (value as f64).sqrt() as u64;
-    while x.saturating_mul(x) > value {
-        x = x.saturating_sub(1);
+    if value == 0 {
+        return 0;
     }
-    while (x + 1).saturating_mul(x + 1) <= value {
-        x = x.saturating_add(1);
+    let mut x = value;
+    let mut y = (x + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + value / x) / 2;
     }
     x
 }
