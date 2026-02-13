@@ -779,7 +779,12 @@ pub fn build_rpc_router(
                 let host_only = host.split(':').next().unwrap_or("");
                 host_only == "localhost"
                     || host_only == "127.0.0.1"
-                    || host_only.ends_with(".moltchain.io")
+                    // AUDIT-FIX 2.14: Explicit subdomain allowlist instead of wildcard suffix
+                    || host_only == "moltchain.io"
+                    || host_only == "app.moltchain.io"
+                    || host_only == "rpc.moltchain.io"
+                    || host_only == "api.moltchain.io"
+                    || host_only == "explorer.moltchain.io"
             } else {
                 false
             }
@@ -4004,7 +4009,7 @@ async fn handle_get_contract_logs(
             message: "Invalid params: expected [contract_id, limit?]".to_string(),
         })?;
 
-    let limit = arr.get(1).and_then(|v| v.as_u64()).unwrap_or(100) as usize;
+    let limit = arr.get(1).and_then(|v| v.as_u64()).unwrap_or(100).min(1000) as usize; // AUDIT-FIX 2.16
 
     let contract_id = Pubkey::from_base58(contract_id_str).map_err(|e| RpcError {
         code: -32602,
@@ -5940,7 +5945,7 @@ async fn handle_get_token_holders(
             code: -32602,
             message: "Missing token_program".to_string(),
         })?;
-    let limit = arr.get(1).and_then(|v| v.as_u64()).unwrap_or(100) as usize;
+    let limit = arr.get(1).and_then(|v| v.as_u64()).unwrap_or(100).min(1000) as usize; // AUDIT-FIX 2.16
 
     let token_program = Pubkey::from_base58(token_str).map_err(|e| RpcError {
         code: -32602,
@@ -5994,7 +5999,7 @@ async fn handle_get_token_transfers(
             code: -32602,
             message: "Missing token_program".to_string(),
         })?;
-    let limit = arr.get(1).and_then(|v| v.as_u64()).unwrap_or(100) as usize;
+    let limit = arr.get(1).and_then(|v| v.as_u64()).unwrap_or(100).min(1000) as usize; // AUDIT-FIX 2.16
 
     let token_program = Pubkey::from_base58(token_str).map_err(|e| RpcError {
         code: -32602,
@@ -6051,7 +6056,7 @@ async fn handle_get_contract_events(
             code: -32602,
             message: "Missing program_id".to_string(),
         })?;
-    let limit = arr.get(1).and_then(|v| v.as_u64()).unwrap_or(100) as usize;
+    let limit = arr.get(1).and_then(|v| v.as_u64()).unwrap_or(100).min(1000) as usize; // AUDIT-FIX 2.16
 
     let program = Pubkey::from_base58(program_str).map_err(|e| RpcError {
         code: -32602,

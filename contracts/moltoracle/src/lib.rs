@@ -547,9 +547,8 @@ pub extern "C" fn submit_attestation(
     let timestamp = get_timestamp();
     
     // Load existing attestation or create new
-    let key = alloc::format!("attestation_{}", 
-        core::str::from_utf8(data_hash).unwrap_or("?")
-    );
+    // AUDIT-FIX 2.9: Use hex encoding to prevent non-UTF8 key collisions
+    let key = alloc::format!("attestation_{}", hex_encode(data_hash));
     
     let mut attestation = match storage_get(key.as_bytes()) {
         Some(existing) if existing.len() >= ATTESTATION_SIZE => existing,
