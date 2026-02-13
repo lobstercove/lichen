@@ -10,6 +10,7 @@ use alloc::vec::Vec;
 use moltchain_sdk::{
     storage_get, storage_set, log_info, set_return_data,
     bytes_to_u64, u64_to_bytes, get_timestamp,
+    Address, CrossCall, call_contract,
 };
 
 // ============================================================================
@@ -32,6 +33,11 @@ const ADMIN_KEY: &[u8] = b"cv_admin";
 /// Minimum shares locked permanently on first deposit to prevent
 /// ERC-4626 inflation / donation attack (T5.9)
 const MIN_LOCKED_SHARES: u64 = 1_000;
+
+/// Storage key for LobsterLend protocol address (lending yield source)
+const LOBSTERLEND_ADDRESS_KEY: &[u8] = b"cv_lobsterlend_addr";
+/// Storage key for MoltSwap protocol address (LP yield source)
+const MOLTSWAP_ADDRESS_KEY: &[u8] = b"cv_moltswap_addr";
 
 // ---- V2 constants ----
 const CV_PAUSE_KEY: &[u8] = b"cv_paused";
@@ -325,6 +331,71 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, shares_to_burn: u64) -> u64
 }
 
 // ============================================================================
+// PROTOCOL YIELD HELPERS
+// ============================================================================
+
+/// Compute simulated yield using a fixed APY rate (fallback when no protocol configured).
+/// yield = deployed * rate * slots / FEE_SCALE / 100
+fn simulated_yield(rate_bps: u64, deployed: u64, elapsed_slots: u64) -> u64 {
+    deployed * rate_bps * elapsed_slots / FEE_SCALE / 100
+}
+
+/// Query a real DeFi protocol for accrued yield via CrossCall.
+/// Returns `Some(yield_amount)` if protocol address is configured and call succeeds with ≥8 bytes.
+/// Returns `None` otherwise (fallback to simulated).
+fn query_protocol_yield(addr_key: &[u8], function: &str, deployed: u64, elapsed_slots: u64) -> Option<u64> {
+    let addr_bytes = storage_get(addr_key)?;
+    if addr_bytes.len() != 32 || addr_bytes.iter().all(|&b| b == 0) {
+        return None;
+    }
+    let mut addr = [0u8; 32];
+    addr.copy_from_slice(&addr_bytes);
+
+    // Build args: [deployed(8), elapsed_slots(8)]
+    let mut args = Vec::with_capacity(16);
+    args.extend_from_slice(&u64_to_bytes(deployed));
+    args.extend_from_slice(&u64_to_bytes(elapsed_slots));
+
+    let call = CrossCall::new(Address(addr), function, args);
+    match call_contract(call) {
+        Ok(result) if result.len() >= 8 => {
+            Some(bytes_to_u64(&result))
+        }
+        // Empty result (test mode) or error → None → fallback to simulated
+        _ => None,
+    }
+}
+
+/// Set protocol addresses for real yield sources. Admin only.
+/// Both addresses optional (pass zero to skip). Non-zero addresses are stored.
+///
+/// Returns: 0 success, 1 not admin
+#[no_mangle]
+pub extern "C" fn set_protocol_addresses(
+    caller_ptr: *const u8,
+    lobsterlend_ptr: *const u8,
+    moltswap_ptr: *const u8,
+) -> u32 {
+    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
+    if !is_cv_admin(caller) {
+        return 1;
+    }
+
+    let lobsterlend = unsafe { core::slice::from_raw_parts(lobsterlend_ptr, 32) };
+    let moltswap = unsafe { core::slice::from_raw_parts(moltswap_ptr, 32) };
+
+    if lobsterlend.iter().any(|&b| b != 0) {
+        storage_set(LOBSTERLEND_ADDRESS_KEY, lobsterlend);
+        log_info("✅ LobsterLend address configured");
+    }
+    if moltswap.iter().any(|&b| b != 0) {
+        storage_set(MOLTSWAP_ADDRESS_KEY, moltswap);
+        log_info("✅ MoltSwap address configured");
+    }
+    0
+}
+
+// ============================================================================
 // HARVEST & AUTO-COMPOUND
 // ============================================================================
 
@@ -353,7 +424,7 @@ pub extern "C" fn harvest() -> u32 {
     let strategy_count = load_u64(b"cv_strategy_count") as usize;
     let mut total_yield: u64 = 0;
 
-    // Simulate yield from each strategy
+    // Yield from each strategy — use real protocol data when available, simulated fallback
     for i in 0..strategy_count {
         let type_key = alloc::format!("cv_strat_type:{}", i);
         let alloc_key = alloc::format!("cv_strat_alloc:{}", i);
@@ -363,16 +434,22 @@ pub extern "C" fn harvest() -> u32 {
 
         let deployed = total_assets * allocation / 100;
 
-        // Yield rate depends on strategy type
-        let yield_rate = match strategy_type {
-            STRATEGY_LENDING => 300,   // ~3% APY
-            STRATEGY_LP => 500,        // ~5% APY (trading fees)
-            STRATEGY_STAKING => 800,   // ~8% APY (staking rewards)
+        let strategy_yield = match strategy_type {
+            STRATEGY_LENDING => {
+                query_protocol_yield(LOBSTERLEND_ADDRESS_KEY, "get_accrued_interest", deployed, elapsed_slots)
+                    .unwrap_or_else(|| simulated_yield(300, deployed, elapsed_slots))
+            }
+            STRATEGY_LP => {
+                query_protocol_yield(MOLTSWAP_ADDRESS_KEY, "get_lp_rewards", deployed, elapsed_slots)
+                    .unwrap_or_else(|| simulated_yield(500, deployed, elapsed_slots))
+            }
+            STRATEGY_STAKING => {
+                // Staking is protocol-level — always simulated
+                simulated_yield(800, deployed, elapsed_slots)
+            }
             _ => 0,
         };
 
-        // yield = deployed * rate * slots / 10B / 788M_slots_per_year
-        let strategy_yield = deployed * yield_rate * elapsed_slots / FEE_SCALE / 100;
         total_yield += strategy_yield;
 
         // Update deployed amount
@@ -1002,5 +1079,151 @@ mod tests {
         // Non-admin fails
         let other = [2u8; 32];
         assert_eq!(update_strategy_allocation(other.as_ptr(), 0, 10), 1);
+    }
+
+    // ====================================================================
+    // PROTOCOL YIELD INTEGRATION TESTS
+    // ====================================================================
+
+    #[test]
+    fn test_set_protocol_addresses_success() {
+        setup();
+        let admin = [1u8; 32];
+        initialize(admin.as_ptr());
+
+        let lobsterlend = [0xAA; 32];
+        let moltswap = [0xBB; 32];
+        assert_eq!(
+            set_protocol_addresses(admin.as_ptr(), lobsterlend.as_ptr(), moltswap.as_ptr()),
+            0
+        );
+
+        let stored_ll = test_mock::get_storage(LOBSTERLEND_ADDRESS_KEY).unwrap();
+        assert_eq!(stored_ll.as_slice(), &lobsterlend);
+        let stored_ms = test_mock::get_storage(MOLTSWAP_ADDRESS_KEY).unwrap();
+        assert_eq!(stored_ms.as_slice(), &moltswap);
+    }
+
+    #[test]
+    fn test_set_protocol_addresses_not_admin() {
+        setup();
+        let admin = [1u8; 32];
+        initialize(admin.as_ptr());
+
+        let other = [99u8; 32];
+        let addr = [0xAA; 32];
+        assert_eq!(
+            set_protocol_addresses(other.as_ptr(), addr.as_ptr(), addr.as_ptr()),
+            1
+        );
+    }
+
+    #[test]
+    fn test_set_protocol_addresses_partial() {
+        setup();
+        let admin = [1u8; 32];
+        initialize(admin.as_ptr());
+
+        // Only set lobsterlend (moltswap = zero → skipped)
+        let lobsterlend = [0xAA; 32];
+        let zero = [0u8; 32];
+        assert_eq!(
+            set_protocol_addresses(admin.as_ptr(), lobsterlend.as_ptr(), zero.as_ptr()),
+            0
+        );
+        assert!(test_mock::get_storage(LOBSTERLEND_ADDRESS_KEY).is_some());
+        assert!(test_mock::get_storage(MOLTSWAP_ADDRESS_KEY).is_none());
+    }
+
+    #[test]
+    fn test_simulated_yield_calculation() {
+        // Verify the simulated yield formula directly
+        let deployed = 1_000_000_000u64;
+        let rate = 300u64; // ~3% APY
+        let slots = 1000u64;
+        let y = simulated_yield(rate, deployed, slots);
+        // y = 1_000_000_000 * 300 * 1000 / 10_000_000_000 / 100
+        // = 300_000_000_000_000 / 1_000_000_000_000 = 300
+        assert_eq!(y, 300);
+    }
+
+    #[test]
+    fn test_query_protocol_yield_no_address() {
+        setup();
+        let admin = [1u8; 32];
+        initialize(admin.as_ptr());
+
+        // No protocol addresses set → query returns None → fallback
+        let result = query_protocol_yield(LOBSTERLEND_ADDRESS_KEY, "get_accrued_interest", 1_000_000, 100);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_query_protocol_yield_test_mode() {
+        setup();
+        let admin = [1u8; 32];
+        initialize(admin.as_ptr());
+
+        // Set protocol address — call_contract returns Ok(Vec::new()) in test mode
+        let lobsterlend = [0xAA; 32];
+        let zero = [0u8; 32];
+        set_protocol_addresses(admin.as_ptr(), lobsterlend.as_ptr(), zero.as_ptr());
+
+        // Empty result → None → fallback to simulated
+        let result = query_protocol_yield(LOBSTERLEND_ADDRESS_KEY, "get_accrued_interest", 1_000_000, 100);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_harvest_with_protocol_addresses_configured() {
+        // Even with addresses configured, test mode returns empty → falls back to simulated
+        setup();
+        let admin = [1u8; 32];
+        initialize(admin.as_ptr());
+        set_deposit_fee(admin.as_ptr(), 0);
+
+        // Configure protocol addresses
+        let lobsterlend = [0xAA; 32];
+        let moltswap = [0xBB; 32];
+        set_protocol_addresses(admin.as_ptr(), lobsterlend.as_ptr(), moltswap.as_ptr());
+
+        // Add strategies
+        add_strategy(admin.as_ptr(), STRATEGY_LENDING, 40);
+        add_strategy(admin.as_ptr(), STRATEGY_LP, 30);
+        add_strategy(admin.as_ptr(), STRATEGY_STAKING, 30);
+
+        let user = [2u8; 32];
+        deposit(user.as_ptr(), 1_000_000_000_000);
+
+        // Advance time
+        test_mock::set_timestamp(401_000);
+        assert_eq!(harvest(), 0);
+
+        // Yield should still accumulate (fallback to simulated)
+        let total_assets = load_u64(b"cv_total_assets");
+        assert!(total_assets > 1_000_000_000_000);
+        let total_earned = load_u64(b"cv_total_earned");
+        assert!(total_earned > 0);
+    }
+
+    #[test]
+    fn test_harvest_without_protocol_addresses() {
+        // Same as original behavior — pure simulated yield
+        setup();
+        let admin = [1u8; 32];
+        initialize(admin.as_ptr());
+        set_deposit_fee(admin.as_ptr(), 0);
+
+        add_strategy(admin.as_ptr(), STRATEGY_LENDING, 50);
+        add_strategy(admin.as_ptr(), STRATEGY_LP, 50);
+
+        let user = [2u8; 32];
+        deposit(user.as_ptr(), 1_000_000_000_000);
+
+        test_mock::set_timestamp(401_000);
+        assert_eq!(harvest(), 0);
+
+        let total_assets = load_u64(b"cv_total_assets");
+        assert!(total_assets > 1_000_000_000_000);
     }
 }

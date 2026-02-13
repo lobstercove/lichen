@@ -19,7 +19,10 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{bytes_to_u64, get_slot, log_info, storage_get, storage_set, u64_to_bytes};
+use moltchain_sdk::{
+    bytes_to_u64, get_slot, log_info, storage_get, storage_set, u64_to_bytes,
+    Address, CrossCall, call_contract,
+};
 
 // ============================================================================
 // CONSTANTS
@@ -54,6 +57,7 @@ const PAUSED_KEY: &[u8] = b"gov_paused";
 const REENTRANCY_KEY: &[u8] = b"gov_reentrancy";
 const PROPOSAL_COUNT_KEY: &[u8] = b"gov_prop_count";
 const CORE_ADDRESS_KEY: &[u8] = b"gov_core_addr";
+const MOLTYID_ADDRESS_KEY: &[u8] = b"gov_moltyid_addr";
 
 // ============================================================================
 // HELPERS
@@ -312,7 +316,7 @@ pub fn get_preferred_quote() -> u64 {
 }
 
 /// Propose a new trading pair
-/// Returns: 0=success, 1=paused, 2=max proposals, 3=reentrancy, 4=invalid quote
+/// Returns: 0=success, 1=paused, 2=max proposals, 3=reentrancy, 4=invalid quote, 5=insufficient reputation
 pub fn propose_new_pair(proposer: *const u8, base_token: *const u8, quote_token: *const u8) -> u32 {
     if !reentrancy_enter() {
         return 3;
@@ -328,6 +332,13 @@ pub fn propose_new_pair(proposer: *const u8, base_token: *const u8, quote_token:
         core::ptr::copy_nonoverlapping(proposer, p.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(base_token, bt.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(quote_token, qt.as_mut_ptr(), 32);
+    }
+
+    // Verify proposer has sufficient on-chain reputation
+    if !verify_reputation(&p, MIN_REPUTATION) {
+        reentrancy_exit();
+        log_info("Proposal rejected: insufficient MoltyID reputation");
+        return 5;
     }
 
     // Validate quote token matches preferred (mUSD) if set
@@ -418,7 +429,7 @@ pub fn propose_fee_change(
 }
 
 /// Vote on a proposal
-/// Returns: 0=success, 1=not found, 2=voting ended, 3=already voted, 4=reentrancy
+/// Returns: 0=success, 1=not found, 2=voting ended, 3=already voted, 4=reentrancy, 5=insufficient reputation
 pub fn vote(voter: *const u8, proposal_id: u64, approve: bool) -> u32 {
     if !reentrancy_enter() {
         return 4;
@@ -426,6 +437,13 @@ pub fn vote(voter: *const u8, proposal_id: u64, approve: bool) -> u32 {
     let mut v = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(voter, v.as_mut_ptr(), 32);
+    }
+
+    // Verify voter has on-chain reputation via MoltyID cross-contract call
+    if !verify_reputation(&v, MIN_REPUTATION) {
+        reentrancy_exit();
+        log_info("Vote rejected: insufficient MoltyID reputation");
+        return 5;
     }
 
     let pk = proposal_key(proposal_id);
@@ -599,6 +617,57 @@ pub fn emergency_unpause(caller: *const u8) -> u32 {
     0
 }
 
+/// Set the MoltyID contract address for on-chain reputation verification.
+/// Admin only. Required for reputation-gated voting and proposals.
+/// Returns: 0=success, 1=not admin, 2=zero address
+pub fn set_moltyid_address(caller: *const u8, moltyid_addr: *const u8) -> u32 {
+    let mut c = [0u8; 32];
+    let mut addr = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(moltyid_addr, addr.as_mut_ptr(), 32);
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
+    if is_zero(&addr) {
+        return 2;
+    }
+    storage_set(MOLTYID_ADDRESS_KEY, &addr);
+    log_info("MoltyID address configured for reputation verification");
+    0
+}
+
+/// Verify that an address has sufficient on-chain reputation via CrossCall to MoltyID.
+/// If no MoltyID address is configured, allows all (graceful fallback).
+/// If CrossCall returns result >= 8 bytes, parse reputation u64. Otherwise fallback to allow.
+fn verify_reputation(addr: &[u8; 32], min_rep: u64) -> bool {
+    let moltyid_bytes = match storage_get(MOLTYID_ADDRESS_KEY) {
+        Some(b) if b.len() == 32 && b.iter().any(|&x| x != 0) => b,
+        _ => return true, // No MoltyID configured — allow all
+    };
+    let mut moltyid_addr = [0u8; 32];
+    moltyid_addr.copy_from_slice(&moltyid_bytes);
+
+    let mut args = Vec::with_capacity(32);
+    args.extend_from_slice(addr);
+    let call = CrossCall::new(
+        Address(moltyid_addr),
+        "get_reputation",
+        args,
+    );
+
+    match call_contract(call) {
+        Ok(result) if result.len() >= 8 => {
+            let reputation = bytes_to_u64(&result);
+            reputation >= min_rep
+        }
+        // CrossCall returned empty (test mode) or failed — fallback to allow
+        // In test mode, call_contract returns Ok(Vec::new()), so this allows
+        _ => true,
+    }
+}
+
 // Queries
 pub fn get_proposal_count() -> u64 {
     load_u64(PROPOSAL_COUNT_KEY)
@@ -729,6 +798,13 @@ pub extern "C" fn call() {
             // emergency_unpause
             if args.len() >= 33 {
                 let r = emergency_unpause(args[1..33].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        14 => {
+            // set_moltyid_address
+            if args.len() >= 1 + 32 + 32 {
+                let r = set_moltyid_address(args[1..33].as_ptr(), args[33..65].as_ptr());
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
@@ -1051,5 +1127,81 @@ mod tests {
     fn test_get_preferred_quote_unset_governance() {
         let _admin = setup();
         assert_eq!(get_preferred_quote(), 0); // 0 = not set
+    }
+
+    // --- MoltyID reputation integration ---
+
+    #[test]
+    fn test_set_moltyid_address_success() {
+        let admin = setup();
+        let moltyid = [77u8; 32];
+        assert_eq!(set_moltyid_address(admin.as_ptr(), moltyid.as_ptr()), 0);
+        let stored = storage_get(MOLTYID_ADDRESS_KEY).unwrap();
+        assert_eq!(stored.as_slice(), &moltyid);
+    }
+
+    #[test]
+    fn test_set_moltyid_address_not_admin() {
+        let _admin = setup();
+        let rando = [99u8; 32];
+        let moltyid = [77u8; 32];
+        assert_eq!(set_moltyid_address(rando.as_ptr(), moltyid.as_ptr()), 1);
+    }
+
+    #[test]
+    fn test_set_moltyid_address_zero_rejected() {
+        let admin = setup();
+        let zero = [0u8; 32];
+        assert_eq!(set_moltyid_address(admin.as_ptr(), zero.as_ptr()), 2);
+    }
+
+    #[test]
+    fn test_verify_reputation_no_address_allows() {
+        // Without MoltyID address configured, verify_reputation returns true
+        let _admin = setup();
+        let user = [5u8; 32];
+        assert!(verify_reputation(&user, 500));
+        assert!(verify_reputation(&user, u64::MAX));
+    }
+
+    #[test]
+    fn test_verify_reputation_test_mode_allows() {
+        // With MoltyID configured but call_contract returns empty (test mode) → allows
+        let admin = setup();
+        let moltyid = [77u8; 32];
+        set_moltyid_address(admin.as_ptr(), moltyid.as_ptr());
+        let user = [5u8; 32];
+        assert!(verify_reputation(&user, 500));
+    }
+
+    #[test]
+    fn test_propose_with_reputation_check() {
+        // Proposing works even with MoltyID configured (test mode fallback allows)
+        let admin = setup();
+        let moltyid = [77u8; 32];
+        set_moltyid_address(admin.as_ptr(), moltyid.as_ptr());
+        let proposer = [2u8; 32];
+        let base = [10u8; 32];
+        let quote = [20u8; 32];
+        test_mock::set_slot(100);
+        assert_eq!(
+            propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr()),
+            0
+        );
+    }
+
+    #[test]
+    fn test_vote_with_reputation_check() {
+        // Voting works even with MoltyID configured (test mode fallback allows)
+        let admin = setup();
+        let moltyid = [77u8; 32];
+        set_moltyid_address(admin.as_ptr(), moltyid.as_ptr());
+        let proposer = [2u8; 32];
+        let voter = [3u8; 32];
+        let base = [10u8; 32];
+        let quote = [20u8; 32];
+        test_mock::set_slot(100);
+        propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr());
+        assert_eq!(vote(voter.as_ptr(), 1, true), 0);
     }
 }

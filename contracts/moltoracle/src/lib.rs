@@ -276,32 +276,119 @@ pub extern "C" fn reveal_randomness(
     1
 }
 
-/// Simple 32-byte hash function for commit scheme (SHA-256-like iterative hash)
-fn simple_hash(input: &[u8]) -> [u8; 32] {
-    let mut state: [u64; 4] = [
-        0x6a09e667f3bcc908, 0xbb67ae8584caa73b,
-        0x3c6ef372fe94f82b, 0xa54ff53a5f1d36f1,
+/// Cryptographic SHA-256 hash function (FIPS 180-4)
+/// Replaces the insecure LCG-based simple_hash that was trivially reversible.
+/// This is the standard SHA-256 algorithm — collision-resistant, preimage-resistant.
+fn sha256(input: &[u8]) -> [u8; 32] {
+    // Initial hash values (first 32 bits of fractional parts of sqrt of first 8 primes)
+    let mut h: [u32; 8] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
+        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
     ];
-    for (i, &byte) in input.iter().enumerate() {
-        let idx = i % 4;
-        state[idx] = state[idx].wrapping_mul(6364136223846793005)
-            .wrapping_add(byte as u64)
-            .wrapping_add(i as u64);
-        state[(idx + 1) % 4] ^= state[idx].rotate_right(17);
+
+    // Round constants (first 32 bits of fractional parts of cube roots of first 64 primes)
+    const K: [u32; 64] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5,
+        0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
+        0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc,
+        0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
+        0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3,
+        0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5,
+        0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
+        0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+    ];
+
+    // Pre-processing: pad message to multiple of 512 bits (64 bytes)
+    let bit_len = (input.len() as u64) * 8;
+    let mut msg = Vec::with_capacity(input.len() + 72);
+    msg.extend_from_slice(input);
+    msg.push(0x80); // append bit '1'
+    // Pad with zeros until length ≡ 56 (mod 64)
+    while msg.len() % 64 != 56 {
+        msg.push(0);
     }
-    // Extra mixing rounds
-    for round in 0..8 {
-        for idx in 0..4 {
-            state[idx] = state[idx].wrapping_mul(6364136223846793005)
-                .wrapping_add(state[(idx + 1) % 4])
-                .wrapping_add(round);
+    // Append original length as 64-bit big-endian
+    msg.extend_from_slice(&bit_len.to_be_bytes());
+
+    // Process each 512-bit (64-byte) block
+    for chunk in msg.chunks_exact(64) {
+        // Prepare message schedule
+        let mut w = [0u32; 64];
+        for i in 0..16 {
+            w[i] = u32::from_be_bytes([
+                chunk[i * 4],
+                chunk[i * 4 + 1],
+                chunk[i * 4 + 2],
+                chunk[i * 4 + 3],
+            ]);
         }
+        for i in 16..64 {
+            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+            w[i] = w[i - 16]
+                .wrapping_add(s0)
+                .wrapping_add(w[i - 7])
+                .wrapping_add(s1);
+        }
+
+        // Initialize working variables
+        let (mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh) =
+            (h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
+
+        // Compression function
+        for i in 0..64 {
+            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+            let ch = (e & f) ^ ((!e) & g);
+            let temp1 = hh
+                .wrapping_add(s1)
+                .wrapping_add(ch)
+                .wrapping_add(K[i])
+                .wrapping_add(w[i]);
+            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+            let maj = (a & b) ^ (a & c) ^ (b & c);
+            let temp2 = s0.wrapping_add(maj);
+
+            hh = g;
+            g = f;
+            f = e;
+            e = d.wrapping_add(temp1);
+            d = c;
+            c = b;
+            b = a;
+            a = temp1.wrapping_add(temp2);
+        }
+
+        // Add compressed chunk to hash value
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+        h[5] = h[5].wrapping_add(f);
+        h[6] = h[6].wrapping_add(g);
+        h[7] = h[7].wrapping_add(hh);
     }
+
+    // Produce final hash (big-endian)
     let mut out = [0u8; 32];
-    for (i, &s) in state.iter().enumerate() {
-        out[i*8..(i+1)*8].copy_from_slice(&s.to_le_bytes());
+    for (i, &val) in h.iter().enumerate() {
+        out[i * 4..(i + 1) * 4].copy_from_slice(&val.to_be_bytes());
     }
     out
+}
+
+/// Legacy alias: simple_hash now delegates to SHA-256
+/// Kept for backward compatibility — all callers get cryptographic security.
+fn simple_hash(input: &[u8]) -> [u8; 32] {
+    sha256(input)
 }
 
 /// Hex encode a byte slice (for storage keys)
@@ -852,5 +939,89 @@ mod tests {
         assert_eq!(bytes_to_u64(&result[0..8]), 0);
         assert_eq!(bytes_to_u64(&result[8..16]), 0);
         assert_eq!(bytes_to_u64(&result[16..24]), 0);
+    }
+
+    // ========================================================================
+    // SHA-256 CORRECTNESS TESTS (Task 3.1)
+    // ========================================================================
+
+    #[test]
+    fn test_sha256_empty_string() {
+        // NIST test vector: SHA-256("") = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+        let hash = sha256(b"");
+        let expected: [u8; 32] = [
+            0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14,
+            0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9, 0x24,
+            0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c,
+            0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55,
+        ];
+        assert_eq!(hash, expected);
+    }
+
+    #[test]
+    fn test_sha256_abc() {
+        // NIST test vector: SHA-256("abc") = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+        let hash = sha256(b"abc");
+        let expected: [u8; 32] = [
+            0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea,
+            0x41, 0x41, 0x40, 0xde, 0x5d, 0xae, 0x22, 0x23,
+            0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c,
+            0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad,
+        ];
+        assert_eq!(hash, expected);
+    }
+
+    #[test]
+    fn test_sha256_deterministic() {
+        let input = b"commit-reveal-vrf-test-data";
+        let h1 = sha256(input);
+        let h2 = sha256(input);
+        assert_eq!(h1, h2, "SHA-256 must be deterministic");
+    }
+
+    #[test]
+    fn test_sha256_avalanche() {
+        // Changing one bit should produce a completely different hash
+        let h1 = sha256(b"test0");
+        let h2 = sha256(b"test1");
+        // Count differing bytes — should be many
+        let diff = h1.iter().zip(h2.iter()).filter(|(a, b)| a != b).count();
+        assert!(diff > 20, "Avalanche: {} of 32 bytes differ", diff);
+    }
+
+    #[test]
+    fn test_sha256_collision_resistance() {
+        // Different inputs must produce different outputs
+        let h1 = sha256(b"input_a");
+        let h2 = sha256(b"input_b");
+        assert_ne!(h1, h2, "Different inputs must produce different hashes");
+    }
+
+    #[test]
+    fn test_commit_reveal_with_sha256() {
+        // End-to-end: commit-reveal produces verifiable randomness with SHA-256
+        setup();
+        let requester = [1u8; 32];
+        let secret = [0x42u8; 32];
+        let seed: u64 = 99999;
+
+        // Compute commit using the new SHA-256
+        let mut preimage = Vec::with_capacity(40);
+        preimage.extend_from_slice(&secret);
+        preimage.extend_from_slice(&moltchain_sdk::u64_to_bytes(seed));
+        let commit_hash = sha256(&preimage);
+
+        // Commit
+        assert_eq!(commit_randomness(requester.as_ptr(), commit_hash.as_ptr(), seed), 1);
+
+        // Advance time
+        test_mock::set_timestamp(5000);
+
+        // Reveal
+        let mut result = [0u8; 8];
+        assert_eq!(reveal_randomness(requester.as_ptr(), secret.as_ptr(), result.as_mut_ptr()), 1);
+        let random_value = u64::from_le_bytes(result);
+        // Value should be non-trivial
+        assert_ne!(random_value, 0, "Random value should be non-zero");
     }
 }
