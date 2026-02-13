@@ -11,9 +11,9 @@ const NETWORKS = {
 };
 
 const VALIDATOR_RPCS = [
-    { name: 'V1', rpc: 'http://localhost:8899', ws: 8900, p2p: 7001 },
-    { name: 'V2', rpc: 'http://localhost:8898', ws: 8901, p2p: 7002 },
-    { name: 'V3', rpc: 'http://localhost:8897', ws: 8902, p2p: 7003 },
+    { name: 'V1', rpc: 'http://localhost:8899', ws: 8900, p2p: 8000 },
+    { name: 'V2', rpc: 'http://localhost:8901', ws: 8902, p2p: 8001 },
+    { name: 'V3', rpc: 'http://localhost:8903', ws: 8904, p2p: 8002 },
 ];
 
 const SYMBOLS = [
