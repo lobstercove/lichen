@@ -510,6 +510,8 @@ pub struct StateBatch {
     active_account_delta: i64,
     /// Accumulated burned amount delta (applied atomically on commit)
     burned_delta: u64,
+    /// AUDIT-FIX 1.15: Track NFT token_ids indexed within this batch for TOCTOU-safe uniqueness
+    nft_token_id_overlay: std::collections::HashSet<Vec<u8>>,
     /// Auto-incrementing sequence counter for event key uniqueness (T2.13)
     event_seq: u64,
     /// Reference to the DB (needed for cf_handle lookups during put)
@@ -2334,6 +2336,7 @@ impl StateStore {
             new_accounts: 0,
             active_account_delta: 0,
             burned_delta: 0,
+            nft_token_id_overlay: std::collections::HashSet::new(),
             event_seq: 0,
             db: Arc::clone(&self.db),
         }
@@ -2712,7 +2715,37 @@ impl StateBatch {
         key.extend_from_slice(&token_id.to_le_bytes());
 
         self.batch.put_cf(&cf, &key, token_account.0);
+        // AUDIT-FIX 1.15: Track in overlay for batch-aware uniqueness checks
+        self.nft_token_id_overlay.insert(key);
         Ok(())
+    }
+
+    /// AUDIT-FIX 1.15: Check if a token_id exists in the batch overlay OR committed state
+    pub fn nft_token_id_exists(
+        &self,
+        collection: &Pubkey,
+        token_id: u64,
+    ) -> Result<bool, String> {
+        let mut key = Vec::with_capacity(44);
+        key.extend_from_slice(b"tid:");
+        key.extend_from_slice(&collection.0);
+        key.extend_from_slice(&token_id.to_le_bytes());
+
+        // Check batch overlay first
+        if self.nft_token_id_overlay.contains(&key) {
+            return Ok(true);
+        }
+
+        // Fall through to committed state
+        let cf = self
+            .db
+            .cf_handle(CF_NFT_BY_COLLECTION)
+            .ok_or_else(|| "NFT collection index CF not found".to_string())?;
+        match self.db.get_cf(&cf, &key) {
+            Ok(Some(_)) => Ok(true),
+            Ok(None) => Ok(false),
+            Err(e) => Err(format!("Database error: {}", e)),
+        }
     }
 
     /// Index NFT transfer in the batch.
