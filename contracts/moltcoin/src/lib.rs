@@ -31,6 +31,12 @@ fn make_token() -> Token {
 /// Initialize the token contract
 #[no_mangle]
 pub extern "C" fn initialize(owner_ptr: *const u8) {
+    // Re-initialization guard: reject if owner is already set
+    if storage_get(b"owner").is_some() {
+        log_info("MoltCoin already initialized — ignoring");
+        return;
+    }
+
     let owner_bytes = unsafe {
         core::slice::from_raw_parts(owner_ptr, 32)
     };

@@ -51,6 +51,12 @@ pub extern "C" fn initialize_dao(
     treasury_address_ptr: *const u8,
     min_proposal_threshold: u64, // Minimum tokens to create proposal
 ) -> u32 {
+    // Re-initialization guard: reject if governance_token is already set
+    if storage_get(b"governance_token").is_some() {
+        log_info("MoltDAO already initialized — ignoring");
+        return 0;
+    }
+
     log_info("🏛️  Initializing MoltDAO...");
     
     let gov_token = unsafe { core::slice::from_raw_parts(governance_token_ptr, 32) };

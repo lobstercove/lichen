@@ -174,6 +174,12 @@ fn accrue_protocol_fee(amount_out: u64, is_token_a: bool) -> u64 {
 /// Initialize the liquidity pool
 #[no_mangle]
 pub extern "C" fn initialize(token_a_ptr: *const u8, token_b_ptr: *const u8) {
+    // Re-initialization guard: reject if pool is already set up
+    if storage_get(b"pool_token_a").is_some() {
+        log_info("MoltSwap pool already initialized — ignoring");
+        return;
+    }
+
     unsafe {
         // Parse token addresses
         let token_a_slice = core::slice::from_raw_parts(token_a_ptr, 32);

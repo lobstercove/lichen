@@ -41,6 +41,12 @@ const LISTING_SIZE: usize = 145;
 /// Initialize the marketplace
 #[no_mangle]
 pub extern "C" fn initialize(owner_ptr: *const u8, fee_addr_ptr: *const u8) {
+    // Re-initialization guard: reject if marketplace_owner is already set
+    if storage_get(b"marketplace_owner").is_some() {
+        log_info("MoltMarket already initialized — ignoring");
+        return;
+    }
+
     let owner = unsafe { core::slice::from_raw_parts(owner_ptr, 32) };
     let fee_addr = unsafe { core::slice::from_raw_parts(fee_addr_ptr, 32) };
     storage_set(b"marketplace_fee", &u64_to_bytes(250)); // 2.5% fee
