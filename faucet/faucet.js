@@ -16,6 +16,16 @@ function generateCaptcha() {
 // Initialize captcha
 let captchaAnswer = generateCaptcha();
 
+// Mobile nav toggle
+const navToggle = document.getElementById('navToggle');
+const navMenu = document.querySelector('.nav-menu');
+if (navToggle && navMenu) {
+    navToggle.addEventListener('click', () => {
+        navMenu.classList.toggle('active');
+        navToggle.classList.toggle('active');
+    });
+}
+
 // Update stats display
 async function updateStats() {
     try {
@@ -98,11 +108,14 @@ document.getElementById('faucetForm').addEventListener('submit', async (e) => {
     }
 });
 
-// Show error message
+// Show error message and renew captcha
 function showError(message) {
     const errorMessage = document.getElementById('errorMessage');
     document.getElementById('errorText').textContent = message;
     errorMessage.classList.remove('hidden');
+    // Renew verification on any error/denial
+    captchaAnswer = generateCaptcha();
+    document.getElementById('captcha').value = '';
 }
 
 // Add request to recent list

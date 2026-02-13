@@ -2003,7 +2003,7 @@ async fn run_validator() {
         info!("  🔐 Creating {} setup...", threshold_desc);
 
         // Generate genesis wallet with multi-sig
-        let (wallet, keypairs, treasury_keypair) =
+        let (wallet, keypairs, distribution_keypairs) =
             GenesisWallet::generate(&genesis_config.chain_id, is_mainnet, signer_count)
                 .expect("Failed to generate genesis wallet");
 
@@ -2028,13 +2028,21 @@ async fn run_validator() {
             }
         }
 
+        // Log whitepaper distribution
+        if let Some(ref dist) = wallet.distribution_wallets {
+            info!("  📊 Whitepaper genesis distribution ({} wallets):", dist.len());
+            for dw in dist {
+                info!("    - {} ({}%): {} MOLT → {}", dw.role, dw.percentage, dw.amount_molt, dw.pubkey.to_base58());
+            }
+        }
+
         // Save wallet info
         wallet
             .save(&genesis_wallet_path)
             .expect("Failed to save genesis wallet");
         info!("  ✓ Wallet info saved: {}", genesis_wallet_path.display());
 
-        // Save all keypairs
+        // Save all signer keypairs
         let keypair_paths = GenesisWallet::save_keypairs(
             &keypairs,
             &genesis_keypairs_dir,
@@ -2042,15 +2050,30 @@ async fn run_validator() {
         )
         .expect("Failed to save keypairs");
 
+        // Save all distribution keypairs (one per whitepaper wallet)
+        let dist_keypair_paths = GenesisWallet::save_distribution_keypairs(
+            wallet.distribution_wallets.as_ref().unwrap(),
+            &distribution_keypairs,
+            &genesis_keypairs_dir,
+            &genesis_config.chain_id,
+        )
+        .expect("Failed to save distribution keypairs");
+
+        // Save treasury keypair separately for backward compat (start-local-stack.sh)
+        // Treasury = validator_rewards = first distribution keypair
         let treasury_keypair_path = GenesisWallet::save_treasury_keypair(
-            &treasury_keypair,
+            &distribution_keypairs[0],
             &genesis_keypairs_dir,
             &genesis_config.chain_id,
         )
         .expect("Failed to save treasury keypair");
 
-        info!("  ✓ Saved {} keypair(s):", keypair_paths.len());
+        info!("  ✓ Saved {} signer keypair(s):", keypair_paths.len());
         for path in &keypair_paths {
+            info!("    - {}", path);
+        }
+        info!("  ✓ Saved {} distribution keypair(s):", dist_keypair_paths.len());
+        for path in &dist_keypair_paths {
             info!("    - {}", path);
         }
         info!("  ✓ Treasury keypair: {}", treasury_keypair_path);
@@ -2133,7 +2156,6 @@ async fn run_validator() {
         }
 
         // Create genesis treasury account with full supply
-        let reward_pool_molt = REWARD_POOL_MOLT.min(1_000_000_000);
         let total_supply_molt = 1_000_000_000u64;
         let mut genesis_account = Account::new(total_supply_molt, genesis_pubkey);
 
@@ -2155,10 +2177,66 @@ async fn run_validator() {
         if let Err(e) = state.set_genesis_pubkey(&genesis_pubkey) {
             eprintln!("Failed to set genesis pubkey: {e}");
         }
-        info!("  ✓ Genesis treasury: {} MOLT", total_supply_molt);
+        info!("  ✓ Genesis mint: {} MOLT", total_supply_molt);
         info!("  ✓ Address: {}", genesis_pubkey.to_base58());
 
-        if let Some(treasury_pubkey) = genesis_wallet.treasury_pubkey {
+        // ════════════════════════════════════════════════════
+        // WHITEPAPER GENESIS DISTRIBUTION (6 wallets, 1B total)
+        // ════════════════════════════════════════════════════
+        // Apply distribution directly to state — cannot use process_transaction()
+        // here because no blocks exist yet and T1.3 rejects zero-blockhash txs.
+        // Corresponding ledger entries are recorded in the genesis block below.
+        if let Some(ref dist_wallets) = genesis_wallet.distribution_wallets {
+            info!("📊 Creating whitepaper genesis distribution:");
+
+            let mut src_acct = match state.get_account(&genesis_pubkey).ok().flatten() {
+                Some(a) => a,
+                None => {
+                    error!("Genesis account missing after creation — cannot distribute");
+                    Account::new(0, genesis_pubkey)
+                }
+            };
+
+            for dw in dist_wallets {
+                let amount_shells = Account::molt_to_shells(dw.amount_molt);
+
+                // Create distribution account
+                let mut acct = Account::new(0, SYSTEM_ACCOUNT_OWNER);
+                acct.shells = amount_shells;
+                acct.spendable = amount_shells;
+                if let Err(e) = state.put_account(&dw.pubkey, &acct) {
+                    error!("Failed to create {} account: {e}", dw.role);
+                }
+
+                // Debit genesis
+                src_acct.shells = src_acct.shells.saturating_sub(amount_shells);
+                src_acct.spendable = src_acct.spendable.saturating_sub(amount_shells);
+
+                // Set treasury pubkey for the validator_rewards wallet
+                if dw.role == "validator_rewards" {
+                    if let Err(e) = state.set_treasury_pubkey(&dw.pubkey) {
+                        error!("Failed to set treasury pubkey: {e}");
+                    }
+                    info!(
+                        "  ✓ {} ({}%): {} MOLT → {} [TREASURY]",
+                        dw.role, dw.percentage, dw.amount_molt, dw.pubkey.to_base58()
+                    );
+                } else {
+                    info!(
+                        "  ✓ {} ({}%): {} MOLT → {}",
+                        dw.role, dw.percentage, dw.amount_molt, dw.pubkey.to_base58()
+                    );
+                }
+            }
+
+            if let Err(e) = state.put_account(&genesis_pubkey, &src_acct) {
+                error!("Failed to update genesis account after distribution: {e}");
+            }
+            info!("  ✓ Genesis distribution complete — 1B MOLT allocated per whitepaper");
+        }
+        // Legacy: single treasury (backward compat for old wallet files)
+        else if let Some(treasury_pubkey) = genesis_wallet.treasury_pubkey {
+            let reward_pool_molt = REWARD_POOL_MOLT.min(1_000_000_000);
             let treasury_account = Account::new(0, SYSTEM_ACCOUNT_OWNER);
             if let Err(e) = state.put_account(&treasury_pubkey, &treasury_account) {
                 eprintln!("Failed to store treasury account: {e}");
@@ -2174,11 +2252,6 @@ async fn run_validator() {
 
             let reward_shells = Account::molt_to_shells(reward_pool_molt);
 
-            // Apply genesis treasury funding directly to state — cannot use
-            // process_transaction() here because no blocks exist yet and
-            // T1.3 rightfully rejects transactions with a zero blockhash.
-            // The corresponding ledger entry is recorded in the genesis
-            // block below (genesis_txs).
             let mut src_acct = match state.get_account(&genesis_pubkey).ok().flatten() {
                 Some(a) => a,
                 None => {
@@ -2248,7 +2321,35 @@ async fn run_validator() {
         state.put_transaction(&mint_tx).ok();
         genesis_txs.push(mint_tx);
 
-        if let Some(treasury_pubkey) = genesis_wallet.treasury_pubkey {
+        // Record distribution transfers in genesis block
+        // (validator_rewards FIRST for backward-compatible treasury extraction)
+        if let Some(ref dist_wallets) = genesis_wallet.distribution_wallets {
+            let signer = genesis_signer
+                .as_ref()
+                .expect("Missing genesis signer for distribution funding");
+
+            for dw in dist_wallets {
+                let mut data = Vec::with_capacity(9);
+                data.push(4); // Genesis transfer (fee-free)
+                data.extend_from_slice(&Account::molt_to_shells(dw.amount_molt).to_le_bytes());
+
+                let instruction = Instruction {
+                    program_id: CORE_SYSTEM_PROGRAM_ID,
+                    accounts: vec![genesis_pubkey, dw.pubkey],
+                    data,
+                };
+
+                let message = Message::new(vec![instruction], Hash::default());
+                let mut tx = Transaction::new(message.clone());
+                let signature = signer.sign(&message.serialize());
+                tx.signatures.push(signature);
+                state.put_transaction(&tx).ok();
+                genesis_txs.push(tx);
+            }
+        }
+        // Legacy: single treasury transfer (backward compat)
+        else if let Some(treasury_pubkey) = genesis_wallet.treasury_pubkey {
+            let reward_pool_molt = REWARD_POOL_MOLT.min(1_000_000_000);
             let mut data = Vec::with_capacity(9);
             data.push(4); // Genesis transfer (fee-free)
             data.extend_from_slice(&Account::molt_to_shells(reward_pool_molt).to_le_bytes());
@@ -2942,52 +3043,78 @@ async fn run_validator() {
                             .set_fee_config_full(&genesis_fee_config)
                             .ok();
 
-                        // 3. Extract pubkeys from genesis block transactions
+                        // 3. Extract genesis pubkey from mint tx
                         //    tx[0]: Mint — accounts = [GENESIS_MINT_PUBKEY, genesis_pubkey]
-                        //    tx[1]: Treasury transfer — accounts = [genesis_pubkey, treasury_pubkey]
+                        //    tx[1..]: Distribution transfers — accounts = [genesis_pubkey, recipient]
+                        //    tx[1] is always the treasury (validator_rewards) for backward compat
                         let extracted_genesis_pubkey = block
                             .transactions
                             .first()
                             .and_then(|tx| tx.message.instructions.first())
                             .and_then(|ix| ix.accounts.get(1))
                             .copied();
-                        let extracted_treasury_pubkey = block
-                            .transactions
-                            .get(1)
-                            .and_then(|tx| tx.message.instructions.first())
-                            .and_then(|ix| ix.accounts.get(1))
-                            .copied();
 
                         if let Some(gpk) = extracted_genesis_pubkey {
-                            // 4. Reconstruct genesis account
+                            // 4. Process all distribution transfers from genesis block
                             let total_supply_molt = 1_000_000_000u64;
-                            let reward_pool_molt = REWARD_POOL_MOLT.min(total_supply_molt);
                             let total_shells = Account::molt_to_shells(total_supply_molt);
-                            let reward_shells = Account::molt_to_shells(reward_pool_molt);
+                            let mut total_distributed_shells = 0u64;
 
+                            for (i, tx) in block.transactions.iter().enumerate().skip(1) {
+                                if let Some(ix) = tx.message.instructions.first() {
+                                    if ix.data.first() == Some(&4) && ix.accounts.len() >= 2 {
+                                        let recipient = ix.accounts[1];
+                                        let amount_shells = if ix.data.len() >= 9 {
+                                            u64::from_le_bytes(
+                                                ix.data[1..9].try_into().unwrap_or([0u8; 8]),
+                                            )
+                                        } else {
+                                            0
+                                        };
+
+                                        let mut acct = Account::new(0, SYSTEM_ACCOUNT_OWNER);
+                                        acct.shells = amount_shells;
+                                        acct.spendable = amount_shells;
+                                        state_for_blocks.put_account(&recipient, &acct).ok();
+                                        total_distributed_shells += amount_shells;
+
+                                        // tx[1] = treasury (validator_rewards) — works for both old and new genesis
+                                        if i == 1 {
+                                            state_for_blocks
+                                                .set_treasury_pubkey(&recipient)
+                                                .ok();
+                                            info!(
+                                                "  ✓ [network genesis] Treasury: {} ({} MOLT)",
+                                                recipient.to_base58(),
+                                                amount_shells / 1_000_000_000
+                                            );
+                                        } else {
+                                            info!(
+                                                "  ✓ [network genesis] Distribution {}: {} ({} MOLT)",
+                                                i,
+                                                recipient.to_base58(),
+                                                amount_shells / 1_000_000_000
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+
+                            // 5. Reconstruct genesis account (total supply minus all distributions)
                             let mut genesis_account = Account::new(total_supply_molt, gpk);
-                            // Reduce genesis by reward pool (already transferred to treasury)
-                            genesis_account.shells = total_shells.saturating_sub(reward_shells);
+                            genesis_account.shells =
+                                total_shells.saturating_sub(total_distributed_shells);
                             genesis_account.spendable = genesis_account
                                 .shells
                                 .saturating_sub(genesis_account.staked)
                                 .saturating_sub(genesis_account.locked);
                             state_for_blocks.put_account(&gpk, &genesis_account).ok();
                             state_for_blocks.set_genesis_pubkey(&gpk).ok();
-                            info!("  ✓ [network genesis] Genesis account: {}", gpk.to_base58());
-
-                            // 5. Reconstruct treasury account
-                            if let Some(tpk) = extracted_treasury_pubkey {
-                                let mut treasury_account = Account::new(0, SYSTEM_ACCOUNT_OWNER);
-                                treasury_account.shells = reward_shells;
-                                treasury_account.spendable = reward_shells;
-                                state_for_blocks.put_account(&tpk, &treasury_account).ok();
-                                state_for_blocks.set_treasury_pubkey(&tpk).ok();
-                                info!(
-                                    "  ✓ [network genesis] Treasury account: {}",
-                                    tpk.to_base58()
-                                );
-                            }
+                            info!(
+                                "  ✓ [network genesis] Genesis account: {} ({} MOLT remaining)",
+                                gpk.to_base58(),
+                                genesis_account.shells / 1_000_000_000
+                            );
 
                             // 6. Create initial accounts from genesis config
                             for account_info in &genesis_config_for_blocks.initial_accounts {

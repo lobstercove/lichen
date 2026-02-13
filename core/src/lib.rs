@@ -52,7 +52,7 @@ pub use marketplace::{
     decode_market_activity, encode_market_activity, MarketActivity, MarketActivityKind,
 };
 pub use mempool::Mempool;
-pub use multisig::{GenesisWallet, MultiSigConfig};
+pub use multisig::{DistributionWallet, GenesisWallet, MultiSigConfig, GENESIS_DISTRIBUTION};
 pub use nft::{
     CollectionState, CreateCollectionData, MintNftData, NftActivity, NftActivityKind, TokenState,
 };
