@@ -203,7 +203,7 @@ async fn main() {
     let port = std::env::var("PORT")
         .ok()
         .and_then(|p| p.parse().ok())
-        .unwrap_or(8901);
+        .unwrap_or(9100);
 
     // Build router
     let app = Router::new()

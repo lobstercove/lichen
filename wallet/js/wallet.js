@@ -1114,7 +1114,7 @@ async function loadActivity() {
         // Fetch airdrops from faucet backend API (cross-origin safe via CORS)
         let airdrops = [];
         try {
-            const resp = await fetch(`http://localhost:8901/faucet/airdrops?address=${encodeURIComponent(wallet.address)}&limit=50`);
+            const resp = await fetch(`http://localhost:9100/faucet/airdrops?address=${encodeURIComponent(wallet.address)}&limit=50`);
             if (resp.ok) {
                 const records = await resp.json();
                 airdrops = records.map(a => ({

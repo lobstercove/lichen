@@ -1,7 +1,7 @@
 // MoltFaucet JavaScript
-// Connects to the MoltChain faucet backend (Rust/axum on port 8901)
+// Connects to the MoltChain faucet backend (Rust/axum on port 9100)
 
-const FAUCET_API = 'http://localhost:8901';
+const FAUCET_API = 'http://localhost:9100';
 const MOLT_PER_REQUEST = 10;
 
 // Generate random captcha
@@ -91,7 +91,7 @@ document.getElementById('faucetForm').addEventListener('submit', async (e) => {
             showError(data.error || 'Request failed. Please try again.');
         }
     } catch (error) {
-        showError('Could not reach faucet service. Make sure the faucet backend is running on port 8901.');
+        showError('Could not reach faucet service. Make sure the faucet backend is running on port 9100.');
     } finally {
         submitBtn.disabled = false;
         submitBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Request Tokens';
