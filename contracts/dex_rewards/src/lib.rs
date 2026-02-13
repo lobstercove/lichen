@@ -27,9 +27,9 @@ const REWARD_POOL_PER_MONTH: u64 = 1_000_000_000_000_000; // 1M MOLT (in shells)
 const SLOTS_PER_MONTH: u64 = 2_592_000;
 
 // Tier thresholds (cumulative volume in shells)
-const TIER_BRONZE_MAX: u64 = 10_000_000_000;       // <10k MOLT
-const TIER_SILVER_MAX: u64 = 100_000_000_000;      // 10k-100k MOLT
-const TIER_GOLD_MAX: u64 = 1_000_000_000_000;      // 100k-1M MOLT
+const TIER_BRONZE_MAX: u64 = 100_000_000_000_000;     // <100k MOLT ($10K at $0.10)
+const TIER_SILVER_MAX: u64 = 1_000_000_000_000_000;    // 100k-1M MOLT ($100K at $0.10)
+const TIER_GOLD_MAX: u64 = 10_000_000_000_000_000;     // 1M-10M MOLT ($1M at $0.10)
 // Above GOLD_MAX = Diamond
 
 // Tier multipliers (in basis points, 10000 = 1x)

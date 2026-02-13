@@ -189,14 +189,17 @@ Reserve Pool:            50,000,000 MOLT (5%)
 ### Transaction Fee Structure
 
 **Base Operations:**
-- Standard transaction: **0.00001 MOLT** ($0.00001 at $0.10/MOLT)
-- Program deployment: **0.0001 MOLT**
+- Standard transaction: **0.001 MOLT** ($0.0001 at $0.10/MOLT)
+- Program deployment: **25 MOLT** ($2.50)
+- Program upgrade: **10 MOLT** ($1.00)
 - Compute unit: **0.000001 MOLT per unit**
-- State rent: **0.001 MOLT per MB per month**
+- State rent: **0.00001 MOLT per KB per month**
 
 **Advanced Operations:**
-- Token creation: **0.1 MOLT** (one-time)
-- DAO creation: **1 MOLT** (one-time)
+- Token creation: **10 MOLT** ($1.00)
+- DAO creation: **10,000 MOLT** ($1,000)
+- NFT mint: **0.1 MOLT** ($0.01)
+- NFT collection: **1,000 MOLT** ($100)
 - Cross-chain bridge: **0.01 MOLT** per transfer
 
 **Fee Burn Mechanism:**

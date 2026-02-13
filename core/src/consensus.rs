@@ -9,20 +9,21 @@ use std::collections::HashMap;
 // STAKING - Economic Security
 // ============================================================================
 
-/// Minimum stake required to become a validator (10,000 MOLT)
-pub const MIN_VALIDATOR_STAKE: u64 = 10_000 * 1_000_000_000; // 10k MOLT in lamports
+/// Minimum stake required to become a validator (100,000 MOLT — $10,000 at $0.10/MOLT)
+pub const MIN_VALIDATOR_STAKE: u64 = 100_000 * 1_000_000_000; // 100k MOLT in shells
 
-/// Transaction block reward (0.18 MOLT per block with transactions)
-pub const TRANSACTION_BLOCK_REWARD: u64 = 180_000_000; // 0.18 MOLT
+/// Transaction block reward (0.9 MOLT per block with transactions — $0.09 at $0.10/MOLT)
+pub const TRANSACTION_BLOCK_REWARD: u64 = 900_000_000; // 0.9 MOLT
 
-/// Heartbeat block reward (0.027 MOLT per heartbeat - 15% of transaction reward)
-pub const HEARTBEAT_BLOCK_REWARD: u64 = 27_000_000; // 0.027 MOLT
+/// Heartbeat block reward (0.135 MOLT per heartbeat — 15% of transaction reward)
+pub const HEARTBEAT_BLOCK_REWARD: u64 = 135_000_000; // 0.135 MOLT
 
 /// Legacy constant for backward compatibility (uses transaction reward)
 pub const BLOCK_REWARD: u64 = TRANSACTION_BLOCK_REWARD;
 
-/// Annual inflation rate (5% = 500 basis points)
-pub const ANNUAL_INFLATION_BPS: u64 = 500;
+/// Target annual reward pool draw rate (5% = 500 basis points — informational only)
+/// MOLT is NOT inflationary — rewards are drawn from the 150M validator rewards pool
+pub const ANNUAL_REWARD_RATE_BPS: u64 = 500;
 
 /// Slots per year (assuming 400ms per slot = ~78.8M slots/year)
 pub const SLOTS_PER_YEAR: u64 = 78_840_000;
@@ -36,27 +37,27 @@ pub trait PriceOracle: Send + Sync {
     fn get_molt_price_usd(&self) -> f64;
 }
 
-/// Mock oracle for testnet (always returns $1.00)
+/// Mock oracle for testnet (returns $0.10 launch price)
 pub struct MockOracle;
 
 impl PriceOracle for MockOracle {
     fn get_molt_price_usd(&self) -> f64 {
-        1.0 // Fixed at $1.00 for testnet
+        0.10 // Launch price: $0.10/MOLT
     }
 }
 
 /// Reward configuration with price-based adjustment
 #[derive(Debug, Clone)]
 pub struct RewardConfig {
-    /// Base transaction reward (0.18 MOLT at $1.00 price)
+    /// Base transaction reward (0.9 MOLT at $0.10 price)
     pub base_transaction_reward: u64,
-    /// Base heartbeat reward (0.027 MOLT at $1.00 price)
+    /// Base heartbeat reward (0.135 MOLT at $0.10 price)
     pub base_heartbeat_reward: u64,
-    /// Reference USD price ($1.00 target)
+    /// Reference USD price ($0.10 launch target)
     pub reference_price_usd: f64,
-    /// Maximum reward multiplier (10x when price is $0.10)
+    /// Maximum reward multiplier (10x when price drops to $0.01)
     pub max_adjustment_multiplier: f64,
-    /// Minimum reward multiplier (0.1x when price is $10.00)
+    /// Minimum reward multiplier (0.1x when price rises to $1.00)
     pub min_adjustment_multiplier: f64,
 }
 
@@ -65,7 +66,7 @@ impl RewardConfig {
         Self {
             base_transaction_reward: TRANSACTION_BLOCK_REWARD,
             base_heartbeat_reward: HEARTBEAT_BLOCK_REWARD,
-            reference_price_usd: 1.0,
+            reference_price_usd: 0.10,
             max_adjustment_multiplier: 10.0,
             min_adjustment_multiplier: 0.1,
         }
@@ -142,8 +143,8 @@ pub enum BootstrapStatus {
     FullyVested,   // Debt fully repaid, can accept delegations
 }
 
-/// Maximum stake per validator (100,000 MOLT)
-pub const MAX_VALIDATOR_STAKE: u64 = 100_000 * 1_000_000_000; // 100k MOLT in lamports
+/// Maximum stake per validator (1,000,000 MOLT — $100,000 at $0.10/MOLT)
+pub const MAX_VALIDATOR_STAKE: u64 = 1_000_000 * 1_000_000_000; // 1M MOLT in shells
 
 /// Unstake cooldown period (7 days in slots at 400ms/slot)
 /// H11 fix: was 604,800 (=seconds in 7 days, only 2.8 days at 400ms/slot)
@@ -1814,8 +1815,8 @@ mod tests {
         set.add_validator(ValidatorInfo::new(pk1, 0));
         set.add_validator(ValidatorInfo::new(pk2, 0));
 
-        pool.stake(pk1, 10_000_000_000_000, 0).unwrap(); // 10000 MOLT
-        pool.stake(pk2, 15_000_000_000_000, 0).unwrap(); // 15000 MOLT
+        pool.stake(pk1, 100_000_000_000_000, 0).unwrap(); // 100k MOLT
+        pool.stake(pk2, 150_000_000_000_000, 0).unwrap(); // 150k MOLT
 
         // Same slot → same leader every time
         let l1 = set.select_leader_weighted(10, &pool);
@@ -1857,7 +1858,7 @@ mod tests {
         let pk1 = Pubkey::new([1u8; 32]);
 
         set.add_validator(ValidatorInfo::new(pk1, 0));
-        pool.stake(pk1, 10_000_000_000_000, 0).unwrap();
+        pool.stake(pk1, 100_000_000_000_000, 0).unwrap(); // 100k MOLT
 
         assert!(set.is_leader_weighted(0, &pk1, &pool));
     }
@@ -1998,7 +1999,7 @@ mod tests {
     fn test_claim_unstake_cooldown_enforced() {
         let mut pool = StakePool::new();
         let pk = Pubkey::new([1u8; 32]);
-        pool.stake(pk, 20_000_000_000_000, 0).unwrap();
+        pool.stake(pk, 200_000_000_000_000, 0).unwrap(); // 200k MOLT
 
         // Graduate validator so they can unstake
         if let Some(si) = pool.stakes.get_mut(&pk) {
@@ -2006,7 +2007,7 @@ mod tests {
             si.bootstrap_debt = 0;
         }
 
-        pool.request_unstake(&pk, 5_000_000_000_000, 100, pk)
+        pool.request_unstake(&pk, 50_000_000_000_000, 100, pk)
             .unwrap();
 
         // Claim too early → error
@@ -2017,7 +2018,7 @@ mod tests {
         let amount = pool
             .claim_unstake(&pk, 100 + UNSTAKE_COOLDOWN_SLOTS, &pk)
             .unwrap();
-        assert_eq!(amount, 5_000_000_000_000);
+        assert_eq!(amount, 50_000_000_000_000);
     }
 
     // ================================================================
@@ -2030,8 +2031,8 @@ mod tests {
         let pk1 = Pubkey::new([1u8; 32]);
         let pk2 = Pubkey::new([2u8; 32]);
 
-        pool.stake(pk1, 10_000_000_000_000, 0).unwrap(); // 10k
-        pool.stake(pk2, 30_000_000_000_000, 0).unwrap(); // 30k
+        pool.stake(pk1, 100_000_000_000_000, 0).unwrap(); // 100k MOLT
+        pool.stake(pk2, 300_000_000_000_000, 0).unwrap(); // 300k MOLT
 
         let rewards = pool.distribute_epoch_rewards(1_000_000);
         assert_eq!(rewards.len(), 2);
@@ -2053,7 +2054,7 @@ mod tests {
     fn test_distribute_epoch_rewards_zero_pool() {
         let mut pool = StakePool::new();
         let pk = Pubkey::new([1u8; 32]);
-        pool.stake(pk, 10_000_000_000_000, 0).unwrap();
+        pool.stake(pk, 100_000_000_000_000, 0).unwrap(); // 100k MOLT
         assert!(pool.distribute_epoch_rewards(0).is_empty());
     }
 
@@ -2066,11 +2067,11 @@ mod tests {
         let mut pool = StakePool::new();
         let pk_a = Pubkey::new([1u8; 32]);
         let pk_b = Pubkey::new([2u8; 32]);
-        pool.stake(pk_a, 20_000_000_000_000, 0).unwrap(); // 20k MOLT
-        pool.stake(pk_b, 20_000_000_000_000, 0).unwrap(); // 20k MOLT
+        pool.stake(pk_a, 200_000_000_000_000, 0).unwrap(); // 200k MOLT
+        pool.stake(pk_b, 200_000_000_000_000, 0).unwrap(); // 200k MOLT
 
-        assert_eq!(pool.total_stake(), 40_000_000_000_000);
-        assert_eq!(pool.active_stake(), 40_000_000_000_000);
+        assert_eq!(pool.total_stake(), 400_000_000_000_000);
+        assert_eq!(pool.active_stake(), 400_000_000_000_000);
         assert_eq!(pool.pending_unstake_total(), 0);
 
         // Before unstake: equal 50/50 reward split
@@ -2086,27 +2087,27 @@ mod tests {
             si.bootstrap_debt = 0;
         }
 
-        // A requests unstake of 10k (keeping 10k active)
-        pool.request_unstake(&pk_a, 10_000_000_000_000, 100, pk_a)
+        // A requests unstake of 100k (keeping 100k active)
+        pool.request_unstake(&pk_a, 100_000_000_000_000, 100, pk_a)
             .unwrap();
 
-        // Verify: total active stake is 30k (A=10k, B=20k), 10k pending
-        assert_eq!(pool.active_stake(), 30_000_000_000_000);
-        assert_eq!(pool.pending_unstake_total(), 10_000_000_000_000);
+        // Verify: total active stake is 300k (A=100k, B=200k), 100k pending
+        assert_eq!(pool.active_stake(), 300_000_000_000_000);
+        assert_eq!(pool.pending_unstake_total(), 100_000_000_000_000);
 
         // After unstake: A gets 1/3, B gets 2/3 — pending unstake does NOT dilute B
         let rewards2 = pool.distribute_epoch_rewards(900_000);
         let r_a2 = rewards2.iter().find(|(pk, _)| *pk == pk_a).unwrap().1;
         let r_b2 = rewards2.iter().find(|(pk, _)| *pk == pk_b).unwrap().1;
-        assert_eq!(r_a2, 300_000); // 10k/30k = 1/3
-        assert_eq!(r_b2, 600_000); // 20k/30k = 2/3
+        assert_eq!(r_a2, 300_000); // 100k/300k = 1/3
+        assert_eq!(r_b2, 600_000); // 200k/300k = 2/3
     }
 
     #[test]
     fn test_pending_unstake_total_tracking() {
         let mut pool = StakePool::new();
         let pk = Pubkey::new([1u8; 32]);
-        pool.stake(pk, 20_000_000_000_000, 0).unwrap();
+        pool.stake(pk, 200_000_000_000_000, 0).unwrap(); // 200k MOLT
 
         // Graduate
         if let Some(si) = pool.stakes.get_mut(&pk) {
@@ -2115,9 +2116,9 @@ mod tests {
         }
 
         assert_eq!(pool.pending_unstake_total(), 0);
-        pool.request_unstake(&pk, 5_000_000_000_000, 100, pk)
+        pool.request_unstake(&pk, 50_000_000_000_000, 100, pk)
             .unwrap();
-        assert_eq!(pool.pending_unstake_total(), 5_000_000_000_000);
+        assert_eq!(pool.pending_unstake_total(), 50_000_000_000_000);
 
         // Claim after cooldown clears the pending amount
         pool.claim_unstake(&pk, 100 + UNSTAKE_COOLDOWN_SLOTS, &pk)
@@ -2130,8 +2131,8 @@ mod tests {
         let mut pool = StakePool::new();
         let pk_a = Pubkey::new([1u8; 32]);
         let pk_b = Pubkey::new([2u8; 32]);
-        pool.stake(pk_a, 20_000_000_000_000, 0).unwrap();
-        pool.stake(pk_b, 20_000_000_000_000, 0).unwrap();
+        pool.stake(pk_a, 200_000_000_000_000, 0).unwrap(); // 200k MOLT
+        pool.stake(pk_b, 200_000_000_000_000, 0).unwrap(); // 200k MOLT
 
         // Initially: equal voting power
         let vp_a = pool.voting_power(&pk_a);
@@ -2144,10 +2145,10 @@ mod tests {
             si.status = BootstrapStatus::FullyVested;
             si.bootstrap_debt = 0;
         }
-        pool.request_unstake(&pk_a, 10_000_000_000_000, 100, pk_a)
+        pool.request_unstake(&pk_a, 100_000_000_000_000, 100, pk_a)
             .unwrap();
 
-        // A now has 10k/30k = 33.3%, B has 20k/30k = 66.6%
+        // A now has 100k/300k = 33.3%, B has 200k/300k = 66.6%
         let vp_a2 = pool.voting_power(&pk_a);
         let vp_b2 = pool.voting_power(&pk_b);
         assert_eq!(vp_a2, 3333); // ~33.3%

@@ -261,19 +261,19 @@ impl GenesisConfig {
 
     /// Generate genesis distribution per whitepaper:
     ///   40% Community Treasury (400M MOLT)
-    ///   25% Validator Rewards Pool (250M MOLT)
-    ///   15% Development Fund (150M MOLT)
-    ///   10% Ecosystem Growth (100M MOLT)
-    ///    5% Foundation Reserve (50M MOLT)
-    ///    5% Early Contributors (50M MOLT)
+    ///   25% Builder Grants (250M MOLT)
+    ///   15% Validator Rewards Pool (150M MOLT)
+    ///   10% Founding Moltys (100M MOLT)
+    ///    5% Ecosystem Partnerships (50M MOLT)
+    ///    5% Reserve Pool (50M MOLT)
     /// Total: 1,000,000,000 MOLT
     pub fn generate_genesis_distribution(
         community_treasury: &str,
+        builder_grants: &str,
         validator_rewards: &str,
-        development_fund: &str,
-        ecosystem_growth: &str,
-        foundation_reserve: &str,
-        early_contributors: &str,
+        founding_moltys: &str,
+        ecosystem_partnerships: &str,
+        reserve_pool: &str,
     ) -> Vec<GenesisAccount> {
         vec![
             GenesisAccount {
@@ -282,29 +282,29 @@ impl GenesisConfig {
                 comment: Some("Community Treasury (40%)".to_string()),
             },
             GenesisAccount {
-                address: validator_rewards.to_string(),
+                address: builder_grants.to_string(),
                 balance_molt: 250_000_000,
-                comment: Some("Validator Rewards Pool (25%)".to_string()),
+                comment: Some("Builder Grants (25%)".to_string()),
             },
             GenesisAccount {
-                address: development_fund.to_string(),
+                address: validator_rewards.to_string(),
                 balance_molt: 150_000_000,
-                comment: Some("Development Fund (15%)".to_string()),
+                comment: Some("Validator Rewards Pool (15%)".to_string()),
             },
             GenesisAccount {
-                address: ecosystem_growth.to_string(),
+                address: founding_moltys.to_string(),
                 balance_molt: 100_000_000,
-                comment: Some("Ecosystem Growth (10%)".to_string()),
+                comment: Some("Founding Moltys (10%)".to_string()),
             },
             GenesisAccount {
-                address: foundation_reserve.to_string(),
+                address: ecosystem_partnerships.to_string(),
                 balance_molt: 50_000_000,
-                comment: Some("Foundation Reserve (5%)".to_string()),
+                comment: Some("Ecosystem Partnerships (5%)".to_string()),
             },
             GenesisAccount {
-                address: early_contributors.to_string(),
+                address: reserve_pool.to_string(),
                 balance_molt: 50_000_000,
-                comment: Some("Early Contributors (5%)".to_string()),
+                comment: Some("Reserve Pool (5%)".to_string()),
             },
         ]
     }
@@ -316,9 +316,9 @@ impl GenesisConfig {
             genesis_time: chrono::Utc::now().to_rfc3339(),
             consensus: ConsensusParams {
                 slot_duration_ms: 400,
-                epoch_slots: 216000,                     // ~24 hours at 400ms
-                min_validator_stake: 10_000_000_000_000, // 10,000 MOLT per whitepaper
-                validator_reward_per_block: 10_000_000,  // 0.01 MOLT
+                epoch_slots: 216000,                      // ~24 hours at 400ms
+                min_validator_stake: 100_000_000_000_000, // 100,000 MOLT
+                validator_reward_per_block: 10_000_000,   // 0.01 MOLT
                 slashing_percentage_double_sign: 50,
                 slashing_percentage_downtime: 5,
                 slashing_percentage_invalid_state: 100,
@@ -340,8 +340,8 @@ impl GenesisConfig {
                 fee_burn_percentage: 50,
                 fee_producer_percentage: 30,
                 fee_voters_percentage: 10,
-                base_fee_shells: 10_000, // 0.00001 MOLT per whitepaper
-                rent_rate_shells_per_kb_month: 1_000,
+                base_fee_shells: 1_000_000, // 0.001 MOLT — $0.0001 at $0.10/MOLT
+                rent_rate_shells_per_kb_month: 10_000, // $0.000001 at $0.10/MOLT
                 rent_free_kb: 1,
                 enable_smart_contracts: true,
                 enable_staking: true,
@@ -358,7 +358,7 @@ impl GenesisConfig {
             consensus: ConsensusParams {
                 slot_duration_ms: 400,
                 epoch_slots: 216000,
-                min_validator_stake: 10_000_000_000_000, // 10,000 MOLT per whitepaper
+                min_validator_stake: 100_000_000_000_000, // 100,000 MOLT
                 validator_reward_per_block: 10_000_000,
                 slashing_percentage_double_sign: 50,
                 slashing_percentage_downtime: 5,
@@ -379,8 +379,8 @@ impl GenesisConfig {
                 fee_burn_percentage: 50,
                 fee_producer_percentage: 30,
                 fee_voters_percentage: 10,
-                base_fee_shells: 10_000, // 0.00001 MOLT per whitepaper
-                rent_rate_shells_per_kb_month: 1_000,
+                base_fee_shells: 1_000_000, // 0.001 MOLT — $0.0001 at $0.10/MOLT
+                rent_rate_shells_per_kb_month: 10_000, // $0.000001 at $0.10/MOLT
                 rent_free_kb: 1,
                 enable_smart_contracts: true,
                 enable_staking: true,

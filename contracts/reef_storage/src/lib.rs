@@ -34,12 +34,12 @@ use moltchain_sdk::{
 const MAX_REPLICATION: u8 = 10;
 const MIN_STORAGE_DURATION: u64 = 1000; // minimum slots
 const MAX_PROVIDERS_PER_ENTRY: usize = 16;
-const REWARD_PER_SLOT_PER_BYTE: u64 = 1; // 1 shell per slot per byte stored
+const REWARD_PER_SLOT_PER_BYTE: u64 = 10; // 10 shells per slot per byte stored
 
 // v2 constants
 const DEFAULT_CHALLENGE_WINDOW: u64 = 200; // slots to respond to a challenge
 const DEFAULT_SLASH_PERCENT: u64 = 10;     // 10% of stake slashed on failure
-const MIN_STAKE_PER_GB: u64 = 1_000_000;  // 1M shells per GB of capacity
+const MIN_STAKE_PER_GB: u64 = 10_000_000;  // 10M shells (0.01 MOLT) per GB of capacity
 const ADMIN_KEY: &[u8] = b"reef_admin";
 
 // ============================================================================

@@ -38,14 +38,14 @@ fn reentrancy_exit() {
 // CONSTANTS
 // ============================================================================
 
-/// Token creation fee: 0.1 MOLT (100_000_000 shells at 9 decimals)
-const CREATION_FEE: u64 = 100_000_000;
+/// Token creation fee: 10 MOLT (10,000,000,000 shells — $1.00 at $0.10/MOLT)
+const CREATION_FEE: u64 = 10_000_000_000;
 
 /// Default initial supply for bonding curve tokens
 const DEFAULT_MAX_SUPPLY: u64 = 1_000_000_000_000_000_000; // 1B tokens * 10^9
 
 /// Graduation threshold: when market cap reaches this, migrate to DEX
-const GRADUATION_MARKET_CAP: u64 = 100_000_000_000_000; // 100K MOLT in shells
+const GRADUATION_MARKET_CAP: u64 = 1_000_000_000_000_000; // 1M MOLT ($100K at $0.10)
 
 /// Bonding curve slope factor (controls price steepness)
 /// price = BASE_PRICE + (supply_sold * SLOPE / SLOPE_SCALE)
@@ -69,7 +69,7 @@ const TOKEN_COUNT_KEY: &[u8] = b"cp_token_count";
 /// Buy cooldown: minimum milliseconds between buys per user per token
 const DEFAULT_BUY_COOLDOWN_MS: u64 = 2_000; // 2 seconds
 /// Maximum MOLT that can be spent in a single buy
-const DEFAULT_MAX_BUY_AMOUNT: u64 = 10_000_000_000_000; // 10K MOLT
+const DEFAULT_MAX_BUY_AMOUNT: u64 = 100_000_000_000_000; // 100K MOLT ($10K at $0.10)
 /// Sell cooldown: minimum ms after buying before selling (anti-dump)
 const DEFAULT_SELL_COOLDOWN_MS: u64 = 5_000; // 5 seconds
 /// Creator royalty: basis points on each trade (default 50 = 0.5%)

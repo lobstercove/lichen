@@ -39,8 +39,8 @@ const CONSTITUTIONAL_APPROVAL: u64 = 75;
 const CONSTITUTIONAL_QUORUM: u64 = 30;
 const CONSTITUTIONAL_EXECUTION_DELAY: u64 = 604800; // 7-day time-lock
 
-/// Proposal stake: 1000 MOLT in shells (returned if approved, lost if spam)
-const PROPOSAL_STAKE: u64 = 1_000_000_000_000;
+/// Proposal stake: 10,000 MOLT in shells ($1,000 at $0.10/MOLT — returned if approved, lost if spam)
+const PROPOSAL_STAKE: u64 = 10_000_000_000_000;
 
 /// Veto threshold: 20% of total voting power active "NO" cancels during time-lock
 const VETO_THRESHOLD_PERCENT: u64 = 20;

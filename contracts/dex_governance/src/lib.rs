@@ -28,7 +28,7 @@ const VOTING_PERIOD_SLOTS: u64 = 172_800; // ~48 hours at 1 slot/sec
 const APPROVAL_THRESHOLD_BPS: u64 = 6600; // 66%
 const EXECUTION_DELAY_SLOTS: u64 = 3_600; // 1 hour timelock after voting
 const MIN_REPUTATION: u64 = 500;
-const MIN_LISTING_LIQUIDITY: u64 = 10_000_000_000; // 10,000 MOLT equivalent
+const MIN_LISTING_LIQUIDITY: u64 = 100_000_000_000_000; // 100,000 MOLT ($10K at $0.10)
 const MIN_LISTING_HOLDERS: u64 = 10;
 const MAX_PROPOSALS: u64 = 500;
 
