@@ -410,6 +410,20 @@ impl TxProcessor {
         }
     }
 
+    /// AUDIT-FIX 1.15: Check token_id uniqueness against batch overlay + committed state
+    fn b_nft_token_id_exists(
+        &self,
+        collection: &Pubkey,
+        token_id: u64,
+    ) -> Result<bool, String> {
+        let guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_ref() {
+            batch.nft_token_id_exists(collection, token_id)
+        } else {
+            self.state.nft_token_id_exists(collection, token_id)
+        }
+    }
+
     fn b_index_program(&self, program: &Pubkey) -> Result<(), String> {
         let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(batch) = guard.as_mut() {
@@ -1054,41 +1068,12 @@ impl TxProcessor {
             logs: result.logs.clone(),
         };
 
-        // Begin atomic batch for EVM state writes
-        self.begin_batch();
-
-        if let Err(e) = self.b_put_evm_tx(&record) {
-            self.rollback_batch();
-            return TxResult {
-                success: false,
-                fee_paid: 0,
-                error: Some(format!("EVM tx storage error: {}", e)),
-            };
-        }
-        if let Err(e) = self.b_put_evm_receipt(&receipt) {
-            self.rollback_batch();
-            return TxResult {
-                success: false,
-                fee_paid: 0,
-                error: Some(format!("EVM receipt storage error: {}", e)),
-            };
-        }
-
-        if let Err(e) = self.b_put_transaction(tx) {
-            self.rollback_batch();
-            return TxResult {
-                success: false,
-                fee_paid: 0,
-                error: Some(format!("Transaction storage error: {}", e)),
-            };
-        }
-
-        // H2 fix: Charge native fee from EVM sender's mapped account within the batch
+        // AUDIT-FIX 0.7: Charge EVM fee BEFORE the batch, so rollback can't erase it.
+        // This prevents free-compute DoS via intentionally-failing EVM transactions.
         let fee_paid = u256_to_shells(&(evm_tx.gas_price * U256::from(result.gas_used)));
         if fee_paid > 0 {
             let native_payer = mapping.unwrap(); // guaranteed Some from earlier check
-            if let Err(e) = self.charge_fee(&native_payer, fee_paid) {
-                self.rollback_batch();
+            if let Err(e) = self.charge_fee_direct(&native_payer, fee_paid) {
                 return TxResult {
                     success: false,
                     fee_paid: 0,
@@ -1097,13 +1082,44 @@ impl TxProcessor {
             }
         }
 
+        // Begin atomic batch for EVM state writes
+        self.begin_batch();
+
+        if let Err(e) = self.b_put_evm_tx(&record) {
+            self.rollback_batch();
+            return TxResult {
+                success: false,
+                fee_paid,
+                error: Some(format!("EVM tx storage error: {}", e)),
+            };
+        }
+        if let Err(e) = self.b_put_evm_receipt(&receipt) {
+            self.rollback_batch();
+            return TxResult {
+                success: false,
+                fee_paid,
+                error: Some(format!("EVM receipt storage error: {}", e)),
+            };
+        }
+
+        if let Err(e) = self.b_put_transaction(tx) {
+            self.rollback_batch();
+            return TxResult {
+                success: false,
+                fee_paid,
+                error: Some(format!("Transaction storage error: {}", e)),
+            };
+        }
+
+        // Fee already charged via charge_fee_direct before batch (AUDIT-FIX 0.7)
+
         // H3 fix: Apply deferred EVM state changes (accounts, storage, native balances)
         // through the same atomic batch. This guarantees all-or-nothing commit.
         if let Err(e) = self.b_apply_evm_state_changes(&evm_state_changes) {
             self.rollback_batch();
             return TxResult {
                 success: false,
-                fee_paid: 0,
+                fee_paid,
                 error: Some(format!("EVM state apply error: {}", e)),
             };
         }
@@ -1112,7 +1128,7 @@ impl TxProcessor {
             self.rollback_batch();
             return TxResult {
                 success: false,
-                fee_paid: 0,
+                fee_paid,
                 error: Some(format!("Atomic commit failed: {}", e)),
             };
         }
@@ -1149,8 +1165,9 @@ impl TxProcessor {
         let burn_amount = fee * fee_config.fee_burn_percent / 100;
         let producer_amount = fee * fee_config.fee_producer_percent / 100;
         let voters_amount = fee * fee_config.fee_voters_percent / 100;
-        // Treasury gets the remainder to avoid rounding dust loss
-        let treasury_amount = fee - burn_amount - producer_amount - voters_amount;
+        // AUDIT-FIX 0.8: Use saturating_sub to prevent underflow if percentages exceed 100
+        let allocated = burn_amount.saturating_add(producer_amount).saturating_add(voters_amount);
+        let treasury_amount = fee.saturating_sub(allocated);
 
         // Burn portion: permanently remove from circulation (via batch — atomic)
         if burn_amount > 0 {
@@ -1198,7 +1215,9 @@ impl TxProcessor {
         let burn_amount = fee * fee_config.fee_burn_percent / 100;
         let producer_amount = fee * fee_config.fee_producer_percent / 100;
         let voters_amount = fee * fee_config.fee_voters_percent / 100;
-        let treasury_amount = fee - burn_amount - producer_amount - voters_amount;
+        // AUDIT-FIX 0.8: Use saturating_sub to prevent underflow if percentages exceed 100
+        let allocated = burn_amount.saturating_add(producer_amount).saturating_add(voters_amount);
+        let treasury_amount = fee.saturating_sub(allocated);
 
         if burn_amount > 0 {
             self.state.add_burned(burn_amount)?;
@@ -1425,9 +1444,9 @@ impl TxProcessor {
         }
 
         // T2.11 fix: Enforce token_id uniqueness within the collection
+        // AUDIT-FIX 1.15: Use batch-aware check to prevent TOCTOU race in same block
         if self
-            .state
-            .nft_token_id_exists(&collection_account, mint_data.token_id)
+            .b_nft_token_id_exists(&collection_account, mint_data.token_id)
             .unwrap_or(false)
         {
             return Err(format!(

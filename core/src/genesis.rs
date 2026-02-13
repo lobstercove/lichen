@@ -213,6 +213,25 @@ impl GenesisConfig {
         if self.features.fee_burn_percentage > 100 {
             return Err("Fee burn percentage cannot exceed 100%".to_string());
         }
+        if self.features.fee_producer_percentage > 100 {
+            return Err("Fee producer percentage cannot exceed 100%".to_string());
+        }
+        if self.features.fee_voters_percentage > 100 {
+            return Err("Fee voters percentage cannot exceed 100%".to_string());
+        }
+        // AUDIT-FIX 0.8: Validate that fee percentages sum to <= 100
+        let total_pct = self.features.fee_burn_percentage
+            + self.features.fee_producer_percentage
+            + self.features.fee_voters_percentage;
+        if total_pct > 100 {
+            return Err(format!(
+                "Fee percentages sum to {}% (burn {}% + producer {}% + voters {}%), must be <= 100%",
+                total_pct,
+                self.features.fee_burn_percentage,
+                self.features.fee_producer_percentage,
+                self.features.fee_voters_percentage,
+            ));
+        }
 
         Ok(())
     }
