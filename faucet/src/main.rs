@@ -173,11 +173,11 @@ async fn main() {
         max_per_request: std::env::var("MAX_PER_REQUEST")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(10),
+            .unwrap_or(100),
         daily_limit_per_ip: std::env::var("DAILY_LIMIT_PER_IP")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(10), // 10 MOLT per IP per day
+            .unwrap_or(100), // 100 MOLT per IP per day ($10 at $0.10/MOLT)
         cooldown_seconds: std::env::var("COOLDOWN_SECONDS")
             .ok()
             .and_then(|v| v.parse().ok())
