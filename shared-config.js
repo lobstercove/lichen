@@ -12,7 +12,7 @@ const MOLT_CONFIG = (() => {
             marketplace: 'http://localhost:3009',
             website:     'http://localhost:9090',
             developers:  'http://localhost:3010',
-            faucet:      'http://localhost:8901',
+            faucet:      'http://localhost:9100',
         };
     }
 

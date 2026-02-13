@@ -63,6 +63,12 @@ sleep 2
 ./skills/custody/run-custody.sh "$NETWORK" >"${LOG_DIR}/custody.log" 2>&1 &
 CUSTODY_PID=$!
 
+# ── Faucet ──
+FAUCET_PORT=9100
+PORT=$FAUCET_PORT RPC_URL="http://127.0.0.1:${BASE_RPC}" NETWORK="$NETWORK" \
+  ./target/release/moltchain-faucet >"${LOG_DIR}/faucet.log" 2>&1 &
+FAUCET_PID=$!
+
 # ── First-boot contract deployment ──
 # Wait 5s for validators to stabilize, then deploy all contracts if not yet deployed
 echo "🔧 Running first-boot contract deployment..."
@@ -74,6 +80,7 @@ echo "🦞 MoltChain local stack started"
 echo "Network: $NETWORK"
 echo "Validator PIDs: $V1_PID $V2_PID $V3_PID"
 echo "Custody PID: $CUSTODY_PID"
+echo "Faucet PID: $FAUCET_PID (port $FAUCET_PORT)"
 echo "Deploy PID: $DEPLOY_PID"
 if [ -n "$SOLANA_RPC_URL" ]; then
   echo "Solana RPC: $SOLANA_RPC_URL"
