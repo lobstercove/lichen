@@ -49,6 +49,32 @@ impl MultiSigConfig {
     }
 }
 
+/// Whitepaper distribution wallet allocation
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DistributionWallet {
+    /// Role name (e.g. "community_treasury", "validator_rewards")
+    pub role: String,
+    /// Public key for this wallet
+    pub pubkey: Pubkey,
+    /// Allocation in MOLT
+    pub amount_molt: u64,
+    /// Percentage of total supply
+    pub percentage: u8,
+    /// Path to keypair file on disk
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keypair_path: Option<String>,
+}
+
+/// Whitepaper genesis distribution (ordered: validator_rewards first for backward compat)
+pub const GENESIS_DISTRIBUTION: &[(&str, u64, u8)] = &[
+    ("validator_rewards", 150_000_000, 15),
+    ("community_treasury", 400_000_000, 40),
+    ("builder_grants", 250_000_000, 25),
+    ("founding_moltys", 100_000_000, 10),
+    ("ecosystem_partnerships", 50_000_000, 5),
+    ("reserve_pool", 50_000_000, 5),
+];
+
 /// Genesis wallet keypair bundle (saved to disk)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenesisWallet {
@@ -56,7 +82,7 @@ pub struct GenesisWallet {
     pub pubkey: Pubkey,
     /// Primary keypair (saved encrypted)
     pub keypair_path: String,
-    /// Treasury public key
+    /// Treasury public key (validator_rewards wallet — used for block rewards, fees, bootstraps)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub treasury_pubkey: Option<Pubkey>,
     /// Treasury keypair path
@@ -64,6 +90,9 @@ pub struct GenesisWallet {
     pub treasury_keypair_path: Option<String>,
     /// Multi-sig configuration
     pub multisig: Option<MultiSigConfig>,
+    /// Whitepaper distribution wallets (6 allocations totaling 1B MOLT)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub distribution_wallets: Option<Vec<DistributionWallet>>,
     /// Creation timestamp
     pub created_at: String,
     /// Chain ID this wallet belongs to
@@ -76,7 +105,7 @@ impl GenesisWallet {
         chain_id: &str,
         is_mainnet: bool,
         signer_count: usize,
-    ) -> Result<(Self, Vec<Keypair>, Keypair), String> {
+    ) -> Result<(Self, Vec<Keypair>, Vec<Keypair>), String> {
         // Generate primary keypair
         let primary_keypair = Keypair::generate();
         let pubkey = primary_keypair.pubkey();
@@ -113,8 +142,24 @@ impl GenesisWallet {
             None
         };
 
-        let treasury_keypair = Keypair::generate();
-        let treasury_pubkey = treasury_keypair.pubkey();
+        // Generate distribution keypairs per whitepaper (6 wallets totaling 1B MOLT)
+        let mut distribution_keypairs = Vec::new();
+        let mut distribution_wallets = Vec::new();
+
+        for &(role, amount, pct) in GENESIS_DISTRIBUTION {
+            let kp = Keypair::generate();
+            distribution_wallets.push(DistributionWallet {
+                role: role.to_string(),
+                pubkey: kp.pubkey(),
+                amount_molt: amount,
+                percentage: pct,
+                keypair_path: None, // filled by save_distribution_keypairs
+            });
+            distribution_keypairs.push(kp);
+        }
+
+        // Treasury = validator_rewards (first in distribution list)
+        let treasury_pubkey = distribution_wallets[0].pubkey;
 
         let wallet = GenesisWallet {
             pubkey,
@@ -122,11 +167,12 @@ impl GenesisWallet {
             treasury_pubkey: Some(treasury_pubkey),
             treasury_keypair_path: Some(format!(".moltchain/treasury-wallet-{}.json", chain_id)),
             multisig,
+            distribution_wallets: Some(distribution_wallets),
             created_at: chrono::Utc::now().to_rfc3339(),
             chain_id: chain_id.to_string(),
         };
 
-        Ok((wallet, all_keypairs, treasury_keypair))
+        Ok((wallet, all_keypairs, distribution_keypairs))
     }
 
     /// Save genesis wallet info to disk
@@ -206,6 +252,39 @@ impl GenesisWallet {
 
         Ok(path.to_string_lossy().to_string())
     }
+
+    /// Save all distribution keypairs to disk (one file per whitepaper wallet)
+    pub fn save_distribution_keypairs<P: AsRef<Path>>(
+        distribution: &[DistributionWallet],
+        keypairs: &[Keypair],
+        base_path: P,
+        chain_id: &str,
+    ) -> Result<Vec<String>, String> {
+        let mut paths = Vec::new();
+
+        for (dw, kp) in distribution.iter().zip(keypairs.iter()) {
+            let filename = format!("{}-{}.json", dw.role, chain_id);
+            let path = base_path.as_ref().join(&filename);
+
+            let keypair_json = serde_json::json!({
+                "pubkey": kp.pubkey().to_base58(),
+                "secret_key": hex::encode(kp.secret()),
+                "role": dw.role,
+                "amount_molt": dw.amount_molt,
+                "percentage": dw.percentage,
+                "chain_id": chain_id,
+                "created_at": chrono::Utc::now().to_rfc3339(),
+                "warning": "KEEP THIS FILE SECURE - CONTROLS DISTRIBUTION WALLET",
+            });
+
+            fs::write(&path, serde_json::to_string_pretty(&keypair_json).unwrap())
+                .map_err(|e| format!("Failed to write distribution keypair: {}", e))?;
+
+            paths.push(path.to_string_lossy().to_string());
+        }
+
+        Ok(paths)
+    }
 }
 
 #[cfg(test)]
@@ -214,15 +293,31 @@ mod tests {
 
     #[test]
     fn test_generate_testnet_wallet() {
-        let (wallet, keypairs, _treasury_keypair) =
+        let (wallet, keypairs, dist_keypairs) =
             GenesisWallet::generate("testnet-1", false, 1).unwrap();
         assert_eq!(keypairs.len(), 1);
         assert!(wallet.multisig.is_none()); // Single sig for testnet
+
+        // Whitepaper distribution
+        assert_eq!(dist_keypairs.len(), 6);
+        let dist = wallet.distribution_wallets.as_ref().unwrap();
+        assert_eq!(dist.len(), 6);
+        assert_eq!(dist[0].role, "validator_rewards");
+        assert_eq!(dist[0].amount_molt, 150_000_000);
+        assert_eq!(dist[1].role, "community_treasury");
+        assert_eq!(dist[1].amount_molt, 400_000_000);
+
+        // Total = 1B
+        let total: u64 = dist.iter().map(|d| d.amount_molt).sum();
+        assert_eq!(total, 1_000_000_000);
+
+        // Treasury = validator_rewards
+        assert_eq!(wallet.treasury_pubkey, Some(dist[0].pubkey));
     }
 
     #[test]
     fn test_generate_mainnet_wallet() {
-        let (wallet, keypairs, _treasury_keypair) =
+        let (wallet, keypairs, dist_keypairs) =
             GenesisWallet::generate("mainnet-1", true, 5).unwrap();
         assert_eq!(keypairs.len(), 5);
         assert!(wallet.multisig.is_some());
@@ -232,6 +327,13 @@ mod tests {
         assert_eq!(multisig.signers.len(), 5);
         assert!(multisig.is_genesis);
         assert!(multisig.is_treasury);
+
+        // Whitepaper distribution
+        assert_eq!(dist_keypairs.len(), 6);
+        let dist = wallet.distribution_wallets.as_ref().unwrap();
+        assert_eq!(dist.len(), 6);
+        let total: u64 = dist.iter().map(|d| d.amount_molt).sum();
+        assert_eq!(total, 1_000_000_000);
     }
 
     #[test]
