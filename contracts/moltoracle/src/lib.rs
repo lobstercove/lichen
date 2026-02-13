@@ -24,6 +24,12 @@ const PRICE_FEED_SIZE: usize = 49;
 pub extern "C" fn initialize_oracle(
     owner_ptr: *const u8,
 ) -> u32 {
+    // Re-initialization guard: reject if oracle_owner is already set
+    if storage_get(b"oracle_owner").is_some() {
+        log_info("MoltOracle already initialized — ignoring");
+        return 0;
+    }
+
     log_info("🔮 Initializing MoltOracle...");
     
     let owner = unsafe { core::slice::from_raw_parts(owner_ptr, 32) };
