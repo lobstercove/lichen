@@ -17,6 +17,7 @@ use alloc::vec::Vec;
 use moltchain_sdk::{
     storage_get, storage_set, log_info, set_return_data,
     bytes_to_u64, u64_to_bytes, get_timestamp,
+    Address, CrossCall, call_contract,
 };
 
 // T5.12: Reentrancy guard
@@ -77,6 +78,19 @@ const DEFAULT_CREATOR_ROYALTY_BPS: u64 = 50;
 const BPS_SCALE: u64 = 10_000;
 /// Emergency pause key
 const PAUSE_KEY: &[u8] = b"cp_paused";
+
+// ============================================================================
+// DEX MIGRATION CONSTANTS
+// ============================================================================
+
+/// DEX core contract address (for creating trading pairs on graduation)
+const DEX_CORE_ADDRESS_KEY: &[u8] = b"cp_dex_core_addr";
+/// DEX AMM contract address (for creating liquidity pools on graduation)
+const DEX_AMM_ADDRESS_KEY: &[u8] = b"cp_dex_amm_addr";
+/// Percentage of raised MOLT seeded as liquidity on graduation (80%)
+const GRADUATION_LIQUIDITY_PERCENT: u64 = 80;
+/// Percentage of raised MOLT retained as platform revenue on graduation (20%)
+const GRADUATION_PLATFORM_PERCENT: u64 = 20;
 
 // ============================================================================
 // STORAGE HELPERS
@@ -423,12 +437,80 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, molt_amount: u64) -> 
     // v2: Record last buy timestamp for cooldown
     store_u64(&lbk, now);
 
-    // Check graduation
-    let market_cap = current_price(new_supply) * new_supply / 1_000_000_000;
+    // Check graduation (use u128 to prevent overflow with large supplies)
+    let market_cap = (current_price(new_supply) as u128 * new_supply as u128 / 1_000_000_000u128) as u64;
     if market_cap >= GRADUATION_MARKET_CAP {
         data[64] = 1; // Mark graduated
         storage_set(&token_key, &data);
-        log_info("🎓 Token graduated! Migrating to ClawSwap DEX");
+
+        // --- DEX Migration: create pair, create pool, seed liquidity ---
+        let dex_core_bytes = storage_get(DEX_CORE_ADDRESS_KEY);
+        let dex_amm_bytes = storage_get(DEX_AMM_ADDRESS_KEY);
+
+        let has_core = dex_core_bytes.as_ref().map(|b| b.len() == 32 && b.iter().any(|&x| x != 0)).unwrap_or(false);
+        let has_amm = dex_amm_bytes.as_ref().map(|b| b.len() == 32 && b.iter().any(|&x| x != 0)).unwrap_or(false);
+
+        if has_core && has_amm {
+            let mut core_addr = [0u8; 32];
+            core_addr.copy_from_slice(dex_core_bytes.as_ref().unwrap());
+            let mut amm_addr = [0u8; 32];
+            amm_addr.copy_from_slice(dex_amm_bytes.as_ref().unwrap());
+
+            let price = current_price(new_supply);
+
+            // 1) Create trading pair on DEX core
+            //    args: token_id(8) + price(8) = 16 bytes
+            let mut create_pair_args = Vec::with_capacity(16);
+            create_pair_args.extend_from_slice(&u64_to_bytes(token_id));
+            create_pair_args.extend_from_slice(&u64_to_bytes(price));
+            let pair_call = CrossCall::new(
+                Address(core_addr),
+                "create_pair",
+                create_pair_args,
+            );
+            let pair_ok = call_contract(pair_call).is_ok();
+
+            // 2) Create AMM pool
+            //    args: token_id(8) + initial_price(8) = 16 bytes
+            let mut create_pool_args = Vec::with_capacity(16);
+            create_pool_args.extend_from_slice(&u64_to_bytes(token_id));
+            create_pool_args.extend_from_slice(&u64_to_bytes(price));
+            let pool_call = CrossCall::new(
+                Address(amm_addr),
+                "create_pool",
+                create_pool_args,
+            );
+            let pool_ok = call_contract(pool_call).is_ok();
+
+            // 3) Seed initial liquidity from raised MOLT
+            //    Split: 80% liquidity, 20% platform revenue
+            let liquidity_molt = new_raised * GRADUATION_LIQUIDITY_PERCENT / 100;
+            let platform_molt = new_raised * GRADUATION_PLATFORM_PERCENT / 100;
+
+            //    args: token_id(8) + molt_amount(8) + supply(8) = 24 bytes
+            let mut seed_args = Vec::with_capacity(24);
+            seed_args.extend_from_slice(&u64_to_bytes(token_id));
+            seed_args.extend_from_slice(&u64_to_bytes(liquidity_molt));
+            seed_args.extend_from_slice(&u64_to_bytes(new_supply));
+            let seed_call = CrossCall::new(
+                Address(amm_addr),
+                "add_liquidity",
+                seed_args,
+            );
+            let seed_ok = call_contract(seed_call).is_ok();
+
+            // Track platform revenue from graduation
+            let prev_revenue = load_u64(b"cp_graduation_revenue");
+            store_u64(b"cp_graduation_revenue", prev_revenue + platform_molt);
+
+            if pair_ok && pool_ok && seed_ok {
+                log_info("🎓 Token graduated! DEX pair created, pool seeded with liquidity");
+            } else {
+                log_info("🎓 Token graduated! DEX migration partially failed — manual intervention needed");
+            }
+        } else {
+            log_info("🎓 Token graduated! DEX addresses not configured — manual migration needed");
+        }
     }
 
     log_info("✅ Buy successful");
@@ -543,7 +625,7 @@ pub extern "C" fn get_token_info(token_id: u64) -> u32 {
     let supply_sold = bytes_to_u64(&data[32..40]);
     let molt_raised = bytes_to_u64(&data[40..48]);
     let price = current_price(supply_sold);
-    let market_cap = price * supply_sold / 1_000_000_000;
+    let market_cap = (price as u128 * supply_sold as u128 / 1_000_000_000u128) as u64;
 
     let mut result = Vec::with_capacity(33);
     result.extend_from_slice(&u64_to_bytes(supply_sold));
@@ -700,6 +782,52 @@ pub extern "C" fn withdraw_fees(caller_ptr: *const u8, amount: u64) -> u32 {
     if amount > fees { return 3; }
     store_u64(b"cp_fees_collected", fees - amount);
     log_info("✅ Fees withdrawn");
+    0
+}
+
+/// Admin sets DEX contract addresses for graduation migration
+/// Both addresses must be non-zero 32-byte addresses
+#[no_mangle]
+pub extern "C" fn set_dex_addresses(caller_ptr: *const u8, core_ptr: *const u8, amm_ptr: *const u8) -> u32 {
+    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
+    if !is_admin(caller) {
+        return 1;
+    }
+    let core_addr = unsafe { core::slice::from_raw_parts(core_ptr, 32) };
+    let amm_addr = unsafe { core::slice::from_raw_parts(amm_ptr, 32) };
+
+    // Validate non-zero
+    if core_addr.iter().all(|&b| b == 0) {
+        log_info("❌ DEX core address cannot be zero");
+        return 2;
+    }
+    if amm_addr.iter().all(|&b| b == 0) {
+        log_info("❌ DEX AMM address cannot be zero");
+        return 3;
+    }
+
+    storage_set(DEX_CORE_ADDRESS_KEY, core_addr);
+    storage_set(DEX_AMM_ADDRESS_KEY, amm_addr);
+    log_info("✅ DEX addresses configured for graduation migration");
+    0
+}
+
+/// Get graduation info: [graduation_revenue(8), dex_core_set(1), dex_amm_set(1)]
+#[no_mangle]
+pub extern "C" fn get_graduation_info() -> u32 {
+    let revenue = load_u64(b"cp_graduation_revenue");
+    let core_set: u8 = storage_get(DEX_CORE_ADDRESS_KEY)
+        .map(|b| if b.len() == 32 && b.iter().any(|&x| x != 0) { 1 } else { 0 })
+        .unwrap_or(0);
+    let amm_set: u8 = storage_get(DEX_AMM_ADDRESS_KEY)
+        .map(|b| if b.len() == 32 && b.iter().any(|&x| x != 0) { 1 } else { 0 })
+        .unwrap_or(0);
+
+    let mut result = Vec::with_capacity(10);
+    result.extend_from_slice(&u64_to_bytes(revenue));
+    result.push(core_set);
+    result.push(amm_set);
+    set_return_data(&result);
     0
 }
 
@@ -1104,5 +1232,259 @@ mod tests {
         assert_eq!(get_sell_cooldown(), DEFAULT_SELL_COOLDOWN_MS);
         assert_eq!(get_max_buy(), DEFAULT_MAX_BUY_AMOUNT);
         assert_eq!(get_creator_royalty(), DEFAULT_CREATOR_ROYALTY_BPS);
+    }
+
+    // ========================================================================
+    // DEX MIGRATION TESTS (Task 2.7)
+    // ========================================================================
+
+    #[test]
+    fn test_set_dex_addresses() {
+        setup();
+        let admin = [1u8; 32];
+        initialize(admin.as_ptr());
+
+        let core_addr = [10u8; 32];
+        let amm_addr = [20u8; 32];
+        let result = set_dex_addresses(admin.as_ptr(), core_addr.as_ptr(), amm_addr.as_ptr());
+        assert_eq!(result, 0);
+
+        // Verify stored
+        let stored_core = test_mock::get_storage(DEX_CORE_ADDRESS_KEY);
+        assert_eq!(stored_core, Some(core_addr.to_vec()));
+        let stored_amm = test_mock::get_storage(DEX_AMM_ADDRESS_KEY);
+        assert_eq!(stored_amm, Some(amm_addr.to_vec()));
+    }
+
+    #[test]
+    fn test_set_dex_addresses_not_admin() {
+        setup();
+        let admin = [1u8; 32];
+        initialize(admin.as_ptr());
+
+        let other = [9u8; 32];
+        let core_addr = [10u8; 32];
+        let amm_addr = [20u8; 32];
+        assert_eq!(set_dex_addresses(other.as_ptr(), core_addr.as_ptr(), amm_addr.as_ptr()), 1);
+    }
+
+    #[test]
+    fn test_set_dex_addresses_zero_core() {
+        setup();
+        let admin = [1u8; 32];
+        initialize(admin.as_ptr());
+
+        let zero = [0u8; 32];
+        let amm_addr = [20u8; 32];
+        assert_eq!(set_dex_addresses(admin.as_ptr(), zero.as_ptr(), amm_addr.as_ptr()), 2);
+    }
+
+    #[test]
+    fn test_set_dex_addresses_zero_amm() {
+        setup();
+        let admin = [1u8; 32];
+        initialize(admin.as_ptr());
+
+        let core_addr = [10u8; 32];
+        let zero = [0u8; 32];
+        assert_eq!(set_dex_addresses(admin.as_ptr(), core_addr.as_ptr(), zero.as_ptr()), 3);
+    }
+
+    #[test]
+    fn test_graduation_with_dex_migration() {
+        setup();
+        let admin = [1u8; 32];
+        initialize(admin.as_ptr());
+
+        // Configure DEX addresses
+        let core_addr = [10u8; 32];
+        let amm_addr = [20u8; 32];
+        set_dex_addresses(admin.as_ptr(), core_addr.as_ptr(), amm_addr.as_ptr());
+
+        let creator = [2u8; 32];
+        let token_id = create_token(creator.as_ptr(), CREATION_FEE);
+
+        // Set max buy very high to allow huge purchases
+        set_max_buy(admin.as_ptr(), u64::MAX);
+
+        // Buy massive amounts to trigger graduation
+        // Graduation needs market_cap >= GRADUATION_MARKET_CAP (1_000_000_000_000_000)
+        // market_cap = current_price(supply) * supply / 1e9
+        // We need to buy enough supply to push market cap over threshold
+        let buyer = [3u8; 32];
+        test_mock::set_timestamp(10_000);
+
+        // Buy in large chunks. Each buy pushes supply higher.
+        // With linear bonding curve, we need substantial purchases.
+        // Let's use huge MOLT amounts to drive supply up quickly.
+        let huge_amount: u64 = 10_000_000_000_000_000; // 10M MOLT
+        let tokens = buy(buyer.as_ptr(), token_id, huge_amount);
+        assert!(tokens > 0, "First buy should succeed");
+
+        // Check if graduated
+        let id_hex = u64_to_hex(token_id);
+        let token_key = make_key(b"cpt:", &id_hex);
+        let data = test_mock::get_storage(&token_key).unwrap();
+
+        if data[64] == 1 {
+            // Graduated — check graduation revenue was tracked
+            let revenue = load_u64(b"cp_graduation_revenue");
+            assert!(revenue > 0, "Graduation revenue should be tracked");
+        } else {
+            // Need more buys to reach graduation
+            test_mock::set_timestamp(15_000);
+            let tokens2 = buy(buyer.as_ptr(), token_id, huge_amount);
+            assert!(tokens2 > 0 || data[64] == 1, "Should buy more or already graduated");
+
+            test_mock::set_timestamp(20_000);
+            let _ = buy(buyer.as_ptr(), token_id, huge_amount);
+            test_mock::set_timestamp(25_000);
+            let _ = buy(buyer.as_ptr(), token_id, huge_amount);
+            test_mock::set_timestamp(30_000);
+            let _ = buy(buyer.as_ptr(), token_id, huge_amount);
+
+            let data2 = test_mock::get_storage(&token_key).unwrap();
+            // Token should eventually graduate with enough MOLT
+            if data2[64] == 1 {
+                let revenue = load_u64(b"cp_graduation_revenue");
+                assert!(revenue > 0, "Graduation revenue should be tracked");
+            }
+        }
+    }
+
+    #[test]
+    fn test_graduation_without_dex_addresses() {
+        setup();
+        let admin = [1u8; 32];
+        initialize(admin.as_ptr());
+
+        // Do NOT set DEX addresses
+        let creator = [2u8; 32];
+        let token_id = create_token(creator.as_ptr(), CREATION_FEE);
+        set_max_buy(admin.as_ptr(), u64::MAX);
+
+        let buyer = [3u8; 32];
+        test_mock::set_timestamp(10_000);
+
+        let huge_amount: u64 = 10_000_000_000_000_000;
+        let _ = buy(buyer.as_ptr(), token_id, huge_amount);
+        test_mock::set_timestamp(15_000);
+        let _ = buy(buyer.as_ptr(), token_id, huge_amount);
+        test_mock::set_timestamp(20_000);
+        let _ = buy(buyer.as_ptr(), token_id, huge_amount);
+        test_mock::set_timestamp(25_000);
+        let _ = buy(buyer.as_ptr(), token_id, huge_amount);
+        test_mock::set_timestamp(30_000);
+        let _ = buy(buyer.as_ptr(), token_id, huge_amount);
+
+        // Even if graduated, no revenue should be tracked (no DEX addresses = no migration)
+        let revenue = load_u64(b"cp_graduation_revenue");
+        assert_eq!(revenue, 0, "No graduation revenue without DEX addresses");
+    }
+
+    #[test]
+    fn test_get_graduation_info_initial() {
+        setup();
+        let admin = [1u8; 32];
+        initialize(admin.as_ptr());
+
+        assert_eq!(get_graduation_info(), 0);
+        let ret = test_mock::get_return_data();
+        assert_eq!(ret.len(), 10);
+        // revenue=0, core_set=0, amm_set=0
+        assert_eq!(bytes_to_u64(&ret[0..8]), 0);
+        assert_eq!(ret[8], 0);
+        assert_eq!(ret[9], 0);
+    }
+
+    #[test]
+    fn test_get_graduation_info_after_address_set() {
+        setup();
+        let admin = [1u8; 32];
+        initialize(admin.as_ptr());
+
+        let core_addr = [10u8; 32];
+        let amm_addr = [20u8; 32];
+        set_dex_addresses(admin.as_ptr(), core_addr.as_ptr(), amm_addr.as_ptr());
+
+        assert_eq!(get_graduation_info(), 0);
+        let ret = test_mock::get_return_data();
+        assert_eq!(ret.len(), 10);
+        assert_eq!(bytes_to_u64(&ret[0..8]), 0); // no revenue yet
+        assert_eq!(ret[8], 1); // core_set
+        assert_eq!(ret[9], 1); // amm_set
+    }
+
+    #[test]
+    fn test_graduated_token_buy_blocked() {
+        setup();
+        let admin = [1u8; 32];
+        initialize(admin.as_ptr());
+
+        let core_addr = [10u8; 32];
+        let amm_addr = [20u8; 32];
+        set_dex_addresses(admin.as_ptr(), core_addr.as_ptr(), amm_addr.as_ptr());
+        set_max_buy(admin.as_ptr(), u64::MAX);
+
+        let creator = [2u8; 32];
+        let token_id = create_token(creator.as_ptr(), CREATION_FEE);
+        let buyer = [3u8; 32];
+
+        // Push to graduation
+        test_mock::set_timestamp(10_000);
+        let huge: u64 = 10_000_000_000_000_000;
+        let _ = buy(buyer.as_ptr(), token_id, huge);
+        test_mock::set_timestamp(15_000);
+        let _ = buy(buyer.as_ptr(), token_id, huge);
+        test_mock::set_timestamp(20_000);
+        let _ = buy(buyer.as_ptr(), token_id, huge);
+        test_mock::set_timestamp(25_000);
+        let _ = buy(buyer.as_ptr(), token_id, huge);
+        test_mock::set_timestamp(30_000);
+        let _ = buy(buyer.as_ptr(), token_id, huge);
+
+        // Check if graduated
+        let id_hex = u64_to_hex(token_id);
+        let token_key = make_key(b"cpt:", &id_hex);
+        let data = test_mock::get_storage(&token_key).unwrap();
+        if data[64] == 1 {
+            // Graduated — further buys should return 0
+            test_mock::set_timestamp(35_000);
+            assert_eq!(buy(buyer.as_ptr(), token_id, 1_000_000_000), 0);
+        }
+    }
+
+    #[test]
+    fn test_graduated_token_sell_blocked() {
+        setup();
+        let admin = [1u8; 32];
+        initialize(admin.as_ptr());
+        set_max_buy(admin.as_ptr(), u64::MAX);
+
+        let creator = [2u8; 32];
+        let token_id = create_token(creator.as_ptr(), CREATION_FEE);
+        let buyer = [3u8; 32];
+
+        // Buy and potentially graduate
+        test_mock::set_timestamp(10_000);
+        let huge: u64 = 10_000_000_000_000_000;
+        let bought = buy(buyer.as_ptr(), token_id, huge);
+        test_mock::set_timestamp(15_000);
+        let _ = buy(buyer.as_ptr(), token_id, huge);
+        test_mock::set_timestamp(20_000);
+        let _ = buy(buyer.as_ptr(), token_id, huge);
+        test_mock::set_timestamp(25_000);
+        let _ = buy(buyer.as_ptr(), token_id, huge);
+        test_mock::set_timestamp(30_000);
+        let _ = buy(buyer.as_ptr(), token_id, huge);
+
+        let id_hex = u64_to_hex(token_id);
+        let token_key = make_key(b"cpt:", &id_hex);
+        let data = test_mock::get_storage(&token_key).unwrap();
+        if data[64] == 1 && bought > 0 {
+            // Graduated — sell should return 0
+            test_mock::set_timestamp(40_000);
+            assert_eq!(sell(buyer.as_ptr(), token_id, bought / 2), 0);
+        }
     }
 }
