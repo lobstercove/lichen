@@ -16,7 +16,7 @@
 //   NATIVE MOLT RPC METHODS        — getBalance, getAccount, getBlock, getSlot, …
 //   CORE TRANSACTION METHODS       — getTransaction, getTransactionsByAddress, send
 //   SOLANA-COMPATIBLE ENDPOINTS    — Solana JSON-RPC compatibility layer
-//   NETWORK ENDPOINTS              — getPeers, getNetworkInfo
+//   NETWORK ENDPOINTS              — getPeers, getNetworkInfo, getClusterInfo
 //   VALIDATOR ENDPOINTS            — getValidatorInfo, getValidatorPerformance
 //   STAKING ENDPOINTS              — stake, unstake, getStakingStatus
 //   ACCOUNT ENDPOINTS              — getAccountInfo, getTransactionHistory
@@ -842,6 +842,7 @@ async fn handle_rpc(State(state): State<Arc<RpcState>>, Json(req): Json<RpcReque
         // Network endpoints
         "getPeers" => handle_get_peers(&state).await,
         "getNetworkInfo" => handle_get_network_info(&state).await,
+        "getClusterInfo" => handle_get_cluster_info(&state).await,
 
         // Validator endpoints
         "getValidatorInfo" => handle_get_validator_info(&state, req.params).await,
@@ -3011,6 +3012,73 @@ async fn handle_get_peers(state: &RpcState) -> Result<serde_json::Value, RpcErro
     Ok(serde_json::json!({
         "peers": peers,
         "count": peer_count,
+    }))
+}
+
+/// Get live cluster info: connected peers with their validator identity & slot
+/// This is the PRODUCTION endpoint for monitoring — no hardcoded ports needed.
+async fn handle_get_cluster_info(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    let current_slot = state.state.get_last_slot().unwrap_or(0);
+
+    // Get connected P2P peers
+    let connected_peers: Vec<String> = if let Some(ref p2p) = state.p2p {
+        p2p.peer_addresses()
+    } else {
+        Vec::new()
+    };
+
+    // Get all known validators from DB (cleaned of stale entries on boot)
+    let validators = state.state.get_all_validators().map_err(|e| RpcError {
+        code: -32000,
+        message: format!("Database error: {}", e),
+    })?;
+
+    // Build per-validator node info
+    let nodes: Vec<serde_json::Value> = validators
+        .iter()
+        .map(|v| {
+            let pool_stake = if let Some(ref pool_arc) = state.stake_pool {
+                if let Ok(pool) = pool_arc.try_lock() {
+                    pool.get_stake(&v.pubkey).map(|s| s.amount).unwrap_or(0)
+                } else {
+                    0
+                }
+            } else {
+                0
+            };
+            let actual_stake = if pool_stake > 0 {
+                pool_stake
+            } else {
+                state
+                    .state
+                    .get_account(&v.pubkey)
+                    .ok()
+                    .flatten()
+                    .map(|acc| acc.staked)
+                    .unwrap_or(0)
+            };
+
+            // A validator is "active" if it produced a block within the last 100 slots
+            let is_active = v.last_active_slot + 100 >= current_slot || v.last_active_slot == 0;
+
+            serde_json::json!({
+                "pubkey": v.pubkey.to_base58(),
+                "stake": actual_stake,
+                "reputation": v.reputation as f64,
+                "blocks_proposed": v.blocks_proposed,
+                "last_active_slot": v.last_active_slot,
+                "joined_slot": v.joined_slot,
+                "active": is_active,
+            })
+        })
+        .collect();
+
+    Ok(serde_json::json!({
+        "current_slot": current_slot,
+        "cluster_nodes": nodes,
+        "connected_peers": connected_peers,
+        "validator_count": validators.len(),
+        "peer_count": connected_peers.len(),
     }))
 }
 

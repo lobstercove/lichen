@@ -3,12 +3,10 @@
 # MoltChain — Blockchain Reset (convenience wrapper)
 # ============================================================================
 #
-# Wraps skills/validator/reset-blockchain.sh from repo root.
-#
 # Usage:
-#   ./reset-blockchain.sh [testnet|mainnet|all] [--restart] [solana_rpc] [evm_rpc]
-#
-# Same as running: ./skills/validator/reset-blockchain.sh [args...]
+#   ./reset-blockchain.sh              # Reset everything
+#   ./reset-blockchain.sh --restart    # Reset + restart local testnet
+#   ./reset-blockchain.sh testnet      # Reset testnet state only
 #
 # ============================================================================
 
