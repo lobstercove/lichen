@@ -102,8 +102,21 @@ if [ "$NETWORK" = "all" ]; then
     rm -rf data/custody* 2>/dev/null || true
     rm -rf /tmp/moltchain-custody* 2>/dev/null || true
 else
-    # Network-specific
+    # Network-specific: remove both naming conventions
+    # Convention 1: data/state-{network}-{port}
     rm -rf data/state-${NETWORK}-* 2>/dev/null && echo "  removed data/state-${NETWORK}-*" || true
+    # Convention 2: data/state-{port} (used by run-validator.sh)
+    if [ "$NETWORK" = "testnet" ]; then
+        for port in 8000 8001 8002 8003 8004; do
+            rm -rf "data/state-${port}" 2>/dev/null || true
+        done
+        echo "  removed data/state-800x (testnet ports)"
+    elif [ "$NETWORK" = "mainnet" ]; then
+        for port in 9000 9001 9002 9003 9004; do
+            rm -rf "data/state-${port}" 2>/dev/null || true
+        done
+        echo "  removed data/state-900x (mainnet ports)"
+    fi
     rm -rf skills/validator/data/state-${NETWORK}-* 2>/dev/null || true
     rm -rf data/custody-${NETWORK}* 2>/dev/null || true
 fi
@@ -140,29 +153,24 @@ echo -e "${YELLOW}[4/6] Cleaning signer data, peer stores, genesis files...${NC}
 if [ "$NETWORK" = "all" ]; then
     # Signer keypairs
     rm -rf ~/.moltchain/signer-* ~/.moltchain/signers 2>/dev/null || true
-    find "$REPO_ROOT" -name "signer-keypair.json" -delete 2>/dev/null || true
     rm -rf "$REPO_ROOT"/data/signer-* 2>/dev/null || true
 
-    # Peer stores
-    find "$REPO_ROOT" -name "known-peers.json" -delete 2>/dev/null || true
-    find ~/.moltchain -name "known-peers.json" -delete 2>/dev/null || true
+    # Peer stores (only check data dirs, not target/)
+    find "$REPO_ROOT/data" -maxdepth 3 -name "known-peers.json" -delete 2>/dev/null || true
+    rm -f ~/.moltchain/known-peers.json 2>/dev/null || true
 
     # Genesis files
     rm -f "$REPO_ROOT/genesis.json" 2>/dev/null || true
-    find "$REPO_ROOT/data" -name "genesis-wallet.json" -delete 2>/dev/null || true
-    find "$REPO_ROOT/data" -name "genesis-keys" -type d -exec rm -rf {} + 2>/dev/null || true
-    find ~/.moltchain -name "genesis-wallet.json" -delete 2>/dev/null || true
-    find ~/.moltchain -name "genesis-keys" -type d -exec rm -rf {} + 2>/dev/null || true
+    find "$REPO_ROOT/data" -maxdepth 3 -name "genesis-wallet.json" -delete 2>/dev/null || true
+    find "$REPO_ROOT/data" -maxdepth 3 -name "genesis-keys" -type d -exec rm -rf {} + 2>/dev/null || true
+    rm -f ~/.moltchain/genesis-wallet.json 2>/dev/null || true
+    rm -rf ~/.moltchain/genesis-keys 2>/dev/null || true
 
     # Faucet persisted state
     rm -f "$REPO_ROOT/airdrops.json" 2>/dev/null || true
 
     # Temp files and logs
     rm -rf /tmp/moltchain-* /tmp/validator-* /tmp/molt* 2>/dev/null || true
-
-    # LOCK files (RocksDB)
-    find /tmp -name "LOCK" -path "*moltchain*" -delete 2>/dev/null || true
-    find /tmp -name "LOCK" -path "*validator*" -delete 2>/dev/null || true
 else
     # Network-specific
     for dir in "$REPO_ROOT"/data/state-${NETWORK}-*; do
