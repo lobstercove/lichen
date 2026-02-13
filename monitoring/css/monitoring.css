@@ -486,21 +486,27 @@ body {
 
 .supply-segment.genesis { background: #334155; }
 .supply-segment.circulating { background: var(--success); }
-.supply-segment.treasury { background: var(--secondary); }
+.supply-segment.treasury { background: var(--primary); }
+.supply-segment.community { background: var(--secondary); }
+.supply-segment.builder { background: var(--info); }
+.supply-segment.founding { background: var(--accent); }
+.supply-segment.ecosystem { background: var(--success); }
+.supply-segment.reserve { background: #6366f1; }
 .supply-segment.staked { background: var(--info); }
 .supply-segment.burned { background: var(--warning); }
 
 .supply-legend {
     display: flex;
-    gap: 1.5rem;
+    gap: 1rem;
     margin-top: 0.75rem;
+    flex-wrap: wrap;
 }
 
 .legend-item {
     display: flex;
     align-items: center;
     gap: 0.4rem;
-    font-size: 0.75rem;
+    font-size: 0.7rem;
     color: var(--text-muted);
 }
 
@@ -512,9 +518,34 @@ body {
 
 .legend-dot.genesis { background: #334155; }
 .legend-dot.circulating { background: var(--success); }
-.legend-dot.treasury { background: var(--secondary); }
+.legend-dot.treasury { background: var(--primary); }
+.legend-dot.community { background: var(--secondary); }
+.legend-dot.builder { background: var(--info); }
+.legend-dot.founding { background: var(--accent); }
+.legend-dot.ecosystem { background: var(--success); }
+.legend-dot.reserve { background: #6366f1; }
 .legend-dot.staked { background: var(--info); }
 .legend-dot.burned { background: var(--warning); }
+
+.supply-divider {
+    border-top: 1px solid var(--border);
+    margin: 1rem 0;
+}
+
+.supply-section-label {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    margin-bottom: 0.75rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.supply-grid-3 {
+    grid-template-columns: 1fr 1fr 1fr;
+}
 
 /* ─── Contract List ────────────────────────────────────────── */
 .contract-list {

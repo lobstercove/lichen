@@ -182,14 +182,30 @@ async function loadRegistryInfo(programId) {
     }
 }
 
-// ===== Known System Addresses =====
-const KNOWN_ADDRESSES = {
-    '3HL5u4hhbFscmS3LQ6jinUboARWmUmEVLMENdWWrrUxj': 'Treasury',
-    'CPM1ZuSRRhVMwDD6qcuGD6BA8hbfJQCWDMGsjgsnhFHu': 'Genesis',
-};
+// ===== Genesis Account Labels (loaded dynamically from RPC) =====
+let KNOWN_ADDRESSES = {};
+let _genesisAccountsLoaded = false;
+
+async function loadGenesisAccounts() {
+    if (_genesisAccountsLoaded) return;
+    try {
+        const result = await rpcCall('getGenesisAccounts', []);
+        const accounts = result?.accounts || [];
+        for (const acc of accounts) {
+            if (acc.pubkey && acc.label) {
+                KNOWN_ADDRESSES[acc.pubkey] = acc.label;
+            }
+        }
+        _genesisAccountsLoaded = true;
+    } catch (e) {
+        console.warn('Failed to load genesis accounts:', e);
+    }
+}
 
 // ===== Validator detection + account type =====
 async function applyValidatorType(data) {
+    // Ensure genesis accounts are loaded
+    await loadGenesisAccounts();
     // Check known addresses first
     if (KNOWN_ADDRESSES[data.base58]) {
         data.type = KNOWN_ADDRESSES[data.base58];

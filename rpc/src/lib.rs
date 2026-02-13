@@ -830,6 +830,7 @@ async fn handle_rpc(State(state): State<Arc<RpcState>>, Json(req): Json<RpcReque
         "getValidators" => handle_get_validators(&state).await,
         "getMetrics" => handle_get_metrics(&state).await,
         "getTreasuryInfo" => handle_get_treasury_info(&state).await,
+        "getGenesisAccounts" => handle_get_genesis_accounts(&state).await,
         "getRecentBlockhash" => handle_get_recent_blockhash(&state).await,
         "health" => Ok(serde_json::json!({"status": "ok"})),
 
@@ -2927,6 +2928,27 @@ async fn handle_get_metrics(state: &RpcState) -> Result<serde_json::Value, RpcEr
         .saturating_sub(genesis_balance)
         .saturating_sub(metrics.total_burned);
 
+    // Distribution wallet balances
+    let dist_wallets_json = {
+        let ga = state.state.get_genesis_accounts().unwrap_or_default();
+        let mut dw_map = serde_json::Map::new();
+        for (role, pubkey, _amount_molt, _pct) in &ga {
+            let bal = state
+                .state
+                .get_account(pubkey)
+                .ok()
+                .flatten()
+                .map(|a| a.shells)
+                .unwrap_or(0);
+            dw_map.insert(format!("{}_balance", role), serde_json::json!(bal));
+            dw_map.insert(
+                format!("{}_pubkey", role),
+                serde_json::json!(pubkey.to_base58()),
+            );
+        }
+        serde_json::Value::Object(dw_map)
+    };
+
     Ok(serde_json::json!({
         "tps": metrics.tps,
         "total_transactions": metrics.total_transactions,
@@ -2947,7 +2969,61 @@ async fn handle_get_metrics(state: &RpcState) -> Result<serde_json::Value, RpcEr
         "genesis_pubkey": genesis_pubkey_b58,
         "total_contracts": count_executable_accounts(&state.state),
         "validator_count": validators.len(),
+        "distribution_wallets": dist_wallets_json,
     }))
+}
+
+// ============================================================================
+// GENESIS ACCOUNTS ENDPOINT
+// ============================================================================
+
+/// Get all genesis distribution accounts with live balances
+async fn handle_get_genesis_accounts(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    let accounts = state.state.get_genesis_accounts().map_err(|e| RpcError {
+        code: -32000,
+        message: format!("Database error: {}", e),
+    })?;
+
+    let mut result = Vec::new();
+
+    // Add genesis wallet itself
+    if let Ok(Some(gpk)) = state.state.get_genesis_pubkey() {
+        let acc = state.state.get_account(&gpk).ok().flatten();
+        let bal = acc.as_ref().map(|a| a.shells).unwrap_or(0);
+        result.push(serde_json::json!({
+            "role": "genesis",
+            "pubkey": gpk.to_base58(),
+            "amount_molt": 1_000_000_000u64,
+            "percentage": 100,
+            "balance": bal,
+            "label": "Genesis Signer",
+        }));
+    }
+
+    // Add all distribution wallets
+    for (role, pubkey, amount_molt, percentage) in &accounts {
+        let acc = state.state.get_account(pubkey).ok().flatten();
+        let bal = acc.as_ref().map(|a| a.shells).unwrap_or(0);
+        let label = match role.as_str() {
+            "validator_rewards" => "Validator Rewards (Treasury)",
+            "community_treasury" => "Community Treasury",
+            "builder_grants" => "Builder Grants",
+            "founding_moltys" => "Founding Moltys",
+            "ecosystem_partnerships" => "Ecosystem Partnerships",
+            "reserve_pool" => "Reserve Pool",
+            _ => role.as_str(),
+        };
+        result.push(serde_json::json!({
+            "role": role,
+            "pubkey": pubkey.to_base58(),
+            "amount_molt": amount_molt,
+            "percentage": percentage,
+            "balance": bal,
+            "label": label,
+        }));
+    }
+
+    Ok(serde_json::json!({ "accounts": result }))
 }
 
 // ============================================================================

@@ -2112,6 +2112,98 @@ async fn run_validator() {
                 }
             }
         }
+        // Backfill genesis accounts from wallet if missing in DB
+        if state.get_genesis_accounts().map(|v| v.is_empty()).unwrap_or(true) {
+            if let Some(ref gw) = genesis_wallet {
+                if let Some(ref dist_wallets) = gw.distribution_wallets {
+                    let ga_entries: Vec<(String, Pubkey, u64, u8)> = dist_wallets
+                        .iter()
+                        .map(|dw| (dw.role.clone(), dw.pubkey, dw.amount_molt, dw.percentage))
+                        .collect();
+                    if let Err(e) = state.set_genesis_accounts(&ga_entries) {
+                        warn!("⚠️  Migration: failed to store genesis accounts: {}", e);
+                    } else {
+                        info!("  ✓ Migration: stored {} genesis accounts in DB", ga_entries.len());
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Fetch genesis accounts from bootstrap peer if still missing ---
+    // This handles V2/V3 joining the network without genesis-wallet.json
+    if state.get_genesis_accounts().map(|v| v.is_empty()).unwrap_or(true)
+        && !explicit_seed_peer_strings.is_empty()
+    {
+        info!("  🔄 Fetching genesis accounts from bootstrap peer...");
+        for peer in &explicit_seed_peer_strings {
+            // Derive RPC port from P2P port
+            let parts: Vec<&str> = peer.split(':').collect();
+            if let (Some(host), Some(p2p_port_str)) = (parts.first(), parts.get(1)) {
+                if let Ok(peer_p2p) = p2p_port_str.parse::<u16>() {
+                    let peer_rpc = if peer_p2p == 8000 {
+                        8899
+                    } else {
+                        let offset = peer_p2p % 1000;
+                        8900u16.saturating_add(offset.saturating_mul(2)).saturating_add(1)
+                    };
+                    let url = format!("http://{}:{}/", host, peer_rpc);
+                    let body = serde_json::json!({
+                        "jsonrpc": "2.0", "id": 1, "method": "getGenesisAccounts"
+                    });
+                    match reqwest::Client::new()
+                        .post(&url)
+                        .json(&body)
+                        .timeout(std::time::Duration::from_secs(5))
+                        .send()
+                        .await
+                    {
+                        Ok(resp) => {
+                            if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                if let Some(accounts) = json["result"]["accounts"].as_array() {
+                                    let mut ga_entries = Vec::new();
+                                    for acc in accounts {
+                                        let role =
+                                            acc["role"].as_str().unwrap_or("").to_string();
+                                        if role == "genesis" {
+                                            continue; // Skip the genesis signer entry
+                                        }
+                                        let pk_str = acc["pubkey"].as_str().unwrap_or("");
+                                        if let Ok(pk) = Pubkey::from_base58(pk_str) {
+                                            let amt =
+                                                acc["amount_molt"].as_u64().unwrap_or(0);
+                                            let pct =
+                                                acc["percentage"].as_u64().unwrap_or(0) as u8;
+                                            ga_entries.push((role, pk, amt, pct));
+                                        }
+                                    }
+                                    if !ga_entries.is_empty() {
+                                        if let Err(e) =
+                                            state.set_genesis_accounts(&ga_entries)
+                                        {
+                                            warn!("⚠️  Failed to store fetched genesis accounts: {}", e);
+                                        } else {
+                                            info!(
+                                                "  ✓ Fetched {} genesis accounts from {}",
+                                                ga_entries.len(),
+                                                peer
+                                            );
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            warn!(
+                                "  ⚠️  Failed to fetch genesis accounts from {}: {}",
+                                peer, e
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     if !genesis_exists && !is_joining_network {
@@ -2232,6 +2324,18 @@ async fn run_validator() {
             if let Err(e) = state.put_account(&genesis_pubkey, &src_acct) {
                 error!("Failed to update genesis account after distribution: {e}");
             }
+
+            // Store genesis accounts in state DB for RPC/explorer lookups
+            let ga_entries: Vec<(String, Pubkey, u64, u8)> = dist_wallets
+                .iter()
+                .map(|dw| (dw.role.clone(), dw.pubkey, dw.amount_molt, dw.percentage))
+                .collect();
+            if let Err(e) = state.set_genesis_accounts(&ga_entries) {
+                error!("Failed to store genesis accounts in DB: {e}");
+            } else {
+                info!("  ✓ Stored {} genesis accounts in state DB", ga_entries.len());
+            }
+
             info!("  ✓ Genesis distribution complete — 1B MOLT allocated per whitepaper");
         }
         // Legacy: single treasury (backward compat for old wallet files)

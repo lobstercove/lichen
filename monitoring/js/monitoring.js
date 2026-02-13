@@ -310,31 +310,42 @@ async function refresh() {
             document.getElementById('supplyStaked').textContent = formatMolt(metrics.total_staked || 0) + ' MOLT';
             document.getElementById('supplyBurned').textContent = formatMolt(metrics.total_burned || 0) + ' MOLT';
 
-            // Treasury + Genesis from metrics (dynamic, no hardcoded address)
-            const treasuryShells = metrics.treasury_balance || 0;
+            // Genesis signer
             const genesisShells = metrics.genesis_balance || 0;
-            document.getElementById('supplyTreasury').textContent = formatMolt(treasuryShells) + ' MOLT';
             document.getElementById('supplyGenesis').textContent = formatMolt(genesisShells) + ' MOLT';
 
-            // Circulating supply from RPC (total - genesis - burned)
+            // Whitepaper distribution wallets from getMetrics.distribution_wallets
+            const dw = metrics.distribution_wallets || {};
+            const vrBal = dw.validator_rewards_balance || 0;
+            const ctBal = dw.community_treasury_balance || 0;
+            const bgBal = dw.builder_grants_balance || 0;
+            const fmBal = dw.founding_moltys_balance || 0;
+            const epBal = dw.ecosystem_partnerships_balance || 0;
+            const rpBal = dw.reserve_pool_balance || 0;
+
+            document.getElementById('supplyValidatorRewards').textContent = formatMolt(vrBal) + ' MOLT';
+            document.getElementById('supplyCommunityTreasury').textContent = formatMolt(ctBal) + ' MOLT';
+            document.getElementById('supplyBuilderGrants').textContent = formatMolt(bgBal) + ' MOLT';
+            document.getElementById('supplyFoundingMoltys').textContent = formatMolt(fmBal) + ' MOLT';
+            document.getElementById('supplyEcosystemPartnerships').textContent = formatMolt(epBal) + ' MOLT';
+            document.getElementById('supplyReservePool').textContent = formatMolt(rpBal) + ' MOLT';
+
+            // Circulating supply from RPC
             const total = metrics.total_supply || 1;
             const burned = metrics.total_burned || 0;
             const staked = metrics.total_staked || 0;
             const circulating = metrics.circulating_supply || 0;
             document.getElementById('supplyCirculating').textContent = formatMolt(circulating) + ' MOLT';
 
-            // Supply bar: Genesis | Treasury | Staked | Active | Burned
-            const activeFree = Math.max(0, circulating - treasuryShells - staked);
-            const genPct = (genesisShells / total * 100).toFixed(1);
-            const treasPct = (treasuryShells / total * 100).toFixed(1);
-            const stakePct = (staked / total * 100).toFixed(1);
-            const activePct = (activeFree / total * 100).toFixed(1);
-            const burnPct = (burned / total * 100).toFixed(1);
-            document.getElementById('segCirculating').style.width = activePct + '%';
-            document.getElementById('segGenesis').style.width = genPct + '%';
-            document.getElementById('segStaked').style.width = stakePct + '%';
-            document.getElementById('segBurned').style.width = burnPct + '%';
-            document.getElementById('segTreasury').style.width = treasPct + '%';
+            // Supply bar: distribution wallets proportional segments
+            const totalDist = vrBal + ctBal + bgBal + fmBal + epBal + rpBal;
+            const base = totalDist > 0 ? totalDist : total;
+            document.getElementById('segTreasury').style.width = (vrBal / base * 100).toFixed(1) + '%';
+            document.getElementById('segCommunity').style.width = (ctBal / base * 100).toFixed(1) + '%';
+            document.getElementById('segBuilder').style.width = (bgBal / base * 100).toFixed(1) + '%';
+            document.getElementById('segFounding').style.width = (fmBal / base * 100).toFixed(1) + '%';
+            document.getElementById('segEcosystem').style.width = (epBal / base * 100).toFixed(1) + '%';
+            document.getElementById('segReserve').style.width = (rpBal / base * 100).toFixed(1) + '%';
 
             // Contract count
             document.getElementById('contractCount').textContent = metrics.total_contracts || '--';

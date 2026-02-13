@@ -3091,6 +3091,62 @@ impl StateStore {
             .map_err(|e| format!("Failed to store genesis pubkey: {}", e))
     }
 
+    /// Store all genesis distribution accounts (role → pubkey mapping)
+    /// Serialized as JSON array: [{"role":"...","pubkey":"...","amount_molt":N,"percentage":N}]
+    pub fn set_genesis_accounts(&self, accounts: &[(String, Pubkey, u64, u8)]) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+
+        let entries: Vec<serde_json::Value> = accounts
+            .iter()
+            .map(|(role, pubkey, amount_molt, percentage)| {
+                serde_json::json!({
+                    "role": role,
+                    "pubkey": pubkey.to_base58(),
+                    "amount_molt": amount_molt,
+                    "percentage": percentage,
+                })
+            })
+            .collect();
+
+        let json = serde_json::to_vec(&entries)
+            .map_err(|e| format!("Failed to serialize genesis accounts: {}", e))?;
+
+        self.db
+            .put_cf(&cf, b"genesis_accounts", json)
+            .map_err(|e| format!("Failed to store genesis accounts: {}", e))
+    }
+
+    /// Load all genesis distribution accounts
+    pub fn get_genesis_accounts(&self) -> Result<Vec<(String, Pubkey, u64, u8)>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+
+        match self.db.get_cf(&cf, b"genesis_accounts") {
+            Ok(Some(data)) => {
+                let entries: Vec<serde_json::Value> = serde_json::from_slice(&data)
+                    .map_err(|e| format!("Failed to deserialize genesis accounts: {}", e))?;
+                let mut result = Vec::new();
+                for entry in entries {
+                    let role = entry["role"].as_str().unwrap_or("").to_string();
+                    let pubkey_str = entry["pubkey"].as_str().unwrap_or("");
+                    let pubkey = Pubkey::from_base58(pubkey_str)
+                        .map_err(|e| format!("Invalid pubkey '{}': {}", pubkey_str, e))?;
+                    let amount_molt = entry["amount_molt"].as_u64().unwrap_or(0);
+                    let percentage = entry["percentage"].as_u64().unwrap_or(0) as u8;
+                    result.push((role, pubkey, amount_molt, percentage));
+                }
+                Ok(result)
+            }
+            Ok(None) => Ok(Vec::new()),
+            Err(e) => Err(format!("Database error: {}", e)),
+        }
+    }
+
     /// Store rent parameters
     pub fn set_rent_params(
         &self,
