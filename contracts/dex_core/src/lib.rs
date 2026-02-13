@@ -31,14 +31,17 @@
 
 #![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+#![allow(clippy::too_many_arguments)]
+#![allow(dead_code)]
+#![allow(clippy::ptr_arg)]
+#![allow(clippy::manual_is_multiple_of)]
+#![allow(unused_variables)]
 
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
-    storage_get, storage_set, log_info,
-    bytes_to_u64, u64_to_bytes, get_slot,
-};
+use moltchain_sdk::{bytes_to_u64, get_slot, log_info, storage_get, storage_set, u64_to_bytes};
 
 // ============================================================================
 // CONSTANTS
@@ -49,12 +52,12 @@ const MAX_ORDER_SIZE: u64 = 10_000_000_000_000_000; // 10M MOLT max order ($1M a
 const MIN_ORDER_VALUE: u64 = 1_000; // minimum 1000 shells
 const MAX_OPEN_ORDERS_PER_USER: u64 = 100;
 const DEFAULT_MAKER_FEE_BPS: i64 = -1; // rebate
-const DEFAULT_TAKER_FEE_BPS: u64 = 5;  // 0.05%
+const DEFAULT_TAKER_FEE_BPS: u64 = 5; // 0.05%
 const MAX_FEE_BPS: u64 = 100; // 1% max
 const FEE_PROTOCOL_SHARE: u64 = 60; // 60% to protocol
-const FEE_LP_SHARE: u64 = 20;       // 20% to LPs
-const FEE_STAKER_SHARE: u64 = 20;   // 20% to stakers
-const MIN_FEE_PER_TRADE: u64 = 1;   // 1 shell minimum
+const FEE_LP_SHARE: u64 = 20; // 20% to LPs
+const FEE_STAKER_SHARE: u64 = 20; // 20% to stakers
+const MIN_FEE_PER_TRADE: u64 = 1; // 1 shell minimum
 const ORDER_EXPIRY_MAX: u64 = 2_592_000; // ~30 days in slots
 
 // Order sides
@@ -87,13 +90,16 @@ const PAIR_COUNT_KEY: &[u8] = b"dex_pair_count";
 const ORDER_COUNT_KEY: &[u8] = b"dex_order_count";
 const TRADE_COUNT_KEY: &[u8] = b"dex_trade_count";
 const FEE_TREASURY_KEY: &[u8] = b"dex_fee_treasury";
+const PREFERRED_QUOTE_KEY: &[u8] = b"dex_preferred_quote";
 
 // ============================================================================
 // HELPERS
 // ============================================================================
 
 fn load_u64(key: &[u8]) -> u64 {
-    storage_get(key).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    storage_get(key)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0)
 }
 
 fn save_u64(key: &[u8], val: u64) {
@@ -101,11 +107,15 @@ fn save_u64(key: &[u8], val: u64) {
 }
 
 fn load_addr(key: &[u8]) -> [u8; 32] {
-    storage_get(key).map(|d| {
-        let mut a = [0u8; 32];
-        if d.len() >= 32 { a.copy_from_slice(&d[..32]); }
-        a
-    }).unwrap_or([0u8; 32])
+    storage_get(key)
+        .map(|d| {
+            let mut a = [0u8; 32];
+            if d.len() >= 32 {
+                a.copy_from_slice(&d[..32]);
+            }
+            a
+        })
+        .unwrap_or([0u8; 32])
 }
 
 fn is_zero(addr: &[u8; 32]) -> bool {
@@ -113,7 +123,9 @@ fn is_zero(addr: &[u8; 32]) -> bool {
 }
 
 fn u64_to_decimal(mut n: u64) -> Vec<u8> {
-    if n == 0 { return alloc::vec![b'0']; }
+    if n == 0 {
+        return alloc::vec![b'0'];
+    }
     let mut buf = Vec::new();
     while n > 0 {
         buf.push(b'0' + (n % 10) as u8);
@@ -218,7 +230,10 @@ fn ask_count_key(pair_id: u64, price: u64) -> Vec<u8> {
 // ============================================================================
 
 fn reentrancy_enter() -> bool {
-    if storage_get(REENTRANCY_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false) {
+    if storage_get(REENTRANCY_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
+    {
         return false;
     }
     storage_set(REENTRANCY_KEY, &[1u8]);
@@ -230,7 +245,9 @@ fn reentrancy_exit() {
 }
 
 fn is_paused() -> bool {
-    storage_get(PAUSED_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false)
+    storage_get(PAUSED_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
 }
 
 fn require_not_paused() -> bool {
@@ -260,9 +277,16 @@ fn require_admin(caller: &[u8; 32]) -> bool {
 const PAIR_SIZE: usize = 112;
 
 fn encode_pair(
-    base_token: &[u8; 32], quote_token: &[u8; 32], pair_id: u64,
-    tick_size: u64, lot_size: u64, min_order: u64,
-    status: u8, maker_fee_bps: i16, taker_fee_bps: u16, daily_volume: u64,
+    base_token: &[u8; 32],
+    quote_token: &[u8; 32],
+    pair_id: u64,
+    tick_size: u64,
+    lot_size: u64,
+    min_order: u64,
+    status: u8,
+    maker_fee_bps: i16,
+    taker_fee_bps: u16,
+    daily_volume: u64,
 ) -> Vec<u8> {
     let mut data = Vec::with_capacity(PAIR_SIZE);
     data.extend_from_slice(base_token);
@@ -280,51 +304,83 @@ fn encode_pair(
 }
 
 fn decode_pair_status(data: &[u8]) -> u8 {
-    if data.len() > 96 { data[96] } else { 0 }
+    if data.len() > 96 {
+        data[96]
+    } else {
+        0
+    }
 }
 
 fn decode_pair_id(data: &[u8]) -> u64 {
-    if data.len() >= 72 { bytes_to_u64(&data[64..72]) } else { 0 }
+    if data.len() >= 72 {
+        bytes_to_u64(&data[64..72])
+    } else {
+        0
+    }
 }
 
 fn decode_pair_tick_size(data: &[u8]) -> u64 {
-    if data.len() >= 80 { bytes_to_u64(&data[72..80]) } else { 0 }
+    if data.len() >= 80 {
+        bytes_to_u64(&data[72..80])
+    } else {
+        0
+    }
 }
 
 fn decode_pair_lot_size(data: &[u8]) -> u64 {
-    if data.len() >= 88 { bytes_to_u64(&data[80..88]) } else { 0 }
+    if data.len() >= 88 {
+        bytes_to_u64(&data[80..88])
+    } else {
+        0
+    }
 }
 
 fn decode_pair_min_order(data: &[u8]) -> u64 {
-    if data.len() >= 96 { bytes_to_u64(&data[88..96]) } else { 0 }
+    if data.len() >= 96 {
+        bytes_to_u64(&data[88..96])
+    } else {
+        0
+    }
 }
 
 fn decode_pair_taker_fee(data: &[u8]) -> u16 {
     if data.len() >= 101 {
         u16::from_le_bytes([data[99], data[100]])
-    } else { DEFAULT_TAKER_FEE_BPS as u16 }
+    } else {
+        DEFAULT_TAKER_FEE_BPS as u16
+    }
 }
 
 fn decode_pair_maker_fee(data: &[u8]) -> i16 {
     if data.len() >= 99 {
         i16::from_le_bytes([data[97], data[98]])
-    } else { DEFAULT_MAKER_FEE_BPS as i16 }
+    } else {
+        DEFAULT_MAKER_FEE_BPS as i16
+    }
 }
 
 fn decode_pair_base_token(data: &[u8]) -> [u8; 32] {
     let mut t = [0u8; 32];
-    if data.len() >= 32 { t.copy_from_slice(&data[..32]); }
+    if data.len() >= 32 {
+        t.copy_from_slice(&data[..32]);
+    }
     t
 }
 
 fn decode_pair_quote_token(data: &[u8]) -> [u8; 32] {
     let mut t = [0u8; 32];
-    if data.len() >= 64 { t.copy_from_slice(&data[32..64]); }
+    if data.len() >= 64 {
+        t.copy_from_slice(&data[32..64]);
+    }
     t
 }
 
 fn decode_pair_daily_volume(data: &[u8]) -> u64 {
-    if data.len() >= 109 { bytes_to_u64(&data[101..109]) } else { 0 }
+    if data.len() >= 109 {
+        bytes_to_u64(&data[101..109])
+    } else {
+        0
+    }
 }
 
 // ============================================================================
@@ -346,9 +402,17 @@ fn decode_pair_daily_volume(data: &[u8]) -> u64 {
 const ORDER_SIZE: usize = 128;
 
 fn encode_order(
-    trader: &[u8; 32], pair_id: u64, side: u8, order_type: u8,
-    price: u64, quantity: u64, filled: u64, status: u8,
-    created_slot: u64, expiry_slot: u64, order_id: u64,
+    trader: &[u8; 32],
+    pair_id: u64,
+    side: u8,
+    order_type: u8,
+    price: u64,
+    quantity: u64,
+    filled: u64,
+    status: u8,
+    created_slot: u64,
+    expiry_slot: u64,
+    order_id: u64,
 ) -> Vec<u8> {
     let mut data = Vec::with_capacity(ORDER_SIZE);
     data.extend_from_slice(trader);
@@ -362,38 +426,88 @@ fn encode_order(
     data.extend_from_slice(&u64_to_bytes(created_slot));
     data.extend_from_slice(&u64_to_bytes(expiry_slot));
     data.extend_from_slice(&u64_to_bytes(order_id));
-    while data.len() < ORDER_SIZE { data.push(0); }
+    while data.len() < ORDER_SIZE {
+        data.push(0);
+    }
     data
 }
 
 fn decode_order_trader(data: &[u8]) -> [u8; 32] {
     let mut t = [0u8; 32];
-    if data.len() >= 32 { t.copy_from_slice(&data[..32]); }
+    if data.len() >= 32 {
+        t.copy_from_slice(&data[..32]);
+    }
     t
 }
 fn decode_order_pair_id(data: &[u8]) -> u64 {
-    if data.len() >= 40 { bytes_to_u64(&data[32..40]) } else { 0 }
+    if data.len() >= 40 {
+        bytes_to_u64(&data[32..40])
+    } else {
+        0
+    }
 }
-fn decode_order_side(data: &[u8]) -> u8 { if data.len() > 40 { data[40] } else { 0 } }
-fn decode_order_type(data: &[u8]) -> u8 { if data.len() > 41 { data[41] } else { 0 } }
+fn decode_order_side(data: &[u8]) -> u8 {
+    if data.len() > 40 {
+        data[40]
+    } else {
+        0
+    }
+}
+fn decode_order_type(data: &[u8]) -> u8 {
+    if data.len() > 41 {
+        data[41]
+    } else {
+        0
+    }
+}
 fn decode_order_price(data: &[u8]) -> u64 {
-    if data.len() >= 50 { bytes_to_u64(&data[42..50]) } else { 0 }
+    if data.len() >= 50 {
+        bytes_to_u64(&data[42..50])
+    } else {
+        0
+    }
 }
 fn decode_order_quantity(data: &[u8]) -> u64 {
-    if data.len() >= 58 { bytes_to_u64(&data[50..58]) } else { 0 }
+    if data.len() >= 58 {
+        bytes_to_u64(&data[50..58])
+    } else {
+        0
+    }
 }
 fn decode_order_filled(data: &[u8]) -> u64 {
-    if data.len() >= 66 { bytes_to_u64(&data[58..66]) } else { 0 }
+    if data.len() >= 66 {
+        bytes_to_u64(&data[58..66])
+    } else {
+        0
+    }
 }
-fn decode_order_status(data: &[u8]) -> u8 { if data.len() > 66 { data[66] } else { 0 } }
+fn decode_order_status(data: &[u8]) -> u8 {
+    if data.len() > 66 {
+        data[66]
+    } else {
+        0
+    }
+}
 fn decode_order_created_slot(data: &[u8]) -> u64 {
-    if data.len() >= 75 { bytes_to_u64(&data[67..75]) } else { 0 }
+    if data.len() >= 75 {
+        bytes_to_u64(&data[67..75])
+    } else {
+        0
+    }
 }
 fn decode_order_expiry_slot(data: &[u8]) -> u64 {
-    if data.len() >= 83 { bytes_to_u64(&data[75..83]) } else { 0 }
+    if data.len() >= 83 {
+        bytes_to_u64(&data[75..83])
+    } else {
+        0
+    }
 }
 fn decode_order_id(data: &[u8]) -> u64 {
-    if data.len() >= 91 { bytes_to_u64(&data[83..91]) } else { 0 }
+    if data.len() >= 91 {
+        bytes_to_u64(&data[83..91])
+    } else {
+        0
+    }
 }
 
 fn update_order_filled(data: &mut Vec<u8>, new_filled: u64) {
@@ -423,8 +537,13 @@ fn update_order_status(data: &mut Vec<u8>, new_status: u8) {
 const TRADE_SIZE: usize = 80;
 
 fn encode_trade(
-    trade_id: u64, pair_id: u64, price: u64, quantity: u64,
-    taker: &[u8; 32], maker_order_id: u64, slot: u64,
+    trade_id: u64,
+    pair_id: u64,
+    price: u64,
+    quantity: u64,
+    taker: &[u8; 32],
+    maker_order_id: u64,
+    slot: u64,
 ) -> Vec<u8> {
     let mut data = Vec::with_capacity(TRADE_SIZE);
     data.extend_from_slice(&u64_to_bytes(trade_id));
@@ -443,11 +562,17 @@ fn encode_trade(
 
 fn calculate_taker_fee(notional: u64, fee_bps: u16) -> u64 {
     let fee = (notional as u128 * fee_bps as u128 / 10_000) as u64;
-    if fee < MIN_FEE_PER_TRADE { MIN_FEE_PER_TRADE } else { fee }
+    if fee < MIN_FEE_PER_TRADE {
+        MIN_FEE_PER_TRADE
+    } else {
+        fee
+    }
 }
 
 fn calculate_maker_rebate(notional: u64, fee_bps: i16) -> u64 {
-    if fee_bps >= 0 { return 0; }
+    if fee_bps >= 0 {
+        return 0;
+    }
     let abs_bps = (-fee_bps) as u64;
     (notional as u128 * abs_bps as u128 / 10_000) as u64
 }
@@ -460,9 +585,13 @@ fn calculate_maker_rebate(notional: u64, fee_bps: i16) -> u64 {
 /// Returns: 0=success, 1=already initialized
 pub fn initialize(admin: *const u8) -> u32 {
     let existing = load_addr(ADMIN_KEY);
-    if !is_zero(&existing) { return 1; }
+    if !is_zero(&existing) {
+        return 1;
+    }
     let mut addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(admin, addr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(admin, addr.as_mut_ptr(), 32);
+    }
     storage_set(ADMIN_KEY, &addr);
     save_u64(PAIR_COUNT_KEY, 0);
     save_u64(ORDER_COUNT_KEY, 0);
@@ -473,13 +602,41 @@ pub fn initialize(admin: *const u8) -> u32 {
     0
 }
 
+/// Set the preferred quote token address (admin only).
+/// Once set, all new trading pairs must use this address as quote_token.
+/// Intended for mUSD address — enforces TOKEN/mUSD convention.
+/// Returns: 0=success, 1=not admin, 2=zero address
+pub fn set_preferred_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
+    let mut c = [0u8; 32];
+    let mut q = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(quote_addr, q.as_mut_ptr(), 32);
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
+    if is_zero(&q) {
+        return 2;
+    }
+    storage_set(PREFERRED_QUOTE_KEY, &q);
+    log_info("Preferred quote token set");
+    0
+}
+
 /// Create a new trading pair
 /// Returns: 0=success, 1=not admin, 2=paused, 3=max pairs, 4=invalid params, 5=reentrancy
 pub fn create_pair(
-    caller: *const u8, base_token: *const u8, quote_token: *const u8,
-    tick_size: u64, lot_size: u64, min_order: u64,
+    caller: *const u8,
+    base_token: *const u8,
+    quote_token: *const u8,
+    tick_size: u64,
+    lot_size: u64,
+    min_order: u64,
 ) -> u32 {
-    if !reentrancy_enter() { return 5; }
+    if !reentrancy_enter() {
+        return 5;
+    }
     let mut c = [0u8; 32];
     let mut bt = [0u8; 32];
     let mut qt = [0u8; 32];
@@ -488,20 +645,49 @@ pub fn create_pair(
         core::ptr::copy_nonoverlapping(base_token, bt.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(quote_token, qt.as_mut_ptr(), 32);
     }
-    if !require_admin(&c) { reentrancy_exit(); return 1; }
-    if !require_not_paused() { reentrancy_exit(); return 2; }
+    if !require_admin(&c) {
+        reentrancy_exit();
+        return 1;
+    }
+    if !require_not_paused() {
+        reentrancy_exit();
+        return 2;
+    }
 
     let count = load_u64(PAIR_COUNT_KEY);
-    if count >= MAX_PAIRS { reentrancy_exit(); return 3; }
-    if tick_size == 0 || lot_size == 0 || min_order < MIN_ORDER_VALUE {
-        reentrancy_exit(); return 4;
+    if count >= MAX_PAIRS {
+        reentrancy_exit();
+        return 3;
     }
-    if bt == qt { reentrancy_exit(); return 4; }
+    if tick_size == 0 || lot_size == 0 || min_order < MIN_ORDER_VALUE {
+        reentrancy_exit();
+        return 4;
+    }
+    if bt == qt {
+        reentrancy_exit();
+        return 4;
+    }
+
+    // If a preferred quote token is set, enforce it
+    let preferred = load_addr(PREFERRED_QUOTE_KEY);
+    if !is_zero(&preferred) && qt != preferred {
+        reentrancy_exit();
+        log_info("create_pair rejected: quote token must be preferred quote (mUSD)");
+        return 6;
+    }
 
     let pair_id = count + 1;
     let data = encode_pair(
-        &bt, &qt, pair_id, tick_size, lot_size, min_order,
-        PAIR_ACTIVE, DEFAULT_MAKER_FEE_BPS as i16, DEFAULT_TAKER_FEE_BPS as u16, 0,
+        &bt,
+        &qt,
+        pair_id,
+        tick_size,
+        lot_size,
+        min_order,
+        PAIR_ACTIVE,
+        DEFAULT_MAKER_FEE_BPS as i16,
+        DEFAULT_TAKER_FEE_BPS as u16,
+        0,
     );
     storage_set(&pair_key(pair_id), &data);
     save_u64(PAIR_COUNT_KEY, pair_id);
@@ -515,18 +701,31 @@ pub fn create_pair(
 
 /// Update pair fees (admin only)
 /// Returns: 0=success, 1=not admin, 2=pair not found, 3=fee too high
-pub fn update_pair_fees(caller: *const u8, pair_id: u64, maker_fee_bps: i16, taker_fee_bps: u16) -> u32 {
+pub fn update_pair_fees(
+    caller: *const u8,
+    pair_id: u64,
+    maker_fee_bps: i16,
+    taker_fee_bps: u16,
+) -> u32 {
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
-    if !require_admin(&c) { return 1; }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
 
     let pk = pair_key(pair_id);
     let mut data = match storage_get(&pk) {
         Some(d) if d.len() >= PAIR_SIZE => d,
         _ => return 2,
     };
-    if taker_fee_bps > MAX_FEE_BPS as u16 { return 3; }
-    if maker_fee_bps > MAX_FEE_BPS as i16 { return 3; }
+    if taker_fee_bps > MAX_FEE_BPS as u16 {
+        return 3;
+    }
+    if maker_fee_bps > MAX_FEE_BPS as i16 {
+        return 3;
+    }
     // Update fee fields
     data[97..99].copy_from_slice(&maker_fee_bps.to_le_bytes());
     data[99..101].copy_from_slice(&taker_fee_bps.to_le_bytes());
@@ -538,8 +737,12 @@ pub fn update_pair_fees(caller: *const u8, pair_id: u64, maker_fee_bps: i16, tak
 /// Returns: 0=success, 1=not admin, 2=pair not found
 pub fn pause_pair(caller: *const u8, pair_id: u64) -> u32 {
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
-    if !require_admin(&c) { return 1; }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
     let pk = pair_key(pair_id);
     let mut data = match storage_get(&pk) {
         Some(d) if d.len() >= PAIR_SIZE => d,
@@ -553,8 +756,12 @@ pub fn pause_pair(caller: *const u8, pair_id: u64) -> u32 {
 /// Unpause a trading pair
 pub fn unpause_pair(caller: *const u8, pair_id: u64) -> u32 {
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
-    if !require_admin(&c) { return 1; }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
     let pk = pair_key(pair_id);
     let mut data = match storage_get(&pk) {
         Some(d) if d.len() >= PAIR_SIZE => d,
@@ -570,62 +777,111 @@ pub fn unpause_pair(caller: *const u8, pair_id: u64) -> u32 {
 ///          4=invalid params, 5=too many orders, 6=reentrancy,
 ///          7=post-only would cross, 8=expired order
 pub fn place_order(
-    trader: *const u8, pair_id: u64, side: u8, order_type: u8,
-    price: u64, quantity: u64, expiry_slot: u64,
+    trader: *const u8,
+    pair_id: u64,
+    side: u8,
+    order_type: u8,
+    price: u64,
+    quantity: u64,
+    expiry_slot: u64,
 ) -> u32 {
-    if !reentrancy_enter() { return 6; }
-    if !require_not_paused() { reentrancy_exit(); return 1; }
+    if !reentrancy_enter() {
+        return 6;
+    }
+    if !require_not_paused() {
+        reentrancy_exit();
+        return 1;
+    }
 
     let mut t = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(trader, t.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(trader, t.as_mut_ptr(), 32);
+    }
 
     // Load pair
     let pk = pair_key(pair_id);
     let pair_data = match storage_get(&pk) {
         Some(d) if d.len() >= PAIR_SIZE => d,
-        _ => { reentrancy_exit(); return 2; }
+        _ => {
+            reentrancy_exit();
+            return 2;
+        }
     };
-    if decode_pair_status(&pair_data) != PAIR_ACTIVE { reentrancy_exit(); return 3; }
+    if decode_pair_status(&pair_data) != PAIR_ACTIVE {
+        reentrancy_exit();
+        return 3;
+    }
 
     let tick = decode_pair_tick_size(&pair_data);
     let lot = decode_pair_lot_size(&pair_data);
     let min_ord = decode_pair_min_order(&pair_data);
 
     // Validate params
-    if side > SIDE_SELL || order_type > ORDER_POST_ONLY { reentrancy_exit(); return 4; }
-    if quantity == 0 || quantity > MAX_ORDER_SIZE { reentrancy_exit(); return 4; }
-    if order_type != ORDER_MARKET && price == 0 { reentrancy_exit(); return 4; }
-    if order_type != ORDER_MARKET && price % tick != 0 { reentrancy_exit(); return 4; }
-    if quantity % lot != 0 { reentrancy_exit(); return 4; }
+    if side > SIDE_SELL || order_type > ORDER_POST_ONLY {
+        reentrancy_exit();
+        return 4;
+    }
+    if quantity == 0 || quantity > MAX_ORDER_SIZE {
+        reentrancy_exit();
+        return 4;
+    }
+    if order_type != ORDER_MARKET && price == 0 {
+        reentrancy_exit();
+        return 4;
+    }
+    if order_type != ORDER_MARKET && price % tick != 0 {
+        reentrancy_exit();
+        return 4;
+    }
+    if quantity % lot != 0 {
+        reentrancy_exit();
+        return 4;
+    }
 
     // Notional value check
-    let notional = if order_type == ORDER_MARKET { quantity } else {
+    let notional = if order_type == ORDER_MARKET {
+        quantity
+    } else {
         (price as u128 * quantity as u128 / 1_000_000_000) as u64
     };
-    if notional < min_ord { reentrancy_exit(); return 4; }
+    if notional < min_ord {
+        reentrancy_exit();
+        return 4;
+    }
 
     // Expiry validation
     let current_slot = get_slot();
     if expiry_slot != 0 {
-        if expiry_slot <= current_slot { reentrancy_exit(); return 8; }
-        if expiry_slot.saturating_sub(current_slot) > ORDER_EXPIRY_MAX { reentrancy_exit(); return 4; }
+        if expiry_slot <= current_slot {
+            reentrancy_exit();
+            return 8;
+        }
+        if expiry_slot.saturating_sub(current_slot) > ORDER_EXPIRY_MAX {
+            reentrancy_exit();
+            return 4;
+        }
     }
 
     // Check user open order limit
     let user_count = load_u64(&user_order_count_key(&t));
-    if user_count >= MAX_OPEN_ORDERS_PER_USER { reentrancy_exit(); return 5; }
+    if user_count >= MAX_OPEN_ORDERS_PER_USER {
+        reentrancy_exit();
+        return 5;
+    }
 
     // Post-only check: reject if would immediately match
     if order_type == ORDER_POST_ONLY {
         if side == SIDE_BUY {
             let best_ask = load_u64(&best_ask_key(pair_id));
             if best_ask != u64::MAX && price >= best_ask {
-                reentrancy_exit(); return 7;
+                reentrancy_exit();
+                return 7;
             }
         } else {
             let best_bid = load_u64(&best_bid_key(pair_id));
             if best_bid != 0 && price <= best_bid {
-                reentrancy_exit(); return 7;
+                reentrancy_exit();
+                return 7;
             }
         }
     }
@@ -634,8 +890,17 @@ pub fn place_order(
     let order_count = load_u64(ORDER_COUNT_KEY);
     let new_order_id = order_count + 1;
     let order_data = encode_order(
-        &t, pair_id, side, order_type, price, quantity, 0,
-        STATUS_OPEN, current_slot, expiry_slot, new_order_id,
+        &t,
+        pair_id,
+        side,
+        order_type,
+        price,
+        quantity,
+        0,
+        STATUS_OPEN,
+        current_slot,
+        expiry_slot,
+        new_order_id,
     );
     storage_set(&order_key(new_order_id), &order_data);
     save_u64(ORDER_COUNT_KEY, new_order_id);
@@ -656,7 +921,14 @@ pub fn place_order(
         let mut od = storage_get(&order_key(new_order_id)).unwrap();
         let filled = quantity - remaining;
         update_order_filled(&mut od, filled);
-        update_order_status(&mut od, if filled > 0 { STATUS_PARTIAL } else { STATUS_CANCELLED });
+        update_order_status(
+            &mut od,
+            if filled > 0 {
+                STATUS_PARTIAL
+            } else {
+                STATUS_CANCELLED
+            },
+        );
         storage_set(&order_key(new_order_id), &od);
     }
 
@@ -666,8 +938,13 @@ pub fn place_order(
 
 /// Match an incoming order against the book (internal)
 fn match_order(
-    taker_order_id: u64, pair_id: u64, side: u8, price: u64,
-    mut remaining: u64, taker: &[u8; 32], pair_data: &[u8],
+    taker_order_id: u64,
+    pair_id: u64,
+    side: u8,
+    price: u64,
+    mut remaining: u64,
+    taker: &[u8; 32],
+    pair_data: &[u8],
 ) -> u64 {
     let current_slot = get_slot();
     let taker_fee_bps = decode_pair_taker_fee(pair_data);
@@ -679,8 +956,15 @@ fn match_order(
         let mut best_ask = load_u64(&best_ask_key(pair_id));
         while remaining > 0 && best_ask != u64::MAX && (price == 0 || price >= best_ask) {
             remaining = fill_at_price_level(
-                taker_order_id, pair_id, SIDE_SELL, best_ask, remaining,
-                taker, taker_fee_bps, maker_fee_bps, current_slot,
+                taker_order_id,
+                pair_id,
+                SIDE_SELL,
+                best_ask,
+                remaining,
+                taker,
+                taker_fee_bps,
+                maker_fee_bps,
+                current_slot,
             );
             // Check if level is exhausted
             let level_count = load_u64(&ask_count_key(pair_id, best_ask));
@@ -697,7 +981,9 @@ fn match_order(
                     }
                     next += 1;
                 }
-                if !found { best_ask = u64::MAX; }
+                if !found {
+                    best_ask = u64::MAX;
+                }
             }
         }
         save_u64(&best_ask_key(pair_id), best_ask);
@@ -705,15 +991,24 @@ fn match_order(
         let mut best_bid = load_u64(&best_bid_key(pair_id));
         while remaining > 0 && best_bid != 0 && (price == 0 || price <= best_bid) {
             remaining = fill_at_price_level(
-                taker_order_id, pair_id, SIDE_BUY, best_bid, remaining,
-                taker, taker_fee_bps, maker_fee_bps, current_slot,
+                taker_order_id,
+                pair_id,
+                SIDE_BUY,
+                best_bid,
+                remaining,
+                taker,
+                taker_fee_bps,
+                maker_fee_bps,
+                current_slot,
             );
             let level_count = load_u64(&bid_count_key(pair_id, best_bid));
             if level_count == 0 {
                 let mut next = best_bid.saturating_sub(1);
                 let mut found = false;
                 for _ in 0..1000 {
-                    if next == 0 { break; }
+                    if next == 0 {
+                        break;
+                    }
                     if load_u64(&bid_count_key(pair_id, next)) > 0 {
                         best_bid = next;
                         found = true;
@@ -721,14 +1016,18 @@ fn match_order(
                     }
                     next = next.saturating_sub(1);
                 }
-                if !found { best_bid = 0; }
+                if !found {
+                    best_bid = 0;
+                }
             }
         }
         save_u64(&best_bid_key(pair_id), best_bid);
     }
 
     // Update taker order state
-    if remaining < decode_order_quantity(&storage_get(&order_key(taker_order_id)).unwrap_or_default()) {
+    if remaining
+        < decode_order_quantity(&storage_get(&order_key(taker_order_id)).unwrap_or_default())
+    {
         let mut od = storage_get(&order_key(taker_order_id)).unwrap();
         let orig_qty = decode_order_quantity(&od);
         let filled = orig_qty - remaining;
@@ -746,17 +1045,29 @@ fn match_order(
 
 /// Fill at a single price level (time priority)
 fn fill_at_price_level(
-    taker_order_id: u64, pair_id: u64, maker_side: u8, price: u64,
-    mut remaining: u64, taker: &[u8; 32],
-    taker_fee_bps: u16, maker_fee_bps: i16, current_slot: u64,
+    taker_order_id: u64,
+    pair_id: u64,
+    maker_side: u8,
+    price: u64,
+    mut remaining: u64,
+    taker: &[u8; 32],
+    taker_fee_bps: u16,
+    maker_fee_bps: i16,
+    current_slot: u64,
 ) -> u64 {
-    let level_key = if maker_side == SIDE_BUY { bid_count_key(pair_id, price) } else { ask_count_key(pair_id, price) };
+    let level_key = if maker_side == SIDE_BUY {
+        bid_count_key(pair_id, price)
+    } else {
+        ask_count_key(pair_id, price)
+    };
     let level_count = load_u64(&level_key);
 
     let mut new_level_count = level_count;
 
     for idx in 1..=level_count {
-        if remaining == 0 { break; }
+        if remaining == 0 {
+            break;
+        }
 
         let lk = if maker_side == SIDE_BUY {
             bid_level_key(pair_id, price, idx)
@@ -765,7 +1076,9 @@ fn fill_at_price_level(
         };
 
         let maker_order_id = load_u64(&lk);
-        if maker_order_id == 0 { continue; }
+        if maker_order_id == 0 {
+            continue;
+        }
 
         let ok = order_key(maker_order_id);
         let mut maker_data = match storage_get(&ok) {
@@ -774,7 +1087,9 @@ fn fill_at_price_level(
         };
 
         let maker_status = decode_order_status(&maker_data);
-        if maker_status == STATUS_FILLED || maker_status == STATUS_CANCELLED { continue; }
+        if maker_status == STATUS_FILLED || maker_status == STATUS_CANCELLED {
+            continue;
+        }
 
         // Check expiry
         let expiry = decode_order_expiry_slot(&maker_data);
@@ -799,7 +1114,11 @@ fn fill_at_price_level(
         let maker_qty = decode_order_quantity(&maker_data);
         let maker_filled = decode_order_filled(&maker_data);
         let available = maker_qty - maker_filled;
-        let fill_qty = if remaining > available { available } else { remaining };
+        let fill_qty = if remaining > available {
+            available
+        } else {
+            remaining
+        };
 
         // Execute trade
         let notional = (price as u128 * fill_qty as u128 / 1_000_000_000) as u64;
@@ -826,7 +1145,15 @@ fn fill_at_price_level(
         // Record trade
         let trade_count = load_u64(TRADE_COUNT_KEY);
         let trade_id = trade_count + 1;
-        let trade_data = encode_trade(trade_id, pair_id, price, fill_qty, taker, maker_order_id, current_slot);
+        let trade_data = encode_trade(
+            trade_id,
+            pair_id,
+            price,
+            fill_qty,
+            taker,
+            maker_order_id,
+            current_slot,
+        );
         storage_set(&trade_key(trade_id), &trade_data);
         save_u64(TRADE_COUNT_KEY, trade_id);
 
@@ -882,22 +1209,33 @@ fn add_to_book(pair_id: u64, side: u8, price: u64, order_id: u64) {
 /// Cancel an order
 /// Returns: 0=success, 1=not found, 2=not owner, 3=already filled/cancelled, 4=reentrancy
 pub fn cancel_order(caller: *const u8, order_id: u64) -> u32 {
-    if !reentrancy_enter() { return 4; }
+    if !reentrancy_enter() {
+        return 4;
+    }
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
 
     let ok = order_key(order_id);
     let mut data = match storage_get(&ok) {
         Some(d) if d.len() >= ORDER_SIZE => d,
-        _ => { reentrancy_exit(); return 1; }
+        _ => {
+            reentrancy_exit();
+            return 1;
+        }
     };
 
     let trader = decode_order_trader(&data);
-    if trader != c { reentrancy_exit(); return 2; }
+    if trader != c {
+        reentrancy_exit();
+        return 2;
+    }
 
     let status = decode_order_status(&data);
     if status == STATUS_FILLED || status == STATUS_CANCELLED || status == STATUS_EXPIRED {
-        reentrancy_exit(); return 3;
+        reentrancy_exit();
+        return 3;
     }
 
     update_order_status(&mut data, STATUS_CANCELLED);
@@ -912,14 +1250,20 @@ pub fn cancel_order(caller: *const u8, order_id: u64) -> u32 {
 /// Cancel all open orders for a trader on a pair
 /// Returns: 0=success, 1=reentrancy
 pub fn cancel_all_orders(caller: *const u8, pair_id: u64) -> u32 {
-    if !reentrancy_enter() { return 1; }
+    if !reentrancy_enter() {
+        return 1;
+    }
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
 
     let user_count = load_u64(&user_order_count_key(&c));
     for idx in 1..=user_count {
         let oid = load_u64(&user_order_key(&c, idx));
-        if oid == 0 { continue; }
+        if oid == 0 {
+            continue;
+        }
         let ok = order_key(oid);
         if let Some(mut data) = storage_get(&ok) {
             if data.len() >= ORDER_SIZE {
@@ -938,25 +1282,34 @@ pub fn cancel_all_orders(caller: *const u8, pair_id: u64) -> u32 {
 
 /// Modify an existing order (cancel + replace)
 /// Returns: 0=success, 1=not found, 2=not owner, 3=not modifiable, 4=reentrancy
-pub fn modify_order(
-    caller: *const u8, order_id: u64, new_price: u64, new_quantity: u64,
-) -> u32 {
-    if !reentrancy_enter() { return 4; }
+pub fn modify_order(caller: *const u8, order_id: u64, new_price: u64, new_quantity: u64) -> u32 {
+    if !reentrancy_enter() {
+        return 4;
+    }
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
 
     let ok = order_key(order_id);
     let data = match storage_get(&ok) {
         Some(d) if d.len() >= ORDER_SIZE => d,
-        _ => { reentrancy_exit(); return 1; }
+        _ => {
+            reentrancy_exit();
+            return 1;
+        }
     };
 
     let trader = decode_order_trader(&data);
-    if trader != c { reentrancy_exit(); return 2; }
+    if trader != c {
+        reentrancy_exit();
+        return 2;
+    }
 
     let status = decode_order_status(&data);
     if status != STATUS_OPEN && status != STATUS_PARTIAL {
-        reentrancy_exit(); return 3;
+        reentrancy_exit();
+        return 3;
     }
 
     // Cancel old order
@@ -971,14 +1324,26 @@ pub fn modify_order(
     let expiry = decode_order_expiry_slot(&data);
 
     reentrancy_exit();
-    place_order(c.as_ptr(), pair_id, side, otype, new_price, new_quantity, expiry)
+    place_order(
+        c.as_ptr(),
+        pair_id,
+        side,
+        otype,
+        new_price,
+        new_quantity,
+        expiry,
+    )
 }
 
 /// Emergency pause (admin only)
 pub fn emergency_pause(caller: *const u8) -> u32 {
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
-    if !require_admin(&c) { return 1; }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
     storage_set(PAUSED_KEY, &[1u8]);
     log_info("DEX Core: EMERGENCY PAUSE ACTIVATED");
     0
@@ -987,8 +1352,12 @@ pub fn emergency_pause(caller: *const u8) -> u32 {
 /// Unpause (admin only)
 pub fn emergency_unpause(caller: *const u8) -> u32 {
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
-    if !require_admin(&c) { return 1; }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
     storage_set(PAUSED_KEY, &[0u8]);
     log_info("DEX Core: Resumed");
     0
@@ -1018,14 +1387,20 @@ pub fn get_best_bid(pair_id: u64) -> u64 {
 /// Get best ask price for a pair
 pub fn get_best_ask(pair_id: u64) -> u64 {
     let ask = load_u64(&best_ask_key(pair_id));
-    if ask == u64::MAX { 0 } else { ask }
+    if ask == u64::MAX {
+        0
+    } else {
+        ask
+    }
 }
 
 /// Get spread (best_ask - best_bid)
 pub fn get_spread(pair_id: u64) -> u64 {
     let bid = get_best_bid(pair_id);
     let ask = load_u64(&best_ask_key(pair_id));
-    if bid == 0 || ask == u64::MAX { return 0; }
+    if bid == 0 || ask == u64::MAX {
+        return 0;
+    }
     ask.saturating_sub(bid)
 }
 
@@ -1056,6 +1431,17 @@ pub fn get_fee_treasury() -> u64 {
     load_u64(FEE_TREASURY_KEY)
 }
 
+/// Get the preferred quote token address (returns all zeros if not set)
+pub fn get_preferred_quote() -> u64 {
+    let addr = load_addr(PREFERRED_QUOTE_KEY);
+    moltchain_sdk::set_return_data(&addr);
+    if is_zero(&addr) {
+        0
+    } else {
+        1
+    }
+}
+
 // ============================================================================
 // WASM ENTRY POINT
 // ============================================================================
@@ -1064,16 +1450,20 @@ pub fn get_fee_treasury() -> u64 {
 #[no_mangle]
 pub extern "C" fn call() {
     let args = moltchain_sdk::get_args();
-    if args.is_empty() { return; }
+    if args.is_empty() {
+        return;
+    }
 
     match args[0] {
-        0 => { // initialize
+        0 => {
+            // initialize
             if args.len() >= 33 {
                 let result = initialize(args[1..33].as_ptr());
                 moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
-        1 => { // create_pair
+        1 => {
+            // create_pair
             if args.len() >= 1 + 32 + 32 + 32 + 8 + 8 + 8 {
                 let result = create_pair(
                     args[1..33].as_ptr(),
@@ -1086,7 +1476,8 @@ pub extern "C" fn call() {
                 moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
-        2 => { // place_order
+        2 => {
+            // place_order
             if args.len() >= 1 + 32 + 8 + 1 + 1 + 8 + 8 + 8 {
                 let result = place_order(
                     args[1..33].as_ptr(),
@@ -1100,10 +1491,131 @@ pub extern "C" fn call() {
                 moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
         }
-        3 => { // cancel_order
+        3 => {
+            // cancel_order
             if args.len() >= 1 + 32 + 8 {
                 let result = cancel_order(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
                 moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+            }
+        }
+        4 => {
+            // set_preferred_quote
+            if args.len() >= 1 + 32 + 32 {
+                let result = set_preferred_quote(args[1..33].as_ptr(), args[33..65].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+            }
+        }
+        5 => {
+            // get_pair_count
+            moltchain_sdk::set_return_data(&u64_to_bytes(get_pair_count()));
+        }
+        6 => {
+            // get_preferred_quote
+            get_preferred_quote();
+        }
+        7 => {
+            // update_pair_fees
+            if args.len() >= 1 + 32 + 8 + 2 + 2 {
+                let maker = i16::from_le_bytes([args[41], args[42]]);
+                let taker = u16::from_le_bytes([args[43], args[44]]);
+                let result = update_pair_fees(
+                    args[1..33].as_ptr(),
+                    bytes_to_u64(&args[33..41]),
+                    maker,
+                    taker,
+                );
+                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+            }
+        }
+        8 => {
+            // emergency_pause
+            if args.len() >= 33 {
+                let result = emergency_pause(args[1..33].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+            }
+        }
+        9 => {
+            // emergency_unpause
+            if args.len() >= 33 {
+                let result = emergency_unpause(args[1..33].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+            }
+        }
+        10 => {
+            // get_best_bid
+            if args.len() >= 9 {
+                moltchain_sdk::set_return_data(&u64_to_bytes(get_best_bid(bytes_to_u64(
+                    &args[1..9],
+                ))));
+            }
+        }
+        11 => {
+            // get_best_ask
+            if args.len() >= 9 {
+                moltchain_sdk::set_return_data(&u64_to_bytes(get_best_ask(bytes_to_u64(
+                    &args[1..9],
+                ))));
+            }
+        }
+        12 => {
+            // get_spread
+            if args.len() >= 9 {
+                moltchain_sdk::set_return_data(&u64_to_bytes(get_spread(bytes_to_u64(
+                    &args[1..9],
+                ))));
+            }
+        }
+        13 => {
+            // get_pair_info
+            if args.len() >= 9 {
+                get_pair_info(bytes_to_u64(&args[1..9]));
+            }
+        }
+        14 => {
+            // get_trade_count
+            moltchain_sdk::set_return_data(&u64_to_bytes(get_trade_count()));
+        }
+        15 => {
+            // get_fee_treasury
+            moltchain_sdk::set_return_data(&u64_to_bytes(get_fee_treasury()));
+        }
+        16 => {
+            // modify_order
+            if args.len() >= 1 + 32 + 8 + 8 + 8 {
+                let result = modify_order(
+                    args[1..33].as_ptr(),
+                    bytes_to_u64(&args[33..41]),
+                    bytes_to_u64(&args[41..49]),
+                    bytes_to_u64(&args[49..57]),
+                );
+                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+            }
+        }
+        17 => {
+            // cancel_all_orders
+            if args.len() >= 1 + 32 + 8 {
+                let result = cancel_all_orders(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
+                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+            }
+        }
+        18 => {
+            // pause_pair
+            if args.len() >= 1 + 32 + 8 {
+                let result = pause_pair(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
+                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+            }
+        }
+        19 => {
+            // unpause_pair
+            if args.len() >= 1 + 32 + 8 {
+                let result = unpause_pair(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
+                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+            }
+        }
+        20 => {
+            // get_order
+            if args.len() >= 9 {
+                get_order(bytes_to_u64(&args[1..9]));
             }
         }
         _ => {}
@@ -1131,7 +1643,17 @@ mod tests {
         let admin = setup();
         let base = [10u8; 32];
         let quote = [20u8; 32];
-        assert_eq!(create_pair(admin.as_ptr(), base.as_ptr(), quote.as_ptr(), 1000, 100, 1000), 0);
+        assert_eq!(
+            create_pair(
+                admin.as_ptr(),
+                base.as_ptr(),
+                quote.as_ptr(),
+                1000,
+                100,
+                1000
+            ),
+            0
+        );
         (admin, 1)
     }
 
@@ -1161,7 +1683,17 @@ mod tests {
         let admin = setup();
         let base = [10u8; 32];
         let quote = [20u8; 32];
-        assert_eq!(create_pair(admin.as_ptr(), base.as_ptr(), quote.as_ptr(), 1000, 100, 1000), 0);
+        assert_eq!(
+            create_pair(
+                admin.as_ptr(),
+                base.as_ptr(),
+                quote.as_ptr(),
+                1000,
+                100,
+                1000
+            ),
+            0
+        );
         assert_eq!(load_u64(PAIR_COUNT_KEY), 1);
     }
 
@@ -1171,14 +1703,34 @@ mod tests {
         let rando = [99u8; 32];
         let base = [10u8; 32];
         let quote = [20u8; 32];
-        assert_eq!(create_pair(rando.as_ptr(), base.as_ptr(), quote.as_ptr(), 1000, 100, 1000), 1);
+        assert_eq!(
+            create_pair(
+                rando.as_ptr(),
+                base.as_ptr(),
+                quote.as_ptr(),
+                1000,
+                100,
+                1000
+            ),
+            1
+        );
     }
 
     #[test]
     fn test_create_pair_same_tokens() {
         let admin = setup();
         let token = [10u8; 32];
-        assert_eq!(create_pair(admin.as_ptr(), token.as_ptr(), token.as_ptr(), 1000, 100, 1000), 4);
+        assert_eq!(
+            create_pair(
+                admin.as_ptr(),
+                token.as_ptr(),
+                token.as_ptr(),
+                1000,
+                100,
+                1000
+            ),
+            4
+        );
     }
 
     #[test]
@@ -1187,11 +1739,27 @@ mod tests {
         let base = [10u8; 32];
         let quote = [20u8; 32];
         // tick_size = 0
-        assert_eq!(create_pair(admin.as_ptr(), base.as_ptr(), quote.as_ptr(), 0, 100, 1000), 4);
+        assert_eq!(
+            create_pair(admin.as_ptr(), base.as_ptr(), quote.as_ptr(), 0, 100, 1000),
+            4
+        );
         // lot_size = 0
-        assert_eq!(create_pair(admin.as_ptr(), base.as_ptr(), quote.as_ptr(), 1000, 0, 1000), 4);
+        assert_eq!(
+            create_pair(admin.as_ptr(), base.as_ptr(), quote.as_ptr(), 1000, 0, 1000),
+            4
+        );
         // min_order too low
-        assert_eq!(create_pair(admin.as_ptr(), base.as_ptr(), quote.as_ptr(), 1000, 100, 100), 4);
+        assert_eq!(
+            create_pair(
+                admin.as_ptr(),
+                base.as_ptr(),
+                quote.as_ptr(),
+                1000,
+                100,
+                100
+            ),
+            4
+        );
     }
 
     #[test]
@@ -1232,10 +1800,18 @@ mod tests {
         // With tick_size=1000, lot_size=100, min_order=1000
         // notional = price * quantity / 1e9 >= 1000
         // 1_000_000_000 * 1000 / 1_000_000_000 = 1000 ✓
-        assert_eq!(place_order(
-            trader.as_ptr(), pair_id, SIDE_BUY, ORDER_LIMIT,
-            1_000_000_000, 1000, 0
-        ), 0);
+        assert_eq!(
+            place_order(
+                trader.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1000,
+                0
+            ),
+            0
+        );
         assert_eq!(load_u64(ORDER_COUNT_KEY), 1);
     }
 
@@ -1244,10 +1820,18 @@ mod tests {
         let (_admin, pair_id) = setup_with_pair();
         let trader = [3u8; 32];
         test_mock::set_slot(100);
-        assert_eq!(place_order(
-            trader.as_ptr(), pair_id, SIDE_SELL, ORDER_LIMIT,
-            2_000_000_000, 1000, 0
-        ), 0);
+        assert_eq!(
+            place_order(
+                trader.as_ptr(),
+                pair_id,
+                SIDE_SELL,
+                ORDER_LIMIT,
+                2_000_000_000,
+                1000,
+                0
+            ),
+            0
+        );
         assert_eq!(load_u64(ORDER_COUNT_KEY), 1);
     }
 
@@ -1256,20 +1840,36 @@ mod tests {
         let (admin, pair_id) = setup_with_pair();
         storage_set(PAUSED_KEY, &[1u8]);
         let trader = [2u8; 32];
-        assert_eq!(place_order(
-            trader.as_ptr(), pair_id, SIDE_BUY, ORDER_LIMIT,
-            1_000_000_000, 1000, 0
-        ), 1);
+        assert_eq!(
+            place_order(
+                trader.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1000,
+                0
+            ),
+            1
+        );
     }
 
     #[test]
     fn test_place_order_pair_not_found() {
         let _admin = setup();
         let trader = [2u8; 32];
-        assert_eq!(place_order(
-            trader.as_ptr(), 999, SIDE_BUY, ORDER_LIMIT,
-            1_000_000_000, 1000, 0
-        ), 2);
+        assert_eq!(
+            place_order(
+                trader.as_ptr(),
+                999,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1000,
+                0
+            ),
+            2
+        );
     }
 
     #[test]
@@ -1277,20 +1877,36 @@ mod tests {
         let (admin, pair_id) = setup_with_pair();
         pause_pair(admin.as_ptr(), pair_id);
         let trader = [2u8; 32];
-        assert_eq!(place_order(
-            trader.as_ptr(), pair_id, SIDE_BUY, ORDER_LIMIT,
-            1_000_000_000, 1000, 0
-        ), 3);
+        assert_eq!(
+            place_order(
+                trader.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1000,
+                0
+            ),
+            3
+        );
     }
 
     #[test]
     fn test_place_order_zero_quantity() {
         let (_admin, pair_id) = setup_with_pair();
         let trader = [2u8; 32];
-        assert_eq!(place_order(
-            trader.as_ptr(), pair_id, SIDE_BUY, ORDER_LIMIT,
-            1_000_000_000, 0, 0
-        ), 4);
+        assert_eq!(
+            place_order(
+                trader.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                0,
+                0
+            ),
+            4
+        );
     }
 
     #[test]
@@ -1298,10 +1914,18 @@ mod tests {
         let (_admin, pair_id) = setup_with_pair();
         let trader = [2u8; 32];
         // tick_size = 1000, price must be multiple of 1000
-        assert_eq!(place_order(
-            trader.as_ptr(), pair_id, SIDE_BUY, ORDER_LIMIT,
-            1_000_000_001, 1000, 0
-        ), 4);
+        assert_eq!(
+            place_order(
+                trader.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_001,
+                1000,
+                0
+            ),
+            4
+        );
     }
 
     #[test]
@@ -1309,10 +1933,18 @@ mod tests {
         let (_admin, pair_id) = setup_with_pair();
         let trader = [2u8; 32];
         // lot_size = 100, quantity must be multiple of 100
-        assert_eq!(place_order(
-            trader.as_ptr(), pair_id, SIDE_BUY, ORDER_LIMIT,
-            1_000_000_000, 99, 0
-        ), 4);
+        assert_eq!(
+            place_order(
+                trader.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                99,
+                0
+            ),
+            4
+        );
     }
 
     #[test]
@@ -1321,10 +1953,18 @@ mod tests {
         let trader = [2u8; 32];
         // min_order = 1000 shells notional
         // notional = 1000 * 100 / 1e9 = 0 — below min
-        assert_eq!(place_order(
-            trader.as_ptr(), pair_id, SIDE_BUY, ORDER_LIMIT,
-            1000, 100, 0
-        ), 4);
+        assert_eq!(
+            place_order(
+                trader.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1000,
+                100,
+                0
+            ),
+            4
+        );
     }
 
     #[test]
@@ -1333,10 +1973,18 @@ mod tests {
         let trader = [2u8; 32];
         test_mock::set_slot(1000);
         // expiry = 500 < current_slot 1000
-        assert_eq!(place_order(
-            trader.as_ptr(), pair_id, SIDE_BUY, ORDER_LIMIT,
-            1_000_000_000, 1000, 500
-        ), 8);
+        assert_eq!(
+            place_order(
+                trader.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1000,
+                500
+            ),
+            8
+        );
     }
 
     // --- Order Matching ---
@@ -1349,16 +1997,32 @@ mod tests {
         test_mock::set_slot(100);
 
         // Seller places ask at 1_000_000_000
-        assert_eq!(place_order(
-            seller.as_ptr(), pair_id, SIDE_SELL, ORDER_LIMIT,
-            1_000_000_000, 1000, 0
-        ), 0);
+        assert_eq!(
+            place_order(
+                seller.as_ptr(),
+                pair_id,
+                SIDE_SELL,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1000,
+                0
+            ),
+            0
+        );
 
         // Buyer places bid at same price — should match
-        assert_eq!(place_order(
-            buyer.as_ptr(), pair_id, SIDE_BUY, ORDER_LIMIT,
-            1_000_000_000, 1000, 0
-        ), 0);
+        assert_eq!(
+            place_order(
+                buyer.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1000,
+                0
+            ),
+            0
+        );
 
         assert_eq!(load_u64(TRADE_COUNT_KEY), 1);
         // Both orders should be filled
@@ -1376,16 +2040,32 @@ mod tests {
         test_mock::set_slot(100);
 
         // Seller places ask for 2000
-        assert_eq!(place_order(
-            seller.as_ptr(), pair_id, SIDE_SELL, ORDER_LIMIT,
-            1_000_000_000, 2000, 0
-        ), 0);
+        assert_eq!(
+            place_order(
+                seller.as_ptr(),
+                pair_id,
+                SIDE_SELL,
+                ORDER_LIMIT,
+                1_000_000_000,
+                2000,
+                0
+            ),
+            0
+        );
 
         // Buyer only wants 1000
-        assert_eq!(place_order(
-            buyer.as_ptr(), pair_id, SIDE_BUY, ORDER_LIMIT,
-            1_000_000_000, 1000, 0
-        ), 0);
+        assert_eq!(
+            place_order(
+                buyer.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1000,
+                0
+            ),
+            0
+        );
 
         let sell_data = storage_get(&order_key(1)).unwrap();
         assert_eq!(decode_order_status(&sell_data), STATUS_PARTIAL);
@@ -1399,14 +2079,30 @@ mod tests {
         test_mock::set_slot(100);
 
         // Same trader places both sides
-        assert_eq!(place_order(
-            trader.as_ptr(), pair_id, SIDE_SELL, ORDER_LIMIT,
-            1_000_000_000, 1000, 0
-        ), 0);
-        assert_eq!(place_order(
-            trader.as_ptr(), pair_id, SIDE_BUY, ORDER_LIMIT,
-            1_000_000_000, 1000, 0
-        ), 0);
+        assert_eq!(
+            place_order(
+                trader.as_ptr(),
+                pair_id,
+                SIDE_SELL,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1000,
+                0
+            ),
+            0
+        );
+        assert_eq!(
+            place_order(
+                trader.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1000,
+                0
+            ),
+            0
+        );
 
         // No trade should have occurred — self-trade prevented
         assert_eq!(load_u64(TRADE_COUNT_KEY), 0);
@@ -1423,16 +2119,32 @@ mod tests {
         test_mock::set_slot(100);
 
         // Seller places ask at 1_000_000_000
-        assert_eq!(place_order(
-            seller.as_ptr(), pair_id, SIDE_SELL, ORDER_LIMIT,
-            1_000_000_000, 1000, 0
-        ), 0);
+        assert_eq!(
+            place_order(
+                seller.as_ptr(),
+                pair_id,
+                SIDE_SELL,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1000,
+                0
+            ),
+            0
+        );
 
         // Buyer tries post-only at same price — should be rejected
-        assert_eq!(place_order(
-            buyer.as_ptr(), pair_id, SIDE_BUY, ORDER_POST_ONLY,
-            1_000_000_000, 1000, 0
-        ), 7);
+        assert_eq!(
+            place_order(
+                buyer.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_POST_ONLY,
+                1_000_000_000,
+                1000,
+                0
+            ),
+            7
+        );
     }
 
     #[test]
@@ -1443,16 +2155,32 @@ mod tests {
         test_mock::set_slot(100);
 
         // Seller places ask at 2_000_000_000
-        assert_eq!(place_order(
-            seller.as_ptr(), pair_id, SIDE_SELL, ORDER_LIMIT,
-            2_000_000_000, 1000, 0
-        ), 0);
+        assert_eq!(
+            place_order(
+                seller.as_ptr(),
+                pair_id,
+                SIDE_SELL,
+                ORDER_LIMIT,
+                2_000_000_000,
+                1000,
+                0
+            ),
+            0
+        );
 
         // Buyer post-only at 1_000_000_000 (below ask) — should rest
-        assert_eq!(place_order(
-            buyer.as_ptr(), pair_id, SIDE_BUY, ORDER_POST_ONLY,
-            1_000_000_000, 1000, 0
-        ), 0);
+        assert_eq!(
+            place_order(
+                buyer.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_POST_ONLY,
+                1_000_000_000,
+                1000,
+                0
+            ),
+            0
+        );
     }
 
     // --- Cancel & Modify ---
@@ -1462,7 +2190,15 @@ mod tests {
         let (_admin, pair_id) = setup_with_pair();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
-        place_order(trader.as_ptr(), pair_id, SIDE_BUY, ORDER_LIMIT, 1_000_000_000, 1000, 0);
+        place_order(
+            trader.as_ptr(),
+            pair_id,
+            SIDE_BUY,
+            ORDER_LIMIT,
+            1_000_000_000,
+            1000,
+            0,
+        );
         assert_eq!(cancel_order(trader.as_ptr(), 1), 0);
         let data = storage_get(&order_key(1)).unwrap();
         assert_eq!(decode_order_status(&data), STATUS_CANCELLED);
@@ -1474,7 +2210,15 @@ mod tests {
         let trader = [2u8; 32];
         let other = [3u8; 32];
         test_mock::set_slot(100);
-        place_order(trader.as_ptr(), pair_id, SIDE_BUY, ORDER_LIMIT, 1_000_000_000, 1000, 0);
+        place_order(
+            trader.as_ptr(),
+            pair_id,
+            SIDE_BUY,
+            ORDER_LIMIT,
+            1_000_000_000,
+            1000,
+            0,
+        );
         assert_eq!(cancel_order(other.as_ptr(), 1), 2);
     }
 
@@ -1483,7 +2227,15 @@ mod tests {
         let (_admin, pair_id) = setup_with_pair();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
-        place_order(trader.as_ptr(), pair_id, SIDE_BUY, ORDER_LIMIT, 1_000_000_000, 1000, 0);
+        place_order(
+            trader.as_ptr(),
+            pair_id,
+            SIDE_BUY,
+            ORDER_LIMIT,
+            1_000_000_000,
+            1000,
+            0,
+        );
         assert_eq!(cancel_order(trader.as_ptr(), 1), 0);
         assert_eq!(cancel_order(trader.as_ptr(), 1), 3);
     }
@@ -1493,8 +2245,24 @@ mod tests {
         let (_admin, pair_id) = setup_with_pair();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
-        place_order(trader.as_ptr(), pair_id, SIDE_BUY, ORDER_LIMIT, 1_000_000_000, 1000, 0);
-        place_order(trader.as_ptr(), pair_id, SIDE_BUY, ORDER_LIMIT, 2_000_000_000, 1000, 0);
+        place_order(
+            trader.as_ptr(),
+            pair_id,
+            SIDE_BUY,
+            ORDER_LIMIT,
+            1_000_000_000,
+            1000,
+            0,
+        );
+        place_order(
+            trader.as_ptr(),
+            pair_id,
+            SIDE_BUY,
+            ORDER_LIMIT,
+            2_000_000_000,
+            1000,
+            0,
+        );
         assert_eq!(cancel_all_orders(trader.as_ptr(), pair_id), 0);
         let d1 = storage_get(&order_key(1)).unwrap();
         let d2 = storage_get(&order_key(2)).unwrap();
@@ -1507,7 +2275,15 @@ mod tests {
         let (_admin, pair_id) = setup_with_pair();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
-        place_order(trader.as_ptr(), pair_id, SIDE_BUY, ORDER_LIMIT, 1_000_000_000, 1000, 0);
+        place_order(
+            trader.as_ptr(),
+            pair_id,
+            SIDE_BUY,
+            ORDER_LIMIT,
+            1_000_000_000,
+            1000,
+            0,
+        );
         assert_eq!(modify_order(trader.as_ptr(), 1, 2_000_000_000, 2000), 0);
         // Old order cancelled
         let d1 = storage_get(&order_key(1)).unwrap();
@@ -1550,11 +2326,27 @@ mod tests {
         let (_admin, pair_id) = setup_with_pair();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
-        place_order(trader.as_ptr(), pair_id, SIDE_BUY, ORDER_LIMIT, 1_000_000_000, 1000, 0);
+        place_order(
+            trader.as_ptr(),
+            pair_id,
+            SIDE_BUY,
+            ORDER_LIMIT,
+            1_000_000_000,
+            1000,
+            0,
+        );
         assert_eq!(get_best_bid(pair_id), 1_000_000_000);
 
         let seller = [3u8; 32];
-        place_order(seller.as_ptr(), pair_id, SIDE_SELL, ORDER_LIMIT, 2_000_000_000, 1000, 0);
+        place_order(
+            seller.as_ptr(),
+            pair_id,
+            SIDE_SELL,
+            ORDER_LIMIT,
+            2_000_000_000,
+            1000,
+            0,
+        );
         assert_eq!(get_best_ask(pair_id), 2_000_000_000);
     }
 
@@ -1564,8 +2356,24 @@ mod tests {
         let buyer = [2u8; 32];
         let seller = [3u8; 32];
         test_mock::set_slot(100);
-        place_order(buyer.as_ptr(), pair_id, SIDE_BUY, ORDER_LIMIT, 1_000_000_000, 1000, 0);
-        place_order(seller.as_ptr(), pair_id, SIDE_SELL, ORDER_LIMIT, 2_000_000_000, 1000, 0);
+        place_order(
+            buyer.as_ptr(),
+            pair_id,
+            SIDE_BUY,
+            ORDER_LIMIT,
+            1_000_000_000,
+            1000,
+            0,
+        );
+        place_order(
+            seller.as_ptr(),
+            pair_id,
+            SIDE_SELL,
+            ORDER_LIMIT,
+            2_000_000_000,
+            1000,
+            0,
+        );
         assert_eq!(get_spread(pair_id), 1_000_000_000);
     }
 
@@ -1586,8 +2394,24 @@ mod tests {
         let buyer = [4u8; 32];
         test_mock::set_slot(100);
 
-        place_order(seller.as_ptr(), pair_id, SIDE_SELL, ORDER_LIMIT, 1_000_000_000, 1_000_000, 0);
-        place_order(buyer.as_ptr(), pair_id, SIDE_BUY, ORDER_LIMIT, 1_000_000_000, 1_000_000, 0);
+        place_order(
+            seller.as_ptr(),
+            pair_id,
+            SIDE_SELL,
+            ORDER_LIMIT,
+            1_000_000_000,
+            1_000_000,
+            0,
+        );
+        place_order(
+            buyer.as_ptr(),
+            pair_id,
+            SIDE_BUY,
+            ORDER_LIMIT,
+            1_000_000_000,
+            1_000_000,
+            0,
+        );
 
         let treasury = get_fee_treasury();
         assert!(treasury > 0, "Protocol fees should accumulate");
@@ -1603,12 +2427,32 @@ mod tests {
             base[0] = (i + 1) as u8;
             let mut quote = [0u8; 32];
             quote[0] = (i + 100) as u8;
-            assert_eq!(create_pair(admin.as_ptr(), base.as_ptr(), quote.as_ptr(), 1000, 100, 1000), 0);
+            assert_eq!(
+                create_pair(
+                    admin.as_ptr(),
+                    base.as_ptr(),
+                    quote.as_ptr(),
+                    1000,
+                    100,
+                    1000
+                ),
+                0
+            );
         }
         // 51st pair should fail
         let base = [200u8; 32];
         let quote = [201u8; 32];
-        assert_eq!(create_pair(admin.as_ptr(), base.as_ptr(), quote.as_ptr(), 1000, 100, 1000), 3);
+        assert_eq!(
+            create_pair(
+                admin.as_ptr(),
+                base.as_ptr(),
+                quote.as_ptr(),
+                1000,
+                100,
+                1000
+            ),
+            3
+        );
     }
 
     // --- Price-time priority ---
@@ -1622,11 +2466,44 @@ mod tests {
         test_mock::set_slot(100);
 
         // Two asks at same price — seller1 first (qty large enough for min notional)
-        assert_eq!(place_order(seller1.as_ptr(), pair_id, SIDE_SELL, ORDER_LIMIT, 1_000_000_000, 10_000, 0), 0);
-        assert_eq!(place_order(seller2.as_ptr(), pair_id, SIDE_SELL, ORDER_LIMIT, 1_000_000_000, 10_000, 0), 0);
+        assert_eq!(
+            place_order(
+                seller1.as_ptr(),
+                pair_id,
+                SIDE_SELL,
+                ORDER_LIMIT,
+                1_000_000_000,
+                10_000,
+                0
+            ),
+            0
+        );
+        assert_eq!(
+            place_order(
+                seller2.as_ptr(),
+                pair_id,
+                SIDE_SELL,
+                ORDER_LIMIT,
+                1_000_000_000,
+                10_000,
+                0
+            ),
+            0
+        );
 
         // Buyer takes 10_000 — should fill seller1 first (time priority)
-        assert_eq!(place_order(buyer.as_ptr(), pair_id, SIDE_BUY, ORDER_LIMIT, 1_000_000_000, 10_000, 0), 0);
+        assert_eq!(
+            place_order(
+                buyer.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                10_000,
+                0
+            ),
+            0
+        );
 
         let s1 = storage_get(&order_key(1)).unwrap();
         let s2 = storage_get(&order_key(2)).unwrap();
@@ -1641,7 +2518,15 @@ mod tests {
         let (_admin, pair_id) = setup_with_pair();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
-        place_order(trader.as_ptr(), pair_id, SIDE_BUY, ORDER_LIMIT, 1_000_000_000, 1000, 0);
+        place_order(
+            trader.as_ptr(),
+            pair_id,
+            SIDE_BUY,
+            ORDER_LIMIT,
+            1_000_000_000,
+            1000,
+            0,
+        );
         assert_eq!(get_order(1), 1);
         assert_eq!(get_order(999), 0);
     }
@@ -1652,8 +2537,24 @@ mod tests {
         let seller = [3u8; 32];
         let buyer = [4u8; 32];
         test_mock::set_slot(100);
-        place_order(seller.as_ptr(), pair_id, SIDE_SELL, ORDER_LIMIT, 1_000_000_000, 1000, 0);
-        place_order(buyer.as_ptr(), pair_id, SIDE_BUY, ORDER_LIMIT, 1_000_000_000, 1000, 0);
+        place_order(
+            seller.as_ptr(),
+            pair_id,
+            SIDE_SELL,
+            ORDER_LIMIT,
+            1_000_000_000,
+            1000,
+            0,
+        );
+        place_order(
+            buyer.as_ptr(),
+            pair_id,
+            SIDE_BUY,
+            ORDER_LIMIT,
+            1_000_000_000,
+            1000,
+            0,
+        );
         assert_eq!(get_trade_count(), 1);
     }
 
@@ -1663,7 +2564,98 @@ mod tests {
         assert_eq!(get_pair_count(), 0);
         let base = [10u8; 32];
         let quote = [20u8; 32];
-        create_pair(admin.as_ptr(), base.as_ptr(), quote.as_ptr(), 1000, 100, 1000);
+        create_pair(
+            admin.as_ptr(),
+            base.as_ptr(),
+            quote.as_ptr(),
+            1000,
+            100,
+            1000,
+        );
         assert_eq!(get_pair_count(), 1);
+    }
+
+    // --- Preferred quote currency (mUSD enforcement) ---
+
+    #[test]
+    fn test_set_preferred_quote() {
+        let admin = setup();
+        let musd = [42u8; 32];
+        assert_eq!(set_preferred_quote(admin.as_ptr(), musd.as_ptr()), 0);
+        assert_eq!(get_preferred_quote(), 1); // 1 = preferred is set
+    }
+
+    #[test]
+    fn test_set_preferred_quote_not_admin() {
+        let _admin = setup();
+        let non_admin = [99u8; 32];
+        let musd = [42u8; 32];
+        assert_eq!(set_preferred_quote(non_admin.as_ptr(), musd.as_ptr()), 1);
+    }
+
+    #[test]
+    fn test_set_preferred_quote_zero_address() {
+        let admin = setup();
+        let zero = [0u8; 32];
+        assert_eq!(set_preferred_quote(admin.as_ptr(), zero.as_ptr()), 2);
+    }
+
+    #[test]
+    fn test_create_pair_enforces_preferred_quote() {
+        let admin = setup();
+        let musd = [42u8; 32];
+        set_preferred_quote(admin.as_ptr(), musd.as_ptr());
+        let base = [10u8; 32];
+        // Quote matches preferred → success
+        assert_eq!(
+            create_pair(
+                admin.as_ptr(),
+                base.as_ptr(),
+                musd.as_ptr(),
+                1000,
+                100,
+                1000
+            ),
+            0
+        );
+        // Wrong quote → error 6
+        let wrong_quote = [99u8; 32];
+        let base2 = [11u8; 32];
+        assert_eq!(
+            create_pair(
+                admin.as_ptr(),
+                base2.as_ptr(),
+                wrong_quote.as_ptr(),
+                1000,
+                100,
+                1000
+            ),
+            6
+        );
+    }
+
+    #[test]
+    fn test_create_pair_no_preferred_quote_allows_any() {
+        let admin = setup();
+        let base = [10u8; 32];
+        let quote = [20u8; 32];
+        // No preferred set → any quote accepted
+        assert_eq!(
+            create_pair(
+                admin.as_ptr(),
+                base.as_ptr(),
+                quote.as_ptr(),
+                1000,
+                100,
+                1000
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn test_get_preferred_quote_unset() {
+        let _admin = setup();
+        assert_eq!(get_preferred_quote(), 0); // 0 = not set
     }
 }

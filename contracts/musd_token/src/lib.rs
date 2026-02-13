@@ -37,29 +37,34 @@
 
 #![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+#![allow(clippy::too_many_arguments)]
+#![allow(dead_code)]
 
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
-    storage_get, storage_set, log_info,
-    bytes_to_u64, u64_to_bytes, get_slot,
-};
+use moltchain_sdk::{bytes_to_u64, get_slot, log_info, storage_get, storage_set, u64_to_bytes};
 
 // ============================================================================
 // CONSTANTS
 // ============================================================================
 
 // Token metadata
+#[allow(dead_code)]
 const TOKEN_NAME: &[u8] = b"MoltChain USD";
+#[allow(dead_code)]
 const TOKEN_SYMBOL: &[u8] = b"mUSD";
+#[allow(dead_code)]
 const DECIMALS: u8 = 6; // Same as USDT/USDC (6 decimals)
 
 // Minting controls
 const MINT_CAP_PER_EPOCH: u64 = 100_000_000_000; // 100K mUSD per epoch (in micro-units)
-const EPOCH_SLOTS: u64 = 86_400;                   // ~24 hours at 1 slot/sec
-const RESERVE_FLOOR_BPS: u64 = 10_000;             // 100% — must be fully backed
-const RESERVE_WARNING_BPS: u64 = 10_200;            // 102% — warn if close to floor
+const EPOCH_SLOTS: u64 = 86_400; // ~24 hours at 1 slot/sec
+#[allow(dead_code)]
+const RESERVE_FLOOR_BPS: u64 = 10_000; // 100% — must be fully backed
+#[allow(dead_code)]
+const RESERVE_WARNING_BPS: u64 = 10_200; // 102% — warn if close to floor
 
 // Storage keys
 const ADMIN_KEY: &[u8] = b"musd_admin";
@@ -70,9 +75,9 @@ const TOTAL_MINTED_KEY: &[u8] = b"musd_minted";
 const TOTAL_BURNED_KEY: &[u8] = b"musd_burned";
 
 // Reserve attestation keys
-const RESERVE_ATTESTED_KEY: &[u8] = b"musd_reserve_att";  // Last attested reserve amount
-const RESERVE_SLOT_KEY: &[u8] = b"musd_reserve_slot";     // Slot of last attestation
-const RESERVE_HASH_KEY: &[u8] = b"musd_reserve_hash";     // Hash of external proof
+const RESERVE_ATTESTED_KEY: &[u8] = b"musd_reserve_att"; // Last attested reserve amount
+const RESERVE_SLOT_KEY: &[u8] = b"musd_reserve_slot"; // Slot of last attestation
+const RESERVE_HASH_KEY: &[u8] = b"musd_reserve_hash"; // Hash of external proof
 const ATTESTATION_COUNT_KEY: &[u8] = b"musd_att_count";
 
 // Epoch tracking
@@ -89,22 +94,40 @@ const TRANSFER_COUNT_KEY: &[u8] = b"musd_xfer_cnt";
 // ============================================================================
 
 fn load_u64(key: &[u8]) -> u64 {
-    storage_get(key).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    storage_get(key)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0)
 }
-fn save_u64(key: &[u8], val: u64) { storage_set(key, &u64_to_bytes(val)); }
+fn save_u64(key: &[u8], val: u64) {
+    storage_set(key, &u64_to_bytes(val));
+}
 
 fn load_addr(key: &[u8]) -> [u8; 32] {
-    storage_get(key).map(|d| {
-        let mut a = [0u8; 32]; if d.len() >= 32 { a.copy_from_slice(&d[..32]); } a
-    }).unwrap_or([0u8; 32])
+    storage_get(key)
+        .map(|d| {
+            let mut a = [0u8; 32];
+            if d.len() >= 32 {
+                a.copy_from_slice(&d[..32]);
+            }
+            a
+        })
+        .unwrap_or([0u8; 32])
 }
-fn is_zero(addr: &[u8; 32]) -> bool { addr.iter().all(|&b| b == 0) }
+fn is_zero(addr: &[u8; 32]) -> bool {
+    addr.iter().all(|&b| b == 0)
+}
 
 fn u64_to_decimal(mut n: u64) -> Vec<u8> {
-    if n == 0 { return alloc::vec![b'0']; }
+    if n == 0 {
+        return alloc::vec![b'0'];
+    }
     let mut buf = Vec::new();
-    while n > 0 { buf.push(b'0' + (n % 10) as u8); n /= 10; }
-    buf.reverse(); buf
+    while n > 0 {
+        buf.push(b'0' + (n % 10) as u8);
+        n /= 10;
+    }
+    buf.reverse();
+    buf
 }
 fn hex_encode(bytes: &[u8]) -> Vec<u8> {
     let hex_chars: &[u8; 16] = b"0123456789abcdef";
@@ -119,7 +142,8 @@ fn hex_encode(bytes: &[u8]) -> Vec<u8> {
 // Per-account balance key
 fn balance_key(addr: &[u8; 32]) -> Vec<u8> {
     let mut k = Vec::from(&b"musd_bal_"[..]);
-    k.extend_from_slice(&hex_encode(addr)); k
+    k.extend_from_slice(&hex_encode(addr));
+    k
 }
 
 // Per-account allowance key (owner → spender)
@@ -134,7 +158,8 @@ fn allowance_key(owner: &[u8; 32], spender: &[u8; 32]) -> Vec<u8> {
 // Attestation history key
 fn attestation_key(index: u64) -> Vec<u8> {
     let mut k = Vec::from(&b"musd_att_"[..]);
-    k.extend_from_slice(&u64_to_decimal(index)); k
+    k.extend_from_slice(&u64_to_decimal(index));
+    k
 }
 
 // ============================================================================
@@ -142,18 +167,27 @@ fn attestation_key(index: u64) -> Vec<u8> {
 // ============================================================================
 
 fn reentrancy_enter() -> bool {
-    if storage_get(REENTRANCY_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false) {
+    if storage_get(REENTRANCY_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
+    {
         return false;
     }
     storage_set(REENTRANCY_KEY, &[1u8]);
     true
 }
-fn reentrancy_exit() { storage_set(REENTRANCY_KEY, &[0u8]); }
+fn reentrancy_exit() {
+    storage_set(REENTRANCY_KEY, &[0u8]);
+}
 
 fn is_paused() -> bool {
-    storage_get(PAUSED_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false)
+    storage_get(PAUSED_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
 }
-fn require_not_paused() -> bool { !is_paused() }
+fn require_not_paused() -> bool {
+    !is_paused()
+}
 
 fn require_admin(caller: &[u8; 32]) -> bool {
     let admin = load_addr(ADMIN_KEY);
@@ -163,7 +197,9 @@ fn require_admin(caller: &[u8; 32]) -> bool {
 // Reserve circuit breaker: block minting if supply would exceed attested reserves
 fn check_reserve_circuit_breaker(additional_mint: u64) -> bool {
     let attested = load_u64(RESERVE_ATTESTED_KEY);
-    if attested == 0 { return true; } // No attestation yet — allow initial minting
+    if attested == 0 {
+        return true;
+    } // No attestation yet — allow initial minting
     let supply = load_u64(TOTAL_SUPPLY_KEY);
     let new_supply = supply.saturating_add(additional_mint);
     // new_supply must not exceed attested reserves
@@ -191,13 +227,20 @@ fn check_epoch_cap(amount: u64) -> bool {
 // ============================================================================
 
 /// Initialize the mUSD token contract. Admin should be a multisig address.
-pub fn initialize(admin: *const u8) -> u32 {
+#[no_mangle]
+pub extern "C" fn initialize(admin: *const u8) -> u32 {
     let existing = load_addr(ADMIN_KEY);
-    if !is_zero(&existing) { return 1; } // Already initialized
+    if !is_zero(&existing) {
+        return 1;
+    } // Already initialized
 
     let mut addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(admin, addr.as_mut_ptr(), 32); }
-    if is_zero(&addr) { return 2; } // Zero address
+    unsafe {
+        core::ptr::copy_nonoverlapping(admin, addr.as_mut_ptr(), 32);
+    }
+    if is_zero(&addr) {
+        return 2;
+    } // Zero address
 
     storage_set(ADMIN_KEY, &addr);
     save_u64(TOTAL_SUPPLY_KEY, 0);
@@ -212,8 +255,11 @@ pub fn initialize(admin: *const u8) -> u32 {
 
 /// Mint new mUSD. Only callable by admin (treasury multisig).
 /// Protected by: reentrancy guard, pause check, reserve circuit breaker, epoch cap.
-pub fn mint(caller: *const u8, to: *const u8, amount: u64) -> u32 {
-    if !reentrancy_enter() { return 100; }
+#[no_mangle]
+pub extern "C" fn mint(caller: *const u8, to: *const u8, amount: u64) -> u32 {
+    if !reentrancy_enter() {
+        return 100;
+    }
 
     let mut caller_addr = [0u8; 32];
     let mut to_addr = [0u8; 32];
@@ -222,10 +268,22 @@ pub fn mint(caller: *const u8, to: *const u8, amount: u64) -> u32 {
         core::ptr::copy_nonoverlapping(to, to_addr.as_mut_ptr(), 32);
     }
 
-    if !require_not_paused() { reentrancy_exit(); return 1; }
-    if !require_admin(&caller_addr) { reentrancy_exit(); return 2; }
-    if is_zero(&to_addr) { reentrancy_exit(); return 3; } // No mint to zero
-    if amount == 0 { reentrancy_exit(); return 4; }
+    if !require_not_paused() {
+        reentrancy_exit();
+        return 1;
+    }
+    if !require_admin(&caller_addr) {
+        reentrancy_exit();
+        return 2;
+    }
+    if is_zero(&to_addr) {
+        reentrancy_exit();
+        return 3;
+    } // No mint to zero
+    if amount == 0 {
+        reentrancy_exit();
+        return 4;
+    }
 
     // Circuit breaker: check reserves
     if !check_reserve_circuit_breaker(amount) {
@@ -248,7 +306,10 @@ pub fn mint(caller: *const u8, to: *const u8, amount: u64) -> u32 {
         save_u64(EPOCH_START_KEY, current_slot);
         save_u64(EPOCH_MINTED_KEY, amount);
     } else {
-        save_u64(EPOCH_MINTED_KEY, load_u64(EPOCH_MINTED_KEY).saturating_add(amount));
+        save_u64(
+            EPOCH_MINTED_KEY,
+            load_u64(EPOCH_MINTED_KEY).saturating_add(amount),
+        );
     }
 
     // Credit recipient
@@ -257,8 +318,14 @@ pub fn mint(caller: *const u8, to: *const u8, amount: u64) -> u32 {
     save_u64(&bk, bal.saturating_add(amount));
 
     // Update totals
-    save_u64(TOTAL_SUPPLY_KEY, load_u64(TOTAL_SUPPLY_KEY).saturating_add(amount));
-    save_u64(TOTAL_MINTED_KEY, load_u64(TOTAL_MINTED_KEY).saturating_add(amount));
+    save_u64(
+        TOTAL_SUPPLY_KEY,
+        load_u64(TOTAL_SUPPLY_KEY).saturating_add(amount),
+    );
+    save_u64(
+        TOTAL_MINTED_KEY,
+        load_u64(TOTAL_MINTED_KEY).saturating_add(amount),
+    );
 
     // Log mint event
     let evt_count = load_u64(MINT_EVENT_COUNT_KEY);
@@ -278,22 +345,42 @@ pub fn mint(caller: *const u8, to: *const u8, amount: u64) -> u32 {
 
 /// Burn mUSD. Called by the holder or by admin on behalf of a withdrawal.
 /// Burns reduce supply — treasury then releases USDT/USDC externally.
-pub fn burn(caller: *const u8, amount: u64) -> u32 {
-    if !reentrancy_enter() { return 100; }
+#[no_mangle]
+pub extern "C" fn burn(caller: *const u8, amount: u64) -> u32 {
+    if !reentrancy_enter() {
+        return 100;
+    }
 
     let mut caller_addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, caller_addr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, caller_addr.as_mut_ptr(), 32);
+    }
 
-    if !require_not_paused() { reentrancy_exit(); return 1; }
-    if amount == 0 { reentrancy_exit(); return 4; }
+    if !require_not_paused() {
+        reentrancy_exit();
+        return 1;
+    }
+    if amount == 0 {
+        reentrancy_exit();
+        return 4;
+    }
 
     let bk = balance_key(&caller_addr);
     let bal = load_u64(&bk);
-    if bal < amount { reentrancy_exit(); return 5; } // Insufficient balance
+    if bal < amount {
+        reentrancy_exit();
+        return 5;
+    } // Insufficient balance
 
     save_u64(&bk, bal - amount);
-    save_u64(TOTAL_SUPPLY_KEY, load_u64(TOTAL_SUPPLY_KEY).saturating_sub(amount));
-    save_u64(TOTAL_BURNED_KEY, load_u64(TOTAL_BURNED_KEY).saturating_add(amount));
+    save_u64(
+        TOTAL_SUPPLY_KEY,
+        load_u64(TOTAL_SUPPLY_KEY).saturating_sub(amount),
+    );
+    save_u64(
+        TOTAL_BURNED_KEY,
+        load_u64(TOTAL_BURNED_KEY).saturating_add(amount),
+    );
 
     let evt_count = load_u64(BURN_EVENT_COUNT_KEY);
     save_u64(BURN_EVENT_COUNT_KEY, evt_count + 1);
@@ -311,8 +398,11 @@ pub fn burn(caller: *const u8, amount: u64) -> u32 {
 }
 
 /// Transfer mUSD between accounts. Standard token transfer.
-pub fn transfer(from: *const u8, to: *const u8, amount: u64) -> u32 {
-    if !reentrancy_enter() { return 100; }
+#[no_mangle]
+pub extern "C" fn transfer(from: *const u8, to: *const u8, amount: u64) -> u32 {
+    if !reentrancy_enter() {
+        return 100;
+    }
 
     let mut from_addr = [0u8; 32];
     let mut to_addr = [0u8; 32];
@@ -321,14 +411,29 @@ pub fn transfer(from: *const u8, to: *const u8, amount: u64) -> u32 {
         core::ptr::copy_nonoverlapping(to, to_addr.as_mut_ptr(), 32);
     }
 
-    if !require_not_paused() { reentrancy_exit(); return 1; }
-    if is_zero(&to_addr) { reentrancy_exit(); return 3; }
-    if amount == 0 { reentrancy_exit(); return 4; }
-    if from_addr == to_addr { reentrancy_exit(); return 6; } // Self-transfer
+    if !require_not_paused() {
+        reentrancy_exit();
+        return 1;
+    }
+    if is_zero(&to_addr) {
+        reentrancy_exit();
+        return 3;
+    }
+    if amount == 0 {
+        reentrancy_exit();
+        return 4;
+    }
+    if from_addr == to_addr {
+        reentrancy_exit();
+        return 6;
+    } // Self-transfer
 
     let from_bk = balance_key(&from_addr);
     let from_bal = load_u64(&from_bk);
-    if from_bal < amount { reentrancy_exit(); return 5; }
+    if from_bal < amount {
+        reentrancy_exit();
+        return 5;
+    }
 
     let to_bk = balance_key(&to_addr);
     let to_bal = load_u64(&to_bk);
@@ -343,7 +448,8 @@ pub fn transfer(from: *const u8, to: *const u8, amount: u64) -> u32 {
 }
 
 /// Approve a spender to transfer on owner's behalf (for DEX integration).
-pub fn approve(owner: *const u8, spender: *const u8, amount: u64) -> u32 {
+#[no_mangle]
+pub extern "C" fn approve(owner: *const u8, spender: *const u8, amount: u64) -> u32 {
     let mut owner_addr = [0u8; 32];
     let mut spender_addr = [0u8; 32];
     unsafe {
@@ -351,8 +457,12 @@ pub fn approve(owner: *const u8, spender: *const u8, amount: u64) -> u32 {
         core::ptr::copy_nonoverlapping(spender, spender_addr.as_mut_ptr(), 32);
     }
 
-    if is_zero(&spender_addr) { return 3; }
-    if owner_addr == spender_addr { return 6; }
+    if is_zero(&spender_addr) {
+        return 3;
+    }
+    if owner_addr == spender_addr {
+        return 6;
+    }
 
     let ak = allowance_key(&owner_addr, &spender_addr);
     save_u64(&ak, amount);
@@ -360,8 +470,16 @@ pub fn approve(owner: *const u8, spender: *const u8, amount: u64) -> u32 {
 }
 
 /// Transfer from another account using allowance (for DEX contracts to move mUSD).
-pub fn transfer_from(caller: *const u8, from: *const u8, to: *const u8, amount: u64) -> u32 {
-    if !reentrancy_enter() { return 100; }
+#[no_mangle]
+pub extern "C" fn transfer_from(
+    caller: *const u8,
+    from: *const u8,
+    to: *const u8,
+    amount: u64,
+) -> u32 {
+    if !reentrancy_enter() {
+        return 100;
+    }
 
     let mut caller_addr = [0u8; 32];
     let mut from_addr = [0u8; 32];
@@ -372,19 +490,34 @@ pub fn transfer_from(caller: *const u8, from: *const u8, to: *const u8, amount: 
         core::ptr::copy_nonoverlapping(to, to_addr.as_mut_ptr(), 32);
     }
 
-    if !require_not_paused() { reentrancy_exit(); return 1; }
-    if is_zero(&to_addr) { reentrancy_exit(); return 3; }
-    if amount == 0 { reentrancy_exit(); return 4; }
+    if !require_not_paused() {
+        reentrancy_exit();
+        return 1;
+    }
+    if is_zero(&to_addr) {
+        reentrancy_exit();
+        return 3;
+    }
+    if amount == 0 {
+        reentrancy_exit();
+        return 4;
+    }
 
     // Check allowance
     let ak = allowance_key(&from_addr, &caller_addr);
     let allowed = load_u64(&ak);
-    if allowed < amount { reentrancy_exit(); return 7; } // Exceeds allowance
+    if allowed < amount {
+        reentrancy_exit();
+        return 7;
+    } // Exceeds allowance
 
     // Check balance
     let from_bk = balance_key(&from_addr);
     let from_bal = load_u64(&from_bk);
-    if from_bal < amount { reentrancy_exit(); return 5; }
+    if from_bal < amount {
+        reentrancy_exit();
+        return 5;
+    }
 
     let to_bk = balance_key(&to_addr);
     let to_bal = load_u64(&to_bk);
@@ -407,7 +540,12 @@ pub fn transfer_from(caller: *const u8, from: *const u8, to: *const u8, amount: 
 /// Record a reserve attestation. Called by admin/auditor to declare
 /// the current off-chain reserve balance (USDT + USDC held in treasury).
 /// proof_hash: 32-byte hash of the external audit report or MoltOracle feed.
-pub fn attest_reserves(caller: *const u8, reserve_amount: u64, proof_hash: *const u8) -> u32 {
+#[no_mangle]
+pub extern "C" fn attest_reserves(
+    caller: *const u8,
+    reserve_amount: u64,
+    proof_hash: *const u8,
+) -> u32 {
     let mut caller_addr = [0u8; 32];
     let mut hash = [0u8; 32];
     unsafe {
@@ -415,7 +553,9 @@ pub fn attest_reserves(caller: *const u8, reserve_amount: u64, proof_hash: *cons
         core::ptr::copy_nonoverlapping(proof_hash, hash.as_mut_ptr(), 32);
     }
 
-    if !require_admin(&caller_addr) { return 2; }
+    if !require_admin(&caller_addr) {
+        return 2;
+    }
 
     // Store current attestation
     save_u64(RESERVE_ATTESTED_KEY, reserve_amount);
@@ -448,14 +588,18 @@ pub fn attest_reserves(caller: *const u8, reserve_amount: u64, proof_hash: *cons
 // ============================================================================
 
 /// Get mUSD balance of an account.
-pub fn balance_of(addr: *const u8) -> u64 {
+#[no_mangle]
+pub extern "C" fn balance_of(addr: *const u8) -> u64 {
     let mut address = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(addr, address.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(addr, address.as_mut_ptr(), 32);
+    }
     load_u64(&balance_key(&address))
 }
 
 /// Get allowance granted from owner to spender.
-pub fn allowance(owner: *const u8, spender: *const u8) -> u64 {
+#[no_mangle]
+pub extern "C" fn allowance(owner: *const u8, spender: *const u8) -> u64 {
     let mut owner_addr = [0u8; 32];
     let mut spender_addr = [0u8; 32];
     unsafe {
@@ -466,32 +610,53 @@ pub fn allowance(owner: *const u8, spender: *const u8) -> u64 {
 }
 
 /// Get total mUSD in circulation.
-pub fn total_supply() -> u64 { load_u64(TOTAL_SUPPLY_KEY) }
+#[no_mangle]
+pub extern "C" fn total_supply() -> u64 {
+    load_u64(TOTAL_SUPPLY_KEY)
+}
 
 /// Get total mUSD ever minted.
-pub fn total_minted() -> u64 { load_u64(TOTAL_MINTED_KEY) }
+#[no_mangle]
+pub extern "C" fn total_minted() -> u64 {
+    load_u64(TOTAL_MINTED_KEY)
+}
 
 /// Get total mUSD ever burned.
-pub fn total_burned() -> u64 { load_u64(TOTAL_BURNED_KEY) }
+#[no_mangle]
+pub extern "C" fn total_burned() -> u64 {
+    load_u64(TOTAL_BURNED_KEY)
+}
 
 /// Get the reserve ratio in basis points (10000 = 100%).
 /// Returns 0 if no attestation has been made.
-pub fn get_reserve_ratio() -> u64 {
+#[no_mangle]
+pub extern "C" fn get_reserve_ratio() -> u64 {
     let attested = load_u64(RESERVE_ATTESTED_KEY);
     let supply = load_u64(TOTAL_SUPPLY_KEY);
-    if supply == 0 { return 10_000; } // 100% if nothing is minted
-    if attested == 0 { return 0; }    // No attestation yet
-    (attested * 10_000) / supply       // bps — 10000 = 100%, 10500 = 105%
+    if supply == 0 {
+        return 10_000;
+    } // 100% if nothing is minted
+    if attested == 0 {
+        return 0;
+    } // No attestation yet
+    (attested * 10_000) / supply // bps — 10000 = 100%, 10500 = 105%
 }
 
 /// Get slot of last reserve attestation.
-pub fn get_last_attestation_slot() -> u64 { load_u64(RESERVE_SLOT_KEY) }
+#[no_mangle]
+pub extern "C" fn get_last_attestation_slot() -> u64 {
+    load_u64(RESERVE_SLOT_KEY)
+}
 
 /// Get attestation count (number of reserve proofs submitted).
-pub fn get_attestation_count() -> u64 { load_u64(ATTESTATION_COUNT_KEY) }
+#[no_mangle]
+pub extern "C" fn get_attestation_count() -> u64 {
+    load_u64(ATTESTATION_COUNT_KEY)
+}
 
 /// Get remaining mint capacity for current epoch.
-pub fn get_epoch_remaining() -> u64 {
+#[no_mangle]
+pub extern "C" fn get_epoch_remaining() -> u64 {
     let current_slot = get_slot();
     let epoch_start = load_u64(EPOCH_START_KEY);
     if current_slot >= epoch_start + EPOCH_SLOTS {
@@ -502,40 +667,58 @@ pub fn get_epoch_remaining() -> u64 {
 }
 
 /// Get transfer count.
-pub fn get_transfer_count() -> u64 { load_u64(TRANSFER_COUNT_KEY) }
+#[no_mangle]
+pub extern "C" fn get_transfer_count() -> u64 {
+    load_u64(TRANSFER_COUNT_KEY)
+}
 
 // ============================================================================
 // ADMIN FUNCTIONS
 // ============================================================================
 
-pub fn emergency_pause(caller: *const u8) -> u32 {
+#[no_mangle]
+pub extern "C" fn emergency_pause(caller: *const u8) -> u32 {
     let mut addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, addr.as_mut_ptr(), 32); }
-    if !require_admin(&addr) { return 2; }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, addr.as_mut_ptr(), 32);
+    }
+    if !require_admin(&addr) {
+        return 2;
+    }
     storage_set(PAUSED_KEY, &[1u8]);
     log_info("mUSD: EMERGENCY PAUSE");
     0
 }
 
-pub fn emergency_unpause(caller: *const u8) -> u32 {
+#[no_mangle]
+pub extern "C" fn emergency_unpause(caller: *const u8) -> u32 {
     let mut addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, addr.as_mut_ptr(), 32); }
-    if !require_admin(&addr) { return 2; }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, addr.as_mut_ptr(), 32);
+    }
+    if !require_admin(&addr) {
+        return 2;
+    }
     storage_set(PAUSED_KEY, &[0u8]);
     log_info("mUSD: RESUMED");
     0
 }
 
 /// Transfer admin to a new multisig address.
-pub fn transfer_admin(caller: *const u8, new_admin: *const u8) -> u32 {
+#[no_mangle]
+pub extern "C" fn transfer_admin(caller: *const u8, new_admin: *const u8) -> u32 {
     let mut caller_addr = [0u8; 32];
     let mut new_addr = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(caller, caller_addr.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(new_admin, new_addr.as_mut_ptr(), 32);
     }
-    if !require_admin(&caller_addr) { return 2; }
-    if is_zero(&new_addr) { return 3; }
+    if !require_admin(&caller_addr) {
+        return 2;
+    }
+    if is_zero(&new_addr) {
+        return 3;
+    }
     storage_set(ADMIN_KEY, &new_addr);
     log_info("mUSD: admin transferred");
     0
@@ -554,10 +737,14 @@ mod tests {
     fn reset_store() {
         test_mock::reset();
     }
-    fn set_slot(v: u64) { test_mock::SLOT.with(|s| *s.borrow_mut() = v); }
+    fn set_slot(v: u64) {
+        test_mock::SLOT.with(|s| *s.borrow_mut() = v);
+    }
 
     fn addr(id: u8) -> [u8; 32] {
-        let mut a = [0u8; 32]; a[0] = id; a
+        let mut a = [0u8; 32];
+        a[0] = id;
+        a
     }
 
     // ---- Initialization ----
@@ -720,7 +907,10 @@ mod tests {
         assert_eq!(allowance(alice.as_ptr(), dex.as_ptr()), 5_000_000);
 
         // DEX moves 3M from Alice to Bob
-        assert_eq!(transfer_from(dex.as_ptr(), alice.as_ptr(), bob.as_ptr(), 3_000_000), 0);
+        assert_eq!(
+            transfer_from(dex.as_ptr(), alice.as_ptr(), bob.as_ptr(), 3_000_000),
+            0
+        );
         assert_eq!(balance_of(alice.as_ptr()), 7_000_000);
         assert_eq!(balance_of(bob.as_ptr()), 3_000_000);
         assert_eq!(allowance(alice.as_ptr(), dex.as_ptr()), 2_000_000);
@@ -736,7 +926,10 @@ mod tests {
         initialize(admin.as_ptr());
         mint(admin.as_ptr(), alice.as_ptr(), 10_000_000);
         approve(alice.as_ptr(), dex.as_ptr(), 1_000_000);
-        assert_eq!(transfer_from(dex.as_ptr(), alice.as_ptr(), bob.as_ptr(), 5_000_000), 7);
+        assert_eq!(
+            transfer_from(dex.as_ptr(), alice.as_ptr(), bob.as_ptr(), 5_000_000),
+            7
+        );
     }
 
     // ---- Reserve Attestation ----
@@ -764,7 +957,7 @@ mod tests {
         // Attest 10M reserves
         attest_reserves(admin.as_ptr(), 10_000_000, proof.as_ptr());
         assert_eq!(get_reserve_ratio(), 10_000); // 100%
-        // Attest 12M reserves (over-collateralized)
+                                                 // Attest 12M reserves (over-collateralized)
         attest_reserves(admin.as_ptr(), 12_000_000, proof.as_ptr());
         assert_eq!(get_reserve_ratio(), 12_000); // 120%
     }
@@ -796,8 +989,8 @@ mod tests {
 
         emergency_pause(admin.as_ptr());
         assert_eq!(transfer(user.as_ptr(), admin.as_ptr(), 100_000), 1); // Blocked
-        assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 100_000), 1);     // Blocked
-        assert_eq!(burn(user.as_ptr(), 100_000), 1);                     // Blocked
+        assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 100_000), 1); // Blocked
+        assert_eq!(burn(user.as_ptr(), 100_000), 1); // Blocked
 
         emergency_unpause(admin.as_ptr());
         assert_eq!(transfer(user.as_ptr(), admin.as_ptr(), 100_000), 0); // Works again

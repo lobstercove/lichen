@@ -3,6 +3,10 @@
 
 #![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+#![allow(clippy::too_many_arguments)]
+#![allow(dead_code)]
+#![allow(unused_imports)]
 
 use moltchain_sdk::{Token, Address, log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes};
 

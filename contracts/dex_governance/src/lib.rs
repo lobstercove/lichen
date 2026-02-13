@@ -11,14 +11,15 @@
 
 #![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+#![allow(clippy::too_many_arguments)]
+#![allow(dead_code)]
+#![allow(clippy::ptr_arg)]
 
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
-    storage_get, storage_set, log_info,
-    bytes_to_u64, u64_to_bytes, get_slot,
-};
+use moltchain_sdk::{bytes_to_u64, get_slot, log_info, storage_get, storage_set, u64_to_bytes};
 
 // ============================================================================
 // CONSTANTS
@@ -31,6 +32,8 @@ const MIN_REPUTATION: u64 = 500;
 const MIN_LISTING_LIQUIDITY: u64 = 100_000_000_000_000; // 100,000 MOLT ($10K at $0.10)
 const MIN_LISTING_HOLDERS: u64 = 10;
 const MAX_PROPOSALS: u64 = 500;
+
+const PREFERRED_QUOTE_KEY: &[u8] = b"gov_preferred_quote";
 
 // Proposal types
 const PROPOSAL_NEW_PAIR: u8 = 0;
@@ -57,29 +60,47 @@ const CORE_ADDRESS_KEY: &[u8] = b"gov_core_addr";
 // ============================================================================
 
 fn load_u64(key: &[u8]) -> u64 {
-    storage_get(key).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    storage_get(key)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0)
 }
-fn save_u64(key: &[u8], val: u64) { storage_set(key, &u64_to_bytes(val)); }
+fn save_u64(key: &[u8], val: u64) {
+    storage_set(key, &u64_to_bytes(val));
+}
 fn load_addr(key: &[u8]) -> [u8; 32] {
-    storage_get(key).map(|d| {
-        let mut a = [0u8; 32];
-        if d.len() >= 32 { a.copy_from_slice(&d[..32]); }
-        a
-    }).unwrap_or([0u8; 32])
+    storage_get(key)
+        .map(|d| {
+            let mut a = [0u8; 32];
+            if d.len() >= 32 {
+                a.copy_from_slice(&d[..32]);
+            }
+            a
+        })
+        .unwrap_or([0u8; 32])
 }
-fn is_zero(addr: &[u8; 32]) -> bool { addr.iter().all(|&b| b == 0) }
+fn is_zero(addr: &[u8; 32]) -> bool {
+    addr.iter().all(|&b| b == 0)
+}
 
 fn u64_to_decimal(mut n: u64) -> Vec<u8> {
-    if n == 0 { return alloc::vec![b'0']; }
+    if n == 0 {
+        return alloc::vec![b'0'];
+    }
     let mut buf = Vec::new();
-    while n > 0 { buf.push(b'0' + (n % 10) as u8); n /= 10; }
+    while n > 0 {
+        buf.push(b'0' + (n % 10) as u8);
+        n /= 10;
+    }
     buf.reverse();
     buf
 }
 fn hex_encode(bytes: &[u8]) -> Vec<u8> {
     let hex_chars: &[u8; 16] = b"0123456789abcdef";
     let mut out = Vec::with_capacity(bytes.len() * 2);
-    for &b in bytes { out.push(hex_chars[(b >> 4) as usize]); out.push(hex_chars[(b & 0x0f) as usize]); }
+    for &b in bytes {
+        out.push(hex_chars[(b >> 4) as usize]);
+        out.push(hex_chars[(b & 0x0f) as usize]);
+    }
     out
 }
 
@@ -102,12 +123,26 @@ fn vote_key(proposal_id: u64, voter: &[u8; 32]) -> Vec<u8> {
 // ============================================================================
 
 fn reentrancy_enter() -> bool {
-    if storage_get(REENTRANCY_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false) { return false; }
-    storage_set(REENTRANCY_KEY, &[1u8]); true
+    if storage_get(REENTRANCY_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    storage_set(REENTRANCY_KEY, &[1u8]);
+    true
 }
-fn reentrancy_exit() { storage_set(REENTRANCY_KEY, &[0u8]); }
-fn is_paused() -> bool { storage_get(PAUSED_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false) }
-fn require_not_paused() -> bool { !is_paused() }
+fn reentrancy_exit() {
+    storage_set(REENTRANCY_KEY, &[0u8]);
+}
+fn is_paused() -> bool {
+    storage_get(PAUSED_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
+}
+fn require_not_paused() -> bool {
+    !is_paused()
+}
 fn require_admin(caller: &[u8; 32]) -> bool {
     let admin = load_addr(ADMIN_KEY);
     !is_zero(&admin) && *caller == admin
@@ -133,9 +168,18 @@ fn require_admin(caller: &[u8; 32]) -> bool {
 const PROPOSAL_SIZE: usize = 120;
 
 fn encode_proposal(
-    proposer: &[u8; 32], proposal_id: u64, ptype: u8, status: u8,
-    created_slot: u64, end_slot: u64, yes_votes: u64, no_votes: u64,
-    pair_id: u64, evidence: &[u8; 32], maker_fee: i16, taker_fee: u16,
+    proposer: &[u8; 32],
+    proposal_id: u64,
+    ptype: u8,
+    status: u8,
+    created_slot: u64,
+    end_slot: u64,
+    yes_votes: u64,
+    no_votes: u64,
+    pair_id: u64,
+    evidence: &[u8; 32],
+    maker_fee: i16,
+    taker_fee: u16,
 ) -> Vec<u8> {
     let mut data = Vec::with_capacity(PROPOSAL_SIZE);
     data.extend_from_slice(proposer);
@@ -150,35 +194,69 @@ fn encode_proposal(
     data.extend_from_slice(evidence);
     data.extend_from_slice(&maker_fee.to_le_bytes());
     data.extend_from_slice(&taker_fee.to_le_bytes());
-    while data.len() < PROPOSAL_SIZE { data.push(0); }
+    while data.len() < PROPOSAL_SIZE {
+        data.push(0);
+    }
     data
 }
 
-fn decode_prop_status(data: &[u8]) -> u8 { if data.len() > 41 { data[41] } else { 0 } }
+fn decode_prop_status(data: &[u8]) -> u8 {
+    if data.len() > 41 {
+        data[41]
+    } else {
+        0
+    }
+}
 fn decode_prop_end_slot(data: &[u8]) -> u64 {
-    if data.len() >= 58 { bytes_to_u64(&data[50..58]) } else { 0 }
+    if data.len() >= 58 {
+        bytes_to_u64(&data[50..58])
+    } else {
+        0
+    }
 }
 fn decode_prop_yes(data: &[u8]) -> u64 {
-    if data.len() >= 66 { bytes_to_u64(&data[58..66]) } else { 0 }
+    if data.len() >= 66 {
+        bytes_to_u64(&data[58..66])
+    } else {
+        0
+    }
 }
 fn decode_prop_no(data: &[u8]) -> u64 {
-    if data.len() >= 74 { bytes_to_u64(&data[66..74]) } else { 0 }
+    if data.len() >= 74 {
+        bytes_to_u64(&data[66..74])
+    } else {
+        0
+    }
 }
-fn decode_prop_type(data: &[u8]) -> u8 { if data.len() > 40 { data[40] } else { 0 } }
+fn decode_prop_type(data: &[u8]) -> u8 {
+    if data.len() > 40 {
+        data[40]
+    } else {
+        0
+    }
+}
 fn decode_prop_proposer(data: &[u8]) -> [u8; 32] {
     let mut p = [0u8; 32];
-    if data.len() >= 32 { p.copy_from_slice(&data[..32]); }
+    if data.len() >= 32 {
+        p.copy_from_slice(&data[..32]);
+    }
     p
 }
 
 fn update_prop_status(data: &mut Vec<u8>, status: u8) {
-    if data.len() > 41 { data[41] = status; }
+    if data.len() > 41 {
+        data[41] = status;
+    }
 }
 fn update_prop_yes(data: &mut Vec<u8>, val: u64) {
-    if data.len() >= 66 { data[58..66].copy_from_slice(&u64_to_bytes(val)); }
+    if data.len() >= 66 {
+        data[58..66].copy_from_slice(&u64_to_bytes(val));
+    }
 }
 fn update_prop_no(data: &mut Vec<u8>, val: u64) {
-    if data.len() >= 74 { data[66..74].copy_from_slice(&u64_to_bytes(val)); }
+    if data.len() >= 74 {
+        data[66..74].copy_from_slice(&u64_to_bytes(val));
+    }
 }
 
 // ============================================================================
@@ -187,9 +265,13 @@ fn update_prop_no(data: &mut Vec<u8>, val: u64) {
 
 pub fn initialize(admin: *const u8) -> u32 {
     let existing = load_addr(ADMIN_KEY);
-    if !is_zero(&existing) { return 1; }
+    if !is_zero(&existing) {
+        return 1;
+    }
     let mut addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(admin, addr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(admin, addr.as_mut_ptr(), 32);
+    }
     storage_set(ADMIN_KEY, &addr);
     save_u64(PROPOSAL_COUNT_KEY, 0);
     storage_set(PAUSED_KEY, &[0u8]);
@@ -197,29 +279,87 @@ pub fn initialize(admin: *const u8) -> u32 {
     0
 }
 
+/// Set the preferred quote token (admin only).
+/// All new pair proposals will be validated against this address.
+/// Returns: 0=success, 1=not admin, 2=zero address
+pub fn set_preferred_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
+    let mut c = [0u8; 32];
+    let mut q = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(quote_addr, q.as_mut_ptr(), 32);
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
+    if is_zero(&q) {
+        return 2;
+    }
+    storage_set(PREFERRED_QUOTE_KEY, &q);
+    log_info("Preferred quote token set for governance");
+    0
+}
+
+/// Get the preferred quote token address
+pub fn get_preferred_quote() -> u64 {
+    let addr = load_addr(PREFERRED_QUOTE_KEY);
+    moltchain_sdk::set_return_data(&addr);
+    if is_zero(&addr) {
+        0
+    } else {
+        1
+    }
+}
+
 /// Propose a new trading pair
-/// Returns: 0=success, 1=paused, 2=max proposals, 3=reentrancy
-pub fn propose_new_pair(
-    proposer: *const u8, base_token: *const u8, _quote_token: *const u8,
-) -> u32 {
-    if !reentrancy_enter() { return 3; }
-    if !require_not_paused() { reentrancy_exit(); return 1; }
+/// Returns: 0=success, 1=paused, 2=max proposals, 3=reentrancy, 4=invalid quote
+pub fn propose_new_pair(proposer: *const u8, base_token: *const u8, quote_token: *const u8) -> u32 {
+    if !reentrancy_enter() {
+        return 3;
+    }
+    if !require_not_paused() {
+        reentrancy_exit();
+        return 1;
+    }
     let mut p = [0u8; 32];
     let mut bt = [0u8; 32];
+    let mut qt = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(proposer, p.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(base_token, bt.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(quote_token, qt.as_mut_ptr(), 32);
+    }
+
+    // Validate quote token matches preferred (mUSD) if set
+    let preferred = load_addr(PREFERRED_QUOTE_KEY);
+    if !is_zero(&preferred) && qt != preferred {
+        reentrancy_exit();
+        log_info("Proposal rejected: quote token must be preferred quote (mUSD)");
+        return 4;
     }
 
     let count = load_u64(PROPOSAL_COUNT_KEY);
-    if count >= MAX_PROPOSALS { reentrancy_exit(); return 2; }
+    if count >= MAX_PROPOSALS {
+        reentrancy_exit();
+        return 2;
+    }
 
     let current_slot = get_slot();
     let end_slot = current_slot + VOTING_PERIOD_SLOTS;
     let prop_id = count + 1;
     let data = encode_proposal(
-        &p, prop_id, PROPOSAL_NEW_PAIR, STATUS_ACTIVE,
-        current_slot, end_slot, 0, 0, 0, &bt, 0, 0,
+        &p,
+        prop_id,
+        PROPOSAL_NEW_PAIR,
+        STATUS_ACTIVE,
+        current_slot,
+        end_slot,
+        0,
+        0,
+        0,
+        &bt,
+        0,
+        0,
     );
     storage_set(&proposal_key(prop_id), &data);
     save_u64(PROPOSAL_COUNT_KEY, prop_id);
@@ -230,23 +370,45 @@ pub fn propose_new_pair(
 
 /// Propose a fee change for an existing pair
 pub fn propose_fee_change(
-    proposer: *const u8, pair_id: u64, new_maker_fee: i16, new_taker_fee: u16,
+    proposer: *const u8,
+    pair_id: u64,
+    new_maker_fee: i16,
+    new_taker_fee: u16,
 ) -> u32 {
-    if !reentrancy_enter() { return 3; }
-    if !require_not_paused() { reentrancy_exit(); return 1; }
+    if !reentrancy_enter() {
+        return 3;
+    }
+    if !require_not_paused() {
+        reentrancy_exit();
+        return 1;
+    }
     let mut p = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(proposer, p.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(proposer, p.as_mut_ptr(), 32);
+    }
 
     let count = load_u64(PROPOSAL_COUNT_KEY);
-    if count >= MAX_PROPOSALS { reentrancy_exit(); return 2; }
+    if count >= MAX_PROPOSALS {
+        reentrancy_exit();
+        return 2;
+    }
 
     let current_slot = get_slot();
     let end_slot = current_slot + VOTING_PERIOD_SLOTS;
     let prop_id = count + 1;
     let data = encode_proposal(
-        &p, prop_id, PROPOSAL_FEE_CHANGE, STATUS_ACTIVE,
-        current_slot, end_slot, 0, 0, pair_id, &[0u8; 32],
-        new_maker_fee, new_taker_fee,
+        &p,
+        prop_id,
+        PROPOSAL_FEE_CHANGE,
+        STATUS_ACTIVE,
+        current_slot,
+        end_slot,
+        0,
+        0,
+        pair_id,
+        &[0u8; 32],
+        new_maker_fee,
+        new_taker_fee,
     );
     storage_set(&proposal_key(prop_id), &data);
     save_u64(PROPOSAL_COUNT_KEY, prop_id);
@@ -258,25 +420,41 @@ pub fn propose_fee_change(
 /// Vote on a proposal
 /// Returns: 0=success, 1=not found, 2=voting ended, 3=already voted, 4=reentrancy
 pub fn vote(voter: *const u8, proposal_id: u64, approve: bool) -> u32 {
-    if !reentrancy_enter() { return 4; }
+    if !reentrancy_enter() {
+        return 4;
+    }
     let mut v = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(voter, v.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(voter, v.as_mut_ptr(), 32);
+    }
 
     let pk = proposal_key(proposal_id);
     let mut data = match storage_get(&pk) {
         Some(d) if d.len() >= PROPOSAL_SIZE => d,
-        _ => { reentrancy_exit(); return 1; }
+        _ => {
+            reentrancy_exit();
+            return 1;
+        }
     };
 
-    if decode_prop_status(&data) != STATUS_ACTIVE { reentrancy_exit(); return 1; }
+    if decode_prop_status(&data) != STATUS_ACTIVE {
+        reentrancy_exit();
+        return 1;
+    }
 
     let current_slot = get_slot();
     let end_slot = decode_prop_end_slot(&data);
-    if current_slot > end_slot { reentrancy_exit(); return 2; }
+    if current_slot > end_slot {
+        reentrancy_exit();
+        return 2;
+    }
 
     // Check if already voted
     let vk = vote_key(proposal_id, &v);
-    if storage_get(&vk).is_some() { reentrancy_exit(); return 3; }
+    if storage_get(&vk).is_some() {
+        reentrancy_exit();
+        return 3;
+    }
 
     // Record vote
     storage_set(&vk, &[if approve { 1u8 } else { 0u8 }]);
@@ -304,11 +482,15 @@ pub fn finalize_proposal(proposal_id: u64) -> u32 {
         _ => return 1,
     };
 
-    if decode_prop_status(&data) != STATUS_ACTIVE { return 3; }
+    if decode_prop_status(&data) != STATUS_ACTIVE {
+        return 3;
+    }
 
     let current_slot = get_slot();
     let end_slot = decode_prop_end_slot(&data);
-    if current_slot <= end_slot { return 2; }
+    if current_slot <= end_slot {
+        return 2;
+    }
 
     let yes = decode_prop_yes(&data);
     let no = decode_prop_no(&data);
@@ -327,7 +509,11 @@ pub fn finalize_proposal(proposal_id: u64) -> u32 {
     }
     storage_set(&pk, &data);
 
-    if passed { 0 } else { 1 }
+    if passed {
+        0
+    } else {
+        1
+    }
 }
 
 /// Execute a passed proposal (after timelock)
@@ -339,11 +525,15 @@ pub fn execute_proposal(proposal_id: u64) -> u32 {
         _ => return 1,
     };
 
-    if decode_prop_status(&data) != STATUS_PASSED { return 2; }
+    if decode_prop_status(&data) != STATUS_PASSED {
+        return 2;
+    }
 
     let current_slot = get_slot();
     let end_slot = decode_prop_end_slot(&data);
-    if current_slot < end_slot + EXECUTION_DELAY_SLOTS { return 3; }
+    if current_slot < end_slot + EXECUTION_DELAY_SLOTS {
+        return 3;
+    }
 
     // Execute — in production would cross-call dex_core
     update_prop_status(&mut data, STATUS_EXECUTED);
@@ -355,8 +545,12 @@ pub fn execute_proposal(proposal_id: u64) -> u32 {
 /// Emergency delist a pair (admin only, no governance needed)
 pub fn emergency_delist(caller: *const u8, pair_id: u64) -> u32 {
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
-    if !require_admin(&c) { return 1; }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
     // In production: cross-call dex_core to pause the pair
     // Store delist record
     let mut dk = Vec::from(&b"gov_delist_"[..]);
@@ -369,8 +563,12 @@ pub fn emergency_delist(caller: *const u8, pair_id: u64) -> u32 {
 /// Set listing requirements (admin only)
 pub fn set_listing_requirements(caller: *const u8, min_liquidity: u64, min_holders: u64) -> u32 {
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
-    if !require_admin(&c) { return 1; }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
     save_u64(b"gov_min_liq", min_liquidity);
     save_u64(b"gov_min_holders", min_holders);
     0
@@ -378,8 +576,12 @@ pub fn set_listing_requirements(caller: *const u8, min_liquidity: u64, min_holde
 
 pub fn emergency_pause(caller: *const u8) -> u32 {
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
-    if !require_admin(&c) { return 1; }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
     storage_set(PAUSED_KEY, &[1u8]);
     log_info("DEX Governance: EMERGENCY PAUSE");
     0
@@ -387,14 +589,20 @@ pub fn emergency_pause(caller: *const u8) -> u32 {
 
 pub fn emergency_unpause(caller: *const u8) -> u32 {
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
-    if !require_admin(&c) { return 1; }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
     storage_set(PAUSED_KEY, &[0u8]);
     0
 }
 
 // Queries
-pub fn get_proposal_count() -> u64 { load_u64(PROPOSAL_COUNT_KEY) }
+pub fn get_proposal_count() -> u64 {
+    load_u64(PROPOSAL_COUNT_KEY)
+}
 pub fn get_proposal_info(proposal_id: u64) -> u64 {
     let pk = proposal_key(proposal_id);
     match storage_get(&pk) {
@@ -411,11 +619,116 @@ pub fn get_proposal_info(proposal_id: u64) -> u64 {
 #[no_mangle]
 pub extern "C" fn call() {
     let args = moltchain_sdk::get_args();
-    if args.is_empty() { return; }
+    if args.is_empty() {
+        return;
+    }
     match args[0] {
         0 => {
             if args.len() >= 33 {
                 let r = initialize(args[1..33].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        1 => {
+            // propose_new_pair
+            if args.len() >= 1 + 32 + 32 + 32 {
+                let r = propose_new_pair(
+                    args[1..33].as_ptr(),
+                    args[33..65].as_ptr(),
+                    args[65..97].as_ptr(),
+                );
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        2 => {
+            // vote
+            if args.len() >= 1 + 32 + 8 + 1 {
+                let r = vote(
+                    args[1..33].as_ptr(),
+                    bytes_to_u64(&args[33..41]),
+                    args[41] != 0,
+                );
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        3 => {
+            // finalize_proposal
+            if args.len() >= 9 {
+                let r = finalize_proposal(bytes_to_u64(&args[1..9]));
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        4 => {
+            // execute_proposal
+            if args.len() >= 9 {
+                let r = execute_proposal(bytes_to_u64(&args[1..9]));
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        5 => {
+            // set_preferred_quote
+            if args.len() >= 1 + 32 + 32 {
+                let r = set_preferred_quote(args[1..33].as_ptr(), args[33..65].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        6 => {
+            // get_preferred_quote
+            get_preferred_quote();
+        }
+        7 => {
+            // get_proposal_count
+            moltchain_sdk::set_return_data(&u64_to_bytes(get_proposal_count()));
+        }
+        8 => {
+            // get_proposal_info
+            if args.len() >= 9 {
+                get_proposal_info(bytes_to_u64(&args[1..9]));
+            }
+        }
+        9 => {
+            // propose_fee_change
+            if args.len() >= 1 + 32 + 8 + 2 + 2 {
+                let maker = i16::from_le_bytes([args[41], args[42]]);
+                let taker = u16::from_le_bytes([args[43], args[44]]);
+                let r = propose_fee_change(
+                    args[1..33].as_ptr(),
+                    bytes_to_u64(&args[33..41]),
+                    maker,
+                    taker,
+                );
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        10 => {
+            // emergency_delist
+            if args.len() >= 1 + 32 + 8 {
+                let r = emergency_delist(args[1..33].as_ptr(), bytes_to_u64(&args[33..41]));
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        11 => {
+            // set_listing_requirements
+            if args.len() >= 1 + 32 + 8 + 8 {
+                let r = set_listing_requirements(
+                    args[1..33].as_ptr(),
+                    bytes_to_u64(&args[33..41]),
+                    bytes_to_u64(&args[41..49]),
+                );
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        12 => {
+            // emergency_pause
+            if args.len() >= 33 {
+                let r = emergency_pause(args[1..33].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        13 => {
+            // emergency_unpause
+            if args.len() >= 33 {
+                let r = emergency_unpause(args[1..33].as_ptr());
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
@@ -463,7 +776,10 @@ mod tests {
         let base = [10u8; 32];
         let quote = [20u8; 32];
         test_mock::set_slot(100);
-        assert_eq!(propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr()), 0);
+        assert_eq!(
+            propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr()),
+            0
+        );
         assert_eq!(get_proposal_count(), 1);
     }
 
@@ -542,10 +858,12 @@ mod tests {
 
         // 3 yes, 1 no → 75% > 66% → pass
         for i in 0u8..3 {
-            let mut v = [0u8; 32]; v[0] = 10 + i;
+            let mut v = [0u8; 32];
+            v[0] = 10 + i;
             vote(v.as_ptr(), 1, true);
         }
-        let mut v = [0u8; 32]; v[0] = 50;
+        let mut v = [0u8; 32];
+        v[0] = 50;
         vote(v.as_ptr(), 1, false);
 
         test_mock::set_slot(100 + VOTING_PERIOD_SLOTS + 1);
@@ -564,10 +882,12 @@ mod tests {
         propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr());
 
         // 1 yes, 3 no → 25% < 66% → reject
-        let mut v1 = [0u8; 32]; v1[0] = 10;
+        let mut v1 = [0u8; 32];
+        v1[0] = 10;
         vote(v1.as_ptr(), 1, true);
         for i in 0u8..3 {
-            let mut v = [0u8; 32]; v[0] = 50 + i;
+            let mut v = [0u8; 32];
+            v[0] = 50 + i;
             vote(v.as_ptr(), 1, false);
         }
 
@@ -597,7 +917,8 @@ mod tests {
         test_mock::set_slot(100);
         propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr());
 
-        let mut v = [0u8; 32]; v[0] = 10;
+        let mut v = [0u8; 32];
+        v[0] = 10;
         vote(v.as_ptr(), 1, true);
 
         test_mock::set_slot(100 + VOTING_PERIOD_SLOTS + 1);
@@ -649,7 +970,10 @@ mod tests {
         let proposer = [2u8; 32];
         let base = [10u8; 32];
         let quote = [20u8; 32];
-        assert_eq!(propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr()), 1);
+        assert_eq!(
+            propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr()),
+            1
+        );
     }
 
     #[test]
@@ -662,5 +986,70 @@ mod tests {
         propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr());
         assert_eq!(get_proposal_info(1), 1);
         assert_eq!(get_proposal_info(999), 0);
+    }
+
+    // --- Preferred quote currency (mUSD enforcement) ---
+
+    #[test]
+    fn test_set_preferred_quote_governance() {
+        let admin = setup();
+        let musd = [42u8; 32];
+        assert_eq!(set_preferred_quote(admin.as_ptr(), musd.as_ptr()), 0);
+        assert_eq!(get_preferred_quote(), 1); // 1 = set
+    }
+
+    #[test]
+    fn test_set_preferred_quote_not_admin_governance() {
+        let _admin = setup();
+        let non_admin = [99u8; 32];
+        let musd = [42u8; 32];
+        assert_eq!(set_preferred_quote(non_admin.as_ptr(), musd.as_ptr()), 1);
+    }
+
+    #[test]
+    fn test_set_preferred_quote_zero_address_governance() {
+        let admin = setup();
+        let zero = [0u8; 32];
+        assert_eq!(set_preferred_quote(admin.as_ptr(), zero.as_ptr()), 2);
+    }
+
+    #[test]
+    fn test_propose_pair_enforces_preferred_quote() {
+        let admin = setup();
+        let musd = [42u8; 32];
+        set_preferred_quote(admin.as_ptr(), musd.as_ptr());
+        let proposer = [2u8; 32];
+        let base = [10u8; 32];
+        test_mock::set_slot(100);
+        // Correct quote → success
+        assert_eq!(
+            propose_new_pair(proposer.as_ptr(), base.as_ptr(), musd.as_ptr()),
+            0
+        );
+        // Wrong quote → error 4
+        let wrong = [99u8; 32];
+        assert_eq!(
+            propose_new_pair(proposer.as_ptr(), base.as_ptr(), wrong.as_ptr()),
+            4
+        );
+    }
+
+    #[test]
+    fn test_propose_pair_no_preferred_allows_any() {
+        let _admin = setup();
+        let proposer = [2u8; 32];
+        let base = [10u8; 32];
+        let quote = [20u8; 32];
+        test_mock::set_slot(100);
+        assert_eq!(
+            propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr()),
+            0
+        );
+    }
+
+    #[test]
+    fn test_get_preferred_quote_unset_governance() {
+        let _admin = setup();
+        assert_eq!(get_preferred_quote(), 0); // 0 = not set
     }
 }

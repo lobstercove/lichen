@@ -1,5 +1,8 @@
 // DEX Analytics — On-Chain OHLCV, Volume Tracking, Leaderboards (DEEP hardened)
 //
+// All trading pairs are denominated in mUSD (preferred quote currency).
+// Prices and volumes are therefore expressed in mUSD units (6 decimals).
+//
 // Features:
 //   - OHLCV candle aggregation (1m, 5m, 15m, 1h, 4h, 1d)
 //   - 24h rolling stats per pair (volume, high, low, price change)
@@ -10,14 +13,16 @@
 
 #![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+#![allow(clippy::too_many_arguments)]
+#![allow(dead_code)]
+#![allow(clippy::ptr_arg)]
+#![allow(clippy::manual_is_multiple_of)]
 
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{
-    storage_get, storage_set, log_info,
-    bytes_to_u64, u64_to_bytes, get_slot,
-};
+use moltchain_sdk::{bytes_to_u64, get_slot, log_info, storage_get, storage_set, u64_to_bytes};
 
 // ============================================================================
 // CONSTANTS
@@ -32,15 +37,22 @@ const INTERVAL_4H: u64 = 14_400;
 const INTERVAL_1D: u64 = 86_400;
 
 // Max candles to keep per interval per pair
-const MAX_CANDLES_1M: u64 = 1_440;   // 24h
-const MAX_CANDLES_5M: u64 = 288;     // 24h
-const MAX_CANDLES_15M: u64 = 96;     // 24h
-const MAX_CANDLES_1H: u64 = 168;     // 7d
-const MAX_CANDLES_4H: u64 = 180;     // 30d
-const MAX_CANDLES_1D: u64 = 365;     // 1 year
+const MAX_CANDLES_1M: u64 = 1_440; // 24h
+const MAX_CANDLES_5M: u64 = 288; // 24h
+const MAX_CANDLES_15M: u64 = 96; // 24h
+const MAX_CANDLES_1H: u64 = 168; // 7d
+const MAX_CANDLES_4H: u64 = 180; // 30d
+const MAX_CANDLES_1D: u64 = 365; // 1 year
 
 const MAX_LEADERBOARD: u64 = 100;
-const INTERVALS: [u64; 6] = [INTERVAL_1M, INTERVAL_5M, INTERVAL_15M, INTERVAL_1H, INTERVAL_4H, INTERVAL_1D];
+const INTERVALS: [u64; 6] = [
+    INTERVAL_1M,
+    INTERVAL_5M,
+    INTERVAL_15M,
+    INTERVAL_1H,
+    INTERVAL_4H,
+    INTERVAL_1D,
+];
 
 // Storage keys
 const ADMIN_KEY: &[u8] = b"ana_admin";
@@ -52,33 +64,59 @@ const TRADE_RECORD_COUNT_KEY: &[u8] = b"ana_rec_count";
 // ============================================================================
 
 fn load_u64(key: &[u8]) -> u64 {
-    storage_get(key).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    storage_get(key)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0)
 }
-fn save_u64(key: &[u8], val: u64) { storage_set(key, &u64_to_bytes(val)); }
+fn save_u64(key: &[u8], val: u64) {
+    storage_set(key, &u64_to_bytes(val));
+}
 fn load_addr(key: &[u8]) -> [u8; 32] {
-    storage_get(key).map(|d| {
-        let mut a = [0u8; 32]; if d.len() >= 32 { a.copy_from_slice(&d[..32]); } a
-    }).unwrap_or([0u8; 32])
+    storage_get(key)
+        .map(|d| {
+            let mut a = [0u8; 32];
+            if d.len() >= 32 {
+                a.copy_from_slice(&d[..32]);
+            }
+            a
+        })
+        .unwrap_or([0u8; 32])
 }
-fn is_zero(addr: &[u8; 32]) -> bool { addr.iter().all(|&b| b == 0) }
+fn is_zero(addr: &[u8; 32]) -> bool {
+    addr.iter().all(|&b| b == 0)
+}
 
 fn u64_to_decimal(mut n: u64) -> Vec<u8> {
-    if n == 0 { return alloc::vec![b'0']; }
+    if n == 0 {
+        return alloc::vec![b'0'];
+    }
     let mut buf = Vec::new();
-    while n > 0 { buf.push(b'0' + (n % 10) as u8); n /= 10; }
-    buf.reverse(); buf
+    while n > 0 {
+        buf.push(b'0' + (n % 10) as u8);
+        n /= 10;
+    }
+    buf.reverse();
+    buf
 }
 fn hex_encode(bytes: &[u8]) -> Vec<u8> {
     let hex_chars: &[u8; 16] = b"0123456789abcdef";
     let mut out = Vec::with_capacity(bytes.len() * 2);
-    for &b in bytes { out.push(hex_chars[(b >> 4) as usize]); out.push(hex_chars[(b & 0x0f) as usize]); }
+    for &b in bytes {
+        out.push(hex_chars[(b >> 4) as usize]);
+        out.push(hex_chars[(b & 0x0f) as usize]);
+    }
     out
 }
 
 fn require_admin(caller: &[u8; 32]) -> bool {
-    let admin = load_addr(ADMIN_KEY); !is_zero(&admin) && *caller == admin
+    let admin = load_addr(ADMIN_KEY);
+    !is_zero(&admin) && *caller == admin
 }
-fn is_paused() -> bool { storage_get(PAUSED_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false) }
+fn is_paused() -> bool {
+    storage_get(PAUSED_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
+}
 
 // Key helpers
 fn candle_key(pair_id: u64, interval: u64, index: u64) -> Vec<u8> {
@@ -148,12 +186,48 @@ fn encode_candle(open: u64, high: u64, low: u64, close: u64, volume: u64, slot: 
     data
 }
 
-fn decode_candle_open(data: &[u8]) -> u64 { if data.len() >= 8 { bytes_to_u64(&data[0..8]) } else { 0 } }
-fn decode_candle_high(data: &[u8]) -> u64 { if data.len() >= 16 { bytes_to_u64(&data[8..16]) } else { 0 } }
-fn decode_candle_low(data: &[u8]) -> u64 { if data.len() >= 24 { bytes_to_u64(&data[16..24]) } else { 0 } }
-fn decode_candle_close(data: &[u8]) -> u64 { if data.len() >= 32 { bytes_to_u64(&data[24..32]) } else { 0 } }
-fn decode_candle_volume(data: &[u8]) -> u64 { if data.len() >= 40 { bytes_to_u64(&data[32..40]) } else { 0 } }
-fn decode_candle_slot(data: &[u8]) -> u64 { if data.len() >= 48 { bytes_to_u64(&data[40..48]) } else { 0 } }
+fn decode_candle_open(data: &[u8]) -> u64 {
+    if data.len() >= 8 {
+        bytes_to_u64(&data[0..8])
+    } else {
+        0
+    }
+}
+fn decode_candle_high(data: &[u8]) -> u64 {
+    if data.len() >= 16 {
+        bytes_to_u64(&data[8..16])
+    } else {
+        0
+    }
+}
+fn decode_candle_low(data: &[u8]) -> u64 {
+    if data.len() >= 24 {
+        bytes_to_u64(&data[16..24])
+    } else {
+        0
+    }
+}
+fn decode_candle_close(data: &[u8]) -> u64 {
+    if data.len() >= 32 {
+        bytes_to_u64(&data[24..32])
+    } else {
+        0
+    }
+}
+fn decode_candle_volume(data: &[u8]) -> u64 {
+    if data.len() >= 40 {
+        bytes_to_u64(&data[32..40])
+    } else {
+        0
+    }
+}
+fn decode_candle_slot(data: &[u8]) -> u64 {
+    if data.len() >= 48 {
+        bytes_to_u64(&data[40..48])
+    } else {
+        0
+    }
+}
 
 // ============================================================================
 // 24H STATS LAYOUT (48 bytes)
@@ -178,10 +252,34 @@ fn encode_stats(volume: u64, high: u64, low: u64, open: u64, close: u64, trades:
     data
 }
 
-fn decode_stats_volume(data: &[u8]) -> u64 { if data.len() >= 8 { bytes_to_u64(&data[0..8]) } else { 0 } }
-fn decode_stats_high(data: &[u8]) -> u64 { if data.len() >= 16 { bytes_to_u64(&data[8..16]) } else { 0 } }
-fn decode_stats_low(data: &[u8]) -> u64 { if data.len() >= 24 { bytes_to_u64(&data[16..24]) } else { 0 } }
-fn decode_stats_trades(data: &[u8]) -> u64 { if data.len() >= 48 { bytes_to_u64(&data[40..48]) } else { 0 } }
+fn decode_stats_volume(data: &[u8]) -> u64 {
+    if data.len() >= 8 {
+        bytes_to_u64(&data[0..8])
+    } else {
+        0
+    }
+}
+fn decode_stats_high(data: &[u8]) -> u64 {
+    if data.len() >= 16 {
+        bytes_to_u64(&data[8..16])
+    } else {
+        0
+    }
+}
+fn decode_stats_low(data: &[u8]) -> u64 {
+    if data.len() >= 24 {
+        bytes_to_u64(&data[16..24])
+    } else {
+        0
+    }
+}
+fn decode_stats_trades(data: &[u8]) -> u64 {
+    if data.len() >= 48 {
+        bytes_to_u64(&data[40..48])
+    } else {
+        0
+    }
+}
 
 // ============================================================================
 // TRADER STATS LAYOUT (32 bytes)
@@ -203,9 +301,27 @@ fn encode_trader_stats(volume: u64, trades: u64, pnl: u64, last_slot: u64) -> Ve
     data
 }
 
-fn decode_ts_volume(data: &[u8]) -> u64 { if data.len() >= 8 { bytes_to_u64(&data[0..8]) } else { 0 } }
-fn decode_ts_trades(data: &[u8]) -> u64 { if data.len() >= 16 { bytes_to_u64(&data[8..16]) } else { 0 } }
-fn decode_ts_pnl(data: &[u8]) -> u64 { if data.len() >= 24 { bytes_to_u64(&data[16..24]) } else { PNL_BIAS } }
+fn decode_ts_volume(data: &[u8]) -> u64 {
+    if data.len() >= 8 {
+        bytes_to_u64(&data[0..8])
+    } else {
+        0
+    }
+}
+fn decode_ts_trades(data: &[u8]) -> u64 {
+    if data.len() >= 16 {
+        bytes_to_u64(&data[8..16])
+    } else {
+        0
+    }
+}
+fn decode_ts_pnl(data: &[u8]) -> u64 {
+    if data.len() >= 24 {
+        bytes_to_u64(&data[16..24])
+    } else {
+        PNL_BIAS
+    }
+}
 
 // ============================================================================
 // PUBLIC FUNCTIONS
@@ -213,9 +329,13 @@ fn decode_ts_pnl(data: &[u8]) -> u64 { if data.len() >= 24 { bytes_to_u64(&data[
 
 pub fn initialize(admin: *const u8) -> u32 {
     let existing = load_addr(ADMIN_KEY);
-    if !is_zero(&existing) { return 1; }
+    if !is_zero(&existing) {
+        return 1;
+    }
     let mut addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(admin, addr.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(admin, addr.as_mut_ptr(), 32);
+    }
     storage_set(ADMIN_KEY, &addr);
     save_u64(TRADE_RECORD_COUNT_KEY, 0);
     storage_set(PAUSED_KEY, &[0u8]);
@@ -226,11 +346,15 @@ pub fn initialize(admin: *const u8) -> u32 {
 /// Record a trade (called by dex_core after settlement)
 /// Returns: 0=success
 pub fn record_trade(pair_id: u64, price: u64, volume: u64, trader: *const u8) -> u32 {
-    if price == 0 || volume == 0 { return 1; }
+    if price == 0 || volume == 0 {
+        return 1;
+    }
     let current_slot = get_slot();
 
     let mut t = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(trader, t.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(trader, t.as_mut_ptr(), 32);
+    }
 
     // Update last price
     save_u64(&last_price_key(pair_id), price);
@@ -268,8 +392,12 @@ fn update_24h_stats(pair_id: u64, price: u64, volume: u64) {
     };
 
     vol += volume;
-    if price > high { high = price; }
-    if price < low { low = price; }
+    if price > high {
+        high = price;
+    }
+    if price < low {
+        low = price;
+    }
     trades += 1;
 
     let stats = encode_stats(vol, high, low, open, price, trades);
@@ -285,7 +413,9 @@ fn update_candle(pair_id: u64, interval: u64, price: u64, volume: u64, current_s
     if stored_start == candle_start_slot {
         // Update existing candle
         let count = load_u64(&candle_count_key(pair_id, interval));
-        if count == 0 { return; }
+        if count == 0 {
+            return;
+        }
         let ck = candle_key(pair_id, interval, count);
         if let Some(mut data) = storage_get(&ck) {
             if data.len() >= CANDLE_SIZE {
@@ -293,8 +423,12 @@ fn update_candle(pair_id: u64, interval: u64, price: u64, volume: u64, current_s
                 let low = decode_candle_low(&data);
                 let vol = decode_candle_volume(&data);
 
-                if price > high { data[8..16].copy_from_slice(&u64_to_bytes(price)); }
-                if price < low { data[16..24].copy_from_slice(&u64_to_bytes(price)); }
+                if price > high {
+                    data[8..16].copy_from_slice(&u64_to_bytes(price));
+                }
+                if price < low {
+                    data[16..24].copy_from_slice(&u64_to_bytes(price));
+                }
                 data[24..32].copy_from_slice(&u64_to_bytes(price)); // close
                 data[32..40].copy_from_slice(&u64_to_bytes(vol + volume));
                 storage_set(&ck, &data);
@@ -315,7 +449,9 @@ fn update_trader_stats(trader: &[u8; 32], volume: u64, slot: u64) {
     let tk = trader_stats_key(trader);
     let (vol, trades, pnl) = match storage_get(&tk) {
         Some(d) if d.len() >= TRADER_STATS_SIZE => (
-            decode_ts_volume(&d), decode_ts_trades(&d), decode_ts_pnl(&d),
+            decode_ts_volume(&d),
+            decode_ts_trades(&d),
+            decode_ts_pnl(&d),
         ),
         _ => (0, 0, PNL_BIAS),
     };
@@ -330,7 +466,9 @@ fn update_trader_stats(trader: &[u8; 32], volume: u64, slot: u64) {
 /// Get OHLCV candles for a pair
 pub fn get_ohlcv(pair_id: u64, interval: u64, count: u64) -> u64 {
     let total = load_u64(&candle_count_key(pair_id, interval));
-    if total == 0 { return 0; }
+    if total == 0 {
+        return 0;
+    }
 
     let start = if count >= total { 1 } else { total - count + 1 };
     let mut result = Vec::new();
@@ -361,7 +499,9 @@ pub fn get_24h_stats(pair_id: u64) -> u64 {
 /// Get trader stats
 pub fn get_trader_stats(trader: *const u8) -> u64 {
     let mut t = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(trader, t.as_mut_ptr(), 32); }
+    unsafe {
+        core::ptr::copy_nonoverlapping(trader, t.as_mut_ptr(), 32);
+    }
     let tk = trader_stats_key(&t);
     match storage_get(&tk) {
         Some(d) if d.len() >= TRADER_STATS_SIZE => {
@@ -378,20 +518,30 @@ pub fn get_last_price(pair_id: u64) -> u64 {
 }
 
 /// Get total recorded trades
-pub fn get_record_count() -> u64 { load_u64(TRADE_RECORD_COUNT_KEY) }
+pub fn get_record_count() -> u64 {
+    load_u64(TRADE_RECORD_COUNT_KEY)
+}
 
 pub fn emergency_pause(caller: *const u8) -> u32 {
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
-    if !require_admin(&c) { return 1; }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
     storage_set(PAUSED_KEY, &[1u8]);
     log_info("DEX Analytics: EMERGENCY PAUSE");
     0
 }
 pub fn emergency_unpause(caller: *const u8) -> u32 {
     let mut c = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
-    if !require_admin(&c) { return 1; }
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
     storage_set(PAUSED_KEY, &[0u8]);
     0
 }
@@ -401,7 +551,9 @@ pub fn emergency_unpause(caller: *const u8) -> u32 {
 #[no_mangle]
 pub extern "C" fn call() {
     let args = moltchain_sdk::get_args();
-    if args.is_empty() { return; }
+    if args.is_empty() {
+        return;
+    }
     match args[0] {
         0 => {
             if args.len() >= 33 {
