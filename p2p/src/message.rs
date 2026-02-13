@@ -145,7 +145,7 @@ impl P2PMessage {
             sender,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
+                .unwrap_or_default()
                 .as_secs(),
         }
     }

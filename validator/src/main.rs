@@ -12,10 +12,10 @@ use moltchain_core::{
     GenesisWallet, Hash, Instruction, Keypair, MarketActivity, MarketActivityKind, Mempool,
     Message, NftActivity, NftActivityKind, ProgramCallActivity, Pubkey, SlashingEvidence,
     SlashingOffense, SlashingTracker, StakePool, StateStore, SymbolRegistryEntry, Transaction,
-    TxProcessor, ValidatorInfo, ValidatorSet, Vote, VoteAggregator, BASE_FEE,
-    CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, HEARTBEAT_BLOCK_REWARD,
-    MIN_VALIDATOR_STAKE, NFT_COLLECTION_FEE, NFT_MINT_FEE,
-    SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID, TRANSACTION_BLOCK_REWARD,
+    TxProcessor, ValidatorInfo, ValidatorSet, Vote, VoteAggregator, BASE_FEE, CONTRACT_DEPLOY_FEE,
+    CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, HEARTBEAT_BLOCK_REWARD, MIN_VALIDATOR_STAKE,
+    NFT_COLLECTION_FEE, NFT_MINT_FEE, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
+    TRANSACTION_BLOCK_REWARD,
 };
 use moltchain_p2p::{
     ConsistencyReportMsg, MessageType, P2PConfig, P2PMessage, P2PNetwork, SnapshotKind,
@@ -654,54 +654,88 @@ fn emit_program_and_nft_events(
                                 // Emit bridge events for lock/mint calls
                                 match function.as_str() {
                                     "lock" | "bridge_lock" => {
-                                        let sender = ix.accounts.first().map(|p| p.to_base58()).unwrap_or_default();
-                                        let recipient = ix.accounts.get(2).copied().unwrap_or(moltchain_core::Pubkey([0; 32]));
+                                        let sender = ix
+                                            .accounts
+                                            .first()
+                                            .map(|p| p.to_base58())
+                                            .unwrap_or_default();
+                                        let recipient = ix
+                                            .accounts
+                                            .get(2)
+                                            .copied()
+                                            .unwrap_or(moltchain_core::Pubkey([0; 32]));
                                         // Parse args from JSON bytes
-                                        let parsed = serde_json::from_slice::<serde_json::Value>(&args).unwrap_or_default();
-                                        let amount = parsed.get("amount")
-                                            .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+                                        let parsed =
+                                            serde_json::from_slice::<serde_json::Value>(&args)
+                                                .unwrap_or_default();
+                                        let amount = parsed
+                                            .get("amount")
+                                            .and_then(|v| {
+                                                v.as_u64().or_else(|| {
+                                                    v.as_str().and_then(|s| s.parse().ok())
+                                                })
+                                            })
                                             .unwrap_or(0);
-                                        let dest_chain = parsed.get("dest_chain")
+                                        let dest_chain = parsed
+                                            .get("dest_chain")
                                             .or_else(|| parsed.get("chain"))
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("unknown")
                                             .to_string();
-                                        let asset = parsed.get("asset")
+                                        let asset = parsed
+                                            .get("asset")
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("molt")
                                             .to_string();
-                                        let _ = ws_event_tx.send(moltchain_rpc::ws::Event::BridgeLock {
-                                            chain: dest_chain,
-                                            asset,
-                                            amount,
-                                            sender,
-                                            recipient,
-                                        });
+                                        let _ = ws_event_tx.send(
+                                            moltchain_rpc::ws::Event::BridgeLock {
+                                                chain: dest_chain,
+                                                asset,
+                                                amount,
+                                                sender,
+                                                recipient,
+                                            },
+                                        );
                                     }
                                     "mint" | "bridge_mint" => {
-                                        let recipient = ix.accounts.get(1).copied().unwrap_or(moltchain_core::Pubkey([0; 32]));
+                                        let recipient = ix
+                                            .accounts
+                                            .get(1)
+                                            .copied()
+                                            .unwrap_or(moltchain_core::Pubkey([0; 32]));
                                         // Parse args from JSON bytes
-                                        let parsed = serde_json::from_slice::<serde_json::Value>(&args).unwrap_or_default();
-                                        let amount = parsed.get("amount")
-                                            .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+                                        let parsed =
+                                            serde_json::from_slice::<serde_json::Value>(&args)
+                                                .unwrap_or_default();
+                                        let amount = parsed
+                                            .get("amount")
+                                            .and_then(|v| {
+                                                v.as_u64().or_else(|| {
+                                                    v.as_str().and_then(|s| s.parse().ok())
+                                                })
+                                            })
                                             .unwrap_or(0);
-                                        let source_chain = parsed.get("source_chain")
+                                        let source_chain = parsed
+                                            .get("source_chain")
                                             .or_else(|| parsed.get("chain"))
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("unknown")
                                             .to_string();
-                                        let asset = parsed.get("asset")
+                                        let asset = parsed
+                                            .get("asset")
                                             .and_then(|v| v.as_str())
                                             .unwrap_or("musd")
                                             .to_string();
                                         let tx_hash = hex::encode(tx.signature().0);
-                                        let _ = ws_event_tx.send(moltchain_rpc::ws::Event::BridgeMint {
-                                            chain: source_chain,
-                                            asset,
-                                            amount,
-                                            recipient,
-                                            tx_hash,
-                                        });
+                                        let _ = ws_event_tx.send(
+                                            moltchain_rpc::ws::Event::BridgeMint {
+                                                chain: source_chain,
+                                                asset,
+                                                amount,
+                                                recipient,
+                                                tx_hash,
+                                            },
+                                        );
                                     }
                                     _ => {}
                                 }
@@ -852,9 +886,13 @@ fn revert_block_effects(state: &StateStore, old_block: &Block) {
 
                     if let Ok(Some(mut treasury_account)) = state.get_account(&treasury_pubkey) {
                         treasury_account.shells = treasury_account.shells.saturating_add(debit);
-                        treasury_account.spendable = treasury_account.spendable.saturating_add(debit);
+                        treasury_account.spendable =
+                            treasury_account.spendable.saturating_add(debit);
                         if let Err(e) = state.put_account(&treasury_pubkey, &treasury_account) {
-                            warn!("revert_block_effects: failed to credit treasury fees: {}", e);
+                            warn!(
+                                "revert_block_effects: failed to credit treasury fees: {}",
+                                e
+                            );
                         }
                     }
                 }
@@ -864,10 +902,16 @@ fn revert_block_effects(state: &StateStore, old_block: &Block) {
 
     // Clear distribution hashes so apply_block_effects can run for the new block
     if let Err(e) = state.clear_reward_distribution_hash(slot) {
-        warn!("revert_block_effects: failed to clear reward hash for slot {}: {}", slot, e);
+        warn!(
+            "revert_block_effects: failed to clear reward hash for slot {}: {}",
+            slot, e
+        );
     }
     if let Err(e) = state.clear_fee_distribution_hash(slot) {
-        warn!("revert_block_effects: failed to clear fee hash for slot {}: {}", slot, e);
+        warn!(
+            "revert_block_effects: failed to clear fee hash for slot {}: {}",
+            slot, e
+        );
     }
 
     info!(
@@ -994,17 +1038,17 @@ async fn apply_block_effects(
                     MIN_VALIDATOR_STAKE
                 );
             } else {
-            let new_validator = ValidatorInfo {
-                pubkey: producer,
-                stake: stake_amount,
-                reputation: 100,
-                blocks_proposed: 1,
-                votes_cast: 0,
-                correct_votes: 0,
-                joined_slot: slot,
-                last_active_slot: slot,
-            };
-            vs.add_validator(new_validator);
+                let new_validator = ValidatorInfo {
+                    pubkey: producer,
+                    stake: stake_amount,
+                    reputation: 100,
+                    blocks_proposed: 1,
+                    votes_cast: 0,
+                    correct_votes: 0,
+                    joined_slot: slot,
+                    last_active_slot: slot,
+                };
+                vs.add_validator(new_validator);
             }
         }
 
@@ -1020,7 +1064,7 @@ async fn apply_block_effects(
     let block_hash = block.hash();
     if !skip_rewards {
         let reward_already = match state.get_reward_distribution_hash(slot) {
-            Ok(Some(_)) => true,  // per-slot guard: any reward for this slot = skip
+            Ok(Some(_)) => true, // per-slot guard: any reward for this slot = skip
             Ok(None) => false,
             Err(e) => {
                 warn!("⚠️  Failed to read reward distribution hash: {}", e);
@@ -1038,8 +1082,10 @@ async fn apply_block_effects(
             // 1. Check treasury can afford the reward BEFORE updating StakePool
             let treasury_pubkey = state.get_treasury_pubkey().ok().flatten();
             let can_afford = if let Some(ref tpk) = treasury_pubkey {
-                state.get_account(tpk)
-                    .ok().flatten()
+                state
+                    .get_account(tpk)
+                    .ok()
+                    .flatten()
                     .map(|a| a.shells >= reward_total)
                     .unwrap_or(false)
             } else {
@@ -1048,7 +1094,12 @@ async fn apply_block_effects(
 
             if !can_afford {
                 if let Some(ref tpk) = treasury_pubkey {
-                    let bal = state.get_account(tpk).ok().flatten().map(|a| a.shells).unwrap_or(0);
+                    let bal = state
+                        .get_account(tpk)
+                        .ok()
+                        .flatten()
+                        .map(|a| a.shells)
+                        .unwrap_or(0);
                     warn!(
                         "⚠️  Treasury balance {} < reward {}, skipping protocol reward",
                         bal, reward_total
@@ -1058,7 +1109,8 @@ async fn apply_block_effects(
                 // 2. Update StakePool (tracks rewards, vesting, bootstrap debt)
                 let (liquid, debt_payment, reward) = {
                     let mut pool = stake_pool.lock().await;
-                    let is_active = pool.get_stake(&producer)
+                    let is_active = pool
+                        .get_stake(&producer)
                         .map(|info| info.is_active)
                         .unwrap_or(false);
                     if !is_active {
@@ -1077,16 +1129,20 @@ async fn apply_block_effects(
                 // 3. Protocol-level balance transfer: treasury → producer
                 if reward > 0 {
                     if let Some(ref treasury_pubkey) = treasury_pubkey {
-                        let mut treasury_account = state.get_account(treasury_pubkey)
-                            .ok().flatten()
+                        let mut treasury_account = state
+                            .get_account(treasury_pubkey)
+                            .ok()
+                            .flatten()
                             .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
 
                         // Debit treasury: only the liquid portion leaves treasury
                         // Debt repayment is internal bookkeeping (reclassifies existing stake)
                         // H12 fix: when liquid==0, no treasury debit or producer credit needed
                         let debit_amount = liquid;
-                        treasury_account.shells = treasury_account.shells.saturating_sub(debit_amount);
-                        treasury_account.spendable = treasury_account.spendable.saturating_sub(debit_amount);
+                        treasury_account.shells =
+                            treasury_account.shells.saturating_sub(debit_amount);
+                        treasury_account.spendable =
+                            treasury_account.spendable.saturating_sub(debit_amount);
                         if let Err(e) = state.put_account(treasury_pubkey, &treasury_account) {
                             warn!("⚠️  Failed to debit treasury for block reward: {}", e);
                         }
@@ -1096,8 +1152,10 @@ async fn apply_block_effects(
                         // Fully vested: 100% liquid
                         // H12 fix: when liquid==0, credit nothing (was falling through to reward_total)
                         let credit_amount = liquid;
-                        let mut producer_account = state.get_account(&producer)
-                            .ok().flatten()
+                        let mut producer_account = state
+                            .get_account(&producer)
+                            .ok()
+                            .flatten()
                             .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
                         producer_account.add_spendable(credit_amount).unwrap_or_else(|e| {
                             warn!("\u{26a0}\u{fe0f}  Overflow crediting producer block reward: {}", e);
@@ -1107,7 +1165,11 @@ async fn apply_block_effects(
                         }
                     }
 
-                    let reward_type = if is_heartbeat { "heartbeat" } else { "transaction" };
+                    let reward_type = if is_heartbeat {
+                        "heartbeat"
+                    } else {
+                        "transaction"
+                    };
                     info!(
                         "💰 Block reward: {:.3} MOLT ({}) | liquid {:.3}, debt {:.3}",
                         reward as f64 / 1_000_000_000.0,
@@ -1186,9 +1248,11 @@ async fn apply_block_effects(
             Ok(Some(account)) => account,
             _ => Account::new(0, SYSTEM_ACCOUNT_OWNER),
         };
-        producer_account.add_spendable(producer_share).unwrap_or_else(|e| {
-            warn!("\u{26a0}\u{fe0f}  Overflow crediting producer fees: {}", e);
-        });
+        producer_account
+            .add_spendable(producer_share)
+            .unwrap_or_else(|e| {
+                warn!("\u{26a0}\u{fe0f}  Overflow crediting producer fees: {}", e);
+            });
         if let Err(e) = state.put_account(&producer, &producer_account) {
             warn!(
                 "⚠️  Failed to credit producer fees for {}: {}",
@@ -1310,37 +1374,37 @@ async fn apply_block_effects(
 /// Contract catalog: (directory_name, symbol, display_name, template)
 const GENESIS_CONTRACT_CATALOG: &[(&str, &str, &str, &str)] = &[
     // Core token
-    ("moltcoin",        "MOLT",         "MoltCoin",             "token"),
+    ("moltcoin", "MOLT", "MoltCoin", "token"),
     // Wrapped tokens
-    ("musd_token",      "MUSD",         "Wrapped USD",          "wrapped"),
-    ("wsol_token",      "WSOL",         "Wrapped SOL",          "wrapped"),
-    ("weth_token",      "WETH",         "Wrapped ETH",          "wrapped"),
+    ("musd_token", "MUSD", "Wrapped USD", "wrapped"),
+    ("wsol_token", "WSOL", "Wrapped SOL", "wrapped"),
+    ("weth_token", "WETH", "Wrapped ETH", "wrapped"),
     // DEX
-    ("dex_core",        "DEX",          "MoltChain DEX Core",   "dex"),
-    ("dex_amm",         "DEXAMM",       "DEX AMM Engine",       "dex"),
-    ("dex_router",      "DEXROUTER",    "DEX Smart Router",     "dex"),
-    ("dex_margin",      "DEXMARGIN",    "DEX Margin Trading",   "dex"),
-    ("dex_rewards",     "DEXREWARDS",   "DEX Reward Distributor","dex"),
-    ("dex_governance",  "DEXGOV",       "DEX Governance",       "dex"),
-    ("dex_analytics",   "ANALYTICS",    "DEX Analytics",        "dex"),
+    ("dex_core", "DEX", "MoltChain DEX Core", "dex"),
+    ("dex_amm", "DEXAMM", "DEX AMM Engine", "dex"),
+    ("dex_router", "DEXROUTER", "DEX Smart Router", "dex"),
+    ("dex_margin", "DEXMARGIN", "DEX Margin Trading", "dex"),
+    ("dex_rewards", "DEXREWARDS", "DEX Reward Distributor", "dex"),
+    ("dex_governance", "DEXGOV", "DEX Governance", "dex"),
+    ("dex_analytics", "ANALYTICS", "DEX Analytics", "dex"),
     // DeFi
-    ("moltswap",        "MOLTSWAP",     "MoltSwap AMM",         "defi"),
-    ("moltbridge",      "BRIDGE",       "MoltBridge",           "bridge"),
-    ("moltmarket",      "MARKET",       "MoltMarket",           "marketplace"),
-    ("moltoracle",      "ORACLE",       "MoltOracle",           "oracle"),
-    ("moltauction",     "AUCTION",      "MoltAuction",          "auction"),
-    ("moltdao",         "DAO",          "MoltDAO Governance",   "governance"),
-    ("lobsterlend",     "LEND",         "LobsterLend",          "lending"),
+    ("moltswap", "MOLTSWAP", "MoltSwap AMM", "defi"),
+    ("moltbridge", "BRIDGE", "MoltBridge", "bridge"),
+    ("moltmarket", "MARKET", "MoltMarket", "marketplace"),
+    ("moltoracle", "ORACLE", "MoltOracle", "oracle"),
+    ("moltauction", "AUCTION", "MoltAuction", "auction"),
+    ("moltdao", "DAO", "MoltDAO Governance", "governance"),
+    ("lobsterlend", "LEND", "LobsterLend", "lending"),
     // NFT / Identity
-    ("moltpunks",       "PUNKS",        "MoltPunks NFT",        "nft"),
-    ("moltyid",         "YID",          "MoltyID Identity",     "identity"),
+    ("moltpunks", "PUNKS", "MoltPunks NFT", "nft"),
+    ("moltyid", "YID", "MoltyID Identity", "identity"),
     // Infrastructure
-    ("clawpay",         "CLAWPAY",      "ClawPay Payments",     "payments"),
-    ("clawpump",        "CLAWPUMP",     "ClawPump Launchpad",   "launchpad"),
-    ("clawvault",       "CLAWVAULT",    "ClawVault",            "vault"),
-    ("bountyboard",     "BOUNTY",       "BountyBoard",          "bounty"),
-    ("compute_market",  "COMPUTE",      "Compute Market",       "compute"),
-    ("reef_storage",    "REEF",         "Reef Storage",         "storage"),
+    ("clawpay", "CLAWPAY", "ClawPay Payments", "payments"),
+    ("clawpump", "CLAWPUMP", "ClawPump Launchpad", "launchpad"),
+    ("clawvault", "CLAWVAULT", "ClawVault", "vault"),
+    ("bountyboard", "BOUNTY", "BountyBoard", "bounty"),
+    ("compute_market", "COMPUTE", "Compute Market", "compute"),
+    ("reef_storage", "REEF", "Reef Storage", "storage"),
 ];
 
 fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey) {
@@ -1358,9 +1422,15 @@ fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey) {
     let mut failed: usize = 0;
 
     for &(dir_name, symbol, display_name, template) in GENESIS_CONTRACT_CATALOG {
-        let wasm_path = contracts_dir.join(dir_name).join(format!("{}.wasm", dir_name));
+        let wasm_path = contracts_dir
+            .join(dir_name)
+            .join(format!("{}.wasm", dir_name));
         if !wasm_path.exists() {
-            warn!("  SKIP {}: WASM not found at {}", symbol, wasm_path.display());
+            warn!(
+                "  SKIP {}: WASM not found at {}",
+                symbol,
+                wasm_path.display()
+            );
             failed += 1;
             continue;
         }
@@ -1388,7 +1458,11 @@ fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey) {
 
         // Check if already deployed (idempotent)
         if let Ok(Some(_)) = state.get_account(&program_pubkey) {
-            info!("  SKIP {}: already deployed at {}", symbol, program_pubkey.to_base58());
+            info!(
+                "  SKIP {}: already deployed at {}",
+                symbol,
+                program_pubkey.to_base58()
+            );
             continue;
         }
 
@@ -1435,12 +1509,20 @@ fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey) {
             warn!("  WARN {}: register_symbol error: {}", symbol, e);
         }
 
-        info!("  OK   {} ({}) -> {}", symbol, display_name, program_pubkey.to_base58());
+        info!(
+            "  OK   {} ({}) -> {}",
+            symbol,
+            display_name,
+            program_pubkey.to_base58()
+        );
         deployed += 1;
     }
 
     info!("──────────────────────────────────────────────────────");
-    info!("  Genesis deploy complete: {} deployed, {} failed", deployed, failed);
+    info!(
+        "  Genesis deploy complete: {} deployed, {} failed",
+        deployed, failed
+    );
     info!("──────────────────────────────────────────────────────");
 }
 
@@ -1499,10 +1581,17 @@ fn main() {
         .with_max_level(tracing::Level::INFO)
         .init();
 
-    info!("🐺 MoltChain Supervisor started (max restarts: {})", max_restarts);
+    info!(
+        "🐺 MoltChain Supervisor started (max restarts: {})",
+        max_restarts
+    );
 
     loop {
-        info!("🚀 Launching validator (attempt {}/{})", restart_count + 1, max_restarts);
+        info!(
+            "🚀 Launching validator (attempt {}/{})",
+            restart_count + 1,
+            max_restarts
+        );
 
         let child_start = std::time::Instant::now();
         let mut child = std::process::Command::new(&exe)
@@ -1519,7 +1608,10 @@ fn main() {
         if runtime > Duration::from_secs(180) {
             backoff_secs = 1;
             restart_count = 0;
-            info!("🔄 Validator ran for {}s — resetting backoff", runtime.as_secs());
+            info!(
+                "🔄 Validator ran for {}s — resetting backoff",
+                runtime.as_secs()
+            );
         }
 
         match status.code() {
@@ -1568,7 +1660,10 @@ fn main() {
                     if let Some(sig) = status.signal() {
                         if sig == 15 || sig == 2 {
                             // SIGTERM or SIGINT — graceful shutdown
-                            info!("🛑 Validator terminated by signal {} — shutting down supervisor", sig);
+                            info!(
+                                "🛑 Validator terminated by signal {} — shutting down supervisor",
+                                sig
+                            );
                             break;
                         }
                         warn!("💥 Validator killed by signal {} — restarting", sig);
@@ -2064,7 +2159,10 @@ async fn run_validator() {
             let pubkey = match Pubkey::from_base58(&account_info.address) {
                 Ok(pk) => pk,
                 Err(e) => {
-                    warn!("Skipping initial account with invalid address {}: {e}", account_info.address);
+                    warn!(
+                        "Skipping initial account with invalid address {}: {e}",
+                        account_info.address
+                    );
                     continue;
                 }
             };
@@ -2201,7 +2299,8 @@ async fn run_validator() {
                 if let Ok(Some(mut genesis_acct)) = state.get_account(&genesis_pk) {
                     if genesis_acct.spendable >= reward_shells {
                         genesis_acct.shells = genesis_acct.shells.saturating_sub(reward_shells);
-                        genesis_acct.spendable = genesis_acct.spendable.saturating_sub(reward_shells);
+                        genesis_acct.spendable =
+                            genesis_acct.spendable.saturating_sub(reward_shells);
                         treasury_account.shells = reward_shells;
                         treasury_account.spendable = reward_shells;
                         state.put_account(&genesis_pk, &genesis_acct).ok();
@@ -2299,7 +2398,10 @@ async fn run_validator() {
                 let pubkey = match Pubkey::from_base58(&validator_info.pubkey) {
                     Ok(pk) => pk,
                     Err(e) => {
-                        warn!("Skipping initial validator with invalid pubkey {}: {e}", validator_info.pubkey);
+                        warn!(
+                            "Skipping initial validator with invalid pubkey {}: {e}",
+                            validator_info.pubkey
+                        );
                         continue;
                     }
                 };
@@ -2408,10 +2510,15 @@ async fn run_validator() {
                     treasury.deduct_spendable(bootstrap_shells).ok();
                     state.put_account(tpk, &treasury).ok();
                     funded = true;
-                    info!("💰 Bootstrap grant: {} MOLT deducted from treasury", bootstrap_molt);
+                    info!(
+                        "💰 Bootstrap grant: {} MOLT deducted from treasury",
+                        bootstrap_molt
+                    );
                 } else {
-                    warn!("⚠️  Treasury has insufficient funds for bootstrap grant ({} < {})",
-                        treasury.spendable, bootstrap_shells);
+                    warn!(
+                        "⚠️  Treasury has insufficient funds for bootstrap grant ({} < {})",
+                        treasury.spendable, bootstrap_shells
+                    );
                 }
             }
         }
@@ -2496,14 +2603,12 @@ async fn run_validator() {
     {
         let mut pool = stake_pool.lock().await;
         let current_slot = state.get_last_slot().unwrap_or(0);
-        let existing = pool.get_stake(&validator_pubkey)
+        let existing = pool
+            .get_stake(&validator_pubkey)
             .map(|s| s.amount)
             .unwrap_or(0);
         if existing >= MIN_VALIDATOR_STAKE {
-            info!(
-                "✅ Already staked: {} MOLT",
-                existing / 1_000_000_000
-            );
+            info!("✅ Already staked: {} MOLT", existing / 1_000_000_000);
         } else {
             pool.upsert_stake(validator_pubkey, MIN_VALIDATOR_STAKE, current_slot);
             info!(
@@ -2550,14 +2655,11 @@ async fn run_validator() {
     let (validator_announce_tx, mut validator_announce_rx) = mpsc::channel(100);
     let (block_range_request_tx, mut block_range_request_rx) = mpsc::channel(200);
     let (status_request_tx, mut status_request_rx) = mpsc::channel::<StatusRequestMsg>(100);
-    let (status_response_tx, mut status_response_rx) =
-        mpsc::channel::<StatusResponseMsg>(100);
+    let (status_response_tx, mut status_response_rx) = mpsc::channel::<StatusResponseMsg>(100);
     let (consistency_report_tx, mut consistency_report_rx) =
         mpsc::channel::<ConsistencyReportMsg>(50);
-    let (snapshot_request_tx, mut snapshot_request_rx) =
-        mpsc::channel::<SnapshotRequestMsg>(50);
-    let (snapshot_response_tx, mut snapshot_response_rx) =
-        mpsc::channel::<SnapshotResponseMsg>(50);
+    let (snapshot_request_tx, mut snapshot_request_rx) = mpsc::channel::<SnapshotRequestMsg>(50);
+    let (snapshot_response_tx, mut snapshot_response_rx) = mpsc::channel::<SnapshotResponseMsg>(50);
     let (slashing_evidence_tx, mut slashing_evidence_rx) =
         mpsc::channel::<moltchain_core::SlashingEvidence>(100);
 
@@ -2738,7 +2840,12 @@ async fn run_validator() {
                 // Handle genesis block specially (slot 0 when current is also 0)
                 if block_slot == 0 && current_slot == 0 {
                     // M3 fix: Prevent overwriting an existing genesis block
-                    if state_for_blocks.get_block_by_slot(0).ok().flatten().is_some() {
+                    if state_for_blocks
+                        .get_block_by_slot(0)
+                        .ok()
+                        .flatten()
+                        .is_some()
+                    {
                         warn!("⚠️  Ignoring duplicate genesis block from network");
                         continue;
                     }
@@ -2755,7 +2862,9 @@ async fn run_validator() {
                         // 1. Rent params from genesis config
                         state_for_blocks
                             .set_rent_params(
-                                genesis_config_for_blocks.features.rent_rate_shells_per_kb_month,
+                                genesis_config_for_blocks
+                                    .features
+                                    .rent_rate_shells_per_kb_month,
                                 genesis_config_for_blocks.features.rent_free_kb,
                             )
                             .ok();
@@ -2776,7 +2885,9 @@ async fn run_validator() {
                                 .saturating_sub(gc.features.fee_producer_percentage)
                                 .saturating_sub(gc.features.fee_voters_percentage),
                         };
-                        state_for_blocks.set_fee_config_full(&genesis_fee_config).ok();
+                        state_for_blocks
+                            .set_fee_config_full(&genesis_fee_config)
+                            .ok();
 
                         // 3. Extract pubkeys from genesis block transactions
                         //    tx[0]: Mint — accounts = [GENESIS_MINT_PUBKEY, genesis_pubkey]
@@ -2804,7 +2915,10 @@ async fn run_validator() {
                             let mut genesis_account = Account::new(total_supply_molt, gpk);
                             // Reduce genesis by reward pool (already transferred to treasury)
                             genesis_account.shells = total_shells.saturating_sub(reward_shells);
-                            genesis_account.spendable = genesis_account.shells.saturating_sub(genesis_account.staked).saturating_sub(genesis_account.locked);
+                            genesis_account.spendable = genesis_account
+                                .shells
+                                .saturating_sub(genesis_account.staked)
+                                .saturating_sub(genesis_account.locked);
                             state_for_blocks.put_account(&gpk, &genesis_account).ok();
                             state_for_blocks.set_genesis_pubkey(&gpk).ok();
                             info!("  ✓ [network genesis] Genesis account: {}", gpk.to_base58());
@@ -2816,7 +2930,10 @@ async fn run_validator() {
                                 treasury_account.spendable = reward_shells;
                                 state_for_blocks.put_account(&tpk, &treasury_account).ok();
                                 state_for_blocks.set_treasury_pubkey(&tpk).ok();
-                                info!("  ✓ [network genesis] Treasury account: {}", tpk.to_base58());
+                                info!(
+                                    "  ✓ [network genesis] Treasury account: {}",
+                                    tpk.to_base58()
+                                );
                             }
 
                             // 6. Create initial accounts from genesis config
@@ -2837,8 +2954,12 @@ async fn run_validator() {
 
                             info!("✅ Applied genesis block (slot 0) from network — full state initialized");
                         } else {
-                            warn!("⚠️  Genesis block has no mint tx — cannot extract genesis pubkey");
-                            info!("✅ Applied genesis block (slot 0) from network (state incomplete)");
+                            warn!(
+                                "⚠️  Genesis block has no mint tx — cannot extract genesis pubkey"
+                            );
+                            info!(
+                                "✅ Applied genesis block (slot 0) from network (state incomplete)"
+                            );
                         }
 
                         // Try to apply any pending blocks now that we have genesis
@@ -2847,8 +2968,10 @@ async fn run_validator() {
                             let pending_slot = pending_block.header.slot;
                             // Validate parent hash chain
                             let parent_ok = if pending_slot > 0 {
-                                state_for_blocks.get_block_by_slot(pending_slot - 1)
-                                    .ok().flatten()
+                                state_for_blocks
+                                    .get_block_by_slot(pending_slot - 1)
+                                    .ok()
+                                    .flatten()
                                     .map(|parent| parent.hash() == pending_block.header.parent_hash)
                                     .unwrap_or(false)
                             } else {
@@ -2941,9 +3064,13 @@ async fn run_validator() {
                                     let pending_slot = pending_block.header.slot;
                                     // Validate parent hash before applying
                                     let parent_ok = if pending_slot > 0 {
-                                        state_for_blocks.get_block_by_slot(pending_slot - 1)
-                                            .ok().flatten()
-                                            .map(|parent| parent.hash() == pending_block.header.parent_hash)
+                                        state_for_blocks
+                                            .get_block_by_slot(pending_slot - 1)
+                                            .ok()
+                                            .flatten()
+                                            .map(|parent| {
+                                                parent.hash() == pending_block.header.parent_hash
+                                            })
                                             .unwrap_or(false)
                                     } else {
                                         true
@@ -2952,7 +3079,10 @@ async fn run_validator() {
                                         warn!("\u{26a0}\u{fe0f}  Pending block {} parent hash mismatch, skipping", pending_slot);
                                         continue;
                                     }
-                                    replay_block_transactions(&processor_for_blocks, &pending_block);
+                                    replay_block_transactions(
+                                        &processor_for_blocks,
+                                        &pending_block,
+                                    );
                                     if state_for_blocks.put_block(&pending_block).is_ok() {
                                         state_for_blocks.set_last_slot(pending_slot).ok();
                                         *last_block_time_for_blocks.lock().await =
@@ -3093,9 +3223,14 @@ async fn run_validator() {
                                     for pending_block in pending {
                                         let pending_slot = pending_block.header.slot;
                                         let parent_ok = if pending_slot > 0 {
-                                            state_for_blocks.get_block_by_slot(pending_slot - 1)
-                                                .ok().flatten()
-                                                .map(|parent| parent.hash() == pending_block.header.parent_hash)
+                                            state_for_blocks
+                                                .get_block_by_slot(pending_slot - 1)
+                                                .ok()
+                                                .flatten()
+                                                .map(|parent| {
+                                                    parent.hash()
+                                                        == pending_block.header.parent_hash
+                                                })
                                                 .unwrap_or(false)
                                         } else {
                                             true
@@ -3104,12 +3239,18 @@ async fn run_validator() {
                                             warn!("⚠️  Pending block {} parent hash mismatch after fork adoption, skipping", pending_slot);
                                             continue;
                                         }
-                                        replay_block_transactions(&processor_for_blocks, &pending_block);
+                                        replay_block_transactions(
+                                            &processor_for_blocks,
+                                            &pending_block,
+                                        );
                                         if state_for_blocks.put_block(&pending_block).is_ok() {
                                             state_for_blocks.set_last_slot(pending_slot).ok();
                                             *last_block_time_for_blocks.lock().await =
                                                 std::time::Instant::now();
-                                            info!("✅ Applied pending block {} (after fork adoption)", pending_slot);
+                                            info!(
+                                                "✅ Applied pending block {} (after fork adoption)",
+                                                pending_slot
+                                            );
                                             apply_block_effects(
                                                 &state_for_blocks,
                                                 &validator_set_for_blocks,
@@ -3331,7 +3472,11 @@ async fn run_validator() {
                                 MIN_VALIDATOR_STAKE,
                                 announcement.current_slot,
                             ) {
-                                warn!("⚠️  Failed to stake joining validator {}: {}", announcement.pubkey.to_base58(), e);
+                                warn!(
+                                    "⚠️  Failed to stake joining validator {}: {}",
+                                    announcement.pubkey.to_base58(),
+                                    e
+                                );
                             }
                             info!(
                                 "💰 Staked joining validator {} in local pool ({} MOLT)",
@@ -3355,10 +3500,14 @@ async fn run_validator() {
                             // Deduct from treasury to avoid minting tokens ex nihilo
                             let mut funded = false;
                             if let Ok(Some(tpk)) = state_for_validators.get_treasury_pubkey() {
-                                if let Ok(Some(mut treasury)) = state_for_validators.get_account(&tpk) {
+                                if let Ok(Some(mut treasury)) =
+                                    state_for_validators.get_account(&tpk)
+                                {
                                     if treasury.spendable >= MIN_VALIDATOR_STAKE {
                                         treasury.deduct_spendable(MIN_VALIDATOR_STAKE).ok();
-                                        if let Err(e) = state_for_validators.put_account(&tpk, &treasury) {
+                                        if let Err(e) =
+                                            state_for_validators.put_account(&tpk, &treasury)
+                                        {
                                             warn!("⚠️  Failed to debit treasury for remote bootstrap: {}", e);
                                         } else {
                                             funded = true;
@@ -3389,7 +3538,10 @@ async fn run_validator() {
                                 if let Err(e) = state_for_validators
                                     .put_account(&announcement.pubkey, &bootstrap_account)
                                 {
-                                    warn!("⚠️  Failed to create bootstrap account for {}: {}", announcement.pubkey, e);
+                                    warn!(
+                                        "⚠️  Failed to create bootstrap account for {}: {}",
+                                        announcement.pubkey, e
+                                    );
                                 } else {
                                     info!(
                                         "💰 Created bootstrap account for validator {} (10000 MOLT staked, treasury debited)",
@@ -3461,7 +3613,9 @@ async fn run_validator() {
                             "⚠️  Banning peer {} — exceeded invalid request limit ({})",
                             request.requester, count
                         );
-                        for _ in 0..5 { peer_mgr_for_responses.record_violation(&request.requester); }
+                        for _ in 0..5 {
+                            peer_mgr_for_responses.record_violation(&request.requester);
+                        }
                     }
                     continue;
                 }
@@ -3494,7 +3648,9 @@ async fn run_validator() {
                             "⚠️  Banning peer {} — exceeded invalid request limit ({})",
                             request.requester, count
                         );
-                        for _ in 0..5 { peer_mgr_for_responses.record_violation(&request.requester); }
+                        for _ in 0..5 {
+                            peer_mgr_for_responses.record_violation(&request.requester);
+                        }
                     }
                     continue;
                 }
@@ -3589,7 +3745,9 @@ async fn run_validator() {
                 // C5 fix: use bounded update to prevent malicious slot inflation
                 // Cap at 500 slots ahead of current highest — enough for legitimate
                 // sync but prevents u64::MAX attacks on fork choice.
-                sync_mgr_for_status.note_seen_bounded(response.current_slot, 500).await;
+                sync_mgr_for_status
+                    .note_seen_bounded(response.current_slot, 500)
+                    .await;
                 debug!(
                     "📡 Peer {} reports slot {} ({} blocks)",
                     response.requester, response.current_slot, response.total_blocks
@@ -3752,13 +3910,17 @@ async fn run_validator() {
                                 // malicious peer from removing legitimate validators.
                                 let mut merged_count = 0u32;
                                 for remote_val in remote_set.validators() {
-                                    if let Some(local_val) = vs.get_validator_mut(&remote_val.pubkey) {
+                                    if let Some(local_val) =
+                                        vs.get_validator_mut(&remote_val.pubkey)
+                                    {
                                         // Update existing: prefer higher stats
                                         if remote_val.blocks_proposed > local_val.blocks_proposed {
                                             local_val.blocks_proposed = remote_val.blocks_proposed;
                                         }
-                                        if remote_val.last_active_slot > local_val.last_active_slot {
-                                            local_val.last_active_slot = remote_val.last_active_slot;
+                                        if remote_val.last_active_slot > local_val.last_active_slot
+                                        {
+                                            local_val.last_active_slot =
+                                                remote_val.last_active_slot;
                                             local_val.stake = remote_val.stake;
                                         }
                                         merged_count += 1;
@@ -3809,7 +3971,11 @@ async fn run_validator() {
                                     Some(local_entry) => entry.amount > local_entry.amount,
                                 };
                                 if should_upsert {
-                                    pool.upsert_stake(entry.validator, entry.amount, entry.last_reward_slot);
+                                    pool.upsert_stake(
+                                        entry.validator,
+                                        entry.amount,
+                                        entry.last_reward_slot,
+                                    );
                                     merged_count += 1;
 
                                     // Create bootstrap account for this validator if it doesn't exist locally
@@ -3819,16 +3985,24 @@ async fn run_validator() {
                                         .unwrap_or(None);
                                     let needs_bootstrap = match &existing_account {
                                         None => true,
-                                        Some(acct) => acct.staked == 0 && entry.amount >= MIN_VALIDATOR_STAKE,
+                                        Some(acct) => {
+                                            acct.staked == 0 && entry.amount >= MIN_VALIDATOR_STAKE
+                                        }
                                     };
                                     if needs_bootstrap {
                                         // Deduct from treasury — same as announce handler
                                         let mut funded = false;
-                                        if let Ok(Some(tpk)) = state_for_snapshot_apply.get_treasury_pubkey() {
-                                            if let Ok(Some(mut treasury)) = state_for_snapshot_apply.get_account(&tpk) {
+                                        if let Ok(Some(tpk)) =
+                                            state_for_snapshot_apply.get_treasury_pubkey()
+                                        {
+                                            if let Ok(Some(mut treasury)) =
+                                                state_for_snapshot_apply.get_account(&tpk)
+                                            {
                                                 if treasury.spendable >= entry.amount {
                                                     treasury.deduct_spendable(entry.amount).ok();
-                                                    if let Err(e) = state_for_snapshot_apply.put_account(&tpk, &treasury) {
+                                                    if let Err(e) = state_for_snapshot_apply
+                                                        .put_account(&tpk, &treasury)
+                                                    {
                                                         warn!("⚠️  Failed to debit treasury for snapshot bootstrap: {}", e);
                                                     } else {
                                                         funded = true;
@@ -3838,34 +4012,34 @@ async fn run_validator() {
                                         }
 
                                         if funded {
-                                        // Construct account directly with staked amount in shells
-                                        // (avoids MOLT<->shells rounding issues)
-                                        let mut bootstrap_account = Account {
-                                            shells: entry.amount,
-                                            spendable: 0,
-                                            staked: entry.amount,
-                                            locked: 0,
-                                            data: Vec::new(),
-                                            owner: SYSTEM_ACCOUNT_OWNER,
-                                            executable: false,
-                                            rent_epoch: 0,
-                                        };
-                                        // Preserve any existing spendable balance (from block rewards)
-                                        if let Some(existing) = &existing_account {
-                                            bootstrap_account.shells += existing.spendable;
-                                            bootstrap_account.spendable = existing.spendable;
-                                        }
-                                        if let Err(e) = state_for_snapshot_apply
-                                            .put_account(&entry.validator, &bootstrap_account)
-                                        {
-                                            warn!("⚠️  Failed to create bootstrap account for {}: {}", entry.validator, e);
-                                        } else {
-                                            info!(
+                                            // Construct account directly with staked amount in shells
+                                            // (avoids MOLT<->shells rounding issues)
+                                            let mut bootstrap_account = Account {
+                                                shells: entry.amount,
+                                                spendable: 0,
+                                                staked: entry.amount,
+                                                locked: 0,
+                                                data: Vec::new(),
+                                                owner: SYSTEM_ACCOUNT_OWNER,
+                                                executable: false,
+                                                rent_epoch: 0,
+                                            };
+                                            // Preserve any existing spendable balance (from block rewards)
+                                            if let Some(existing) = &existing_account {
+                                                bootstrap_account.shells += existing.spendable;
+                                                bootstrap_account.spendable = existing.spendable;
+                                            }
+                                            if let Err(e) = state_for_snapshot_apply
+                                                .put_account(&entry.validator, &bootstrap_account)
+                                            {
+                                                warn!("⚠️  Failed to create bootstrap account for {}: {}", entry.validator, e);
+                                            } else {
+                                                info!(
                                                 "💰 Created bootstrap account for validator {} ({:.4} MOLT staked, treasury debited)",
                                                 entry.validator,
                                                 entry.amount as f64 / 1_000_000_000.0
                                             );
-                                        }
+                                            }
                                         } else {
                                             warn!("⚠️  Insufficient treasury to bootstrap validator {} from snapshot ({:.4} MOLT needed)",
                                                 entry.validator, entry.amount as f64 / 1_000_000_000.0);
@@ -3914,7 +4088,9 @@ async fn run_validator() {
                 8899
             } else {
                 let offset = p2p_port % 1000;
-                8900u16.saturating_add(offset.saturating_mul(2)).saturating_add(1)
+                8900u16
+                    .saturating_add(offset.saturating_mul(2))
+                    .saturating_add(1)
             }
         });
 
@@ -3928,7 +4104,9 @@ async fn run_validator() {
                 8900
             } else {
                 let offset = p2p_port % 1000;
-                8900u16.saturating_add(offset.saturating_mul(2)).saturating_add(2)
+                8900u16
+                    .saturating_add(offset.saturating_mul(2))
+                    .saturating_add(2)
             }
         });
 
@@ -4035,7 +4213,10 @@ async fn run_validator() {
                 result
             }
             Err(e) => {
-                error!("Failed to start WebSocket server: {} — continuing without WebSocket", e);
+                error!(
+                    "Failed to start WebSocket server: {} — continuing without WebSocket",
+                    e
+                );
                 // Create a dummy broadcast channel so the rest of the code can send events
                 // without checking — receivers simply don't exist.
                 let (dummy_tx, _) = tokio::sync::broadcast::channel::<moltchain_rpc::ws::Event>(1);
@@ -4050,7 +4231,11 @@ async fn run_validator() {
         "Block time: {}ms",
         genesis_config.consensus.slot_duration_ms
     );
-    info!("Base fee: {} shells ({:.5} MOLT)", BASE_FEE, BASE_FEE as f64 / 1_000_000_000.0);
+    info!(
+        "Base fee: {} shells ({:.5} MOLT)",
+        BASE_FEE,
+        BASE_FEE as f64 / 1_000_000_000.0
+    );
     info!("Fee split: 50% burned, 30% producer, 10% voters, 10% treasury");
     info!("Leader selection: stake + contribution weighted");
 
@@ -4191,7 +4376,11 @@ async fn run_validator() {
                             Some(local) => entry.amount > local.amount,
                         };
                         if should_upsert {
-                            pool.upsert_stake(entry.validator, entry.amount, entry.last_reward_slot);
+                            pool.upsert_stake(
+                                entry.validator,
+                                entry.amount,
+                                entry.last_reward_slot,
+                            );
                         }
                     }
                     info!("🔄 Stake pool reconciled from state");
@@ -4380,16 +4569,21 @@ async fn run_validator() {
             let elapsed = last_block_time_for_watchdog.lock().await.elapsed();
             let current_slot = state_for_watchdog.get_last_slot().unwrap_or(0);
 
-            if elapsed > Duration::from_secs(watchdog_timeout_secs) && current_slot == last_known_slot {
+            if elapsed > Duration::from_secs(watchdog_timeout_secs)
+                && current_slot == last_known_slot
+            {
                 stale_checks += 1;
                 warn!(
                     "🐺 Watchdog: no block activity for {:.0}s (stale {}/{})",
-                    elapsed.as_secs_f64(), stale_checks, threshold
+                    elapsed.as_secs_f64(),
+                    stale_checks,
+                    threshold
                 );
                 if stale_checks >= threshold {
                     error!(
                         "🐺 Watchdog: validator stalled for {}s — triggering restart (exit {})",
-                        elapsed.as_secs(), EXIT_CODE_RESTART
+                        elapsed.as_secs(),
+                        EXIT_CODE_RESTART
                     );
                     std::process::exit(EXIT_CODE_RESTART);
                 }
@@ -4586,7 +4780,10 @@ async fn run_validator() {
         let current_slot_check = state.get_last_slot().unwrap_or(0);
         if slot <= current_slot_check {
             slot = current_slot_check + 1;
-            warn!("⚠️  Slot adjusted to {} (was behind chain head {})", slot, current_slot_check);
+            warn!(
+                "⚠️  Slot adjusted to {} (was behind chain head {})",
+                slot, current_slot_check
+            );
         }
         if current_slot_check > 0 {
             if let Ok(Some(latest_block)) = state.get_block_by_slot(current_slot_check) {

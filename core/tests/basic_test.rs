@@ -14,7 +14,7 @@ fn test_pubkey_base58() {
     let keypair = Keypair::new();
     let pubkey = keypair.pubkey();
     let base58 = pubkey.to_base58();
-    assert!(base58.len() > 0);
+    assert!(!base58.is_empty());
 }
 
 #[test]
@@ -115,7 +115,7 @@ fn test_validator_set() {
         joined_slot: 0,
     });
 
-    assert!(set.validators().len() >= 1);
+    assert!(!set.validators().is_empty());
     assert!(set.total_voting_weight() > 0);
 }
 
@@ -125,5 +125,4 @@ fn test_tx_processor_init() {
     let state = StateStore::open(temp.path()).unwrap();
     let _processor = TxProcessor::new(state);
     // Just verify it compiles and initializes
-    assert!(true);
 }

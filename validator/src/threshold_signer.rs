@@ -85,7 +85,11 @@ pub async fn start_signer_server(bind: SocketAddr, data_dir: &Path) {
     let listener = match tokio::net::TcpListener::bind(bind).await {
         Ok(l) => l,
         Err(e) => {
-            tracing::error!("threshold signer failed to bind {}: {} — signer disabled", bind, e);
+            tracing::error!(
+                "threshold signer failed to bind {}: {} — signer disabled",
+                bind,
+                e
+            );
             return;
         }
     };

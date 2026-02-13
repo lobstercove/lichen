@@ -95,9 +95,9 @@ fn decrypt_aes_gcm(encrypted: &[u8], key: &[u8; 32]) -> Result<Vec<u8>> {
     let nonce = Nonce::from_slice(&encrypted[..12]);
     let ciphertext = &encrypted[12..];
     let cipher = Aes256Gcm::new_from_slice(key).expect("Invalid AES key length");
-    cipher
-        .decrypt(nonce, ciphertext)
-        .map_err(|_| anyhow::anyhow!("AES-GCM decryption failed \u{2014} wrong password or corrupted data"))
+    cipher.decrypt(nonce, ciphertext).map_err(|_| {
+        anyhow::anyhow!("AES-GCM decryption failed \u{2014} wrong password or corrupted data")
+    })
 }
 
 impl KeypairFile {

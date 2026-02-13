@@ -95,8 +95,8 @@ impl ShieldedPool {
 
         // Compute expected HMAC: SHA256(commitment_root || type_tag || commitment_hash || nonce)
         let mut hasher = Sha256::new();
-        hasher.update(&self.commitment_root);
-        hasher.update(&[type_tag]);
+        hasher.update(self.commitment_root);
+        hasher.update([type_tag]);
         hasher.update(commitment_hash);
         hasher.update(nonce);
         let expected_hmac = hasher.finalize();
@@ -197,9 +197,9 @@ mod tests {
         // Compute HMAC: SHA256(commitment_root || type_tag || commitment_hash || nonce)
         let mut hasher = Sha256::new();
         hasher.update(commitment_root);
-        hasher.update(&[type_tag]);
-        hasher.update(&commitment_hash);
-        hasher.update(&nonce);
+        hasher.update([type_tag]);
+        hasher.update(commitment_hash);
+        hasher.update(nonce);
         let hmac = hasher.finalize();
 
         let mut data = Vec::with_capacity(81);

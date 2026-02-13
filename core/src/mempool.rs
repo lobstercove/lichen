@@ -126,7 +126,7 @@ impl Mempool {
 
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
+            .unwrap_or_default()
             .as_secs();
 
         let prioritized = PrioritizedTransaction {
@@ -208,7 +208,7 @@ impl Mempool {
     pub fn cleanup_expired(&mut self) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
+            .unwrap_or_default()
             .as_secs();
 
         // Clean regular queue

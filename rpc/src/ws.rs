@@ -13,8 +13,8 @@ use axum::{
 use moltchain_core::{Block, MarketActivity, Pubkey, StateStore, Transaction};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{error, info, warn};
 
@@ -72,16 +72,47 @@ pub enum Event {
     Slot(u64),
     Block(Block),
     Transaction(Transaction),
-    AccountChange { pubkey: Pubkey, balance: u64 },
-    Log { contract: Pubkey, message: String },
-    ProgramUpdate { program: Pubkey, kind: String },
-    ProgramCall { program: Pubkey },
-    NftMint { collection: Pubkey },
-    NftTransfer { collection: Pubkey },
-    MarketListing { activity: MarketActivity },
-    MarketSale { activity: MarketActivity },
-    BridgeLock { chain: String, asset: String, amount: u64, sender: String, recipient: Pubkey },
-    BridgeMint { chain: String, asset: String, amount: u64, recipient: Pubkey, tx_hash: String },
+    AccountChange {
+        pubkey: Pubkey,
+        balance: u64,
+    },
+    Log {
+        contract: Pubkey,
+        message: String,
+    },
+    ProgramUpdate {
+        program: Pubkey,
+        kind: String,
+    },
+    ProgramCall {
+        program: Pubkey,
+    },
+    NftMint {
+        collection: Pubkey,
+    },
+    NftTransfer {
+        collection: Pubkey,
+    },
+    MarketListing {
+        activity: MarketActivity,
+    },
+    MarketSale {
+        activity: MarketActivity,
+    },
+    BridgeLock {
+        chain: String,
+        asset: String,
+        amount: u64,
+        sender: String,
+        recipient: Pubkey,
+    },
+    BridgeMint {
+        chain: String,
+        asset: String,
+        amount: u64,
+        recipient: Pubkey,
+        tx_hash: String,
+    },
 }
 
 /// Subscription manager
@@ -196,7 +227,10 @@ pub async fn start_ws_server(
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<WsState>) -> Response {
     let current = state.active_connections.load(Ordering::Relaxed);
     if current >= MAX_WS_CONNECTIONS {
-        warn!("WebSocket connection limit reached ({}/{}), rejecting", current, MAX_WS_CONNECTIONS);
+        warn!(
+            "WebSocket connection limit reached ({}/{}), rejecting",
+            current, MAX_WS_CONNECTIONS
+        );
         return Response::builder()
             .status(503)
             .body(axum::body::Body::from("Too many WebSocket connections"))
@@ -800,7 +834,13 @@ fn create_notification(sub_id: u64, event: &Event) -> Notification {
         }),
         Event::MarketListing { activity } => market_activity_json(activity, "MarketListing"),
         Event::MarketSale { activity } => market_activity_json(activity, "MarketSale"),
-        Event::BridgeLock { chain, asset, amount, sender, recipient } => serde_json::json!({
+        Event::BridgeLock {
+            chain,
+            asset,
+            amount,
+            sender,
+            recipient,
+        } => serde_json::json!({
             "event": "BridgeLock",
             "chain": chain,
             "asset": asset,
@@ -809,7 +849,13 @@ fn create_notification(sub_id: u64, event: &Event) -> Notification {
             "sender": sender,
             "recipient": recipient.to_base58(),
         }),
-        Event::BridgeMint { chain, asset, amount, recipient, tx_hash } => serde_json::json!({
+        Event::BridgeMint {
+            chain,
+            asset,
+            amount,
+            recipient,
+            tx_hash,
+        } => serde_json::json!({
             "event": "BridgeMint",
             "chain": chain,
             "asset": asset,
@@ -839,6 +885,5 @@ mod tests {
     #[test]
     fn test_subscription_manager() {
         // Just ensure the module compiles
-        assert!(true);
     }
 }

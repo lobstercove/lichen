@@ -6,7 +6,7 @@ use moltchain_core::{
     SlashingOffense, SlashingTracker, StateStore, Transaction, TxProcessor, ValidatorInfo,
     ValidatorSet, Vote, BASE_FEE, SYSTEM_PROGRAM_ID,
 };
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 use tempfile::TempDir;
 
 fn create_test_state() -> (StateStore, TempDir, Hash) {

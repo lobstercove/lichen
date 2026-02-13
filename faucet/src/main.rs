@@ -87,8 +87,10 @@ impl RateLimiter {
             .unwrap_or_default()
             .as_secs();
         let day_seconds: u64 = 86400;
-        self.ip_usage.retain(|_, (last_req, _, _)| now - *last_req < day_seconds);
-        self.address_requests.retain(|_, last_req| now - *last_req < day_seconds);
+        self.ip_usage
+            .retain(|_, (last_req, _, _)| now - *last_req < day_seconds);
+        self.address_requests
+            .retain(|_, last_req| now - *last_req < day_seconds);
     }
 
     fn check_and_record(
@@ -104,7 +106,7 @@ impl RateLimiter {
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
+            .unwrap_or_default()
             .as_secs();
 
         let day_seconds: u64 = 86400;
@@ -160,8 +162,8 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     // Load config from environment
-    let airdrops_file = std::env::var("AIRDROPS_FILE")
-        .unwrap_or_else(|_| "airdrops.json".to_string());
+    let airdrops_file =
+        std::env::var("AIRDROPS_FILE").unwrap_or_else(|_| "airdrops.json".to_string());
 
     let config = FaucetConfig {
         rpc_url: std::env::var("RPC_URL").unwrap_or_else(|_| "http://localhost:8899".to_string()),
@@ -221,7 +223,10 @@ async fn main() {
     info!("💧 MoltChain Faucet Service starting on {}", addr);
     info!("   Network: {}", state.config.network);
     info!("   Max per request: {} MOLT", state.config.max_per_request);
-    info!("   Daily limit per IP: {} MOLT", state.config.daily_limit_per_ip);
+    info!(
+        "   Daily limit per IP: {} MOLT",
+        state.config.daily_limit_per_ip
+    );
     info!("   Cooldown: {} seconds", state.config.cooldown_seconds);
     info!("   RPC URL: {}", state.config.rpc_url);
 
@@ -325,7 +330,10 @@ async fn faucet_request_handler(
         Ok(result) => {
             info!("✅ Airdropped {} MOLT to {}", req.amount, req.address);
 
-            let timestamp_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
+            let timestamp_ms = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
             let sig = format!("airdrop-{}", timestamp_ms);
 
             // Record airdrop for history API
@@ -400,11 +408,17 @@ async fn request_airdrop(rpc_url: &str, address: &str, amount_molt: u64) -> Resu
     let data: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
 
     if let Some(error) = data.get("error") {
-        return Err(format!("RPC error: {}", error["message"].as_str().unwrap_or("unknown")));
+        return Err(format!(
+            "RPC error: {}",
+            error["message"].as_str().unwrap_or("unknown")
+        ));
     }
 
     let result = &data["result"];
-    let msg = result["message"].as_str().unwrap_or("Airdrop completed").to_string();
+    let msg = result["message"]
+        .as_str()
+        .unwrap_or("Airdrop completed")
+        .to_string();
     Ok(msg)
 }
 

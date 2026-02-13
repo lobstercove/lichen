@@ -229,7 +229,8 @@ impl P2PNetwork {
                     block.header.slot, peer_addr
                 );
                 self.block_tx
-                    .send(block).await
+                    .send(block)
+                    .await
                     .map_err(|_| "Failed to send block to validator".to_string())?;
             }
 
@@ -239,14 +240,16 @@ impl P2PNetwork {
                     vote.slot, peer_addr
                 );
                 self.vote_tx
-                    .send(vote).await
+                    .send(vote)
+                    .await
                     .map_err(|_| "Failed to send vote to validator".to_string())?;
             }
 
             MessageType::Transaction(tx) => {
                 info!("🦞 P2P: Received transaction from {}", peer_addr);
                 self.transaction_tx
-                    .send(tx).await
+                    .send(tx)
+                    .await
                     .map_err(|_| "Failed to send transaction to validator".to_string())?;
             }
 
@@ -269,7 +272,7 @@ impl P2PNetwork {
                         address: *addr,
                         last_seen: std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
+                            .unwrap_or_default()
                             .as_secs(),
                         reputation: 500,
                         validator_pubkey: None, // Populated when validator identity is known
@@ -301,7 +304,8 @@ impl P2PNetwork {
                     requester: peer_addr,
                 };
                 self.block_range_request_tx
-                    .send(request).await
+                    .send(request)
+                    .await
                     .map_err(|_| "Failed to forward block request".to_string())?;
             }
 
@@ -320,7 +324,8 @@ impl P2PNetwork {
                     requester: peer_addr,
                 };
                 self.block_range_request_tx
-                    .send(request).await
+                    .send(request)
+                    .await
                     .map_err(|_| "Failed to send block range request".to_string())?;
             }
 
@@ -330,7 +335,8 @@ impl P2PNetwork {
                     block.header.slot, peer_addr
                 );
                 self.block_tx
-                    .send(block).await
+                    .send(block)
+                    .await
                     .map_err(|_| "Failed to send block to validator".to_string())?;
             }
 
@@ -342,7 +348,8 @@ impl P2PNetwork {
                 );
                 for block in blocks {
                     self.block_tx
-                        .send(block).await
+                        .send(block)
+                        .await
                         .map_err(|_| "Failed to send block to validator".to_string())?;
                 }
             }
@@ -353,7 +360,8 @@ impl P2PNetwork {
                     requester: peer_addr,
                 };
                 self.status_request_tx
-                    .send(request).await
+                    .send(request)
+                    .await
                     .map_err(|_| "Failed to forward status request".to_string())?;
             }
 
@@ -371,7 +379,8 @@ impl P2PNetwork {
                     total_blocks,
                 };
                 self.status_response_tx
-                    .send(response).await
+                    .send(response)
+                    .await
                     .map_err(|_| "Failed to forward status response".to_string())?;
             }
 
@@ -385,7 +394,8 @@ impl P2PNetwork {
                     stake_pool_hash,
                 };
                 self.consistency_report_tx
-                    .send(report).await
+                    .send(report)
+                    .await
                     .map_err(|_| "Failed to forward consistency report".to_string())?;
             }
 
@@ -395,7 +405,8 @@ impl P2PNetwork {
                     kind,
                 };
                 self.snapshot_request_tx
-                    .send(request).await
+                    .send(request)
+                    .await
                     .map_err(|_| "Failed to forward snapshot request".to_string())?;
             }
 
@@ -411,7 +422,8 @@ impl P2PNetwork {
                     stake_pool,
                 };
                 self.snapshot_response_tx
-                    .send(response).await
+                    .send(response)
+                    .await
                     .map_err(|_| "Failed to forward snapshot response".to_string())?;
             }
 
@@ -449,7 +461,8 @@ impl P2PNetwork {
                     signature,
                 };
                 self.validator_announce_tx
-                    .send(announcement).await
+                    .send(announcement)
+                    .await
                     .map_err(|_| "Failed to send validator announcement".to_string())?;
             }
 
@@ -460,7 +473,8 @@ impl P2PNetwork {
                     peer_addr
                 );
                 self.slashing_evidence_tx
-                    .send(evidence).await
+                    .send(evidence)
+                    .await
                     .map_err(|_| "Failed to forward slashing evidence".to_string())?;
             }
         }

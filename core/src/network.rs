@@ -226,7 +226,7 @@ impl PeerDiscovery {
             address: address.clone(),
             last_seen: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
+                .unwrap_or_default()
                 .as_secs(),
             latency_ms: 0,
             is_seed,
@@ -243,7 +243,7 @@ impl PeerDiscovery {
     pub fn get_healthy_peers(&self, max_age_secs: u64) -> Vec<String> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
+            .unwrap_or_default()
             .as_secs();
 
         self.discovered_peers
@@ -276,8 +276,8 @@ mod tests {
         let config = SeedsConfig::default_embedded();
 
         // Testnet should have seeds
-        assert!(config.testnet.seeds.len() > 0);
-        assert!(config.testnet.bootstrap_peers.len() > 0);
+        assert!(!config.testnet.seeds.is_empty());
+        assert!(!config.testnet.bootstrap_peers.is_empty());
 
         // Devnet should have localhost
         assert!(config
@@ -292,7 +292,7 @@ mod tests {
 
         // Get bootstrap peers
         let peers = discovery.get_bootstrap_peers();
-        assert!(peers.len() > 0);
+        assert!(!peers.is_empty());
 
         // Add discovered peer
         discovery.add_peer("192.168.1.100:8000".to_string(), false);

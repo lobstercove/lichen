@@ -430,10 +430,12 @@ impl DatabaseCommit for StateEvmDb {
             let address_bytes = revm_address_to_array(address);
             if account.is_empty() {
                 if let Err(e) = self.state.clear_evm_account(&address_bytes) {
-                    self.commit_errors.push(format!("clear EVM account {:?}: {}", address_bytes, e));
+                    self.commit_errors
+                        .push(format!("clear EVM account {:?}: {}", address_bytes, e));
                 }
                 if let Err(e) = self.state.clear_evm_storage(&address_bytes) {
-                    self.commit_errors.push(format!("clear EVM storage {:?}: {}", address_bytes, e));
+                    self.commit_errors
+                        .push(format!("clear EVM storage {:?}: {}", address_bytes, e));
                 }
                 continue;
             }
@@ -446,10 +448,8 @@ impl DatabaseCommit for StateEvmDb {
             }
 
             if let Err(e) = self.state.put_evm_account(&address_bytes, &stored) {
-                self.commit_errors.push(format!(
-                    "put EVM account {:?}: {}",
-                    address_bytes, e
-                ));
+                self.commit_errors
+                    .push(format!("put EVM account {:?}: {}", address_bytes, e));
             }
 
             for (slot, value) in account.storage {
@@ -489,10 +489,8 @@ impl DatabaseCommit for StateEvmDb {
                     }
                 };
                 if let Err(e) = self.state.set_spendable_balance(&pubkey, shells_u64) {
-                    self.commit_errors.push(format!(
-                        "commit native balance for {:?}: {}",
-                        pubkey, e
-                    ));
+                    self.commit_errors
+                        .push(format!("commit native balance for {:?}: {}", pubkey, e));
                 }
                 // Warn if there's a fractional remainder being dropped
                 let remainder = balance % divisor;
@@ -581,7 +579,10 @@ pub fn execute_evm_transaction(
 
     // If conversion produced hard errors, fail
     if !evm_changes.errors.is_empty() {
-        return Err(format!("EVM state conversion failed: {}", evm_changes.errors.join("; ")));
+        return Err(format!(
+            "EVM state conversion failed: {}",
+            evm_changes.errors.join("; ")
+        ));
     }
 
     match result_and_state.result {
@@ -597,31 +598,40 @@ pub fn execute_evm_transaction(
                     (data.to_vec(), address.map(revm_address_to_array))
                 }
             };
-            Ok((EvmExecutionResult {
-                success: true,
-                gas_used,
-                output: output_bytes,
-                created_address,
-                logs: logs
-                    .iter()
-                    .map(|log| log.data.data.clone().into())
-                    .collect(),
-            }, evm_changes))
+            Ok((
+                EvmExecutionResult {
+                    success: true,
+                    gas_used,
+                    output: output_bytes,
+                    created_address,
+                    logs: logs
+                        .iter()
+                        .map(|log| log.data.data.clone().into())
+                        .collect(),
+                },
+                evm_changes,
+            ))
         }
-        ExecutionResult::Revert { gas_used, output } => Ok((EvmExecutionResult {
-            success: false,
-            gas_used,
-            output: output.to_vec(),
-            created_address: None,
-            logs: Vec::new(),
-        }, evm_changes)),
-        ExecutionResult::Halt { gas_used, .. } => Ok((EvmExecutionResult {
-            success: false,
-            gas_used,
-            output: Vec::new(),
-            created_address: None,
-            logs: Vec::new(),
-        }, evm_changes)),
+        ExecutionResult::Revert { gas_used, output } => Ok((
+            EvmExecutionResult {
+                success: false,
+                gas_used,
+                output: output.to_vec(),
+                created_address: None,
+                logs: Vec::new(),
+            },
+            evm_changes,
+        )),
+        ExecutionResult::Halt { gas_used, .. } => Ok((
+            EvmExecutionResult {
+                success: false,
+                gas_used,
+                output: Vec::new(),
+                created_address: None,
+                logs: Vec::new(),
+            },
+            evm_changes,
+        )),
     }
 }
 

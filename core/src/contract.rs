@@ -1119,7 +1119,7 @@ mod tests {
 
         let ctx = ContractContext::with_storage(caller, contract, 0, 50, store.clone());
         assert_eq!(ctx.storage.len(), 1);
-        assert_eq!(ctx.storage.get(&b"key1".to_vec()), Some(&b"val1".to_vec()));
+        assert_eq!(ctx.storage.get(b"key1".as_slice()), Some(&b"val1".to_vec()));
         assert_eq!(ctx.compute_remaining, DEFAULT_COMPUTE_LIMIT);
     }
 

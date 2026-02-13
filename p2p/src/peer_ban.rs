@@ -72,7 +72,7 @@ impl PeerBanList {
         if let Some(entry) = self.entries.get(addr) {
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
+                .unwrap_or_default()
                 .as_secs();
             return entry.banned_until > now;
         }
@@ -82,7 +82,7 @@ impl PeerBanList {
     pub fn record_score(&mut self, addr: SocketAddr, score: i64) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
+            .unwrap_or_default()
             .as_secs();
         let banned_until = if score <= -10 { now + 600 } else { 0 };
 
@@ -100,7 +100,7 @@ impl PeerBanList {
     pub fn prune(&mut self) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
+            .unwrap_or_default()
             .as_secs();
         self.entries.retain(|_, entry| entry.banned_until > now);
     }
@@ -122,7 +122,7 @@ mod tests {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
+                .unwrap_or_default()
                 .as_nanos(),
             n,
         ))

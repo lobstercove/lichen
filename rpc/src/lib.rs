@@ -31,9 +31,9 @@
 //   DEX WEBSOCKET FEEDS             — orderbook, trades, ticker, candles (dex_ws.rs)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-pub mod ws;
 pub mod dex;
 pub mod dex_ws;
+pub mod ws;
 
 use alloy_primitives::{Address, Bytes, U256};
 use axum::http::{HeaderValue, Method};
@@ -771,10 +771,15 @@ pub fn build_rpc_router(
         .allow_origin(AllowOrigin::predicate(|origin: &HeaderValue, _| {
             let origin_str = origin.to_str().unwrap_or("");
             // Parse scheme://host:port — only allow exact localhost/127.0.0.1 hosts
-            if let Some(rest) = origin_str.strip_prefix("http://").or_else(|| origin_str.strip_prefix("https://")) {
+            if let Some(rest) = origin_str
+                .strip_prefix("http://")
+                .or_else(|| origin_str.strip_prefix("https://"))
+            {
                 let host = rest.split('/').next().unwrap_or("");
                 let host_only = host.split(':').next().unwrap_or("");
-                host_only == "localhost" || host_only == "127.0.0.1" || host_only.ends_with(".moltchain.io")
+                host_only == "localhost"
+                    || host_only == "127.0.0.1"
+                    || host_only.ends_with(".moltchain.io")
             } else {
                 false
             }
@@ -1297,7 +1302,9 @@ async fn handle_get_block(
 
             // Protocol-level block reward (coinbase) — deterministic, not a transaction
             let has_user_txs = block.transactions.iter().any(|tx| {
-                tx.message.instructions.first()
+                tx.message
+                    .instructions
+                    .first()
                     .map(|ix| !matches!(ix.data.first(), Some(2) | Some(3)))
                     .unwrap_or(true)
             });
@@ -1461,8 +1468,10 @@ async fn handle_set_fee_config(
     }
 
     // Validate that fee distribution percentages sum to 100
-    let pct_sum = config.fee_burn_percent + config.fee_producer_percent
-        + config.fee_voters_percent + config.fee_treasury_percent;
+    let pct_sum = config.fee_burn_percent
+        + config.fee_producer_percent
+        + config.fee_voters_percent
+        + config.fee_treasury_percent;
     if pct_sum != 100 {
         return Err(RpcError {
             code: -32602,
@@ -1728,8 +1737,16 @@ async fn handle_get_transactions_by_address(
 
         let first_ix = tx.message.instructions.first();
         let (tx_type, from, to, amount) = if let Some(ix) = first_ix {
-            let from = ix.accounts.first().map(|acc| acc.to_base58()).unwrap_or_default();
-            let to = ix.accounts.get(1).map(|acc| acc.to_base58()).unwrap_or_default();
+            let from = ix
+                .accounts
+                .first()
+                .map(|acc| acc.to_base58())
+                .unwrap_or_default();
+            let to = ix
+                .accounts
+                .get(1)
+                .map(|acc| acc.to_base58())
+                .unwrap_or_default();
             let amount = parse_transfer_amount(ix).unwrap_or(0);
             (instruction_type(ix), from, to, amount)
         } else {
@@ -1825,8 +1842,16 @@ async fn handle_get_recent_transactions(
 
         let first_ix = tx.message.instructions.first();
         let (tx_type, from, to, amount) = if let Some(ix) = first_ix {
-            let from = ix.accounts.first().map(|acc| acc.to_base58()).unwrap_or_default();
-            let to = ix.accounts.get(1).map(|acc| acc.to_base58()).unwrap_or_default();
+            let from = ix
+                .accounts
+                .first()
+                .map(|acc| acc.to_base58())
+                .unwrap_or_default();
+            let to = ix
+                .accounts
+                .get(1)
+                .map(|acc| acc.to_base58())
+                .unwrap_or_default();
             let amount = parse_transfer_amount(ix).unwrap_or(0);
             (instruction_type(ix), from, to, amount)
         } else {
@@ -1906,7 +1931,7 @@ async fn handle_get_token_accounts(
 
         let symbol = registry
             .as_ref()
-            .and_then(|r| Some(r.symbol.clone()))
+            .map(|r| r.symbol.clone())
             .unwrap_or_else(|| "Unknown".to_string());
         let name = registry
             .as_ref()
@@ -2640,7 +2665,11 @@ async fn handle_solana_get_transaction(
         None => {
             // Fallback: look inside the block itself
             if let Ok(Some(block)) = state.state.get_block_by_slot(slot) {
-                match block.transactions.iter().find(|t| t.signature() == sig_hash) {
+                match block
+                    .transactions
+                    .iter()
+                    .find(|t| t.signature() == sig_hash)
+                {
                     Some(t) => t.clone(),
                     None => return Ok(serde_json::Value::Null),
                 }
@@ -2862,7 +2891,9 @@ async fn handle_get_metrics(state: &RpcState) -> Result<serde_json::Value, RpcEr
     // Treasury balance (dynamically from state, no hardcoded address)
     let (treasury_balance, treasury_pubkey_b58) = match state.state.get_treasury_pubkey() {
         Ok(Some(tpk)) => {
-            let bal = state.state.get_account(&tpk)
+            let bal = state
+                .state
+                .get_account(&tpk)
                 .ok()
                 .flatten()
                 .map(|a| a.shells)
@@ -2875,7 +2906,9 @@ async fn handle_get_metrics(state: &RpcState) -> Result<serde_json::Value, RpcEr
     // Genesis wallet balance (from state)
     let (genesis_balance, genesis_pubkey_b58) = match state.state.get_genesis_pubkey() {
         Ok(Some(gpk)) => {
-            let bal = state.state.get_account(&gpk)
+            let bal = state
+                .state
+                .get_account(&gpk)
                 .ok()
                 .flatten()
                 .map(|a| a.shells)
@@ -2921,15 +2954,16 @@ async fn handle_get_metrics(state: &RpcState) -> Result<serde_json::Value, RpcEr
 
 /// Get treasury info (dynamic -- reads pubkey from state, no hardcoded address)
 async fn handle_get_treasury_info(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let (treasury_pubkey, treasury_balance, treasury_staked) = match state.state.get_treasury_pubkey() {
-        Ok(Some(tpk)) => {
-            let acc = state.state.get_account(&tpk).ok().flatten();
-            let bal = acc.as_ref().map(|a| a.shells).unwrap_or(0);
-            let stk = acc.as_ref().map(|a| a.staked).unwrap_or(0);
-            (Some(tpk.to_base58()), bal, stk)
-        }
-        _ => (None, 0u64, 0u64),
-    };
+    let (treasury_pubkey, treasury_balance, treasury_staked) =
+        match state.state.get_treasury_pubkey() {
+            Ok(Some(tpk)) => {
+                let acc = state.state.get_account(&tpk).ok().flatten();
+                let bal = acc.as_ref().map(|a| a.shells).unwrap_or(0);
+                let stk = acc.as_ref().map(|a| a.staked).unwrap_or(0);
+                (Some(tpk.to_base58()), bal, stk)
+            }
+            _ => (None, 0u64, 0u64),
+        };
 
     let (genesis_pubkey, genesis_balance, genesis_staked) = match state.state.get_genesis_pubkey() {
         Ok(Some(gpk)) => {
@@ -3327,7 +3361,9 @@ async fn handle_get_staking_status(
     if let Some(validator) = validator_info {
         let live_stake = if let Some(ref pool_arc) = state.stake_pool {
             if let Ok(pool) = pool_arc.try_lock() {
-                pool.get_stake(&pubkey).map(|s| s.amount).unwrap_or(validator.stake)
+                pool.get_stake(&pubkey)
+                    .map(|s| s.amount)
+                    .unwrap_or(validator.stake)
             } else {
                 validator.stake
             }
@@ -3499,7 +3535,10 @@ async fn handle_get_transaction_history(
 
     let opts = arr.get(1);
     let limit = opts
-        .and_then(|v| v.as_u64().or_else(|| v.get("limit").and_then(|l| l.as_u64())))
+        .and_then(|v| {
+            v.as_u64()
+                .or_else(|| v.get("limit").and_then(|l| l.as_u64()))
+        })
         .unwrap_or(10)
         .min(500) as usize;
 
@@ -3555,8 +3594,16 @@ async fn handle_get_transaction_history(
 
         let first_ix = tx.message.instructions.first();
         let (tx_type, from, to, amount) = if let Some(ix) = first_ix {
-            let from = ix.accounts.first().map(|acc| acc.to_base58()).unwrap_or_default();
-            let to = ix.accounts.get(1).map(|acc| acc.to_base58()).unwrap_or_default();
+            let from = ix
+                .accounts
+                .first()
+                .map(|acc| acc.to_base58())
+                .unwrap_or_default();
+            let to = ix
+                .accounts
+                .get(1)
+                .map(|acc| acc.to_base58())
+                .unwrap_or_default();
             let amount = parse_transfer_amount(ix).unwrap_or(0);
             (instruction_type(ix), from, to, amount)
         } else {
@@ -3638,7 +3685,9 @@ async fn handle_get_contract_info(
     let (has_abi, abi_functions, code_hash, owner_b58, token_metadata) = if account.executable {
         if let Ok(ca) = serde_json::from_slice::<moltchain_core::ContractAccount>(&account.data) {
             let func_count = ca.abi.as_ref().map(|a| a.functions.len()).unwrap_or(0);
-            let abi_fn_names: Vec<String> = ca.abi.as_ref()
+            let abi_fn_names: Vec<String> = ca
+                .abi
+                .as_ref()
                 .map(|a| a.functions.iter().map(|f| f.name.clone()).collect())
                 .unwrap_or_default();
 
@@ -3646,7 +3695,8 @@ async fn handle_get_contract_info(
             let mut tmeta = serde_json::Map::new();
             if let Some(v) = ca.storage.get(b"total_supply".as_ref()) {
                 if v.len() == 8 {
-                    let supply = u64::from_le_bytes([v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]]);
+                    let supply =
+                        u64::from_le_bytes([v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7]]);
                     tmeta.insert("total_supply".to_string(), serde_json::json!(supply));
                 } else if let Ok(s) = std::str::from_utf8(v) {
                     if let Ok(n) = s.parse::<u64>() {
@@ -3658,9 +3708,14 @@ async fn handle_get_contract_info(
             if !tmeta.contains_key("total_supply") {
                 for (key, val) in ca.storage.iter() {
                     if let Ok(k) = std::str::from_utf8(key) {
-                        if k.ends_with("_supply") && !k.ends_with("_minted") && !k.ends_with("_burned") {
+                        if k.ends_with("_supply")
+                            && !k.ends_with("_minted")
+                            && !k.ends_with("_burned")
+                        {
                             if val.len() == 8 {
-                                let supply = u64::from_le_bytes([val[0], val[1], val[2], val[3], val[4], val[5], val[6], val[7]]);
+                                let supply = u64::from_le_bytes([
+                                    val[0], val[1], val[2], val[3], val[4], val[5], val[6], val[7],
+                                ]);
                                 tmeta.insert("total_supply".to_string(), serde_json::json!(supply));
                             }
                             break;
@@ -3693,7 +3748,11 @@ async fn handle_get_contract_info(
             tmeta.insert("mintable".to_string(), serde_json::json!(has_mint));
             tmeta.insert("burnable".to_string(), serde_json::json!(has_burn));
 
-            let token_meta = if tmeta.is_empty() { None } else { Some(serde_json::Value::Object(tmeta)) };
+            let token_meta = if tmeta.is_empty() {
+                None
+            } else {
+                Some(serde_json::Value::Object(tmeta))
+            };
 
             (
                 ca.abi.is_some(),
@@ -3720,7 +3779,10 @@ async fn handle_get_contract_info(
         "deployed_at": 0,
     });
     if let Some(tm) = token_metadata {
-        result.as_object_mut().unwrap().insert("token_metadata".to_string(), tm);
+        result
+            .as_object_mut()
+            .unwrap()
+            .insert("token_metadata".to_string(), tm);
     }
     Ok(result)
 }
@@ -3980,13 +4042,16 @@ async fn handle_deploy_contract(
 
     let arr = params.as_array().ok_or_else(|| RpcError {
         code: -32602,
-        message: "Params must be an array: [deployer, code_base64, init_data, signature]".to_string(),
+        message: "Params must be an array: [deployer, code_base64, init_data, signature]"
+            .to_string(),
     })?;
 
     if arr.len() < 4 {
         return Err(RpcError {
             code: -32602,
-            message: "Expected [deployer_base58, code_base64, init_data_json_or_null, signature_hex]".to_string(),
+            message:
+                "Expected [deployer_base58, code_base64, init_data_json_or_null, signature_hex]"
+                    .to_string(),
         });
     }
 
@@ -4005,10 +4070,12 @@ async fn handle_deploy_contract(
         code: -32602,
         message: "code must be a base64 string".to_string(),
     })?;
-    let code_bytes = general_purpose::STANDARD.decode(code_b64).map_err(|e| RpcError {
-        code: -32602,
-        message: format!("Invalid base64 code: {}", e),
-    })?;
+    let code_bytes = general_purpose::STANDARD
+        .decode(code_b64)
+        .map_err(|e| RpcError {
+            code: -32602,
+            message: format!("Invalid base64 code: {}", e),
+        })?;
 
     if code_bytes.is_empty() {
         return Err(RpcError {
@@ -4072,7 +4139,7 @@ async fn handle_deploy_contract(
     };
 
     let mut addr_hasher = Sha256::new();
-    addr_hasher.update(&deployer_pubkey.0);
+    addr_hasher.update(deployer_pubkey.0);
     if let Some(ref name) = contract_name {
         addr_hasher.update(name.as_bytes());
     }
@@ -4092,13 +4159,17 @@ async fn handle_deploy_contract(
 
     // Charge deploy fee (2.5 MOLT)
     let deploy_fee = moltchain_core::CONTRACT_DEPLOY_FEE;
-    let deployer_account = state.state.get_account(&deployer_pubkey).map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Database error: {}", e),
-    })?.ok_or_else(|| RpcError {
-        code: -32000,
-        message: "Deployer account not found".to_string(),
-    })?;
+    let deployer_account = state
+        .state
+        .get_account(&deployer_pubkey)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?
+        .ok_or_else(|| RpcError {
+            code: -32000,
+            message: "Deployer account not found".to_string(),
+        })?;
 
     if deployer_account.spendable < deploy_fee {
         return Err(RpcError {
@@ -4115,35 +4186,53 @@ async fn handle_deploy_contract(
 
     // Debit deployer using deduct_spendable to maintain shells == spendable + staked + locked
     let mut updated_deployer = deployer_account.clone();
-    updated_deployer.deduct_spendable(deploy_fee).map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Failed to deduct deploy fee: {}", e),
-    })?;
-    state.state.put_account(&deployer_pubkey, &updated_deployer).map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Failed to update deployer balance: {}", e),
-    })?;
+    updated_deployer
+        .deduct_spendable(deploy_fee)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Failed to deduct deploy fee: {}", e),
+        })?;
+    state
+        .state
+        .put_account(&deployer_pubkey, &updated_deployer)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Failed to update deployer balance: {}", e),
+        })?;
 
     // Credit deploy fee to treasury (not a vanishing deduction)
-    let treasury_pubkey = state.state.get_treasury_pubkey().map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Database error: {}", e),
-    })?.ok_or_else(|| RpcError {
-        code: -32000,
-        message: "Treasury pubkey not set".to_string(),
-    })?;
-    let mut treasury_account = state.state.get_account(&treasury_pubkey).map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Database error: {}", e),
-    })?.unwrap_or_else(|| moltchain_core::Account::new(0, treasury_pubkey));
-    treasury_account.add_spendable(deploy_fee).map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Treasury balance overflow: {}", e),
-    })?;
-    state.state.put_account(&treasury_pubkey, &treasury_account).map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Failed to credit treasury: {}", e),
-    })?;
+    let treasury_pubkey = state
+        .state
+        .get_treasury_pubkey()
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?
+        .ok_or_else(|| RpcError {
+            code: -32000,
+            message: "Treasury pubkey not set".to_string(),
+        })?;
+    let mut treasury_account = state
+        .state
+        .get_account(&treasury_pubkey)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?
+        .unwrap_or_else(|| moltchain_core::Account::new(0, treasury_pubkey));
+    treasury_account
+        .add_spendable(deploy_fee)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Treasury balance overflow: {}", e),
+        })?;
+    state
+        .state
+        .put_account(&treasury_pubkey, &treasury_account)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Failed to credit treasury: {}", e),
+        })?;
 
     // Create ContractAccount
     let contract = ContractAccount::new(code_bytes, deployer_pubkey);
@@ -4155,10 +4244,13 @@ async fn handle_deploy_contract(
     account.executable = true;
 
     // Store the contract account
-    state.state.put_account(&program_pubkey, &account).map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Failed to store contract: {}", e),
-    })?;
+    state
+        .state
+        .put_account(&program_pubkey, &account)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Failed to store contract: {}", e),
+        })?;
 
     // Index in programs list
     if let Err(e) = state.state.index_program(&program_pubkey) {
@@ -4174,8 +4266,14 @@ async fn handle_deploy_contract(
                         symbol: symbol.to_string(),
                         program: program_pubkey,
                         owner: deployer_pubkey,
-                        name: registry_data.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()),
-                        template: registry_data.get("template").and_then(|t| t.as_str()).map(|s| s.to_string()),
+                        name: registry_data
+                            .get("name")
+                            .and_then(|n| n.as_str())
+                            .map(|s| s.to_string()),
+                        template: registry_data
+                            .get("template")
+                            .and_then(|t| t.as_str())
+                            .map(|s| s.to_string()),
                         metadata: registry_data.get("metadata").cloned(),
                     };
                     if let Err(e) = state.state.register_symbol(symbol, entry) {
@@ -4560,7 +4658,8 @@ async fn handle_get_nft(
 
     let arr = params.as_array().ok_or_else(|| RpcError {
         code: -32602,
-        message: "Invalid params: expected [collection_pubkey, token_id] or [token_pubkey]".to_string(),
+        message: "Invalid params: expected [collection_pubkey, token_id] or [token_pubkey]"
+            .to_string(),
     })?;
 
     // Support two calling conventions:
@@ -4583,8 +4682,8 @@ async fn handle_get_nft(
         // Derive token address: SHA-256(collection_bytes + token_id_le_bytes)
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
-        hasher.update(&collection_pubkey.0);
-        hasher.update(&token_id.to_le_bytes());
+        hasher.update(collection_pubkey.0);
+        hasher.update(token_id.to_le_bytes());
         let hash = hasher.finalize();
         let mut bytes = [0u8; 32];
         bytes.copy_from_slice(&hash[..32]);
@@ -5449,9 +5548,8 @@ async fn handle_get_reefstake_pool_info(state: &RpcState) -> Result<serde_json::
         let sp = sp_arc.lock().await;
         let stats = sp.get_stats();
         let slots_per_day = SLOTS_PER_YEAR / 365;
-        let apy_bp = pool
-            .calculate_apy_bp(slots_per_day, TRANSACTION_BLOCK_REWARD);
-        (stats.active_validators as u64, apy_bp as f64 / 100.0)
+        let apy_bp = pool.calculate_apy_bp(slots_per_day, TRANSACTION_BLOCK_REWARD);
+        (stats.active_validators, apy_bp as f64 / 100.0)
     } else {
         (0, 0.0)
     };
@@ -5464,57 +5562,6 @@ async fn handle_get_reefstake_pool_info(state: &RpcState) -> Result<serde_json::
         "average_apy_percent": apy_percent,
         "total_stakers": pool.positions.len()
     }))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        filter_signatures_for_address, validate_solana_encoding,
-        validate_solana_transaction_details,
-    };
-    use moltchain_core::Hash;
-
-    fn make_hash(value: u8) -> Hash {
-        Hash([value; 32])
-    }
-
-    #[test]
-    fn test_validate_solana_encoding() {
-        assert!(validate_solana_encoding("json").is_ok());
-        assert!(validate_solana_encoding("base58").is_ok());
-        assert!(validate_solana_encoding("base64").is_ok());
-        assert!(validate_solana_encoding("binary").is_err());
-    }
-
-    #[test]
-    fn test_validate_solana_transaction_details() {
-        assert!(validate_solana_transaction_details("full").is_ok());
-        assert!(validate_solana_transaction_details("signatures").is_ok());
-        assert!(validate_solana_transaction_details("none").is_ok());
-        assert!(validate_solana_transaction_details("accounts").is_err());
-    }
-
-    #[test]
-    fn test_filter_signatures_for_address() {
-        let h1 = make_hash(1);
-        let h2 = make_hash(2);
-        let h3 = make_hash(3);
-        let h4 = make_hash(4);
-
-        let indexed = vec![(h4, 4), (h3, 3), (h2, 2), (h1, 1)];
-
-        let filtered = filter_signatures_for_address(indexed.clone(), Some(h3), None, 10);
-        assert_eq!(filtered, vec![(h2, 2), (h1, 1)]);
-
-        let filtered = filter_signatures_for_address(indexed.clone(), None, Some(h2), 10);
-        assert_eq!(filtered, vec![(h4, 4), (h3, 3)]);
-
-        let filtered = filter_signatures_for_address(indexed.clone(), Some(h3), Some(h1), 10);
-        assert_eq!(filtered, vec![(h2, 2)]);
-
-        let filtered = filter_signatures_for_address(indexed, None, None, 1);
-        assert_eq!(filtered, vec![(h4, 4)]);
-    }
 }
 
 /// Handle getUnstakingQueue: Get user's pending unstake requests
@@ -5855,7 +5902,11 @@ async fn handle_request_airdrop(
     require_single_validator(state, "requestAirdrop")?;
 
     // Only allow on testnet / devnet (not mainnet)
-    if state.network_id.contains("mainnet") || (!state.network_id.contains("testnet") && !state.network_id.contains("devnet") && !state.network_id.contains("local")) {
+    if state.network_id.contains("mainnet")
+        || (!state.network_id.contains("testnet")
+            && !state.network_id.contains("devnet")
+            && !state.network_id.contains("local"))
+    {
         return Err(RpcError {
             code: -32003,
             message: "Airdrop only available on testnet/devnet".to_string(),
@@ -5904,21 +5955,29 @@ async fn handle_request_airdrop(
     let amount_shells = amount_molt * 1_000_000_000;
 
     // Get treasury
-    let treasury_pubkey = state.state.get_treasury_pubkey().map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Failed to get treasury: {}", e),
-    })?.ok_or(RpcError {
-        code: -32000,
-        message: "No treasury configured".to_string(),
-    })?;
+    let treasury_pubkey = state
+        .state
+        .get_treasury_pubkey()
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Failed to get treasury: {}", e),
+        })?
+        .ok_or(RpcError {
+            code: -32000,
+            message: "No treasury configured".to_string(),
+        })?;
 
-    let mut treasury_account = state.state.get_account(&treasury_pubkey).map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Failed to read treasury: {}", e),
-    })?.ok_or(RpcError {
-        code: -32000,
-        message: "Treasury account not found".to_string(),
-    })?;
+    let mut treasury_account = state
+        .state
+        .get_account(&treasury_pubkey)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Failed to read treasury: {}", e),
+        })?
+        .ok_or(RpcError {
+            code: -32000,
+            message: "Treasury account not found".to_string(),
+        })?;
 
     if treasury_account.spendable < amount_shells {
         return Err(RpcError {
@@ -5928,28 +5987,40 @@ async fn handle_request_airdrop(
     }
 
     // Debit treasury
-    treasury_account.deduct_spendable(amount_shells).map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Failed to debit treasury: {}", e),
-    })?;
-    state.state.put_account(&treasury_pubkey, &treasury_account).map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Failed to save treasury: {}", e),
-    })?;
+    treasury_account
+        .deduct_spendable(amount_shells)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Failed to debit treasury: {}", e),
+        })?;
+    state
+        .state
+        .put_account(&treasury_pubkey, &treasury_account)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Failed to save treasury: {}", e),
+        })?;
 
     // Credit recipient
-    let mut recipient_account = state.state.get_account(&recipient)
+    let mut recipient_account = state
+        .state
+        .get_account(&recipient)
         .unwrap_or(None)
         .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
 
-    recipient_account.add_spendable(amount_shells).map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Failed to credit recipient: {}", e),
-    })?;
-    state.state.put_account(&recipient, &recipient_account).map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Failed to save recipient: {}", e),
-    })?;
+    recipient_account
+        .add_spendable(amount_shells)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Failed to credit recipient: {}", e),
+        })?;
+    state
+        .state
+        .put_account(&recipient, &recipient_account)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Failed to save recipient: {}", e),
+        })?;
 
     info!(
         "💧 Airdrop: {} MOLT from treasury to {}",
@@ -5962,4 +6033,55 @@ async fn handle_request_airdrop(
         "recipient": address_str,
         "message": format!("{} MOLT airdropped successfully", amount_molt),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        filter_signatures_for_address, validate_solana_encoding,
+        validate_solana_transaction_details,
+    };
+    use moltchain_core::Hash;
+
+    fn make_hash(value: u8) -> Hash {
+        Hash([value; 32])
+    }
+
+    #[test]
+    fn test_validate_solana_encoding() {
+        assert!(validate_solana_encoding("json").is_ok());
+        assert!(validate_solana_encoding("base58").is_ok());
+        assert!(validate_solana_encoding("base64").is_ok());
+        assert!(validate_solana_encoding("binary").is_err());
+    }
+
+    #[test]
+    fn test_validate_solana_transaction_details() {
+        assert!(validate_solana_transaction_details("full").is_ok());
+        assert!(validate_solana_transaction_details("signatures").is_ok());
+        assert!(validate_solana_transaction_details("none").is_ok());
+        assert!(validate_solana_transaction_details("accounts").is_err());
+    }
+
+    #[test]
+    fn test_filter_signatures_for_address() {
+        let h1 = make_hash(1);
+        let h2 = make_hash(2);
+        let h3 = make_hash(3);
+        let h4 = make_hash(4);
+
+        let indexed = vec![(h4, 4), (h3, 3), (h2, 2), (h1, 1)];
+
+        let filtered = filter_signatures_for_address(indexed.clone(), Some(h3), None, 10);
+        assert_eq!(filtered, vec![(h2, 2), (h1, 1)]);
+
+        let filtered = filter_signatures_for_address(indexed.clone(), None, Some(h2), 10);
+        assert_eq!(filtered, vec![(h4, 4), (h3, 3)]);
+
+        let filtered = filter_signatures_for_address(indexed.clone(), Some(h3), Some(h1), 10);
+        assert_eq!(filtered, vec![(h2, 2)]);
+
+        let filtered = filter_signatures_for_address(indexed, None, None, 1);
+        assert_eq!(filtered, vec![(h4, 4)]);
+    }
 }

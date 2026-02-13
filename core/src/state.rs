@@ -9,7 +9,10 @@ use crate::hash::Hash;
 use crate::reefstake::ReefStakePool;
 use crate::transaction::Transaction;
 use alloy_primitives::U256;
-use rocksdb::{BlockBasedOptions, Cache, ColumnFamilyDescriptor, Direction, Options, SliceTransform, WriteBatch, DB};
+use rocksdb::{
+    BlockBasedOptions, Cache, ColumnFamilyDescriptor, Direction, Options, SliceTransform,
+    WriteBatch, DB,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::VecDeque;
@@ -149,7 +152,10 @@ impl MetricsStore {
 
         // Update totals
         {
-            let mut total_txs = self.total_transactions.lock().unwrap_or_else(|e| e.into_inner());
+            let mut total_txs = self
+                .total_transactions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             *total_txs += tx_count;
         }
 
@@ -160,7 +166,10 @@ impl MetricsStore {
 
         // Track block time
         {
-            let mut last_time = self.last_block_time.lock().unwrap_or_else(|e| e.into_inner());
+            let mut last_time = self
+                .last_block_time
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if *last_time > 0 {
                 let block_time = timestamp.saturating_sub(*last_time);
                 let mut times = self.block_times.lock().unwrap_or_else(|e| e.into_inner());
@@ -215,7 +224,10 @@ impl MetricsStore {
 
         Metrics {
             tps,
-            total_transactions: *self.total_transactions.lock().unwrap_or_else(|e| e.into_inner()),
+            total_transactions: *self
+                .total_transactions
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()),
             total_blocks: *self.total_blocks.lock().unwrap_or_else(|e| e.into_inner()),
             average_block_time: avg_block_time,
             total_accounts,  // Use provided actual count from DB
@@ -235,7 +247,10 @@ impl MetricsStore {
         if let Ok(Some(data)) = db.get_cf(&cf, b"total_transactions") {
             if let Ok(bytes) = data.as_slice().try_into() {
                 let count = u64::from_le_bytes(bytes);
-                let mut total = self.total_transactions.lock().unwrap_or_else(|e| e.into_inner());
+                let mut total = self
+                    .total_transactions
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 *total = count;
             }
         }
@@ -253,7 +268,10 @@ impl MetricsStore {
         if let Ok(Some(data)) = db.get_cf(&cf, b"total_accounts") {
             if let Ok(bytes) = data.as_slice().try_into() {
                 let count = u64::from_le_bytes(bytes);
-                let mut total = self.total_accounts.lock().unwrap_or_else(|e| e.into_inner());
+                let mut total = self
+                    .total_accounts
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 *total = count;
             }
         }
@@ -262,7 +280,10 @@ impl MetricsStore {
         if let Ok(Some(data)) = db.get_cf(&cf, b"active_accounts") {
             if let Ok(bytes) = data.as_slice().try_into() {
                 let count = u64::from_le_bytes(bytes);
-                let mut total = self.active_accounts.lock().unwrap_or_else(|e| e.into_inner());
+                let mut total = self
+                    .active_accounts
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 *total = count;
             }
         }
@@ -271,36 +292,54 @@ impl MetricsStore {
     }
     /// Increment account counter
     pub fn increment_accounts(&self) {
-        let mut count = self.total_accounts.lock().unwrap_or_else(|e| e.into_inner());
+        let mut count = self
+            .total_accounts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         *count += 1;
     }
 
     /// Decrement account counter
     pub fn decrement_accounts(&self) {
-        let mut count = self.total_accounts.lock().unwrap_or_else(|e| e.into_inner());
+        let mut count = self
+            .total_accounts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         *count = count.saturating_sub(1);
     }
 
     /// Increment active accounts counter
     pub fn increment_active_accounts(&self) {
-        let mut count = self.active_accounts.lock().unwrap_or_else(|e| e.into_inner());
+        let mut count = self
+            .active_accounts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         *count += 1;
     }
 
     /// Decrement active accounts counter
     pub fn decrement_active_accounts(&self) {
-        let mut count = self.active_accounts.lock().unwrap_or_else(|e| e.into_inner());
+        let mut count = self
+            .active_accounts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         *count = count.saturating_sub(1);
     }
 
     /// Get total accounts count (no DB scan)
     pub fn get_total_accounts(&self) -> u64 {
-        *self.total_accounts.lock().unwrap_or_else(|e| e.into_inner())
+        *self
+            .total_accounts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     /// Get active accounts count (no DB scan)
     pub fn get_active_accounts(&self) -> u64 {
-        *self.active_accounts.lock().unwrap_or_else(|e| e.into_inner())
+        *self
+            .active_accounts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     /// Save metrics to database
@@ -310,7 +349,10 @@ impl MetricsStore {
             .ok_or_else(|| "Stats CF not found".to_string())?;
 
         // Save total transactions
-        let total_txs = *self.total_transactions.lock().unwrap_or_else(|e| e.into_inner());
+        let total_txs = *self
+            .total_transactions
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         db.put_cf(&cf, b"total_transactions", total_txs.to_le_bytes())
             .map_err(|e| format!("Failed to save total transactions: {}", e))?;
 
@@ -320,12 +362,18 @@ impl MetricsStore {
             .map_err(|e| format!("Failed to save total blocks: {}", e))?;
 
         // Save total accounts
-        let total_accounts = *self.total_accounts.lock().unwrap_or_else(|e| e.into_inner());
+        let total_accounts = *self
+            .total_accounts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         db.put_cf(&cf, b"total_accounts", total_accounts.to_le_bytes())
             .map_err(|e| format!("Failed to save total accounts: {}", e))?;
 
         // Save active accounts
-        let active_accounts = *self.active_accounts.lock().unwrap_or_else(|e| e.into_inner());
+        let active_accounts = *self
+            .active_accounts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         db.put_cf(&cf, b"active_accounts", active_accounts.to_le_bytes())
             .map_err(|e| format!("Failed to save active accounts: {}", e))?;
 
@@ -494,49 +542,43 @@ impl StateStore {
         // ── Column family definitions with tuned options ─────────────
         let cfs = vec![
             // Hot point-lookup CFs (1M+ entries expected)
-            ColumnFamilyDescriptor::new(CF_ACCOUNTS,       point_lookup_opts(32)),  // key=pubkey(32)
-            ColumnFamilyDescriptor::new(CF_TRANSACTIONS,    point_lookup_opts(32)),  // key=hash(32)
-            ColumnFamilyDescriptor::new(CF_BLOCKS,          point_lookup_opts(32)),  // key=hash(32)
-            ColumnFamilyDescriptor::new(CF_TX_TO_SLOT,      point_lookup_opts(32)),  // key=hash(32)
+            ColumnFamilyDescriptor::new(CF_ACCOUNTS, point_lookup_opts(32)), // key=pubkey(32)
+            ColumnFamilyDescriptor::new(CF_TRANSACTIONS, point_lookup_opts(32)), // key=hash(32)
+            ColumnFamilyDescriptor::new(CF_BLOCKS, point_lookup_opts(32)),   // key=hash(32)
+            ColumnFamilyDescriptor::new(CF_TX_TO_SLOT, point_lookup_opts(32)), // key=hash(32)
             ColumnFamilyDescriptor::new(CF_SYMBOL_BY_PROGRAM, point_lookup_opts(32)), // key=pubkey(32)
-
             // Prefix-scan CFs (32-byte pubkey prefix)
-            ColumnFamilyDescriptor::new(CF_ACCOUNT_TXS,     prefix_scan_opts(32)),  // key=pubkey(32)+slot+seq+hash
-            ColumnFamilyDescriptor::new(CF_NFT_BY_OWNER,    prefix_scan_opts(32)),  // key=owner(32)+token(32)
+            ColumnFamilyDescriptor::new(CF_ACCOUNT_TXS, prefix_scan_opts(32)), // key=pubkey(32)+slot+seq+hash
+            ColumnFamilyDescriptor::new(CF_NFT_BY_OWNER, prefix_scan_opts(32)), // key=owner(32)+token(32)
             ColumnFamilyDescriptor::new(CF_NFT_BY_COLLECTION, prefix_scan_opts(32)), // key=collection(32)+token(32)
-            ColumnFamilyDescriptor::new(CF_NFT_ACTIVITY,    prefix_scan_opts(32)),  // key=collection(32)+slot+seq
-            ColumnFamilyDescriptor::new(CF_PROGRAM_CALLS,   prefix_scan_opts(32)),  // key=program(32)+slot+seq+hash
-            ColumnFamilyDescriptor::new(CF_MARKET_ACTIVITY, prefix_scan_opts(32)),  // key=collection(32)+slot+seq
-            ColumnFamilyDescriptor::new(CF_TOKEN_BALANCES,  prefix_scan_opts(32)),  // key=token(32)+holder(32)
-            ColumnFamilyDescriptor::new(CF_HOLDER_TOKENS,   prefix_scan_opts(32)),  // key=holder(32)+token(32)
-            ColumnFamilyDescriptor::new(CF_TOKEN_TRANSFERS, prefix_scan_opts(32)),  // key=token(32)+slot+seq
-            ColumnFamilyDescriptor::new(CF_EVENTS,          prefix_scan_opts(32)),  // key=program(32)+slot+seq
-
+            ColumnFamilyDescriptor::new(CF_NFT_ACTIVITY, prefix_scan_opts(32)), // key=collection(32)+slot+seq
+            ColumnFamilyDescriptor::new(CF_PROGRAM_CALLS, prefix_scan_opts(32)), // key=program(32)+slot+seq+hash
+            ColumnFamilyDescriptor::new(CF_MARKET_ACTIVITY, prefix_scan_opts(32)), // key=collection(32)+slot+seq
+            ColumnFamilyDescriptor::new(CF_TOKEN_BALANCES, prefix_scan_opts(32)), // key=token(32)+holder(32)
+            ColumnFamilyDescriptor::new(CF_HOLDER_TOKENS, prefix_scan_opts(32)), // key=holder(32)+token(32)
+            ColumnFamilyDescriptor::new(CF_TOKEN_TRANSFERS, prefix_scan_opts(32)), // key=token(32)+slot+seq
+            ColumnFamilyDescriptor::new(CF_EVENTS, prefix_scan_opts(32)), // key=program(32)+slot+seq
             // Prefix-scan CFs (8-byte slot prefix)
-            ColumnFamilyDescriptor::new(CF_TX_BY_SLOT,      prefix_scan_opts(8)),   // key=slot(8)+seq(8)
-            ColumnFamilyDescriptor::new(CF_EVENTS_BY_SLOT,  prefix_scan_opts(8)),   // key=slot(8)+program(32)+seq(8)
-
+            ColumnFamilyDescriptor::new(CF_TX_BY_SLOT, prefix_scan_opts(8)), // key=slot(8)+seq(8)
+            ColumnFamilyDescriptor::new(CF_EVENTS_BY_SLOT, prefix_scan_opts(8)), // key=slot(8)+program(32)+seq(8)
             // Write-heavy archival CFs
-            ColumnFamilyDescriptor::new(CF_EVM_TXS,         archival_opts(32)),     // key=evm_hash
-            ColumnFamilyDescriptor::new(CF_EVM_RECEIPTS,    archival_opts(32)),     // key=evm_hash
-
+            ColumnFamilyDescriptor::new(CF_EVM_TXS, archival_opts(32)), // key=evm_hash
+            ColumnFamilyDescriptor::new(CF_EVM_RECEIPTS, archival_opts(32)), // key=evm_hash
             // EVM CFs with 20-byte address prefix
-            ColumnFamilyDescriptor::new(CF_EVM_ACCOUNTS,    point_lookup_opts(20)), // key=evm_addr(20)
-            ColumnFamilyDescriptor::new(CF_EVM_MAP,         point_lookup_opts(20)), // key=evm_addr(20)
-            ColumnFamilyDescriptor::new(CF_EVM_STORAGE,     prefix_scan_opts(20)),  // key=evm_addr(20)+slot(32)
-
+            ColumnFamilyDescriptor::new(CF_EVM_ACCOUNTS, point_lookup_opts(20)), // key=evm_addr(20)
+            ColumnFamilyDescriptor::new(CF_EVM_MAP, point_lookup_opts(20)),      // key=evm_addr(20)
+            ColumnFamilyDescriptor::new(CF_EVM_STORAGE, prefix_scan_opts(20)), // key=evm_addr(20)+slot(32)
             // Small/singleton CFs
-            ColumnFamilyDescriptor::new(CF_SLOTS,           small_cf_opts()),
-            ColumnFamilyDescriptor::new(CF_STATS,           write_heavy_opts(0)), // many per-slot seq counters + per-account atomic counters
-            ColumnFamilyDescriptor::new(CF_VALIDATORS,      small_cf_opts()),
-            ColumnFamilyDescriptor::new(CF_REEFSTAKE,       small_cf_opts()),
-            ColumnFamilyDescriptor::new(CF_STAKE_POOL,      small_cf_opts()),
-            ColumnFamilyDescriptor::new(CF_PROGRAMS,        point_lookup_opts(32)),
+            ColumnFamilyDescriptor::new(CF_SLOTS, small_cf_opts()),
+            ColumnFamilyDescriptor::new(CF_STATS, write_heavy_opts(0)), // many per-slot seq counters + per-account atomic counters
+            ColumnFamilyDescriptor::new(CF_VALIDATORS, small_cf_opts()),
+            ColumnFamilyDescriptor::new(CF_REEFSTAKE, small_cf_opts()),
+            ColumnFamilyDescriptor::new(CF_STAKE_POOL, small_cf_opts()),
+            ColumnFamilyDescriptor::new(CF_PROGRAMS, point_lookup_opts(32)),
             ColumnFamilyDescriptor::new(CF_SYMBOL_REGISTRY, small_cf_opts()),
             ColumnFamilyDescriptor::new(CF_CONTRACT_STORAGE, prefix_scan_opts(32)),
-
             // Incremental Merkle leaf cache
-            ColumnFamilyDescriptor::new(CF_MERKLE_LEAVES,   point_lookup_opts(32)), // key=pubkey(32)->leaf_hash(32)
+            ColumnFamilyDescriptor::new(CF_MERKLE_LEAVES, point_lookup_opts(32)), // key=pubkey(32)->leaf_hash(32)
         ];
 
         let db = DB::open_cf_descriptors(&db_opts, path, cfs)
@@ -620,7 +662,8 @@ impl StateStore {
 
         // Check if this is a new slot BEFORE writing the slot index
         // (otherwise the lookup finds our own write and metrics are never tracked)
-        let is_new_slot = self.get_block_by_slot(block.header.slot)
+        let is_new_slot = self
+            .get_block_by_slot(block.header.slot)
             .unwrap_or(None)
             .is_none();
 
@@ -644,11 +687,7 @@ impl StateStore {
             let sig = tx.signature();
             // Store tx body in CF_TRANSACTIONS so getTransaction RPC can find it
             if let Err(e) = self.put_transaction(tx) {
-                eprintln!(
-                    "Warning: failed to store tx {}: {}",
-                    sig.to_hex(),
-                    e
-                );
+                eprintln!("Warning: failed to store tx {}: {}", sig.to_hex(), e);
             }
             if let Err(e) = self.index_tx_to_slot(&sig, block.header.slot) {
                 // Non-fatal: log but don't fail block storage
@@ -913,7 +952,9 @@ impl StateStore {
 
         // Rebuild Merkle tree from all cached leaves (already sorted by pubkey in RocksDB)
         let mut leaves: Vec<Hash> = Vec::new();
-        let iter = self.db.iterator_cf(&cf_leaves, rocksdb::IteratorMode::Start);
+        let iter = self
+            .db
+            .iterator_cf(&cf_leaves, rocksdb::IteratorMode::Start);
         for item in iter.flatten() {
             let (_, value) = item;
             if value.len() == 32 {
@@ -951,7 +992,9 @@ impl StateStore {
         let mut batch = WriteBatch::default();
         let mut count = 0u64;
 
-        let iter = self.db.iterator_cf(&cf_accounts, rocksdb::IteratorMode::Start);
+        let iter = self
+            .db
+            .iterator_cf(&cf_accounts, rocksdb::IteratorMode::Start);
         for item in iter.flatten() {
             let (key, value) = item;
             let mut data = Vec::with_capacity(key.len() + value.len());
@@ -1187,7 +1230,11 @@ impl StateStore {
     /// Use this to fix discrepancies between counter and reality
     pub fn reconcile_account_count(&self) -> Result<(), String> {
         let actual_count = self.count_accounts()?;
-        let mut counter = self.metrics.total_accounts.lock().unwrap_or_else(|e| e.into_inner());
+        let mut counter = self
+            .metrics
+            .total_accounts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         *counter = actual_count;
         self.metrics.save(&self.db)?;
         Ok(())
@@ -1316,7 +1363,9 @@ impl StateStore {
                         }
                         _ => 0,
                     };
-                    let _ = self.db.put_cf(cf_s, &counter_key, (current + 1).to_le_bytes());
+                    let _ = self
+                        .db
+                        .put_cf(cf_s, &counter_key, (current + 1).to_le_bytes());
                 }
             }
         }
@@ -1752,11 +1801,7 @@ impl StateStore {
     }
 
     /// Check if a token_id is already used in a collection.
-    pub fn nft_token_id_exists(
-        &self,
-        collection: &Pubkey,
-        token_id: u64,
-    ) -> Result<bool, String> {
+    pub fn nft_token_id_exists(&self, collection: &Pubkey, token_id: u64) -> Result<bool, String> {
         let cf = self
             .db
             .cf_handle(CF_NFT_BY_COLLECTION)
@@ -1881,7 +1926,7 @@ impl StateStore {
             .cf_handle(CF_SYMBOL_BY_PROGRAM)
             .ok_or_else(|| "Symbol-by-program CF not found".to_string())?;
 
-        match self.db.get_cf(&cf_rev, &program.0) {
+        match self.db.get_cf(&cf_rev, program.0) {
             Ok(Some(symbol_bytes)) => {
                 let symbol = String::from_utf8(symbol_bytes.to_vec())
                     .map_err(|e| format!("Invalid UTF-8 in symbol reverse index: {}", e))?;
@@ -1893,7 +1938,10 @@ impl StateStore {
     }
 
     /// List all symbol registry entries (up to limit)
-    pub fn get_all_symbol_registry(&self, limit: usize) -> Result<Vec<SymbolRegistryEntry>, String> {
+    pub fn get_all_symbol_registry(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<SymbolRegistryEntry>, String> {
         let cf = self
             .db
             .cf_handle(CF_SYMBOL_REGISTRY)
@@ -1945,7 +1993,7 @@ impl StateStore {
         // Write reverse index: program pubkey -> symbol (O(1) program→symbol lookup)
         if let Some(cf_rev) = self.db.cf_handle(CF_SYMBOL_BY_PROGRAM) {
             self.db
-                .put_cf(&cf_rev, &entry.program.0, normalized.as_bytes())
+                .put_cf(&cf_rev, entry.program.0, normalized.as_bytes())
                 .map_err(|e| format!("Failed to store symbol reverse index: {}", e))?;
         }
 
@@ -1984,7 +2032,9 @@ impl StateStore {
                 }
                 _ => 0,
             };
-            let _ = self.db.put_cf(&cf_stats, &counter_key, (current + 1).to_le_bytes());
+            let _ = self
+                .db
+                .put_cf(&cf_stats, &counter_key, (current + 1).to_le_bytes());
         }
 
         Ok(())
@@ -2277,10 +2327,10 @@ impl StateBatch {
                 if let Some(ref account) = change.account {
                     let data = bincode::serialize(account)
                         .map_err(|e| format!("Failed to serialize EVM account: {}", e))?;
-                    self.batch.put_cf(&cf_accounts, &change.evm_address, &data);
+                    self.batch.put_cf(&cf_accounts, change.evm_address, &data);
                 } else {
                     // Clear EVM account (self-destruct)
-                    self.batch.delete_cf(&cf_accounts, &change.evm_address);
+                    self.batch.delete_cf(&cf_accounts, change.evm_address);
 
                     // Clear all on-disk storage slots for this address
                     let prefix = &change.evm_address[..];
@@ -2715,7 +2765,7 @@ impl StateBatch {
         // Write reverse index: program pubkey -> symbol (O(1) program→symbol lookup)
         if let Some(cf_rev) = self.db.cf_handle(CF_SYMBOL_BY_PROGRAM) {
             self.batch
-                .put_cf(&cf_rev, &entry.program.0, normalized.as_bytes());
+                .put_cf(&cf_rev, entry.program.0, normalized.as_bytes());
         }
 
         Ok(())
@@ -2734,263 +2784,6 @@ impl StateBatch {
             Ok(_) => Ok(0),
             Err(e) => Err(format!("Database error: {}", e)),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::tempdir;
-
-    #[test]
-    fn test_state_store() {
-        let temp_dir = tempdir().unwrap();
-        let state = StateStore::open(temp_dir.path()).unwrap();
-
-        let pubkey = Pubkey([1u8; 32]);
-        let account = Account::new(100, pubkey);
-
-        // Store
-        state.put_account(&pubkey, &account).unwrap();
-
-        // Retrieve
-        let retrieved = state.get_account(&pubkey).unwrap().unwrap();
-        assert_eq!(retrieved.shells, Account::molt_to_shells(100));
-    }
-
-    #[test]
-    fn test_transfer() {
-        let temp_dir = tempdir().unwrap();
-        let state = StateStore::open(temp_dir.path()).unwrap();
-
-        let alice = Pubkey([1u8; 32]);
-        let bob = Pubkey([2u8; 32]);
-
-        // Create Alice with 1000 MOLT
-        let alice_account = Account::new(1000, alice);
-        state.put_account(&alice, &alice_account).unwrap();
-
-        // Transfer 100 MOLT to Bob
-        let shells = Account::molt_to_shells(100);
-        state.transfer(&alice, &bob, shells).unwrap();
-
-        // Check balances
-        assert_eq!(
-            state.get_balance(&alice).unwrap(),
-            Account::molt_to_shells(900)
-        );
-        assert_eq!(
-            state.get_balance(&bob).unwrap(),
-            Account::molt_to_shells(100)
-        );
-    }
-
-    #[test]
-    fn test_state_root_deterministic() {
-        let temp1 = tempdir().unwrap();
-        let state1 = StateStore::open(temp1.path()).unwrap();
-
-        let temp2 = tempdir().unwrap();
-        let state2 = StateStore::open(temp2.path()).unwrap();
-
-        // Same accounts in both states
-        let pk_a = Pubkey([1u8; 32]);
-        let pk_b = Pubkey([2u8; 32]);
-        state1.put_account(&pk_a, &Account::new(100, pk_a)).unwrap();
-        state1.put_account(&pk_b, &Account::new(200, pk_b)).unwrap();
-
-        state2.put_account(&pk_a, &Account::new(100, pk_a)).unwrap();
-        state2.put_account(&pk_b, &Account::new(200, pk_b)).unwrap();
-
-        let root1 = state1.compute_state_root();
-        let root2 = state2.compute_state_root();
-        assert_eq!(root1, root2, "Same accounts should produce same state root");
-    }
-
-    #[test]
-    fn test_state_root_changes_on_mutation() {
-        let temp = tempdir().unwrap();
-        let state = StateStore::open(temp.path()).unwrap();
-
-        let pk = Pubkey([1u8; 32]);
-        state.put_account(&pk, &Account::new(100, pk)).unwrap();
-        let root1 = state.compute_state_root();
-
-        state.put_account(&pk, &Account::new(200, pk)).unwrap();
-        let root2 = state.compute_state_root();
-
-        assert_ne!(
-            root1, root2,
-            "Changed balance should produce different state root"
-        );
-    }
-
-    #[test]
-    fn test_fee_config_roundtrip() {
-        let temp = tempdir().unwrap();
-        let state = StateStore::open(temp.path()).unwrap();
-
-        let config = crate::FeeConfig {
-            base_fee: 5_000,
-            contract_deploy_fee: 1_000_000,
-            contract_upgrade_fee: 500_000,
-            nft_mint_fee: 100_000,
-            nft_collection_fee: 200_000,
-            fee_burn_percent: 40,
-            fee_producer_percent: 35,
-            fee_voters_percent: 15,
-            fee_treasury_percent: 10,
-        };
-
-        state.set_fee_config_full(&config).unwrap();
-
-        let loaded = state.get_fee_config().unwrap();
-        assert_eq!(loaded.base_fee, 5_000);
-        assert_eq!(loaded.fee_burn_percent, 40);
-        assert_eq!(loaded.fee_producer_percent, 35);
-        assert_eq!(loaded.fee_voters_percent, 15);
-    }
-
-    #[test]
-    fn test_recent_blockhashes() {
-        let temp = tempdir().unwrap();
-        let state = StateStore::open(temp.path()).unwrap();
-
-        // Store a few blocks
-        let h1 = Hash::hash(b"block1");
-        let _h2 = Hash::hash(b"block2");
-        let block1 = crate::Block::new_with_timestamp(
-            1,
-            Hash::default(),
-            Hash::default(),
-            [0u8; 32],
-            vec![],
-            100,
-        );
-        let block2 =
-            crate::Block::new_with_timestamp(2, h1, Hash::default(), [0u8; 32], vec![], 200);
-
-        state.put_block(&block1).unwrap();
-        state.put_block(&block2).unwrap();
-        state.set_last_slot(2).unwrap();
-
-        let recent = state.get_recent_blockhashes(10).unwrap();
-        // Should contain the block hashes we stored (not Hash::default() anymore — T1.3)
-        assert!(
-            recent.len() >= 2,
-            "Should contain at least the 2 stored block hashes"
-        );
-        assert!(
-            recent.contains(&block1.hash()),
-            "Should contain block1's hash"
-        );
-        assert!(
-            recent.contains(&block2.hash()),
-            "Should contain block2's hash"
-        );
-    }
-
-    // ── H3 tests: StateBatch::apply_evm_changes ──
-
-    #[test]
-    fn test_apply_evm_changes_writes_account_and_storage() {
-        let temp = tempdir().unwrap();
-        let state = StateStore::open(temp.path()).unwrap();
-        let changes = vec![crate::evm::EvmStateChange {
-            evm_address: [0xAA; 20],
-            account: Some(crate::evm::EvmAccount {
-                nonce: 5,
-                balance: [0u8; 32],
-                code: vec![0xAB, 0xCD],
-            }),
-            storage_changes: vec![
-                ([0x01; 32], Some(alloy_primitives::U256::from(42u64))),
-                ([0x02; 32], Some(alloy_primitives::U256::from(99u64))),
-            ],
-            native_balance_update: None,
-        }];
-
-        let mut batch = state.begin_batch();
-        batch.apply_evm_changes(&changes).unwrap();
-        state.commit_batch(batch).unwrap();
-
-        // Verify the EVM account was written
-        let stored = state.get_evm_account(&[0xAA; 20]).unwrap();
-        assert!(stored.is_some());
-        let acct = stored.unwrap();
-        assert_eq!(acct.nonce, 5);
-        assert_eq!(acct.code, vec![0xABu8, 0xCD]);
-
-        // Verify storage (returns U256::ZERO for missing, non-zero for present)
-        let val1 = state.get_evm_storage(&[0xAA; 20], &[0x01; 32]).unwrap();
-        assert_ne!(val1, alloy_primitives::U256::ZERO);
-        let val2 = state.get_evm_storage(&[0xAA; 20], &[0x02; 32]).unwrap();
-        assert_ne!(val2, alloy_primitives::U256::ZERO);
-    }
-
-    #[test]
-    fn test_apply_evm_changes_clears_account() {
-        let temp = tempdir().unwrap();
-        let state = StateStore::open(temp.path()).unwrap();
-
-        // First write an account
-        let create = vec![crate::evm::EvmStateChange {
-            evm_address: [0xBB; 20],
-            account: Some(crate::evm::EvmAccount {
-                nonce: 1,
-                balance: [0u8; 32],
-                code: vec![],
-            }),
-            storage_changes: vec![([0x01; 32], Some(alloy_primitives::U256::from(10u64)))],
-            native_balance_update: None,
-        }];
-        let mut batch = state.begin_batch();
-        batch.apply_evm_changes(&create).unwrap();
-        state.commit_batch(batch).unwrap();
-        assert!(state.get_evm_account(&[0xBB; 20]).unwrap().is_some());
-
-        // Now clear it (account = None → self-destruct)
-        let clear = vec![crate::evm::EvmStateChange {
-            evm_address: [0xBB; 20],
-            account: None,
-            storage_changes: vec![],
-            native_balance_update: None,
-        }];
-        let mut batch2 = state.begin_batch();
-        batch2.apply_evm_changes(&clear).unwrap();
-        state.commit_batch(batch2).unwrap();
-
-        // Account and storage should be gone
-        assert!(state.get_evm_account(&[0xBB; 20]).unwrap().is_none());
-        assert_eq!(state.get_evm_storage(&[0xBB; 20], &[0x01; 32]).unwrap(), alloy_primitives::U256::ZERO);
-    }
-
-    #[test]
-    fn test_apply_evm_changes_native_balance_update() {
-        let temp = tempdir().unwrap();
-        let state = StateStore::open(temp.path()).unwrap();
-
-        let pk = Pubkey([0x77; 32]);
-        state.put_account(&pk, &Account::new(100, pk)).unwrap();
-
-        let new_spendable = 500_000_000u64; // 0.5 MOLT in shells
-        let changes = vec![crate::evm::EvmStateChange {
-            evm_address: [0xCC; 20],
-            account: Some(crate::evm::EvmAccount {
-                nonce: 0,
-                balance: [0u8; 32],
-                code: vec![],
-            }),
-            storage_changes: vec![],
-            native_balance_update: Some((pk, new_spendable)),
-        }];
-
-        let mut batch = state.begin_batch();
-        batch.apply_evm_changes(&changes).unwrap();
-        state.commit_batch(batch).unwrap();
-
-        let acct = state.get_account(&pk).unwrap().unwrap();
-        assert_eq!(acct.spendable, new_spendable);
     }
 }
 
@@ -3635,7 +3428,9 @@ impl StateStore {
 
             // Reset dirty counter after pruning dirty_acct keys
             if let Some(cf_stats) = self.db.cf_handle(CF_STATS) {
-                let _ = self.db.put_cf(&cf_stats, b"dirty_account_count", 0u64.to_le_bytes());
+                let _ = self
+                    .db
+                    .put_cf(&cf_stats, b"dirty_account_count", 0u64.to_le_bytes());
             }
         }
 
@@ -4444,9 +4239,273 @@ impl StateStore {
     /// Reconcile active account count with actual database
     pub fn reconcile_active_account_count(&self) -> Result<(), String> {
         let actual_count = self.count_active_accounts()?;
-        let mut counter = self.metrics.active_accounts.lock().unwrap_or_else(|e| e.into_inner());
+        let mut counter = self
+            .metrics
+            .active_accounts
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         *counter = actual_count;
         self.metrics.save(&self.db)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_state_store() {
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+
+        let pubkey = Pubkey([1u8; 32]);
+        let account = Account::new(100, pubkey);
+
+        // Store
+        state.put_account(&pubkey, &account).unwrap();
+
+        // Retrieve
+        let retrieved = state.get_account(&pubkey).unwrap().unwrap();
+        assert_eq!(retrieved.shells, Account::molt_to_shells(100));
+    }
+
+    #[test]
+    fn test_transfer() {
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+
+        let alice = Pubkey([1u8; 32]);
+        let bob = Pubkey([2u8; 32]);
+
+        // Create Alice with 1000 MOLT
+        let alice_account = Account::new(1000, alice);
+        state.put_account(&alice, &alice_account).unwrap();
+
+        // Transfer 100 MOLT to Bob
+        let shells = Account::molt_to_shells(100);
+        state.transfer(&alice, &bob, shells).unwrap();
+
+        // Check balances
+        assert_eq!(
+            state.get_balance(&alice).unwrap(),
+            Account::molt_to_shells(900)
+        );
+        assert_eq!(
+            state.get_balance(&bob).unwrap(),
+            Account::molt_to_shells(100)
+        );
+    }
+
+    #[test]
+    fn test_state_root_deterministic() {
+        let temp1 = tempdir().unwrap();
+        let state1 = StateStore::open(temp1.path()).unwrap();
+
+        let temp2 = tempdir().unwrap();
+        let state2 = StateStore::open(temp2.path()).unwrap();
+
+        // Same accounts in both states
+        let pk_a = Pubkey([1u8; 32]);
+        let pk_b = Pubkey([2u8; 32]);
+        state1.put_account(&pk_a, &Account::new(100, pk_a)).unwrap();
+        state1.put_account(&pk_b, &Account::new(200, pk_b)).unwrap();
+
+        state2.put_account(&pk_a, &Account::new(100, pk_a)).unwrap();
+        state2.put_account(&pk_b, &Account::new(200, pk_b)).unwrap();
+
+        let root1 = state1.compute_state_root();
+        let root2 = state2.compute_state_root();
+        assert_eq!(root1, root2, "Same accounts should produce same state root");
+    }
+
+    #[test]
+    fn test_state_root_changes_on_mutation() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let pk = Pubkey([1u8; 32]);
+        state.put_account(&pk, &Account::new(100, pk)).unwrap();
+        let root1 = state.compute_state_root();
+
+        state.put_account(&pk, &Account::new(200, pk)).unwrap();
+        let root2 = state.compute_state_root();
+
+        assert_ne!(
+            root1, root2,
+            "Changed balance should produce different state root"
+        );
+    }
+
+    #[test]
+    fn test_fee_config_roundtrip() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let config = crate::FeeConfig {
+            base_fee: 5_000,
+            contract_deploy_fee: 1_000_000,
+            contract_upgrade_fee: 500_000,
+            nft_mint_fee: 100_000,
+            nft_collection_fee: 200_000,
+            fee_burn_percent: 40,
+            fee_producer_percent: 35,
+            fee_voters_percent: 15,
+            fee_treasury_percent: 10,
+        };
+
+        state.set_fee_config_full(&config).unwrap();
+
+        let loaded = state.get_fee_config().unwrap();
+        assert_eq!(loaded.base_fee, 5_000);
+        assert_eq!(loaded.fee_burn_percent, 40);
+        assert_eq!(loaded.fee_producer_percent, 35);
+        assert_eq!(loaded.fee_voters_percent, 15);
+    }
+
+    #[test]
+    fn test_recent_blockhashes() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        // Store a few blocks
+        let h1 = Hash::hash(b"block1");
+        let _h2 = Hash::hash(b"block2");
+        let block1 = crate::Block::new_with_timestamp(
+            1,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            vec![],
+            100,
+        );
+        let block2 =
+            crate::Block::new_with_timestamp(2, h1, Hash::default(), [0u8; 32], vec![], 200);
+
+        state.put_block(&block1).unwrap();
+        state.put_block(&block2).unwrap();
+        state.set_last_slot(2).unwrap();
+
+        let recent = state.get_recent_blockhashes(10).unwrap();
+        // Should contain the block hashes we stored (not Hash::default() anymore — T1.3)
+        assert!(
+            recent.len() >= 2,
+            "Should contain at least the 2 stored block hashes"
+        );
+        assert!(
+            recent.contains(&block1.hash()),
+            "Should contain block1's hash"
+        );
+        assert!(
+            recent.contains(&block2.hash()),
+            "Should contain block2's hash"
+        );
+    }
+
+    // ── H3 tests: StateBatch::apply_evm_changes ──
+
+    #[test]
+    fn test_apply_evm_changes_writes_account_and_storage() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+        let changes = vec![crate::evm::EvmStateChange {
+            evm_address: [0xAA; 20],
+            account: Some(crate::evm::EvmAccount {
+                nonce: 5,
+                balance: [0u8; 32],
+                code: vec![0xAB, 0xCD],
+            }),
+            storage_changes: vec![
+                ([0x01; 32], Some(alloy_primitives::U256::from(42u64))),
+                ([0x02; 32], Some(alloy_primitives::U256::from(99u64))),
+            ],
+            native_balance_update: None,
+        }];
+
+        let mut batch = state.begin_batch();
+        batch.apply_evm_changes(&changes).unwrap();
+        state.commit_batch(batch).unwrap();
+
+        // Verify the EVM account was written
+        let stored = state.get_evm_account(&[0xAA; 20]).unwrap();
+        assert!(stored.is_some());
+        let acct = stored.unwrap();
+        assert_eq!(acct.nonce, 5);
+        assert_eq!(acct.code, vec![0xABu8, 0xCD]);
+
+        // Verify storage (returns U256::ZERO for missing, non-zero for present)
+        let val1 = state.get_evm_storage(&[0xAA; 20], &[0x01; 32]).unwrap();
+        assert_ne!(val1, alloy_primitives::U256::ZERO);
+        let val2 = state.get_evm_storage(&[0xAA; 20], &[0x02; 32]).unwrap();
+        assert_ne!(val2, alloy_primitives::U256::ZERO);
+    }
+
+    #[test]
+    fn test_apply_evm_changes_clears_account() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        // First write an account
+        let create = vec![crate::evm::EvmStateChange {
+            evm_address: [0xBB; 20],
+            account: Some(crate::evm::EvmAccount {
+                nonce: 1,
+                balance: [0u8; 32],
+                code: vec![],
+            }),
+            storage_changes: vec![([0x01; 32], Some(alloy_primitives::U256::from(10u64)))],
+            native_balance_update: None,
+        }];
+        let mut batch = state.begin_batch();
+        batch.apply_evm_changes(&create).unwrap();
+        state.commit_batch(batch).unwrap();
+        assert!(state.get_evm_account(&[0xBB; 20]).unwrap().is_some());
+
+        // Now clear it (account = None → self-destruct)
+        let clear = vec![crate::evm::EvmStateChange {
+            evm_address: [0xBB; 20],
+            account: None,
+            storage_changes: vec![],
+            native_balance_update: None,
+        }];
+        let mut batch2 = state.begin_batch();
+        batch2.apply_evm_changes(&clear).unwrap();
+        state.commit_batch(batch2).unwrap();
+
+        // Account and storage should be gone
+        assert!(state.get_evm_account(&[0xBB; 20]).unwrap().is_none());
+        assert_eq!(
+            state.get_evm_storage(&[0xBB; 20], &[0x01; 32]).unwrap(),
+            alloy_primitives::U256::ZERO
+        );
+    }
+
+    #[test]
+    fn test_apply_evm_changes_native_balance_update() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let pk = Pubkey([0x77; 32]);
+        state.put_account(&pk, &Account::new(100, pk)).unwrap();
+
+        let new_spendable = 500_000_000u64; // 0.5 MOLT in shells
+        let changes = vec![crate::evm::EvmStateChange {
+            evm_address: [0xCC; 20],
+            account: Some(crate::evm::EvmAccount {
+                nonce: 0,
+                balance: [0u8; 32],
+                code: vec![],
+            }),
+            storage_changes: vec![],
+            native_balance_update: Some((pk, new_spendable)),
+        }];
+
+        let mut batch = state.begin_batch();
+        batch.apply_evm_changes(&changes).unwrap();
+        state.commit_batch(batch).unwrap();
+
+        let acct = state.get_account(&pk).unwrap().unwrap();
+        assert_eq!(acct.spendable, new_spendable);
     }
 }

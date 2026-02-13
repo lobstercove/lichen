@@ -262,7 +262,10 @@ impl Account {
     /// Add to spendable balance (for rewards, transfers)
     pub fn add_spendable(&mut self, amount: u64) -> Result<(), String> {
         self.shells = self.shells.checked_add(amount).ok_or_else(|| {
-            format!("Overflow adding {} to shells balance {}", amount, self.shells)
+            format!(
+                "Overflow adding {} to shells balance {}",
+                amount, self.shells
+            )
         })?;
         self.spendable = self.spendable.checked_add(amount).ok_or_else(|| {
             // Roll back shells on spendable overflow
@@ -312,7 +315,7 @@ mod tests {
 
         // Base58 format
         let base58 = pubkey.to_base58();
-        assert!(base58.len() > 0);
+        assert!(!base58.is_empty());
         println!("Base58: {}", base58);
 
         // EVM format

@@ -339,9 +339,8 @@ impl ReefStakePool {
             if total_before == 0 {
                 0
             } else {
-                let transfer_deposited =
-                    ((st_molt_amount as u128 * sender.molt_deposited as u128) / total_before as u128)
-                        as u64;
+                let transfer_deposited = ((st_molt_amount as u128 * sender.molt_deposited as u128)
+                    / total_before as u128) as u64;
                 sender.molt_deposited -= transfer_deposited;
                 transfer_deposited
             }

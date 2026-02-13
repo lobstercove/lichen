@@ -30,7 +30,7 @@ impl PeerInfo {
             connection: None,
             last_seen: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
+                .unwrap_or_default()
                 .as_secs(),
             reputation: 500,
             is_validator: false,
@@ -41,7 +41,7 @@ impl PeerInfo {
     pub fn update_last_seen(&mut self) {
         self.last_seen = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
+            .unwrap_or_default()
             .as_secs();
     }
 
@@ -131,7 +131,12 @@ impl PeerManager {
 
     /// Connect to a peer
     pub async fn connect_peer(&self, peer_addr: SocketAddr) -> Result<(), String> {
-        if self.ban_list.lock().unwrap_or_else(|e| e.into_inner()).is_banned(&peer_addr) {
+        if self
+            .ban_list
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_banned(&peer_addr)
+        {
             return Err("Peer is banned".to_string());
         }
         if self.peers.contains_key(&peer_addr) {
@@ -249,7 +254,10 @@ impl PeerManager {
             peer.adjust_score(-2);
             if peer.score <= -10 {
                 let addr = *peer_addr;
-                self.ban_list.lock().unwrap_or_else(|e| e.into_inner()).record_score(addr, peer.score);
+                self.ban_list
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .record_score(addr, peer.score);
                 drop(peer);
                 self.peers.remove(&addr);
                 warn!("P2P: Removed peer {} due to low score", addr);
@@ -265,7 +273,10 @@ impl PeerManager {
     }
 
     pub fn prune_ban_list(&self) {
-        self.ban_list.lock().unwrap_or_else(|e| e.into_inner()).prune();
+        self.ban_list
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .prune();
     }
 
     /// Start accepting connections
@@ -287,13 +298,21 @@ impl PeerManager {
                     match connecting.await {
                         Ok(connection) => {
                             let peer_addr = connection.remote_address();
-                            if ban_list.lock().unwrap_or_else(|e| e.into_inner()).is_banned(&peer_addr) {
+                            if ban_list
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .is_banned(&peer_addr)
+                            {
                                 warn!("P2P: Rejected banned peer {}", peer_addr);
                                 return;
                             }
                             // Enforce MAX_PEERS on inbound connections too
                             if peers.len() >= PeerManager::MAX_PEERS {
-                                warn!("P2P: Rejected inbound connection from {} — at max peers ({})", peer_addr, PeerManager::MAX_PEERS);
+                                warn!(
+                                    "P2P: Rejected inbound connection from {} — at max peers ({})",
+                                    peer_addr,
+                                    PeerManager::MAX_PEERS
+                                );
                                 return;
                             }
                             info!("🦞 P2P: Accepted connection from {}", peer_addr);
@@ -326,7 +345,7 @@ impl PeerManager {
     pub fn cleanup_stale_peers(&self, timeout_secs: u64) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
+            .unwrap_or_default()
             .as_secs();
         let mut to_remove = Vec::new();
 
@@ -368,7 +387,7 @@ async fn handle_connection(
         match P2PMessage::deserialize(&bytes) {
             Ok(message) => {
                 deser_failures = 0; // reset on success
-                // Update last seen
+                                    // Update last seen
                 if let Some(mut peer) = peers.get_mut(&peer_addr) {
                     peer.update_last_seen();
                 }
@@ -386,11 +405,17 @@ async fn handle_connection(
                 );
                 // H18 fix: disconnect after too many consecutive failures
                 if deser_failures >= MAX_DESER_FAILURES {
-                    warn!("P2P: Disconnecting {} — too many deserialization failures", peer_addr);
+                    warn!(
+                        "P2P: Disconnecting {} — too many deserialization failures",
+                        peer_addr
+                    );
                     if let Some(mut peer) = peers.get_mut(&peer_addr) {
                         peer.score -= 20;
                     }
-                    return Err(format!("Too many deserialization failures from {}", peer_addr));
+                    return Err(format!(
+                        "Too many deserialization failures from {}",
+                        peer_addr
+                    ));
                 }
             }
         }

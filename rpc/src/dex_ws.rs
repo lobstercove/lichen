@@ -92,19 +92,19 @@ pub struct PriceLevel {
 /// Parsed DEX subscription channel
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum DexChannel {
-    OrderBook(u64),         // orderbook:<pair_id>
-    Trades(u64),            // trades:<pair_id>
-    Ticker(u64),            // ticker:<pair_id>
-    Candles(u64, u64),      // candles:<pair_id>:<interval>
-    UserOrders(String),     // orders:<trader_addr>
-    UserPositions(String),  // positions:<trader_addr>
+    OrderBook(u64),        // orderbook:<pair_id>
+    Trades(u64),           // trades:<pair_id>
+    Ticker(u64),           // ticker:<pair_id>
+    Candles(u64, u64),     // candles:<pair_id>:<interval>
+    UserOrders(String),    // orders:<trader_addr>
+    UserPositions(String), // positions:<trader_addr>
 }
 
 impl DexChannel {
     /// Parse a channel string into a DexChannel
     pub fn parse(channel: &str) -> Option<DexChannel> {
         let parts: Vec<&str> = channel.split(':').collect();
-        match parts.get(0).copied()? {
+        match parts.first().copied()? {
             "orderbook" => {
                 let pair_id = parts.get(1)?.parse().ok()?;
                 Some(DexChannel::OrderBook(pair_id))
@@ -135,7 +135,7 @@ impl DexChannel {
     }
 
     /// Convert back to channel string
-    pub fn to_string(&self) -> String {
+    pub fn channel_string(&self) -> String {
         match self {
             DexChannel::OrderBook(p) => format!("orderbook:{}", p),
             DexChannel::Trades(p) => format!("trades:{}", p),
@@ -152,7 +152,12 @@ impl DexChannel {
             (DexChannel::OrderBook(p), DexEvent::OrderBookUpdate { pair_id, .. }) => p == pair_id,
             (DexChannel::Trades(p), DexEvent::TradeExecution { pair_id, .. }) => p == pair_id,
             (DexChannel::Ticker(p), DexEvent::TickerUpdate { pair_id, .. }) => p == pair_id,
-            (DexChannel::Candles(p, i), DexEvent::CandleUpdate { pair_id, interval, .. }) => p == pair_id && i == interval,
+            (
+                DexChannel::Candles(p, i),
+                DexEvent::CandleUpdate {
+                    pair_id, interval, ..
+                },
+            ) => p == pair_id && i == interval,
             (DexChannel::UserOrders(a), DexEvent::OrderUpdate { trader, .. }) => a == trader,
             (DexChannel::UserPositions(a), DexEvent::PositionUpdate { trader, .. }) => a == trader,
             _ => false,
@@ -189,7 +194,15 @@ impl DexEventBroadcaster {
     // Convenience methods for common events
 
     /// Broadcast a trade execution
-    pub fn emit_trade(&self, trade_id: u64, pair_id: u64, price: f64, quantity: u64, side: &str, slot: u64) {
+    pub fn emit_trade(
+        &self,
+        trade_id: u64,
+        pair_id: u64,
+        price: f64,
+        quantity: u64,
+        side: &str,
+        slot: u64,
+    ) {
         self.broadcast(DexEvent::TradeExecution {
             trade_id,
             pair_id,
@@ -201,37 +214,103 @@ impl DexEventBroadcaster {
     }
 
     /// Broadcast an order book update
-    pub fn emit_orderbook(&self, pair_id: u64, bids: Vec<PriceLevel>, asks: Vec<PriceLevel>, slot: u64) {
-        self.broadcast(DexEvent::OrderBookUpdate { pair_id, bids, asks, slot });
+    pub fn emit_orderbook(
+        &self,
+        pair_id: u64,
+        bids: Vec<PriceLevel>,
+        asks: Vec<PriceLevel>,
+        slot: u64,
+    ) {
+        self.broadcast(DexEvent::OrderBookUpdate {
+            pair_id,
+            bids,
+            asks,
+            slot,
+        });
     }
 
     /// Broadcast a ticker update
-    pub fn emit_ticker(&self, pair_id: u64, last_price: f64, bid: f64, ask: f64, volume_24h: u64, change_24h: f64) {
+    pub fn emit_ticker(
+        &self,
+        pair_id: u64,
+        last_price: f64,
+        bid: f64,
+        ask: f64,
+        volume_24h: u64,
+        change_24h: f64,
+    ) {
         self.broadcast(DexEvent::TickerUpdate {
-            pair_id, last_price, bid, ask, volume_24h, change_24h,
+            pair_id,
+            last_price,
+            bid,
+            ask,
+            volume_24h,
+            change_24h,
         });
     }
 
     /// Broadcast a candle update
-    pub fn emit_candle(&self, pair_id: u64, interval: u64, o: f64, h: f64, l: f64, c: f64, v: u64, slot: u64) {
+    #[allow(clippy::too_many_arguments)]
+    pub fn emit_candle(
+        &self,
+        pair_id: u64,
+        interval: u64,
+        o: f64,
+        h: f64,
+        l: f64,
+        c: f64,
+        v: u64,
+        slot: u64,
+    ) {
         self.broadcast(DexEvent::CandleUpdate {
-            pair_id, interval, open: o, high: h, low: l, close: c, volume: v, slot,
+            pair_id,
+            interval,
+            open: o,
+            high: h,
+            low: l,
+            close: c,
+            volume: v,
+            slot,
         });
     }
 
     /// Broadcast an order status update
-    pub fn emit_order_update(&self, order_id: u64, trader: &str, status: &str, filled: u64, remaining: u64, slot: u64) {
+    pub fn emit_order_update(
+        &self,
+        order_id: u64,
+        trader: &str,
+        status: &str,
+        filled: u64,
+        remaining: u64,
+        slot: u64,
+    ) {
         self.broadcast(DexEvent::OrderUpdate {
-            order_id, trader: trader.to_string(), status: status.to_string(),
-            filled, remaining, slot,
+            order_id,
+            trader: trader.to_string(),
+            status: status.to_string(),
+            filled,
+            remaining,
+            slot,
         });
     }
 
     /// Broadcast a margin position update
-    pub fn emit_position_update(&self, position_id: u64, trader: &str, status: &str, unrealized_pnl: i64, margin_ratio: f64, slot: u64) {
+    pub fn emit_position_update(
+        &self,
+        position_id: u64,
+        trader: &str,
+        status: &str,
+        unrealized_pnl: i64,
+        margin_ratio: f64,
+        slot: u64,
+    ) {
         self.broadcast(DexEvent::PositionUpdate {
-            position_id, trader: trader.to_string(), status: status.to_string(),
-            unrealized_pnl, margin_ratio, slot,
+            position_id,
+            trader: trader.to_string(),
+            status: status.to_string(),
+            unrealized_pnl,
+            margin_ratio,
+            slot,
         });
     }
 }
@@ -243,7 +322,7 @@ impl DexEventBroadcaster {
 /// Process a DEX WebSocket subscription request.
 /// Returns the channel string if valid, None otherwise.
 pub fn handle_dex_subscribe(channel: &str) -> Option<String> {
-    DexChannel::parse(channel).map(|c| c.to_string())
+    DexChannel::parse(channel).map(|c| c.channel_string())
 }
 
 /// Format a DexEvent into a JSON notification message

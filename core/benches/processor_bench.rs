@@ -4,11 +4,10 @@
 // Quick: cargo bench --bench processor_bench -- --warmup-time 1 --measurement-time 3
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
-use moltchain_core::{
-    Account, Block, Hash, Instruction, Keypair, Message, Pubkey, Transaction,
-    TxProcessor,
-};
 use moltchain_core::StateStore;
+use moltchain_core::{
+    Account, Block, Hash, Instruction, Keypair, Message, Pubkey, Transaction, TxProcessor,
+};
 use tempfile::TempDir;
 
 // ---------------------------------------------------------------------------
@@ -106,13 +105,7 @@ fn bench_block_creation(c: &mut Criterion) {
                 .collect();
 
             b.iter(|| {
-                let _block = Block::new(
-                    1,
-                    parent_hash,
-                    state_root,
-                    validator_bytes,
-                    txs.clone(),
-                );
+                let _block = Block::new(1, parent_hash, state_root, validator_bytes, txs.clone());
             });
         });
     }

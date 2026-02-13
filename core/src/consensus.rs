@@ -221,9 +221,9 @@ pub struct StakeInfo {
     pub blocks_produced: u64,         // Total blocks produced (for achievements)
     pub graduation_slot: Option<u64>, // Slot when fully vested (if graduated)
     #[serde(default)]
-    pub total_claimed: u64,           // Total lifetime rewards claimed (liquid + debt)
+    pub total_claimed: u64, // Total lifetime rewards claimed (liquid + debt)
     #[serde(default)]
-    pub total_debt_repaid: u64,       // Total lifetime debt repaid
+    pub total_debt_repaid: u64, // Total lifetime debt repaid
 }
 
 impl StakeInfo {
@@ -277,8 +277,10 @@ impl StakeInfo {
         // Proportionally reduce vesting state to keep ratios consistent
         let ratio_num = self.amount.saturating_sub(slashed);
         let ratio_den = self.amount;
-        self.earned_amount = (self.earned_amount as u128 * ratio_num as u128 / ratio_den as u128) as u64;
-        self.bootstrap_debt = (self.bootstrap_debt as u128 * ratio_num as u128 / ratio_den as u128) as u64;
+        self.earned_amount =
+            (self.earned_amount as u128 * ratio_num as u128 / ratio_den as u128) as u64;
+        self.bootstrap_debt =
+            (self.bootstrap_debt as u128 * ratio_num as u128 / ratio_den as u128) as u64;
         self.amount = ratio_num;
         self.is_active = self.meets_minimum();
         slashed
@@ -724,7 +726,12 @@ impl StakePool {
     }
 
     /// Claim unstake after cooldown completes
-    pub fn claim_unstake(&mut self, validator: &Pubkey, current_slot: u64, staker: &Pubkey) -> Result<u64, String> {
+    pub fn claim_unstake(
+        &mut self,
+        validator: &Pubkey,
+        current_slot: u64,
+        staker: &Pubkey,
+    ) -> Result<u64, String> {
         let request = self
             .unstake_requests
             .get(validator)
@@ -948,7 +955,7 @@ impl Vote {
             signature,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
+                .unwrap_or_default()
                 .as_secs(),
         }
     }
@@ -1134,7 +1141,8 @@ impl ValidatorSet {
                 let base = integer_sqrt(stake.max(1));
                 // H10 fix: multiply before divide to preserve granularity
                 let reputation = v.reputation.max(100) as u128;
-                ((base as u128).saturating_mul(reputation) / 100u128 + 1) as u64 // +1 avoids zero weight
+                ((base as u128).saturating_mul(reputation) / 100u128 + 1) as u64
+                // +1 avoids zero weight
             })
             .collect();
 
@@ -1218,10 +1226,8 @@ impl VoteAggregator {
         // H8 fix: Prevent equivocation — reject second vote from same validator
         // at the same slot, regardless of block hash.
         for ((slot, _hash), votes) in &self.votes {
-            if *slot == vote.slot {
-                if votes.iter().any(|v| v.validator == vote.validator) {
-                    return false; // equivocation attempt
-                }
+            if *slot == vote.slot && votes.iter().any(|v| v.validator == vote.validator) {
+                return false; // equivocation attempt
             }
         }
 
@@ -1458,7 +1464,7 @@ impl SlashingEvidence {
             reporter,
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
+                .unwrap_or_default()
                 .as_secs(),
         }
     }
@@ -1589,8 +1595,12 @@ impl SlashingTracker {
                 ) => s1 == s2,
                 // M7 fix: deduplicate Downtime evidence by missed_slots
                 (
-                    SlashingOffense::Downtime { missed_slots: m1, .. },
-                    SlashingOffense::Downtime { missed_slots: m2, .. },
+                    SlashingOffense::Downtime {
+                        missed_slots: m1, ..
+                    },
+                    SlashingOffense::Downtime {
+                        missed_slots: m2, ..
+                    },
                 ) => m1 == m2,
                 _ => false,
             })
@@ -1996,7 +2006,8 @@ mod tests {
             si.bootstrap_debt = 0;
         }
 
-        pool.request_unstake(&pk, 5_000_000_000_000, 100, pk).unwrap();
+        pool.request_unstake(&pk, 5_000_000_000_000, 100, pk)
+            .unwrap();
 
         // Claim too early → error
         let err = pool.claim_unstake(&pk, 200, &pk).unwrap_err();
@@ -2104,7 +2115,8 @@ mod tests {
         }
 
         assert_eq!(pool.pending_unstake_total(), 0);
-        pool.request_unstake(&pk, 5_000_000_000_000, 100, pk).unwrap();
+        pool.request_unstake(&pk, 5_000_000_000_000, 100, pk)
+            .unwrap();
         assert_eq!(pool.pending_unstake_total(), 5_000_000_000_000);
 
         // Claim after cooldown clears the pending amount

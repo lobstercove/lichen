@@ -24,7 +24,7 @@ struct CustodyState {
     db: Arc<DB>,
     next_index_lock: Arc<Mutex<()>>,
     /// M13 fix: serialize reserve ledger read-modify-write to prevent concurrent race conditions
-    reserve_lock: Arc<Mutex<()>>,
+    _reserve_lock: Arc<Mutex<()>>,
     config: CustodyConfig,
     http: reqwest::Client,
 }
@@ -54,11 +54,11 @@ struct CustodyConfig {
     wsol_contract_addr: Option<String>,
     weth_contract_addr: Option<String>,
     // Reserve rebalance settings
-    rebalance_threshold_bps: u64,   // trigger when one side exceeds this (e.g. 7000 = 70%)
-    rebalance_target_bps: u64,      // swap to reach this ratio (e.g. 5000 = 50/50)
-    jupiter_api_url: Option<String>,    // Solana DEX aggregator for USDT↔USDC swaps
-    uniswap_router: Option<String>,     // Ethereum DEX router for USDT↔USDC swaps
-    deposit_ttl_secs: i64,              // Expire unfunded deposits after this many seconds (default: 24h)
+    rebalance_threshold_bps: u64, // trigger when one side exceeds this (e.g. 7000 = 70%)
+    rebalance_target_bps: u64,    // swap to reach this ratio (e.g. 5000 = 50/50)
+    jupiter_api_url: Option<String>, // Solana DEX aggregator for USDT↔USDC swaps
+    uniswap_router: Option<String>, // Ethereum DEX router for USDT↔USDC swaps
+    deposit_ttl_secs: i64,        // Expire unfunded deposits after this many seconds (default: 24h)
     /// C8 fix: Secret master seed for key derivation (HMAC-SHA256 instead of plain SHA256).
     /// Load from CUSTODY_MASTER_SEED env var. Required for production.
     master_seed: String,
@@ -157,10 +157,10 @@ struct CreditJob {
 #[derive(Debug, Serialize, Deserialize)]
 struct WithdrawalRequest {
     user_id: String,
-    asset: String,         // "mUSD", "wSOL", "wETH"
+    asset: String, // "mUSD", "wSOL", "wETH"
     amount: u64,
-    dest_chain: String,    // "solana", "ethereum"
-    dest_address: String,  // destination address on dest_chain
+    dest_chain: String,   // "solana", "ethereum"
+    dest_address: String, // destination address on dest_chain
     /// For mUSD withdrawals: which stablecoin to receive ("usdt" or "usdc"). Defaults to "usdt".
     #[serde(default = "default_preferred_stablecoin")]
     preferred_stablecoin: String,
@@ -173,24 +173,24 @@ fn default_preferred_stablecoin() -> String {
 /// Treasury reserve ledger entry — tracks actual stablecoin holdings per chain+asset
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ReserveLedgerEntry {
-    chain: String,          // "solana" or "ethereum"
-    asset: String,          // "usdt" or "usdc"
-    amount: u64,            // smallest unit (6 decimals for both USDT/USDC)
-    last_updated: i64,      // unix timestamp
+    chain: String,     // "solana" or "ethereum"
+    asset: String,     // "usdt" or "usdc"
+    amount: u64,       // smallest unit (6 decimals for both USDT/USDC)
+    last_updated: i64, // unix timestamp
 }
 
 /// Rebalance job — swap one stablecoin for another on a given chain
 #[derive(Debug, Serialize, Deserialize)]
 struct RebalanceJob {
     job_id: String,
-    chain: String,              // "solana" or "ethereum"
-    from_asset: String,         // "usdt" or "usdc"
-    to_asset: String,           // "usdc" or "usdt"
-    amount: u64,                // amount to swap (smallest unit)
-    trigger: String,            // "threshold" — periodic ratio check, "withdrawal" — on-demand
+    chain: String,      // "solana" or "ethereum"
+    from_asset: String, // "usdt" or "usdc"
+    to_asset: String,   // "usdc" or "usdt"
+    amount: u64,        // amount to swap (smallest unit)
+    trigger: String,    // "threshold" — periodic ratio check, "withdrawal" — on-demand
     linked_withdrawal_job_id: Option<String>,
     swap_tx_hash: Option<String>,
-    status: String,             // "queued" | "submitted" | "confirmed" | "failed"
+    status: String, // "queued" | "submitted" | "confirmed" | "failed"
     #[serde(default)]
     attempts: u32,
     #[serde(default)]
@@ -204,7 +204,7 @@ struct RebalanceJob {
 struct WithdrawalJob {
     job_id: String,
     user_id: String,
-    asset: String,         // "mUSD", "wSOL", "wETH"
+    asset: String, // "mUSD", "wSOL", "wETH"
     amount: u64,
     dest_chain: String,
     dest_address: String,
@@ -217,7 +217,7 @@ struct WithdrawalJob {
     outbound_tx_hash: Option<String>,
     #[serde(default)]
     signatures: Vec<SignerSignature>,
-    status: String,        // "pending_burn" | "burned" | "signing" | "broadcasting" | "confirmed" | "failed"
+    status: String, // "pending_burn" | "burned" | "signing" | "broadcasting" | "confirmed" | "failed"
     #[serde(default)]
     attempts: u32,
     #[serde(default)]
@@ -266,7 +266,7 @@ async fn main() {
     let state = CustodyState {
         db: Arc::new(db),
         next_index_lock: Arc::new(Mutex::new(())),
-        reserve_lock: Arc::new(Mutex::new(())),
+        _reserve_lock: Arc::new(Mutex::new(())),
         config: config.clone(),
         http: reqwest::Client::new(),
     };
@@ -557,7 +557,12 @@ fn set_last_u64_index(db: &DB, key: &str, value: u64) -> Result<(), String> {
         .map_err(|e| format!("db put: {}", e))
 }
 
-fn derive_deposit_address(chain: &str, asset: &str, path: &str, master_seed: &str) -> Result<String, String> {
+fn derive_deposit_address(
+    chain: &str,
+    asset: &str,
+    path: &str,
+    master_seed: &str,
+) -> Result<String, String> {
     match (chain, asset) {
         ("sol", _) | ("solana", _) => derive_solana_address(path, master_seed),
         ("eth", _) | ("ethereum", _) => derive_evm_address(path, master_seed),
@@ -800,11 +805,12 @@ fn load_config() -> CustodyConfig {
         uniswap_router,
         deposit_ttl_secs,
         // C8 fix: secret master seed (required for production key derivation)
-        master_seed: std::env::var("CUSTODY_MASTER_SEED")
-            .unwrap_or_else(|_| {
-                tracing::warn!("⚠️  CUSTODY_MASTER_SEED not set — using insecure default! Set this in production!");
-                "INSECURE_DEFAULT_SEED_DO_NOT_USE_IN_PRODUCTION".to_string()
-            }),
+        master_seed: std::env::var("CUSTODY_MASTER_SEED").unwrap_or_else(|_| {
+            tracing::warn!(
+                "⚠️  CUSTODY_MASTER_SEED not set — using insecure default! Set this in production!"
+            );
+            "INSECURE_DEFAULT_SEED_DO_NOT_USE_IN_PRODUCTION".to_string()
+        }),
         // C9 fix: auth token for threshold signers
         signer_auth_token: std::env::var("CUSTODY_SIGNER_AUTH_TOKEN").ok(),
         // M17 fix: API auth token for withdrawal endpoint
@@ -1634,7 +1640,11 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
                     if let Some(ref amount_str) = job.amount {
                         if let Ok(amount) = amount_str.parse::<u64>() {
                             if let Err(e) = adjust_reserve_balance(
-                                &state.db, &job.chain, &asset_lower, amount, true,
+                                &state.db,
+                                &job.chain,
+                                &asset_lower,
+                                amount,
+                                true,
                             ) {
                                 tracing::warn!("reserve ledger update failed: {}", e);
                             }
@@ -1738,7 +1748,8 @@ fn build_credit_job(state: &CustodyState, sweep: &SweepJob) -> Result<Option<Cre
     if _contract_addr.is_none() {
         tracing::warn!(
             "no wrapped token contract configured for chain={} asset={}",
-            source_chain, source_asset
+            source_chain,
+            source_asset
         );
         return Ok(None);
     }
@@ -1886,7 +1897,8 @@ async fn broadcast_solana_sweep(
     };
 
     let recent_blockhash = solana_get_latest_blockhash(&state.http, url).await?;
-    let (signing_key, from_pubkey) = derive_solana_signer(&deposit.derivation_path, &state.config.master_seed)?;
+    let (signing_key, from_pubkey) =
+        derive_solana_signer(&deposit.derivation_path, &state.config.master_seed)?;
     let to_pubkey = decode_solana_pubkey(&job.to_treasury)?;
 
     let message =
@@ -2228,12 +2240,15 @@ async fn submit_wrapped_credit(state: &CustodyState, job: &CreditJob) -> Result<
         .ok_or_else(|| "missing CUSTODY_TREASURY_KEYPAIR".to_string())?;
 
     // Resolve which wrapped token contract to call
-    let contract_addr_str = resolve_token_contract(
-        &state.config, &job.source_chain, &job.source_asset
-    ).ok_or_else(|| format!(
-        "no wrapped token contract for chain={} asset={}",
-        job.source_chain, job.source_asset
-    ))?;
+    let contract_addr_str =
+        resolve_token_contract(&state.config, &job.source_chain, &job.source_asset).ok_or_else(
+            || {
+                format!(
+                    "no wrapped token contract for chain={} asset={}",
+                    job.source_chain, job.source_asset
+                )
+            },
+        )?;
 
     let contract_pubkey = Pubkey::from_base58(&contract_addr_str)
         .map_err(|_| format!("invalid contract address: {}", contract_addr_str))?;
@@ -2326,7 +2341,7 @@ fn build_contract_mint_instruction(
 
 /// Build a MoltChain contract Call instruction for the "burn" function.
 /// Used during withdrawal flow — treasury burns wrapped tokens on behalf of user.
-fn build_contract_burn_instruction(
+fn _build_contract_burn_instruction(
     contract_pubkey: &Pubkey,
     caller: &Pubkey,
     amount: u64,
@@ -2364,7 +2379,7 @@ fn load_treasury_keypair(path: &Path) -> Result<Keypair, String> {
     Ok(Keypair::from_seed(&seed))
 }
 
-fn build_system_transfer(from: &Pubkey, to: &Pubkey, amount: u64) -> Instruction {
+fn _build_system_transfer(from: &Pubkey, to: &Pubkey, amount: u64) -> Instruction {
     let mut data = Vec::with_capacity(9);
     data.push(0u8);
     data.extend_from_slice(&amount.to_le_bytes());
@@ -2576,8 +2591,8 @@ fn derive_solana_address(path: &str, master_seed: &str) -> Result<String, String
     use sha2::Sha256;
 
     // C8 fix: HMAC-SHA256(master_seed, path) instead of plain SHA256(path)
-    let mut mac = Hmac::<Sha256>::new_from_slice(master_seed.as_bytes())
-        .map_err(|_| "HMAC key error")?;
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(master_seed.as_bytes()).map_err(|_| "HMAC key error")?;
     mac.update(path.as_bytes());
     let seed = mac.finalize().into_bytes();
     let seed_bytes: [u8; 32] = seed.as_slice().try_into().map_err(|_| "seed")?;
@@ -2586,14 +2601,17 @@ fn derive_solana_address(path: &str, master_seed: &str) -> Result<String, String
     Ok(bs58::encode(verifying_key.to_bytes()).into_string())
 }
 
-fn derive_solana_signer(path: &str, master_seed: &str) -> Result<(ed25519_dalek::SigningKey, [u8; 32]), String> {
+fn derive_solana_signer(
+    path: &str,
+    master_seed: &str,
+) -> Result<(ed25519_dalek::SigningKey, [u8; 32]), String> {
     use ed25519_dalek::SigningKey;
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
 
     // C8 fix: HMAC-SHA256(master_seed, path)
-    let mut mac = Hmac::<Sha256>::new_from_slice(master_seed.as_bytes())
-        .map_err(|_| "HMAC key error")?;
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(master_seed.as_bytes()).map_err(|_| "HMAC key error")?;
     mac.update(path.as_bytes());
     let seed = mac.finalize().into_bytes();
     let seed_bytes: [u8; 32] = seed.as_slice().try_into().map_err(|_| "seed")?;
@@ -2667,17 +2685,17 @@ fn find_program_address(seeds: &[&[u8]], program_id: &[u8; 32]) -> Result<[u8; 3
 }
 
 fn derive_evm_address(path: &str, master_seed: &str) -> Result<String, String> {
-    use k256::ecdsa::SigningKey;
     use hmac::{Hmac, Mac};
+    use k256::ecdsa::SigningKey;
     use sha2::Sha256;
     use sha3::{Digest, Keccak256};
 
     // C8 fix: HMAC-SHA256(master_seed, path) instead of Keccak256(path)
-    let mut mac = Hmac::<Sha256>::new_from_slice(master_seed.as_bytes())
-        .map_err(|_| "HMAC key error")?;
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(master_seed.as_bytes()).map_err(|_| "HMAC key error")?;
     mac.update(path.as_bytes());
     let seed = mac.finalize().into_bytes();
-    let key = SigningKey::from_bytes(&seed.into()).map_err(|_| "invalid seed")?;
+    let key = SigningKey::from_bytes(&seed).map_err(|_| "invalid seed")?;
     let verifying_key = key.verifying_key();
     let encoded = verifying_key.to_encoded_point(false);
     let pubkey = encoded.as_bytes();
@@ -2686,16 +2704,19 @@ fn derive_evm_address(path: &str, master_seed: &str) -> Result<String, String> {
     Ok(format!("0x{}", hex::encode(addr)))
 }
 
-fn derive_evm_signing_key(path: &str, master_seed: &str) -> Result<k256::ecdsa::SigningKey, String> {
+fn derive_evm_signing_key(
+    path: &str,
+    master_seed: &str,
+) -> Result<k256::ecdsa::SigningKey, String> {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
 
     // C8 fix: HMAC-SHA256(master_seed, path) instead of Keccak256(path)
-    let mut mac = Hmac::<Sha256>::new_from_slice(master_seed.as_bytes())
-        .map_err(|_| "HMAC key error")?;
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(master_seed.as_bytes()).map_err(|_| "HMAC key error")?;
     mac.update(path.as_bytes());
     let seed = mac.finalize().into_bytes();
-    k256::ecdsa::SigningKey::from_bytes(&seed.into()).map_err(|_| "invalid seed".to_string())
+    k256::ecdsa::SigningKey::from_bytes(&seed).map_err(|_| "invalid seed".to_string())
 }
 
 async fn solana_get_latest_blockhash(
@@ -3121,19 +3142,18 @@ async fn create_withdrawal(
         return Json(json!({"error": format!("failed to store withdrawal: {}", e)}));
     }
 
-    if let Err(e) = record_audit_event(
-        &state.db,
-        "withdrawal_requested",
-        &job.job_id,
-        None,
-        None,
-    ) {
+    if let Err(e) = record_audit_event(&state.db, "withdrawal_requested", &job.job_id, None, None) {
         tracing::warn!("audit event failed: {}", e);
     }
 
     info!(
         "withdrawal requested: {} {} → {} on {} (preferred_stablecoin={}, job={})",
-        job.amount, job.asset, job.dest_address, job.dest_chain, job.preferred_stablecoin, job.job_id
+        job.amount,
+        job.asset,
+        job.dest_address,
+        job.dest_chain,
+        job.preferred_stablecoin,
+        job.job_id
     );
 
     let stablecoin_info = if asset_lower == "musd" {
@@ -3237,7 +3257,10 @@ fn adjust_reserve_balance(
         if amount > current {
             tracing::warn!(
                 "reserve underflow: {}:{} has {} but trying to deduct {}",
-                chain, asset, current, amount
+                chain,
+                asset,
+                current,
+                amount
             );
         }
         current.saturating_sub(amount)
@@ -3272,21 +3295,20 @@ async fn get_reserves(State(state): State<CustodyState>) -> Json<Value> {
     };
     let mut entries = Vec::new();
     let iter = state.db.iterator_cf(cf, rocksdb::IteratorMode::Start);
-    for item in iter {
-        if let Ok((_, value)) = item {
-            if let Ok(entry) = serde_json::from_slice::<ReserveLedgerEntry>(&value) {
-                entries.push(json!({
-                    "chain": entry.chain,
-                    "asset": entry.asset,
-                    "amount": entry.amount,
-                    "last_updated": entry.last_updated,
-                }));
-            }
+    for (_, value) in iter.flatten() {
+        if let Ok(entry) = serde_json::from_slice::<ReserveLedgerEntry>(&value) {
+            entries.push(json!({
+                "chain": entry.chain,
+                "asset": entry.asset,
+                "amount": entry.amount,
+                "last_updated": entry.last_updated,
+            }));
         }
     }
 
     // Compute per-chain ratios
-    let mut by_chain: std::collections::HashMap<String, (u64, u64)> = std::collections::HashMap::new();
+    let mut by_chain: std::collections::HashMap<String, (u64, u64)> =
+        std::collections::HashMap::new();
     for item in &entries {
         let chain = item["chain"].as_str().unwrap_or("?");
         let asset = item["asset"].as_str().unwrap_or("?");
@@ -3302,7 +3324,11 @@ async fn get_reserves(State(state): State<CustodyState>) -> Json<Value> {
     let mut ratios = Vec::new();
     for (chain, (usdt, usdc)) in &by_chain {
         let total = usdt + usdc;
-        let usdt_pct = if total > 0 { (*usdt as f64 / total as f64) * 100.0 } else { 0.0 };
+        let usdt_pct = if total > 0 {
+            (*usdt as f64 / total as f64) * 100.0
+        } else {
+            0.0
+        };
         ratios.push(json!({
             "chain": chain,
             "usdt": usdt,
@@ -3432,13 +3458,11 @@ async fn deposit_cleanup_loop(state: CustodyState) {
             if let Some(tok_cf) = state.db.cf_handle(CF_TOKEN_BALANCES) {
                 let prefix = format!("{}:", address);
                 let iter = state.db.prefix_iterator_cf(&tok_cf, prefix.as_bytes());
-                for item in iter {
-                    if let Ok((key, _)) = item {
-                        if key.starts_with(prefix.as_bytes()) {
-                            let _ = state.db.delete_cf(&tok_cf, &key);
-                        } else {
-                            break;
-                        }
+                for (key, _) in iter.flatten() {
+                    if key.starts_with(prefix.as_bytes()) {
+                        let _ = state.db.delete_cf(&tok_cf, &key);
+                    } else {
+                        break;
                     }
                 }
             }
@@ -3446,20 +3470,21 @@ async fn deposit_cleanup_loop(state: CustodyState) {
             if let Some(evt_cf) = state.db.cf_handle(CF_DEPOSIT_EVENTS) {
                 let prefix = format!("{}:", deposit_id);
                 let iter = state.db.prefix_iterator_cf(&evt_cf, prefix.as_bytes());
-                for item in iter {
-                    if let Ok((key, _)) = item {
-                        if key.starts_with(prefix.as_bytes()) {
-                            let _ = state.db.delete_cf(&evt_cf, &key);
-                        } else {
-                            break;
-                        }
+                for (key, _) in iter.flatten() {
+                    if key.starts_with(prefix.as_bytes()) {
+                        let _ = state.db.delete_cf(&evt_cf, &key);
+                    } else {
+                        break;
                     }
                 }
             }
         }
 
         if count > 0 {
-            info!("deposit cleanup: expired {} unfunded deposits older than {}s", count, ttl);
+            info!(
+                "deposit cleanup: expired {} unfunded deposits older than {}s",
+                count, ttl
+            );
         }
     }
 }
@@ -3571,7 +3596,7 @@ async fn parse_solana_swap_output(
     };
 
     // Check for transaction error
-    if !meta.get("err").map_or(true, |e| e.is_null()) {
+    if !meta.get("err").is_none_or(|e| e.is_null()) {
         return Err("Solana swap transaction failed on-chain".to_string());
     }
 
@@ -3588,10 +3613,7 @@ async fn parse_solana_swap_output(
     let extract_amount = |entries: &[Value]| -> Option<u64> {
         for entry in entries {
             let mint = entry.get("mint").and_then(|v| v.as_str()).unwrap_or("");
-            let owner = entry
-                .get("owner")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let owner = entry.get("owner").and_then(|v| v.as_str()).unwrap_or("");
             if mint == to_mint && owner == treasury_addr {
                 return entry
                     .get("uiTokenAmount")
@@ -3635,7 +3657,10 @@ async fn parse_evm_swap_output(
     };
 
     // Check receipt status (0x1 = success)
-    let status = receipt.get("status").and_then(|v| v.as_str()).unwrap_or("0x0");
+    let status = receipt
+        .get("status")
+        .and_then(|v| v.as_str())
+        .unwrap_or("0x0");
     if status != "0x1" {
         return Err("EVM swap transaction reverted".to_string());
     }
@@ -3726,7 +3751,9 @@ async fn process_rebalance_jobs(state: &CustodyState) -> Result<(), String> {
                     job.status = "failed".to_string();
                     tracing::error!(
                         "rebalance job {} failed permanently after {} attempts: {}",
-                        job.job_id, job.attempts, e
+                        job.job_id,
+                        job.attempts,
+                        e
                     );
                 }
                 store_rebalance_job(&state.db, &job)?;
@@ -3739,7 +3766,9 @@ async fn process_rebalance_jobs(state: &CustodyState) -> Result<(), String> {
     for mut job in submitted {
         let confirmed = match job.chain.as_str() {
             "solana" => {
-                if let (Some(url), Some(ref tx_hash)) = (state.config.solana_rpc_url.as_ref(), &job.swap_tx_hash) {
+                if let (Some(url), Some(ref tx_hash)) =
+                    (state.config.solana_rpc_url.as_ref(), &job.swap_tx_hash)
+                {
                     solana_get_signature_confirmed(&state.http, url, tx_hash)
                         .await
                         .unwrap_or(None)
@@ -3749,10 +3778,17 @@ async fn process_rebalance_jobs(state: &CustodyState) -> Result<(), String> {
                 }
             }
             "ethereum" => {
-                if let (Some(url), Some(ref tx_hash)) = (state.config.evm_rpc_url.as_ref(), &job.swap_tx_hash) {
-                    check_evm_tx_confirmed(&state.http, url, tx_hash, state.config.evm_confirmations)
-                        .await
-                        .unwrap_or(false)
+                if let (Some(url), Some(ref tx_hash)) =
+                    (state.config.evm_rpc_url.as_ref(), &job.swap_tx_hash)
+                {
+                    check_evm_tx_confirmed(
+                        &state.http,
+                        url,
+                        tx_hash,
+                        state.config.evm_confirmations,
+                    )
+                    .await
+                    .unwrap_or(false)
                 } else {
                     false
                 }
@@ -3768,12 +3804,11 @@ async fn process_rebalance_jobs(state: &CustodyState) -> Result<(), String> {
             // instead of assuming output == input (which ignores slippage, fees, price impact).
             let actual_output = match job.chain.as_str() {
                 "solana" => {
-                    if let (Some(url), Some(ref tx_hash)) = (
-                        state.config.solana_rpc_url.as_ref(),
-                        &job.swap_tx_hash,
-                    ) {
-                        let to_mint = solana_mint_for_asset(&state.config, &job.to_asset)
-                            .unwrap_or_default();
+                    if let (Some(url), Some(ref tx_hash)) =
+                        (state.config.solana_rpc_url.as_ref(), &job.swap_tx_hash)
+                    {
+                        let to_mint =
+                            solana_mint_for_asset(&state.config, &job.to_asset).unwrap_or_default();
                         let treasury = state
                             .config
                             .treasury_solana_address
@@ -3787,18 +3822,12 @@ async fn process_rebalance_jobs(state: &CustodyState) -> Result<(), String> {
                     }
                 }
                 "ethereum" => {
-                    if let (Some(url), Some(ref tx_hash)) = (
-                        state.config.evm_rpc_url.as_ref(),
-                        &job.swap_tx_hash,
-                    ) {
-                        let to_contract =
-                            evm_contract_for_asset(&state.config, &job.to_asset)
-                                .unwrap_or_default();
-                        let treasury = state
-                            .config
-                            .treasury_evm_address
-                            .as_deref()
-                            .unwrap_or("");
+                    if let (Some(url), Some(ref tx_hash)) =
+                        (state.config.evm_rpc_url.as_ref(), &job.swap_tx_hash)
+                    {
+                        let to_contract = evm_contract_for_asset(&state.config, &job.to_asset)
+                            .unwrap_or_default();
+                        let treasury = state.config.treasury_evm_address.as_deref().unwrap_or("");
                         parse_evm_swap_output(&state.http, url, tx_hash, treasury, &to_contract)
                             .await
                             .unwrap_or(None)
@@ -3878,11 +3907,20 @@ async fn execute_solana_rebalance_swap(
     state: &CustodyState,
     job: &RebalanceJob,
 ) -> Result<String, String> {
-    let jupiter_url = state.config.jupiter_api_url.as_ref()
+    let jupiter_url = state
+        .config
+        .jupiter_api_url
+        .as_ref()
         .ok_or_else(|| "missing CUSTODY_JUPITER_API_URL for Solana rebalance".to_string())?;
-    let solana_url = state.config.solana_rpc_url.as_ref()
+    let solana_url = state
+        .config
+        .solana_rpc_url
+        .as_ref()
         .ok_or_else(|| "missing solana RPC for rebalance".to_string())?;
-    let treasury_addr = state.config.treasury_solana_address.as_ref()
+    let treasury_addr = state
+        .config
+        .treasury_solana_address
+        .as_ref()
         .ok_or_else(|| "missing treasury solana address".to_string())?;
 
     let from_mint = match job.from_asset.as_str() {
@@ -3904,9 +3942,15 @@ async fn execute_solana_rebalance_swap(
         to_mint,
         job.amount
     );
-    let quote_resp = state.http.get(&quote_url).send().await
+    let quote_resp = state
+        .http
+        .get(&quote_url)
+        .send()
+        .await
         .map_err(|e| format!("jupiter quote: {}", e))?;
-    let quote: Value = quote_resp.json().await
+    let quote: Value = quote_resp
+        .json()
+        .await
         .map_err(|e| format!("jupiter quote json: {}", e))?;
 
     // Step 2: Get swap transaction
@@ -3916,19 +3960,30 @@ async fn execute_solana_rebalance_swap(
         "userPublicKey": treasury_addr,
         "wrapAndUnwrapSol": false,
     });
-    let swap_resp = state.http.post(&swap_url).json(&swap_body).send().await
+    let swap_resp = state
+        .http
+        .post(&swap_url)
+        .json(&swap_body)
+        .send()
+        .await
         .map_err(|e| format!("jupiter swap: {}", e))?;
-    let swap_result: Value = swap_resp.json().await
+    let swap_result: Value = swap_resp
+        .json()
+        .await
         .map_err(|e| format!("jupiter swap json: {}", e))?;
 
-    let swap_tx_b64 = swap_result.get("swapTransaction")
+    let swap_tx_b64 = swap_result
+        .get("swapTransaction")
         .and_then(|v| v.as_str())
         .ok_or_else(|| "jupiter swap tx missing".to_string())?;
 
     // Step 3: Decode, sign, and submit
     // Jupiter returns a base64-encoded versioned transaction
     // For now, we pass it directly to Solana RPC signed by our treasury key
-    let fee_payer_path = state.config.solana_fee_payer_keypair_path.as_ref()
+    let fee_payer_path = state
+        .config
+        .solana_fee_payer_keypair_path
+        .as_ref()
         .ok_or_else(|| "missing fee payer for rebalance".to_string())?;
     let _fee_payer = load_solana_keypair(fee_payer_path)?;
 
@@ -3936,7 +3991,9 @@ async fn execute_solana_rebalance_swap(
     // (Jupiter pre-signs the swap instruction; we need to add our treasury signature)
     let params = json!([swap_tx_b64, {"encoding": "base64", "skipPreflight": true}]);
     let result = solana_rpc_call(&state.http, solana_url, "sendTransaction", params).await?;
-    result.as_str().map(|s| s.to_string())
+    result
+        .as_str()
+        .map(|s| s.to_string())
         .ok_or_else(|| "no tx hash from solana".to_string())
 }
 
@@ -3950,11 +4007,20 @@ async fn execute_ethereum_rebalance_swap(
     state: &CustodyState,
     job: &RebalanceJob,
 ) -> Result<String, String> {
-    let _router = state.config.uniswap_router.as_ref()
+    let _router = state
+        .config
+        .uniswap_router
+        .as_ref()
         .ok_or_else(|| "missing CUSTODY_UNISWAP_ROUTER for Ethereum rebalance".to_string())?;
-    let evm_url = state.config.evm_rpc_url.as_ref()
+    let evm_url = state
+        .config
+        .evm_rpc_url
+        .as_ref()
         .ok_or_else(|| "missing EVM RPC for rebalance".to_string())?;
-    let treasury_addr = state.config.treasury_evm_address.as_ref()
+    let treasury_addr = state
+        .config
+        .treasury_evm_address
+        .as_ref()
         .ok_or_else(|| "missing treasury EVM address".to_string())?;
 
     let from_contract = match job.from_asset.as_str() {
@@ -3988,7 +4054,13 @@ async fn execute_ethereum_rebalance_swap(
         chain_id,
     )?;
     let approve_hex = format!("0x{}", hex::encode(&approve_tx));
-    let _approve_result = evm_rpc_call(&state.http, evm_url, "eth_sendRawTransaction", json!([approve_hex])).await?;
+    let _approve_result = evm_rpc_call(
+        &state.http,
+        evm_url,
+        "eth_sendRawTransaction",
+        json!([approve_hex]),
+    )
+    .await?;
 
     // Step 2: Execute the swap (simplified — production uses exactInputSingle)
     // For a USDT↔USDC swap on a 0.01% fee tier (stable pair), slippage is minimal
@@ -4009,8 +4081,16 @@ async fn execute_ethereum_rebalance_swap(
         chain_id,
     )?;
     let swap_hex = format!("0x{}", hex::encode(&swap_tx));
-    let result = evm_rpc_call(&state.http, evm_url, "eth_sendRawTransaction", json!([swap_hex])).await?;
-    result.as_str().map(|s| s.to_string())
+    let result = evm_rpc_call(
+        &state.http,
+        evm_url,
+        "eth_sendRawTransaction",
+        json!([swap_hex]),
+    )
+    .await?;
+    result
+        .as_str()
+        .map(|s| s.to_string())
         .ok_or_else(|| "no tx hash from ethereum".to_string())
 }
 
@@ -4116,7 +4196,8 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
         // In production, we'd query MoltChain for the burn event
         if let Some(ref burn_sig) = job.burn_tx_signature {
             if let Some(rpc_url) = state.config.molt_rpc_url.as_ref() {
-                match molt_rpc_call(&state.http, rpc_url, "getTransaction", json!([burn_sig])).await {
+                match molt_rpc_call(&state.http, rpc_url, "getTransaction", json!([burn_sig])).await
+                {
                     Ok(result) => {
                         if !result.is_null() {
                             let success = result
@@ -4166,8 +4247,16 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
             chain: job.dest_chain.clone(),
             asset: outbound_asset.to_string(),
             from_address: match job.dest_chain.as_str() {
-                "solana" => state.config.treasury_solana_address.clone().unwrap_or_default(),
-                "ethereum" => state.config.treasury_evm_address.clone().unwrap_or_default(),
+                "solana" => state
+                    .config
+                    .treasury_solana_address
+                    .clone()
+                    .unwrap_or_default(),
+                "ethereum" => state
+                    .config
+                    .treasury_evm_address
+                    .clone()
+                    .unwrap_or_default(),
                 _ => String::new(),
             },
             to_address: job.dest_address.clone(),
@@ -4183,7 +4272,9 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                     if let Ok(payload) = response.json::<SignerResponse>().await {
                         if payload.status == "signed" {
                             // Check for duplicate signers
-                            let already_signed = job.signatures.iter()
+                            let already_signed = job
+                                .signatures
+                                .iter()
                                 .any(|s| s.signer_pubkey == payload.signer_pubkey);
                             if !already_signed {
                                 job.signatures.push(SignerSignature {
@@ -4256,17 +4347,33 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
     for mut job in broadcasting {
         let confirmed = match job.dest_chain.as_str() {
             "solana" => {
-                if let (Some(url), Some(ref tx_hash)) = (state.config.solana_rpc_url.as_ref(), &job.outbound_tx_hash) {
-                    check_solana_tx_confirmed(&state.http, url, tx_hash, state.config.solana_confirmations).await
-                        .unwrap_or(false)
+                if let (Some(url), Some(ref tx_hash)) =
+                    (state.config.solana_rpc_url.as_ref(), &job.outbound_tx_hash)
+                {
+                    check_solana_tx_confirmed(
+                        &state.http,
+                        url,
+                        tx_hash,
+                        state.config.solana_confirmations,
+                    )
+                    .await
+                    .unwrap_or(false)
                 } else {
                     false
                 }
             }
             "ethereum" => {
-                if let (Some(url), Some(ref tx_hash)) = (state.config.evm_rpc_url.as_ref(), &job.outbound_tx_hash) {
-                    check_evm_tx_confirmed(&state.http, url, tx_hash, state.config.evm_confirmations).await
-                        .unwrap_or(false)
+                if let (Some(url), Some(ref tx_hash)) =
+                    (state.config.evm_rpc_url.as_ref(), &job.outbound_tx_hash)
+                {
+                    check_evm_tx_confirmed(
+                        &state.http,
+                        url,
+                        tx_hash,
+                        state.config.evm_confirmations,
+                    )
+                    .await
+                    .unwrap_or(false)
                 } else {
                     false
                 }
@@ -4291,13 +4398,21 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
             if asset_lower == "musd" {
                 let stablecoin = &job.preferred_stablecoin;
                 if let Err(e) = adjust_reserve_balance(
-                    &state.db, &job.dest_chain, stablecoin, job.amount, false,
+                    &state.db,
+                    &job.dest_chain,
+                    stablecoin,
+                    job.amount,
+                    false,
                 ) {
                     tracing::warn!("reserve ledger decrement failed: {}", e);
                 }
             }
 
-            info!("withdrawal confirmed: {} (dest tx={})", job.job_id, job.outbound_tx_hash.as_deref().unwrap_or("?"));
+            info!(
+                "withdrawal confirmed: {} (dest tx={})",
+                job.job_id,
+                job.outbound_tx_hash.as_deref().unwrap_or("?")
+            );
         }
     }
 
@@ -4312,7 +4427,10 @@ async fn broadcast_outbound_withdrawal(
 ) -> Result<String, String> {
     match job.dest_chain.as_str() {
         "solana" => {
-            let url = state.config.solana_rpc_url.as_ref()
+            let url = state
+                .config
+                .solana_rpc_url
+                .as_ref()
                 .ok_or_else(|| "missing solana RPC".to_string())?;
             let outbound_asset = match job.asset.to_lowercase().as_str() {
                 "wsol" => "sol".to_string(),
@@ -4325,12 +4443,23 @@ async fn broadcast_outbound_withdrawal(
             // Signatures are provided by threshold signers
             let signed_tx = assemble_signed_solana_tx(state, job, &outbound_asset)?;
             let encoded = base64::engine::general_purpose::STANDARD.encode(&signed_tx);
-            let result = solana_rpc_call(&state.http, url, "sendTransaction", json!([encoded, {"encoding": "base64"}])).await?;
-            result.as_str().map(|s| s.to_string())
+            let result = solana_rpc_call(
+                &state.http,
+                url,
+                "sendTransaction",
+                json!([encoded, {"encoding": "base64"}]),
+            )
+            .await?;
+            result
+                .as_str()
+                .map(|s| s.to_string())
                 .ok_or_else(|| "no tx hash returned".to_string())
         }
         "ethereum" => {
-            let url = state.config.evm_rpc_url.as_ref()
+            let url = state
+                .config
+                .evm_rpc_url
+                .as_ref()
                 .ok_or_else(|| "missing EVM RPC".to_string())?;
             let outbound_asset = match job.asset.to_lowercase().as_str() {
                 "weth" => "eth".to_string(),
@@ -4342,8 +4471,11 @@ async fn broadcast_outbound_withdrawal(
             // For USDT/USDC: ERC-20 transfer from treasury → dest_address
             let signed_tx = assemble_signed_evm_tx(state, job, &outbound_asset)?;
             let tx_hex = format!("0x{}", hex::encode(&signed_tx));
-            let result = evm_rpc_call(&state.http, url, "eth_sendRawTransaction", json!([tx_hex])).await?;
-            result.as_str().map(|s| s.to_string())
+            let result =
+                evm_rpc_call(&state.http, url, "eth_sendRawTransaction", json!([tx_hex])).await?;
+            result
+                .as_str()
+                .map(|s| s.to_string())
                 .ok_or_else(|| "no tx hash returned".to_string())
         }
         other => Err(format!("unsupported destination chain: {}", other)),
@@ -4367,8 +4499,7 @@ fn assemble_signed_solana_tx(
     // Placeholder: the actual implementation would use frost/multisig assembly
     // The signer service returns a fully assembled signed transaction
     let first_sig = &job.signatures[0];
-    hex::decode(&first_sig.signature)
-        .map_err(|e| format!("decode signature: {}", e))
+    hex::decode(&first_sig.signature).map_err(|e| format!("decode signature: {}", e))
 }
 
 /// Assemble an EVM transaction from threshold signatures.
@@ -4382,8 +4513,7 @@ fn assemble_signed_evm_tx(
     }
 
     let first_sig = &job.signatures[0];
-    hex::decode(&first_sig.signature)
-        .map_err(|e| format!("decode signature: {}", e))
+    hex::decode(&first_sig.signature).map_err(|e| format!("decode signature: {}", e))
 }
 
 /// Check if a Solana transaction is confirmed with enough confirmations
@@ -4393,14 +4523,18 @@ async fn check_solana_tx_confirmed(
     tx_hash: &str,
     required_confirmations: u64,
 ) -> Result<bool, String> {
-    let result = solana_rpc_call(client, url, "getTransaction", json!([tx_hash, {"encoding": "json"}])).await?;
+    let result = solana_rpc_call(
+        client,
+        url,
+        "getTransaction",
+        json!([tx_hash, {"encoding": "json"}]),
+    )
+    .await?;
     if result.is_null() {
         return Ok(false);
     }
     // Check confirmation count from the slot
-    let confirmations = result
-        .get("slot")
-        .and_then(|_| Some(required_confirmations)); // simplified: if tx found, consider confirmed
+    let confirmations = result.get("slot").map(|_| required_confirmations); // simplified: if tx found, consider confirmed
     Ok(confirmations.unwrap_or(0) >= required_confirmations)
 }
 
@@ -4426,7 +4560,8 @@ async fn check_evm_tx_confirmed(
     }
 
     let current_block = evm_rpc_call(client, url, "eth_blockNumber", json!([])).await?;
-    let current = current_block.as_str()
+    let current = current_block
+        .as_str()
         .map(|s| parse_hex_u64(s).unwrap_or(0))
         .unwrap_or(0);
 
@@ -4604,7 +4739,10 @@ mod tests {
         let db = open_db("/tmp/test_custody_reserve_2").unwrap();
         adjust_reserve_balance(&db, "ethereum", "usdc", 1_000_000, true).unwrap();
         adjust_reserve_balance(&db, "ethereum", "usdc", 400_000, false).unwrap();
-        assert_eq!(get_reserve_balance(&db, "ethereum", "usdc").unwrap(), 600_000);
+        assert_eq!(
+            get_reserve_balance(&db, "ethereum", "usdc").unwrap(),
+            600_000
+        );
         // Decrement past zero clamps to 0
         adjust_reserve_balance(&db, "ethereum", "usdc", 999_999, false).unwrap();
         assert_eq!(get_reserve_balance(&db, "ethereum", "usdc").unwrap(), 0);
@@ -4621,8 +4759,14 @@ mod tests {
         adjust_reserve_balance(&db, "ethereum", "usdc", 100_000, true).unwrap();
         assert_eq!(get_reserve_balance(&db, "solana", "usdt").unwrap(), 500_000);
         assert_eq!(get_reserve_balance(&db, "solana", "usdc").unwrap(), 200_000);
-        assert_eq!(get_reserve_balance(&db, "ethereum", "usdt").unwrap(), 300_000);
-        assert_eq!(get_reserve_balance(&db, "ethereum", "usdc").unwrap(), 100_000);
+        assert_eq!(
+            get_reserve_balance(&db, "ethereum", "usdt").unwrap(),
+            300_000
+        );
+        assert_eq!(
+            get_reserve_balance(&db, "ethereum", "usdc").unwrap(),
+            100_000
+        );
         let _ = DB::destroy(&Options::default(), "/tmp/test_custody_reserve_3");
     }
 

@@ -131,7 +131,7 @@ impl TxProcessor {
         if let Some(first_ix) = tx.message.instructions.first() {
             if first_ix.program_id == SYSTEM_PROGRAM_ID {
                 if let Some(&kind) = first_ix.data.first() {
-                    if matches!(kind, 2 | 3 | 4 | 5) {
+                    if matches!(kind, 2..=5) {
                         return 0;
                     }
                 }
@@ -1013,16 +1013,17 @@ impl TxProcessor {
         }
 
         let chain_id = evm_tx.chain_id.unwrap_or(0);
-        let (result, evm_state_changes) = match execute_evm_transaction(self.state.clone(), &evm_tx, chain_id) {
-            Ok(res) => res,
-            Err(err) => {
-                return TxResult {
-                    success: false,
-                    fee_paid: 0,
-                    error: Some(err),
+        let (result, evm_state_changes) =
+            match execute_evm_transaction(self.state.clone(), &evm_tx, chain_id) {
+                Ok(res) => res,
+                Err(err) => {
+                    return TxResult {
+                        success: false,
+                        fee_paid: 0,
+                        error: Some(err),
+                    }
                 }
-            }
-        };
+            };
 
         let evm_hash: [u8; 32] = evm_tx.hash.into();
         let native_hash = tx.hash().0;
@@ -1214,7 +1215,8 @@ impl TxProcessor {
                 .get_account(&treasury_pubkey)?
                 .unwrap_or_else(|| Account::new(0, treasury_pubkey));
             treasury_account.add_spendable(total_to_treasury)?;
-            self.state.put_account(&treasury_pubkey, &treasury_account)?;
+            self.state
+                .put_account(&treasury_pubkey, &treasury_account)?;
         }
 
         Ok(())
@@ -1241,9 +1243,11 @@ impl TxProcessor {
         match instruction_type {
             0 => self.system_transfer(ix),
             // H1 fix: types 2-5 are fee-free internal txs — verify sender is treasury
-            2 | 3 | 4 | 5 => {
+            2..=5 => {
                 if let Some(sender) = ix.accounts.first() {
-                    let is_treasury = self.state.get_treasury_pubkey()
+                    let is_treasury = self
+                        .state
+                        .get_treasury_pubkey()
                         .ok()
                         .flatten()
                         .map(|t| t == *sender)
@@ -1421,7 +1425,9 @@ impl TxProcessor {
         }
 
         // T2.11 fix: Enforce token_id uniqueness within the collection
-        if self.state.nft_token_id_exists(&collection_account, mint_data.token_id)
+        if self
+            .state
+            .nft_token_id_exists(&collection_account, mint_data.token_id)
             .unwrap_or(false)
         {
             return Err(format!(
@@ -1450,9 +1456,9 @@ impl TxProcessor {
         self.b_put_account(&token_account, &token_account_data)?;
         self.b_index_nft_mint(&collection_account, &token_account, &owner)?;
         // M6 fix: index token_id through batch for atomicity (was direct state write before)
-        if let Err(e) = self.b_index_nft_token_id(
-            &collection_account, mint_data.token_id, &token_account
-        ) {
+        if let Err(e) =
+            self.b_index_nft_token_id(&collection_account, mint_data.token_id, &token_account)
+        {
             eprintln!("Warning: failed to index NFT token_id: {}", e);
         }
 
@@ -1737,7 +1743,9 @@ impl TxProcessor {
                 .map_err(|_| "Invalid code length encoding".to_string())?,
         ) as usize;
         if ix.data.len() < 5 + code_len {
-            return Err("DeployContract: instruction data shorter than declared code_length".to_string());
+            return Err(
+                "DeployContract: instruction data shorter than declared code_length".to_string(),
+            );
         }
         let code_bytes = &ix.data[5..5 + code_len];
         let init_data_bytes = if ix.data.len() > 5 + code_len {
@@ -1751,7 +1759,9 @@ impl TxProcessor {
         }
 
         // Verify treasury is correct
-        let actual_treasury = self.state.get_treasury_pubkey()?
+        let actual_treasury = self
+            .state
+            .get_treasury_pubkey()?
             .ok_or_else(|| "Treasury pubkey not set".to_string())?;
         if treasury != actual_treasury {
             return Err("DeployContract: incorrect treasury account".to_string());
@@ -1771,7 +1781,7 @@ impl TxProcessor {
         };
 
         let mut addr_hasher = Sha256::new();
-        addr_hasher.update(&deployer.0);
+        addr_hasher.update(deployer.0);
         if let Some(ref name) = contract_name {
             addr_hasher.update(name.as_bytes());
         }
@@ -1830,8 +1840,14 @@ impl TxProcessor {
                             symbol: symbol.to_string(),
                             program: program_pubkey,
                             owner: deployer,
-                            name: registry_data.get("name").and_then(|n| n.as_str()).map(|s| s.to_string()),
-                            template: registry_data.get("template").and_then(|t| t.as_str()).map(|s| s.to_string()),
+                            name: registry_data
+                                .get("name")
+                                .and_then(|n| n.as_str())
+                                .map(|s| s.to_string()),
+                            template: registry_data
+                                .get("template")
+                                .and_then(|t| t.as_str())
+                                .map(|s| s.to_string()),
                             metadata: registry_data.get("metadata").cloned(),
                         };
                         if let Err(e) = self.state.register_symbol(symbol, entry) {
@@ -1861,8 +1877,8 @@ impl TxProcessor {
         let contract_id = ix.accounts[1];
         let abi_bytes = &ix.data[1..];
 
-        let abi: crate::ContractAbi = serde_json::from_slice(abi_bytes)
-            .map_err(|e| format!("Invalid ABI format: {}", e))?;
+        let abi: crate::ContractAbi =
+            serde_json::from_slice(abi_bytes).map_err(|e| format!("Invalid ABI format: {}", e))?;
 
         let mut account = self
             .b_get_account(&contract_id)?
@@ -1906,7 +1922,9 @@ impl TxProcessor {
         let recipient = ix.accounts[1];
 
         // Verify sender is treasury
-        let actual_treasury = self.state.get_treasury_pubkey()?
+        let actual_treasury = self
+            .state
+            .get_treasury_pubkey()?
             .ok_or_else(|| "Treasury pubkey not set".to_string())?;
         if treasury != actual_treasury {
             return Err("FaucetAirdrop: sender must be treasury".to_string());
@@ -2196,9 +2214,7 @@ impl TxProcessor {
         }
 
         // Mark contract as non-executable and clear code data
-        let mut closed_account = self
-            .b_get_account(contract_address)?
-            .unwrap_or(account);
+        let mut closed_account = self.b_get_account(contract_address)?.unwrap_or(account);
         closed_account.executable = false;
         closed_account.data = Vec::new();
         self.b_put_account(contract_address, &closed_account)?;
@@ -2259,7 +2275,8 @@ impl TxProcessor {
                 // Graceful rent: collect up to what is available, don't abort the transaction
                 let actual_rent = rent_due.min(account.spendable);
                 if actual_rent > 0 {
-                    account.deduct_spendable(actual_rent)
+                    account
+                        .deduct_spendable(actual_rent)
                         .map_err(|e| format!("Rent deduction failed: {}", e))?;
                     total_rent_collected += actual_rent;
                 }
@@ -2271,9 +2288,12 @@ impl TxProcessor {
 
         // Credit collected rent to treasury (prevents supply leak)
         if total_rent_collected > 0 {
-            let treasury_pubkey = self.state.get_treasury_pubkey()?
+            let treasury_pubkey = self
+                .state
+                .get_treasury_pubkey()?
                 .ok_or_else(|| "Treasury pubkey not set for rent credit".to_string())?;
-            let mut treasury = self.b_get_account(&treasury_pubkey)?
+            let mut treasury = self
+                .b_get_account(&treasury_pubkey)?
                 .unwrap_or_else(|| Account::new(0, treasury_pubkey));
             treasury.add_spendable(total_rent_collected)?;
             self.b_put_account(&treasury_pubkey, &treasury)?;
@@ -2788,7 +2808,7 @@ mod tests {
 
     #[test]
     fn test_reefstake_unstake_more_than_staked_fails() {
-        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
         let validator = Pubkey([42u8; 32]);
 
         // Deposit 100 MOLT
@@ -2812,7 +2832,9 @@ mod tests {
 
         // Fund treasury for test
         let mut treasury_acct = state.get_account(&treasury).unwrap().unwrap();
-        treasury_acct.add_spendable(Account::molt_to_shells(100)).unwrap();
+        treasury_acct
+            .add_spendable(Account::molt_to_shells(100))
+            .unwrap();
         state.put_account(&treasury, &treasury_acct).unwrap();
 
         // Build deploy instruction: [17 | code_length(4 LE) | code_bytes]
@@ -2860,7 +2882,10 @@ mod tests {
         tx.signatures.push(sig);
 
         let result = processor.process_transaction(&tx, &validator);
-        assert!(!result.success, "Deploy with insufficient funds should fail");
+        assert!(
+            !result.success,
+            "Deploy with insufficient funds should fail"
+        );
     }
 
     #[test]
@@ -2884,12 +2909,16 @@ mod tests {
         let sig = alice_kp.sign(&tx.message.serialize());
         tx.signatures.push(sig);
         let r = processor.process_transaction(&tx, &validator);
-        assert!(r.success, "Deploy for ABI test should succeed: {:?}", r.error);
+        assert!(
+            r.success,
+            "Deploy for ABI test should succeed: {:?}",
+            r.error
+        );
 
         // Find the deployed program address
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
-        hasher.update(&alice.0);
+        hasher.update(alice.0);
         hasher.update(&code);
         let hash = hasher.finalize();
         let mut addr_bytes = [0u8; 32];
@@ -2916,7 +2945,11 @@ mod tests {
         let sig2 = alice_kp.sign(&tx2.message.serialize());
         tx2.signatures.push(sig2);
         let result = processor.process_transaction(&tx2, &validator);
-        assert!(result.success, "SetContractAbi should succeed: {:?}", result.error);
+        assert!(
+            result.success,
+            "SetContractAbi should succeed: {:?}",
+            result.error
+        );
 
         // Verify ABI is stored
         let acct = state.get_account(&program_pubkey).unwrap().unwrap();
@@ -2947,7 +2980,7 @@ mod tests {
         // Compute program address
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
-        hasher.update(&alice.0);
+        hasher.update(alice.0);
         hasher.update(&code);
         let hash = hasher.finalize();
         let mut addr_bytes = [0u8; 32];
@@ -2990,7 +3023,7 @@ mod tests {
         let mut data = vec![19u8];
         data.extend_from_slice(&amount.to_le_bytes());
 
-        let ix = Instruction {
+        let _ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![treasury, recipient],
             data,
@@ -3000,7 +3033,7 @@ mod tests {
         // Re-set treasury pubkey to match the keyed treasury
         state.set_treasury_pubkey(&treasury_kp.pubkey()).unwrap();
         let treasury_pk = treasury_kp.pubkey();
-        let mut tacct = state.get_account(&treasury).unwrap().unwrap();
+        let tacct = state.get_account(&treasury).unwrap().unwrap();
         state.put_account(&treasury_pk, &tacct).unwrap();
 
         let ix2 = Instruction {
@@ -3014,9 +3047,14 @@ mod tests {
         };
         let msg = crate::transaction::Message::new(vec![ix2], genesis_hash);
         let mut tx = Transaction::new(msg);
-        tx.signatures.push(treasury_kp.sign(&tx.message.serialize()));
+        tx.signatures
+            .push(treasury_kp.sign(&tx.message.serialize()));
         let result = processor.process_transaction(&tx, &validator);
-        assert!(result.success, "Faucet airdrop should succeed: {:?}", result.error);
+        assert!(
+            result.success,
+            "Faucet airdrop should succeed: {:?}",
+            result.error
+        );
 
         let r = state.get_account(&recipient).unwrap();
         assert!(r.is_some());
@@ -3039,7 +3077,7 @@ mod tests {
         let mut data = vec![19u8];
         data.extend_from_slice(&amount.to_le_bytes());
 
-        let ix = Instruction {
+        let _ix = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![treasury, recipient],
             data,
@@ -3059,7 +3097,8 @@ mod tests {
         };
         let msg = crate::transaction::Message::new(vec![ix2], genesis_hash);
         let mut tx = Transaction::new(msg);
-        tx.signatures.push(treasury_kp.sign(&tx.message.serialize()));
+        tx.signatures
+            .push(treasury_kp.sign(&tx.message.serialize()));
         let result = processor.process_transaction(&tx, &validator);
         assert!(!result.success, "Airdrop > 100 MOLT should fail");
     }

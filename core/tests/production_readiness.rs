@@ -5,11 +5,10 @@
 // ═══════════════════════════════════════════════════════════════════════════════
 
 use moltchain_core::{
-    Account, Block, FeeConfig, Hash, Instruction, Keypair, Message, Pubkey,
-    SlashingEvidence, SlashingOffense, SlashingTracker, StateStore, StakePool,
-    Transaction, TxProcessor, ValidatorInfo, ValidatorSet, Vote, VoteAggregator,
-    ForkChoice, Mempool,
-    BASE_FEE, SYSTEM_PROGRAM_ID, CONTRACT_DEPLOY_FEE, MIN_VALIDATOR_STAKE,
+    Account, Block, FeeConfig, ForkChoice, Hash, Instruction, Keypair, Mempool, Message, Pubkey,
+    SlashingEvidence, SlashingOffense, SlashingTracker, StakePool, StateStore, Transaction,
+    TxProcessor, ValidatorInfo, ValidatorSet, Vote, VoteAggregator, BASE_FEE, CONTRACT_DEPLOY_FEE,
+    MIN_VALIDATOR_STAKE, SYSTEM_PROGRAM_ID,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::TempDir;
@@ -23,9 +22,18 @@ fn create_test_state() -> (StateStore, TempDir, Hash) {
     let state = StateStore::open(temp_dir.path()).unwrap();
     let treasury = Keypair::new();
     let treasury_account = account_with_shells(treasury.pubkey(), 10_000_000_000_000);
-    state.put_account(&treasury.pubkey(), &treasury_account).unwrap();
+    state
+        .put_account(&treasury.pubkey(), &treasury_account)
+        .unwrap();
     state.set_treasury_pubkey(&treasury.pubkey()).unwrap();
-    let genesis = Block::new_with_timestamp(0, Hash::default(), Hash::default(), [0u8; 32], Vec::new(), 0);
+    let genesis = Block::new_with_timestamp(
+        0,
+        Hash::default(),
+        Hash::default(),
+        [0u8; 32],
+        Vec::new(),
+        0,
+    );
     let genesis_hash = genesis.hash();
     state.put_block(&genesis).unwrap();
     state.set_last_slot(0).unwrap();
@@ -45,14 +53,24 @@ fn account_with_shells(owner: Pubkey, shells: u64) -> Account {
     }
 }
 
-fn build_signed_tx(signer: &Keypair, instruction: Instruction, recent_blockhash: Hash) -> Transaction {
+fn build_signed_tx(
+    signer: &Keypair,
+    instruction: Instruction,
+    recent_blockhash: Hash,
+) -> Transaction {
     let message = Message::new(vec![instruction], recent_blockhash);
     let signature = signer.sign(&message.serialize());
-    Transaction { signatures: vec![signature], message }
+    Transaction {
+        signatures: vec![signature],
+        message,
+    }
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 fn make_vote(signer: &Keypair, slot: u64, block_hash: Hash) -> Vote {
@@ -64,21 +82,37 @@ fn make_vote(signer: &Keypair, slot: u64, block_hash: Hash) -> Vote {
 }
 
 fn make_block(slot: u64, parent_hash: Hash, validator: &Keypair, txs: Vec<Transaction>) -> Block {
-    Block::new_with_timestamp(slot, parent_hash, Hash::default(), validator.pubkey().0, txs, now_ms() / 1000)
+    Block::new_with_timestamp(
+        slot,
+        parent_hash,
+        Hash::default(),
+        validator.pubkey().0,
+        txs,
+        now_ms() / 1000,
+    )
 }
 
 fn transfer_instruction(from: Pubkey, to: Pubkey, amount_shells: u64) -> Instruction {
     let mut data = Vec::with_capacity(9);
     data.push(0); // Transfer opcode
     data.extend_from_slice(&amount_shells.to_le_bytes());
-    Instruction { program_id: SYSTEM_PROGRAM_ID, accounts: vec![from, to], data }
+    Instruction {
+        program_id: SYSTEM_PROGRAM_ID,
+        accounts: vec![from, to],
+        data,
+    }
 }
 
 fn make_validator_info(kp: &Keypair, stake: u64) -> ValidatorInfo {
     ValidatorInfo {
-        pubkey: kp.pubkey(), stake, reputation: 100,
-        blocks_proposed: 0, votes_cast: 0, correct_votes: 0,
-        last_active_slot: 0, joined_slot: 0,
+        pubkey: kp.pubkey(),
+        stake,
+        reputation: 100,
+        blocks_proposed: 0,
+        votes_cast: 0,
+        correct_votes: 0,
+        last_active_slot: 0,
+        joined_slot: 0,
     }
 }
 
@@ -124,7 +158,12 @@ fn test_block_with_transactions() {
     let (state, _tmp, genesis_hash) = create_test_state();
     let sender = Keypair::new();
     let receiver = Keypair::new();
-    state.put_account(&sender.pubkey(), &account_with_shells(sender.pubkey(), 5_000_000_000)).unwrap();
+    state
+        .put_account(
+            &sender.pubkey(),
+            &account_with_shells(sender.pubkey(), 5_000_000_000),
+        )
+        .unwrap();
     let ix = transfer_instruction(sender.pubkey(), receiver.pubkey(), 1_000_000_000);
     let tx = build_signed_tx(&sender, ix, genesis_hash);
     let validator = Keypair::new();
@@ -163,8 +202,12 @@ fn test_account_max_balance() {
 fn test_account_overwrite() {
     let (state, _tmp, _) = create_test_state();
     let kp = Keypair::new();
-    state.put_account(&kp.pubkey(), &account_with_shells(kp.pubkey(), 100)).unwrap();
-    state.put_account(&kp.pubkey(), &account_with_shells(kp.pubkey(), 200)).unwrap();
+    state
+        .put_account(&kp.pubkey(), &account_with_shells(kp.pubkey(), 100))
+        .unwrap();
+    state
+        .put_account(&kp.pubkey(), &account_with_shells(kp.pubkey(), 200))
+        .unwrap();
     let loaded = state.get_account(&kp.pubkey()).unwrap().unwrap();
     assert_eq!(loaded.shells, 200);
 }
@@ -273,7 +316,12 @@ fn test_fee_deduction_basic_transfer() {
     let receiver = Keypair::new();
     let validator = Keypair::new();
     let initial = 5_000_000_000u64;
-    state.put_account(&sender.pubkey(), &account_with_shells(sender.pubkey(), initial)).unwrap();
+    state
+        .put_account(
+            &sender.pubkey(),
+            &account_with_shells(sender.pubkey(), initial),
+        )
+        .unwrap();
     let ix = transfer_instruction(sender.pubkey(), receiver.pubkey(), 1_000_000_000);
     let tx = build_signed_tx(&sender, ix, genesis_hash);
     let fee_config = FeeConfig::default_from_constants();
@@ -292,7 +340,12 @@ fn test_fee_insufficient_for_fee_plus_amount() {
     let receiver = Keypair::new();
     let validator = Keypair::new();
     // Exactly enough for amount but not fee
-    state.put_account(&sender.pubkey(), &account_with_shells(sender.pubkey(), 1_000_000_000)).unwrap();
+    state
+        .put_account(
+            &sender.pubkey(),
+            &account_with_shells(sender.pubkey(), 1_000_000_000),
+        )
+        .unwrap();
     let ix = transfer_instruction(sender.pubkey(), receiver.pubkey(), 1_000_000_000);
     let tx = build_signed_tx(&sender, ix, genesis_hash);
     let result = processor.process_transaction(&tx, &validator.pubkey());
@@ -307,14 +360,26 @@ fn test_multiple_instructions_in_one_tx() {
     let r1 = Keypair::new();
     let r2 = Keypair::new();
     let validator = Keypair::new();
-    state.put_account(&sender.pubkey(), &account_with_shells(sender.pubkey(), 10_000_000_000)).unwrap();
+    state
+        .put_account(
+            &sender.pubkey(),
+            &account_with_shells(sender.pubkey(), 10_000_000_000),
+        )
+        .unwrap();
     let ix1 = transfer_instruction(sender.pubkey(), r1.pubkey(), 1_000_000_000);
     let ix2 = transfer_instruction(sender.pubkey(), r2.pubkey(), 2_000_000_000);
     let message = Message::new(vec![ix1, ix2], genesis_hash);
     let signature = sender.sign(&message.serialize());
-    let tx = Transaction { signatures: vec![signature], message };
+    let tx = Transaction {
+        signatures: vec![signature],
+        message,
+    };
     let result = processor.process_transaction(&tx, &validator.pubkey());
-    assert!(result.success, "Multi-instruction tx failed: {:?}", result.error);
+    assert!(
+        result.success,
+        "Multi-instruction tx failed: {:?}",
+        result.error
+    );
     let r1_acct = state.get_account(&r1.pubkey()).unwrap().unwrap();
     let r2_acct = state.get_account(&r2.pubkey()).unwrap().unwrap();
     assert_eq!(r1_acct.shells, 1_000_000_000);
@@ -411,7 +476,10 @@ fn test_validator_set_leader_deterministic() {
     vs.add_validator(make_validator_info(&v2, 100));
     let leader1 = vs.select_leader(5);
     let leader2 = vs.select_leader(5);
-    assert_eq!(leader1, leader2, "Leader selection must be deterministic for same slot");
+    assert_eq!(
+        leader1, leader2,
+        "Leader selection must be deterministic for same slot"
+    );
 }
 
 #[test]
@@ -427,7 +495,10 @@ fn test_validator_set_different_slots_different_leaders() {
             leaders.insert(leader);
         }
     }
-    assert!(leaders.len() > 1, "Leader rotation should select multiple different leaders");
+    assert!(
+        leaders.len() > 1,
+        "Leader rotation should select multiple different leaders"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -493,7 +564,10 @@ fn test_slashing_different_validators_independent() {
     );
     tracker.add_evidence(ev1);
     assert!(tracker.should_slash(&v1.pubkey()));
-    assert!(!tracker.should_slash(&v2.pubkey()), "Unrelated validator should not be slashed");
+    assert!(
+        !tracker.should_slash(&v2.pubkey()),
+        "Unrelated validator should not be slashed"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -511,7 +585,10 @@ fn test_fork_choice_selects_heaviest_head() {
     let best = fc.select_head();
     assert!(best.is_some());
     let (_, best_hash) = best.unwrap();
-    assert_eq!(best_hash, hash_a, "Fork choice should pick heaviest by stake");
+    assert_eq!(
+        best_hash, hash_a,
+        "Fork choice should pick heaviest by stake"
+    );
 }
 
 #[test]
@@ -596,8 +673,12 @@ fn test_state_batch_commit_atomicity() {
     let (state, _tmp, _) = create_test_state();
     let a = Keypair::new();
     let b = Keypair::new();
-    state.put_account(&a.pubkey(), &account_with_shells(a.pubkey(), 1000)).unwrap();
-    state.put_account(&b.pubkey(), &account_with_shells(b.pubkey(), 0)).unwrap();
+    state
+        .put_account(&a.pubkey(), &account_with_shells(a.pubkey(), 1000))
+        .unwrap();
+    state
+        .put_account(&b.pubkey(), &account_with_shells(b.pubkey(), 0))
+        .unwrap();
     let mut batch = state.begin_batch();
     let a_acct = account_with_shells(a.pubkey(), 500);
     let b_acct = account_with_shells(b.pubkey(), 500);
@@ -630,7 +711,11 @@ fn test_block_hash_changes_with_slot() {
     let validator = Keypair::new();
     let b1 = make_block(1, Hash::default(), &validator, vec![]);
     let b2 = make_block(2, Hash::default(), &validator, vec![]);
-    assert_ne!(b1.hash(), b2.hash(), "Different slots should produce different hashes");
+    assert_ne!(
+        b1.hash(),
+        b2.hash(),
+        "Different slots should produce different hashes"
+    );
 }
 
 #[test]
@@ -660,8 +745,10 @@ fn test_transaction_wrong_key_signature() {
     let ix = transfer_instruction(kp.pubkey(), Keypair::new().pubkey(), 100);
     let tx = build_signed_tx(&kp, ix, Hash::default());
     let msg_bytes = tx.message.serialize();
-    assert!(!Keypair::verify(&other.pubkey(), &msg_bytes, &tx.signatures[0]),
-            "Wrong key should fail verification");
+    assert!(
+        !Keypair::verify(&other.pubkey(), &msg_bytes, &tx.signatures[0]),
+        "Wrong key should fail verification"
+    );
 }
 
 #[test]
@@ -673,8 +760,10 @@ fn test_transaction_tampered_data() {
     tx.message.instructions[0].data[1] = 0xFF;
     let tampered_msg = tx.message.serialize();
     // Verify original sig against tampered msg fails
-    assert!(!Keypair::verify(&kp.pubkey(), &tampered_msg, &tx.signatures[0]),
-            "Tampered tx should fail verification");
+    assert!(
+        !Keypair::verify(&kp.pubkey(), &tampered_msg, &tx.signatures[0]),
+        "Tampered tx should fail verification"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -688,7 +777,12 @@ fn test_replay_protection_stale_blockhash() {
     let sender = Keypair::new();
     let receiver = Keypair::new();
     let validator = Keypair::new();
-    state.put_account(&sender.pubkey(), &account_with_shells(sender.pubkey(), 10_000_000_000)).unwrap();
+    state
+        .put_account(
+            &sender.pubkey(),
+            &account_with_shells(sender.pubkey(), 10_000_000_000),
+        )
+        .unwrap();
     let stale_hash = Hash::new([0xDE; 32]);
     let ix = transfer_instruction(sender.pubkey(), receiver.pubkey(), 1_000_000_000);
     let tx = build_signed_tx(&sender, ix, stale_hash);
@@ -765,7 +859,10 @@ fn test_mempool_eviction_by_size() {
         let tx = build_signed_tx(&kp, ix, Hash::new([i as u8; 32]));
         let _ = pool.add_transaction(tx, BASE_FEE * (i + 1), 0);
     }
-    assert!(pool.size() <= 3, "Mempool should evict lowest priority when full");
+    assert!(
+        pool.size() <= 3,
+        "Mempool should evict lowest priority when full"
+    );
 }
 
 #[test]
@@ -842,7 +939,12 @@ fn test_transfer_to_self_only_deducts_fee() {
     let sender = Keypair::new();
     let validator = Keypair::new();
     let initial = 5_000_000_000u64;
-    state.put_account(&sender.pubkey(), &account_with_shells(sender.pubkey(), initial)).unwrap();
+    state
+        .put_account(
+            &sender.pubkey(),
+            &account_with_shells(sender.pubkey(), initial),
+        )
+        .unwrap();
     let ix = transfer_instruction(sender.pubkey(), sender.pubkey(), 1_000_000_000);
     let tx = build_signed_tx(&sender, ix, genesis_hash);
     let fee_config = FeeConfig::default_from_constants();
@@ -850,7 +952,11 @@ fn test_transfer_to_self_only_deducts_fee() {
     let result = processor.process_transaction(&tx, &validator.pubkey());
     assert!(result.success);
     let acct = state.get_account(&sender.pubkey()).unwrap().unwrap();
-    assert_eq!(acct.shells, initial - fee, "Self-transfer should only deduct fee");
+    assert_eq!(
+        acct.shells,
+        initial - fee,
+        "Self-transfer should only deduct fee"
+    );
 }
 
 #[test]
@@ -860,11 +966,19 @@ fn test_zero_amount_transfer() {
     let sender = Keypair::new();
     let receiver = Keypair::new();
     let validator = Keypair::new();
-    state.put_account(&sender.pubkey(), &account_with_shells(sender.pubkey(), 5_000_000_000)).unwrap();
+    state
+        .put_account(
+            &sender.pubkey(),
+            &account_with_shells(sender.pubkey(), 5_000_000_000),
+        )
+        .unwrap();
     let ix = transfer_instruction(sender.pubkey(), receiver.pubkey(), 0);
     let tx = build_signed_tx(&sender, ix, genesis_hash);
     let result = processor.process_transaction(&tx, &validator.pubkey());
-    assert!(result.success, "Zero amount transfer should succeed (pays fee only)");
+    assert!(
+        result.success,
+        "Zero amount transfer should succeed (pays fee only)"
+    );
 }
 
 #[test]
@@ -876,7 +990,11 @@ fn test_concurrent_batch_burns() {
     batch2.add_burned(200);
     state.commit_batch(batch1).unwrap();
     state.commit_batch(batch2).unwrap();
-    assert_eq!(state.get_total_burned().unwrap(), 300, "Sequential batch burns should accumulate");
+    assert_eq!(
+        state.get_total_burned().unwrap(),
+        300,
+        "Sequential batch burns should accumulate"
+    );
 }
 
 #[test]
@@ -969,9 +1087,15 @@ fn test_large_validator_set_supermajority() {
     for v in validators.iter().take(66) {
         agg.add_vote(make_vote(v, 1, block_hash));
     }
-    assert!(!agg.has_supermajority(1, &block_hash, &vs, &sp), "66/100 should not reach 2/3+1");
+    assert!(
+        !agg.has_supermajority(1, &block_hash, &vs, &sp),
+        "66/100 should not reach 2/3+1"
+    );
     agg.add_vote(make_vote(&validators[66], 1, block_hash));
-    assert!(agg.has_supermajority(1, &block_hash, &vs, &sp), "67/100 should reach 2/3+1");
+    assert!(
+        agg.has_supermajority(1, &block_hash, &vs, &sp),
+        "67/100 should reach 2/3+1"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -993,7 +1117,10 @@ fn test_block_forged_signature_rejected() {
     let mut block = make_block(1, Hash::default(), &validator, vec![]);
     block.sign(&imposter);
     // Signature was made by imposter but block's validator field is `validator`
-    assert!(!block.verify_signature(), "Block signed by wrong key should fail");
+    assert!(
+        !block.verify_signature(),
+        "Block signed by wrong key should fail"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1036,7 +1163,9 @@ fn test_state_root_changes_on_mutation() {
     let (state, _tmp, _) = create_test_state();
     let r1 = state.compute_state_root();
     let kp = Keypair::new();
-    state.put_account(&kp.pubkey(), &account_with_shells(kp.pubkey(), 42)).unwrap();
+    state
+        .put_account(&kp.pubkey(), &account_with_shells(kp.pubkey(), 42))
+        .unwrap();
     let r2 = state.compute_state_root();
     assert_ne!(r1, r2, "State root must change after mutation");
 }
@@ -1070,13 +1199,29 @@ fn test_double_spend_sequential() {
     let v2 = Keypair::new();
     let validator = Keypair::new();
     let balance = 2_000_000_000u64 + BASE_FEE * 2;
-    state.put_account(&attacker.pubkey(), &account_with_shells(attacker.pubkey(), balance)).unwrap();
-    let tx1 = build_signed_tx(&attacker, transfer_instruction(attacker.pubkey(), v1.pubkey(), 2_000_000_000), genesis_hash);
-    let tx2 = build_signed_tx(&attacker, transfer_instruction(attacker.pubkey(), v2.pubkey(), 2_000_000_000), genesis_hash);
+    state
+        .put_account(
+            &attacker.pubkey(),
+            &account_with_shells(attacker.pubkey(), balance),
+        )
+        .unwrap();
+    let tx1 = build_signed_tx(
+        &attacker,
+        transfer_instruction(attacker.pubkey(), v1.pubkey(), 2_000_000_000),
+        genesis_hash,
+    );
+    let tx2 = build_signed_tx(
+        &attacker,
+        transfer_instruction(attacker.pubkey(), v2.pubkey(), 2_000_000_000),
+        genesis_hash,
+    );
     let r1 = processor.process_transaction(&tx1, &validator.pubkey());
     let r2 = processor.process_transaction(&tx2, &validator.pubkey());
     assert!(r1.success, "First tx should succeed");
-    assert!(!r2.success, "Second tx should fail — double spend prevented");
+    assert!(
+        !r2.success,
+        "Second tx should fail — double spend prevented"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1116,7 +1261,10 @@ fn test_stakepool_claim_rewards() {
     pool.stake(v1.pubkey(), MIN_VALIDATOR_STAKE, 0).unwrap();
     pool.distribute_block_reward(&v1.pubkey(), 1, false);
     let (claimed_block, claimed_fee) = pool.claim_rewards(&v1.pubkey());
-    assert!(claimed_block > 0 || claimed_fee > 0, "Should have rewards to claim");
+    assert!(
+        claimed_block > 0 || claimed_fee > 0,
+        "Should have rewards to claim"
+    );
 }
 
 #[test]
@@ -1162,10 +1310,14 @@ fn test_stakepool_delegation_bootstrapping_rejected() {
     let mut pool = StakePool::new();
     let validator = Keypair::new();
     let delegator = Keypair::new();
-    pool.stake(validator.pubkey(), MIN_VALIDATOR_STAKE, 0).unwrap();
+    pool.stake(validator.pubkey(), MIN_VALIDATOR_STAKE, 0)
+        .unwrap();
     // Fresh validators are in bootstrapping phase — delegation must be rejected
     let result = pool.delegate(delegator.pubkey(), &validator.pubkey(), 5_000);
-    assert!(result.is_err(), "Bootstrapping validators should reject delegation");
+    assert!(
+        result.is_err(),
+        "Bootstrapping validators should reject delegation"
+    );
     assert!(result.unwrap_err().contains("bootstrapping"));
 }
 
@@ -1174,7 +1326,8 @@ fn test_stakepool_delegation_after_graduation() {
     let mut pool = StakePool::new();
     let validator = Keypair::new();
     let delegator = Keypair::new();
-    pool.stake(validator.pubkey(), MIN_VALIDATOR_STAKE, 0).unwrap();
+    pool.stake(validator.pubkey(), MIN_VALIDATOR_STAKE, 0)
+        .unwrap();
     // Produce many blocks and distribute rewards to fully vest the validator
     for slot in 1..=500 {
         pool.distribute_block_reward(&validator.pubkey(), slot, false);
@@ -1194,7 +1347,8 @@ fn test_stakepool_undelegate() {
     let mut pool = StakePool::new();
     let validator = Keypair::new();
     let delegator = Keypair::new();
-    pool.stake(validator.pubkey(), MIN_VALIDATOR_STAKE, 0).unwrap();
+    pool.stake(validator.pubkey(), MIN_VALIDATOR_STAKE, 0)
+        .unwrap();
     // Fully vest validator through block production
     for slot in 1..=500 {
         pool.distribute_block_reward(&validator.pubkey(), slot, false);
@@ -1225,7 +1379,11 @@ fn test_vote_aggregator_pruning() {
     agg.prune_old_votes(100, 10);
     // Old votes should be gone
     assert_eq!(agg.vote_count(0, &hash), 0, "Old votes should be pruned");
-    assert_eq!(agg.vote_count(49, &hash), 0, "Votes before keep window should be pruned");
+    assert_eq!(
+        agg.vote_count(49, &hash),
+        0,
+        "Votes before keep window should be pruned"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1237,7 +1395,10 @@ fn test_block_validate_structure() {
     let validator = Keypair::new();
     let block = make_block(1, Hash::default(), &validator, vec![]);
     let result = block.validate_structure();
-    assert!(result.is_ok(), "Valid block should pass structure validation");
+    assert!(
+        result.is_ok(),
+        "Valid block should pass structure validation"
+    );
 }
 
 #[test]
@@ -1268,8 +1429,10 @@ fn test_fee_config_default_sane_values() {
     let config = FeeConfig::default_from_constants();
     assert_eq!(config.base_fee, BASE_FEE);
     assert_eq!(config.contract_deploy_fee, CONTRACT_DEPLOY_FEE);
-    let total_pct = config.fee_burn_percent + config.fee_producer_percent
-        + config.fee_voters_percent + config.fee_treasury_percent;
+    let total_pct = config.fee_burn_percent
+        + config.fee_producer_percent
+        + config.fee_voters_percent
+        + config.fee_treasury_percent;
     assert_eq!(total_pct, 100, "Fee distribution must sum to 100%");
 }
 
@@ -1348,7 +1511,10 @@ fn test_fork_choice_clear() {
     fc.add_head(1, Hash::new([1u8; 32]), 100);
     fc.add_head(2, Hash::new([2u8; 32]), 200);
     fc.clear();
-    assert!(fc.select_head().is_none(), "After clear, no head should be selected");
+    assert!(
+        fc.select_head().is_none(),
+        "After clear, no head should be selected"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1377,8 +1543,12 @@ fn test_state_transfer_utility() {
     let (state, _tmp, _) = create_test_state();
     let a = Keypair::new();
     let b = Keypair::new();
-    state.put_account(&a.pubkey(), &account_with_shells(a.pubkey(), 10_000)).unwrap();
-    state.put_account(&b.pubkey(), &account_with_shells(b.pubkey(), 0)).unwrap();
+    state
+        .put_account(&a.pubkey(), &account_with_shells(a.pubkey(), 10_000))
+        .unwrap();
+    state
+        .put_account(&b.pubkey(), &account_with_shells(b.pubkey(), 0))
+        .unwrap();
     state.transfer(&a.pubkey(), &b.pubkey(), 3_000).unwrap();
     let a_acct = state.get_account(&a.pubkey()).unwrap().unwrap();
     let b_acct = state.get_account(&b.pubkey()).unwrap().unwrap();
@@ -1391,8 +1561,12 @@ fn test_state_transfer_insufficient() {
     let (state, _tmp, _) = create_test_state();
     let a = Keypair::new();
     let b = Keypair::new();
-    state.put_account(&a.pubkey(), &account_with_shells(a.pubkey(), 100)).unwrap();
-    state.put_account(&b.pubkey(), &account_with_shells(b.pubkey(), 0)).unwrap();
+    state
+        .put_account(&a.pubkey(), &account_with_shells(a.pubkey(), 100))
+        .unwrap();
+    state
+        .put_account(&b.pubkey(), &account_with_shells(b.pubkey(), 0))
+        .unwrap();
     let result = state.transfer(&a.pubkey(), &b.pubkey(), 200);
     assert!(result.is_err(), "Transfer more than balance should fail");
 }
