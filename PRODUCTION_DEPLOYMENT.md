@@ -38,7 +38,7 @@ MoltChain compiles into **4 separate binaries** from the workspace:
 |---|---|---|---|---|
 | `moltchain-validator` | `validator` | P2P: 8000, RPC: 8899, WS: 8900, Signer: 9200 | Every VPS | Validator + built-in RPC + WebSocket + threshold signer. **This is the main binary.** |
 | `moltchain-custody` | `custody` | 9105 | Seed VPS only (1 instance) | Bridge service for Solana/Ethereum ↔ MoltChain deposits & withdrawals |
-| `moltchain-faucet` | `faucet` | 8901 | Seed VPS only (testnet) | MOLT faucet for testnet. Refuses to run on mainnet. |
+| `moltchain-faucet` | `faucet` | 9100 | Seed VPS only (testnet) | MOLT faucet for testnet. Refuses to run on mainnet. |
 | `molt` | `cli` | — | Dev machines | CLI tool for sending transactions, querying state. NOT a server. |
 
 **Important:** The `moltchain-validator` binary is a single process that includes:
@@ -111,7 +111,7 @@ cargo build --release
 │ WebSocket  :8900   │    │ WebSocket  :8900   │    │ WebSocket  :8900   │
 │ Signer     :9200   │    │ Signer     :9200   │    │ Signer     :9200   │
 │                    │    │ Custody    :9105   │    │                    │
-│                    │    │ Faucet     :8901   │    │                    │
+│                    │    │ Faucet     :9100   │    │                    │
 │ Caddy      :443    │    │ Caddy      :443    │    │ Caddy      :443    │
 └────────────────────┘    └────────────────────┘    └────────────────────┘
          ▲                         ▲                         ▲
@@ -200,7 +200,7 @@ On the free plan, DNS round-robin works fine — clients get a random IP from th
 | WebSocket | **8900** | TCP | YES — via Caddy → `ws.moltchain.network` |
 | Threshold Signer | **9200** | TCP | **NO** — private network only (other VPS signers) |
 | Custody API | **9105** | TCP | YES — via Caddy → `custody.moltchain.network` |
-| Faucet API | **8901** | TCP | YES — via Caddy → `faucet.moltchain.network` |
+| Faucet API | **9100** | TCP | YES — via Caddy → `faucet.moltchain.network` |
 | Caddy (HTTPS) | **443** | TCP | YES |
 | Caddy (HTTP→HTTPS) | **80** | TCP | YES (redirect only) |
 
@@ -643,15 +643,15 @@ All portal frontends have RPC/WS endpoint configuration that defaults to `localh
 | **monitoring** | `monitoring/js/monitoring.js` | YES | YES (RPC) | `VALIDATOR_RPCS` array is hardcoded to local ports — update for prod |
 | **programs** | `programs/js/moltchain-sdk.js` | YES | YES | `landing.js` only has 2-way auto-detect (local vs testnet) |
 | **dex** | `dex/dex.js` | PARTIAL | NO | Uses `window.MOLTCHAIN_RPC` override — network selector not wired up |
-| **faucet UI** | `faucet/faucet.js` | NO | NO | Hardcoded `localhost:4000` — needs full rewrite for prod |
+| **faucet UI** | `faucet/faucet.js` | NO | NO | Hardcoded `localhost:9100` — needs full rewrite for prod |
 | **shared** | `shared/wallet-connect.js` | Delegates | — | Fallback port `9000` should be `8899` |
 
 **Config fixes needed before production:**
 
-1. `faucet/faucet.js` — Change `FAUCET_API` from `http://localhost:4000` to auto-detect (`/faucet` relative path when served by Caddy, or `https://faucet.moltchain.network`)
+1. `faucet/faucet.js` — Change `FAUCET_API` from `http://localhost:9100` to auto-detect (`/faucet` relative path when served by Caddy, or `https://faucet.moltchain.network`)
 2. `dex/dex.js` — Wire up the existing `<select id="networkSelect">` to switch `MOLTCHAIN_RPC`/`MOLTCHAIN_WS`
 3. `monitoring/js/monitoring.js` — Make `VALIDATOR_RPCS` configurable per-network (seed-us/eu/ap for prod)
-4. `explorer/js/transaction.js` L110 — Replace hardcoded `localhost:4000` faucet URL
+4. `explorer/js/transaction.js` L110 — Replace hardcoded `localhost:9100` faucet URL
 5. `programs/js/landing.js` — Add mainnet to the auto-detect (currently only local vs testnet)
 6. `shared/wallet-connect.js` — Fix fallback port from `9000` to `8899`
 
@@ -836,10 +836,10 @@ custody.moltchain.network {
 faucet.moltchain.network {
     # API routes
     handle /faucet/* {
-        reverse_proxy localhost:8901
+        reverse_proxy localhost:9100
     }
     handle /health {
-        reverse_proxy localhost:8901
+        reverse_proxy localhost:9100
     }
     # Static UI (faucet is special — served from VPS because it needs its API co-located)
     handle {
@@ -918,7 +918,7 @@ curl -s http://localhost:8899 -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}'
 curl -s http://localhost:9105/health | jq
 
 # Faucet
-curl -s http://localhost:8901/health | jq
+curl -s http://localhost:9100/health | jq
 
 # Peer count
 curl -s http://localhost:8899 -d '{"jsonrpc":"2.0","id":1,"method":"getValidators"}' | jq '.result | length'
@@ -1124,7 +1124,7 @@ curl -s http://<OTHER_VPS_IP>:9200/health
 [ ] 45. Fix faucet/faucet.js: FAUCET_API → production URL
 [ ] 46. Fix dex/dex.js: wire network selector dropdown
 [ ] 47. Fix monitoring/js/monitoring.js: VALIDATOR_RPCS → seed-us/eu/ap
-[ ] 48. Fix explorer/js/transaction.js L110: hardcoded localhost:4000
+[ ] 48. Fix explorer/js/transaction.js L110: hardcoded localhost:9100
 [ ] 49. Fix programs/js/landing.js: add mainnet to auto-detect
 [ ] 50. Fix shared/wallet-connect.js: fallback port 9000 → 8899
 ```
