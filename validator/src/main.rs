@@ -937,6 +937,29 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block) {
         .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
 
     for tx in old_block.transactions.iter().rev() {
+        // AUDIT-FIX 0.5: Detect non-system-transfer instructions that can't be reverted
+        let has_non_revertible = tx.message.instructions.iter().any(|ix| {
+            if ix.program_id != SYSTEM_PROGRAM_ID {
+                return true; // Contract call — can't revert
+            }
+            if ix.data.is_empty() {
+                return false;
+            }
+            // Only types 0,2,3,4,5 (transfers) are revertible
+            !matches!(ix.data[0], 0 | 2 | 3 | 4 | 5)
+        });
+        if has_non_revertible {
+            error!(
+                "⚠️ CRITICAL: Block {} contains non-revertible instructions (contract calls, \
+                 NFT ops, staking, etc.). Fork switch may leave inconsistent state. \
+                 Tx hash: {}",
+                old_block.header.slot,
+                tx.hash().to_hex()
+            );
+            // Still revert what we can (transfers + fees) — this is best-effort.
+            // TODO: Implement full state snapshots for safe fork switches.
+        }
+
         // 1. Reverse each system transfer instruction
         for ix in &tx.message.instructions {
             if ix.program_id == SYSTEM_PROGRAM_ID && !ix.data.is_empty() {
@@ -1244,6 +1267,11 @@ async fn apply_block_effects(
     // transaction processing.  Do NOT call add_burned again here — that
     // caused a double-burn destroying twice the intended supply.
 
+    // AUDIT-FIX 0.6: All fee distribution writes go through an atomic
+    // WriteBatch. Nothing hits disk until commit_batch() succeeds, so a
+    // crash mid-distribution cannot leave state half-credited.
+    let mut batch = state.begin_batch();
+
     if producer_share > 0 {
         let mut producer_account = match state.get_account(&producer) {
             Ok(Some(account)) => account,
@@ -1254,7 +1282,7 @@ async fn apply_block_effects(
             .unwrap_or_else(|e| {
                 warn!("\u{26a0}\u{fe0f}  Overflow crediting producer fees: {}", e);
             });
-        if let Err(e) = state.put_account(&producer, &producer_account) {
+        if let Err(e) = batch.put_account(&producer, &producer_account) {
             warn!(
                 "⚠️  Failed to credit producer fees for {}: {}",
                 producer.to_base58(),
@@ -1308,14 +1336,17 @@ async fn apply_block_effects(
                     continue;
                 }
 
-                let mut voter_account = match state.get_account(validator) {
+                let mut voter_account = match batch.get_account(validator) {
                     Ok(Some(account)) => account,
-                    _ => Account::new(0, SYSTEM_ACCOUNT_OWNER),
+                    _ => match state.get_account(validator) {
+                        Ok(Some(account)) => account,
+                        _ => Account::new(0, SYSTEM_ACCOUNT_OWNER),
+                    },
                 };
                 voter_account.add_spendable(share).unwrap_or_else(|e| {
                     warn!("\u{26a0}\u{fe0f}  Overflow crediting voter fees: {}", e);
                 });
-                if let Err(e) = state.put_account(validator, &voter_account) {
+                if let Err(e) = batch.put_account(validator, &voter_account) {
                     warn!(
                         "⚠️  Failed to credit voter fees for {}: {}",
                         validator.to_base58(),
@@ -1340,8 +1371,25 @@ async fn apply_block_effects(
     treasury_account.spendable = treasury_account
         .spendable
         .saturating_sub(producer_share + voters_paid);
-    if let Err(e) = state.put_account(&treasury_pubkey, &treasury_account) {
+    if let Err(e) = batch.put_account(&treasury_pubkey, &treasury_account) {
         warn!("⚠️  Failed to update treasury account: {}", e);
+        return;
+    }
+
+    if let Err(e) = batch.set_fee_distribution_hash(slot, &block_hash) {
+        warn!(
+            "⚠️  Failed to record fee distribution hash in batch for slot {}: {}",
+            slot, e
+        );
+        return;
+    }
+
+    // Commit all fee distribution writes atomically
+    if let Err(e) = state.commit_batch(batch) {
+        warn!(
+            "⚠️  CRITICAL: Failed to commit fee distribution batch for slot {}: {}",
+            slot, e
+        );
         return;
     }
 
@@ -1349,13 +1397,6 @@ async fn apply_block_effects(
         info!(
             "🏦 Treasury fees retained: {:.6} MOLT",
             treasury_share as f64 / 1_000_000_000.0
-        );
-    }
-
-    if let Err(e) = state.set_fee_distribution_hash(slot, &block_hash) {
-        warn!(
-            "⚠️  Failed to record fee distribution for slot {}: {}",
-            slot, e
         );
     }
 
@@ -5589,8 +5630,29 @@ async fn run_validator() {
                             old_reputation,
                             validator_info.reputation
                         );
+
+                        // AUDIT-FIX 0.4: Persist slashing to the validator's Account
+                        // Debit staked amount from the on-chain account so restarts
+                        // don't restore the slashed stake.
+                        if let Ok(Some(mut acct)) = state.get_account(&validator_info.pubkey) {
+                            let debit = slashed_amount.min(acct.staked);
+                            acct.staked = acct.staked.saturating_sub(debit);
+                            acct.shells = acct.shells.saturating_sub(debit);
+                            if let Err(e) = state.put_account(&validator_info.pubkey, &acct) {
+                                error!("Failed to persist slashed account: {}", e);
+                            }
+                        }
                     }
                 }
+            }
+
+            // AUDIT-FIX 0.4: Persist stake pool and validator set after slashing
+            // so that slashing effects survive node restarts.
+            if let Err(e) = state.put_stake_pool(&pool) {
+                error!("Failed to persist stake pool after slashing: {}", e);
+            }
+            if let Err(e) = state.save_validator_set(&vs) {
+                error!("Failed to persist validator set after slashing: {}", e);
             }
 
             drop(vs);

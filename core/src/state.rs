@@ -2648,6 +2648,17 @@ impl StateBatch {
         }
     }
 
+    /// Record fee distribution hash in the batch (atomic with account writes).
+    pub fn set_fee_distribution_hash(&mut self, slot: u64, hash: &Hash) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!("fee_dist:{}", slot);
+        self.batch.put_cf(&cf, key.as_bytes(), hash.0);
+        Ok(())
+    }
+
     /// Register EVM address mapping in the batch.
     pub fn register_evm_address(
         &mut self,
