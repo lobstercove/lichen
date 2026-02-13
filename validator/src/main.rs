@@ -50,7 +50,11 @@ use tracing::{debug, error, info, warn};
 
 const SYSTEM_ACCOUNT_OWNER: Pubkey = Pubkey([0x01; 32]);
 const GENESIS_MINT_PUBKEY: Pubkey = Pubkey([0xFE; 32]);
-const REWARD_POOL_MOLT: u64 = 150_000_000; // 15% of 1B supply
+/// AUDIT-FIX 3.12: Documented — this is 150M MOLT (15% of 1B supply) per whitepaper.
+/// The `.min(1_000_000_000)` cap in the legacy path is a safety guard that's
+/// redundant (150M < 1B). Kept for backward compat only — new deployments use
+/// the GenesisAccounts distribution path.
+const REWARD_POOL_MOLT: u64 = 150_000_000; // 15% of 1B supply (in MOLT, not shells)
 
 /// Exit code used by the internal health watchdog to signal the supervisor
 /// that the validator should be restarted (deadlock/stall detected).
@@ -267,8 +271,10 @@ fn block_has_user_transactions(block: &Block) -> bool {
         .any(|tx| !is_reward_or_debt_tx(tx))
 }
 
-fn record_block_activity(state: &StateStore, block: &Block) {
+/// AUDIT-FIX 3.14: Returns count of indexing errors so callers can track failure rate.
+fn record_block_activity(state: &StateStore, block: &Block) -> u32 {
     let mut activity_seq: u32 = 0;
+    let mut error_count: u32 = 0;
 
     for tx in &block.transactions {
         let tx_signature = tx.signature();
@@ -297,6 +303,7 @@ fn record_block_activity(state: &StateStore, block: &Block) {
 
                         if let Err(e) = state.record_nft_activity(&activity, activity_seq) {
                             warn!("⚠️  Failed to record NFT mint activity: {}", e);
+                            error_count += 1;
                         }
 
                         activity_seq = activity_seq.saturating_add(1);
@@ -333,6 +340,7 @@ fn record_block_activity(state: &StateStore, block: &Block) {
 
                         if let Err(e) = state.record_nft_activity(&activity, activity_seq) {
                             warn!("⚠️  Failed to record NFT transfer activity: {}", e);
+                            error_count += 1;
                         }
 
                         activity_seq = activity_seq.saturating_add(1);
@@ -365,6 +373,7 @@ fn record_block_activity(state: &StateStore, block: &Block) {
 
                     if let Err(e) = state.record_program_call(&activity, activity_seq) {
                         warn!("⚠️  Failed to record program call: {}", e);
+                        error_count += 1;
                     }
 
                     let market_kind = match function.as_str() {
@@ -389,6 +398,7 @@ fn record_block_activity(state: &StateStore, block: &Block) {
                         if let Err(e) = state.record_market_activity(&market_activity, activity_seq)
                         {
                             warn!("⚠️  Failed to record market activity: {}", e);
+                            error_count += 1;
                         }
 
                         activity_seq = activity_seq.saturating_add(1);
@@ -399,6 +409,7 @@ fn record_block_activity(state: &StateStore, block: &Block) {
             }
         }
     }
+    error_count
 }
 
 struct ParsedMarketArgs {
@@ -519,7 +530,14 @@ fn emit_program_and_nft_events(
     ws_event_tx: &tokio::sync::broadcast::Sender<moltchain_rpc::ws::Event>,
     block: &Block,
 ) {
-    record_block_activity(state, block);
+    // AUDIT-FIX 3.14: Track indexing errors for monitoring
+    let activity_errors = record_block_activity(state, block);
+    if activity_errors > 0 {
+        warn!(
+            "⚠️  Block {} had {} activity indexing errors",
+            block.header.slot, activity_errors
+        );
+    }
 
     for tx in &block.transactions {
         // Emit Transaction event for every tx in the block
@@ -5277,7 +5295,19 @@ async fn run_validator() {
         BASE_FEE,
         BASE_FEE as f64 / 1_000_000_000.0
     );
-    info!("Fee split: 50% burned, 30% producer, 10% voters, 10% treasury");
+    // AUDIT-FIX 3.13: Log actual fee config values, not hardcoded percentages
+    let genesis_fee_info = format!(
+        "Fee split: {}% burned, {}% producer, {}% voters, {}% treasury",
+        genesis_config.features.fee_burn_percentage,
+        genesis_config.features.fee_producer_percentage,
+        genesis_config.features.fee_voters_percentage,
+        100u64.saturating_sub(
+            genesis_config.features.fee_burn_percentage
+                + genesis_config.features.fee_producer_percentage
+                + genesis_config.features.fee_voters_percentage,
+        ),
+    );
+    info!("{}", genesis_fee_info);
     info!("Leader selection: stake + contribution weighted");
 
     if let Some(ref p2p_pm) = p2p_peer_manager {

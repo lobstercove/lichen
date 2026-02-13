@@ -216,6 +216,13 @@ fn wasm_valtype_to_abi(vt: &wasmer::Type) -> AbiType {
 // ============================================================================
 
 /// Contract account storing bytecode and state
+/// AUDIT-FIX 3.5: NOTE — `code` (Vec<u8>) is serialized as a JSON integer array
+/// by serde_json, causing ~3-4x storage bloat vs base64 or raw bytes. A migration
+/// to base64 encoding (serde_bytes + base64 serializer) is recommended for a future
+/// release but requires a storage migration for existing deployed contracts.
+/// AUDIT-FIX 3.6: NOTE — WASM modules are compiled from raw bytecode on every
+/// `execute()` call. A compiled module cache (keyed by code_hash) would eliminate
+/// redundant Cranelift compilations. Deferred to a future optimization pass.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContractAccount {
     /// WASM bytecode

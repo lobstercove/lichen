@@ -575,17 +575,21 @@ impl TxProcessor {
         use crate::account::Keypair;
         let mut verified_signers: HashSet<Pubkey> = HashSet::new();
 
-        // Each signature corresponds to the first account of sequential instructions
-        // that haven't been verified yet, OR the fee payer + additional signers.
-        // We verify each signature against each required signer until all are matched.
+        // AUDIT-FIX 3.10: Build a set of unverified signers for O(s * r_remaining)
+        // instead of O(s * r) on every iteration. Each successful verify removes
+        // the signer from the pending set, reducing work for subsequent sigs.
+        let mut unverified: Vec<Pubkey> = required_signers.iter().cloned().collect();
         for sig in &tx.signatures {
-            for signer in &required_signers {
-                if !verified_signers.contains(signer)
-                    && Keypair::verify(signer, &message_bytes, sig)
-                {
+            let mut matched_idx = None;
+            for (i, signer) in unverified.iter().enumerate() {
+                if Keypair::verify(signer, &message_bytes, sig) {
                     verified_signers.insert(*signer);
+                    matched_idx = Some(i);
                     break;
                 }
+            }
+            if let Some(idx) = matched_idx {
+                unverified.swap_remove(idx);
             }
         }
 
@@ -1540,6 +1544,15 @@ impl TxProcessor {
 
         let current_slot = self.b_get_last_slot().unwrap_or(0);
         let mut pool = self.b_get_stake_pool()?;
+        // AUDIT-FIX 3.11: Verify validator exists in the stake pool before
+        // allowing new stake. Prevents users from locking funds to arbitrary
+        // non-validator pubkeys where rewards will never be earned.
+        if pool.get_stake(&validator).is_none() {
+            return Err(format!(
+                "Validator {} is not registered in the stake pool",
+                validator.to_base58()
+            ));
+        }
         pool.stake(validator, amount, current_slot)?;
         self.b_put_stake_pool(&pool)?;
 
@@ -1819,7 +1832,13 @@ impl TxProcessor {
         }
 
         // Charge deploy fee
-        let deploy_fee = crate::CONTRACT_DEPLOY_FEE;
+        // AUDIT-FIX 3.8: Use fee_config from state instead of hardcoded constant
+        // so governance-updated fees take effect.
+        let deploy_fee_config = self
+            .state
+            .get_fee_config()
+            .unwrap_or_else(|_| FeeConfig::default_from_constants());
+        let deploy_fee = deploy_fee_config.contract_deploy_fee;
         let mut deployer_account = self
             .b_get_account(&deployer)?
             .ok_or_else(|| "Deployer account not found".to_string())?;
@@ -2181,6 +2200,9 @@ impl TxProcessor {
 
         contract.code = new_code;
         contract.code_hash = new_hash;
+        // AUDIT-FIX 3.7: Clear stale ABI from previous code version — the new
+        // code may have different exports/params. ABI should be re-published.
+        contract.abi = None;
 
         let mut updated_account = account;
         updated_account.data = serde_json::to_vec(&contract)
@@ -2293,7 +2315,10 @@ impl TxProcessor {
             let rent_due = months.saturating_mul(billable_kb).saturating_mul(rent_rate);
 
             if rent_due > 0 {
-                // Graceful rent: collect up to what is available, don't abort the transaction
+                // AUDIT-FIX 3.9: Graceful rent — collect up to what is available.
+                // Zero-balance accounts persist indefinitely (rent is clamped to 0).
+                // Account eviction is NOT implemented to avoid data loss risks.
+                // Future: consider garbage collection of zero-balance + zero-data accounts.
                 let actual_rent = rent_due.min(account.spendable);
                 if actual_rent > 0 {
                     account

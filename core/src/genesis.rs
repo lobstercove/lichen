@@ -232,6 +232,10 @@ impl GenesisConfig {
                 self.features.fee_voters_percentage,
             ));
         }
+        // AUDIT-FIX 3.23: Reject all-zero fee config (at least one category must be nonzero)
+        if total_pct == 0 {
+            return Err("Fee percentages cannot all be zero".to_string());
+        }
 
         Ok(())
     }
@@ -329,6 +333,7 @@ impl GenesisConfig {
     }
 
     /// Create default testnet genesis with auto-generated treasury
+    /// AUDIT-FIX 3.22: Differentiated from mainnet — lower stakes, faster epochs
     pub fn default_testnet() -> Self {
         GenesisConfig {
             chain_id: "moltchain-testnet-1".to_string(),
@@ -337,7 +342,8 @@ impl GenesisConfig {
                 slot_duration_ms: 400,
                 // AUDIT-FIX 1.3: match SLOTS_PER_EPOCH constant (432_000)
                 epoch_slots: 432000,                      // ~2 days at 400ms
-                min_validator_stake: 100_000_000_000_000, // 100,000 MOLT
+                // AUDIT-FIX 3.22: Lower stake requirement for testnet (100 MOLT vs 100k)
+                min_validator_stake: 100_000_000_000,     // 100 MOLT (testnet)
                 // AUDIT-FIX 1.3: match TRANSACTION_BLOCK_REWARD constant (0.9 MOLT)
                 validator_reward_per_block: 900_000_000,   // 0.9 MOLT
                 slashing_percentage_double_sign: 50,

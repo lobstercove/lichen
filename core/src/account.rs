@@ -174,7 +174,9 @@ impl Account {
         molt.saturating_mul(1_000_000_000)
     }
 
-    /// Convert shells to MOLT
+    /// Convert shells to MOLT (integer division — truncates fractional MOLT).
+    /// AUDIT-FIX 3.2: Callers needing rounding should use
+    /// `(shells + 999_999_999) / 1_000_000_000` for round-up.
     pub const fn shells_to_molt(shells: u64) -> u64 {
         shells / 1_000_000_000
     }
@@ -198,6 +200,8 @@ impl Account {
     /// T3.3 fix: shells total is unchanged (just a reclassification)
     /// AUDIT-FIX 1.1a: checked arithmetic, compute-before-mutate
     pub fn stake(&mut self, amount: u64) -> Result<(), String> {
+        // AUDIT-FIX 3.1: Skip no-op zero-amount operations
+        if amount == 0 { return Ok(()); }
         let new_spendable = self.spendable.checked_sub(amount).ok_or_else(|| {
             format!("Insufficient spendable balance: {} < {}", self.spendable, amount)
         })?;
@@ -215,6 +219,8 @@ impl Account {
     /// Unstake balance (moves from staked to spendable)
     /// AUDIT-FIX 1.1b: checked arithmetic, compute-before-mutate
     pub fn unstake(&mut self, amount: u64) -> Result<(), String> {
+        // AUDIT-FIX 3.1: Skip no-op zero-amount operations
+        if amount == 0 { return Ok(()); }
         let new_staked = self.staked.checked_sub(amount).ok_or_else(|| {
             format!("Insufficient staked balance: {} < {}", self.staked, amount)
         })?;
@@ -232,6 +238,8 @@ impl Account {
     /// Lock balance (moves from spendable to locked)
     /// AUDIT-FIX 1.1c: checked arithmetic, compute-before-mutate
     pub fn lock(&mut self, amount: u64) -> Result<(), String> {
+        // AUDIT-FIX 3.1: Skip no-op zero-amount operations
+        if amount == 0 { return Ok(()); }
         let new_spendable = self.spendable.checked_sub(amount).ok_or_else(|| {
             format!("Insufficient spendable balance: {} < {}", self.spendable, amount)
         })?;
@@ -249,6 +257,8 @@ impl Account {
     /// Unlock balance (moves from locked to spendable)
     /// AUDIT-FIX 1.1d: checked arithmetic, compute-before-mutate
     pub fn unlock(&mut self, amount: u64) -> Result<(), String> {
+        // AUDIT-FIX 3.1: Skip no-op zero-amount operations
+        if amount == 0 { return Ok(()); }
         let new_locked = self.locked.checked_sub(amount).ok_or_else(|| {
             format!("Insufficient locked balance: {} < {}", self.locked, amount)
         })?;
