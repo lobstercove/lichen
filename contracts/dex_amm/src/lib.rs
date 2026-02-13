@@ -843,6 +843,19 @@ pub extern "C" fn call() {
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
+        1 => {
+            // create_pool: caller(32) + token_a(32) + token_b(32) + fee_tier(1) + initial_sqrt_price(8)
+            if args.len() >= 1 + 32 + 32 + 32 + 1 + 8 {
+                let r = create_pool(
+                    args[1..33].as_ptr(),
+                    args[33..65].as_ptr(),
+                    args[65..97].as_ptr(),
+                    args[97],
+                    bytes_to_u64(&args[98..106]),
+                );
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
         _ => {}
     }
 }

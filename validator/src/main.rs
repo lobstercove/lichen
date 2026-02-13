@@ -9,14 +9,14 @@ pub mod updater;
 
 use moltchain_core::nft::decode_token_state;
 use moltchain_core::{
-    evm_tx_hash, Account, Block, ContractAccount, ContractInstruction, FeeConfig, GenesisConfig,
-    GenesisWallet, Hash, Instruction, Keypair, MarketActivity, MarketActivityKind, Mempool,
-    Message, NftActivity, NftActivityKind, ProgramCallActivity, Pubkey, SlashingEvidence,
-    SlashingOffense, SlashingTracker, StakePool, StateStore, SymbolRegistryEntry, Transaction,
-    TxProcessor, ValidatorInfo, ValidatorSet, Vote, VoteAggregator, BASE_FEE, CONTRACT_DEPLOY_FEE,
-    CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, HEARTBEAT_BLOCK_REWARD, MIN_VALIDATOR_STAKE,
-    NFT_COLLECTION_FEE, NFT_MINT_FEE, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
-    TRANSACTION_BLOCK_REWARD,
+    evm_tx_hash, Account, Block, ContractAccount, ContractContext, ContractInstruction,
+    ContractRuntime, FeeConfig, GenesisConfig, GenesisWallet, Hash, Instruction, Keypair,
+    MarketActivity, MarketActivityKind, Mempool, Message, NftActivity, NftActivityKind,
+    ProgramCallActivity, Pubkey, SlashingEvidence, SlashingOffense, SlashingTracker, StakePool,
+    StateStore, SymbolRegistryEntry, Transaction, TxProcessor, ValidatorInfo, ValidatorSet, Vote,
+    VoteAggregator, BASE_FEE, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID,
+    HEARTBEAT_BLOCK_REWARD, MIN_VALIDATOR_STAKE, NFT_COLLECTION_FEE, NFT_MINT_FEE,
+    SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID, TRANSACTION_BLOCK_REWARD,
 };
 use moltchain_p2p::{
     ConsistencyReportMsg, MessageType, P2PConfig, P2PMessage, P2PNetwork, SnapshotKind,
@@ -1547,6 +1547,507 @@ fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey) {
     info!("──────────────────────────────────────────────────────");
 }
 
+// ========================================================================
+//  GENESIS PHASE 2 — Initialize all 26 contracts by executing their
+//  initialize() function via the WASM runtime.
+// ========================================================================
+
+/// Derive a contract's deterministic address from deployer + dir_name + wasm.
+/// Must match the derivation in genesis_auto_deploy().
+fn derive_contract_address(deployer_pubkey: &Pubkey, dir_name: &str) -> Option<Pubkey> {
+    let contracts_dir = PathBuf::from("contracts");
+    let wasm_path = contracts_dir
+        .join(dir_name)
+        .join(format!("{}.wasm", dir_name));
+    let wasm_bytes = fs::read(&wasm_path).ok()?;
+    let mut hasher = Sha256::new();
+    hasher.update(deployer_pubkey.0);
+    hasher.update(dir_name.as_bytes());
+    hasher.update(&wasm_bytes);
+    let hash_result = hasher.finalize();
+    let mut addr_bytes = [0u8; 32];
+    addr_bytes.copy_from_slice(&hash_result[..32]);
+    Some(Pubkey(addr_bytes))
+}
+
+/// Execute a contract function via WASM runtime and apply storage changes.
+/// Returns true on success.
+fn genesis_exec_contract(
+    state: &StateStore,
+    program_pubkey: &Pubkey,
+    deployer_pubkey: &Pubkey,
+    function_name: &str,
+    args: &[u8],
+    label: &str,
+) -> bool {
+    let account = match state.get_account(program_pubkey) {
+        Ok(Some(a)) => a,
+        _ => {
+            error!("  FAIL {}: account not found", label);
+            return false;
+        }
+    };
+
+    let mut contract: ContractAccount = match serde_json::from_slice(&account.data) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("  FAIL {}: deserialize ContractAccount: {}", label, e);
+            return false;
+        }
+    };
+
+    let ctx = ContractContext::with_args(
+        *deployer_pubkey,
+        *program_pubkey,
+        0,
+        0,
+        contract.storage.clone(),
+        args.to_vec(),
+    );
+
+    let mut runtime = ContractRuntime::new();
+    match runtime.execute(&contract, function_name, args, ctx) {
+        Ok(result) => {
+            if !result.success {
+                warn!(
+                    "  WARN {}: contract returned error: {:?}",
+                    label, result.error
+                );
+                // Some contracts return non-zero on "already initialized" — not fatal
+            }
+            // Apply storage changes
+            for (key, val_opt) in &result.storage_changes {
+                match val_opt {
+                    Some(val) => contract.set_storage(key.clone(), val.clone()),
+                    None => {
+                        contract.remove_storage(key);
+                    }
+                }
+            }
+            // Re-serialize and store
+            let mut updated_account = account;
+            match serde_json::to_vec(&contract) {
+                Ok(data) => updated_account.data = data,
+                Err(e) => {
+                    error!("  FAIL {}: re-serialize: {}", label, e);
+                    return false;
+                }
+            }
+            if let Err(e) = state.put_account(program_pubkey, &updated_account) {
+                error!("  FAIL {}: put_account: {}", label, e);
+                return false;
+            }
+            true
+        }
+        Err(e) => {
+            error!("  FAIL {}: WASM execution error: {}", label, e);
+            false
+        }
+    }
+}
+
+fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey) {
+    info!("──────────────────────────────────────────────────────");
+    info!("  GENESIS PHASE 2: Initializing all contracts");
+    info!("──────────────────────────────────────────────────────");
+
+    let admin = deployer_pubkey.0;
+    let mut initialized: usize = 0;
+    let mut skipped: usize = 0;
+
+    // Build a lookup: dir_name -> Pubkey for cross-references
+    let mut address_map: HashMap<String, Pubkey> = HashMap::new();
+    for &(dir_name, _symbol, _display, _template) in GENESIS_CONTRACT_CATALOG {
+        if let Some(addr) = derive_contract_address(deployer_pubkey, dir_name) {
+            address_map.insert(dir_name.to_string(), addr);
+        }
+    }
+
+    // ── Initialization in dependency order ──
+    // Layer 0: Tokens (no dependencies)
+    // Layer 1: Identity
+    // Layer 2: DEX core (opcode dispatch)
+    // Layer 3: DEX infrastructure (opcode dispatch)
+    // Layer 4: DeFi protocols
+    // Layer 5: Applications
+
+    // Define initialization config for each contract:
+    // (dir_name, function_name, args_builder)
+    // For opcode-dispatch contracts: function="call", args=[0x00][admin 32B]
+    // For named-export contracts: function="initialize" (or variant), args=[admin 32B]
+
+    struct InitSpec {
+        dir_name: &'static str,
+        function: &'static str,
+        /// Build arguments. We pass in admin pubkey and address map.
+        args: Vec<u8>,
+    }
+
+    // Helper: build opcode-dispatch init args [0x00][admin 32B]
+    fn opcode_init_args(admin: &[u8; 32]) -> Vec<u8> {
+        let mut args = Vec::with_capacity(33);
+        args.push(0x00); // opcode 0 = initialize
+        args.extend_from_slice(admin);
+        args
+    }
+
+    // Helper: build named-export init args = just [admin 32B]
+    fn named_init_args(admin: &[u8; 32]) -> Vec<u8> {
+        admin.to_vec()
+    }
+
+    // Resolve token contract addresses for moltswap and moltdao
+    let molt_addr = address_map
+        .get("moltcoin")
+        .map(|p| p.0)
+        .unwrap_or([0u8; 32]);
+    let musd_addr = address_map
+        .get("musd_token")
+        .map(|p| p.0)
+        .unwrap_or([0u8; 32]);
+
+    // DAO: governance_token = MOLT address, treasury = deployer (initially),
+    // min_proposal_threshold = 10,000 MOLT in shells (10_000 * 1e9)
+    let dao_threshold: u64 = 10_000_000_000_000; // 10,000 MOLT
+    let mut dao_args = Vec::with_capacity(72);
+    dao_args.extend_from_slice(&molt_addr); // governance_token (32B)
+    dao_args.extend_from_slice(&admin); // treasury (32B = deployer)
+    dao_args.extend_from_slice(&dao_threshold.to_le_bytes()); // min_proposal_threshold (8B)
+
+    // MoltSwap: token_a = MOLT, token_b = MUSD
+    let mut moltswap_args = Vec::with_capacity(64);
+    moltswap_args.extend_from_slice(&molt_addr);
+    moltswap_args.extend_from_slice(&musd_addr);
+
+    // MoltMarket: owner(32B) + fee_addr(32B) = deployer for both initially
+    let mut moltmarket_args = Vec::with_capacity(64);
+    moltmarket_args.extend_from_slice(&admin);
+    moltmarket_args.extend_from_slice(&admin); // fee recipient = deployer initially
+
+    // MoltAuction: initialize(marketplace_addr) + initialize_ma_admin(admin)
+    // marketplace_addr = moltmarket address for integration
+    let moltmarket_addr = address_map.get("moltmarket").map(|p| p.0).unwrap_or(admin);
+
+    let specs: Vec<InitSpec> = vec![
+        // ── Layer 0: Tokens ──
+        InitSpec {
+            dir_name: "moltcoin",
+            function: "initialize",
+            args: named_init_args(&admin),
+        },
+        InitSpec {
+            dir_name: "musd_token",
+            function: "initialize",
+            args: named_init_args(&admin),
+        },
+        InitSpec {
+            dir_name: "wsol_token",
+            function: "initialize",
+            args: named_init_args(&admin),
+        },
+        InitSpec {
+            dir_name: "weth_token",
+            function: "initialize",
+            args: named_init_args(&admin),
+        },
+        // ── Layer 1: Identity ──
+        InitSpec {
+            dir_name: "moltyid",
+            function: "initialize",
+            args: named_init_args(&admin),
+        },
+        // ── Layer 2: DEX core (opcode dispatch) ──
+        InitSpec {
+            dir_name: "dex_core",
+            function: "call",
+            args: opcode_init_args(&admin),
+        },
+        InitSpec {
+            dir_name: "dex_amm",
+            function: "call",
+            args: opcode_init_args(&admin),
+        },
+        InitSpec {
+            dir_name: "dex_router",
+            function: "call",
+            args: opcode_init_args(&admin),
+        },
+        // ── Layer 3: DEX infrastructure (opcode dispatch) ──
+        InitSpec {
+            dir_name: "dex_margin",
+            function: "call",
+            args: opcode_init_args(&admin),
+        },
+        InitSpec {
+            dir_name: "dex_rewards",
+            function: "call",
+            args: opcode_init_args(&admin),
+        },
+        InitSpec {
+            dir_name: "dex_governance",
+            function: "call",
+            args: opcode_init_args(&admin),
+        },
+        InitSpec {
+            dir_name: "dex_analytics",
+            function: "call",
+            args: opcode_init_args(&admin),
+        },
+        // ── Layer 4: DeFi protocols ──
+        InitSpec {
+            dir_name: "moltswap",
+            function: "initialize",
+            args: moltswap_args,
+        },
+        InitSpec {
+            dir_name: "moltbridge",
+            function: "initialize",
+            args: named_init_args(&admin),
+        },
+        InitSpec {
+            dir_name: "moltoracle",
+            function: "initialize_oracle",
+            args: named_init_args(&admin),
+        },
+        InitSpec {
+            dir_name: "lobsterlend",
+            function: "initialize",
+            args: named_init_args(&admin),
+        },
+        // ── Layer 4b: Governance ──
+        InitSpec {
+            dir_name: "moltdao",
+            function: "initialize_dao",
+            args: dao_args,
+        },
+        // ── Layer 5: Marketplaces ──
+        InitSpec {
+            dir_name: "moltmarket",
+            function: "initialize",
+            args: moltmarket_args,
+        },
+        InitSpec {
+            dir_name: "moltpunks",
+            function: "initialize",
+            args: named_init_args(&admin),
+        },
+        // ── Layer 5b: Infrastructure ──
+        InitSpec {
+            dir_name: "clawpay",
+            function: "initialize_cp_admin",
+            args: named_init_args(&admin),
+        },
+        InitSpec {
+            dir_name: "clawpump",
+            function: "initialize",
+            args: named_init_args(&admin),
+        },
+        InitSpec {
+            dir_name: "clawvault",
+            function: "initialize",
+            args: named_init_args(&admin),
+        },
+        InitSpec {
+            dir_name: "compute_market",
+            function: "initialize",
+            args: named_init_args(&admin),
+        },
+        InitSpec {
+            dir_name: "reef_storage",
+            function: "initialize",
+            args: named_init_args(&admin),
+        },
+        // bountyboard: no initialization needed (stateless bootstrap)
+    ];
+
+    for spec in &specs {
+        let pubkey = match address_map.get(spec.dir_name) {
+            Some(pk) => *pk,
+            None => {
+                warn!(
+                    "  SKIP {}: address not derived (WASM missing?)",
+                    spec.dir_name
+                );
+                skipped += 1;
+                continue;
+            }
+        };
+
+        if genesis_exec_contract(
+            state,
+            &pubkey,
+            deployer_pubkey,
+            spec.function,
+            &spec.args,
+            spec.dir_name,
+        ) {
+            info!("  INIT {}", spec.dir_name);
+            initialized += 1;
+        } else {
+            skipped += 1;
+        }
+    }
+
+    // MoltAuction requires TWO init calls:
+    // 1. initialize(marketplace_addr) — sets escrow address
+    // 2. initialize_ma_admin(admin) — sets admin
+    if let Some(auction_pk) = address_map.get("moltauction") {
+        let mkt_args = moltmarket_addr.to_vec();
+        if genesis_exec_contract(
+            state,
+            auction_pk,
+            deployer_pubkey,
+            "initialize",
+            &mkt_args,
+            "moltauction(escrow)",
+        ) {
+            if genesis_exec_contract(
+                state,
+                auction_pk,
+                deployer_pubkey,
+                "initialize_ma_admin",
+                admin.as_ref(),
+                "moltauction(admin)",
+            ) {
+                info!("  INIT moltauction (escrow + admin)");
+                initialized += 1;
+            } else {
+                skipped += 1;
+            }
+        } else {
+            skipped += 1;
+        }
+    }
+
+    info!("──────────────────────────────────────────────────────");
+    info!(
+        "  Genesis init complete: {} initialized, {} skipped",
+        initialized, skipped
+    );
+    info!("──────────────────────────────────────────────────────");
+}
+
+// ========================================================================
+//  GENESIS PHASE 3 — Create trading pairs and AMM pools at genesis.
+//  Auto-lists MOLT/mUSD, WSOL/mUSD, WETH/mUSD pairs on dex_core and
+//  creates corresponding AMM pools on dex_amm.
+// ========================================================================
+
+fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey) {
+    info!("──────────────────────────────────────────────────────");
+    info!("  GENESIS PHASE 3: Creating trading pairs & AMM pools");
+    info!("──────────────────────────────────────────────────────");
+
+    let admin = deployer_pubkey.0;
+
+    // Resolve contract addresses
+    let dex_core_pk = match derive_contract_address(deployer_pubkey, "dex_core") {
+        Some(pk) => pk,
+        None => {
+            error!("  FAIL: Cannot derive dex_core address");
+            return;
+        }
+    };
+    let dex_amm_pk = match derive_contract_address(deployer_pubkey, "dex_amm") {
+        Some(pk) => pk,
+        None => {
+            error!("  FAIL: Cannot derive dex_amm address");
+            return;
+        }
+    };
+
+    // Resolve token addresses
+    let molt_addr = derive_contract_address(deployer_pubkey, "moltcoin")
+        .map(|p| p.0)
+        .unwrap_or([0u8; 32]);
+    let musd_addr = derive_contract_address(deployer_pubkey, "musd_token")
+        .map(|p| p.0)
+        .unwrap_or([0u8; 32]);
+    let wsol_addr = derive_contract_address(deployer_pubkey, "wsol_token")
+        .map(|p| p.0)
+        .unwrap_or([0u8; 32]);
+    let weth_addr = derive_contract_address(deployer_pubkey, "weth_token")
+        .map(|p| p.0)
+        .unwrap_or([0u8; 32]);
+
+    // Genesis pair parameters (reasonable defaults for launch):
+    // tick_size: 1 (minimum price increment in shells)
+    // lot_size: 1_000_000 (minimum order lot = 0.001 tokens)
+    // min_order: 1_000 (minimum order value in shells = MIN_ORDER_VALUE)
+    let tick_size: u64 = 1;
+    let lot_size: u64 = 1_000_000;
+    let min_order: u64 = 1_000;
+
+    let pairs: [(&str, [u8; 32], [u8; 32]); 3] = [
+        ("MOLT/mUSD", molt_addr, musd_addr),
+        ("WSOL/mUSD", wsol_addr, musd_addr),
+        ("WETH/mUSD", weth_addr, musd_addr),
+    ];
+
+    let mut created_pairs: usize = 0;
+    let mut created_pools: usize = 0;
+
+    // Create CLOB trading pairs via dex_core opcode 1 (create_pair)
+    // Args: [0x01][caller 32B][base 32B][quote 32B][tick_size 8B][lot_size 8B][min_order 8B]
+    for (label, base, quote) in &pairs {
+        let mut args = Vec::with_capacity(121);
+        args.push(0x01); // opcode 1 = create_pair
+        args.extend_from_slice(&admin); // caller
+        args.extend_from_slice(base); // base_token
+        args.extend_from_slice(quote); // quote_token
+        args.extend_from_slice(&tick_size.to_le_bytes());
+        args.extend_from_slice(&lot_size.to_le_bytes());
+        args.extend_from_slice(&min_order.to_le_bytes());
+
+        if genesis_exec_contract(
+            state,
+            &dex_core_pk,
+            deployer_pubkey,
+            "call",
+            &args,
+            &format!("dex_core.create_pair({})", label),
+        ) {
+            info!("  PAIR {}", label);
+            created_pairs += 1;
+        }
+    }
+
+    // Create AMM pools via dex_amm opcode 1 (create_pool)
+    // Args: [0x01][caller 32B][token_a 32B][token_b 32B][fee_tier 1B][initial_sqrt_price 8B]
+    // fee_tier = 2 (30bps), initial_sqrt_price = 1 << 32 (1.0 in Q32 fixed-point)
+    let fee_tier: u8 = 2; // FEE_TIER_30BPS
+    let initial_sqrt_price: u64 = 1u64 << 32; // 1.0 price
+
+    for (label, base, quote) in &pairs {
+        let mut args = Vec::with_capacity(106);
+        args.push(0x01); // opcode 1 = create_pool
+        args.extend_from_slice(&admin); // caller
+        args.extend_from_slice(base); // token_a
+        args.extend_from_slice(quote); // token_b
+        args.push(fee_tier);
+        args.extend_from_slice(&initial_sqrt_price.to_le_bytes());
+
+        if genesis_exec_contract(
+            state,
+            &dex_amm_pk,
+            deployer_pubkey,
+            "call",
+            &args,
+            &format!("dex_amm.create_pool({})", label),
+        ) {
+            info!("  POOL {}", label);
+            created_pools += 1;
+        }
+    }
+
+    info!("──────────────────────────────────────────────────────");
+    info!(
+        "  Genesis pairs: {} pairs, {} pools created",
+        created_pairs, created_pools
+    );
+    info!("──────────────────────────────────────────────────────");
+}
+
 // ═══════════════════════════════════════════════════════════════════════
 //  SUPERVISOR — wraps the validator in a restart loop.
 //  When the internal watchdog detects a stall it exits with EXIT_CODE_RESTART;
@@ -2553,6 +3054,8 @@ async fn run_validator() {
 
         // Auto-deploy all compiled contracts from contracts/ directory
         genesis_auto_deploy(&state, &genesis_pubkey);
+        genesis_initialize_contracts(&state, &genesis_pubkey);
+        genesis_create_trading_pairs(&state, &genesis_pubkey);
     } else if genesis_exists {
         info!("✓ Genesis state already exists");
         let last_slot = state.get_last_slot().unwrap_or(0);
@@ -3293,6 +3796,8 @@ async fn run_validator() {
 
                             // 8. Auto-deploy contracts
                             genesis_auto_deploy(&state_for_blocks, &gpk);
+                            genesis_initialize_contracts(&state_for_blocks, &gpk);
+                            genesis_create_trading_pairs(&state_for_blocks, &gpk);
 
                             info!("✅ Applied genesis block (slot 0) from network — full state initialized");
                         } else {
