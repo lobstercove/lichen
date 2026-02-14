@@ -838,7 +838,7 @@ test_batch_resolve_performance (100 addresses < 200ms)
 | Question | Options | Recommendation |
 |----------|---------|----------------|
 | Identity registration cost? | Free (gas only), Small fee (1 MOLT), Significant fee (10 MOLT) | **Free (gas only)** — maximize adoption, reputation gates protect quality |
-| .molt name pricing? | Flat fee per year, Length-based (short=expensive), Auction | **Length-based** — 3-char: 100 MOLT, 4-char: 10 MOLT, 5+: 1 MOLT per year |
+| .molt name pricing? | Flat fee per year, Length-based (short=expensive), Auction | **Length-based** — 3-char: 500 MOLT ($50), 4-char: 100 MOLT ($10), 5+: 20 MOLT ($2) per year |
 | Should .molt names expire? | Yes (annual renewal), No (perpetual), Grace period | **Yes with grace** — 1yr registration, 30-day grace period before release |
 | Reputation decay? | No decay (permanent), Slow decay (10% annual), Activity-based | **Activity-based** — score decays 5% per 90 days of inactivity |
 | Who can attest skills? | Anyone with identity, Same-skill holders only, Admin-approved attestors | **Anyone with identity** — attestation count is the credibility signal |
