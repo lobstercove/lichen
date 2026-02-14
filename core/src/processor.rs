@@ -63,8 +63,8 @@ pub const CONTRACT_DEPLOY_FEE: u64 = 25_000_000_000;
 /// Contract upgrade fee (10 MOLT = 10,000,000,000 shells — $1.00 at $0.10/MOLT)
 pub const CONTRACT_UPGRADE_FEE: u64 = 10_000_000_000;
 
-/// NFT mint fee (0.1 MOLT = 100,000,000 shells — $0.01 at $0.10/MOLT)
-pub const NFT_MINT_FEE: u64 = 100_000_000;
+/// NFT mint fee (0.5 MOLT = 500,000,000 shells — $0.05 at $0.10/MOLT)
+pub const NFT_MINT_FEE: u64 = 500_000_000;
 
 /// NFT collection creation fee (1,000 MOLT = 1,000,000,000,000 shells — $100 at $0.10/MOLT)
 pub const NFT_COLLECTION_FEE: u64 = 1_000_000_000_000;
