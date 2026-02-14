@@ -381,8 +381,8 @@ cargo build --release
                     <tr>
                         <td><code>min_validator_stake</code></td>
                         <td>Integer</td>
-                        <td><code>100000000000</code></td>
-                        <td>Minimum stake in shells (1 MOLT = 1,000,000,000 shells). 100 MOLT on testnet, 1000 MOLT on mainnet.</td>
+                        <td><code>100000000000000</code></td>
+                        <td>Minimum stake in shells (1 MOLT = 1,000,000,000 shells). 100,000 MOLT (100K) — bootstrapped to new validators at no cost.</td>
                     </tr>
                     <tr>
                         <td><code>slot_duration_ms</code></td>
@@ -649,21 +649,22 @@ cargo build --release
                     <span class="code-lang">Shell</span>
                     <button class="code-copy-btn">Copy</button>
                 </div>
-                <pre><code>$ molt stake add 100 --rpc-url https://testnet-rpc.moltchain.io
+                <pre><code>$ molt validator register --rpc-url https://testnet-rpc.moltchain.io
 
-🦞 Staking 100 MOLT to validator Mo1tVa1idAtoR...xYz789
+🦞 Registering validator Mo1tVa1idAtoR...xYz789
 
   Transaction: 5bN2...kQrT
-  Stake:       100.000000000 MOLT
+  Bootstrap:   100,000.000000000 MOLT (granted)
+  Debt:        100,000.000000000 MOLT (to repay via 50% of rewards)
   Status:      Finalized (slot 1,204,817)
 
-✓ Validator stake activated! Your node will enter the active set next epoch.</code></pre>
+✓ Validator registered! Your node will enter the active set next epoch.</code></pre>
             </div>
 
             <h3>Minimum Stake</h3>
             <ul>
-                <li><strong>Testnet:</strong> 100 MOLT (<code>100,000,000,000</code> shells)</li>
-                <li><strong>Mainnet:</strong> 1,000 MOLT (<code>1,000,000,000,000</code> shells)</li>
+                <li><strong>Bootstrap Grant:</strong> 100,000 MOLT (<code>100,000,000,000,000</code> shells) — new validators receive this at $0 cost</li>
+                <li><strong>Vesting:</strong> 50% of all earned rewards repay the bootstrap debt (~86 days solo validator)</li>
             </ul>
 
             <h3>ReefStake Mechanism</h3>
@@ -685,9 +686,9 @@ cargo build --release
                 <pre><code>$ molt stake status --rpc-url https://testnet-rpc.moltchain.io
 
   Identity:    Mo1tVa1idAtoR...xYz789
-  Stake:       100.000000000 MOLT
+  Stake:       100,000.000000000 MOLT (bootstrap)
   Delegated:   450.000000000 MOLT
-  Total:       550.000000000 MOLT
+  Total:       100,450.000000000 MOLT
   Active:      Yes (rank #7 of 21)
   Commission:  10%
   Last Vote:   slot 1,205,142</code></pre>

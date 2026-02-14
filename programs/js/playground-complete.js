@@ -1367,7 +1367,7 @@ const Playground = {
                     </div>
                     <div class="form-group">
                         <label>Graduation Market Cap</label>
-                        <input type="number" class="form-input" id="launchGradMcapInput" min="10000" max="10000000" step="1000" value="${current.graduationMcap}">
+                        <input type="number" class="form-input" id="launchGradMcapInput" min="100000" max="10000000" step="1000" value="${current.graduationMcap}">
                         <div class="template-options-note">MOLT market cap to graduate to MoltSwap</div>
                     </div>
                 </div>
@@ -1659,7 +1659,7 @@ const Playground = {
             return { collateralFactor: 75, liquidationThreshold: 85, liquidationBonus: 5 };
         }
         if (exampleId === 'launchpad') {
-            return { platformFee: 1, graduationMcap: 100000 };
+            return { platformFee: 1, graduationMcap: 1000000 };
         }
         if (exampleId === 'vault') {
             return { performanceFee: 10, maxStrategies: 5 };
@@ -1895,7 +1895,7 @@ const Playground = {
         const pf = parseInt(document.getElementById('launchPlatformFeeInput')?.value, 10);
         const gm = parseInt(document.getElementById('launchGradMcapInput')?.value, 10);
         if (![pf, gm].every(v => Number.isFinite(v))) return null;
-        return { platformFee: Math.max(0, Math.min(10, pf)), graduationMcap: Math.max(10000, Math.min(10000000, gm)) };
+        return { platformFee: Math.max(0, Math.min(10, pf)), graduationMcap: Math.max(100000, Math.min(10000000, gm)) };
     },
 
     // --- Vault (ClawVault) ---
@@ -5631,8 +5631,8 @@ use moltchain_sdk::{
     bytes_to_u64, u64_to_bytes, get_timestamp
 };
 
-const CREATION_FEE: u64 = 100_000_000;       // 0.1 MOLT
-const GRADUATION_MCAP: u64 = 100_000;         // Graduate at 100K MOLT market cap
+const CREATION_FEE: u64 = 10_000_000_000;     // 10 MOLT
+const GRADUATION_MCAP: u64 = 1_000_000;        // Graduate at 1M MOLT market cap
 const BASE_PRICE: u64 = 1000;                 // Base price in shells
 const SLOPE: u64 = 1;                         // Linear bonding curve slope
 const SLOPE_SCALE: u64 = 1_000_000;
