@@ -157,7 +157,7 @@ Three Truths (3 cards):
       <ul>
         <li>95%+ uptime</li>
         <li>Honest block production</li>
-        <li>43 days to fully vest</li>
+        <li>9 days to fully vest</li>
         <li>Build reputation</li>
       </ul>
     </div>

@@ -206,8 +206,8 @@ if $FOREGROUND && ! $IS_GENESIS; then
     # Foreground mode — no first-boot or custody, just run
     echo -e ""
     echo -e "  📊 Adaptive Block Production:"
-    echo -e "     • No TXs: Heartbeat every 5s (0.027 MOLT)"
-    echo -e "     • With TXs: 400ms blocks (0.18 MOLT)"
+    echo -e "     • No TXs: Heartbeat every 5s (0.135 MOLT)"
+    echo -e "     • With TXs: 400ms blocks (0.9 MOLT)"
     echo -e ""
     echo -e "  Starting in foreground (Ctrl+C to stop)..."
     exec "${VALIDATOR_CMD[@]}"

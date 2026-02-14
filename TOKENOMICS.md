@@ -45,8 +45,8 @@
 
 | Reward Type | Amount per event | In shells |
 |-------------|-----------------|-----------|
-| Transaction block reward | **0.18 MOLT** per block | 180,000,000 |
-| Heartbeat block reward | **0.027 MOLT** per empty block | 27,000,000 |
+| Transaction block reward | **0.9 MOLT** per block | 900,000,000 |
+| Heartbeat block reward | **0.135 MOLT** per empty block | 135,000,000 |
 | Slots per year | 78,840,000 (~400ms slots) | — |
 | Code: `ANNUAL_INFLATION_BPS` | 500 (5%) | — |
 
@@ -80,18 +80,22 @@
 Assuming ~400ms slots, 78.84M slots/year:
 
 **Scenario A — High activity (50% blocks have transactions):**
-- TX blocks: 39.42M × 0.18 MOLT = **7,095,600 MOLT/year**
-- Empty blocks: 39.42M × 0.027 MOLT = **1,064,340 MOLT/year**
-- **Total emission: ~8,159,940 MOLT/year** (~0.82% of supply)
+- TX blocks: 39.42M × 0.9 MOLT = **35,478,000 MOLT/year**
+- Empty blocks: 39.42M × 0.135 MOLT = **5,321,700 MOLT/year**
+- **Total emission: ~40,799,700 MOLT/year** (~4.08% of supply)
 
 **Scenario B — Low activity (10% blocks have transactions):**
-- TX blocks: 7.884M × 0.18 MOLT = **1,419,120 MOLT/year**
-- Empty blocks: 70.956M × 0.027 MOLT = **1,915,812 MOLT/year**
-- **Total emission: ~3,334,932 MOLT/year** (~0.33% of supply)
+- TX blocks: 7.884M × 0.9 MOLT = **7,095,600 MOLT/year**
+- Empty blocks: 70.956M × 0.135 MOLT = **9,579,060 MOLT/year**
+- **Total emission: ~16,674,660 MOLT/year** (~1.67% of supply)
 
 **Scenario C — Maximum activity (100% blocks have transactions):**
-- TX blocks: 78.84M × 0.18 MOLT = **14,191,200 MOLT/year**
-- **Total emission: ~14.2M MOLT/year** (~1.4% of supply)
+- TX blocks: 78.84M × 0.9 MOLT = **70,956,000 MOLT/year**
+- **Total emission: ~71M MOLT/year** (~7.1% of supply)
+
+> **Note:** With adaptive heartbeat (5s interval instead of 400ms), actual heartbeat
+> block emission is ~12.5x lower than shown. At 5s intervals, heartbeat blocks/year ≈ 6.3M
+> (not 39-71M), so real-world heartbeat emission in Scenario B is closer to 850K MOLT/year.
 
 ### Reward Pool Depletion
 
@@ -99,9 +103,13 @@ The validator reward pool is **150,000,000 MOLT** (15% of supply).
 
 | Activity Level | Annual Emission | Years Until Depleted |
 |---------------|----------------|---------------------|
-| Low (10% tx) | 3.3M MOLT/yr | **~45 years** |
-| Medium (50% tx) | 8.2M MOLT/yr | **~18 years** |
-| High (100% tx) | 14.2M MOLT/yr | **~10.5 years** |
+| Low (10% tx) | 16.7M MOLT/yr | **~9 years** |
+| Medium (50% tx) | 40.8M MOLT/yr | **~3.7 years** |
+| High (100% tx) | 71M MOLT/yr | **~2.1 years** |
+
+> **Note:** These are theoretical maximums at base reward rates. In practice, the
+> price-based reward adjustment (oracle) reduces emissions as MOLT price rises
+> above $0.10, and adaptive heartbeat reduces empty-block emissions by ~12.5x.
 
 ### Fee Burn Estimation
 
@@ -133,7 +141,7 @@ This is **massive** — it's nearly the same as maximum block reward emission. I
 We're bootstrapping from zero. The initial price is a **design decision**, not a market-discovered value. Every fee, every reward, and every cost in the system is denominated in MOLT, so the initial price determines:
 
 1. **Is 0.00001 MOLT per tx too cheap or too expensive?**
-2. **Is 0.18 MOLT per block reward sustainable?**
+2. **Is 0.9 MOLT per block reward sustainable?**
 3. **Is 2.5 MOLT to deploy a contract reasonable?**
 4. **Is 1,000 MOLT to stake a DAO proposal accessible?**
 5. **Is 100 MOLT for an NFT collection a fair barrier?**
@@ -142,14 +150,14 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 
 | MOLT Price | Base Fee (USD) | Block Reward (USD) | Deploy Cost (USD) | DAO Stake (USD) | Collection (USD) |
 |-----------|---------------|-------------------|-------------------|----------------|-----------------|
-| $0.001 | $0.00000001 | $0.00018 | $0.0025 | $1.00 | $0.10 |
-| $0.01 | $0.0000001 | $0.0018 | $0.025 | $10.00 | $1.00 |
-| **$0.05** | $0.0000005 | $0.009 | $0.125 | $50.00 | $5.00 |
-| **$0.10** | $0.000001 | $0.018 | $0.25 | $100.00 | $10.00 |
-| $0.50 | $0.000005 | $0.09 | $1.25 | $500.00 | $50.00 |
-| $1.00 | $0.00001 | $0.18 | $2.50 | $1,000.00 | $100.00 |
-| $5.00 | $0.00005 | $0.90 | $12.50 | $5,000.00 | $500.00 |
-| $10.00 | $0.0001 | $1.80 | $25.00 | $10,000.00 | $1,000.00 |
+| $0.001 | $0.00000001 | $0.0009 | $0.0025 | $1.00 | $0.10 |
+| $0.01 | $0.0000001 | $0.009 | $0.025 | $10.00 | $1.00 |
+| **$0.05** | $0.0000005 | $0.045 | $0.125 | $50.00 | $5.00 |
+| **$0.10** | $0.000001 | $0.09 | $0.25 | $100.00 | $10.00 |
+| $0.50 | $0.000005 | $0.45 | $1.25 | $500.00 | $50.00 |
+| $1.00 | $0.00001 | $0.90 | $2.50 | $1,000.00 | $100.00 |
+| $5.00 | $0.00005 | $4.50 | $12.50 | $5,000.00 | $500.00 |
+| $10.00 | $0.0001 | $9.00 | $25.00 | $10,000.00 | $1,000.00 |
 
 ---
 
@@ -161,7 +169,7 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 |--------|-------|
 | Fully Diluted Valuation (FDV) | **$10,000,000** |
 | Transaction fee | $0.0000001 (virtually free) |
-| Block reward | $0.0018/block (~$142K/yr at 100% activity) |
+| Block reward | $0.009/block (~$710K/yr at 100% activity) |
 | Contract deploy | $0.025 (dirt cheap) |
 | DAO proposal | $10 (very accessible) |
 | DEX reward pool | $12M/yr in emissions (unsustainable at this price) |
@@ -174,7 +182,7 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 |--------|-------|
 | Fully Diluted Valuation (FDV) | **$100,000,000** |
 | Transaction fee | $0.000001 (~1 micro-cent, near-free) |
-| Block reward | $0.018/block (~$1.42M/yr at 100%) |
+| Block reward | $0.09/block (~$7.1M/yr at 100%) |
 | Contract deploy | $0.25 (very affordable) |
 | DAO proposal | $100 (moderate barrier) |
 | DEX reward pool | $1.2M/yr emissions (~reasonable) |
@@ -188,7 +196,7 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 |--------|-------|
 | Fully Diluted Valuation (FDV) | **$500,000,000** |
 | Transaction fee | $0.000005 (still near-free) |
-| Block reward | $0.09/block (~$7.1M/yr at 100%) |
+| Block reward | $0.45/block (~$35.5M/yr at 100%) |
 | Contract deploy | $1.25 (fair) |
 | DAO proposal | $500 (significant barrier) |
 | DEX reward pool | $6M/yr emissions |
@@ -202,7 +210,7 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 |--------|-------|
 | Fully Diluted Valuation (FDV) | **$1,000,000,000** |
 | Transaction fee | $0.00001 (negligible) |
-| Block reward | $0.18/block (~$14.2M/yr at 100%) |
+| Block reward | $0.90/block (~$71M/yr at 100%) |
 | Contract deploy | $2.50 (standard) |
 | DAO proposal | $1,000 (high barrier) |
 | NFT collection | $100.00 (serious) |
@@ -224,7 +232,7 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 
 3. **Meaningful governance** — DAO proposal at $100 prevents spam but isn't exclusionary. DEX governance listing at $50 rep barrier makes sense.
 
-4. **Sustainable validator economics** — At 50% activity: 8.2M MOLT/yr × $0.10 = $820K/year in block rewards, split among validators. That's meaningful revenue.
+4. **Sustainable validator economics** — At 50% activity with oracle adjustment: rewards scale with price. At $0.10 reference price, validators earn meaningful revenue split among all active validators. As MOLT price rises, reward rate adjusts down automatically.
 
 5. **Revenue for the team** — Founding Moltys allocation (100M MOLT) = $10M initial value. Ecosystem partnerships (50M) = $5M. Fair compensation for building a working L1.
 
@@ -239,8 +247,8 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 | Parameter | Current | At $0.10 | Verdict |
 |-----------|---------|----------|---------|
 | Base tx fee | 0.00001 MOLT | $0.000001 | OK — trivially cheap, as intended |
-| Block reward (tx) | 0.18 MOLT | $0.018/block | OK — ~$1.4M/yr max, reasonable |
-| Block reward (heartbeat) | 0.027 MOLT | $0.0027/block | OK — empty blocks should pay little |
+| Block reward (tx) | 0.9 MOLT | $0.09/block | OK — oracle adjusts down as price rises |
+| Block reward (heartbeat) | 0.135 MOLT | $0.0135/block | OK — 15% of tx reward, adaptive 5s interval |
 | Contract deploy | 2.5 MOLT | $0.25 | OK — cheap enough to deploy, not free |
 | Contract upgrade | 1 MOLT | $0.10 | OK |
 | NFT mint | 0.001 MOLT | $0.0001 | OK — near free, as intended |
@@ -257,7 +265,7 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 
 1. **`MAX_ORDER_SIZE` in dex_core** — Currently 1,000 MOLT = $100. For a proper DEX, this should be much higher (e.g., 10,000,000 MOLT = $1M max order). This is the max _per order_, not per position.
 
-2. **`REWARD_POOL_PER_MONTH` in dex_rewards** — 1M MOLT/month = $100K/month = $1.2M/yr. If funded from the 150M validator rewards pool, that's 150M / 13.2M (block + dex) = ~11 years of combined runway. This is aggressive but workable — the idea is that by year 5, trading volume generates enough fee income that reward programs can be reduced.
+2. **`REWARD_POOL_PER_MONTH` in dex_rewards** — 1M MOLT/month = $100K/month = $1.2M/yr. Combined with block rewards, the reward pool depletion depends heavily on network activity and MOLT price (oracle adjustment). The price-based reward adjustment means higher MOLT prices automatically reduce emission, extending the runway.
 
 3. **`CREATION_FEE` in clawpump** — 0.1 MOLT = $0.01 is probably too cheap. At $0.01, bots will spam thousands of meme tokens. Consider raising to 1-10 MOLT ($0.10-$1.00) to add friction.
 

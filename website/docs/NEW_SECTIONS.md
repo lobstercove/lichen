@@ -175,7 +175,7 @@ Update navigation to include: Vision, Validators, Roadmap links.
                 <ul>
                     <li>95%+ uptime</li>
                     <li>Honest block production</li>
-                    <li>43 days to fully vest</li>
+                    <li>9 days to fully vest</li>
                     <li>Build reputation</li>
                 </ul>
             </div>

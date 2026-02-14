@@ -133,8 +133,8 @@ WETH ──DEX swap──► MOLT     (via WETH/mUSD → mUSD/MOLT route)
 **The entire system was designed at $1.00/MOLT.** Evidence:
 - `reference_price_usd = 1.0` in `RewardConfig` (consensus.rs line ~54)
 - At $1: deploy = $2.50, base fee = $0.00001 — matching the website/docs exactly
-- Block rewards: 0.18 MOLT = $0.18/block, designed to emit ~1.42% of supply/year at 100% activity
-- Heartbeat: 0.027 MOLT = 15% of tx reward — design comment says "15% of transaction reward"
+- Block rewards: 0.9 MOLT = $0.18/block, designed to emit ~1.42% of supply/year at 100% activity
+- Heartbeat: 0.135 MOLT = 15% of tx reward — design comment says "15% of transaction reward"
 - The dynamic price adjustment (PriceOracle, get_adjusted_reward) exists in code but is **dormant** — MockOracle always returns $1.00, never called by the validator
 
 **At $0.10, every value is 10× too cheap in USD.** We must multiply MOLT amounts by 10 to hit the same USD targets.
@@ -155,9 +155,11 @@ These target specific USD prices documented on the website and whitepaper.
 
 #### Category B — Block Rewards (DECISION: 5× recommended)
 
-Block rewards come from the **validator rewards pool (150M MOLT)**, not minted. At $1 the design intent was:
+Block rewards come from the **validator rewards pool (150M MOLT)**, not minted. At $1 the original design intent was:
 - 0.18 MOLT/block = $0.18 per transaction block
 - 0.027 MOLT/block = $0.027 per heartbeat (15% of tx reward)
+
+> **✅ Applied:** 5× upgrade now live — 0.9 MOLT/tx, 0.135 MOLT/heartbeat
 
 **At $0.10, keeping the same MOLT amounts gives validators only $0.018/block — 10× less than designed.**
 
