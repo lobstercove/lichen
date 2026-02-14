@@ -319,7 +319,7 @@ contribution_score = (
                     <button class="code-copy-btn">Copy</button>
                 </div>
                 <pre><code>pub struct Account {
-    /// Native MOLT balance in lamports (1 MOLT = 1e9 lamports)
+    /// Native MOLT balance in shells (1 MOLT = 1e9 shells)
     pub balance: u64,
 
     /// Transaction sequence number (prevents replay attacks)
@@ -347,7 +347,7 @@ contribution_score = (
 
             <div class="callout callout-info">
                 <div class="callout-title"><i class="fas fa-info-circle"></i> Rent Exemption</div>
-                Accounts must maintain a minimum balance proportional to their data size to remain rent-exempt. The formula is: <code>min_balance = data_size × 6960 + 890880</code> lamports. Accounts that fall below this threshold are garbage-collected after 2 epochs.
+                Accounts must maintain a minimum balance proportional to their data size to remain rent-exempt. The formula is: <code>min_balance = data_size × 6960 + 890880</code> shells. Accounts that fall below this threshold are garbage-collected after 2 epochs.
             </div>
 
             <!-- ========== 5. WASM EXECUTION ========== -->

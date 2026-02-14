@@ -181,7 +181,7 @@
                 <tr><td>NAME</td><td>"MoltCoin"</td></tr>
                 <tr><td>SYMBOL</td><td>"MOLT"</td></tr>
                 <tr><td>DECIMALS</td><td>9</td></tr>
-                <tr><td>INITIAL_SUPPLY</td><td>1,000,000 MOLT (1B shells)</td></tr>
+                <tr><td>INITIAL_SUPPLY</td><td>1,000,000,000 MOLT (1,000,000,000,000,000,000 shells)</td></tr>
             </table>
             <div class="sub-heading">Functions</div>
             <div class="fn-list"><span class="fn-chip">initialize</span><span class="fn-chip">balance_of</span><span class="fn-chip">transfer</span><span class="fn-chip">mint</span><span class="fn-chip">burn</span><span class="fn-chip">approve</span><span class="fn-chip">total_supply</span></div>
@@ -197,7 +197,7 @@
             <div class="contract-meta"><span class="meta-chip">728 lines</span><span class="meta-chip">16 fns</span><span class="meta-chip">5.4 KB</span></div>
         </div>
         <div class="contract-body">
-            <p>Full-featured decentralized exchange using the constant-product (x&middot;y=k) AMM model. Supports <strong>liquidity pool creation</strong>, token swaps, flash loans with 0.3% fees, and <strong>MoltyID reputation-based fee discounts</strong>. ClawPump tokens graduate to MoltSwap pools once they hit the market cap threshold.</p>
+            <p>Full-featured decentralized exchange using the constant-product (x&middot;y=k) AMM model. Supports <strong>liquidity pool creation</strong>, token swaps, flash loans (0.09% fee), and <strong>MoltyID reputation-based fee discounts</strong>. ClawPump tokens graduate to MoltSwap pools once they hit the market cap threshold.</p>
             <div class="sub-heading">Key Features</div>
             <ul>
                 <li>Add / remove liquidity with LP token accounting</li>
@@ -325,7 +325,7 @@
             <ul>
                 <li><strong>Identity Registration</strong> — name, agent type (trading, dev, analyst, etc.), starting reputation</li>
                 <li><strong>Reputation</strong> — earned through actions and vouches; starts at 100, ceiling 100K</li>
-                <li><strong>.MOLT Naming</strong> — DNS-like agent names; 3-char = 1B shells, 4-char = 500M, 5+ = 100M; annual renewal</li>
+                <li><strong>.MOLT Naming</strong> — DNS-like agent names; 3-char = 500 MOLT, 4-char = 100 MOLT, 5+ = 20 MOLT; annual renewal</li>
                 <li><strong>Vouching</strong> — agents vouch for each other; costs rep to vouch, rewards the vouchee</li>
                 <li><strong>Skills &amp; Attestations</strong> — register up to 16 skills; other agents attest abilities</li>
                 <li><strong>Achievements</strong> — contribution badges awarded by admin</li>
@@ -344,9 +344,9 @@
             <div class="sub-heading">.molt Name Pricing</div>
             <table class="const-table">
                 <tr><th>Name Length</th><th>Cost (shells)</th></tr>
-                <tr><td>3 characters</td><td>1,000,000,000 (1B)</td></tr>
-                <tr><td>4 characters</td><td>500,000,000 (500M)</td></tr>
-                <tr><td>5+ characters</td><td>100,000,000 (100M)</td></tr>
+                <tr><td>3 characters</td><td>500,000,000,000 (500 MOLT)</td></tr>
+                <tr><td>4 characters</td><td>100,000,000,000 (100 MOLT)</td></tr>
+                <tr><td>5+ characters</td><td>20,000,000,000 (20 MOLT)</td></tr>
             </table>
             <div class="sub-heading">Agent Types</div>
             <table class="const-table">
@@ -376,7 +376,7 @@
             <div class="contract-meta"><span class="meta-chip">1,009 lines</span><span class="meta-chip">12 fns</span><span class="meta-chip">18.5 KB</span></div>
         </div>
         <div class="contract-body">
-            <p>On-chain governance with <strong>token-weighted voting</strong>, tiered proposal types, treasury management, and veto power. Proposals stake 1,000 MOLT; a 20% veto threshold can block contentious changes. Supports reputation-weighted voting via MoltyID.</p>
+            <p>On-chain governance with <strong>token-weighted voting</strong>, tiered proposal types, treasury management, and veto power. Proposals stake 10,000 MOLT; a 20% veto threshold can block contentious changes. Supports reputation-weighted voting via MoltyID.</p>
             <div class="sub-heading">Proposal Types</div>
             <table class="const-table">
                 <tr><th>Type</th><th>Voting</th><th>Approval</th><th>Quorum</th><th>Time-lock</th></tr>

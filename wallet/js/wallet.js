@@ -1001,7 +1001,7 @@ async function refreshBalance() {
         const tokenBalances = await getAllTokenBalances(wallet.address);
         
         // Calculate total USD value (using mock prices)
-        const MOCK_PRICES = { MOLT: 0.001, mUSD: 1.0, wSOL: 150.0, wETH: 3000.0, REEF: 0.05 };
+        const MOCK_PRICES = { MOLT: 0.10, mUSD: 1.0, wSOL: 150.0, wETH: 3000.0, REEF: 0.05 };
         let totalUsd = molt * MOCK_PRICES.MOLT;
         for (const [symbol, bal] of Object.entries(tokenBalances)) {
             totalUsd += bal * (MOCK_PRICES[symbol] || 0);
@@ -1039,7 +1039,7 @@ async function loadAssets() {
     const tokenBalances = await getAllTokenBalances(wallet.address);
     
     // Mock prices for display
-    const MOCK_PRICES = { MOLT: 0.001, mUSD: 1.0, wSOL: 150.0, wETH: 3000.0, REEF: 0.05 };
+    const MOCK_PRICES = { MOLT: 0.10, mUSD: 1.0, wSOL: 150.0, wETH: 3000.0, REEF: 0.05 };
     const settings = walletState.settings || {};
     const decimals = settings.decimals || 6;
     const currency = settings.currency || 'USD';
