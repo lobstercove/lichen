@@ -91,11 +91,13 @@ pub mod test_mock {
     }
 }
 
-/// Panic handler for WASM contracts only
+/// Panic handler for WASM contracts — uses explicit unreachable instead of
+/// `loop {}` which is UB (empty loop with no side effects) and modern LLVM
+/// compiles it to `unreachable` anyway. Being explicit avoids UB.
 #[cfg(target_arch = "wasm32")]
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
-    loop {}
+    core::arch::wasm32::unreachable()
 }
 
 /// Contract storage operations
@@ -247,16 +249,30 @@ pub mod event {
 /// Logging functions
 pub mod log {
     #[cfg(target_arch = "wasm32")]
+    #[link(wasm_import_module = "env")]
     extern "C" {
+        /// Host logging function. Declared with explicit wasm_import_module to
+        /// prevent the linker from DCE-ing it via --gc-sections when LTO is on.
         fn log(msg_ptr: *const u8, msg_len: u32);
     }
 
-    /// Log a message
+    /// Log a message to the host runtime.
+    ///
+    /// The call is wrapped with `core::hint::black_box` to prevent the LLVM
+    /// optimizer from eliminating it during link-time optimization. Without
+    /// this, `opt-level = "z"` + LTO + `--gc-sections` can remove the `log`
+    /// import entirely, replacing call sites with `unreachable` instructions.
     pub fn info(msg: &str) {
         #[cfg(target_arch = "wasm32")]
         {
+            let ptr = msg.as_ptr();
+            let len = msg.len() as u32;
             unsafe {
-                log(msg.as_ptr(), msg.len() as u32);
+                // black_box the args to make the call opaque to the optimizer
+                log(
+                    core::hint::black_box(ptr),
+                    core::hint::black_box(len),
+                );
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
@@ -380,7 +396,7 @@ pub use alloc::string::String;
 
 #[cfg(target_arch = "wasm32")]
 #[global_allocator]
-static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
+static ALLOC: dlmalloc::GlobalDlmalloc = dlmalloc::GlobalDlmalloc;
 
 // Function re-exports
 pub use storage::{get as storage_get, set as storage_set};

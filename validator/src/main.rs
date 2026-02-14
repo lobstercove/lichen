@@ -3706,6 +3706,8 @@ async fn run_validator() {
         let local_addr = p2p_config.listen_addr;
         let last_block_time_for_blocks = last_block_time_for_blocks.clone();
         let genesis_config_for_blocks = genesis_config.clone();
+        let slashing_for_blocks = slashing_tracker.clone();
+        let validator_pubkey_for_block_slash = validator_pubkey;
         tokio::spawn(async move {
             info!("🔄 Block receiver started");
             // 1.7: Track (slot, validator) → block_hash to detect double-block equivocation
@@ -3744,6 +3746,34 @@ async fn run_validator() {
                                 prev_hash.to_hex(),
                                 block_hash.to_hex(),
                             );
+
+                            // Create slashing evidence and submit to tracker
+                            let evidence = SlashingEvidence::new(
+                                SlashingOffense::DoubleBlock {
+                                    slot: block_slot,
+                                    block_hash_1: *prev_hash,
+                                    block_hash_2: block_hash,
+                                },
+                                Pubkey(block.header.validator),
+                                block_slot,
+                                validator_pubkey_for_block_slash,
+                            );
+
+                            let mut slasher = slashing_for_blocks.lock().await;
+                            if slasher.add_evidence(evidence.clone()) {
+                                info!(
+                                    "⚔️  DoubleBlock slashing evidence recorded for {}",
+                                    Pubkey(block.header.validator).to_base58()
+                                );
+                                // Broadcast evidence to network
+                                let evidence_msg = P2PMessage::new(
+                                    MessageType::SlashingEvidence(evidence),
+                                    local_addr,
+                                );
+                                peer_mgr_for_sync.broadcast(evidence_msg).await;
+                            }
+                            drop(slasher);
+
                             // Reject the conflicting block
                             continue;
                         } else {
@@ -5854,14 +5884,20 @@ async fn run_validator() {
         // In-slot view-change: rotate leader if no blocks for too long
         let elapsed = last_block_time_for_local.lock().await.elapsed();
         let view_ms = view_timeout.as_millis().max(1);
-        let view = (elapsed.as_millis() / view_ms) as u64;
+        // Cap view at 15 — with the slot*16+view formula below, view >= 16
+        // would alias with (slot+1)*16+0, defeating the anti-aliasing fix.
+        // If 15 view-changes pass without a block, the slot is effectively dead
+        // and the network waits for the next slot.
+        let view = ((elapsed.as_millis() / view_ms) as u64).min(15);
 
         // Stake-weighted leader election with deterministic fallback
         let vs = validator_set.lock().await;
         let pool = stake_pool.lock().await;
         // AUDIT-FIX 2.13: Use slot*16+view to avoid aliasing with the next
         // slot's view=0 leader. Previous `slot+view` meant view=1 at slot N
-        // selected the same leader as view=0 at slot N+1.
+        // selected the same leader as view=0 at slot N+1. View is capped at
+        // 15 to prevent slot*16+view from overflowing into the next slot's
+        // address space.
         let leader_slot = if view == 0 {
             slot
         } else {

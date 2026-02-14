@@ -137,7 +137,16 @@ impl TxProcessor {
                 }
             }
             if first_ix.program_id == EVM_PROGRAM_ID {
-                // EVM transactions pay base_fee; actual gas is handled in EVM execution
+                // EVM transactions: estimate fee from the embedded gas parameters.
+                // The actual charge at execution time is gas_price * gas_used, but
+                // at simulation time we don't know gas_used yet, so we estimate
+                // with gas_price * gas_limit (the maximum possible charge).
+                if let Ok(evm_tx) = decode_evm_transaction(&first_ix.data) {
+                    let estimated = u256_to_shells(
+                        &(evm_tx.gas_price * U256::from(evm_tx.gas_limit)),
+                    );
+                    return if estimated > 0 { estimated } else { fee_config.base_fee };
+                }
                 return fee_config.base_fee;
             }
         }
@@ -452,6 +461,10 @@ impl TxProcessor {
     }
 
     /// Accumulate burned amount in the current batch (H3/H4 fix — atomic with tx state)
+    /// NOTE: Currently unused — fee charging goes through charge_fee_direct() which
+    /// handles burn tracking at the block level via validator/src/main.rs. Retained
+    /// for potential future use with batch-scoped burn tracking.
+    #[allow(dead_code)]
     fn b_add_burned(&self, amount: u64) -> Result<(), String> {
         let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
         let batch = guard.as_mut().ok_or("No active batch for b_add_burned")?;
@@ -1150,6 +1163,10 @@ impl TxProcessor {
 
     /// Charge transaction fee from spendable balance only (not staked/locked)
     /// Fee is split per FeeConfig: burn / producer / voters / treasury percentages.
+    /// NOTE: Currently unused — fee charging goes through charge_fee_direct() which
+    /// handles the split at the block level. Retained for potential future use with
+    /// batch-scoped fee splitting.
+    #[allow(dead_code)]
     fn charge_fee(&self, payer: &Pubkey, fee: u64) -> Result<(), String> {
         let mut payer_account = self
             .b_get_account(payer)?

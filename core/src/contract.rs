@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use wasmer::{
     imports, CompilerConfig, Function, FunctionEnv, FunctionEnvMut, Instance, Memory, Module, Store,
+    Type, Value,
 };
 use wasmer_compiler_cranelift::Cranelift;
 use wasmer_middlewares::metering::get_remaining_points;
@@ -13,7 +14,10 @@ use wasmer_middlewares::metering::MeteringPoints;
 use wasmer_middlewares::Metering;
 
 /// Maximum compute units per contract execution (T1.5)
-const MAX_WASM_COMPUTE_UNITS: u64 = 1_400_000;
+/// Contracts with 64KB stack buffers (storage_get) + complex init can easily
+/// use 2-3M instructions. 10M provides ample headroom for legitimate contracts
+/// while still preventing infinite loops.
+const MAX_WASM_COMPUTE_UNITS: u64 = 10_000_000;
 /// Maximum WASM memory pages (1 page = 64KB, 256 pages = 16MB) (T1.9)
 const MAX_WASM_MEMORY_PAGES: u32 = 256;
 
@@ -486,7 +490,7 @@ const MAX_RETURN_DATA: usize = 65_536;
 /// Maximum event data JSON size (8 KB)
 const MAX_EVENT_DATA: usize = 8_192;
 /// Default compute limit per contract call (1 million units)
-pub const DEFAULT_COMPUTE_LIMIT: u64 = 1_000_000;
+pub const DEFAULT_COMPUTE_LIMIT: u64 = 10_000_000;
 /// Compute cost for a storage read
 const COMPUTE_STORAGE_READ: u64 = 100;
 /// Compute cost for a storage write
@@ -673,7 +677,68 @@ impl ContractRuntime {
             .get_function(function_name)
             .map_err(|e| format!("Function '{}' not found: {}", function_name, e))?;
 
-        let exec_result = func.call(&mut self.store, &[]);
+        // Build WASM-level call arguments by introspecting the function's type
+        // signature. Contracts use two ABIs:
+        //   (a) Named-export ABI: fn initialize(ptr: *const u8) — I32 params are
+        //       pointers into linear memory (32-byte pubkeys); I64 params are raw
+        //       u64 values (amounts, thresholds).
+        //   (b) Opcode ABI: fn call() — zero WASM params; args read via get_args()
+        //       host import.
+        // This block handles both transparently.
+        let func_type = func.ty(&self.store);
+        let params: Vec<Type> = func_type.params().to_vec();
+        let call_args: Vec<Value> = if params.is_empty() || args.is_empty() {
+            vec![]
+        } else {
+            // Grow WASM memory by 1 page (64KB) to get a safe buffer area for
+            // writing the function arguments. This avoids corrupting the module's
+            // stack/heap/data sections.
+            let memory = instance
+                .exports
+                .get_memory("memory")
+                .map_err(|e| format!("Contract has no memory export: {}", e))?;
+            let old_pages = memory
+                .grow(&mut self.store, 1)
+                .map_err(|e| format!("Failed to grow WASM memory for args: {}", e))?;
+            let args_base: u32 = old_pages.0 * 65536; // byte offset of the new page
+
+            let view = memory.view(&self.store);
+            view.write(args_base as u64, args)
+                .map_err(|e| format!("Failed to write args to WASM memory: {}", e))?;
+
+            // Convention in this codebase:
+            //   I32 → pointer to a 32-byte address/pubkey (advance 32 bytes)
+            //   I64 → raw u64 value (advance 8 bytes, little-endian)
+            let mut wasm_args = Vec::with_capacity(params.len());
+            let mut byte_offset: u32 = 0;
+            for param in &params {
+                match param {
+                    Type::I32 => {
+                        wasm_args.push(Value::I32((args_base + byte_offset) as i32));
+                        byte_offset += 32;
+                    }
+                    Type::I64 => {
+                        let start = byte_offset as usize;
+                        let end = (start + 8).min(args.len());
+                        let val = if end <= args.len() && end > start {
+                            let mut buf = [0u8; 8];
+                            buf[..end - start].copy_from_slice(&args[start..end]);
+                            u64::from_le_bytes(buf)
+                        } else {
+                            0
+                        };
+                        wasm_args.push(Value::I64(val as i64));
+                        byte_offset += 8;
+                    }
+                    _ => {
+                        wasm_args.push(Value::I32(0)); // fallback
+                    }
+                }
+            }
+            wasm_args
+        };
+
+        let exec_result = func.call(&mut self.store, &call_args);
 
         // T1.5: Check remaining metering points after execution.
         // If exhausted, the execution already trapped, but we report it clearly.
@@ -829,7 +894,7 @@ fn host_storage_read(
     }; // mutable borrow dropped
 
     // Phase 3: Write value to WASM memory (immutable borrow)
-    match found_value {
+    let ret = match found_value {
         Some(value) => {
             if write_len > 0 {
                 let memory = match env.data().memory.clone() {
@@ -844,7 +909,8 @@ fn host_storage_read(
             write_len as u32
         }
         None => 0,
-    }
+    };
+    ret
 }
 
 /// Copy last `storage_read` result into WASM memory at `[out_ptr..out_ptr+out_len]`.

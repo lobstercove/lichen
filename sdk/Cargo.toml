@@ -12,7 +12,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 serde = { version = "1.0", features = ["derive"], default-features = false, optional = true }
 serde_json = { version = "1.0", default-features = false, optional = true }
-wee_alloc = "0.4"
+dlmalloc = { version = "0.2", features = ["global"] }  # Sound WASM allocator (replaces abandoned wee_alloc)
 
 [features]
 default = []
