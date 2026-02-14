@@ -1297,7 +1297,7 @@ async function loadStaking() {
 
                     <div class="stat-card" style="background: var(--card-bg); padding: 1.25rem; border-radius: 12px; border: 1px solid var(--border);">
                         <div style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">Bootstrap Grant</div>
-                        <div style="font-size: 1.5rem; font-weight: 600; color: var(--text);">10,000 MOLT</div>
+                        <div style="font-size: 1.5rem; font-weight: 600; color: var(--text);">100,000 MOLT</div>
                     </div>
 
                     <div class="stat-card" style="background: var(--card-bg); padding: 1.25rem; border-radius: 12px; border: 1px solid var(--border);">
@@ -1340,7 +1340,7 @@ async function loadStaking() {
         const totalStakeMOLT = (totalStake / 1_000_000_000).toFixed(2);
         
         // Bootstrap grant info
-        const BOOTSTRAP_GRANT = 10000; // 10K MOLT
+        const BOOTSTRAP_GRANT = 100000; // 100K MOLT
         const bootstrapDebt = myValidator.bootstrap_debt || 0;
         const debtMOLT = (bootstrapDebt / 1_000_000_000).toFixed(2);
         

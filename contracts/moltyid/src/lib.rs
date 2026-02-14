@@ -94,12 +94,12 @@ const AGENT_TYPE_GENERAL: u8 = 9;
 const MIN_MOLT_NAME_LEN: usize = 3;
 /// Maximum name length for .molt domains
 const MAX_MOLT_NAME_LEN: usize = 32;
-/// Base registration cost (in lamports/shells) for 5+ char names
-const NAME_COST_BASE: u64 = 100_000_000; // 100 MOLT (with 6 decimals = 100_000_000)
+/// Base registration cost (in shells) for 5+ char names
+const NAME_COST_BASE: u64 = 100_000_000; // 0.1 MOLT (9 decimals: 100_000_000 shells)
 /// Premium cost for 4-char names
-const NAME_COST_4CHAR: u64 = 500_000_000;
+const NAME_COST_4CHAR: u64 = 500_000_000; // 0.5 MOLT
 /// Premium cost for 3-char names
-const NAME_COST_3CHAR: u64 = 1_000_000_000;
+const NAME_COST_3CHAR: u64 = 1_000_000_000; // 1 MOLT
 /// Slots per year (approx: 2 slots/sec * 86400 * 365)
 const SLOTS_PER_YEAR: u64 = 63_072_000;
 /// Maximum metadata length

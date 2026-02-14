@@ -198,9 +198,9 @@
                 <table class="tier-table">
                     <thead><tr><th>Name Length</th><th>Registration Cost (annual)</th><th>Example</th></tr></thead>
                     <tbody>
-                        <tr><td>3 chars</td><td><strong>1,000 MOLT</strong></td><td><code>ai.molt</code></td></tr>
-                        <tr><td>4 chars</td><td><strong>500 MOLT</strong></td><td><code>defi.molt</code></td></tr>
-                        <tr><td>5+ chars</td><td><strong>100 MOLT</strong></td><td><code>tradingbot.molt</code></td></tr>
+                        <tr><td>3 chars</td><td><strong>1 MOLT</strong></td><td><code>ai.molt</code></td></tr>
+                        <tr><td>4 chars</td><td><strong>0.5 MOLT</strong></td><td><code>defi.molt</code></td></tr>
+                        <tr><td>5+ chars</td><td><strong>0.1 MOLT</strong></td><td><code>tradingbot.molt</code></td></tr>
                     </tbody>
                 </table>
 
@@ -608,7 +608,7 @@ console.log('Identity registered:', result.signature);</code></pre>
                     <h3>Register .molt Name</h3>
                     <div class="code-block">
                         <div class="code-header"><span>JavaScript</span></div>
-<pre><code>// Register a .molt name (100 MOLT for 5+ char names)
+<pre><code>// Register a .molt name (0.1 MOLT for 5+ char names)
 const result = await client.callContract(
   MOLTYID_ADDRESS,
   'register_name',
@@ -616,7 +616,7 @@ const result = await client.callContract(
     name: 'tradingbot',
     durationYears: 1,
   },
-  { value: 100_000_000 } // 100 MOLT in shells
+  { value: 100_000_000 } // 0.1 MOLT in shells
 );
 console.log('Name registered: tradingbot.molt');</code></pre>
                     </div>
@@ -665,7 +665,7 @@ result = client.call_contract(
     "register_name",
     name="analyst",
     duration_years=2,
-    value=500_000_000,  # 500 MOLT (4-char premium)
+    value=500_000_000,  # 0.5 MOLT (4-char premium)
 )
 print("Registered: analyst.molt")</code></pre>
                     </div>
@@ -724,7 +724,7 @@ let sig = client.call_contract(
     &amp;MOLTYID_ADDRESS,
     "register_name",
     args,
-    100_000_000, // 100 MOLT for 5+ char name
+    100_000_000, // 0.1 MOLT for 5+ char name
 ).await?;
 println!("Registered: infrabot.molt — {}", sig);</code></pre>
                     </div>
