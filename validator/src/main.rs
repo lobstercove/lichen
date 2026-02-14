@@ -3510,8 +3510,17 @@ async fn run_validator() {
     // ========================================================================
 
     let machine_fingerprint = if dev_mode {
-        info!("🔧 Dev mode: using empty machine fingerprint");
-        [0u8; 32]
+        // Dev mode: SHA-256(pubkey) — unique per key, not per machine.
+        // This allows multi-validator on one machine while still tracking per-key.
+        use sha2::{Sha256, Digest};
+        let mut hasher = Sha256::new();
+        hasher.update(&validator_pubkey.0);
+        let result = hasher.finalize();
+        let mut fp = [0u8; 32];
+        fp.copy_from_slice(&result);
+        info!("🔧 Dev mode: fingerprint = SHA-256(pubkey) — {}..{}",
+            hex::encode(&fp[..4]), hex::encode(&fp[28..]));
+        fp
     } else {
         let fp = collect_machine_fingerprint();
         if fp == [0u8; 32] {
@@ -3799,38 +3808,32 @@ async fn run_validator() {
                 }
             }
         } else {
-            // New validator — allocate bootstrap index and stake
-            let bootstrap_index = pool
-                .next_bootstrap_index()
-                .unwrap_or(u64::MAX); // u64::MAX = self-funded
-
-            if bootstrap_index < moltchain_core::consensus::MAX_BOOTSTRAP_VALIDATORS {
-                info!(
-                    "🦞 Bootstrap validator #{} — debt-based stake with graduation",
-                    bootstrap_index + 1
-                );
-            } else {
-                info!("📋 Post-bootstrap validator — self-funded, no debt");
-            }
-
-            pool.stake_with_index(
+            // New validator — atomic: validate fingerprint → allocate index → stake → register
+            match pool.try_bootstrap_with_fingerprint(
                 validator_pubkey,
                 MIN_VALIDATOR_STAKE,
                 current_slot,
-                bootstrap_index,
-            )
-            .unwrap_or_else(|e| warn!("⚠️  Failed to stake: {}", e));
-
-            info!(
-                "💰 Staked {} MOLT (minimum required)",
-                MIN_VALIDATOR_STAKE / 1_000_000_000
-            );
-
-            // Register machine fingerprint
-            if machine_fingerprint != [0u8; 32] {
-                match pool.register_fingerprint(&validator_pubkey, machine_fingerprint) {
-                    Ok(()) => info!("🔒 Machine fingerprint registered"),
-                    Err(e) => warn!("⚠️  Fingerprint registration failed: {}", e),
+                machine_fingerprint,
+            ) {
+                Ok((bootstrap_index, _is_new)) => {
+                    if bootstrap_index < moltchain_core::consensus::MAX_BOOTSTRAP_VALIDATORS {
+                        info!(
+                            "🦞 Bootstrap validator #{} — debt-based stake with graduation",
+                            bootstrap_index + 1
+                        );
+                    } else {
+                        info!("📋 Post-bootstrap validator — self-funded, no debt");
+                    }
+                    info!(
+                        "💰 Staked {} MOLT (minimum required)",
+                        MIN_VALIDATOR_STAKE / 1_000_000_000
+                    );
+                    if machine_fingerprint != [0u8; 32] {
+                        info!("🔒 Machine fingerprint registered");
+                    }
+                }
+                Err(e) => {
+                    warn!("⚠️  Failed to stake: {}", e);
                 }
             }
 
@@ -4835,11 +4838,13 @@ async fn run_validator() {
                     }
 
                     // 1.5a: Defense-in-depth — re-verify announcement signature
+                    //        Signature covers: pubkey + stake + slot + machine_fingerprint
                     {
-                        let mut msg = Vec::with_capacity(48);
+                        let mut msg = Vec::with_capacity(80);
                         msg.extend_from_slice(&announcement.pubkey.0);
                         msg.extend_from_slice(&announcement.stake.to_le_bytes());
                         msg.extend_from_slice(&announcement.current_slot.to_le_bytes());
+                        msg.extend_from_slice(&announcement.machine_fingerprint);
                         if !moltchain_core::account::Keypair::verify(
                             &announcement.pubkey,
                             &msg,
@@ -4910,54 +4915,40 @@ async fn run_validator() {
                                 MIN_VALIDATOR_STAKE
                             };
 
-                            // Allocate bootstrap index if still in bootstrap phase
-                            let bootstrap_index = if already_staked < MIN_VALIDATOR_STAKE {
-                                pool.next_bootstrap_index().unwrap_or(u64::MAX)
+                            // Atomic: validate fingerprint → allocate bootstrap index → stake → register
+                            // Self-funded validators (already_staked >= MIN) skip bootstrap allocation
+                            let fingerprint = if already_staked < MIN_VALIDATOR_STAKE {
+                                announcement.machine_fingerprint
                             } else {
-                                u64::MAX // Self-funded, no bootstrap debt
+                                [0u8; 32] // No fingerprint check for self-funded
                             };
 
-                            if let Err(e) = pool.stake_with_index(
+                            match pool.try_bootstrap_with_fingerprint(
                                 announcement.pubkey,
                                 stake_amount,
                                 announcement.current_slot,
-                                bootstrap_index,
+                                fingerprint,
                             ) {
-                                warn!(
-                                    "⚠️  Failed to stake joining validator {}: {}",
-                                    announcement.pubkey.to_base58(),
-                                    e
-                                );
-                            } else {
-                                if bootstrap_index < moltchain_core::consensus::MAX_BOOTSTRAP_VALIDATORS {
-                                    info!(
-                                        "💰 Bootstrap validator #{} staked in local pool ({} MOLT, with debt)",
-                                        bootstrap_index + 1,
-                                        stake_amount / 1_000_000_000
-                                    );
-                                } else {
-                                    info!(
-                                        "💰 Self-funded validator staked in local pool ({} MOLT, no debt)",
-                                        stake_amount / 1_000_000_000
-                                    );
+                                Ok((bootstrap_index, _)) => {
+                                    if bootstrap_index < moltchain_core::consensus::MAX_BOOTSTRAP_VALIDATORS {
+                                        info!(
+                                            "💰 Bootstrap validator #{} staked in local pool ({} MOLT, with debt)",
+                                            bootstrap_index + 1,
+                                            stake_amount / 1_000_000_000
+                                        );
+                                    } else {
+                                        info!(
+                                            "💰 Self-funded validator staked in local pool ({} MOLT, no debt)",
+                                            stake_amount / 1_000_000_000
+                                        );
+                                    }
                                 }
-                            }
-
-                            // Register machine fingerprint if provided
-                            if announcement.machine_fingerprint != [0u8; 32] {
-                                match pool.register_fingerprint(
-                                    &announcement.pubkey,
-                                    announcement.machine_fingerprint,
-                                ) {
-                                    Ok(()) => info!(
-                                        "🔒 Fingerprint registered for {}",
-                                        announcement.pubkey.to_base58()
-                                    ),
-                                    Err(e) => warn!(
-                                        "⚠️  Fingerprint registration failed for {}: {}",
+                                Err(e) => {
+                                    warn!(
+                                        "⚠️  Failed to stake joining validator {}: {}",
                                         announcement.pubkey.to_base58(),
                                         e
-                                    ),
+                                    );
                                 }
                             }
                         }
@@ -4972,7 +4963,7 @@ async fn run_validator() {
                             pool.bootstrap_grants_issued()
                         };
                         let is_bootstrap_eligible =
-                            bootstrap_grants <= moltchain_core::consensus::MAX_BOOTSTRAP_VALIDATORS;
+                            bootstrap_grants < moltchain_core::consensus::MAX_BOOTSTRAP_VALIDATORS;
 
                         if !is_bootstrap_eligible {
                             info!(
@@ -5782,10 +5773,11 @@ async fn run_validator() {
 
                 // T2.3 fix: Sign announcement with validator keypair
                 let announce_keypair = Keypair::from_seed(&validator_seed_for_announce);
-                let mut sign_message = Vec::with_capacity(48);
+                let mut sign_message = Vec::with_capacity(80);
                 sign_message.extend_from_slice(&validator_pubkey_for_announce.0);
                 sign_message.extend_from_slice(&validator_stake.to_le_bytes());
                 sign_message.extend_from_slice(&current_slot.to_le_bytes());
+                sign_message.extend_from_slice(&machine_fingerprint_for_announce);
                 let signature = announce_keypair.sign(&sign_message);
 
                 let announce_msg = P2PMessage::new(

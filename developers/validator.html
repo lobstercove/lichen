@@ -288,7 +288,7 @@ cargo build --release
 
             <div class="callout callout-warning">
                 <div class="callout-title"><i class="fas fa-exclamation-triangle"></i> Note</div>
-                These settings are passed as command-line flags: <code>--network</code>, <code>--p2p-port</code>, <code>--rpc-port</code>, <code>--ws-port</code>, <code>--db-path</code>, <code>--keypair</code>, <code>--bootstrap</code>, <code>--bootstrap-peers</code>, <code>--admin-token</code>, <code>--no-watchdog</code>, <code>--watchdog-timeout</code>, <code>--max-restarts</code>. See the Installation section above for examples.
+                These settings are passed as command-line flags: <code>--network</code>, <code>--p2p-port</code>, <code>--rpc-port</code>, <code>--ws-port</code>, <code>--db-path</code>, <code>--keypair</code>, <code>--bootstrap</code>, <code>--bootstrap-peers</code>, <code>--admin-token</code>, <code>--no-watchdog</code>, <code>--watchdog-timeout</code>, <code>--max-restarts</code>, <code>--dev-mode</code>, <code>--import-key</code>. See the Installation section above for examples.
             </div>
 
             <!-- [validator] -->
@@ -382,7 +382,7 @@ cargo build --release
                         <td><code>min_validator_stake</code></td>
                         <td>Integer</td>
                         <td><code>100000000000000</code></td>
-                        <td>Minimum stake in shells (1 MOLT = 1,000,000,000 shells). 100,000 MOLT (100K) — bootstrapped to new validators at no cost.</td>
+                        <td>Minimum stake in shells (1 MOLT = 1,000,000,000 shells). 100,000 MOLT (100K) — bootstrapped to the first 200 validators at no cost; validator 201+ must self-fund.</td>
                     </tr>
                     <tr>
                         <td><code>slot_duration_ms</code></td>
@@ -398,6 +398,35 @@ cargo build --release
                     </tr>
                 </tbody>
             </table>
+
+            <!-- [graduation] -->
+            <h3><span class="config-section-label">[graduation]</span></h3>
+            <p>Validator graduation and anti-fraud settings (CLI flags).</p>
+
+            <table class="config-table">
+                <thead>
+                    <tr><th>Flag</th><th>Type</th><th>Default</th><th>Description</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>--dev-mode</code></td>
+                        <td>Boolean</td>
+                        <td><code>false</code></td>
+                        <td>Skip machine fingerprint uniqueness check. Allows multiple validators per machine (for local testing). Uses SHA-256(pubkey) as fingerprint. <strong>Blocked on mainnet.</strong></td>
+                    </tr>
+                    <tr>
+                        <td><code>--import-key &lt;path&gt;</code></td>
+                        <td>String</td>
+                        <td>—</td>
+                        <td>Import an existing keypair from another machine. Copies <code>&lt;path&gt;</code> to the validator's data directory. The validator resumes with its existing stake, debt, and progress. Fingerprint auto-updates on next announcement.</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <div class="callout callout-info">
+                <div class="callout-title"><i class="fas fa-key"></i> Machine Migration</div>
+                To move a validator to a new machine: (1) Stop the validator on the old machine. (2) Copy the keypair file to the new machine. (3) Start with <code>--import-key /path/to/keypair.json</code>. All progress (debt, earned rewards, blocks produced) is tied to the keypair, not the machine. The machine fingerprint auto-updates with a 2-day cooldown between migrations.
+            </div>
 
             <!-- [rpc] -->
             <h3><span class="config-section-label">[rpc]</span></h3>
@@ -654,8 +683,9 @@ cargo build --release
 🦞 Registering validator Mo1tVa1idAtoR...xYz789
 
   Transaction: 5bN2...kQrT
-  Bootstrap:   100,000.000000000 MOLT (granted)
+  Bootstrap:   100,000.000000000 MOLT (granted, #47 of 200)
   Debt:        100,000.000000000 MOLT (to repay via 50% of rewards)
+  Uptime:      98.5% (≥ 95% → 1.5× accelerated repayment)
   Status:      Finalized (slot 1,204,817)
 
 ✓ Validator registered! Your node will enter the active set next epoch.</code></pre>
@@ -663,9 +693,45 @@ cargo build --release
 
             <h3>Minimum Stake</h3>
             <ul>
-                <li><strong>Bootstrap Grant:</strong> 100,000 MOLT (<code>100,000,000,000,000</code> shells) — new validators receive this at $0 cost</li>
-                <li><strong>Vesting:</strong> 50% of all earned rewards repay the bootstrap debt (~86 days solo validator)</li>
+                <li><strong>Bootstrap Grant (first 200 validators):</strong> 100,000 MOLT (<code>100,000,000,000,000</code> shells) — new validators receive this at $0 cost from the treasury</li>
+                <li><strong>Self-funded (validator 201+):</strong> Must provide your own 100,000 MOLT — immediately fully vested, no debt</li>
+                <li><strong>Vesting:</strong> 50% of all earned rewards repay the bootstrap debt. With 95%+ uptime, this accelerates to 75/25 (1.5× speed)</li>
+                <li><strong>Time cap:</strong> All remaining debt is forgiven after 547 days (~18 months) regardless of repayment progress</li>
             </ul>
+
+            <h3>Graduation System</h3>
+            <p>Bootstrap validators go through a <strong>graduation</strong> process from <code>Bootstrapping</code> to <code>FullyVested</code>:</p>
+            <table class="config-table">
+                <thead>
+                    <tr><th>Path</th><th>Condition</th><th>Effect</th></tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Standard</td>
+                        <td>Bootstrap debt reaches 0 (50/50 reward split)</td>
+                        <td>Status → <code>FullyVested</code>, 100% liquid rewards</td>
+                    </tr>
+                    <tr>
+                        <td>Performance Bonus</td>
+                        <td>95%+ uptime (75/25 split, debt repays 1.5× faster)</td>
+                        <td>Same graduation, reached sooner</td>
+                    </tr>
+                    <tr>
+                        <td>Time Cap</td>
+                        <td>547 days since validator started (~118M slots)</td>
+                        <td>Remaining debt forgiven, immediate graduation</td>
+                    </tr>
+                </tbody>
+            </table>
+
+            <h3>Anti-Sybil Protection</h3>
+            <p>Each validator collects a <strong>machine fingerprint</strong> (SHA-256 hash of platform UUID + MAC address) at startup. This fingerprint is:</p>
+            <ul>
+                <li>Included in &amp; signed with validator announcements</li>
+                <li>Registered in the stake pool — one fingerprint per bootstrap validator</li>
+                <li>Prevents running 50 validators on one machine to steal 50 bootstrap grants</li>
+            </ul>
+            <p><strong>Rule:</strong> One machine = one bootstrap grant. Self-funded validators (201+) are not restricted by fingerprint.</p>
 
             <h3>ReefStake Mechanism</h3>
             <p>MoltChain uses <strong>ReefStake</strong>, a delegated proof-of-stake variant inspired by coral reef ecosystems:</p>

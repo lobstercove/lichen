@@ -463,10 +463,13 @@ impl StakeInfo {
                 return (total_reward, 0);
             }
 
-            // ── Performance bonus: 95%+ uptime → 75/25 split ──────
+            // ── Performance bonus: 95%+ uptime → accelerated repayment ──
+            // PERFORMANCE_BONUS_BPS = 15000 → 1.5× multiplier on the 50% debt portion.
+            // Effective split: debt = 50% × 1.5 = 75%, liquid = 25%.
             let debt_fraction = if self.uptime_bps(current_slot) >= UPTIME_BONUS_THRESHOLD_BPS {
-                // 75% to debt repayment (accelerated)
-                (total_reward as u128 * 75 / 100) as u64
+                // Accelerated: debt_portion = base_50% × (PERFORMANCE_BONUS_BPS / 10000)
+                let base_half = total_reward / 2;
+                (base_half as u128 * PERFORMANCE_BONUS_BPS as u128 / 10000) as u64
             } else {
                 // Standard 50% to debt repayment
                 total_reward / 2
@@ -589,6 +592,69 @@ impl StakeInfo {
     }
 }
 
+/// Custom serde for HashMap<[u8; 32], Pubkey> — JSON requires string keys.
+/// Keys are hex-encoded for serialization, decoded on deserialization.
+mod fingerprint_serde {
+    use super::*;
+    use serde::de::{self, Deserializer, MapAccess, Visitor};
+    use serde::ser::{SerializeMap, Serializer};
+    use std::fmt;
+
+    pub fn serialize<S>(
+        map: &HashMap<[u8; 32], Pubkey>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut ser_map = serializer.serialize_map(Some(map.len()))?;
+        for (key, value) in map {
+            ser_map.serialize_entry(&hex::encode(key), value)?;
+        }
+        ser_map.end()
+    }
+
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<HashMap<[u8; 32], Pubkey>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct FpVisitor;
+
+        impl<'de> Visitor<'de> for FpVisitor {
+            type Value = HashMap<[u8; 32], Pubkey>;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a map of hex-encoded fingerprints to pubkeys")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let mut result = HashMap::new();
+                while let Some((key_str, value)) = map.next_entry::<String, Pubkey>()? {
+                    let bytes = hex::decode(&key_str)
+                        .map_err(|e| de::Error::custom(format!("bad hex fingerprint: {}", e)))?;
+                    if bytes.len() != 32 {
+                        return Err(de::Error::custom(format!(
+                            "fingerprint must be 32 bytes, got {}",
+                            bytes.len()
+                        )));
+                    }
+                    let mut fp = [0u8; 32];
+                    fp.copy_from_slice(&bytes);
+                    result.insert(fp, value);
+                }
+                Ok(result)
+            }
+        }
+
+        deserializer.deserialize_map(FpVisitor)
+    }
+}
+
 /// Manages all validator stakes in the network
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StakePool {
@@ -602,7 +668,7 @@ pub struct StakePool {
     delegations: HashMap<Pubkey, HashMap<Pubkey, u64>>,
     /// Machine fingerprint registry: fingerprint → validator pubkey.
     /// Prevents the same physical machine from running multiple validators.
-    #[serde(default)]
+    #[serde(default, serialize_with = "fingerprint_serde::serialize", deserialize_with = "fingerprint_serde::deserialize")]
     fingerprint_registry: HashMap<[u8; 32], Pubkey>,
     /// Number of bootstrap grants issued so far (monotonically increasing, 0..200)
     #[serde(default)]
@@ -1249,6 +1315,81 @@ impl StakePool {
     /// Check if a fingerprint is already registered (and to which validator).
     pub fn fingerprint_owner(&self, fingerprint: &[u8; 32]) -> Option<&Pubkey> {
         self.fingerprint_registry.get(fingerprint)
+    }
+
+    /// Atomically: validate fingerprint → allocate bootstrap index → stake → register.
+    ///
+    /// This prevents the bug where `next_bootstrap_index()` increments the counter
+    /// and then `register_fingerprint()` fails, wasting a bootstrap slot.
+    ///
+    /// Returns `Ok((bootstrap_index, is_new))` on success.
+    /// `bootstrap_index` is `u64::MAX` if the bootstrap phase is complete.
+    /// `is_new` is true if this was a new stake entry (not an existing restake).
+    pub fn try_bootstrap_with_fingerprint(
+        &mut self,
+        validator: Pubkey,
+        amount: u64,
+        current_slot: u64,
+        fingerprint: [u8; 32],
+    ) -> Result<(u64, bool), String> {
+        // If validator already exists, just update amount (no new bootstrap)
+        if self.stakes.contains_key(&validator) {
+            let stake_info = self.stakes.get_mut(&validator).unwrap();
+            stake_info.amount += amount;
+            stake_info.is_active = stake_info.meets_minimum();
+            let existing_index = stake_info.bootstrap_index;
+            self.total_staked += amount;
+            // Register fingerprint (idempotent for same validator)
+            if fingerprint != [0u8; 32] {
+                self.register_fingerprint(&validator, fingerprint)?;
+            }
+            return Ok((existing_index, false));
+        }
+
+        // New validator — check fingerprint BEFORE allocating bootstrap index
+        if fingerprint != [0u8; 32] {
+            if let Some(existing) = self.fingerprint_registry.get(&fingerprint) {
+                if existing != &validator {
+                    return Err(format!(
+                        "Machine fingerprint already registered to validator {}. \
+                         Each machine can only receive one bootstrap grant.",
+                        existing.to_base58()
+                    ));
+                }
+            }
+        }
+
+        // Fingerprint is unique — safe to allocate bootstrap index
+        let bootstrap_index = if self.bootstrap_grants_issued < MAX_BOOTSTRAP_VALIDATORS {
+            let idx = self.bootstrap_grants_issued;
+            self.bootstrap_grants_issued += 1;
+            idx
+        } else {
+            u64::MAX // Self-funded
+        };
+
+        // Create stake entry
+        if amount < MIN_VALIDATOR_STAKE {
+            // Roll back counter if we allocated an index
+            if bootstrap_index < MAX_BOOTSTRAP_VALIDATORS {
+                self.bootstrap_grants_issued -= 1;
+            }
+            return Err(format!("Stake {} is below minimum {}", amount, MIN_VALIDATOR_STAKE));
+        }
+
+        let stake_info = StakeInfo::with_bootstrap_index(validator, amount, current_slot, bootstrap_index);
+        self.stakes.insert(validator, stake_info);
+        self.total_staked += amount;
+
+        // Register fingerprint
+        if fingerprint != [0u8; 32] {
+            self.fingerprint_registry.insert(fingerprint, validator);
+            if let Some(si) = self.stakes.get_mut(&validator) {
+                si.machine_fingerprint = fingerprint;
+            }
+        }
+
+        Ok((bootstrap_index, true))
     }
 
     /// Get mutable reference to stake info (for direct field updates in validator)
@@ -2811,5 +2952,150 @@ mod tests {
         // Can immediately unstake (no vesting requirement)
         let result = pool.request_unstake(&pk, MIN_VALIDATOR_STAKE / 2, 1000, pk);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_bootstrap_counter_persists() {
+        // Verify bootstrap_grants_issued survives serialization roundtrip
+        // Production uses bincode (binary) — test both bincode and JSON
+        let mut pool = StakePool::new();
+        for i in 0..5u64 {
+            let pk = Pubkey::new({
+                let mut b = [0u8; 32];
+                b[..8].copy_from_slice(&i.to_le_bytes());
+                b
+            });
+            let idx = pool.next_bootstrap_index().unwrap();
+            pool.stake_with_index(pk, MIN_VALIDATOR_STAKE, 0, idx).unwrap();
+        }
+        assert_eq!(pool.bootstrap_grants_issued(), 5);
+
+        // Bincode roundtrip (production format — used by RocksDB persistence)
+        let bytes = bincode::serialize(&pool).unwrap();
+        let pool2: StakePool = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(pool2.bootstrap_grants_issued(), 5);
+
+        // The counter continues from 5, not 0
+        let mut pool2 = pool2;
+        let idx = pool2.next_bootstrap_index().unwrap();
+        assert_eq!(idx, 5);
+        assert_eq!(pool2.bootstrap_grants_issued(), 6);
+
+        // Bincode roundtrip WITH fingerprint (tests fingerprint_registry serialization)
+        let pk_with_fp = Pubkey::new([0xAA; 32]);
+        let next_idx = pool.next_bootstrap_index().unwrap();
+        pool.stake_with_index(pk_with_fp, MIN_VALIDATOR_STAKE, 0, next_idx).unwrap();
+        pool.register_fingerprint(&pk_with_fp, [0xFF; 32]).unwrap();
+        let bytes2 = bincode::serialize(&pool).unwrap();
+        let pool3: StakePool = bincode::deserialize(&bytes2).unwrap();
+        assert_eq!(pool3.bootstrap_grants_issued(), 6); // 5 original + 1 new
+        assert_eq!(pool3.fingerprint_owner(&[0xFF; 32]), Some(&pk_with_fp));
+    }
+
+    #[test]
+    fn test_fingerprint_allows_self_funded() {
+        // Duplicate fingerprint is OK for self-funded validators (201+)
+        let mut pool = StakePool::new();
+        let pk1 = Pubkey::new([1u8; 32]);
+        let pk2 = Pubkey::new([2u8; 32]);
+        let shared_fp = [0xAA; 32];
+
+        // pk1 is bootstrap (index 0) with fingerprint
+        pool.stake_with_index(pk1, MIN_VALIDATOR_STAKE, 0, 0).unwrap();
+        pool.register_fingerprint(&pk1, shared_fp).unwrap();
+
+        // pk2 is self-funded (index u64::MAX) — same fingerprint
+        pool.stake_with_index(pk2, MIN_VALIDATOR_STAKE, 0, u64::MAX).unwrap();
+        // register_fingerprint should fail (fingerprint taken by pk1)
+        let err = pool.register_fingerprint(&pk2, shared_fp).unwrap_err();
+        assert!(err.contains("already registered"));
+
+        // But pk2 is still staked and operational (self-funded, no fingerprint)
+        let stake2 = pool.get_stake(&pk2).unwrap();
+        assert_eq!(stake2.bootstrap_debt, 0); // self-funded, no debt
+        assert_eq!(stake2.status, BootstrapStatus::FullyVested);
+    }
+
+    #[test]
+    fn test_try_bootstrap_with_fingerprint_atomic() {
+        // Verifies the atomic method: fingerprint fails → index NOT consumed
+        let mut pool = StakePool::new();
+        let pk1 = Pubkey::new([1u8; 32]);
+        let pk2 = Pubkey::new([2u8; 32]);
+        let fingerprint = [0xBB; 32];
+
+        // pk1 bootstraps successfully with fingerprint
+        let (idx1, is_new1) = pool
+            .try_bootstrap_with_fingerprint(pk1, MIN_VALIDATOR_STAKE, 0, fingerprint)
+            .unwrap();
+        assert_eq!(idx1, 0);
+        assert!(is_new1);
+        assert_eq!(pool.bootstrap_grants_issued(), 1);
+
+        // pk2 tries same fingerprint → should fail
+        let err = pool
+            .try_bootstrap_with_fingerprint(pk2, MIN_VALIDATOR_STAKE, 0, fingerprint)
+            .unwrap_err();
+        assert!(err.contains("already registered"));
+
+        // Counter should still be 1 (NOT 2) — index was NOT wasted
+        assert_eq!(pool.bootstrap_grants_issued(), 1);
+
+        // pk2 with a different fingerprint succeeds
+        let fp2 = [0xCC; 32];
+        let (idx2, is_new2) = pool
+            .try_bootstrap_with_fingerprint(pk2, MIN_VALIDATOR_STAKE, 0, fp2)
+            .unwrap();
+        assert_eq!(idx2, 1);
+        assert!(is_new2);
+        assert_eq!(pool.bootstrap_grants_issued(), 2);
+    }
+
+    #[test]
+    fn test_try_bootstrap_existing_validator_restake() {
+        // Existing validator re-staking doesn't get a new bootstrap index
+        let mut pool = StakePool::new();
+        let pk = Pubkey::new([1u8; 32]);
+        let fp = [0xDD; 32];
+
+        // First bootstrap
+        let (idx, is_new) = pool
+            .try_bootstrap_with_fingerprint(pk, MIN_VALIDATOR_STAKE, 0, fp)
+            .unwrap();
+        assert_eq!(idx, 0);
+        assert!(is_new);
+
+        // Re-stake same validator
+        let (idx2, is_new2) = pool
+            .try_bootstrap_with_fingerprint(pk, MIN_VALIDATOR_STAKE, 100, fp)
+            .unwrap();
+        assert_eq!(idx2, 0); // Same index
+        assert!(!is_new2); // Not new
+
+        // Counter should be 1 (only one grant)
+        assert_eq!(pool.bootstrap_grants_issued(), 1);
+
+        // Total stake doubled
+        let stake = pool.get_stake(&pk).unwrap();
+        assert_eq!(stake.amount, MIN_VALIDATOR_STAKE * 2);
+    }
+
+    #[test]
+    fn test_performance_bonus_uses_constant() {
+        // Verify PERFORMANCE_BONUS_BPS = 15000 produces 75% debt fraction
+        // base_half = reward / 2, debt = base_half * 15000 / 10000 = base_half * 1.5
+        let pk = Pubkey::new([1u8; 32]);
+        let mut stake = StakeInfo::with_bootstrap_index(pk, MIN_VALIDATOR_STAKE, 0, 0);
+        let reward: u64 = 1_000_000_000; // 1 MOLT
+        stake.rewards_earned = reward;
+
+        // Give enough blocks for 100% uptime (well above 95%)
+        stake.blocks_produced = 1_000_000;
+
+        let (liquid, debt) = stake.claim_rewards(SLOTS_PER_EPOCH * 10);
+        // debt = (reward / 2) * 15000 / 10000 = 500M * 1.5 = 750M
+        assert_eq!(debt, 750_000_000);
+        assert_eq!(liquid, 250_000_000);
+        assert_eq!(liquid + debt, reward);
     }
 }
