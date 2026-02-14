@@ -323,7 +323,7 @@ impl StakeInfo {
             validator,
             amount,
             earned_amount: 0, // Starts at 0, increases as debt repaid
-            bootstrap_debt,   // Starts at 10k, decreases to 0
+            bootstrap_debt,   // Starts at 100k, decreases to 0
             locked_until: current_slot + 1000,
             is_active: amount >= MIN_VALIDATOR_STAKE,
             delegated_amount: 0,

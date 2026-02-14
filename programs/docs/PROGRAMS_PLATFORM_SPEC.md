@@ -129,13 +129,13 @@ Professional entry point showcasing MoltChain's developer platform capabilities.
             <h4>Solana</h4>
             <p class="metric ok">$0.10 deploy</p>
             <p class="metric ok">2-5 min</p>
-            <p class="metric ok">$0.0005 per tx</p>
+            <p class="metric ok">$0.00025 per tx</p>
         </div>
         <div class="comparison-card highlight">
             <h4>MoltChain 🦞</h4>
             <p class="metric good">$2.50 deploy</p>
             <p class="metric good">1-3 seconds</p>
-            <p class="metric good">$0.00001 per tx</p>
+            <p class="metric good">$0.0001 per tx</p>
         </div>
     </div>
 </section>

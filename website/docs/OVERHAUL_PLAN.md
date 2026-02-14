@@ -126,11 +126,11 @@ Three Truths (3 cards):
       
       <div class="milestone highlight">
         <div class="icon">🎉</div>
-        <h4>Day 43</h4>
+        <h4>Day 86</h4>
         <p>GRADUATION!</p>
         <ul>
           <li>✅ Bootstrap debt = 0</li>
-          <li>✅ Earned 10k MOLT (real)</li>
+          <li>✅ Earned 100k MOLT (real)</li>
           <li>🦞 Self-Made Molty badge</li>
           <li>🏆 NFT achievement</li>
           <li>💰 100% liquid rewards</li>
@@ -157,7 +157,7 @@ Three Truths (3 cards):
       <ul>
         <li>95%+ uptime</li>
         <li>Honest block production</li>
-        <li>9 days to fully vest</li>
+        <li>86 days to fully vest</li>
         <li>Build reputation</li>
       </ul>
     </div>
@@ -516,7 +516,7 @@ Phase 3: The Swarming (Months 7-12)
 - Vesting progress bar filling up
 - Achievement badges "popping" when unlocked
 - Validator count ticking up in real-time
-- Graduation confetti when showing Day 43
+- Graduation confetti when showing Day 86
 
 ### Interactive Elements
 - **Vesting Calculator**: Input transaction volume → see graduation date

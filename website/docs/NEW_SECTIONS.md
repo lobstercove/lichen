@@ -144,11 +144,11 @@ Update navigation to include: Vision, Validators, Roadmap links.
                 
                 <div class="milestone milestone-graduation">
                     <div class="milestone-icon">🎉</div>
-                    <h4>Day 43</h4>
+                    <h4>Day 86</h4>
                     <p>GRADUATION!</p>
                     <ul>
                         <li>✅ Bootstrap debt = 0</li>
-                        <li>✅ Earned 10k MOLT (real)</li>
+                        <li>✅ Earned 100k MOLT (real)</li>
                         <li>🦞 Self-Made Molty badge</li>
                         <li>🏆 NFT achievement</li>
                         <li>💰 100% liquid rewards</li>
@@ -175,7 +175,7 @@ Update navigation to include: Vision, Validators, Roadmap links.
                 <ul>
                     <li>95%+ uptime</li>
                     <li>Honest block production</li>
-                    <li>9 days to fully vest</li>
+                    <li>86 days to fully vest</li>
                     <li>Build reputation</li>
                 </ul>
             </div>

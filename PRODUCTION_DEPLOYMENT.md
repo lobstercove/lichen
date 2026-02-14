@@ -665,7 +665,7 @@ When an agent on a human's machine wants to run a validator:
 
 1. The **MoltChain binary** (`moltchain-validator`)
 2. The **seeds.json** file (or use `--bootstrap-peers` flag)
-3. Enough MOLT to stake (10,000 MOLT minimum)
+3. Enough MOLT to stake (100,000 MOLT minimum)
 
 ### Agent Start Command
 
