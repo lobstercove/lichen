@@ -8,9 +8,15 @@
 #
 # Usage:
 #   ./reset-blockchain.sh              # Reset everything
-#   ./reset-blockchain.sh --restart    # Reset + restart local testnet
+#   ./reset-blockchain.sh --restart    # Reset + restart local testnet (dev mode)
 #   ./reset-blockchain.sh testnet      # Reset testnet state only
 #   ./reset-blockchain.sh mainnet      # Reset mainnet state only
+#   ./reset-blockchain.sh --no-keys    # Reset state but keep keypairs
+#
+# Flags:
+#   --restart     Reset + relaunch 3 testnet validators in dev mode
+#   --no-keys     Preserve validator keypairs (resume same identities)
+#   --dev-mode    Passed through to validators on --restart (default: on)
 #
 # All paths are resolved relative to the repo root (auto-detected).
 # Works on any machine regardless of install location.
@@ -19,7 +25,7 @@
 set -euo pipefail
 
 # Colors
-RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 
 # Resolve repo root (works from any CWD)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,16 +35,28 @@ REPO_ROOT="$(cd "$REPO_ROOT" && pwd)"
 # Parse args
 NETWORK="all"
 RESTART=false
+KEEP_KEYS=false
+EXTRA_FLAGS=""
 
 for arg in "$@"; do
     case "$arg" in
-        --restart) RESTART=true ;;
+        --restart)  RESTART=true ;;
+        --no-keys)  KEEP_KEYS=true ;;
+        --dev-mode) EXTRA_FLAGS="$EXTRA_FLAGS --dev-mode" ;;
         testnet|mainnet|all) NETWORK="$arg" ;;
     esac
 done
 
 if [ "$RESTART" = true ] && [ "$NETWORK" = "all" ]; then
     NETWORK="testnet"
+fi
+
+# --restart always implies --dev-mode for local testing (multiple validators
+# on one machine require dev-mode to bypass machine fingerprint checks)
+if [ "$RESTART" = true ]; then
+    if [[ "$EXTRA_FLAGS" != *"--dev-mode"* ]]; then
+        EXTRA_FLAGS="$EXTRA_FLAGS --dev-mode"
+    fi
 fi
 
 echo -e "${RED}=================================================${NC}"
@@ -52,7 +70,7 @@ echo ""
 # ════════════════════════════════════════════════════════════
 # STEP 1: KILL ALL PROCESSES
 # ════════════════════════════════════════════════════════════
-echo -e "${YELLOW}[1/6] Killing all MoltChain processes...${NC}"
+echo -e "${YELLOW}[1/7] Killing all MoltChain processes...${NC}"
 
 pkill -9 -f moltchain-validator 2>/dev/null || true
 pkill -9 -f moltchain-faucet    2>/dev/null || true
@@ -77,7 +95,7 @@ fi
 # ════════════════════════════════════════════════════════════
 # STEP 2: FLUSH ROCKSDB STATE DIRECTORIES
 # ════════════════════════════════════════════════════════════
-echo -e "${YELLOW}[2/6] Removing blockchain state directories...${NC}"
+echo -e "${YELLOW}[2/7] Removing blockchain state directories...${NC}"
 
 cd "$REPO_ROOT"
 
@@ -124,31 +142,38 @@ fi
 echo -e "${GREEN}  State directories flushed${NC}"
 
 # ════════════════════════════════════════════════════════════
-# STEP 3: FLUSH VALIDATOR KEYPAIRS
+# STEP 3: FLUSH VALIDATOR KEYPAIRS (unless --no-keys)
 # ════════════════════════════════════════════════════════════
-echo -e "${YELLOW}[3/6] Removing validator keypairs...${NC}"
-
-if [ "$NETWORK" = "all" ]; then
-    rm -rf ~/.moltchain/validators 2>/dev/null || true
-    rm -f ~/.moltchain/validator-*.json 2>/dev/null || true
+if [ "$KEEP_KEYS" = true ]; then
+    echo -e "${CYAN}[3/7] Keeping validator keypairs (--no-keys)${NC}"
 else
-    # Only remove keypairs for the specific network ports
-    if [ "$NETWORK" = "testnet" ]; then
-        for port in 7001 7002 7003 8000 8001 8002; do
-            rm -f "$HOME/.moltchain/validators/validator-${port}.json" 2>/dev/null || true
-        done
+    echo -e "${YELLOW}[3/7] Removing validator keypairs...${NC}"
+
+    if [ "$NETWORK" = "all" ]; then
+        rm -rf ~/.moltchain/validators 2>/dev/null || true
+        rm -f ~/.moltchain/validator-*.json 2>/dev/null || true
+
+        # Keypairs copied via --import-key into data dirs
+        find "$REPO_ROOT/data" -maxdepth 3 -name "validator-keypair.json" -delete 2>/dev/null || true
     else
-        for port in 8001 8002 8003 9000 9001 9002; do
-            rm -f "$HOME/.moltchain/validators/validator-${port}.json" 2>/dev/null || true
-        done
+        # Only remove keypairs for the specific network ports
+        if [ "$NETWORK" = "testnet" ]; then
+            for port in 7001 7002 7003 8000 8001 8002; do
+                rm -f "$HOME/.moltchain/validators/validator-${port}.json" 2>/dev/null || true
+            done
+        else
+            for port in 8001 8002 8003 9000 9001 9002; do
+                rm -f "$HOME/.moltchain/validators/validator-${port}.json" 2>/dev/null || true
+            done
+        fi
     fi
+    echo -e "${GREEN}  Validator keypairs cleared (regenerate on start)${NC}"
 fi
-echo -e "${GREEN}  Validator keypairs cleared (regenerate on start)${NC}"
 
 # ════════════════════════════════════════════════════════════
 # STEP 4: FLUSH SIGNER, PEER STORES, GENESIS, TEMP FILES
 # ════════════════════════════════════════════════════════════
-echo -e "${YELLOW}[4/6] Cleaning signer data, peer stores, genesis files...${NC}"
+echo -e "${YELLOW}[4/7] Cleaning signer data, peer stores, genesis files...${NC}"
 
 if [ "$NETWORK" = "all" ]; then
     # Signer keypairs
@@ -185,9 +210,39 @@ fi
 echo -e "${GREEN}  All transient state cleaned${NC}"
 
 # ════════════════════════════════════════════════════════════
-# STEP 5: VERIFY CLEAN STATE
+# STEP 5: FLUSH MACHINE FINGERPRINT & MIGRATION ARTIFACTS
 # ════════════════════════════════════════════════════════════
-echo -e "${YELLOW}[5/6] Verifying clean state...${NC}"
+echo -e "${YELLOW}[5/7] Cleaning machine fingerprint and migration artifacts...${NC}"
+
+if [ "$NETWORK" = "all" ]; then
+    # Imported/migrated keypair temp files in /tmp
+    rm -f /tmp/v*-migrated-keypair.json 2>/dev/null || true
+    rm -f /tmp/*-keypair-backup-*.json 2>/dev/null || true
+
+    # Migration metadata that may be left over in data dirs
+    find "$REPO_ROOT/data" -maxdepth 3 -name "migration-*.json" -delete 2>/dev/null || true
+    find "$REPO_ROOT/data" -maxdepth 3 -name "fingerprint-*.dat" -delete 2>/dev/null || true
+
+    # Any stale validator PID files
+    rm -f /tmp/moltchain-validator-*.pid 2>/dev/null || true
+
+    # Dev signer temp files
+    rm -f /tmp/signer-*.json 2>/dev/null || true
+else
+    # Network-specific: clean migration artifacts from matching data dirs
+    for dir in "$REPO_ROOT"/data/state-${NETWORK}-*; do
+        [ -d "$dir" ] || continue
+        find "$dir" -name "migration-*.json" -delete 2>/dev/null || true
+        find "$dir" -name "fingerprint-*.dat" -delete 2>/dev/null || true
+    done
+fi
+
+echo -e "${GREEN}  Fingerprint and migration artifacts cleaned${NC}"
+
+# ════════════════════════════════════════════════════════════
+# STEP 6: VERIFY CLEAN STATE
+# ════════════════════════════════════════════════════════════
+echo -e "${YELLOW}[6/7] Verifying clean state...${NC}"
 
 DIRTY=0
 if [ "$NETWORK" = "all" ]; then
@@ -205,7 +260,7 @@ else
 fi
 
 # ════════════════════════════════════════════════════════════
-# STEP 6: OPTIONAL RESTART
+# STEP 7: OPTIONAL RESTART
 # ════════════════════════════════════════════════════════════
 echo ""
 echo -e "${GREEN}=================================================${NC}"
@@ -214,7 +269,7 @@ echo -e "${GREEN}=================================================${NC}"
 echo ""
 
 if [ "$RESTART" = true ]; then
-    echo -e "${YELLOW}Restarting ${NETWORK} local stack...${NC}"
+    echo -e "${YELLOW}Restarting ${NETWORK} local stack (dev mode)...${NC}"
     echo ""
 
     LAUNCHER="${SCRIPT_DIR}/run-validator.sh"
@@ -225,7 +280,7 @@ if [ "$RESTART" = true ]; then
     fi
 
     echo "   Starting V1 (primary - creates genesis)..."
-    nohup "$LAUNCHER" "$NETWORK" 1 > /tmp/moltchain-v1.log 2>&1 &
+    nohup "$LAUNCHER" "$NETWORK" 1 $EXTRA_FLAGS > /tmp/moltchain-v1.log 2>&1 &
     V1_PID=$!
     echo "   V1 PID: $V1_PID"
 
@@ -233,13 +288,13 @@ if [ "$RESTART" = true ]; then
     sleep 8
 
     echo "   Starting V2 (secondary)..."
-    nohup "$LAUNCHER" "$NETWORK" 2 > /tmp/moltchain-v2.log 2>&1 &
+    nohup "$LAUNCHER" "$NETWORK" 2 $EXTRA_FLAGS > /tmp/moltchain-v2.log 2>&1 &
     echo "   V2 PID: $!"
 
     sleep 3
 
     echo "   Starting V3 (tertiary)..."
-    nohup "$LAUNCHER" "$NETWORK" 3 > /tmp/moltchain-v3.log 2>&1 &
+    nohup "$LAUNCHER" "$NETWORK" 3 $EXTRA_FLAGS > /tmp/moltchain-v3.log 2>&1 &
     echo "   V3 PID: $!"
 
     echo ""
@@ -247,7 +302,7 @@ if [ "$RESTART" = true ]; then
     sleep 10
 
     echo ""
-    echo -e "${GREEN}Stack restarted. Check logs:${NC}"
+    echo -e "${GREEN}Stack restarted (dev mode — fingerprint = SHA-256(pubkey)). Check logs:${NC}"
     echo "   tail -f /tmp/moltchain-v1.log"
     echo "   tail -f /tmp/moltchain-v2.log"
     echo "   tail -f /tmp/moltchain-v3.log"
