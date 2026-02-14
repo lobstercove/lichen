@@ -55,7 +55,7 @@ pub fn load_or_generate_keypair(config_path: Option<&str>, p2p_port: u16) -> Res
 }
 
 /// Get default validator keypair path
-fn default_validator_keypair_path(p2p_port: u16) -> PathBuf {
+pub fn default_validator_keypair_path(p2p_port: u16) -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join(".moltchain")

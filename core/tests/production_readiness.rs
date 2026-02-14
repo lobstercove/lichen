@@ -1260,7 +1260,7 @@ fn test_stakepool_claim_rewards() {
     let v1 = Keypair::new();
     pool.stake(v1.pubkey(), MIN_VALIDATOR_STAKE, 0).unwrap();
     pool.distribute_block_reward(&v1.pubkey(), 1, false);
-    let (claimed_block, claimed_fee) = pool.claim_rewards(&v1.pubkey());
+    let (claimed_block, claimed_fee) = pool.claim_rewards(&v1.pubkey(), 1);
     assert!(
         claimed_block > 0 || claimed_fee > 0,
         "Should have rewards to claim"
@@ -1310,9 +1310,10 @@ fn test_stakepool_delegation_bootstrapping_rejected() {
     let mut pool = StakePool::new();
     let validator = Keypair::new();
     let delegator = Keypair::new();
-    pool.stake(validator.pubkey(), MIN_VALIDATOR_STAKE, 0)
+    // Use stake_with_index to simulate a bootstrap validator (index 0 < 200)
+    pool.stake_with_index(validator.pubkey(), MIN_VALIDATOR_STAKE, 0, 0)
         .unwrap();
-    // Fresh validators are in bootstrapping phase — delegation must be rejected
+    // Fresh bootstrap validators are in bootstrapping phase — delegation must be rejected
     let result = pool.delegate(delegator.pubkey(), &validator.pubkey(), 5_000);
     assert!(
         result.is_err(),

@@ -125,6 +125,10 @@ pub enum MessageType {
         /// Ed25519 signature over (pubkey.0 || stake.to_le_bytes() || current_slot.to_le_bytes())
         #[serde(with = "signature_serde")]
         signature: [u8; 64],
+        /// SHA-256 machine fingerprint (platform UUID + MAC address).
+        /// [0u8; 32] if not available (dev mode or legacy).
+        #[serde(default)]
+        machine_fingerprint: [u8; 32],
     },
 
     /// Slashing evidence broadcast

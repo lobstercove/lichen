@@ -43,6 +43,8 @@ pub struct ValidatorAnnouncement {
     pub current_slot: u64,
     pub version: String,
     pub signature: [u8; 64],
+    /// SHA-256 machine fingerprint (platform UUID + MAC). [0u8;32] if not set.
+    pub machine_fingerprint: [u8; 32],
 }
 
 /// Block range request from peer
@@ -434,6 +436,7 @@ impl P2PNetwork {
                 current_slot,
                 version,
                 signature,
+                machine_fingerprint,
             } => {
                 // T2.3 fix: Verify Ed25519 signature before forwarding
                 let mut message = Vec::with_capacity(48);
@@ -463,6 +466,7 @@ impl P2PNetwork {
                     current_slot,
                     version,
                     signature,
+                    machine_fingerprint,
                 };
                 self.validator_announce_tx
                     .send(announcement)

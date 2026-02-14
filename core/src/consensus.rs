@@ -30,6 +30,26 @@ pub const ANNUAL_REWARD_RATE_BPS: u64 = 500;
 /// Slots per year (assuming 400ms per slot = ~78.8M slots/year)
 pub const SLOTS_PER_YEAR: u64 = 78_840_000;
 
+// ============================================================================
+// GRADUATION - Bootstrap-to-Maturity System
+// ============================================================================
+
+/// Maximum number of validators that receive the bootstrap grant (first 200)
+pub const MAX_BOOTSTRAP_VALIDATORS: u64 = 200;
+
+/// Maximum bootstrap duration in slots (~18 months = 547 days × 216,000 slots/day)
+pub const MAX_BOOTSTRAP_SLOTS: u64 = 547 * 216_000; // 118,152,000 slots
+
+/// Uptime threshold for performance bonus (95% = 9500 basis points)
+pub const UPTIME_BONUS_THRESHOLD_BPS: u64 = 9500;
+
+/// Performance bonus multiplier (1.5× = 15000 basis points, i.e. 75/25 split)
+pub const PERFORMANCE_BONUS_BPS: u64 = 15000;
+
+/// Cooldown period after machine migration before fingerprint slot is released
+/// (1 epoch = 432,000 slots ≈ 2 days)
+pub const MIGRATION_COOLDOWN_SLOTS: u64 = 432_000;
+
 /// Oracle price staleness threshold (1 hour in seconds — matches moltoracle contract)
 const ORACLE_STALENESS_SECS: u64 = 3600;
 
@@ -307,23 +327,54 @@ pub struct StakeInfo {
     pub total_claimed: u64, // Total lifetime rewards claimed (liquid + debt)
     #[serde(default)]
     pub total_debt_repaid: u64, // Total lifetime debt repaid
+    /// SHA-256 machine fingerprint (platform UUID + MAC) — [0u8; 32] if not set
+    #[serde(default)]
+    pub machine_fingerprint: [u8; 32],
+    /// Slot when this validator first staked (for time-cap graduation)
+    #[serde(default)]
+    pub start_slot: u64,
+    /// Bootstrap grant index (0-based). Validators #0..199 get the grant; 200+ do not.
+    /// u64::MAX means "not a bootstrap validator" (self-funded).
+    #[serde(default = "default_no_bootstrap_index")]
+    pub bootstrap_index: u64,
+    /// Last slot when machine fingerprint was migrated (for migration cooldown)
+    #[serde(default)]
+    pub last_migration_slot: u64,
+}
+
+/// Serde default for bootstrap_index — u64::MAX means "not a bootstrap validator"
+fn default_no_bootstrap_index() -> u64 {
+    u64::MAX
 }
 
 impl StakeInfo {
-    /// Create new validator stake with bootstrap (Contributory Stake system)
+    /// Create new validator stake with bootstrap (Contributory Stake system).
+    ///
+    /// `bootstrap_index` — the grant sequence number (0..199 = bootstrap grant,
+    /// 200+ or u64::MAX = self-funded, no debt).
     pub fn new(validator: Pubkey, amount: u64, current_slot: u64) -> Self {
-        // Validators start with bootstrap stake and must earn it
-        let bootstrap_debt = if amount == MIN_VALIDATOR_STAKE {
-            amount // Bootstrap: granted stake, must be earned
-        } else {
-            0 // Already has stake (existing validator)
-        };
+        Self::with_bootstrap_index(validator, amount, current_slot, u64::MAX)
+    }
+
+    /// Create new validator stake, explicitly setting the bootstrap index.
+    /// Validators with index < MAX_BOOTSTRAP_VALIDATORS receive bootstrap debt;
+    /// others (index >= MAX_BOOTSTRAP_VALIDATORS or u64::MAX) are self-funded.
+    pub fn with_bootstrap_index(
+        validator: Pubkey,
+        amount: u64,
+        current_slot: u64,
+        bootstrap_index: u64,
+    ) -> Self {
+        // Only bootstrap if this is one of the first 200 AND amount matches MIN_VALIDATOR_STAKE
+        let is_bootstrap = bootstrap_index < MAX_BOOTSTRAP_VALIDATORS
+            && amount == MIN_VALIDATOR_STAKE;
+        let bootstrap_debt = if is_bootstrap { amount } else { 0 };
 
         Self {
             validator,
             amount,
-            earned_amount: 0, // Starts at 0, increases as debt repaid
-            bootstrap_debt,   // Starts at 100k, decreases to 0
+            earned_amount: 0,
+            bootstrap_debt,
             locked_until: current_slot + 1000,
             is_active: amount >= MIN_VALIDATOR_STAKE,
             delegated_amount: 0,
@@ -338,6 +389,10 @@ impl StakeInfo {
             graduation_slot: None,
             total_claimed: 0,
             total_debt_repaid: 0,
+            machine_fingerprint: [0u8; 32],
+            start_slot: current_slot,
+            bootstrap_index,
+            last_migration_slot: 0,
         }
     }
 
@@ -381,24 +436,50 @@ impl StakeInfo {
         self.last_reward_slot = slot;
     }
 
-    /// Claim accumulated rewards with Contributory Stake split
+    /// Claim accumulated rewards with Contributory Stake split.
+    ///
+    /// **Graduation paths:**
+    /// 1. **Debt repaid** — bootstrap_debt reaches 0 (standard graduation).
+    /// 2. **Time cap** — 18 months (MAX_BOOTSTRAP_SLOTS) elapsed since start_slot.
+    ///
+    /// **Performance bonus:**
+    /// Validators with ≥ 95% uptime get a 75/25 split (75% to debt) instead of 50/50,
+    /// accelerating graduation by ~1.5×.
+    ///
     /// Returns (liquid_amount, debt_payment)
-    pub fn claim_rewards(&mut self) -> (u64, u64) {
+    pub fn claim_rewards(&mut self, current_slot: u64) -> (u64, u64) {
         let total_reward = self.rewards_earned;
         self.rewards_earned = 0;
 
         if self.bootstrap_debt > 0 {
-            // Bootstrapping: 50/50 split (debt repayment vs liquid)
-            let debt_payment = total_reward / 2;
+            // ── Time-cap graduation check ──────────────────────────
+            // If 18 months have passed, forgive remaining debt immediately.
+            if current_slot >= self.start_slot.saturating_add(MAX_BOOTSTRAP_SLOTS) {
+                self.bootstrap_debt = 0;
+                self.status = BootstrapStatus::FullyVested;
+                self.graduation_slot = Some(current_slot);
+                // All reward is liquid after time-cap graduation
+                self.total_claimed = self.total_claimed.saturating_add(total_reward);
+                return (total_reward, 0);
+            }
+
+            // ── Performance bonus: 95%+ uptime → 75/25 split ──────
+            let debt_fraction = if self.uptime_bps(current_slot) >= UPTIME_BONUS_THRESHOLD_BPS {
+                // 75% to debt repayment (accelerated)
+                (total_reward as u128 * 75 / 100) as u64
+            } else {
+                // Standard 50% to debt repayment
+                total_reward / 2
+            };
 
             // Apply debt payment (capped at remaining debt)
-            let paid = debt_payment.min(self.bootstrap_debt);
+            let paid = debt_fraction.min(self.bootstrap_debt);
             self.bootstrap_debt -= paid;
             // AUDIT-FIX 1.2b: saturating_add to prevent overflow
             self.earned_amount = self.earned_amount.saturating_add(paid);
             self.total_debt_repaid = self.total_debt_repaid.saturating_add(paid);
 
-            // Liquid = everything not going to debt (includes excess if debt < half reward)
+            // Liquid = everything not going to debt (includes excess if debt < fraction)
             let liquid = total_reward - paid;
 
             // Track total claimed (liquid + debt payment = full reward)
@@ -407,7 +488,7 @@ impl StakeInfo {
             // Check for graduation
             if self.bootstrap_debt == 0 {
                 self.status = BootstrapStatus::FullyVested;
-                self.graduation_slot = Some(self.last_reward_slot);
+                self.graduation_slot = Some(current_slot);
             }
 
             (liquid, paid) // (spendable, locked_for_debt)
@@ -416,6 +497,26 @@ impl StakeInfo {
             self.total_claimed = self.total_claimed.saturating_add(total_reward);
             (total_reward, 0)
         }
+    }
+
+    /// Calculate validator uptime in basis points (0–10000).
+    ///
+    /// Uptime = blocks_produced / expected_blocks, where expected_blocks =
+    /// (current_slot - start_slot) / SLOTS_PER_EPOCH × blocks_per_epoch_expected.
+    ///
+    /// For simplicity we use `blocks_produced / slots_active × slots_per_epoch`
+    /// normalized. Since every validator should produce roughly 1 block per
+    /// SLOTS_PER_EPOCH/validator_count, and we don't have validator_count here,
+    /// we approximate with: blocks_produced / ((current_slot - start_slot) / SLOTS_PER_EPOCH + 1).
+    /// A validator producing at least 1 block per epoch has ~100% uptime.
+    ///
+    /// In practice: epochs_active = (current_slot - start_slot) / SLOTS_PER_EPOCH + 1.
+    /// uptime_bps = min(10000, blocks_produced * 10000 / epochs_active).
+    pub fn uptime_bps(&self, current_slot: u64) -> u64 {
+        let slots_active = current_slot.saturating_sub(self.start_slot);
+        let epochs_active = slots_active / SLOTS_PER_EPOCH + 1; // +1 to avoid div-by-zero and count partial epoch
+        let bps = self.blocks_produced.saturating_mul(10000) / epochs_active;
+        bps.min(10000)
     }
 
     /// Check if validator is fully vested
@@ -499,6 +600,13 @@ pub struct StakePool {
     /// Per-validator map of delegator -> amount
     #[serde(default)]
     delegations: HashMap<Pubkey, HashMap<Pubkey, u64>>,
+    /// Machine fingerprint registry: fingerprint → validator pubkey.
+    /// Prevents the same physical machine from running multiple validators.
+    #[serde(default)]
+    fingerprint_registry: HashMap<[u8; 32], Pubkey>,
+    /// Number of bootstrap grants issued so far (monotonically increasing, 0..200)
+    #[serde(default)]
+    bootstrap_grants_issued: u64,
 }
 
 impl Default for StakePool {
@@ -515,6 +623,8 @@ impl StakePool {
             total_slashed: 0,
             unstake_requests: HashMap::new(),
             delegations: HashMap::new(),
+            fingerprint_registry: HashMap::new(),
+            bootstrap_grants_issued: 0,
         }
     }
 
@@ -670,9 +780,9 @@ impl StakePool {
     }
 
     /// Claim rewards for validator (returns (liquid, debt_payment))
-    pub fn claim_rewards(&mut self, validator: &Pubkey) -> (u64, u64) {
+    pub fn claim_rewards(&mut self, validator: &Pubkey, current_slot: u64) -> (u64, u64) {
         if let Some(stake_info) = self.stakes.get_mut(validator) {
-            stake_info.claim_rewards()
+            stake_info.claim_rewards(current_slot)
         } else {
             (0, 0)
         }
@@ -988,6 +1098,162 @@ impl StakePool {
         }
 
         rewards
+    }
+
+    // ========================================================================
+    // GRADUATION — Bootstrap grant management + machine fingerprint registry
+    // ========================================================================
+
+    /// Get the number of bootstrap grants issued so far.
+    pub fn bootstrap_grants_issued(&self) -> u64 {
+        self.bootstrap_grants_issued
+    }
+
+    /// Allocate the next bootstrap index. Returns `Some(index)` if under the cap,
+    /// or `None` if the bootstrap phase is complete (≥ MAX_BOOTSTRAP_VALIDATORS).
+    pub fn next_bootstrap_index(&mut self) -> Option<u64> {
+        if self.bootstrap_grants_issued < MAX_BOOTSTRAP_VALIDATORS {
+            let index = self.bootstrap_grants_issued;
+            self.bootstrap_grants_issued += 1;
+            Some(index)
+        } else {
+            None
+        }
+    }
+
+    /// Register stake for a validator with explicit bootstrap index.
+    /// Use this instead of `stake()` when the caller knows whether this is a
+    /// bootstrap grant or a self-funded validator.
+    pub fn stake_with_index(
+        &mut self,
+        validator: Pubkey,
+        amount: u64,
+        current_slot: u64,
+        bootstrap_index: u64,
+    ) -> Result<(), String> {
+        if amount < MIN_VALIDATOR_STAKE {
+            return Err(format!(
+                "Stake {} is below minimum {}",
+                amount, MIN_VALIDATOR_STAKE
+            ));
+        }
+
+        if let Some(stake_info) = self.stakes.get_mut(&validator) {
+            stake_info.amount += amount;
+            stake_info.is_active = stake_info.meets_minimum();
+        } else {
+            let stake_info =
+                StakeInfo::with_bootstrap_index(validator, amount, current_slot, bootstrap_index);
+            self.stakes.insert(validator, stake_info);
+        }
+
+        self.total_staked += amount;
+        Ok(())
+    }
+
+    /// Register a machine fingerprint for a validator.
+    ///
+    /// Returns `Ok(())` on success, or an error if the fingerprint is already
+    /// claimed by a different validator (anti-Sybil).
+    pub fn register_fingerprint(
+        &mut self,
+        validator: &Pubkey,
+        fingerprint: [u8; 32],
+    ) -> Result<(), String> {
+        // All-zeros fingerprint = not set (dev mode or legacy), always accept
+        if fingerprint == [0u8; 32] {
+            return Ok(());
+        }
+
+        if let Some(existing) = self.fingerprint_registry.get(&fingerprint) {
+            if existing != validator {
+                return Err(format!(
+                    "Machine fingerprint already registered to validator {}",
+                    existing.to_base58()
+                ));
+            }
+            // Same validator re-registering same fingerprint — idempotent
+            return Ok(());
+        }
+
+        self.fingerprint_registry.insert(fingerprint, *validator);
+
+        // Also store on the StakeInfo
+        if let Some(stake_info) = self.stakes.get_mut(validator) {
+            stake_info.machine_fingerprint = fingerprint;
+        }
+
+        Ok(())
+    }
+
+    /// Migrate a validator's fingerprint to a new machine.
+    ///
+    /// The old fingerprint is released after MIGRATION_COOLDOWN_SLOTS.
+    /// Returns `Ok(())` on success, or an error if cooldown hasn't elapsed.
+    pub fn migrate_fingerprint(
+        &mut self,
+        validator: &Pubkey,
+        new_fingerprint: [u8; 32],
+        current_slot: u64,
+    ) -> Result<(), String> {
+        if new_fingerprint == [0u8; 32] {
+            return Err("Cannot migrate to empty fingerprint".to_string());
+        }
+
+        // Check new fingerprint isn't already taken
+        if let Some(existing) = self.fingerprint_registry.get(&new_fingerprint) {
+            if existing != validator {
+                return Err(format!(
+                    "New machine fingerprint already registered to validator {}",
+                    existing.to_base58()
+                ));
+            }
+        }
+
+        let stake_info = self
+            .stakes
+            .get(validator)
+            .ok_or_else(|| "Validator not found".to_string())?;
+
+        // Enforce migration cooldown
+        if stake_info.last_migration_slot > 0
+            && current_slot < stake_info.last_migration_slot + MIGRATION_COOLDOWN_SLOTS
+        {
+            let remaining =
+                (stake_info.last_migration_slot + MIGRATION_COOLDOWN_SLOTS) - current_slot;
+            return Err(format!(
+                "Migration cooldown active. {} slots remaining (~{} hours)",
+                remaining,
+                remaining * 400 / 1000 / 3600
+            ));
+        }
+
+        // Remove old fingerprint mapping
+        let old_fingerprint = stake_info.machine_fingerprint;
+        if old_fingerprint != [0u8; 32] {
+            self.fingerprint_registry.remove(&old_fingerprint);
+        }
+
+        // Register new fingerprint
+        self.fingerprint_registry.insert(new_fingerprint, *validator);
+
+        // Update StakeInfo
+        if let Some(stake_info) = self.stakes.get_mut(validator) {
+            stake_info.machine_fingerprint = new_fingerprint;
+            stake_info.last_migration_slot = current_slot;
+        }
+
+        Ok(())
+    }
+
+    /// Check if a fingerprint is already registered (and to which validator).
+    pub fn fingerprint_owner(&self, fingerprint: &[u8; 32]) -> Option<&Pubkey> {
+        self.fingerprint_registry.get(fingerprint)
+    }
+
+    /// Get mutable reference to stake info (for direct field updates in validator)
+    pub fn get_stake_mut(&mut self, validator: &Pubkey) -> Option<&mut StakeInfo> {
+        self.stakes.get_mut(validator)
     }
 }
 
@@ -2258,5 +2524,292 @@ mod tests {
         let vp_b2 = pool.voting_power(&pk_b);
         assert_eq!(vp_a2, 3333); // ~33.3%
         assert_eq!(vp_b2, 6666); // ~66.6%
+    }
+
+    // ================================================================
+    // Graduation System tests
+    // ================================================================
+
+    #[test]
+    fn test_bootstrap_grant_first_200() {
+        let mut pool = StakePool::new();
+
+        // Issue 200 bootstrap grants — all should succeed
+        for i in 0..200u64 {
+            let pk = Pubkey::new({
+                let mut b = [0u8; 32];
+                b[..8].copy_from_slice(&i.to_le_bytes());
+                b
+            });
+            let idx = pool.next_bootstrap_index().unwrap();
+            assert_eq!(idx, i);
+            pool.stake_with_index(pk, MIN_VALIDATOR_STAKE, 0, idx)
+                .unwrap();
+
+            // Confirm bootstrap debt exists
+            let stake = pool.get_stake(&pk).unwrap();
+            assert_eq!(stake.bootstrap_debt, MIN_VALIDATOR_STAKE);
+            assert_eq!(stake.bootstrap_index, i);
+            assert_eq!(stake.status, BootstrapStatus::Bootstrapping);
+        }
+
+        assert_eq!(pool.bootstrap_grants_issued(), 200);
+
+        // 201st grant should return None
+        assert!(pool.next_bootstrap_index().is_none());
+
+        // Self-funded validator (#201) — no debt
+        let pk_201 = Pubkey::new([0xFFu8; 32]);
+        pool.stake_with_index(pk_201, MIN_VALIDATOR_STAKE, 0, u64::MAX)
+            .unwrap();
+        let stake_201 = pool.get_stake(&pk_201).unwrap();
+        assert_eq!(stake_201.bootstrap_debt, 0);
+        assert_eq!(stake_201.status, BootstrapStatus::FullyVested);
+        assert_eq!(stake_201.bootstrap_index, u64::MAX);
+    }
+
+    #[test]
+    fn test_standard_graduation_50_50_split() {
+        let pk = Pubkey::new([1u8; 32]);
+        let mut stake = StakeInfo::with_bootstrap_index(pk, MIN_VALIDATOR_STAKE, 0, 0);
+
+        assert_eq!(stake.bootstrap_debt, MIN_VALIDATOR_STAKE);
+        assert_eq!(stake.status, BootstrapStatus::Bootstrapping);
+
+        // Simulate low uptime: produce far fewer blocks than epochs would expect.
+        // At slot SLOTS_PER_EPOCH * 10 → epochs_active = 10 + 1 = 11.
+        // With 0 blocks → uptime = 0 → standard 50/50 split.
+        let claim_slot = SLOTS_PER_EPOCH * 10;
+        stake.add_reward(1_000_000_000, claim_slot); // 1 MOLT
+        stake.blocks_produced = 0; // Zero uptime — definitely below 95%
+        let (liquid, debt) = stake.claim_rewards(claim_slot);
+
+        // Standard 50/50 split
+        assert_eq!(debt, 500_000_000); // 0.5 MOLT to debt
+        assert_eq!(liquid, 500_000_000); // 0.5 MOLT liquid
+        assert_eq!(stake.bootstrap_debt, MIN_VALIDATOR_STAKE - 500_000_000);
+        assert_eq!(stake.earned_amount, 500_000_000);
+        assert_eq!(stake.total_claimed, 1_000_000_000);
+        assert_eq!(stake.total_debt_repaid, 500_000_000);
+    }
+
+    #[test]
+    fn test_performance_bonus_75_25_split() {
+        let pk = Pubkey::new([1u8; 32]);
+        let mut stake = StakeInfo::with_bootstrap_index(pk, MIN_VALIDATOR_STAKE, 0, 0);
+
+        // Simulate high uptime: many blocks produced over a few epochs
+        // uptime_bps = blocks_produced * 10000 / (epochs_active). We need >= 9500.
+        // At slot = SLOTS_PER_EPOCH, epochs_active = 1 + 1 = 2.
+        // blocks_produced * 10000 / 2 >= 9500 → blocks_produced >= 2
+        stake.blocks_produced = 2;
+        stake.add_reward(1_000_000_000, SLOTS_PER_EPOCH); // 1 MOLT
+
+        let uptime = stake.uptime_bps(SLOTS_PER_EPOCH);
+        assert!(
+            uptime >= UPTIME_BONUS_THRESHOLD_BPS,
+            "uptime {} should be >= {}",
+            uptime,
+            UPTIME_BONUS_THRESHOLD_BPS
+        );
+
+        let (liquid, debt) = stake.claim_rewards(SLOTS_PER_EPOCH);
+
+        // Performance bonus: 75/25 split
+        assert_eq!(debt, 750_000_000); // 0.75 MOLT to debt
+        assert_eq!(liquid, 250_000_000); // 0.25 MOLT liquid (total - paid)
+        assert_eq!(stake.total_debt_repaid, 750_000_000);
+    }
+
+    #[test]
+    fn test_time_cap_graduation() {
+        let pk = Pubkey::new([1u8; 32]);
+        let mut stake = StakeInfo::with_bootstrap_index(pk, MIN_VALIDATOR_STAKE, 0, 0);
+
+        assert_eq!(stake.status, BootstrapStatus::Bootstrapping);
+        assert_eq!(stake.bootstrap_debt, MIN_VALIDATOR_STAKE);
+
+        // Add rewards but don't claim enough to fully repay
+        let reward = 10_000_000_000_000u64; // 10,000 MOLT
+        stake.add_reward(reward, MAX_BOOTSTRAP_SLOTS);
+
+        // Claim at exactly the time cap
+        let (liquid, debt) = stake.claim_rewards(MAX_BOOTSTRAP_SLOTS);
+
+        // Time cap reached: entire reward is liquid, debt is forgiven
+        assert_eq!(liquid, reward);
+        assert_eq!(debt, 0);
+        assert_eq!(stake.bootstrap_debt, 0);
+        assert_eq!(stake.status, BootstrapStatus::FullyVested);
+        assert!(stake.graduation_slot.is_some());
+        assert_eq!(stake.graduation_slot.unwrap(), MAX_BOOTSTRAP_SLOTS);
+    }
+
+    #[test]
+    fn test_time_cap_before_debt_repayment() {
+        let pk = Pubkey::new([1u8; 32]);
+        let start_slot = 1000;
+        let mut stake =
+            StakeInfo::with_bootstrap_index(pk, MIN_VALIDATOR_STAKE, start_slot, 0);
+
+        // Add a small reward — nowhere near enough to repay debt
+        stake.add_reward(1_000_000_000, start_slot + 100); // 1 MOLT
+
+        // Claim before time cap — normal 50/50 split
+        let (liquid1, debt1) = stake.claim_rewards(start_slot + 100);
+        assert_eq!(liquid1, 500_000_000);
+        assert_eq!(debt1, 500_000_000);
+        assert_eq!(stake.status, BootstrapStatus::Bootstrapping);
+
+        // Now add another small reward and claim PAST the time cap
+        stake.add_reward(2_000_000_000, start_slot + MAX_BOOTSTRAP_SLOTS + 1);
+        let (liquid2, debt2) =
+            stake.claim_rewards(start_slot + MAX_BOOTSTRAP_SLOTS + 1);
+
+        // Time cap reached: debt forgiven, full reward is liquid
+        assert_eq!(liquid2, 2_000_000_000);
+        assert_eq!(debt2, 0);
+        assert_eq!(stake.bootstrap_debt, 0);
+        assert_eq!(stake.status, BootstrapStatus::FullyVested);
+    }
+
+    #[test]
+    fn test_fingerprint_blocks_duplicate() {
+        let mut pool = StakePool::new();
+        let pk1 = Pubkey::new([1u8; 32]);
+        let pk2 = Pubkey::new([2u8; 32]);
+
+        pool.stake_with_index(pk1, MIN_VALIDATOR_STAKE, 0, 0).unwrap();
+        pool.stake_with_index(pk2, MIN_VALIDATOR_STAKE, 0, 1).unwrap();
+
+        let fingerprint = [0xABu8; 32];
+
+        // First registration should succeed
+        assert!(pool.register_fingerprint(&pk1, fingerprint).is_ok());
+
+        // Same fingerprint for different validator should fail
+        let err = pool.register_fingerprint(&pk2, fingerprint).unwrap_err();
+        assert!(err.contains("already registered"));
+
+        // Same validator re-registering same fingerprint should be idempotent
+        assert!(pool.register_fingerprint(&pk1, fingerprint).is_ok());
+    }
+
+    #[test]
+    fn test_fingerprint_zero_always_accepted() {
+        let mut pool = StakePool::new();
+        let pk1 = Pubkey::new([1u8; 32]);
+        let pk2 = Pubkey::new([2u8; 32]);
+
+        pool.stake_with_index(pk1, MIN_VALIDATOR_STAKE, 0, 0).unwrap();
+        pool.stake_with_index(pk2, MIN_VALIDATOR_STAKE, 0, 1).unwrap();
+
+        let zero_fp = [0u8; 32];
+
+        // Zero fingerprints should always be accepted (dev mode / legacy)
+        assert!(pool.register_fingerprint(&pk1, zero_fp).is_ok());
+        assert!(pool.register_fingerprint(&pk2, zero_fp).is_ok());
+    }
+
+    #[test]
+    fn test_machine_migration() {
+        let mut pool = StakePool::new();
+        let pk = Pubkey::new([1u8; 32]);
+        pool.stake_with_index(pk, MIN_VALIDATOR_STAKE, 0, 0).unwrap();
+
+        let old_fp = [0xAAu8; 32];
+        let new_fp = [0xBBu8; 32];
+
+        pool.register_fingerprint(&pk, old_fp).unwrap();
+
+        // Migrate to new machine
+        let migrate_slot = MIGRATION_COOLDOWN_SLOTS + 100;
+        pool.migrate_fingerprint(&pk, new_fp, migrate_slot).unwrap();
+
+        // Old fingerprint should be released
+        assert!(pool.fingerprint_owner(&old_fp).is_none());
+        // New fingerprint should be registered
+        assert_eq!(pool.fingerprint_owner(&new_fp), Some(&pk));
+
+        // Immediately migrating again should fail (cooldown)
+        let newer_fp = [0xCCu8; 32];
+        let err = pool
+            .migrate_fingerprint(&pk, newer_fp, migrate_slot + 100)
+            .unwrap_err();
+        assert!(err.contains("cooldown"));
+
+        // After cooldown, migration should succeed
+        let after_cooldown = migrate_slot + MIGRATION_COOLDOWN_SLOTS + 1;
+        pool.migrate_fingerprint(&pk, newer_fp, after_cooldown)
+            .unwrap();
+        assert_eq!(pool.fingerprint_owner(&newer_fp), Some(&pk));
+        assert!(pool.fingerprint_owner(&new_fp).is_none());
+    }
+
+    #[test]
+    fn test_graduation_backward_compat() {
+        // Old StakeInfo::new() still works — creates with u64::MAX index
+        let pk = Pubkey::new([1u8; 32]);
+        let stake = StakeInfo::new(pk, MIN_VALIDATOR_STAKE, 0);
+
+        // u64::MAX index → no bootstrap debt (self-funded / legacy behavior)
+        assert_eq!(stake.bootstrap_index, u64::MAX);
+        assert_eq!(stake.bootstrap_debt, 0);
+        assert_eq!(stake.status, BootstrapStatus::FullyVested);
+        assert_eq!(stake.machine_fingerprint, [0u8; 32]);
+        assert_eq!(stake.start_slot, 0);
+        assert_eq!(stake.last_migration_slot, 0);
+    }
+
+    #[test]
+    fn test_uptime_bps_calculation() {
+        let pk = Pubkey::new([1u8; 32]);
+        let mut stake = StakeInfo::with_bootstrap_index(pk, MIN_VALIDATOR_STAKE, 0, 0);
+
+        // 0 blocks produced → 0 uptime
+        assert_eq!(stake.uptime_bps(SLOTS_PER_EPOCH), 0);
+
+        // 1 block per epoch for 10 epochs
+        stake.blocks_produced = 10;
+        let uptime_10e = stake.uptime_bps(SLOTS_PER_EPOCH * 10);
+        // epochs_active = 10 + 1 = 11 (partial epoch counted)
+        // bps = 10 * 10000 / 11 = 9090
+        assert_eq!(uptime_10e, 9090);
+
+        // Many blocks → capped at 10000
+        stake.blocks_produced = 1_000_000;
+        assert_eq!(stake.uptime_bps(SLOTS_PER_EPOCH), 10000);
+    }
+
+    #[test]
+    fn test_self_funded_validator_no_debt() {
+        let mut pool = StakePool::new();
+        let pk = Pubkey::new([1u8; 32]);
+
+        // Exhaust bootstrap grants
+        for i in 0..200 {
+            let dummy = Pubkey::new({
+                let mut b = [0u8; 32];
+                b[..8].copy_from_slice(&(i as u64).to_le_bytes());
+                b[31] = 0xFE; // Different from pk
+                b
+            });
+            let idx = pool.next_bootstrap_index().unwrap();
+            pool.stake_with_index(dummy, MIN_VALIDATOR_STAKE, 0, idx)
+                .unwrap();
+        }
+
+        // Now #201 — must self-fund
+        assert!(pool.next_bootstrap_index().is_none());
+        pool.stake_with_index(pk, MIN_VALIDATOR_STAKE, 0, u64::MAX)
+            .unwrap();
+
+        let stake = pool.get_stake(&pk).unwrap();
+        assert_eq!(stake.bootstrap_debt, 0);
+        assert_eq!(stake.status, BootstrapStatus::FullyVested);
+
+        // Can immediately unstake (no vesting requirement)
+        let result = pool.request_unstake(&pk, MIN_VALIDATOR_STAKE / 2, 1000, pk);
+        assert!(result.is_ok());
     }
 }

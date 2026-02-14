@@ -28,10 +28,12 @@ pub use account::{Account, Keypair, Pubkey};
 pub use block::{Block, BlockHeader, MAX_BLOCK_SIZE, MAX_CONTRACT_CODE, MAX_TX_PER_BLOCK};
 pub use consensus::{
     epoch_start_slot, is_epoch_boundary, molt_price_from_state, read_molt_price_feed_from_state,
-    slot_to_epoch, EpochInfo, ForkChoice, PriceOracle, RewardAdjustmentInfo, RewardConfig,
-    SlashingEvidence, SlashingOffense, SlashingTracker, StakeInfo, StakePool, StakingStats,
-    StateOracle, ValidatorInfo, ValidatorSet, Vote, VoteAggregator, BLOCK_REWARD,
-    HEARTBEAT_BLOCK_REWARD, MIN_VALIDATOR_STAKE, SLOTS_PER_EPOCH, TRANSACTION_BLOCK_REWARD,
+    slot_to_epoch, BootstrapStatus, EpochInfo, ForkChoice, PriceOracle, RewardAdjustmentInfo,
+    RewardConfig, SlashingEvidence, SlashingOffense, SlashingTracker, StakeInfo, StakePool,
+    StakingStats, StateOracle, ValidatorInfo, ValidatorSet, Vote, VoteAggregator, BLOCK_REWARD,
+    HEARTBEAT_BLOCK_REWARD, MAX_BOOTSTRAP_SLOTS, MAX_BOOTSTRAP_VALIDATORS,
+    MIGRATION_COOLDOWN_SLOTS, MIN_VALIDATOR_STAKE, PERFORMANCE_BONUS_BPS, SLOTS_PER_EPOCH,
+    TRANSACTION_BLOCK_REWARD, UPTIME_BONUS_THRESHOLD_BPS,
 };
 pub use contract::{
     decode_program_call_activity, encode_program_call_activity, AbiError, AbiEvent, AbiEventField,

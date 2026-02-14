@@ -68,6 +68,107 @@ const DEFAULT_WATCHDOG_TIMEOUT_SECS: u64 = 120;
 /// Override with `--max-restarts <n>`.
 const DEFAULT_MAX_RESTARTS: u32 = 50;
 
+/// Collect a machine fingerprint for anti-Sybil protection.
+///
+/// Computes SHA-256(platform_uuid || primary_mac_address).
+/// - macOS: reads IOPlatformUUID via `ioreg` and MAC from `ifconfig en0`
+/// - Linux: reads `/sys/class/dmi/id/product_uuid` (or `/etc/machine-id`) and MAC from `/sys/class/net/*/address`
+///
+/// Returns `[0u8; 32]` if unable to collect (dev mode fallback).
+fn collect_machine_fingerprint() -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    let mut got_uuid = false;
+    let mut got_mac = false;
+
+    // ── Platform UUID ──────────────────────────────────────────────
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(output) = std::process::Command::new("ioreg")
+            .args(["-rd1", "-c", "IOPlatformExpertDevice"])
+            .output()
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                if line.contains("IOPlatformUUID") {
+                    if let Some(uuid) = line.split('"').nth(3) {
+                        hasher.update(uuid.as_bytes());
+                        got_uuid = true;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // Try DMI product UUID first (requires root), then machine-id
+        if let Ok(uuid) = std::fs::read_to_string("/sys/class/dmi/id/product_uuid") {
+            hasher.update(uuid.trim().as_bytes());
+            got_uuid = true;
+        } else if let Ok(machine_id) = std::fs::read_to_string("/etc/machine-id") {
+            hasher.update(machine_id.trim().as_bytes());
+            got_uuid = true;
+        }
+    }
+
+    // ── Primary MAC address ────────────────────────────────────────
+    #[cfg(target_os = "macos")]
+    {
+        if let Ok(output) = std::process::Command::new("ifconfig")
+            .arg("en0")
+            .output()
+        {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("ether ") {
+                    let mac = trimmed.trim_start_matches("ether ").trim();
+                    hasher.update(mac.as_bytes());
+                    got_mac = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        // Read the first non-loopback, non-virtual MAC
+        if let Ok(entries) = std::fs::read_dir("/sys/class/net") {
+            let mut macs: Vec<String> = Vec::new();
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name == "lo" || name.starts_with("veth") || name.starts_with("docker") {
+                    continue;
+                }
+                let addr_path = entry.path().join("address");
+                if let Ok(mac) = std::fs::read_to_string(&addr_path) {
+                    let mac = mac.trim().to_string();
+                    if mac != "00:00:00:00:00:00" {
+                        macs.push(mac);
+                    }
+                }
+            }
+            macs.sort(); // Deterministic — pick first alphabetically
+            if let Some(mac) = macs.first() {
+                hasher.update(mac.as_bytes());
+                got_mac = true;
+            }
+        }
+    }
+
+    if !got_uuid && !got_mac {
+        // Unable to fingerprint this machine — return zeros (dev/test fallback)
+        return [0u8; 32];
+    }
+
+    let result = hasher.finalize();
+    let mut fingerprint = [0u8; 32];
+    fingerprint.copy_from_slice(&result);
+    fingerprint
+}
+
 #[derive(Debug, Deserialize)]
 struct SeedsFile {
     testnet: Option<SeedNetwork>,
@@ -1186,7 +1287,7 @@ async fn apply_block_effects(
                     } else {
                         let reward = pool.distribute_block_reward(&producer, slot, is_heartbeat);
                         pool.record_block_produced(&producer);
-                        let (liquid, debt_payment) = pool.claim_rewards(&producer);
+                        let (liquid, debt_payment) = pool.claim_rewards(&producer, slot);
                         if let Err(e) = state.put_stake_pool(&pool) {
                             warn!("⚠️  Failed to persist stake pool reward update: {}", e);
                         }
@@ -2535,6 +2636,7 @@ async fn run_validator() {
             | "--db-path"
             | "--genesis"
             | "--keypair"
+            | "--import-key"
             | "--network"
             | "--admin-token"
             | "--watchdog-timeout"
@@ -2545,7 +2647,7 @@ async fn run_validator() {
             | "--update-channel" => {
                 skip_next = true;
             }
-            "--supervised" | "--no-watchdog" | "--no-auto-restart" => {
+            "--supervised" | "--no-watchdog" | "--no-auto-restart" | "--dev-mode" => {
                 // Supervisor flags / boolean flags — skip without consuming next arg
                 continue;
             }
@@ -3337,6 +3439,52 @@ async fn run_validator() {
     // VALIDATOR IDENTITY
     // ========================================================================
 
+    // Parse --dev-mode flag (disables machine fingerprint, blocks mainnet)
+    let dev_mode = args.iter().any(|arg| arg == "--dev-mode");
+    if dev_mode {
+        info!("🔧 Developer mode enabled — machine fingerprint disabled");
+        if genesis_config.chain_id.contains("mainnet") {
+            error!("❌ --dev-mode cannot be used on mainnet — aborting");
+            std::process::exit(1);
+        }
+    }
+
+    // Parse --import-key: copy an existing keypair file into the validator data directory,
+    // then use it as the validator identity. This is for machine migration.
+    if let Some(import_pos) = args.iter().position(|arg| arg == "--import-key") {
+        if let Some(import_path) = args.get(import_pos + 1) {
+            let source = Path::new(import_path);
+            if !source.exists() {
+                error!("❌ --import-key file not found: {}", import_path);
+                std::process::exit(1);
+            }
+            let dest = keypair_loader::default_validator_keypair_path(p2p_port);
+            if dest.exists() {
+                // Back up existing keypair before overwriting
+                let backup = dest.with_extension("json.bak");
+                info!("📋 Backing up existing keypair to {:?}", backup);
+                if let Err(e) = fs::copy(&dest, &backup) {
+                    warn!("⚠️  Failed to backup existing keypair: {}", e);
+                }
+            }
+            info!("🔑 Importing keypair from {:?} → {:?}", source, dest);
+            if let Some(parent) = dest.parent() {
+                fs::create_dir_all(parent).ok();
+            }
+            fs::copy(source, &dest).expect("Failed to copy keypair file for --import-key");
+            // Set restrictive permissions
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&dest, fs::Permissions::from_mode(0o600)).ok();
+            }
+            info!("✅ Keypair imported successfully — this validator will resume the imported identity");
+        } else {
+            error!("❌ --import-key requires a file path argument");
+            std::process::exit(1);
+        }
+    }
+
     // Load validator keypair from file (production-ready)
     // Priority order:
     // 1. --keypair CLI argument
@@ -3356,6 +3504,27 @@ async fn run_validator() {
     let validator_pubkey = validator_keypair.pubkey();
     info!("🦞 Validator identity: {}", validator_pubkey.to_base58());
     info!("   Port: {}, Keypair loaded successfully", p2p_port);
+
+    // ========================================================================
+    // MACHINE FINGERPRINT (Anti-Sybil)
+    // ========================================================================
+
+    let machine_fingerprint = if dev_mode {
+        info!("🔧 Dev mode: using empty machine fingerprint");
+        [0u8; 32]
+    } else {
+        let fp = collect_machine_fingerprint();
+        if fp == [0u8; 32] {
+            warn!("⚠️  Could not collect machine fingerprint — running without anti-Sybil protection");
+        } else {
+            info!(
+                "🔒 Machine fingerprint: {}..{}",
+                hex::encode(&fp[..4]),
+                hex::encode(&fp[28..])
+            );
+        }
+        fp
+    };
 
     // ========================================================================
     // VALIDATOR SET INITIALIZATION
@@ -3474,65 +3643,82 @@ async fn run_validator() {
         None
     });
     if validator_account.is_none() {
-        // H13 fix: Bootstrap grant must come from treasury, not ex nihilo
-        let bootstrap_molt = MIN_VALIDATOR_STAKE / 1_000_000_000; // 100K MOLT — same as V2/V3 joining grant
-        let bootstrap_shells = MIN_VALIDATOR_STAKE;
-        let treasury_pk = state.get_treasury_pubkey().ok().flatten();
-        let mut funded = false;
+        // Check if we're still in the bootstrap phase (first 200 validators)
+        let bootstrap_grants_issued = {
+            let persisted_pool = state.get_stake_pool().unwrap_or_else(|_| StakePool::new());
+            persisted_pool.bootstrap_grants_issued()
+        };
+        let is_bootstrap_eligible =
+            bootstrap_grants_issued < moltchain_core::consensus::MAX_BOOTSTRAP_VALIDATORS;
 
-        if let Some(ref tpk) = treasury_pk {
-            if let Ok(Some(mut treasury)) = state.get_account(tpk) {
-                if treasury.spendable >= bootstrap_shells {
-                    treasury.deduct_spendable(bootstrap_shells).ok();
-                    state.put_account(tpk, &treasury).ok();
-                    funded = true;
-                    info!(
-                        "💰 Bootstrap grant: {} MOLT deducted from treasury",
-                        bootstrap_molt
-                    );
-                } else {
-                    warn!(
-                        "⚠️  Treasury has insufficient funds for bootstrap grant ({} < {})",
-                        treasury.spendable, bootstrap_shells
-                    );
+        if is_bootstrap_eligible {
+            // H13 fix: Bootstrap grant must come from treasury, not ex nihilo
+            let bootstrap_molt = MIN_VALIDATOR_STAKE / 1_000_000_000; // 100K MOLT
+            let bootstrap_shells = MIN_VALIDATOR_STAKE;
+            let treasury_pk = state.get_treasury_pubkey().ok().flatten();
+            let mut funded = false;
+
+            if let Some(ref tpk) = treasury_pk {
+                if let Ok(Some(mut treasury)) = state.get_account(tpk) {
+                    if treasury.spendable >= bootstrap_shells {
+                        treasury.deduct_spendable(bootstrap_shells).ok();
+                        state.put_account(tpk, &treasury).ok();
+                        funded = true;
+                        info!(
+                            "💰 Bootstrap grant #{}: {} MOLT deducted from treasury",
+                            bootstrap_grants_issued + 1,
+                            bootstrap_molt
+                        );
+                    } else {
+                        warn!(
+                            "⚠️  Treasury has insufficient funds for bootstrap grant ({} < {})",
+                            treasury.spendable, bootstrap_shells
+                        );
+                    }
                 }
             }
-        }
 
-        if !funded {
-            warn!("⚠️  No treasury available — bootstrap grant skipped. Validator needs manual funding.");
-        }
-
-        let bootstrap_account = if funded {
-            // Set shells + staked directly — matches V2/V3 account creation pattern
-            Account {
-                shells: bootstrap_shells,
-                spendable: 0,
-                staked: bootstrap_shells,
-                locked: 0,
-                data: Vec::new(),
-                owner: SYSTEM_ACCOUNT_OWNER,
-                executable: false,
-                rent_epoch: 0,
+            if !funded {
+                warn!("⚠️  No treasury available — bootstrap grant skipped. Validator needs manual funding.");
             }
-        } else {
-            // Create empty account — validator needs external funding
-            Account::new(0, SYSTEM_ACCOUNT_OWNER)
-        };
 
-        if let Err(e) = state.put_account(&validator_pubkey, &bootstrap_account) {
-            eprintln!("Failed to create validator account: {e}");
+            let bootstrap_account = if funded {
+                Account {
+                    shells: bootstrap_shells,
+                    spendable: 0,
+                    staked: bootstrap_shells,
+                    locked: 0,
+                    data: Vec::new(),
+                    owner: SYSTEM_ACCOUNT_OWNER,
+                    executable: false,
+                    rent_epoch: 0,
+                }
+            } else {
+                Account::new(0, SYSTEM_ACCOUNT_OWNER)
+            };
+
+            if let Err(e) = state.put_account(&validator_pubkey, &bootstrap_account) {
+                eprintln!("Failed to create validator account: {e}");
+            }
+            info!(
+                "✓ Bootstrap validator account created (grant #{}/{}): {} MOLT total",
+                bootstrap_grants_issued + 1,
+                moltchain_core::consensus::MAX_BOOTSTRAP_VALIDATORS,
+                bootstrap_account.balance_molt()
+            );
+        } else {
+            // Post-bootstrap phase: validator #201+ must bring their own stake
+            info!(
+                "📋 Bootstrap phase complete ({} grants issued). This validator must self-fund.",
+                bootstrap_grants_issued
+            );
+            // Create empty account — validator needs external funding of MIN_VALIDATOR_STAKE
+            let empty_account = Account::new(0, SYSTEM_ACCOUNT_OWNER);
+            if let Err(e) = state.put_account(&validator_pubkey, &empty_account) {
+                eprintln!("Failed to create validator account: {e}");
+            }
+            info!("✓ Validator account created (empty — requires {} MOLT deposit)", MIN_VALIDATOR_STAKE / 1_000_000_000);
         }
-        info!(
-            "✓ Validator account created: {} MOLT total (0 spendable, 100K staked)",
-            bootstrap_account.balance_molt()
-        );
-        info!(
-            "   Spendable: {:.2} | Staked: {:.2} | Locked: {:.2}",
-            bootstrap_account.spendable as f64 / 1_000_000_000.0,
-            bootstrap_account.staked as f64 / 1_000_000_000.0,
-            bootstrap_account.locked as f64 / 1_000_000_000.0
-        );
     } else if let Some(account) = validator_account {
         info!(
             "✓ Validator account exists: {} MOLT",
@@ -3574,7 +3760,7 @@ async fn run_validator() {
         }
     });
 
-    // Stake tokens for this validator (10,000 MOLT minimum)
+    // Stake tokens for this validator (100,000 MOLT minimum)
     // Uses get_stake() to avoid accumulating on every restart
     {
         let mut pool = stake_pool.lock().await;
@@ -3585,12 +3771,69 @@ async fn run_validator() {
             .unwrap_or(0);
         if existing >= MIN_VALIDATOR_STAKE {
             info!("✅ Already staked: {} MOLT", existing / 1_000_000_000);
+
+            // Ensure fingerprint is registered (may be missing from pre-graduation validators)
+            if machine_fingerprint != [0u8; 32] {
+                match pool.register_fingerprint(&validator_pubkey, machine_fingerprint) {
+                    Ok(()) => info!("🔒 Machine fingerprint registered"),
+                    Err(e) => {
+                        // Check if this is a migration (known key, new machine)
+                        let existing_fp = pool
+                            .get_stake(&validator_pubkey)
+                            .map(|s| s.machine_fingerprint)
+                            .unwrap_or([0u8; 32]);
+                        if existing_fp != [0u8; 32] && existing_fp != machine_fingerprint {
+                            info!("🔄 Machine migration detected — updating fingerprint");
+                            match pool.migrate_fingerprint(
+                                &validator_pubkey,
+                                machine_fingerprint,
+                                current_slot,
+                            ) {
+                                Ok(()) => info!("✅ Fingerprint migrated successfully"),
+                                Err(e) => warn!("⚠️  Fingerprint migration failed: {}", e),
+                            }
+                        } else {
+                            warn!("⚠️  Fingerprint registration failed: {}", e);
+                        }
+                    }
+                }
+            }
         } else {
-            pool.upsert_stake(validator_pubkey, MIN_VALIDATOR_STAKE, current_slot);
+            // New validator — allocate bootstrap index and stake
+            let bootstrap_index = pool
+                .next_bootstrap_index()
+                .unwrap_or(u64::MAX); // u64::MAX = self-funded
+
+            if bootstrap_index < moltchain_core::consensus::MAX_BOOTSTRAP_VALIDATORS {
+                info!(
+                    "🦞 Bootstrap validator #{} — debt-based stake with graduation",
+                    bootstrap_index + 1
+                );
+            } else {
+                info!("📋 Post-bootstrap validator — self-funded, no debt");
+            }
+
+            pool.stake_with_index(
+                validator_pubkey,
+                MIN_VALIDATOR_STAKE,
+                current_slot,
+                bootstrap_index,
+            )
+            .unwrap_or_else(|e| warn!("⚠️  Failed to stake: {}", e));
+
             info!(
                 "💰 Staked {} MOLT (minimum required)",
                 MIN_VALIDATOR_STAKE / 1_000_000_000
             );
+
+            // Register machine fingerprint
+            if machine_fingerprint != [0u8; 32] {
+                match pool.register_fingerprint(&validator_pubkey, machine_fingerprint) {
+                    Ok(()) => info!("🔒 Machine fingerprint registered"),
+                    Err(e) => warn!("⚠️  Fingerprint registration failed: {}", e),
+                }
+            }
+
             info!("💰 Validator is now economically secured");
         }
     };
@@ -4545,6 +4788,40 @@ async fn run_validator() {
                     if let Some(val) = vs.get_validator_mut(&announcement.pubkey) {
                         val.last_active_slot = announcement.current_slot;
                     }
+
+                    // Check for fingerprint migration (same pubkey, new machine)
+                    if announcement.machine_fingerprint != [0u8; 32] {
+                        let mut pool = stake_pool_for_announce.lock().await;
+                        if let Some(stake_info) = pool.get_stake(&announcement.pubkey) {
+                            let current_fp = stake_info.machine_fingerprint;
+                            if current_fp != [0u8; 32]
+                                && current_fp != announcement.machine_fingerprint
+                            {
+                                info!(
+                                    "🔄 Machine migration detected for {} — updating fingerprint",
+                                    announcement.pubkey.to_base58()
+                                );
+                                match pool.migrate_fingerprint(
+                                    &announcement.pubkey,
+                                    announcement.machine_fingerprint,
+                                    announcement.current_slot,
+                                ) {
+                                    Ok(()) => info!("✅ Fingerprint migrated for {}", announcement.pubkey.to_base58()),
+                                    Err(e) => warn!("⚠️  Fingerprint migration failed for {}: {}", announcement.pubkey.to_base58(), e),
+                                }
+                            } else if current_fp == [0u8; 32] {
+                                // Legacy validator — register fingerprint for the first time
+                                match pool.register_fingerprint(
+                                    &announcement.pubkey,
+                                    announcement.machine_fingerprint,
+                                ) {
+                                    Ok(()) => info!("🔒 Late fingerprint registered for {}", announcement.pubkey.to_base58()),
+                                    Err(e) => debug!("Fingerprint registration skipped for {}: {}", announcement.pubkey.to_base58(), e),
+                                }
+                            }
+                        }
+                        drop(pool);
+                    }
                 } else {
                     // Reject if at capacity
                     if vs.validators().len() >= MAX_VALIDATORS {
@@ -4632,84 +4909,137 @@ async fn run_validator() {
                             } else {
                                 MIN_VALIDATOR_STAKE
                             };
-                            if let Err(e) = pool.stake(
+
+                            // Allocate bootstrap index if still in bootstrap phase
+                            let bootstrap_index = if already_staked < MIN_VALIDATOR_STAKE {
+                                pool.next_bootstrap_index().unwrap_or(u64::MAX)
+                            } else {
+                                u64::MAX // Self-funded, no bootstrap debt
+                            };
+
+                            if let Err(e) = pool.stake_with_index(
                                 announcement.pubkey,
                                 stake_amount,
                                 announcement.current_slot,
+                                bootstrap_index,
                             ) {
                                 warn!(
                                     "⚠️  Failed to stake joining validator {}: {}",
                                     announcement.pubkey.to_base58(),
                                     e
                                 );
+                            } else {
+                                if bootstrap_index < moltchain_core::consensus::MAX_BOOTSTRAP_VALIDATORS {
+                                    info!(
+                                        "💰 Bootstrap validator #{} staked in local pool ({} MOLT, with debt)",
+                                        bootstrap_index + 1,
+                                        stake_amount / 1_000_000_000
+                                    );
+                                } else {
+                                    info!(
+                                        "💰 Self-funded validator staked in local pool ({} MOLT, no debt)",
+                                        stake_amount / 1_000_000_000
+                                    );
+                                }
                             }
-                            info!(
-                                "💰 Staked joining validator {} in local pool ({} MOLT)",
-                                announcement.pubkey.to_base58(),
-                                stake_amount / 1_000_000_000
-                            );
+
+                            // Register machine fingerprint if provided
+                            if announcement.machine_fingerprint != [0u8; 32] {
+                                match pool.register_fingerprint(
+                                    &announcement.pubkey,
+                                    announcement.machine_fingerprint,
+                                ) {
+                                    Ok(()) => info!(
+                                        "🔒 Fingerprint registered for {}",
+                                        announcement.pubkey.to_base58()
+                                    ),
+                                    Err(e) => warn!(
+                                        "⚠️  Fingerprint registration failed for {}: {}",
+                                        announcement.pubkey.to_base58(),
+                                        e
+                                    ),
+                                }
+                            }
                         }
                     }
 
                     // Bootstrap account only if the validator doesn't already have sufficient stake
+                    // AND we're still in the bootstrap phase (first 200 validators)
                     if needs_bootstrap {
-                        // Deduct from treasury to avoid minting tokens ex nihilo
-                        let mut funded = false;
-                        if let Ok(Some(tpk)) = state_for_validators.get_treasury_pubkey() {
-                            if let Ok(Some(mut treasury)) =
-                                state_for_validators.get_account(&tpk)
-                            {
-                                if treasury.spendable >= MIN_VALIDATOR_STAKE {
-                                    treasury.deduct_spendable(MIN_VALIDATOR_STAKE).ok();
-                                    if let Err(e) =
-                                        state_for_validators.put_account(&tpk, &treasury)
-                                    {
-                                        warn!("⚠️  Failed to debit treasury for remote bootstrap: {}", e);
+                        // Check bootstrap cap from stake pool
+                        let bootstrap_grants = {
+                            let pool = stake_pool_for_announce.lock().await;
+                            pool.bootstrap_grants_issued()
+                        };
+                        let is_bootstrap_eligible =
+                            bootstrap_grants <= moltchain_core::consensus::MAX_BOOTSTRAP_VALIDATORS;
+
+                        if !is_bootstrap_eligible {
+                            info!(
+                                "📋 Bootstrap phase complete ({} grants). Validator {} must self-fund.",
+                                bootstrap_grants,
+                                announcement.pubkey.to_base58()
+                            );
+                        } else {
+                            // Deduct from treasury to avoid minting tokens ex nihilo
+                            let mut funded = false;
+                            if let Ok(Some(tpk)) = state_for_validators.get_treasury_pubkey() {
+                                if let Ok(Some(mut treasury)) =
+                                    state_for_validators.get_account(&tpk)
+                                {
+                                    if treasury.spendable >= MIN_VALIDATOR_STAKE {
+                                        treasury.deduct_spendable(MIN_VALIDATOR_STAKE).ok();
+                                        if let Err(e) =
+                                            state_for_validators.put_account(&tpk, &treasury)
+                                        {
+                                            warn!("⚠️  Failed to debit treasury for remote bootstrap: {}", e);
+                                        } else {
+                                            funded = true;
+                                        }
                                     } else {
-                                        funded = true;
+                                        warn!("⚠️  Treasury insufficient for remote validator bootstrap ({} < {})",
+                                            treasury.spendable, MIN_VALIDATOR_STAKE);
                                     }
-                                } else {
-                                    warn!("⚠️  Treasury insufficient for remote validator bootstrap ({} < {})",
-                                        treasury.spendable, MIN_VALIDATOR_STAKE);
                                 }
                             }
-                        }
 
-                        if funded {
-                            let mut bootstrap_account = Account {
-                                shells: MIN_VALIDATOR_STAKE,
-                                spendable: 0,
-                                staked: MIN_VALIDATOR_STAKE,
-                                locked: 0,
-                                data: Vec::new(),
-                                owner: SYSTEM_ACCOUNT_OWNER,
-                                executable: false,
-                                rent_epoch: 0,
-                            };
-                            // Preserve any existing spendable balance (from block rewards)
-                            if let Some(existing) = &existing_account {
-                                bootstrap_account.shells += existing.spendable;
-                                bootstrap_account.spendable = existing.spendable;
-                            }
-                            if let Err(e) = state_for_validators
-                                .put_account(&announcement.pubkey, &bootstrap_account)
-                            {
-                                warn!(
-                                    "⚠️  Failed to create bootstrap account for {}: {}",
-                                    announcement.pubkey, e
-                                );
+                            if funded {
+                                let mut bootstrap_account = Account {
+                                    shells: MIN_VALIDATOR_STAKE,
+                                    spendable: 0,
+                                    staked: MIN_VALIDATOR_STAKE,
+                                    locked: 0,
+                                    data: Vec::new(),
+                                    owner: SYSTEM_ACCOUNT_OWNER,
+                                    executable: false,
+                                    rent_epoch: 0,
+                                };
+                                // Preserve any existing spendable balance (from block rewards)
+                                if let Some(existing) = &existing_account {
+                                    bootstrap_account.shells += existing.spendable;
+                                    bootstrap_account.spendable = existing.spendable;
+                                }
+                                if let Err(e) = state_for_validators
+                                    .put_account(&announcement.pubkey, &bootstrap_account)
+                                {
+                                    warn!(
+                                        "⚠️  Failed to create bootstrap account for {}: {}",
+                                        announcement.pubkey, e
+                                    );
+                                } else {
+                                    bootstrap_count += 1;
+                                    info!(
+                                        "💰 Created bootstrap account for validator {} ({} MOLT staked, treasury debited) [{}/{}]",
+                                        announcement.pubkey.to_base58(),
+                                        MIN_VALIDATOR_STAKE / 1_000_000_000,
+                                        bootstrap_count,
+                                        MAX_BOOTSTRAPS_PER_EPOCH,
+                                    );
+                                }
                             } else {
-                                bootstrap_count += 1;
-                                info!(
-                                    "💰 Created bootstrap account for validator {} (10000 MOLT staked, treasury debited) [{}/{}]",
-                                    announcement.pubkey.to_base58(),
-                                    bootstrap_count,
-                                    MAX_BOOTSTRAPS_PER_EPOCH,
-                                );
+                                warn!("⚠️  Skipping bootstrap account for {} — treasury unavailable or insufficient",
+                                    announcement.pubkey.to_base58());
                             }
-                        } else {
-                            warn!("⚠️  Skipping bootstrap account for {} — treasury unavailable or insufficient",
-                                announcement.pubkey.to_base58());
                         }
                     } else {
                         info!(
@@ -5434,6 +5764,7 @@ async fn run_validator() {
         let stake_pool_for_announce = stake_pool.clone();
         let state_for_announce = state.clone();
         let validator_seed_for_announce = validator_keypair.to_seed();
+        let machine_fingerprint_for_announce = machine_fingerprint;
         tokio::spawn(async move {
             // Wait for initial peer connections
             time::sleep(Duration::from_secs(2)).await;
@@ -5464,6 +5795,7 @@ async fn run_validator() {
                         current_slot,
                         version: updater::VERSION.to_string(),
                         signature,
+                        machine_fingerprint: machine_fingerprint_for_announce,
                     },
                     local_addr,
                 );

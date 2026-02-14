@@ -215,11 +215,33 @@ The network treats this as a **machine migration**:
 3. Bootstrap debt, earned amount, graduation progress — all preserved (tied to pubkey, not machine)
 4. The validator continues where it left off
 
-**No special command needed.** Just:
+**Using `--import-key`:**
 1. Stop validator on old machine
-2. Copy keypair file to new machine
-3. Start validator on new machine
+2. On new machine, start with: `moltchain-validator --import-key /path/to/keypair.json`
+3. The keypair file is copied into the validator's data directory
 4. Fingerprint auto-updates on next announcement
+5. All progress (debt, earned rewards, graduation) is preserved — tied to pubkey, not machine
+
+### 5.2.1 Key Import vs Fresh Start
+
+```bash
+# FRESH START — new keypair generated, eligible for bootstrap grant if < 200
+moltchain-validator --p2p-port 8000
+
+# RESUME — import existing keypair, NO bootstrap grant (system detects existing stake)
+moltchain-validator --p2p-port 8000 --import-key /path/to/validator-keypair.json
+```
+
+**Rule:** When `--import-key` is provided, the validator binary:
+1. Reads the keypair file and copies it to `<data-dir>/validator-keypair.json`
+2. Derives the pubkey from the imported key
+3. On announcement, the network recognizes the existing pubkey → no new bootstrap grant
+4. The validator's `StakeInfo` (debt, earned amount, blocks produced) is already in StakePool
+5. Only the machine fingerprint is updated (migration flow)
+
+**When NO key is provided:**
+1. If `<data-dir>/validator-keypair.json` exists → use it (restart on same machine)
+2. If it doesn't exist → generate a new keypair (fresh validator, eligible for grant)
 
 ### 5.3 Cooldown Period
 
