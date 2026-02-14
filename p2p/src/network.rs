@@ -439,10 +439,12 @@ impl P2PNetwork {
                 machine_fingerprint,
             } => {
                 // T2.3 fix: Verify Ed25519 signature before forwarding
-                let mut message = Vec::with_capacity(48);
+                // Message = pubkey(32) + stake(8) + slot(8) + fingerprint(32) = 80 bytes
+                let mut message = Vec::with_capacity(80);
                 message.extend_from_slice(&pubkey.0);
                 message.extend_from_slice(&stake.to_le_bytes());
                 message.extend_from_slice(&current_slot.to_le_bytes());
+                message.extend_from_slice(&machine_fingerprint);
 
                 if !moltchain_core::account::Keypair::verify(&pubkey, &message, &signature) {
                     warn!(
