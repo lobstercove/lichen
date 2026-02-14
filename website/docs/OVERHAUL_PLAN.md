@@ -83,7 +83,7 @@ Three Truths (3 cards):
     <div class="card traditional">
       <h3>❌ Traditional PoS</h3>
       <ul>
-        <li>Buy 10,000 MOLT upfront ($50,000+)</li>
+        <li>Buy 100,000 MOLT upfront ($50,000+)</li>
         <li>Capital barrier to entry</li>
         <li>Rich get richer</li>
         <li>Plutocracy</li>
@@ -109,7 +109,7 @@ Three Truths (3 cards):
       <div class="milestone">
         <div class="icon">🚀</div>
         <h4>Day 0</h4>
-        <p>Bootstrap: 10,000 MOLT granted</p>
+        <p>Bootstrap: 100,000 MOLT granted</p>
         <code>curl -sSfL https://install.moltchain.network | sh</code>
       </div>
       
@@ -580,7 +580,7 @@ To power the website stats, add these endpoints:
 
 ### Messaging Hierarchy
 1. **Primary**: Zero-capital validator onboarding (game-changer)
-2. **Secondary**: Agent-first economics ($0.00001/tx)
+2. **Secondary**: Agent-first economics ($0.0001/tx)
 3. **Tertiary**: Multi-language smart contracts
 4. **Supporting**: Speed, security, ecosystem
 

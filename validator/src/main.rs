@@ -25,8 +25,8 @@ use moltchain_core::{
     ProgramCallActivity, Pubkey, SlashingEvidence, SlashingOffense, SlashingTracker, StakePool,
     StateStore, SymbolRegistryEntry, Transaction, TxProcessor, ValidatorInfo, ValidatorSet, Vote,
     VoteAggregator, BASE_FEE, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID,
-    HEARTBEAT_BLOCK_REWARD, MIN_VALIDATOR_STAKE, NFT_COLLECTION_FEE, NFT_MINT_FEE,
-    SLOTS_PER_EPOCH, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID, TRANSACTION_BLOCK_REWARD,
+    MIN_VALIDATOR_STAKE, NFT_COLLECTION_FEE, NFT_MINT_FEE,
+    SLOTS_PER_EPOCH, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
 };
 use moltchain_p2p::{
     ConsistencyReportMsg, MessageType, P2PConfig, P2PMessage, P2PNetwork, SnapshotKind,
@@ -864,10 +864,15 @@ fn revert_block_effects(state: &StateStore, old_block: &Block) {
     let slot = old_block.header.slot;
     let is_heartbeat = !block_has_user_transactions(old_block);
 
-    let reward = if is_heartbeat {
-        HEARTBEAT_BLOCK_REWARD
-    } else {
-        TRANSACTION_BLOCK_REWARD
+    let reward = {
+        // Use oracle-adjusted rewards (same logic as apply_block_effects)
+        let reward_config = moltchain_core::consensus::RewardConfig::new();
+        let molt_price = moltchain_core::consensus::molt_price_from_state(state);
+        if is_heartbeat {
+            reward_config.get_adjusted_heartbeat_reward(molt_price)
+        } else {
+            reward_config.get_adjusted_transaction_reward(molt_price)
+        }
     };
 
     // Phase 1: Read all needed state
@@ -1133,10 +1138,13 @@ async fn apply_block_effects(
         };
 
         if !reward_already {
+            // Read MOLT price from on-chain oracle; falls back to $0.10 if unavailable
+            let reward_config = moltchain_core::consensus::RewardConfig::new();
+            let molt_price = moltchain_core::consensus::molt_price_from_state(state);
             let reward_total = if is_heartbeat {
-                HEARTBEAT_BLOCK_REWARD
+                reward_config.get_adjusted_heartbeat_reward(molt_price)
             } else {
-                TRANSACTION_BLOCK_REWARD
+                reward_config.get_adjusted_transaction_reward(molt_price)
             };
 
             // 1. Check treasury can afford the reward BEFORE updating StakePool
@@ -2117,6 +2125,80 @@ fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey) {
         "  Genesis pairs: {} pairs, {} pools created",
         created_pairs, created_pools
     );
+    info!("──────────────────────────────────────────────────────");
+}
+
+// ========================================================================
+//  GENESIS PHASE 4 — Seed Oracle Price Feeds
+//  Authorizes the genesis admin as a MOLT price feeder on the moltoracle
+//  contract, then submits the initial launch price ($0.10).
+//  This ensures oracle-adjusted rewards work from the very first block.
+// ========================================================================
+
+fn genesis_seed_oracle(state: &StateStore, deployer_pubkey: &Pubkey) {
+    info!("──────────────────────────────────────────────────────");
+    info!("  GENESIS PHASE 4: Seeding oracle price feeds");
+    info!("──────────────────────────────────────────────────────");
+
+    let admin = deployer_pubkey.0;
+
+    // Resolve moltoracle contract address
+    let oracle_pk = match derive_contract_address(deployer_pubkey, "moltoracle") {
+        Some(pk) => pk,
+        None => {
+            warn!("  SKIP oracle seeding: moltoracle address not derived");
+            return;
+        }
+    };
+
+    // Step 1: Authorize genesis admin as MOLT price feeder
+    // add_price_feeder(feeder_ptr: 32, asset_ptr: N, asset_len: u32) -> u32
+    let asset = b"MOLT";
+    let mut feeder_args = Vec::with_capacity(32 + asset.len() + 4);
+    feeder_args.extend_from_slice(&admin); // feeder pubkey (32 bytes)
+    feeder_args.extend_from_slice(asset); // asset name
+    feeder_args.extend_from_slice(&(asset.len() as u32).to_le_bytes()); // asset_len
+
+    if genesis_exec_contract(
+        state,
+        &oracle_pk,
+        deployer_pubkey,
+        "add_price_feeder",
+        &feeder_args,
+        "moltoracle.add_price_feeder(MOLT)",
+    ) {
+        info!("  FEEDER authorized: genesis admin → MOLT");
+    } else {
+        warn!("  SKIP feeder authorization failed");
+        return;
+    }
+
+    // Step 2: Submit initial MOLT price ($0.10 with 8 decimals = 10_000_000)
+    // submit_price(feeder_ptr: 32, asset_ptr: N, asset_len: u32, price: u64, decimals: u8) -> u32
+    let launch_price: u64 = 10_000_000; // $0.10 with 8 decimals
+    let decimals: u8 = 8;
+    let mut price_args = Vec::with_capacity(32 + asset.len() + 4 + 8 + 1);
+    price_args.extend_from_slice(&admin); // feeder pubkey
+    price_args.extend_from_slice(asset); // asset name
+    price_args.extend_from_slice(&(asset.len() as u32).to_le_bytes()); // asset_len
+    price_args.extend_from_slice(&launch_price.to_le_bytes()); // price
+    price_args.push(decimals); // decimals
+
+    if genesis_exec_contract(
+        state,
+        &oracle_pk,
+        deployer_pubkey,
+        "submit_price",
+        &price_args,
+        "moltoracle.submit_price(MOLT=$0.10)",
+    ) {
+        info!("  PRICE submitted: MOLT = $0.10 (launch price)");
+    } else {
+        warn!("  SKIP initial price submission failed");
+    }
+
+    info!("──────────────────────────────────────────────────────");
+    info!("  Genesis oracle seeding complete");
     info!("──────────────────────────────────────────────────────");
 }
 
@@ -3128,6 +3210,7 @@ async fn run_validator() {
         genesis_auto_deploy(&state, &genesis_pubkey);
         genesis_initialize_contracts(&state, &genesis_pubkey);
         genesis_create_trading_pairs(&state, &genesis_pubkey);
+        genesis_seed_oracle(&state, &genesis_pubkey);
     } else if genesis_exists {
         info!("✓ Genesis state already exists");
         let last_slot = state.get_last_slot().unwrap_or(0);
@@ -3933,6 +4016,7 @@ async fn run_validator() {
                             genesis_auto_deploy(&state_for_blocks, &gpk);
                             genesis_initialize_contracts(&state_for_blocks, &gpk);
                             genesis_create_trading_pairs(&state_for_blocks, &gpk);
+                            genesis_seed_oracle(&state_for_blocks, &gpk);
 
                             info!("✅ Applied genesis block (slot 0) from network — full state initialized");
                         } else {

@@ -24,7 +24,7 @@ Built following the playground structure with ALL sections from BUILD_SPEC.md.
 
 ### 3. Core Features (6 cards)
 - Lightning Fast (100K+ TPS)
-- Ultra Low Cost ($0.00001/tx)
+- Ultra Low Cost ($0.0001/tx)
 - Agent-Native (Molty ID)
 - Multi-Language (4 languages)
 - EVM Compatible

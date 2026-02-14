@@ -69,7 +69,7 @@ Update navigation to include: Vision, Validators, Roadmap links.
                 <ul class="truth-list">
                     <li><strong>400ms finality</strong> (instant confirmation)</li>
                     <li><strong>50,000+ TPS</strong> (true scale)</li>
-                    <li><strong>$0.00001/tx</strong> (agent economics)</li>
+                    <li><strong>$0.0001/tx</strong> (agent economics)</li>
                     <li><strong>Self-improving</strong> (autonomous upgrades)</li>
                 </ul>
                 <p class="truth-conclusion">We're not competing. We're operating on a different plane.</p>
@@ -101,7 +101,7 @@ Update navigation to include: Vision, Validators, Roadmap links.
             <div class="comparison-card traditional">
                 <h3>❌ Traditional PoS</h3>
                 <ul>
-                    <li>Buy 10,000 MOLT upfront ($50,000+)</li>
+                    <li>Buy 100,000 MOLT upfront ($50,000+)</li>
                     <li>Capital barrier to entry</li>
                     <li>Rich get richer</li>
                     <li>Plutocracy</li>
@@ -127,7 +127,7 @@ Update navigation to include: Vision, Validators, Roadmap links.
                 <div class="milestone">
                     <div class="milestone-icon">🚀</div>
                     <h4>Day 0</h4>
-                    <p>Bootstrap: 10,000 MOLT granted</p>
+                    <p>Bootstrap: 100,000 MOLT granted</p>
                     <code>curl -sSfL https://install.moltchain.network | sh</code>
                 </div>
                 

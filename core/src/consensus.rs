@@ -1,9 +1,11 @@
 // MoltChain Consensus Module
 // Byzantine Fault Tolerant consensus with Proof of Contribution
 
+use crate::contract::ContractAccount;
 use crate::{Hash, Pubkey};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::Arc;
 
 // ============================================================================
 // STAKING - Economic Security
@@ -28,21 +30,97 @@ pub const ANNUAL_REWARD_RATE_BPS: u64 = 500;
 /// Slots per year (assuming 400ms per slot = ~78.8M slots/year)
 pub const SLOTS_PER_YEAR: u64 = 78_840_000;
 
+/// Oracle price staleness threshold (1 hour in seconds — matches moltoracle contract)
+const ORACLE_STALENESS_SECS: u64 = 3600;
+
 // ============================================================================
 // PRICE-BASED REWARDS - Dynamic reward adjustment
 // ============================================================================
 
-/// Price oracle interface (testnet uses mock, mainnet uses real oracle)
+/// Price oracle interface for on-chain price feeds
 pub trait PriceOracle: Send + Sync {
     fn get_molt_price_usd(&self) -> f64;
 }
 
-/// Mock oracle for testnet (returns $0.10 launch price)
-pub struct MockOracle;
+/// On-chain oracle that reads price data from the moltoracle contract's storage.
+/// Falls back to the reference price ($0.10) if the oracle has no data or is stale.
+pub struct StateOracle {
+    state: Arc<crate::state::StateStore>,
+}
 
-impl PriceOracle for MockOracle {
+impl StateOracle {
+    pub fn new(state: Arc<crate::state::StateStore>) -> Self {
+        Self { state }
+    }
+
+    /// Read the raw MOLT price feed from moltoracle contract storage.
+    /// Returns (price_raw, decimals, timestamp) or None if unavailable.
+    #[allow(dead_code)]
+    fn read_molt_price_feed(&self) -> Option<(u64, u8, u64)> {
+        read_molt_price_feed_from_state(&self.state)
+    }
+}
+
+impl PriceOracle for StateOracle {
     fn get_molt_price_usd(&self) -> f64 {
-        0.10 // Launch price: $0.10/MOLT
+        molt_price_from_state(&self.state)
+    }
+}
+
+/// Read the raw MOLT price feed from moltoracle contract storage.
+/// Returns (price_raw, decimals, timestamp) or None if unavailable.
+pub fn read_molt_price_feed_from_state(
+    state: &crate::state::StateStore,
+) -> Option<(u64, u8, u64)> {
+    // Resolve moltoracle program address via symbol registry
+    let entry = state.get_symbol_registry("moltoracle").ok()??;
+    let account = state.get_account(&entry.program).ok()??;
+    let contract: ContractAccount = serde_json::from_slice(&account.data).ok()?;
+
+    // Read "price_MOLT" feed — 49 bytes: price(8) + timestamp(8) + decimals(1) + feeder(32)
+    let feed = contract.get_storage(b"price_MOLT")?;
+    if feed.len() < 17 {
+        return None;
+    }
+
+    let price_raw = u64::from_le_bytes(feed[0..8].try_into().ok()?);
+    let timestamp = u64::from_le_bytes(feed[8..16].try_into().ok()?);
+    let decimals = feed[16];
+
+    Some((price_raw, decimals, timestamp))
+}
+
+/// Read the current MOLT price in USD from on-chain moltoracle storage.
+/// Falls back to $0.10 (launch reference price) if oracle data is unavailable or stale.
+pub fn molt_price_from_state(state: &crate::state::StateStore) -> f64 {
+    match read_molt_price_feed_from_state(state) {
+        Some((price_raw, decimals, timestamp)) => {
+            // Check staleness: reject if > 1 hour old
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+
+            if now > 0 && timestamp > 0 && now.saturating_sub(timestamp) > ORACLE_STALENESS_SECS {
+                return 0.10; // Stale — fall back to reference price
+            }
+
+            if price_raw == 0 || decimals > 18 {
+                return 0.10; // Invalid data
+            }
+
+            // Convert to f64 USD price
+            let divisor = 10u64.pow(decimals as u32) as f64;
+            let price = price_raw as f64 / divisor;
+
+            // Sanity bounds: reject obviously wrong prices
+            if price < 0.000001 || price > 1_000_000.0 {
+                return 0.10;
+            }
+
+            price
+        }
+        None => 0.10, // No oracle data — use reference launch price
     }
 }
 

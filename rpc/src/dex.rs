@@ -1238,9 +1238,108 @@ async fn get_lp_positions(
     ApiResponse::ok(positions, slot).into_response()
 }
 
+// ─── AMM MATH (mirrors contracts/dex_amm compute_swap_output) ──────────────
+
+/// Fee tiers in basis points — must match dex_amm FEE_VALUES
+const AMM_FEE_BPS: [u64; 4] = [1, 5, 30, 100];
+
+/// Compute swap output amount given input and pool state.
+/// Replicates the exact Uniswap V3-style math from contracts/dex_amm.
+fn compute_swap_output_rpc(
+    amount_in: u64,
+    liquidity: u64,
+    sqrt_price: u64,
+    fee_bps: u64,
+    is_token_a: bool,
+) -> (u64, u64) {
+    if liquidity == 0 || amount_in == 0 {
+        return (0, sqrt_price);
+    }
+
+    // Apply fee
+    let fee = (amount_in as u128 * fee_bps as u128 / 10_000) as u64;
+    let amount_after_fee = amount_in.saturating_sub(fee);
+
+    if is_token_a {
+        // Swapping A for B: price decreases
+        // new_sqrt = L * sqrt_p / (L + amount * sqrt_p / 2^32)
+        let numerator = liquidity as u128 * sqrt_price as u128;
+        let denominator = liquidity as u128
+            + (amount_after_fee as u128 * sqrt_price as u128 / (1u128 << 32));
+        if denominator == 0 {
+            return (0, sqrt_price);
+        }
+        let new_sqrt = (numerator / denominator) as u64;
+        // amount_b_out = L * (sqrt_p - new_sqrt) / 2^32
+        let delta_sqrt = sqrt_price as u128 - new_sqrt as u128;
+        let amount_out = (liquidity as u128 * delta_sqrt / (1u128 << 32)) as u64;
+        (amount_out, new_sqrt)
+    } else {
+        // Swapping B for A: price increases
+        // new_sqrt = sqrt_p + amount * 2^32 / L
+        let delta = amount_after_fee as u128 * (1u128 << 32) / liquidity as u128;
+        let new_sqrt = (sqrt_price as u128 + delta) as u64;
+        // amount_a_out = L * (new_sqrt - sqrt_p) / (sqrt_p * new_sqrt / 2^32)
+        let delta_sqrt = new_sqrt as u128 - sqrt_price as u128;
+        let denom = sqrt_price as u128 * new_sqrt as u128 / (1u128 << 32);
+        let amount_out = if denom == 0 {
+            0
+        } else {
+            (liquidity as u128 * delta_sqrt / denom) as u64
+        };
+        (amount_out, new_sqrt)
+    }
+}
+
+/// Compute a swap quote through an AMM pool, reading pool state from storage.
+/// Returns (amount_out, price_impact) or None if pool not found.
+fn quote_amm_swap(
+    state: &crate::RpcState,
+    pool_id: u64,
+    token_in: &str,
+    amount_in: u64,
+) -> Option<(u64, f64)> {
+    let key = format!("amm_pool_{}", pool_id);
+    let data = read_bytes(state, DEX_AMM_PROGRAM, &key)?;
+    if data.len() < 96 {
+        return None;
+    }
+    let token_a = hex::encode(&data[0..32]);
+    let token_b = hex::encode(&data[32..64]);
+    let sqrt_price = u64::from_le_bytes(data[72..80].try_into().ok()?);
+    let liquidity = u64::from_le_bytes(data[84..92].try_into().ok()?);
+    let fee_tier_idx = data[92] as usize;
+    let fee_bps = if fee_tier_idx < AMM_FEE_BPS.len() {
+        AMM_FEE_BPS[fee_tier_idx]
+    } else {
+        AMM_FEE_BPS[3] // default 100bps
+    };
+
+    let token_in_lower = token_in.to_lowercase();
+    let is_token_a = token_in_lower == token_a;
+    if !is_token_a && token_in_lower != token_b {
+        return None; // token_in doesn't match either side of the pool
+    }
+
+    let (amount_out, new_sqrt) =
+        compute_swap_output_rpc(amount_in, liquidity, sqrt_price, fee_bps, is_token_a);
+
+    // Price impact = |1 - new_price / old_price| as percentage
+    // sqrt_price is Q32.32, actual price = (sqrt_price / 2^32)^2
+    // price_impact ≈ |1 - (new_sqrt / sqrt_price)^2| * 100
+    let price_impact = if sqrt_price > 0 {
+        let ratio = new_sqrt as f64 / sqrt_price as f64;
+        ((1.0 - ratio * ratio).abs() * 100.0 * 100.0).round() / 100.0 // round to 2 decimals
+    } else {
+        0.0
+    };
+
+    Some((amount_out, price_impact))
+}
+
 // ─── ROUTER ─────────────────────────────────────────────────────────────────
 
-/// POST /api/v1/router/swap — Smart-routed swap
+/// POST /api/v1/router/swap — Smart-routed swap using real AMM pricing
 async fn post_router_swap(
     State(state): State<Arc<RpcState>>,
     Json(body): Json<SwapBody>,
@@ -1254,17 +1353,84 @@ async fn post_router_swap(
         return api_err("slippage must be 0-50%");
     }
 
-    // Find best route
+    let token_in = body.token_in.to_lowercase();
+
+    // Find the best route for this token pair
     let route_count = read_u64(&state, DEX_ROUTER_PROGRAM, "rtr_route_count");
     let mut best_route: Option<RouteJson> = None;
+    let mut best_output: u64 = 0;
+    let mut best_impact: f64 = 0.0;
 
     for i in 0..route_count {
         let key = format!("rtr_route_{}", i);
         if let Some(data) = read_bytes(&state, DEX_ROUTER_PROGRAM, &key) {
             if let Some(route) = decode_route(&data) {
-                if route.enabled {
-                    best_route = Some(route);
-                    break; // TODO: compare routes for best output
+                if !route.enabled {
+                    continue;
+                }
+                // Match token pair (both directions)
+                let route_in = route.token_in.to_lowercase();
+                let route_out = route.token_out.to_lowercase();
+                let body_out = body.token_out.to_lowercase();
+                if !((route_in == token_in && route_out == body_out)
+                    || (route_out == token_in && route_in == body_out))
+                {
+                    continue;
+                }
+
+                // Quote through AMM pool if route type is AMM
+                if route.route_type == "amm" {
+                    if let Some((amount_out, impact)) =
+                        quote_amm_swap(&state, route.pool_or_pair_id, &token_in, body.amount_in)
+                    {
+                        if amount_out > best_output {
+                            best_output = amount_out;
+                            best_impact = impact;
+                            best_route = Some(route);
+                        }
+                    }
+                } else {
+                    // CLOB or other route types — fall back to 1:1 quote if no AMM available
+                    if best_route.is_none() {
+                        best_route = Some(route);
+                    }
+                }
+            }
+        }
+    }
+
+    // Fallback: if no explicit route found, scan all AMM pools for a matching pair
+    if best_route.is_none() {
+        let pool_count = read_u64(&state, DEX_AMM_PROGRAM, "amm_pool_count");
+        for pid in 0..pool_count {
+            let pk = format!("amm_pool_{}", pid);
+            if let Some(data) = read_bytes(&state, DEX_AMM_PROGRAM, &pk) {
+                if data.len() >= 96 {
+                    let ta = hex::encode(&data[0..32]);
+                    let tb = hex::encode(&data[32..64]);
+                    let body_out = body.token_out.to_lowercase();
+                    if (ta == token_in && tb == body_out)
+                        || (tb == token_in && ta == body_out)
+                    {
+                        if let Some((amount_out, impact)) =
+                            quote_amm_swap(&state, pid, &token_in, body.amount_in)
+                        {
+                            if amount_out > best_output {
+                                best_output = amount_out;
+                                best_impact = impact;
+                                best_route = Some(RouteJson {
+                                    route_id: pid,
+                                    token_in: token_in.clone(),
+                                    token_out: body_out.clone(),
+                                    route_type: "amm",
+                                    pool_or_pair_id: pid,
+                                    secondary_id: 0,
+                                    split_percent: 100,
+                                    enabled: true,
+                                });
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1272,12 +1438,22 @@ async fn post_router_swap(
 
     match best_route {
         Some(route) => {
+            // Check slippage tolerance
+            let min_out = (body.amount_in as f64 * (1.0 - body.slippage / 100.0)) as u64;
+            if best_output > 0 && best_output < min_out {
+                return api_err(&format!(
+                    "slippage exceeded: output {} below minimum {}",
+                    best_output, min_out
+                ));
+            }
+
             let result = serde_json::json!({
                 "amountIn": body.amount_in,
-                "amountOut": body.amount_in, // Simulated 1:1 for now
+                "amountOut": best_output,
                 "routeType": route.route_type,
                 "routeId": route.route_id,
-                "priceImpact": 0.01,
+                "poolId": route.pool_or_pair_id,
+                "priceImpact": best_impact,
                 "slot": slot,
             });
             ApiResponse::ok(result, slot).into_response()
@@ -1286,12 +1462,12 @@ async fn post_router_swap(
     }
 }
 
-/// POST /api/v1/router/quote — Swap quote (no execution)
+/// POST /api/v1/router/quote — Swap quote (read-only, same AMM pricing)
 async fn post_router_quote(
     State(state): State<Arc<RpcState>>,
     Json(body): Json<SwapBody>,
 ) -> Response {
-    // Same logic as swap but read-only
+    // Same logic as swap — both are read-only queries against on-chain state
     post_router_swap(State(state), Json(body)).await
 }
 

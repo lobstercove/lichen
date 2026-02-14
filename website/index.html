@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MoltChain — The Agent-First Blockchain</title>
-    <meta name="description" content="MoltChain: The first Layer-1 blockchain built from the ground up for autonomous AI agents. $0.00001 transactions, 400ms finality, WASM + EVM smart contracts, on-chain identity.">
+    <meta name="description" content="MoltChain: The first Layer-1 blockchain built from the ground up for autonomous AI agents. $0.0001 transactions, 400ms finality, WASM + EVM smart contracts, on-chain identity.">
     <link rel="icon" href="favicon.ico">
     <link rel="stylesheet" href="../shared-base-styles.css">
     <link rel="stylesheet" href="../shared-theme.css">
@@ -65,13 +65,13 @@
                     <span class="gradient-text">Built BY Agents, FOR Agents</span>
                 </h1>
                 <p class="hero-subtitle">
-                    MoltChain is an agent-first Layer-1 with 400ms finality, $0.00001 transactions,
+                    MoltChain is an agent-first Layer-1 with 400ms finality, $0.0001 transactions,
                     WASM + EVM smart contracts, and on-chain identity — designed so autonomous agents
                     can operate at machine speed without human-scale costs.
                 </p>
                 <div class="hero-stats">
                     <div class="stat">
-                        <div class="stat-value">$0.00001</div>
+                        <div class="stat-value">$0.0001</div>
                         <div class="stat-label">Per Transaction</div>
                     </div>
                     <div class="stat">
@@ -136,7 +136,7 @@
                     <div class="vision-icon"><i class="fas fa-balance-scale"></i></div>
                     <h3>Meritocracy, Not Plutocracy</h3>
                     <p>Ethereum requires $100,000 to validate. Solana requires $50,000+. MoltChain requires
-                       <strong>$0</strong>. Our Contributory Stake model grants new validators a 10,000 MOLT
+                       <strong>$0</strong>. Our Contributory Stake model grants new validators a 100,000 MOLT
                        bootstrap — they earn their stake through honest work. No capital gates. Merit-based from day one.</p>
                 </div>
             </div>
@@ -178,7 +178,7 @@
                         </div>
                         <div class="spec-row">
                             <span class="spec-label">Min Validator Stake</span>
-                            <span class="spec-value">10,000 MOLT</span>
+                            <span class="spec-value">100,000 MOLT</span>
                         </div>
                     </div>
                 </div>
@@ -278,10 +278,10 @@
                             <h4>MoltChain</h4>
                         </div>
                         <div class="comparison-body">
-                            <div class="comp-row"><span>TX Cost</span><span class="good">$0.00001</span></div>
+                            <div class="comp-row"><span>TX Cost</span><span class="good">$0.0001</span></div>
                             <div class="comp-row"><span>TPS</span><span class="good">35,000+ (single-thread)</span></div>
                             <div class="comp-row"><span>Finality</span><span class="good">400ms</span></div>
-                            <div class="comp-row"><span>Deploy Cost</span><span class="good">2.5 MOLT</span></div>
+                            <div class="comp-row"><span>Deploy Cost</span><span class="good">$2.50</span></div>
                             <div class="comp-row"><span>Validator Stake</span><span class="good">$0 (bootstrapped)</span></div>
                         </div>
                     </div>
@@ -367,11 +367,11 @@
                     <div class="token-body">
                         <div class="token-row">
                             <span>Base Transfer</span>
-                            <span class="good">0.00001 MOLT</span>
+                            <span class="good">0.0001 MOLT</span>
                         </div>
                         <div class="token-row">
                             <span>Contract Deploy</span>
-                            <span>2.5 MOLT</span>
+                            <span>$2.50</span>
                         </div>
                         <div class="token-row">
                             <span>NFT Mint</span>
@@ -498,7 +498,7 @@
                         </div>
                         <div class="metric">
                             <span class="metric-label">Bootstrap Grant</span>
-                            <span class="metric-value good">10,000 MOLT</span>
+                            <span class="metric-value good">100,000 MOLT</span>
                         </div>
                         <div class="metric">
                             <span class="metric-label">Hardware</span>
@@ -527,7 +527,7 @@
                         </div>
                         <div class="metric">
                             <span class="metric-label">Block Reward</span>
-                            <span class="metric-value">0.18 MOLT / block</span>
+                            <span class="metric-value">0.45 MOLT / block</span>
                         </div>
                         <div class="metric">
                             <span class="metric-label">Required Uptime</span>
@@ -548,7 +548,7 @@
                         </div>
                         <div class="metric">
                             <span class="metric-label">MOLT Earned</span>
-                            <span class="metric-value good">10,000+ MOLT</span>
+                            <span class="metric-value good">100,000+ MOLT</span>
                         </div>
                         <div class="metric">
                             <span class="metric-label">New Rate</span>
@@ -863,7 +863,7 @@ rustc --target wasm32-unknown-unknown \
   --crate-type=cdylib -O \
   src/lib.rs -o counter.wasm
 
-# Deploy (costs 2.5 MOLT)
+# Deploy (costs $2.50)
 python3 tools/deploy_contract.py counter.wasm
 
 # Output:
@@ -1169,7 +1169,7 @@ console.log('Counter:', result); // 1</code></pre>
                         <span class="logo-text">MoltChain</span>
                     </div>
                     <p class="footer-desc">
-                        The agent-first blockchain. 400ms finality, $0.00001 fees, WASM + EVM contracts, on-chain identity.
+                        The agent-first blockchain. 400ms finality, $0.0001 fees, WASM + EVM contracts, on-chain identity.
                     </p>
                 </div>
                 <div class="footer-col">
