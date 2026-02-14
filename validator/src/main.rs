@@ -1493,9 +1493,9 @@ const GENESIS_CONTRACT_CATALOG: &[(&str, &str, &str, &str)] = &[
     ("reef_storage", "REEF", "Reef Storage", "storage"),
 ];
 
-fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey) {
+fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey, label: &str) {
     info!("──────────────────────────────────────────────────────");
-    info!("  FIRST-BOOT: Auto-deploying genesis contracts");
+    info!("  {} Auto-deploying genesis contracts", label);
     info!("──────────────────────────────────────────────────────");
 
     let contracts_dir = PathBuf::from("contracts");
@@ -1731,9 +1731,9 @@ fn genesis_exec_contract(
     }
 }
 
-fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey) {
+fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, label: &str) {
     info!("──────────────────────────────────────────────────────");
-    info!("  GENESIS PHASE 2: Initializing all contracts");
+    info!("  {} Initializing all contracts", label);
     info!("──────────────────────────────────────────────────────");
 
     let admin = deployer_pubkey.0;
@@ -2019,9 +2019,9 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey) {
 //  bridge & custody systems are live and tokens have real supply.
 // ========================================================================
 
-fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey) {
+fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey, label: &str) {
     info!("──────────────────────────────────────────────────────");
-    info!("  GENESIS PHASE 3: Creating trading pairs & AMM pools");
+    info!("  {} Creating trading pairs & AMM pools", label);
     info!("──────────────────────────────────────────────────────");
 
     let admin = deployer_pubkey.0;
@@ -2135,9 +2135,9 @@ fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey) {
 //  This ensures oracle-adjusted rewards work from the very first block.
 // ========================================================================
 
-fn genesis_seed_oracle(state: &StateStore, deployer_pubkey: &Pubkey) {
+fn genesis_seed_oracle(state: &StateStore, deployer_pubkey: &Pubkey, label: &str) {
     info!("──────────────────────────────────────────────────────");
-    info!("  GENESIS PHASE 4: Seeding oracle price feeds");
+    info!("  {} Seeding oracle price feeds", label);
     info!("──────────────────────────────────────────────────────");
 
     let admin = deployer_pubkey.0;
@@ -3207,10 +3207,10 @@ async fn run_validator() {
         info!("  Genesis hash: {}", genesis_block.hash());
 
         // Auto-deploy all compiled contracts from contracts/ directory
-        genesis_auto_deploy(&state, &genesis_pubkey);
-        genesis_initialize_contracts(&state, &genesis_pubkey);
-        genesis_create_trading_pairs(&state, &genesis_pubkey);
-        genesis_seed_oracle(&state, &genesis_pubkey);
+        genesis_auto_deploy(&state, &genesis_pubkey, "FIRST-BOOT:");
+        genesis_initialize_contracts(&state, &genesis_pubkey, "FIRST-BOOT:");
+        genesis_create_trading_pairs(&state, &genesis_pubkey, "FIRST-BOOT:");
+        genesis_seed_oracle(&state, &genesis_pubkey, "FIRST-BOOT:");
     } else if genesis_exists {
         info!("✓ Genesis state already exists");
         let last_slot = state.get_last_slot().unwrap_or(0);
@@ -3967,13 +3967,13 @@ async fn run_validator() {
                                         if i == 1 {
                                             state_for_blocks.set_treasury_pubkey(&recipient).ok();
                                             info!(
-                                                "  ✓ [network genesis] Treasury: {} ({} MOLT)",
+                                                "  ✓ 📡 [sync] Treasury: {} ({} MOLT)",
                                                 recipient.to_base58(),
                                                 amount_shells / 1_000_000_000
                                             );
                                         } else {
                                             info!(
-                                                "  ✓ [network genesis] Distribution {}: {} ({} MOLT)",
+                                                "  ✓ 📡 [sync] Distribution {}: {} ({} MOLT)",
                                                 i,
                                                 recipient.to_base58(),
                                                 amount_shells / 1_000_000_000
@@ -3994,7 +3994,7 @@ async fn run_validator() {
                             state_for_blocks.put_account(&gpk, &genesis_account).ok();
                             state_for_blocks.set_genesis_pubkey(&gpk).ok();
                             info!(
-                                "  ✓ [network genesis] Genesis account: {} ({} MOLT remaining)",
+                                "  ✓ 📡 [sync] Genesis account: {} ({} MOLT remaining)",
                                 gpk.to_base58(),
                                 genesis_account.shells / 1_000_000_000
                             );
@@ -4013,18 +4013,18 @@ async fn run_validator() {
                             }
 
                             // 8. Auto-deploy contracts
-                            genesis_auto_deploy(&state_for_blocks, &gpk);
-                            genesis_initialize_contracts(&state_for_blocks, &gpk);
-                            genesis_create_trading_pairs(&state_for_blocks, &gpk);
-                            genesis_seed_oracle(&state_for_blocks, &gpk);
+                            genesis_auto_deploy(&state_for_blocks, &gpk, "📡 [sync]");
+                            genesis_initialize_contracts(&state_for_blocks, &gpk, "📡 [sync]");
+                            genesis_create_trading_pairs(&state_for_blocks, &gpk, "📡 [sync]");
+                            genesis_seed_oracle(&state_for_blocks, &gpk, "📡 [sync]");
 
-                            info!("✅ Applied genesis block (slot 0) from network — full state initialized");
+                            info!("✅ 📡 [sync] Applied genesis block (slot 0) from network — full state initialized");
                         } else {
                             warn!(
                                 "⚠️  Genesis block has no mint tx — cannot extract genesis pubkey"
                             );
                             info!(
-                                "✅ Applied genesis block (slot 0) from network (state incomplete)"
+                                "✅ 📡 [sync] Applied genesis block (slot 0) from network (state incomplete)"
                             );
                         }
 
