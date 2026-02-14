@@ -447,7 +447,12 @@ impl StakeInfo {
     /// accelerating graduation by ~1.5×.
     ///
     /// Returns (liquid_amount, debt_payment)
-    pub fn claim_rewards(&mut self, current_slot: u64) -> (u64, u64) {
+    ///
+    /// `num_validators` — count of active validators in the stake pool.
+    /// Used to compute the expected block production rate for the uptime formula:
+    ///   expected_blocks = (current_slot - start_slot) / num_validators
+    ///   uptime_bps = blocks_produced × 10000 / expected_blocks
+    pub fn claim_rewards(&mut self, current_slot: u64, num_validators: u64) -> (u64, u64) {
         let total_reward = self.rewards_earned;
         self.rewards_earned = 0;
 
@@ -466,7 +471,7 @@ impl StakeInfo {
             // ── Performance bonus: 95%+ uptime → accelerated repayment ──
             // PERFORMANCE_BONUS_BPS = 15000 → 1.5× multiplier on the 50% debt portion.
             // Effective split: debt = 50% × 1.5 = 75%, liquid = 25%.
-            let debt_fraction = if self.uptime_bps(current_slot) >= UPTIME_BONUS_THRESHOLD_BPS {
+            let debt_fraction = if self.uptime_bps(current_slot, num_validators) >= UPTIME_BONUS_THRESHOLD_BPS {
                 // Accelerated: debt_portion = base_50% × (PERFORMANCE_BONUS_BPS / 10000)
                 let base_half = total_reward / 2;
                 (base_half as u128 * PERFORMANCE_BONUS_BPS as u128 / 10000) as u64
@@ -504,21 +509,30 @@ impl StakeInfo {
 
     /// Calculate validator uptime in basis points (0–10000).
     ///
-    /// Uptime = blocks_produced / expected_blocks, where expected_blocks =
-    /// (current_slot - start_slot) / SLOTS_PER_EPOCH × blocks_per_epoch_expected.
+    /// Per VALIDATOR_GRADUATION_PLAN.md §3.2:
+    ///   expected_blocks = (current_slot - start_slot) / num_validators
+    ///   uptime_bps = min(10000, blocks_produced × 10000 / expected_blocks)
     ///
-    /// For simplicity we use `blocks_produced / slots_active × slots_per_epoch`
-    /// normalized. Since every validator should produce roughly 1 block per
-    /// SLOTS_PER_EPOCH/validator_count, and we don't have validator_count here,
-    /// we approximate with: blocks_produced / ((current_slot - start_slot) / SLOTS_PER_EPOCH + 1).
-    /// A validator producing at least 1 block per epoch has ~100% uptime.
+    /// This accounts for the fact that with N validators, each one is expected
+    /// to produce roughly 1/N of the total blocks. Without this factor, 95%
+    /// uptime is trivially achievable regardless of actual availability.
     ///
-    /// In practice: epochs_active = (current_slot - start_slot) / SLOTS_PER_EPOCH + 1.
-    /// uptime_bps = min(10000, blocks_produced * 10000 / epochs_active).
-    pub fn uptime_bps(&self, current_slot: u64) -> u64 {
+    /// `num_validators` must be ≥ 1 (clamped internally).
+    pub fn uptime_bps(&self, current_slot: u64, num_validators: u64) -> u64 {
         let slots_active = current_slot.saturating_sub(self.start_slot);
-        let epochs_active = slots_active / SLOTS_PER_EPOCH + 1; // +1 to avoid div-by-zero and count partial epoch
-        let bps = self.blocks_produced.saturating_mul(10000) / epochs_active;
+        if slots_active == 0 {
+            return 0;
+        }
+        let num_val = num_validators.max(1);
+        // Expected blocks this validator should have produced:
+        // total_slots / num_validators (their fair share of block production)
+        let expected_blocks = slots_active / num_val;
+        if expected_blocks == 0 {
+            // Not enough slots elapsed for even 1 expected block per validator
+            // — give benefit of the doubt if they produced at least 1
+            return if self.blocks_produced > 0 { 10000 } else { 0 };
+        }
+        let bps = self.blocks_produced.saturating_mul(10000) / expected_blocks;
         bps.min(10000)
     }
 
@@ -846,9 +860,20 @@ impl StakePool {
     }
 
     /// Claim rewards for validator (returns (liquid, debt_payment))
+    ///
+    /// Automatically computes the active validator count from the stake pool
+    /// and passes it to StakeInfo::claim_rewards for correct uptime calculation.
     pub fn claim_rewards(&mut self, validator: &Pubkey, current_slot: u64) -> (u64, u64) {
+        // Count active validators for uptime formula:
+        // expected_blocks = slots_active / num_active_validators
+        let num_active: u64 = self
+            .stakes
+            .values()
+            .filter(|info| info.is_active)
+            .count() as u64;
+        let num_active = num_active.max(1); // floor at 1
         if let Some(stake_info) = self.stakes.get_mut(validator) {
-            stake_info.claim_rewards(current_slot)
+            stake_info.claim_rewards(current_slot, num_active)
         } else {
             (0, 0)
         }
@@ -2717,13 +2742,14 @@ mod tests {
         assert_eq!(stake.bootstrap_debt, MIN_VALIDATOR_STAKE);
         assert_eq!(stake.status, BootstrapStatus::Bootstrapping);
 
-        // Simulate low uptime: produce far fewer blocks than epochs would expect.
-        // At slot SLOTS_PER_EPOCH * 10 → epochs_active = 10 + 1 = 11.
-        // With 0 blocks → uptime = 0 → standard 50/50 split.
+        // Simulate low uptime: 0 blocks produced on a 1-validator network.
+        // With the plan formula: expected_blocks = slots_active / num_validators.
+        // At slot SLOTS_PER_EPOCH * 10, 1 validator: expected = SLOTS_PER_EPOCH * 10.
+        // 0 blocks → uptime = 0 → standard 50/50 split.
         let claim_slot = SLOTS_PER_EPOCH * 10;
         stake.add_reward(1_000_000_000, claim_slot); // 1 MOLT
         stake.blocks_produced = 0; // Zero uptime — definitely below 95%
-        let (liquid, debt) = stake.claim_rewards(claim_slot);
+        let (liquid, debt) = stake.claim_rewards(claim_slot, 1);
 
         // Standard 50/50 split
         assert_eq!(debt, 500_000_000); // 0.5 MOLT to debt
@@ -2739,22 +2765,29 @@ mod tests {
         let pk = Pubkey::new([1u8; 32]);
         let mut stake = StakeInfo::with_bootstrap_index(pk, MIN_VALIDATOR_STAKE, 0, 0);
 
-        // Simulate high uptime: many blocks produced over a few epochs
-        // uptime_bps = blocks_produced * 10000 / (epochs_active). We need >= 9500.
-        // At slot = SLOTS_PER_EPOCH, epochs_active = 1 + 1 = 2.
-        // blocks_produced * 10000 / 2 >= 9500 → blocks_produced >= 2
-        stake.blocks_produced = 2;
-        stake.add_reward(1_000_000_000, SLOTS_PER_EPOCH); // 1 MOLT
+        // Simulate high uptime on a 1-validator network.
+        // Plan formula: expected_blocks = (current_slot - start_slot) / num_validators
+        //   = SLOTS_PER_EPOCH / 1 = 432,000
+        // Need uptime_bps >= 9500 → blocks_produced * 10000 / 432,000 >= 9500
+        //   → blocks_produced >= 432,000 * 9500 / 10000 = 410,400
+        let num_validators: u64 = 1;
+        let test_slot = SLOTS_PER_EPOCH;
+        let expected_blocks = test_slot / num_validators;
+        // Produce 95% of expected blocks
+        stake.blocks_produced = expected_blocks * 95 / 100;
+        stake.add_reward(1_000_000_000, test_slot); // 1 MOLT
 
-        let uptime = stake.uptime_bps(SLOTS_PER_EPOCH);
+        let uptime = stake.uptime_bps(test_slot, num_validators);
         assert!(
             uptime >= UPTIME_BONUS_THRESHOLD_BPS,
-            "uptime {} should be >= {}",
+            "uptime {} should be >= {} (blocks={}, expected={})",
             uptime,
-            UPTIME_BONUS_THRESHOLD_BPS
+            UPTIME_BONUS_THRESHOLD_BPS,
+            stake.blocks_produced,
+            expected_blocks,
         );
 
-        let (liquid, debt) = stake.claim_rewards(SLOTS_PER_EPOCH);
+        let (liquid, debt) = stake.claim_rewards(test_slot, num_validators);
 
         // Performance bonus: 75/25 split
         assert_eq!(debt, 750_000_000); // 0.75 MOLT to debt
@@ -2775,7 +2808,7 @@ mod tests {
         stake.add_reward(reward, MAX_BOOTSTRAP_SLOTS);
 
         // Claim at exactly the time cap
-        let (liquid, debt) = stake.claim_rewards(MAX_BOOTSTRAP_SLOTS);
+        let (liquid, debt) = stake.claim_rewards(MAX_BOOTSTRAP_SLOTS, 1);
 
         // Time cap reached: entire reward is liquid, debt is forgiven
         assert_eq!(liquid, reward);
@@ -2796,8 +2829,8 @@ mod tests {
         // Add a small reward — nowhere near enough to repay debt
         stake.add_reward(1_000_000_000, start_slot + 100); // 1 MOLT
 
-        // Claim before time cap — normal 50/50 split
-        let (liquid1, debt1) = stake.claim_rewards(start_slot + 100);
+        // Claim before time cap — normal 50/50 split (0 blocks → 0 uptime)
+        let (liquid1, debt1) = stake.claim_rewards(start_slot + 100, 1);
         assert_eq!(liquid1, 500_000_000);
         assert_eq!(debt1, 500_000_000);
         assert_eq!(stake.status, BootstrapStatus::Bootstrapping);
@@ -2805,7 +2838,7 @@ mod tests {
         // Now add another small reward and claim PAST the time cap
         stake.add_reward(2_000_000_000, start_slot + MAX_BOOTSTRAP_SLOTS + 1);
         let (liquid2, debt2) =
-            stake.claim_rewards(start_slot + MAX_BOOTSTRAP_SLOTS + 1);
+            stake.claim_rewards(start_slot + MAX_BOOTSTRAP_SLOTS + 1, 1);
 
         // Time cap reached: debt forgiven, full reward is liquid
         assert_eq!(liquid2, 2_000_000_000);
@@ -2907,19 +2940,33 @@ mod tests {
         let pk = Pubkey::new([1u8; 32]);
         let mut stake = StakeInfo::with_bootstrap_index(pk, MIN_VALIDATOR_STAKE, 0, 0);
 
-        // 0 blocks produced → 0 uptime
-        assert_eq!(stake.uptime_bps(SLOTS_PER_EPOCH), 0);
+        // 0 blocks produced, 1 validator → 0 uptime
+        assert_eq!(stake.uptime_bps(SLOTS_PER_EPOCH, 1), 0);
 
-        // 1 block per epoch for 10 epochs
+        // Plan formula: expected_blocks = slots_active / num_validators
+        // With 1 validator over 10 epochs: expected = SLOTS_PER_EPOCH * 10 / 1 = 4,320,000
+        // 10 blocks / 4,320,000 expected = 0 bps (truncated)
         stake.blocks_produced = 10;
-        let uptime_10e = stake.uptime_bps(SLOTS_PER_EPOCH * 10);
-        // epochs_active = 10 + 1 = 11 (partial epoch counted)
-        // bps = 10 * 10000 / 11 = 9090
-        assert_eq!(uptime_10e, 9090);
+        let uptime_10e = stake.uptime_bps(SLOTS_PER_EPOCH * 10, 1);
+        assert_eq!(uptime_10e, 0); // 10 blocks out of 4.32M expected is negligible
 
-        // Many blocks → capped at 10000
-        stake.blocks_produced = 1_000_000;
-        assert_eq!(stake.uptime_bps(SLOTS_PER_EPOCH), 10000);
+        // With 200 validators over 10 epochs: expected = SLOTS_PER_EPOCH * 10 / 200 = 21,600
+        // 10 blocks / 21,600 = 4 bps (still very low)
+        let uptime_200v = stake.uptime_bps(SLOTS_PER_EPOCH * 10, 200);
+        assert_eq!(uptime_200v, 4);
+
+        // Realistic: 200 validators, 10 epochs. Each expected ≈ 21,600 blocks.
+        // A validator producing 20,520 blocks (95%) should get 9500 bps.
+        stake.blocks_produced = 20_520;
+        let uptime_95 = stake.uptime_bps(SLOTS_PER_EPOCH * 10, 200);
+        assert!(uptime_95 >= 9500, "uptime {} should be >= 9500 at 95%", uptime_95);
+
+        // Saturates at 10000
+        stake.blocks_produced = 100_000;
+        assert_eq!(stake.uptime_bps(SLOTS_PER_EPOCH * 10, 200), 10000);
+
+        // Edge: 0 slots active → 0 uptime
+        assert_eq!(stake.uptime_bps(0, 1), 0);
     }
 
     #[test]
@@ -3089,10 +3136,16 @@ mod tests {
         let reward: u64 = 1_000_000_000; // 1 MOLT
         stake.rewards_earned = reward;
 
-        // Give enough blocks for 100% uptime (well above 95%)
-        stake.blocks_produced = 1_000_000;
+        // Give enough blocks for 100% uptime with 1 validator over 10 epochs.
+        // expected_blocks = SLOTS_PER_EPOCH * 10 / 1 = 4,320,000
+        // 1M blocks / 4.32M → only ~2314 bps, NOT enough for bonus.
+        // Need >= 4,104,000 blocks (95%) for a 1-validator network.
+        let num_validators: u64 = 1;
+        let test_slot = SLOTS_PER_EPOCH * 10;
+        let expected_blocks = test_slot / num_validators;
+        stake.blocks_produced = expected_blocks; // Exactly 100% uptime
 
-        let (liquid, debt) = stake.claim_rewards(SLOTS_PER_EPOCH * 10);
+        let (liquid, debt) = stake.claim_rewards(test_slot, num_validators);
         // debt = (reward / 2) * 15000 / 10000 = 500M * 1.5 = 750M
         assert_eq!(debt, 750_000_000);
         assert_eq!(liquid, 250_000_000);
