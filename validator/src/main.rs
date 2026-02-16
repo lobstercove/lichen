@@ -22,7 +22,7 @@ use moltchain_core::{
     evm_tx_hash, Account, Block, ContractAccount, ContractContext, ContractInstruction,
     ContractRuntime, FeeConfig, FinalityTracker, GenesisConfig, GenesisWallet, Hash, Instruction,
     Keypair, MarketActivity, MarketActivityKind, Mempool, Message, NftActivity, NftActivityKind,
-    ProgramCallActivity, Pubkey, SlashingEvidence, SlashingOffense, SlashingTracker, StakePool,
+    ProgramCallActivity, Pubkey, SlashingEvidence, SlashingOffense, StakePool,
     StateStore, SymbolRegistryEntry, Transaction, TxProcessor, ValidatorInfo, ValidatorSet, Vote,
     VoteAggregator, BASE_FEE, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID,
     MIN_VALIDATOR_STAKE, NFT_COLLECTION_FEE, NFT_MINT_FEE,
@@ -1070,7 +1070,9 @@ fn revert_block_effects(state: &StateStore, old_block: &Block) {
 /// C7 fix: Reverse user transaction effects of a replaced block during fork choice.
 /// For each transaction: reverse transfer instructions, refund fees, remove tx record
 /// so the new block's transactions can be properly replayed.
-fn revert_block_transactions(state: &StateStore, old_block: &Block) {
+/// For non-revertible instructions (contract calls, NFT, staking), attempts to
+/// restore affected accounts from the nearest RocksDB checkpoint.
+fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &str) {
     use moltchain_core::SYSTEM_PROGRAM_ID;
 
     if old_block.header.slot == 0 {
@@ -1080,6 +1082,10 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block) {
     let fee_config = state
         .get_fee_config()
         .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
+
+    // AUDIT-FIX C7: Collect accounts touched by non-revertible instructions
+    // so we can restore them from checkpoint if needed.
+    let mut non_revertible_accounts: Vec<moltchain_core::Pubkey> = Vec::new();
 
     for tx in old_block.transactions.iter().rev() {
         // AUDIT-FIX 0.5: Detect non-system-transfer instructions that can't be reverted
@@ -1094,17 +1100,22 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block) {
             !matches!(ix.data[0], 0 | 2 | 3 | 4 | 5)
         });
         if has_non_revertible {
-            error!(
-                "⚠️ CRITICAL: Block {} contains non-revertible instructions (contract calls, \
-                 NFT ops, staking, etc.). Fork switch may leave inconsistent state. \
-                 Tx hash: {}",
+            // AUDIT-FIX C7: Collect all accounts from non-revertible instructions
+            // for checkpoint-based restoration instead of best-effort field reversal.
+            for ix in &tx.message.instructions {
+                if ix.program_id != SYSTEM_PROGRAM_ID || (!ix.data.is_empty() && !matches!(ix.data[0], 0 | 2 | 3 | 4 | 5)) {
+                    for acct in &ix.accounts {
+                        non_revertible_accounts.push(*acct);
+                    }
+                    // Also include the contract/program itself
+                    non_revertible_accounts.push(ix.program_id);
+                }
+            }
+            warn!(
+                "⚠️  Block {} contains non-revertible instructions — will restore from checkpoint. Tx: {}",
                 old_block.header.slot,
                 tx.hash().to_hex()
             );
-            // Still revert what we can (transfers + fees) — this is best-effort.
-            // State snapshots (RocksDB checkpoints) are now implemented for safe
-            // fork switches. Checkpoints are created every 10K slots and can be
-            // used to restore pre-fork state if needed.
         }
 
         // 1. Reverse each system transfer instruction
@@ -1162,10 +1173,83 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block) {
         state.delete_transaction(&tx_hash).ok();
     }
 
+    // AUDIT-FIX C7: Restore non-revertible accounts from nearest checkpoint.
+    // This ensures contract storage, NFT state, staking mutations, etc.
+    // are properly rolled back during a fork switch.
+    if !non_revertible_accounts.is_empty() {
+        non_revertible_accounts.sort_by(|a, b| a.0.cmp(&b.0));
+        non_revertible_accounts.dedup();
+
+        // Find the nearest checkpoint at or below the reverted block's slot
+        let checkpoints = StateStore::list_checkpoints(data_dir);
+        let nearest = checkpoints
+            .iter()
+            .rev()
+            .find(|(cp_slot, _)| *cp_slot < old_block.header.slot);
+
+        if let Some((cp_slot, cp_path)) = nearest {
+            match StateStore::open_checkpoint(cp_path) {
+                Ok(checkpoint_store) => {
+                    let mut restored = 0usize;
+                    for acct_key in &non_revertible_accounts {
+                        match checkpoint_store.get_account(acct_key) {
+                            Ok(Some(cp_account)) => {
+                                if state.put_account(acct_key, &cp_account).is_ok() {
+                                    restored += 1;
+                                }
+                            }
+                            Ok(None) => {
+                                // Account didn't exist at checkpoint time — zero it out
+                                // (it was created by the reverted block's contract call)
+                                let zeroed = moltchain_core::Account {
+                                    shells: 0,
+                                    spendable: 0,
+                                    staked: 0,
+                                    locked: 0,
+                                    data: Vec::new(),
+                                    owner: SYSTEM_ACCOUNT_OWNER,
+                                    executable: false,
+                                    rent_epoch: 0,
+                                };
+                                state.put_account(acct_key, &zeroed).ok();
+                                restored += 1;
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "⚠️  Failed to read account {} from checkpoint: {}",
+                                    acct_key.to_base58(), e
+                                );
+                            }
+                        }
+                    }
+                    info!(
+                        "🔄 AUDIT-FIX C7: Restored {}/{} non-revertible accounts from checkpoint slot {}",
+                        restored, non_revertible_accounts.len(), cp_slot
+                    );
+                }
+                Err(e) => {
+                    error!(
+                        "🚨 CRITICAL: Failed to open checkpoint at {} for fork-switch account restoration: {}",
+                        cp_path, e
+                    );
+                }
+            }
+        } else {
+            error!(
+                "🚨 CRITICAL: No checkpoint available before slot {} for fork-switch restoration. \
+                 {} accounts may have inconsistent state from non-revertible instructions.",
+                old_block.header.slot, non_revertible_accounts.len()
+            );
+        }
+    }
+
     info!(
-        "⚖️  Reverted {} user transactions for slot {}",
+        "⚖️  Reverted {} user transactions for slot {}{}",
         old_block.transactions.len(),
-        old_block.header.slot
+        old_block.header.slot,
+        if non_revertible_accounts.is_empty() { String::new() } else {
+            format!(" (restored {} accounts from checkpoint)", non_revertible_accounts.len())
+        }
     );
 }
 
@@ -4026,9 +4110,17 @@ async fn run_validator() {
         initial_confirmed, initial_finalized
     );
 
-    // Initialize slashing tracker
-    let slashing_tracker = Arc::new(Mutex::new(SlashingTracker::new()));
-    info!("⚔️  Slashing system initialized");
+    // AUDIT-FIX M7: Load slashing tracker from disk for restart-proof evidence
+    let slashing_tracker = Arc::new(Mutex::new(state.get_slashing_tracker()));
+    {
+        let tracker = slashing_tracker.lock().await;
+        let evidence_count: usize = tracker.evidence_count();
+        if evidence_count > 0 {
+            info!("⚔️  Slashing system initialized — loaded {} evidence records from disk", evidence_count);
+        } else {
+            info!("⚔️  Slashing system initialized (clean)");
+        }
+    }
 
     // Initialize stake pool for economic security
     let stake_pool = Arc::new(Mutex::new(
@@ -4921,7 +5013,7 @@ async fn run_validator() {
                                 // Revert old block's financial effects before replacing
                                 revert_block_effects(&state_for_blocks, &existing);
                                 // C7 fix: Also revert user transaction effects
-                                revert_block_transactions(&state_for_blocks, &existing);
+                                revert_block_transactions(&state_for_blocks, &existing, &data_dir_for_blocks);
                                 // Replace slot index with the higher-weight block
                                 replay_block_transactions(&processor_for_blocks, &block);
                                 if state_for_blocks.put_block(&block).is_ok() {
@@ -7025,6 +7117,10 @@ async fn run_validator() {
             }
             if let Err(e) = state.save_validator_set(&vs) {
                 error!("Failed to persist validator set after slashing: {}", e);
+            }
+            // AUDIT-FIX M7: Persist slashing tracker evidence to disk
+            if let Err(e) = state.put_slashing_tracker(&slasher) {
+                error!("Failed to persist slashing tracker: {}", e);
             }
 
             drop(vs);

@@ -25,8 +25,8 @@ fn test_add_margin_u64_overflow() {
     let _admin = setup();
     let trader = [2u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
-    // 2x tier: notional=1000, required=1000*5000/10000/2=250
-    assert_eq!(open_position(trader.as_ptr(), 1, 0, 1000, 2, 250), 0);
+    // 2x tier: notional=1000, required=1000*5000/10000=500
+    assert_eq!(open_position(trader.as_ptr(), 1, 0, 1000, 2, 500), 0);
     assert_eq!(add_margin(trader.as_ptr(), 1, u64::MAX), 6, "overflow should return error 6");
 }
 
@@ -39,8 +39,8 @@ fn test_insurance_fund_overflow() {
     moltchain_sdk::storage_set(b"mrg_insurance", &moltchain_sdk::u64_to_bytes(u64::MAX - 10));
 
     let trader = [2u8; 32];
-    // 5x short: notional=10000, required=10000*2000/10000/5=400
-    assert_eq!(open_position(trader.as_ptr(), 1, 1, 10_000, 5, 400), 0);
+    // 5x short: notional=10000, required=10000*2000/10000=2000
+    assert_eq!(open_position(trader.as_ptr(), 1, 1, 10_000, 5, 2000), 0);
 
     // Pump price 10x to make short liquidatable
     set_mark_price(admin.as_ptr(), 1, 10_000_000_000);
@@ -138,7 +138,7 @@ fn test_liquidate_already_closed() {
     let liquidator = [3u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
 
-    assert_eq!(open_position(trader.as_ptr(), 1, 0, 1000, 2, 250), 0);
+    assert_eq!(open_position(trader.as_ptr(), 1, 0, 1000, 2, 500), 0);
     assert_eq!(close_position(trader.as_ptr(), 1), 0);
     assert_eq!(liquidate(liquidator.as_ptr(), 1), 2,
         "closed position should not be liquidatable");
@@ -152,8 +152,8 @@ fn test_liquidate_already_liquidated() {
     moltchain_sdk::test_mock::set_slot(100);
 
     // Open SHORT, pump price 10x to make liquidatable
-    // 5x tier: notional=10000, required=10000*2000/10000/5=400
-    assert_eq!(open_position(trader.as_ptr(), 1, 1, 10_000, 5, 400), 0);
+    // 5x tier: notional=10000, required=10000*2000/10000=2000
+    assert_eq!(open_position(trader.as_ptr(), 1, 1, 10_000, 5, 2000), 0);
     set_mark_price(admin.as_ptr(), 1, 10_000_000_000); // 10x
     assert_eq!(liquidate(liquidator.as_ptr(), 1), 0);
     // Try again — status is now POS_LIQUIDATED
@@ -177,18 +177,17 @@ fn test_liquidation_penalty_exceeds_margin() {
     let liquidator = [3u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
 
-    // 5x tier: penalty=500bps=5%. notional=10000, required margin=400
-    assert_eq!(open_position(trader.as_ptr(), 1, 0, 10_000, 5, 400), 0);
+    // 50x tier: initial=200bps=2%, maint=100bps=1%, penalty=1000bps=10%
+    // notional=10000, required=10000*200/10000=200
+    assert_eq!(open_position(trader.as_ptr(), 1, 0, 10_000, 50, 200), 0);
 
-    // Drop price to trigger liquidation
-    // mark at 0.5 → notional = 10000 * 0.5 = 5000
-    // margin_ratio = 400 / 5000 * 10000 = 800 bps < 1000 maintenance
-    set_mark_price(admin.as_ptr(), 1, 500_000_000);
+    // Raise price to 3.0 → notional=30000
+    // ratio = 200*10000/30000 = 66bps < 100bps maint → liquidatable
+    // penalty = 30000*1000/10000 = 3000 > 200 margin → capped to margin
+    set_mark_price(admin.as_ptr(), 1, 3_000_000_000);
     let result = liquidate(liquidator.as_ptr(), 1);
     assert_eq!(result, 0);
 
-    // penalty = 5000 * 500 / 10000 = 250, split: 125 liquidator, 125 insurance
-    // margin was only 400, penalty is 250 — doesn't exceed margin here
     let insurance = get_insurance_fund();
     assert!(insurance > 0, "insurance fund should have received penalty");
 }
@@ -203,14 +202,14 @@ fn test_close_position_doesnt_return_margin() {
     let _admin = setup();
     let trader = [2u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
-    // 2x: notional=1000, required=250
-    assert_eq!(open_position(trader.as_ptr(), 1, 0, 1000, 2, 250), 0);
+    // 2x: notional=1000, required=500
+    assert_eq!(open_position(trader.as_ptr(), 1, 0, 1000, 2, 500), 0);
     assert_eq!(close_position(trader.as_ptr(), 1), 0);
     // With host-level collateral locking, close_position now unlocks margin
     let ret = moltchain_sdk::test_mock::get_return_data();
     let unlock = moltchain_sdk::bytes_to_u64(&ret);
-    // No price change → PnL = 0 → unlock = margin = 250
-    assert_eq!(unlock, 250);
+    // No price change → PnL = 0 → unlock = margin = 500
+    assert_eq!(unlock, 500);
 }
 
 #[test]
@@ -219,7 +218,7 @@ fn test_close_position_not_owner() {
     let trader = [2u8; 32];
     let attacker = [99u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
-    assert_eq!(open_position(trader.as_ptr(), 1, 0, 1000, 2, 250), 0);
+    assert_eq!(open_position(trader.as_ptr(), 1, 0, 1000, 2, 500), 0);
     assert_eq!(close_position(attacker.as_ptr(), 1), 2,
         "attacker should not be able to close others' positions");
 }
@@ -229,7 +228,7 @@ fn test_close_already_closed() {
     let _admin = setup();
     let trader = [2u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
-    assert_eq!(open_position(trader.as_ptr(), 1, 0, 1000, 2, 250), 0);
+    assert_eq!(open_position(trader.as_ptr(), 1, 0, 1000, 2, 500), 0);
     assert_eq!(close_position(trader.as_ptr(), 1), 0);
     assert_eq!(close_position(trader.as_ptr(), 1), 3,
         "closing already-closed should return 3");
@@ -244,12 +243,13 @@ fn test_remove_margin_to_below_maintenance() {
     let _admin = setup();
     let trader = [2u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
-    // 2x: notional=1000, required=250, maint=2500bps=25%=250 of notional
-    assert_eq!(open_position(trader.as_ptr(), 1, 0, 1000, 2, 300), 0);
+    // 2x: notional=1000, required=500, maint=2500bps=25%=250 of notional
+    // Open with 500 (exactly at initial)
+    assert_eq!(open_position(trader.as_ptr(), 1, 0, 1000, 2, 500), 0);
 
-    // Current ratio: 300/1000*10000 = 3000 > maint 2500 → healthy
-    // Remove 55: new margin=245, ratio=2450 < 2500 → below maintenance → rejected
-    let result = remove_margin(trader.as_ptr(), 1, 55);
+    // Current ratio: 500/1000*10000 = 5000 > maint 2500 → healthy
+    // Remove 255: new margin=245, ratio=2450 < 2500 → below maintenance → rejected
+    let result = remove_margin(trader.as_ptr(), 1, 255);
     assert_eq!(result, 6, "removing margin below maintenance should be rejected");
 }
 
@@ -258,8 +258,8 @@ fn test_remove_margin_more_than_deposited() {
     let _admin = setup();
     let trader = [2u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
-    assert_eq!(open_position(trader.as_ptr(), 1, 0, 1000, 2, 250), 0);
-    assert_eq!(remove_margin(trader.as_ptr(), 1, 251), 5,
+    assert_eq!(open_position(trader.as_ptr(), 1, 0, 1000, 2, 500), 0);
+    assert_eq!(remove_margin(trader.as_ptr(), 1, 501), 5,
         "removing more than deposited should be rejected");
 }
 
@@ -268,7 +268,7 @@ fn test_add_margin_to_closed_position() {
     let _admin = setup();
     let trader = [2u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
-    assert_eq!(open_position(trader.as_ptr(), 1, 0, 1000, 2, 250), 0);
+    assert_eq!(open_position(trader.as_ptr(), 1, 0, 1000, 2, 500), 0);
     assert_eq!(close_position(trader.as_ptr(), 1), 0);
     assert_eq!(add_margin(trader.as_ptr(), 1, 100), 3,
         "adding margin to closed position should be rejected");
@@ -300,11 +300,11 @@ fn test_flash_pump_then_liquidate_short() {
     let liquidator = [3u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
 
-    // Open short position: 2x, notional=1000, required=250
-    assert_eq!(open_position(trader.as_ptr(), 1, 1, 1000, 2, 250), 0);
+    // Open short position: 2x, notional=1000, required=500
+    assert_eq!(open_position(trader.as_ptr(), 1, 1, 1000, 2, 500), 0);
 
     // Pump price 20x → notional = 1000 * 20e9 / 1e9 = 20_000
-    // ratio = 250 * 10_000 / 20_000 = 125 bps < 2500 maint
+    // ratio = 500 * 10_000 / 20_000 = 250 bps < 2500 maint
     set_mark_price(admin.as_ptr(), 1, 20_000_000_000);
 
     assert_eq!(liquidate(liquidator.as_ptr(), 1), 0, "should be liquidatable after pump");
@@ -350,8 +350,8 @@ fn test_custom_max_leverage_enforced() {
     // Set max leverage to 3 for pair 1
     assert_eq!(set_max_leverage(admin.as_ptr(), 1, 3), 0);
 
-    // 3x: notional=1000, 3x tier: init=3333, required=1000*3333/10000/3=111
-    assert_eq!(open_position(trader.as_ptr(), 1, 0, 1000, 3, 115), 0);
+    // 3x: notional=1000, 3x tier: init=3333bps, required=1000*3333/10000=333
+    assert_eq!(open_position(trader.as_ptr(), 1, 0, 1000, 3, 334), 0);
 
     // 4x should fail
     assert_eq!(open_position(trader.as_ptr(), 1, 0, 1000, 4, 200), 2,
@@ -369,10 +369,10 @@ fn test_operations_while_paused() {
     moltchain_sdk::test_mock::set_slot(100);
 
     assert_eq!(emergency_pause(admin.as_ptr()), 0);
-    assert_eq!(open_position(trader.as_ptr(), 1, 0, 1000, 2, 250), 1,
+    assert_eq!(open_position(trader.as_ptr(), 1, 0, 1000, 2, 500), 1,
         "opening position should fail when paused");
     assert_eq!(emergency_unpause(admin.as_ptr()), 0);
-    assert_eq!(open_position(trader.as_ptr(), 1, 0, 1000, 2, 250), 0,
+    assert_eq!(open_position(trader.as_ptr(), 1, 0, 1000, 2, 500), 0,
         "should work after unpause");
 }
 

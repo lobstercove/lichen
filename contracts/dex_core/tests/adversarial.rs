@@ -272,7 +272,11 @@ fn test_unpause_restores_operations() {
     let trader = [2u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
     assert_eq!(emergency_pause(admin.as_ptr()), 0);
-    assert_eq!(emergency_unpause(admin.as_ptr()), 0);
+    // AUDIT-FIX M12: Unpause is now two-step: schedule then execute after timelock
+    assert_eq!(emergency_unpause(admin.as_ptr()), 0); // schedules
+    // Advance past timelock
+    moltchain_sdk::test_mock::set_slot(100 + UNPAUSE_TIMELOCK_SLOTS);
+    assert_eq!(execute_unpause(admin.as_ptr()), 0);   // executes
     assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, P, Q, 0), 0);
 }
 

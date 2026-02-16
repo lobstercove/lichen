@@ -93,6 +93,11 @@ const FEE_TREASURY_KEY: &[u8] = b"dex_fee_treasury";
 const PREFERRED_QUOTE_KEY: &[u8] = b"dex_preferred_quote";
 const ALLOWED_QUOTE_COUNT_KEY: &[u8] = b"dex_aq_count";
 const MAX_ALLOWED_QUOTES: u64 = 8;
+/// AUDIT-FIX M12: Timelock for unpause — 900 slots (~6 minutes at 400ms slots).
+/// Pause is instant (circuit breaker), but unpause requires a scheduling + execution
+/// two-step process to prevent a compromised admin from immediately resuming trading.
+pub const UNPAUSE_TIMELOCK_SLOTS: u64 = 900;
+const UNPAUSE_SCHEDULED_KEY: &[u8] = b"dex_unpause_scheduled_slot";
 
 // ============================================================================
 // HELPERS
@@ -1426,7 +1431,7 @@ pub fn modify_order(caller: *const u8, order_id: u64, new_price: u64, new_quanti
     )
 }
 
-/// Emergency pause (admin only)
+/// Emergency pause (admin only) — instant, no timelock
 pub fn emergency_pause(caller: *const u8) -> u32 {
     let mut c = [0u8; 32];
     unsafe {
@@ -1436,11 +1441,14 @@ pub fn emergency_pause(caller: *const u8) -> u32 {
         return 1;
     }
     storage_set(PAUSED_KEY, &[1u8]);
+    // AUDIT-FIX M12: Clear any pending unpause schedule when re-pausing
+    storage_set(UNPAUSE_SCHEDULED_KEY, &u64_to_bytes(0));
     log_info("DEX Core: EMERGENCY PAUSE ACTIVATED");
     0
 }
 
-/// Unpause (admin only)
+/// AUDIT-FIX M12: Schedule unpause (admin only) — starts the timelock countdown.
+/// The actual unpause happens when `execute_unpause` is called after UNPAUSE_TIMELOCK_SLOTS.
 pub fn emergency_unpause(caller: *const u8) -> u32 {
     let mut c = [0u8; 32];
     unsafe {
@@ -1449,8 +1457,47 @@ pub fn emergency_unpause(caller: *const u8) -> u32 {
     if !require_admin(&c) {
         return 1;
     }
+    // Check that DEX is actually paused
+    let is_paused = storage_get(PAUSED_KEY)
+        .map(|d| !d.is_empty() && d[0] == 1)
+        .unwrap_or(false);
+    if !is_paused {
+        log_info("DEX Core: Not paused, nothing to unpause");
+        return 2;
+    }
+    let current_slot = get_slot();
+    let execute_after = current_slot + UNPAUSE_TIMELOCK_SLOTS;
+    storage_set(UNPAUSE_SCHEDULED_KEY, &u64_to_bytes(execute_after));
+    log_info("DEX Core: Unpause SCHEDULED — execute after timelock elapses");
+    0
+}
+
+/// AUDIT-FIX M12: Execute a previously scheduled unpause after timelock has elapsed.
+pub fn execute_unpause(caller: *const u8) -> u32 {
+    let mut c = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
+    let scheduled = match storage_get(UNPAUSE_SCHEDULED_KEY) {
+        Some(d) if d.len() >= 8 => bytes_to_u64(&d),
+        _ => 0,
+    };
+    if scheduled == 0 {
+        log_info("DEX Core: No unpause scheduled");
+        return 3;
+    }
+    let current_slot = get_slot();
+    if current_slot < scheduled {
+        log_info("DEX Core: Timelock not yet elapsed");
+        return 4;
+    }
+    // Timelock elapsed — execute unpause
     storage_set(PAUSED_KEY, &[0u8]);
-    log_info("DEX Core: Resumed");
+    storage_set(UNPAUSE_SCHEDULED_KEY, &u64_to_bytes(0));
+    log_info("DEX Core: Resumed after timelock");
     0
 }
 
@@ -1726,6 +1773,14 @@ pub extern "C" fn call() {
         23 => {
             // get_allowed_quote_count
             moltchain_sdk::set_return_data(&u64_to_bytes(get_allowed_quote_count()));
+        }
+        24 => {
+            // AUDIT-FIX M12: execute_unpause — completes a previously scheduled unpause
+            // after the timelock (UNPAUSE_TIMELOCK_SLOTS) has elapsed.
+            if args.len() >= 33 {
+                let result = execute_unpause(args[1..33].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+            }
         }
         _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
     }
@@ -2408,9 +2463,20 @@ mod tests {
     #[test]
     fn test_emergency_pause() {
         let admin = setup();
+        // Pause is instant
         assert_eq!(emergency_pause(admin.as_ptr()), 0);
         assert!(is_paused());
+        // AUDIT-FIX M12: Unpause is now a two-step process with timelock
+        // Step 1: Schedule unpause
         assert_eq!(emergency_unpause(admin.as_ptr()), 0);
+        // Still paused — timelock hasn't elapsed
+        assert!(is_paused());
+        // Step 2: Try executing before timelock — should fail (return code 4)
+        assert_eq!(execute_unpause(admin.as_ptr()), 4);
+        assert!(is_paused());
+        // Step 3: Advance slot past timelock and execute
+        test_mock::set_slot(1 + UNPAUSE_TIMELOCK_SLOTS);
+        assert_eq!(execute_unpause(admin.as_ptr()), 0);
         assert!(!is_paused());
     }
 
