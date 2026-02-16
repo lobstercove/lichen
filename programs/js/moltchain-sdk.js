@@ -408,6 +408,22 @@ class MoltChainRPC {
     async getSymbolRegistryByProgram(programId) {
         return await this.call('getSymbolRegistryByProgram', [programId]);
     }
+
+    /**
+     * Check if a native address has an EVM address registered on-chain
+     * Returns { evmAddress: "0x..." } or null
+     */
+    async getEvmRegistration(nativePubkey) {
+        return await this.call('getEvmRegistration', [nativePubkey]);
+    }
+
+    /**
+     * Resolve an EVM address to native pubkey
+     * Returns { nativePubkey: "..." } or null
+     */
+    async lookupEvmAddress(evmAddress) {
+        return await this.call('lookupEvmAddress', [evmAddress]);
+    }
     
     /**
      * Get all validators
@@ -1087,6 +1103,25 @@ class TransactionBuilder {
             programId: CONTRACT_PROGRAM_ID,
             accounts: [deployer, programId],
             data
+        };
+    }
+
+    /**
+     * Register a symbol for an already-deployed contract (system instruction 20).
+     * @param {string} owner - contract owner pubkey (base58)
+     * @param {string} contractId - contract address (base58)
+     * @param {object} registryData - { symbol, name?, template?, metadata? }
+     */
+    static registerSymbol(owner, contractId, registryData) {
+        const json = JSON.stringify(registryData);
+        const jsonBytes = textEncoder.encode(json);
+        const data = new Uint8Array(1 + jsonBytes.length);
+        data[0] = 20; // opcode
+        data.set(jsonBytes, 1);
+        return {
+            programId: SYSTEM_PROGRAM_ID,
+            accounts: [owner, contractId],
+            data: Array.from(data)
         };
     }
     

@@ -925,6 +925,10 @@ async fn handle_rpc(State(state): State<Arc<RpcState>>, Json(req): Json<RpcReque
         "getMoltyIdAgentDirectory" => handle_get_moltyid_agent_directory(&state, req.params).await,
         "getMoltyIdStats" => handle_get_moltyid_stats(&state).await,
 
+        // EVM address registry
+        "getEvmRegistration" => handle_get_evm_registration(&state, req.params).await,
+        "lookupEvmAddress" => handle_lookup_evm_address(&state, req.params).await,
+
         // Symbol registry
         "getSymbolRegistry" => handle_get_symbol_registry(&state, req.params).await,
         "getSymbolRegistryByProgram" => {
@@ -1067,6 +1071,89 @@ async fn handle_evm_rpc(
 // ═══════════════════════════════════════════════════════════════════════════════
 // NATIVE MOLT RPC METHODS
 // ═══════════════════════════════════════════════════════════════════════════════
+
+/// getEvmRegistration — check if a native address has an EVM address registered on-chain.
+/// Params: [nativePubkey (base58)]
+/// Returns: { "evmAddress": "0x..." } or null
+async fn handle_get_evm_registration(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let params = params.ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing params".to_string(),
+    })?;
+
+    let native_str = params
+        .as_array()
+        .and_then(|arr| arr.first())
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Invalid params: expected [nativePubkey]".to_string(),
+        })?;
+
+    let native_pubkey = Pubkey::from_base58(native_str).map_err(|_| RpcError {
+        code: -32602,
+        message: "Invalid pubkey format".to_string(),
+    })?;
+
+    let evm = state
+        .state
+        .lookup_native_to_evm(&native_pubkey)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: e,
+        })?;
+
+    match evm {
+        Some(evm_bytes) => {
+            let hex: String = evm_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+            Ok(serde_json::json!({ "evmAddress": format!("0x{}", hex) }))
+        }
+        None => Ok(serde_json::Value::Null),
+    }
+}
+
+/// lookupEvmAddress — resolve an EVM address to native pubkey.
+/// Params: [evmAddress (hex with or without 0x)]
+/// Returns: { "nativePubkey": "..." } or null
+async fn handle_lookup_evm_address(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let params = params.ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing params".to_string(),
+    })?;
+
+    let evm_str = params
+        .as_array()
+        .and_then(|arr| arr.first())
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Invalid params: expected [evmAddress]".to_string(),
+        })?;
+
+    let evm_bytes = StateStore::parse_evm_address(evm_str).map_err(|e| RpcError {
+        code: -32602,
+        message: e,
+    })?;
+
+    let native = state
+        .state
+        .lookup_evm_address(&evm_bytes)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: e,
+        })?;
+
+    match native {
+        Some(pubkey) => Ok(serde_json::json!({ "nativePubkey": pubkey.to_base58() })),
+        None => Ok(serde_json::Value::Null),
+    }
+}
 
 async fn handle_get_symbol_registry(
     state: &RpcState,

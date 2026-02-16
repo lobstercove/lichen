@@ -4074,6 +4074,32 @@ impl StateStore {
         }
     }
 
+    /// Reverse lookup: native pubkey → EVM address
+    /// Uses the "reverse:" prefix key stored in CF_EVM_MAP
+    pub fn lookup_native_to_evm(&self, native_pubkey: &Pubkey) -> Result<Option<[u8; 20]>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_EVM_MAP)
+            .ok_or_else(|| "EVM Map CF not found".to_string())?;
+
+        let mut reverse_key = Vec::with_capacity(40);
+        reverse_key.extend_from_slice(b"reverse:");
+        reverse_key.extend_from_slice(&native_pubkey.0);
+
+        match self.db.get_cf(&cf, &reverse_key) {
+            Ok(Some(data)) => {
+                if data.len() != 20 {
+                    return Err("Invalid EVM address data in reverse map".to_string());
+                }
+                let mut evm_bytes = [0u8; 20];
+                evm_bytes.copy_from_slice(&data);
+                Ok(Some(evm_bytes))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(format!("Database error: {}", e)),
+        }
+    }
+
     /// Parse EVM address from hex string (with or without 0x prefix)
     pub fn parse_evm_address(addr_str: &str) -> Result<[u8; 20], String> {
         let addr_str = addr_str.strip_prefix("0x").unwrap_or(addr_str);
