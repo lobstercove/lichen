@@ -399,7 +399,7 @@
                     </div>
                 </div>
 
-                <!-- Tabs: Assets | Activity | NFTs | Staking -->
+                <!-- Tabs: Assets | Activity | NFTs | Staking | Identity -->
                 <div class="dashboard-tabs">
                     <button class="dashboard-tab active" data-tab="assets">
                         <i class="fas fa-coins"></i> Assets
@@ -415,15 +415,6 @@
                     </button>
                     <button class="dashboard-tab" data-tab="identity">
                         <i class="fas fa-fingerprint"></i> Identity
-                    </button>
-                    <button class="dashboard-tab" data-tab="governance">
-                        <i class="fas fa-landmark"></i> Governance
-                    </button>
-                    <button class="dashboard-tab" data-tab="bridge">
-                        <i class="fas fa-bridge"></i> Bridge
-                    </button>
-                    <button class="dashboard-tab" data-tab="prediction">
-                        <i class="fas fa-chart-line"></i> Markets
                     </button>
                 </div>
 
@@ -492,87 +483,7 @@
                     </div>
                 </div>
 
-                <!-- Governance Tab -->
-                <div class="tab-content" data-tab="governance">
-                    <div id="governanceContent">
-                        <div class="panel-header">
-                            <h3><i class="fas fa-landmark"></i> MoltDAO Governance</h3>
-                            <button class="btn btn-sm btn-secondary" onclick="loadGovernance()"><i class="fas fa-sync-alt"></i></button>
-                        </div>
-                        <div id="govStats" class="stats-row">
-                            <div class="stat-card"><div class="stat-value" id="govActiveProposals">—</div><div class="stat-label">Active Proposals</div></div>
-                            <div class="stat-card"><div class="stat-value" id="govVotingPower">—</div><div class="stat-label">Your Voting Power</div></div>
-                            <div class="stat-card"><div class="stat-value" id="govTotalProposals">—</div><div class="stat-label">Total Proposals</div></div>
-                        </div>
-                        <div id="govProposalsList" class="proposals-list">
-                            <p class="empty-state"><i class="fas fa-vote-yea"></i> Loading proposals...</p>
-                        </div>
-                        <div class="panel-actions">
-                            <button class="btn btn-primary" onclick="showCreateProposal()"><i class="fas fa-plus"></i> Create Proposal</button>
-                        </div>
-                    </div>
-                </div>
 
-                <!-- Bridge Tab -->
-                <div class="tab-content" data-tab="bridge">
-                    <div id="bridgeContent">
-                        <div class="panel-header">
-                            <h3><i class="fas fa-bridge"></i> MoltBridge</h3>
-                            <button class="btn btn-sm btn-secondary" onclick="loadBridge()"><i class="fas fa-sync-alt"></i></button>
-                        </div>
-                        <div id="bridgeStats" class="stats-row">
-                            <div class="stat-card"><div class="stat-value" id="bridgeTVL">—</div><div class="stat-label">TVL</div></div>
-                            <div class="stat-card"><div class="stat-value" id="bridgePending">—</div><div class="stat-label">Pending Transfers</div></div>
-                            <div class="stat-card"><div class="stat-value" id="bridgeCompleted">—</div><div class="stat-label">Your Completed</div></div>
-                        </div>
-                        <div class="bridge-form">
-                            <div class="form-group">
-                                <label>Source Chain</label>
-                                <select id="bridgeSource" class="form-input">
-                                    <option value="moltchain">MoltChain</option>
-                                    <option value="ethereum">Ethereum</option>
-                                    <option value="solana">Solana</option>
-                                </select>
-                            </div>
-                            <div class="bridge-arrow"><i class="fas fa-arrow-right"></i></div>
-                            <div class="form-group">
-                                <label>Destination Chain</label>
-                                <select id="bridgeDest" class="form-input">
-                                    <option value="ethereum">Ethereum</option>
-                                    <option value="moltchain">MoltChain</option>
-                                    <option value="solana">Solana</option>
-                                </select>
-                            </div>
-                            <div class="form-group">
-                                <label>Amount (MOLT)</label>
-                                <input type="number" id="bridgeAmount" class="form-input" placeholder="0.00">
-                            </div>
-                            <button class="btn btn-primary btn-block" onclick="initBridgeTransfer()"><i class="fas fa-paper-plane"></i> Bridge Tokens</button>
-                        </div>
-                        <div id="bridgeHistory" class="bridge-history">
-                            <h4>Recent Transfers</h4>
-                            <p class="empty-state"><i class="fas fa-exchange-alt"></i> No bridge transfers yet</p>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Prediction Markets Tab -->
-                <div class="tab-content" data-tab="prediction">
-                    <div id="predictionContent">
-                        <div class="panel-header">
-                            <h3><i class="fas fa-chart-line"></i> Prediction Markets</h3>
-                            <button class="btn btn-sm btn-secondary" onclick="loadPredictionMarkets()"><i class="fas fa-sync-alt"></i></button>
-                        </div>
-                        <div id="predStats" class="stats-row">
-                            <div class="stat-card"><div class="stat-value" id="predActiveMarkets">—</div><div class="stat-label">Active Markets</div></div>
-                            <div class="stat-card"><div class="stat-value" id="predTotalVolume">—</div><div class="stat-label">Total Volume</div></div>
-                            <div class="stat-card"><div class="stat-value" id="predYourPositions">—</div><div class="stat-label">Your Positions</div></div>
-                        </div>
-                        <div id="predMarketsList" class="markets-list">
-                            <p class="empty-state"><i class="fas fa-chart-bar"></i> Loading markets...</p>
-                        </div>
-                    </div>
-                </div>
             </div>
         </div>
     </div>
