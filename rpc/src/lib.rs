@@ -51,9 +51,9 @@ use lru::LruCache;
 use moltchain_core::contract::ContractAccount;
 use moltchain_core::nft::{decode_collection_state, decode_token_state, NftActivityKind};
 use moltchain_core::{
-    decode_evm_transaction, shells_to_u256, simulate_evm_call, Account, Hash, Instruction,
-    MarketActivityKind, Pubkey, StakePool, StateStore, SymbolRegistryEntry, Transaction,
-    TxProcessor, CONTRACT_PROGRAM_ID, EVM_PROGRAM_ID, SYSTEM_PROGRAM_ID,
+    decode_evm_transaction, shells_to_u256, simulate_evm_call, Account, FinalityTracker, Hash,
+    Instruction, MarketActivityKind, Pubkey, StakePool, StateStore, SymbolRegistryEntry,
+    Transaction, TxProcessor, CONTRACT_PROGRAM_ID, EVM_PROGRAM_ID, SYSTEM_PROGRAM_ID,
 };
 
 /// System account owner (Pubkey([0x01; 32]))
@@ -126,6 +126,8 @@ struct RpcState {
     admin_token: Option<String>,
     /// T2.6: Per-IP rate limiter
     rate_limiter: Arc<RateLimiter>,
+    /// Lock-free finality tracker for commitment levels (processed/confirmed/finalized)
+    finality: Option<FinalityTracker>,
 }
 
 /// H16 fix: Guard state-mutating RPC endpoints in multi-validator mode.
@@ -713,6 +715,7 @@ pub async fn start_rpc_server(
     chain_id: String,
     network_id: String,
     admin_token: Option<String>,
+    finality: Option<FinalityTracker>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let app = build_rpc_router(
         state,
@@ -722,6 +725,7 @@ pub async fn start_rpc_server(
         chain_id,
         network_id,
         admin_token,
+        finality,
     );
 
     let addr = format!("0.0.0.0:{}", port);
@@ -745,6 +749,7 @@ pub fn build_rpc_router(
     chain_id: String,
     network_id: String,
     admin_token: Option<String>,
+    finality: Option<FinalityTracker>,
 ) -> Router {
     let evm_chain_id = evm_chain_id_from_chain_id(&chain_id);
     let solana_tx_cache = Arc::new(Mutex::new(LruCache::new(
@@ -774,6 +779,7 @@ pub fn build_rpc_router(
                 .and_then(|v| v.parse::<u64>().ok())
                 .unwrap_or(5_000)
         )),
+        finality,
     };
 
     // T2.7: Restrictive CORS — allow localhost and configured origins only
@@ -836,13 +842,14 @@ async fn handle_rpc(State(state): State<Arc<RpcState>>, Json(req): Json<RpcReque
         "getAccount" => handle_get_account(&state, req.params).await,
         "getBlock" => handle_get_block(&state, req.params).await,
         "getLatestBlock" => handle_get_latest_block(&state).await,
-        "getSlot" => handle_get_slot(&state).await,
+        "getSlot" => handle_get_slot(&state, req.params).await,
         "getTransaction" => handle_get_transaction(&state, req.params).await,
         "getTransactionsByAddress" => handle_get_transactions_by_address(&state, req.params).await,
         "getAccountTxCount" => handle_get_account_tx_count(&state, req.params).await,
         "getRecentTransactions" => handle_get_recent_transactions(&state, req.params).await,
         "getTokenAccounts" => handle_get_token_accounts(&state, req.params).await,
         "sendTransaction" => handle_send_transaction(&state, req.params).await,
+        "confirmTransaction" => handle_confirm_transaction(&state, req.params).await,
         "simulateTransaction" => handle_simulate_transaction(&state, req.params).await,
         "getTotalBurned" => handle_get_total_burned(&state).await,
         "getValidators" => handle_get_validators(&state).await,
@@ -1381,12 +1388,45 @@ async fn handle_get_block(
     }
 }
 
-/// Get current slot
-async fn handle_get_slot(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let slot = state.state.get_last_slot().map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Database error: {}", e),
-    })?;
+/// Get current slot (supports optional commitment level)
+async fn handle_get_slot(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let commitment = params
+        .as_ref()
+        .and_then(|p| p.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            params
+                .as_ref()
+                .and_then(|p| p.as_object())
+                .and_then(|o| o.get("commitment"))
+                .and_then(|v| v.as_str())
+        })
+        .unwrap_or("processed");
+
+    let slot = match commitment {
+        "finalized" => {
+            if let Some(ref ft) = state.finality {
+                ft.finalized_slot()
+            } else {
+                state.state.get_last_finalized_slot().unwrap_or(0)
+            }
+        }
+        "confirmed" => {
+            if let Some(ref ft) = state.finality {
+                ft.confirmed_slot()
+            } else {
+                state.state.get_last_confirmed_slot().unwrap_or(0)
+            }
+        }
+        _ => state.state.get_last_slot().map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?,
+    };
 
     Ok(serde_json::json!(slot))
 }
@@ -1673,7 +1713,16 @@ async fn handle_get_transaction(
         .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
 
     match tx {
-        Some(tx) => Ok(tx_to_rpc_json(&tx, slot, timestamp, &fee_config)),
+        Some(tx) => {
+            let mut json = tx_to_rpc_json(&tx, slot, timestamp, &fee_config);
+            // Add commitment status to transaction response
+            let (status, confirmations) = tx_commitment_status(state, slot);
+            if let Some(obj) = json.as_object_mut() {
+                obj.insert("confirmationStatus".to_string(), serde_json::json!(status));
+                obj.insert("confirmations".to_string(), confirmations);
+            }
+            Ok(json)
+        }
         None => {
             // Fallback: look inside the block itself (covers genesis txs
             // and any tx that wasn't individually stored)
@@ -2065,6 +2114,153 @@ fn submit_transaction(state: &RpcState, tx: Transaction) -> Result<String, RpcEr
     Ok(signature_hash.to_hex())
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// COMMITMENT-LEVEL HELPERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Helper: extract commitment string from params (supports both array and object forms)
+fn parse_commitment(params: &Option<serde_json::Value>) -> &str {
+    params
+        .as_ref()
+        .and_then(|p| {
+            // Array form: ["sig", "confirmed"]  or  ["sig", {"commitment": "confirmed"}]
+            p.as_array()
+                .and_then(|arr| {
+                    arr.get(1).and_then(|v| {
+                        v.as_str().or_else(|| {
+                            v.as_object()
+                                .and_then(|o| o.get("commitment"))
+                                .and_then(|c| c.as_str())
+                        })
+                    })
+                })
+                // Object form: { "signature": "...", "commitment": "confirmed" }
+                .or_else(|| {
+                    p.as_object()
+                        .and_then(|o| o.get("commitment"))
+                        .and_then(|v| v.as_str())
+                })
+        })
+        .unwrap_or("processed")
+}
+
+/// Determine the commitment status of a transaction given its slot.
+/// Returns (confirmationStatus, confirmations_or_null).
+fn tx_commitment_status(
+    state: &RpcState,
+    tx_slot: u64,
+) -> (&'static str, serde_json::Value) {
+    if let Some(ref ft) = state.finality {
+        let status = ft.commitment_for_slot(tx_slot);
+        let confirmations = match status {
+            "finalized" => serde_json::Value::Null, // Solana returns null for finalized
+            _ => {
+                let confirmed = ft.confirmed_slot();
+                if tx_slot <= confirmed {
+                    serde_json::Value::Null
+                } else {
+                    // Approximate confirmations as processed_slot - tx_slot
+                    let processed = state.state.get_last_slot().unwrap_or(0);
+                    serde_json::json!(processed.saturating_sub(tx_slot))
+                }
+            }
+        };
+        (status, confirmations)
+    } else {
+        // No finality tracker — fall back to "processed" for all
+        ("processed", serde_json::json!(0))
+    }
+}
+
+/// confirmTransaction — check transaction confirmation status
+///
+/// Params: ["signature"] or ["signature", "commitment"] or ["signature", {"commitment": "..."}]
+///
+/// Returns:
+/// ```json
+/// {
+///   "value": {
+///     "confirmationStatus": "processed"|"confirmed"|"finalized",
+///     "slot": 42,
+///     "confirmations": 5 | null,
+///     "err": null
+///   }
+/// }
+/// ```
+///
+/// If the transaction is not found, returns `{"value": null}`.
+/// If a commitment level is specified, returns null unless the tx has reached
+/// at least that commitment level.
+async fn handle_confirm_transaction(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let params_ref = &params;
+    let sig_str = params_ref
+        .as_ref()
+        .and_then(|p| p.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|v| v.as_str())
+        .or_else(|| {
+            params_ref
+                .as_ref()
+                .and_then(|p| p.as_object())
+                .and_then(|o| o.get("signature"))
+                .and_then(|v| v.as_str())
+        })
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Invalid params: expected [signature] or {\"signature\": \"...\"}".to_string(),
+        })?;
+
+    let sig_hash = moltchain_core::Hash::from_hex(sig_str).map_err(|e| RpcError {
+        code: -32602,
+        message: format!("Invalid signature: {}", e),
+    })?;
+
+    let desired_commitment = parse_commitment(params_ref);
+
+    // Look up which slot the tx was included in
+    let tx_slot = match state.state.get_tx_slot(&sig_hash) {
+        Ok(Some(slot)) => slot,
+        Ok(None) => {
+            // TX not yet included in any block
+            return Ok(serde_json::json!({"value": null}));
+        }
+        Err(e) => {
+            return Err(RpcError {
+                code: -32000,
+                message: format!("Database error: {}", e),
+            });
+        }
+    };
+
+    let (status, confirmations) = tx_commitment_status(state, tx_slot);
+
+    // Check if the tx has reached the desired commitment level
+    let commitment_rank = |c: &str| -> u8 {
+        match c {
+            "finalized" => 3,
+            "confirmed" => 2,
+            _ => 1, // processed
+        }
+    };
+
+    if commitment_rank(status) < commitment_rank(desired_commitment) {
+        // TX exists but hasn't reached the desired commitment level
+        return Ok(serde_json::json!({"value": null}));
+    }
+
+    Ok(serde_json::json!({
+        "value": {
+            "confirmationStatus": status,
+            "slot": tx_slot,
+            "confirmations": confirmations,
+            "err": null,
+        }
+    }))
+}
+
 fn decode_solana_transaction(
     payload: &str,
     encoding: Option<&str>,
@@ -2410,6 +2606,8 @@ async fn handle_solana_get_latest_blockhash(
 }
 
 async fn handle_solana_get_slot(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    // Solana getSlot accepts optional [config] with commitment
+    // For simplicity, return processed slot (chain tip) — matches Solana default
     let slot = state.state.get_last_slot().map_err(|e| RpcError {
         code: -32000,
         message: format!("Database error: {}", e),
@@ -2471,18 +2669,27 @@ async fn handle_solana_get_signature_statuses(
         };
 
         let mut found = false;
+        let mut tx_slot = last_slot;
         if state.solana_tx_cache.lock().await.contains(&sig_hash) {
             found = true;
+            // Try to get actual slot
+            if let Ok(Some(slot)) = state.state.get_tx_slot(&sig_hash) {
+                tx_slot = slot;
+            }
         } else if let Ok(Some(_)) = state.state.get_transaction(&sig_hash) {
             found = true;
+            if let Ok(Some(slot)) = state.state.get_tx_slot(&sig_hash) {
+                tx_slot = slot;
+            }
         }
 
         if found {
+            let (status, confirmations) = tx_commitment_status(state, tx_slot);
             values.push(serde_json::json!({
-                "slot": last_slot,
-                "confirmations": serde_json::Value::Null,
+                "slot": tx_slot,
+                "confirmations": confirmations,
                 "err": serde_json::Value::Null,
-                "confirmationStatus": "finalized",
+                "confirmationStatus": status,
             }));
         } else {
             values.push(serde_json::Value::Null);

@@ -741,6 +741,70 @@ impl StateStore {
             .map_err(|e| format!("Failed to store slot: {}", e))
     }
 
+    /// Get the last confirmed slot (2/3 supermajority reached)
+    pub fn get_last_confirmed_slot(&self) -> Result<u64, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_SLOTS)
+            .ok_or_else(|| "Slots CF not found".to_string())?;
+
+        match self.db.get_cf(&cf, b"confirmed_slot") {
+            Ok(Some(data)) => {
+                let bytes: [u8; 8] = data
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| "Invalid confirmed slot data".to_string())?;
+                Ok(u64::from_le_bytes(bytes))
+            }
+            Ok(None) => Ok(0),
+            Err(e) => Err(format!("Database error: {}", e)),
+        }
+    }
+
+    /// Update the last confirmed slot
+    pub fn set_last_confirmed_slot(&self, slot: u64) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_SLOTS)
+            .ok_or_else(|| "Slots CF not found".to_string())?;
+
+        self.db
+            .put_cf(&cf, b"confirmed_slot", slot.to_le_bytes())
+            .map_err(|e| format!("Failed to store confirmed slot: {}", e))
+    }
+
+    /// Get the last finalized slot (confirmed + 32 slots deep)
+    pub fn get_last_finalized_slot(&self) -> Result<u64, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_SLOTS)
+            .ok_or_else(|| "Slots CF not found".to_string())?;
+
+        match self.db.get_cf(&cf, b"finalized_slot") {
+            Ok(Some(data)) => {
+                let bytes: [u8; 8] = data
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| "Invalid finalized slot data".to_string())?;
+                Ok(u64::from_le_bytes(bytes))
+            }
+            Ok(None) => Ok(0),
+            Err(e) => Err(format!("Database error: {}", e)),
+        }
+    }
+
+    /// Update the last finalized slot
+    pub fn set_last_finalized_slot(&self, slot: u64) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_SLOTS)
+            .ok_or_else(|| "Slots CF not found".to_string())?;
+
+        self.db
+            .put_cf(&cf, b"finalized_slot", slot.to_le_bytes())
+            .map_err(|e| format!("Failed to store finalized slot: {}", e))
+    }
+
     /// Get the hashes of the last N blocks for replay protection.
     /// Returns a set of block hashes from the most recent `count` slots.
     /// T1.3 fix: Hash::default() is NO LONGER accepted. Only real block hashes
