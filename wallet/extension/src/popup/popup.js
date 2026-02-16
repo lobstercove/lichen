@@ -88,7 +88,17 @@ const screens = {
 
 const statusField = document.getElementById('statusField');
 
+// Security: clear all sensitive input fields across all screens
+function clearAllInputs() {
+  document.querySelectorAll('input, textarea').forEach(el => {
+    if (el.type !== 'hidden' && el.type !== 'checkbox' && el.type !== 'radio') {
+      el.value = '';
+    }
+  });
+}
+
 function showScreen(key) {
+  clearAllInputs();
   Object.values(screens).forEach((element) => element.classList.remove('active'));
   screens[key].classList.add('active');
 }
@@ -507,7 +517,7 @@ async function loadActivity() {
 
   try {
     const result = await rpc.getTransactionsByAddress(wallet.address, {
-      limit: 8
+      limit: 12
     });
 
     const txs = result?.transactions || (Array.isArray(result) ? result : []);
@@ -521,31 +531,66 @@ async function loadActivity() {
       const sig = tx.signature || tx.hash || tx.txid || 'unknown';
       const shortSig = `${String(sig).slice(0, 8)}...${String(sig).slice(-4)}`;
       const isSent = (tx.from === wallet.address);
+
+      // 14 type mappings — aligned with wallet website
       const typeMap = {
         'Transfer': isSent ? 'Sent' : 'Received',
-        'Stake': 'Staked', 'Unstake': 'Unstaked', 'ClaimUnstake': 'Claimed',
-        'RegisterEvmAddress': 'EVM Registration',
-        'Contract': 'Contract Call', 'Reward': 'Reward',
-        'GenesisTransfer': 'Genesis', 'GenesisMint': 'Genesis Mint',
         'Airdrop': 'Airdrop',
+        'Stake': 'Staked',
+        'Unstake': 'Unstaked',
+        'ClaimUnstake': 'Claimed Unstake',
+        'RegisterEvmAddress': 'EVM Registration',
+        'Contract': 'Contract Call',
+        'CreateCollection': 'Created Collection',
+        'MintNFT': 'Minted NFT',
+        'TransferNFT': isSent ? 'Sent NFT' : 'Received NFT',
+        'Reward': 'Reward',
+        'GenesisTransfer': 'Genesis Transfer',
+        'GenesisMint': 'Genesis Mint',
       };
       const type = typeMap[tx.type] || (isSent ? 'Sent' : 'Received');
       const amountVal = tx.amount_shells ? tx.amount_shells : (tx.amount || 0);
       const amt = (amountVal / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 4 });
-      const sign = isSent ? '-' : '+';
       const ts = tx.timestamp ? new Date(tx.timestamp * 1000).toLocaleString() : '';
-      const color = isSent ? '#ff6b35' : '#4ade80';
-      const icon = isSent ? 'fa-arrow-up' : 'fa-arrow-down';
+
+      // Icons & colors — aligned with wallet website
+      let icon = isSent ? 'fa-arrow-up' : 'fa-arrow-down';
+      let color = isSent ? '#ff6b35' : '#4ade80';
+      let sign = isSent ? '-' : '+';
+
+      if (tx.type === 'Stake' || tx.type === 'Unstake' || tx.type === 'ClaimUnstake') {
+        icon = 'fa-coins'; color = '#a78bfa';
+      } else if (tx.type === 'RegisterEvmAddress') {
+        icon = 'fa-link'; color = '#94a3b8';
+      } else if (tx.type === 'Contract') {
+        icon = 'fa-file-code'; color = '#f59e0b';
+      } else if (tx.type === 'Reward' || tx.type === 'GenesisTransfer' || tx.type === 'GenesisMint') {
+        icon = 'fa-gift'; color = '#4ade80'; sign = '+';
+      } else if (tx.type === 'Airdrop') {
+        icon = 'fa-parachute-box'; color = '#60a5fa';
+      }
+
+      const address = isSent ? (tx.to || '') : (tx.from || '');
+      const displayAddr = address && address.length > 20 ? address.slice(0, 8) + '...' + address.slice(-4) : (address || '');
+
+      // Fee display: "Fee only" for EVM registration and 0-amount contract calls
+      const isZeroAmount = Number(amountVal) === 0;
+      const amountStr = (tx.type === 'RegisterEvmAddress' || (tx.type === 'Contract' && isZeroAmount))
+        ? 'Fee only'
+        : `${sign}${amt} MOLT`;
+
       return `
         <div class="popup-activity-item" style="cursor:pointer;" title="${sig}">
           <div style="display:flex;align-items:center;gap:8px;">
-            <i class="fas ${icon}" style="color:${color};font-size:0.9rem;"></i>
+            <div style="width:28px;height:28px;border-radius:50%;background:${color}22;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+              <i class="fas ${icon}" style="color:${color};font-size:0.75rem;"></i>
+            </div>
             <div style="flex:1;min-width:0;">
-              <div style="font-weight:600;font-size:0.85rem;">${type}</div>
+              <div style="font-weight:600;font-size:0.85rem;">${type}${displayAddr ? `<span style="margin-left:0.35rem;font-size:0.7rem;opacity:0.5;">${displayAddr}</span>` : ''}</div>
               <div style="font-size:0.7rem;opacity:0.5;">${shortSig}</div>
             </div>
             <div style="text-align:right;">
-              <div style="font-weight:600;font-size:0.85rem;color:${color};">${sign}${amt} MOLT</div>
+              <div style="font-weight:600;font-size:0.85rem;color:${color};">${amountStr}</div>
               <div style="font-size:0.65rem;opacity:0.5;">${ts}</div>
             </div>
           </div>
@@ -571,12 +616,18 @@ async function loadIdentityPanel() {
     const profile = await rpcClient.call('getMoltyIdProfile', [wallet.address]).catch(() => null);
     if (!profile || !profile.name) {
       container.innerHTML = `
-        <div class="popup-empty-state">
-          <i class="fas fa-fingerprint"></i>
-          <p>No MoltyID registered yet</p>
-          <p style="font-size:0.78rem;color:var(--text-muted);">Register an on-chain identity from the full wallet view.</p>
+        <div class="popup-empty-state" style="text-align:center;padding:1rem 0;">
+          <div style="font-size:1.5rem;margin-bottom:0.5rem;"><i class="fas fa-fingerprint" style="color:var(--primary);"></i></div>
+          <p style="font-weight:600;margin-bottom:0.25rem;">No MoltyID registered yet</p>
+          <p style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.75rem;">Create your on-chain identity, claim a .molt name, and build reputation.</p>
+          <button id="popupRegisterIdentity" class="btn btn-primary btn-small" style="padding:0.5rem 1.25rem;">
+            <i class="fas fa-plus"></i> Register Identity
+          </button>
         </div>
       `;
+      document.getElementById('popupRegisterIdentity')?.addEventListener('click', () => {
+        chrome.tabs.create({ url: chrome.runtime.getURL('src/pages/full.html') + '#identity' });
+      });
       return;
     }
     const rep = Number(profile.reputation?.score || 0);
@@ -584,20 +635,31 @@ async function loadIdentityPanel() {
     const tierName = profile.reputation?.tier_name || 'Newcomer';
     const skills = Array.isArray(profile.skills) ? profile.skills : [];
     const vouchesReceived = Array.isArray(profile.vouches?.received) ? profile.vouches.received : [];
+    const achievements = Array.isArray(profile.achievements) ? profile.achievements : [];
     const repPct = Math.min(100, (rep / 10000) * 100);
+    const isActive = profile.is_active !== false && profile.is_active !== 0;
     container.innerHTML = `
       <div style="text-align:center;padding:0.75rem 0;">
         <div style="font-size:1.5rem;"><i class="fas fa-fingerprint" style="color:var(--primary);"></i></div>
         <h4 style="margin:0.5rem 0 0.25rem;">${profile.name}${moltName ? ' <span style="color:var(--primary);">' + moltName + (moltName.endsWith('.molt') ? '' : '.molt') + '</span>' : ''}</h4>
-        <div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.25rem;">${tierName} · ${profile.agent_type_name || 'General'}</div>
+        <div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.25rem;">${tierName} · ${profile.agent_type_name || 'General'}${isActive ? ' · <span style="color:#4ade80;">Active</span>' : ''}</div>
         <div style="font-size:0.82rem;color:var(--text-muted);">Reputation: ${rep.toLocaleString()} / 10,000</div>
         <div style="margin-top:0.5rem;height:4px;background:var(--bg-tertiary);border-radius:2px;overflow:hidden;">
           <div style="height:100%;width:${repPct}%;background:var(--primary);border-radius:2px;"></div>
         </div>
         ${skills.length > 0 ? `<div style="font-size:0.75rem;color:var(--text-muted);margin-top:0.5rem;">Skills: ${skills.map(s => s.name).join(', ')}</div>` : ''}
-        ${vouchesReceived.length > 0 ? `<div style="font-size:0.75rem;color:var(--text-muted);margin-top:0.25rem;">Vouches: ${vouchesReceived.length} received</div>` : ''}
+        <div style="display:flex;justify-content:center;gap:1rem;margin-top:0.5rem;font-size:0.75rem;color:var(--text-muted);">
+          <span><i class="fas fa-handshake"></i> ${vouchesReceived.length} vouches</span>
+          <span><i class="fas fa-award"></i> ${achievements.length} achievements</span>
+        </div>
+        <button id="popupManageIdentity" class="btn btn-secondary btn-small" style="margin-top:0.75rem;font-size:0.75rem;">
+          <i class="fas fa-external-link-alt"></i> Manage Identity
+        </button>
       </div>
     `;
+    document.getElementById('popupManageIdentity')?.addEventListener('click', () => {
+      chrome.tabs.create({ url: chrome.runtime.getURL('src/pages/full.html') + '#identity' });
+    });
   } catch {
     container.innerHTML = '<div class="popup-status">Failed to load identity</div>';
   }
@@ -1041,6 +1103,7 @@ async function handleUnlock() {
 
 async function handleLock() {
   await clearAutoLockAlarm();
+  clearAllInputs();
   await persistAndRender({
     ...state,
     isLocked: true
@@ -1050,8 +1113,9 @@ async function handleLock() {
 async function handleLogout() {
   if (!confirm('This will remove all wallets from this extension. Make sure you have your seed phrase backed up!')) return;
   await clearAutoLockAlarm();
+  clearAllInputs();
   await chrome.storage.local.clear();
-  state = { wallets: [], activeWalletId: null, isLocked: true, settings: { currency: 'USD', lockTimeout: 300000 }, network: { selected: 'local-testnet' } };
+  state = { wallets: [], activeWalletId: null, isLocked: false, settings: { currency: 'USD', lockTimeout: 300000 }, network: { selected: 'local-testnet' } };
   showScreen('welcome');
 }
 

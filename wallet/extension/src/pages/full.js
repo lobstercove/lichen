@@ -21,6 +21,20 @@ import {
 } from '../core/crypto-service.js';
 import { buildSignedNativeTransferTransaction, encodeTransactionBase64, registerEvmAddress } from '../core/tx-service.js';
 import { notify } from '../core/notification-service.js';
+import {
+  loadIdentityDetails,
+  registerIdentity,
+  addIdentitySkill,
+  updateIdentityAgentType,
+  vouchForIdentity,
+  setIdentityEndpoint,
+  setIdentityAvailability,
+  setIdentityRate,
+  registerMoltName,
+  renewMoltName,
+  transferMoltName,
+  releaseMoltName
+} from '../core/identity-service.js';
 
 /* ──────────────────────────────────────────
    State
@@ -66,7 +80,19 @@ async function persist(next) {
    ────────────────────────────────────────── */
 const allScreens = () => document.querySelectorAll('.welcome-screen, .wallet-screen, .wallet-dashboard');
 
+// Security: clear all sensitive input fields across all screens
+function clearAllInputs() {
+  document.querySelectorAll('input, textarea').forEach(el => {
+    if (el.type !== 'hidden' && el.type !== 'checkbox' && el.type !== 'radio' && el.type !== 'file') {
+      el.value = '';
+    }
+  });
+  // Also clear file inputs separately
+  document.querySelectorAll('input[type="file"]').forEach(el => { el.value = ''; });
+}
+
 function showScreen(id) {
+  clearAllInputs();
   allScreens().forEach(el => { el.style.display = 'none'; });
   const target = $(id);
   if (target) target.style.display = target.classList.contains('wallet-dashboard') ? 'block' : 'flex';
@@ -375,6 +401,7 @@ async function handleUnlock() {
 
   try {
     await decryptPrivateKey(wallet.encryptedKey, pw);
+    clearAllInputs();
     await persist({ ...state, isLocked: false });
     showToast('Wallet unlocked!', 'success');
     showDashboard();
@@ -384,14 +411,17 @@ async function handleUnlock() {
 }
 
 async function handleLock() {
+  clearAllInputs();
   await persist({ ...state, isLocked: true });
   showScreen('unlockScreen');
 }
 
 async function handleLogout() {
   if (!confirm('This will remove all wallets from this extension. Make sure you have your seed phrase backed up!')) return;
+  clearAllInputs();
+  if (typeof clearAutoLockAlarm === 'function') await clearAutoLockAlarm();
   await chrome.storage.local.clear();
-  state = { wallets: [], activeWalletId: null, isLocked: true, settings: { currency: 'USD', lockTimeout: 300000 }, network: { selected: 'local-testnet' } };
+  state = { wallets: [], activeWalletId: null, isLocked: false, settings: { currency: 'USD', lockTimeout: 300000 }, network: { selected: 'local-testnet' } };
   showScreen('welcomeScreen');
   showToast('Logged out');
 }
@@ -473,6 +503,63 @@ async function refreshBalance() {
   }
 }
 
+const AGENT_TYPES = [
+  { value: 0, label: 'Unknown', desc: 'Unspecified or new identity' },
+  { value: 1, label: 'Trading', desc: 'Market-making, arbitrage, DeFi strategies' },
+  { value: 2, label: 'Development', desc: 'Smart contracts, tooling, protocol dev' },
+  { value: 3, label: 'Analysis', desc: 'On-chain analytics, data feeds, research' },
+  { value: 4, label: 'Creative', desc: 'Content creation, design, media' },
+  { value: 5, label: 'Infrastructure', desc: 'Validators, RPCs, indexers, relayers' },
+  { value: 6, label: 'Governance', desc: 'Voting, proposals, DAO operations' },
+  { value: 7, label: 'Oracle', desc: 'External data feeds, price oracles' },
+  { value: 8, label: 'Storage', desc: 'Data persistence, archival, backups' },
+  { value: 9, label: 'General', desc: 'Multi-purpose or uncategorized agent' }
+];
+
+const TRUST_TIERS = [
+  { name: 'Newcomer', min: 0, color: '#6c7a89' },
+  { name: 'Verified', min: 100, color: '#3498db' },
+  { name: 'Trusted', min: 500, color: '#2ecc71' },
+  { name: 'Established', min: 1000, color: '#f1c40f' },
+  { name: 'Elite', min: 5000, color: '#e67e22' },
+  { name: 'Legendary', min: 10000, color: '#e74c3c' }
+];
+
+const ACHIEVEMENT_DEFS = [
+  { id: 1, name: 'First Transaction', icon: 'fas fa-exchange-alt' },
+  { id: 2, name: 'Governance Voter', icon: 'fas fa-vote-yea' },
+  { id: 3, name: 'Builder', icon: 'fas fa-code' },
+  { id: 4, name: 'Trusted', icon: 'fas fa-shield-alt' },
+  { id: 5, name: 'Veteran', icon: 'fas fa-medal' },
+  { id: 6, name: 'Legend', icon: 'fas fa-crown' },
+  { id: 7, name: 'Endorsed', icon: 'fas fa-handshake' },
+  { id: 8, name: 'Graduated', icon: 'fas fa-graduation-cap' }
+];
+
+function getTrustTier(score) {
+  for (let i = TRUST_TIERS.length - 1; i >= 0; i--) {
+    if (score >= TRUST_TIERS[i].min) return TRUST_TIERS[i];
+  }
+  return TRUST_TIERS[0];
+}
+
+function getNextTier(score) {
+  for (const t of TRUST_TIERS) {
+    if (score < t.min) return t;
+  }
+  return null;
+}
+
+function getAgentTypeName(val) {
+  const t = AGENT_TYPES.find(a => a.value === Number(val));
+  return t ? t.label : 'Unknown';
+}
+
+function fmtAddr(addr, len = 8) {
+  if (!addr || addr.length < 16) return addr || '—';
+  return addr.slice(0, len) + '…' + addr.slice(-4);
+}
+
 async function loadIdentityTab() {
   const wallet = getActiveWallet();
   const container = $('identityContent');
@@ -481,57 +568,436 @@ async function loadIdentityTab() {
   container.innerHTML = '<div class="empty-state"><i class="fas fa-spinner fa-spin"></i> Loading MoltyID...</div>';
 
   try {
-    const profile = await rpc().call('getMoltyIdProfile', [wallet.address]).catch(() => null);
-    if (!profile || !profile.name) {
+    const data = await loadIdentityDetails(wallet.address, state.network?.selected);
+
+    if (!data) {
+      // No identity — show onboarding steps
       container.innerHTML = `
-        <div class="empty-state">
-          <span class="empty-icon"><i class="fas fa-fingerprint"></i></span>
-          <h3>No MoltyID Yet</h3>
-          <p>Register an on-chain identity to get started with MoltyID.</p>
+        <div class="id-banner" style="text-align:center;padding:1.5rem;">
+          <div style="font-size:2rem;margin-bottom:0.75rem;"><i class="fas fa-fingerprint" style="color:var(--primary);"></i></div>
+          <h3 style="margin-bottom:0.25rem;">MoltyID — On-Chain Identity</h3>
+          <p style="color:var(--text-muted);font-size:0.85rem;">Your portable reputation, .molt name, skills, and agent profile — all on MoltChain.</p>
+        </div>
+        <div class="id-onboard" style="display:flex;flex-direction:column;gap:0.5rem;padding:0 1rem 1rem;">
+          <div class="id-onboard-step" id="idRegisterStep" style="display:flex;align-items:center;gap:1rem;padding:1rem;background:var(--bg-card);border:1px solid var(--primary);border-radius:12px;cursor:pointer;transition:background 0.2s;">
+            <div style="width:36px;height:36px;border-radius:50%;background:var(--primary);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0;">1</div>
+            <div style="flex:1;">
+              <div style="font-weight:600;">Register Identity</div>
+              <div style="font-size:0.82rem;color:var(--text-muted);">Choose a display name and agent type. Free — only the 0.0001 MOLT tx fee.</div>
+            </div>
+            <i class="fas fa-chevron-right" style="color:var(--primary);"></i>
+          </div>
+          <div style="display:flex;align-items:center;gap:1rem;padding:1rem;background:var(--bg-card);border:1px solid var(--border);border-radius:12px;opacity:0.5;">
+            <div style="width:36px;height:36px;border-radius:50%;background:var(--bg-tertiary);color:var(--text-muted);display:flex;align-items:center;justify-content:center;flex-shrink:0;"><i class="fas fa-lock" style="font-size:0.65rem;"></i></div>
+            <div style="flex:1;">
+              <div style="font-weight:600;">Claim a .molt Name</div>
+              <div style="font-size:0.82rem;color:var(--text-muted);">Register a human-readable name (5+ chars, 20 MOLT/year).</div>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:1rem;padding:1rem;background:var(--bg-card);border:1px solid var(--border);border-radius:12px;opacity:0.5;">
+            <div style="width:36px;height:36px;border-radius:50%;background:var(--bg-tertiary);color:var(--text-muted);display:flex;align-items:center;justify-content:center;flex-shrink:0;"><i class="fas fa-lock" style="font-size:0.65rem;"></i></div>
+            <div style="flex:1;">
+              <div style="font-weight:600;">Build Reputation</div>
+              <div style="font-size:0.82rem;color:var(--text-muted);">Earn rep through transactions, governance, vouches. Unlock trust tiers.</div>
+            </div>
+          </div>
         </div>
       `;
+
+      $('idRegisterStep')?.addEventListener('click', () => showIdentityRegisterModal());
       return;
     }
-    const rep = Number(profile.reputation?.score || 0);
+
+    // Has identity — render full profile
+    const rep = data.reputation;
+    const tier = getTrustTier(rep);
+    const nextTier = getNextTier(rep);
     const repPct = Math.min(100, (rep / 10000) * 100);
-    const moltName = profile.molt_name;
-    const tierName = profile.reputation?.tier_name || 'Newcomer';
-    const agentType = profile.agent_type_name || 'General';
-    const skills = Array.isArray(profile.skills) ? profile.skills : [];
-    const vouchesReceived = Array.isArray(profile.vouches?.received) ? profile.vouches.received : [];
-    const vouchesGiven = Array.isArray(profile.vouches?.given) ? profile.vouches.given : [];
-    const achievements = Array.isArray(profile.achievements) ? profile.achievements : [];
-    const isActive = profile.is_active !== false && profile.is_active !== 0;
-    const agentEndpoint = profile.agent?.endpoint || '';
-    const agentAvailability = profile.agent?.availability_name || 'offline';
+    const agentType = getAgentTypeName(data.agentType);
+    const displayName = data.name || 'Unnamed';
+    const moltNameDisplay = data.name && data.name.endsWith('.molt') ? data.name : (data.name ? data.name + '.molt' : '');
+    const isActive = data.active;
+    const skills = data.skills;
+    const achievements = data.achievements;
+    const vouchesReceived = data.vouchesReceived;
+    const vouchesGiven = data.vouchesGiven;
+    const achievedIds = new Set(achievements.map(a => Number(a.id)).filter(Boolean));
+
+    const nextInfo = nextTier
+      ? `<span style="font-size:0.75rem;color:var(--text-muted);">Next: <strong>${nextTier.name}</strong> at ${nextTier.min.toLocaleString()}</span>`
+      : '<span style="font-size:0.75rem;color:var(--text-muted);"><strong>Max tier reached</strong></span>';
+
+    const tierStepsHtml = TRUST_TIERS.map(t => {
+      const active = rep >= t.min;
+      return `<span style="display:inline-block;padding:0.15rem 0.5rem;border-radius:6px;font-size:0.7rem;${active ? `background:${t.color}18;color:${t.color};border:1px solid ${t.color}33;` : 'background:var(--bg-tertiary);color:var(--text-muted);border:1px solid transparent;'}">${t.name}</span>`;
+    }).join(' ');
+
+    const skillsHtml = skills.length > 0
+      ? skills.slice(0, 8).map(s => {
+          const name = String(s.name || s.skill || 'Unnamed');
+          const prof = Number(s.proficiency || s.level || 0);
+          const level = Math.max(0, Math.min(5, Math.round(prof / 20) || prof));
+          const pct = (level / 5) * 100;
+          return `<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.35rem;font-size:0.85rem;">
+            <span style="min-width:80px;">${name}</span>
+            <div style="flex:1;height:4px;background:var(--bg-tertiary);border-radius:2px;overflow:hidden;"><div style="height:100%;width:${pct}%;background:var(--primary);border-radius:2px;"></div></div>
+            <span style="color:var(--text-muted);font-size:0.75rem;">${level}/5</span>
+          </div>`;
+        }).join('')
+      : '<div style="color:var(--text-muted);font-size:0.82rem;">No skills yet</div>';
+
+    const vouchChips = vouchesReceived.length > 0
+      ? vouchesReceived.slice(0, 12).map(v => {
+          const label = v.voucher_name ? v.voucher_name + '.molt' : fmtAddr(v.voucher, 8);
+          return `<span style="display:inline-block;padding:0.2rem 0.6rem;background:var(--bg-tertiary);border-radius:6px;font-size:0.75rem;margin:0.15rem;">${label}</span>`;
+        }).join('')
+      : '<span style="color:var(--text-muted);font-size:0.82rem;">None yet</span>';
+
+    const allAchievements = ACHIEVEMENT_DEFS.map(def => {
+      const earned = achievedIds.has(def.id);
+      return `<span style="display:inline-block;padding:0.25rem 0.6rem;border-radius:6px;font-size:0.75rem;margin:0.15rem;${earned ? 'background:var(--primary)18;color:var(--primary);border:1px solid var(--primary)33;' : 'background:var(--bg-tertiary);color:var(--text-muted);opacity:0.5;'}"><i class="${def.icon}"></i> ${def.name}</span>`;
+    }).join('');
 
     container.innerHTML = `
-      <div style="text-align:center;padding:1.5rem 0;">
-        <div style="font-size:2rem;"><i class="fas fa-fingerprint" style="color:var(--primary);"></i></div>
-        <h3 style="margin:0.75rem 0 0.25rem;">${profile.name}${moltName ? ' <span style="color:var(--primary);">' + moltName + (moltName.endsWith('.molt') ? '' : '.molt') + '</span>' : ''}</h3>
-        <div style="font-size:0.85rem;color:var(--text-muted);margin-bottom:0.25rem;">${tierName} · ${agentType}${isActive ? ' · <span style="color:var(--success);">Active</span>' : ''}</div>
-        <div style="font-size:0.9rem;color:var(--text-muted);">Reputation: ${rep.toLocaleString()} / 10,000</div>
-        <div style="margin-top:0.75rem;height:6px;background:var(--bg-tertiary);border-radius:3px;overflow:hidden;max-width:300px;margin-left:auto;margin-right:auto;">
-          <div style="height:100%;width:${repPct}%;background:var(--primary);border-radius:3px;"></div>
+      <!-- Profile Strip -->
+      <div style="display:flex;align-items:center;gap:1rem;padding:1.25rem;border-bottom:1px solid var(--border);">
+        <div style="width:48px;height:48px;border-radius:50%;background:${tier.color}18;border:2px solid ${tier.color};display:flex;align-items:center;justify-content:center;">
+          <i class="fas fa-fingerprint" style="color:${tier.color};font-size:1.25rem;"></i>
+        </div>
+        <div style="flex:1;">
+          <div style="font-weight:700;font-size:1.1rem;">${displayName}${moltNameDisplay ? ` <span style="color:var(--primary);">${moltNameDisplay}</span>` : ''}</div>
+          <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;margin-top:0.25rem;">
+            <span style="display:inline-block;padding:0.15rem 0.5rem;border-radius:6px;font-size:0.72rem;background:${tier.color}18;color:${tier.color};border:1px solid ${tier.color}33;">${tier.name}</span>
+            <span style="display:inline-block;padding:0.15rem 0.5rem;border-radius:6px;font-size:0.72rem;background:var(--bg-tertiary);">${agentType}</span>
+            ${isActive ? '<span style="display:inline-block;padding:0.15rem 0.5rem;border-radius:6px;font-size:0.72rem;background:rgba(74,222,128,0.1);color:#4ade80;"><i class="fas fa-circle" style="font-size:0.35em;vertical-align:middle;"></i> Active</span>' : ''}
+            <span style="font-size:0.75rem;color:var(--text-muted);">${rep.toLocaleString()} rep</span>
+          </div>
+        </div>
+        <button class="btn btn-small btn-secondary" id="idEditProfileBtn" title="Edit Profile"><i class="fas fa-pen"></i></button>
+      </div>
+
+      <!-- Grid: Reputation + Name -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;padding:1rem;">
+        <!-- Reputation -->
+        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:1rem;">
+          <div style="font-weight:600;font-size:0.85rem;margin-bottom:0.75rem;"><i class="fas fa-chart-line"></i> Reputation</div>
+          <div style="display:flex;align-items:baseline;gap:0.5rem;">
+            <span style="font-size:1.5rem;font-weight:700;">${rep.toLocaleString()}</span>
+            <span style="color:var(--text-muted);font-size:0.82rem;">/ 10,000</span>
+          </div>
+          <div style="margin-top:0.5rem;height:6px;background:var(--bg-tertiary);border-radius:3px;overflow:hidden;">
+            <div style="height:100%;width:${repPct}%;background:${tier.color};border-radius:3px;"></div>
+          </div>
+          <div style="margin-top:0.75rem;display:flex;flex-wrap:wrap;gap:0.25rem;">${tierStepsHtml}</div>
+          ${nextInfo}
+        </div>
+
+        <!-- .molt Name -->
+        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:1rem;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
+            <span style="font-weight:600;font-size:0.85rem;"><i class="fas fa-at"></i> .molt Name</span>
+          </div>
+          ${data.name ? `
+            <div style="font-size:1.25rem;font-weight:700;">${data.name.endsWith('.molt') ? data.name : data.name + '.molt'}</div>
+            <div style="display:flex;gap:0.5rem;margin-top:0.75rem;flex-wrap:wrap;">
+              <button class="btn btn-small btn-secondary" id="idRenewNameBtn"><i class="fas fa-redo"></i> Renew</button>
+              <button class="btn btn-small btn-secondary" id="idTransferNameBtn"><i class="fas fa-exchange-alt"></i> Transfer</button>
+              <button class="btn btn-small btn-danger" id="idReleaseNameBtn" style="font-size:0.75rem;"><i class="fas fa-trash-alt"></i> Release</button>
+            </div>
+          ` : `
+            <div style="color:var(--text-muted);font-size:0.82rem;margin-bottom:0.5rem;">No name registered</div>
+            <small style="color:var(--text-muted);">5+ chars from 20 MOLT/yr</small>
+            <button class="btn btn-small btn-primary" id="idRegisterNameBtn" style="margin-top:0.5rem;"><i class="fas fa-plus"></i> Register</button>
+          `}
+        </div>
+
+        <!-- Skills -->
+        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:1rem;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
+            <span style="font-weight:600;font-size:0.85rem;"><i class="fas fa-tools"></i> Skills</span>
+            <button class="btn btn-small btn-secondary" id="idAddSkillBtn" style="font-size:0.72rem;"><i class="fas fa-plus"></i> Add</button>
+          </div>
+          ${skillsHtml}
+        </div>
+
+        <!-- Vouches -->
+        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:1rem;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
+            <span style="font-weight:600;font-size:0.85rem;"><i class="fas fa-handshake"></i> Vouches</span>
+            <button class="btn btn-small btn-secondary" id="idVouchBtn" style="font-size:0.72rem;"><i class="fas fa-plus"></i> Vouch</button>
+          </div>
+          <div style="display:flex;gap:1rem;margin-bottom:0.5rem;font-size:0.82rem;">
+            <span><strong>${vouchesReceived.length}</strong> received</span>
+            <span><strong>${vouchesGiven.length}</strong> given</span>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;">${vouchChips}</div>
         </div>
       </div>
-      ${skills.length > 0 ? `
+
+      <!-- Achievements (full width) -->
       <div style="padding:0 1rem 1rem;">
-        <h4 style="font-size:0.85rem;color:var(--text-muted);margin-bottom:0.5rem;"><i class="fas fa-tools"></i> Skills</h4>
-        ${skills.map(s => {
-          const level = Math.max(0, Math.min(5, Math.round((s.proficiency || 0) / 20)));
-          return `<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.35rem;font-size:0.85rem;"><span style="min-width:80px;">${s.name}</span><div style="flex:1;height:4px;background:var(--bg-tertiary);border-radius:2px;overflow:hidden;"><div style="height:100%;width:${(level/5)*100}%;background:var(--primary);border-radius:2px;"></div></div><span style="color:var(--text-muted);font-size:0.75rem;">${level}/5</span></div>`;
-        }).join('')}
-      </div>` : ''}
-      <div style="display:flex;justify-content:center;gap:1.5rem;padding:0.5rem 1rem;font-size:0.82rem;color:var(--text-muted);">
-        <span><i class="fas fa-handshake"></i> ${vouchesReceived.length} vouches</span>
-        <span><i class="fas fa-award"></i> ${achievements.length} achievements</span>
-        ${agentEndpoint ? `<span><i class="fas fa-satellite-dish"></i> ${agentAvailability}</span>` : ''}
+        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:1rem;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
+            <span style="font-weight:600;font-size:0.85rem;"><i class="fas fa-award"></i> Achievements</span>
+            <span style="font-size:0.75rem;color:var(--text-muted);">${achievements.length}/${ACHIEVEMENT_DEFS.length}</span>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;">${allAchievements}</div>
+        </div>
+      </div>
+
+      <!-- Agent Service (full width) -->
+      <div style="padding:0 1rem 1rem;">
+        <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:1rem;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;">
+            <span style="font-weight:600;font-size:0.85rem;"><i class="fas fa-satellite-dish"></i> Agent Service</span>
+            <button class="btn btn-small btn-secondary" id="idConfigAgentBtn" style="font-size:0.72rem;"><i class="fas fa-cog"></i> Configure</button>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.75rem;font-size:0.82rem;">
+            <div><span style="color:var(--text-muted);display:block;font-size:0.72rem;">Endpoint</span><span style="font-family:monospace;">${data.endpoint || '<em style="opacity:0.4;">Not set</em>'}</span></div>
+            <div><span style="color:var(--text-muted);display:block;font-size:0.72rem;">Status</span>${data.availability === 'online' ? '<span style="color:#4ade80;">Online</span>' : '<span style="color:var(--text-muted);">Offline</span>'}</div>
+            <div><span style="color:var(--text-muted);display:block;font-size:0.72rem;">Rate</span>${data.rate.toLocaleString(undefined, { maximumFractionDigits: 9 })} MOLT/req</div>
+          </div>
+        </div>
       </div>
     `;
-  } catch {
-    container.innerHTML = '<div class="empty-state"><p>Failed to load identity</p></div>';
+
+    // Wire action buttons
+    $('idEditProfileBtn')?.addEventListener('click', () => showIdentityEditProfileModal(data.agentType));
+    $('idAddSkillBtn')?.addEventListener('click', () => showIdentityAddSkillModal());
+    $('idVouchBtn')?.addEventListener('click', () => showIdentityVouchModal());
+    $('idRegisterNameBtn')?.addEventListener('click', () => showIdentityRegisterNameModal());
+    $('idRenewNameBtn')?.addEventListener('click', () => showIdentityRenewNameModal(data.name));
+    $('idTransferNameBtn')?.addEventListener('click', () => showIdentityTransferNameModal(data.name));
+    $('idReleaseNameBtn')?.addEventListener('click', () => showIdentityReleaseNameModal(data.name));
+    $('idConfigAgentBtn')?.addEventListener('click', () => showIdentityAgentConfigModal(data));
+
+  } catch (e) {
+    container.innerHTML = `<div class="empty-state"><p>Failed to load identity: ${e.message}</p></div>`;
   }
+}
+
+/* ── Identity Action Modals ── */
+
+function showIdentityPrompt(title, fields, onSubmit) {
+  // Create a simple modal for identity actions
+  const overlay = document.createElement('div');
+  overlay.className = 'modal show';
+  overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:1000;';
+  
+  const card = document.createElement('div');
+  card.style.cssText = 'background:var(--bg-secondary);border:1px solid var(--border);border-radius:16px;padding:1.5rem;max-width:420px;width:90%;max-height:85vh;overflow-y:auto;';
+  
+  let fieldsHtml = fields.map(f => {
+    if (f.type === 'select') {
+      const opts = f.options.map(o => `<option value="${o.value}"${o.selected ? ' selected' : ''}>${o.label}</option>`).join('');
+      return `<div class="form-group" style="margin-bottom:0.75rem;"><label style="font-size:0.82rem;color:var(--text-muted);display:block;margin-bottom:0.25rem;">${f.label}</label><select id="idModal_${f.id}" class="form-input" style="width:100%;">${opts}</select></div>`;
+    }
+    if (f.type === 'info') {
+      return `<div style="font-size:0.82rem;color:var(--text-muted);margin-bottom:0.75rem;padding:0.5rem;background:var(--bg-tertiary);border-radius:8px;">${f.html}</div>`;
+    }
+    return `<div class="form-group" style="margin-bottom:0.75rem;"><label style="font-size:0.82rem;color:var(--text-muted);display:block;margin-bottom:0.25rem;">${f.label}</label><input type="${f.type || 'text'}" id="idModal_${f.id}" class="form-input" placeholder="${f.placeholder || ''}" value="${f.value || ''}" style="width:100%;"></div>`;
+  }).join('');
+
+  card.innerHTML = `
+    <h3 style="margin-bottom:1rem;"><i class="fas fa-fingerprint" style="color:var(--primary);margin-right:0.5rem;"></i>${title}</h3>
+    ${fieldsHtml}
+    <div style="display:flex;gap:0.75rem;margin-top:1rem;">
+      <button class="btn btn-secondary" id="idModalCancel" style="flex:1;">Cancel</button>
+      <button class="btn btn-primary" id="idModalConfirm" style="flex:1;">Confirm</button>
+    </div>
+  `;
+
+  overlay.appendChild(card);
+  document.body.appendChild(overlay);
+
+  overlay.addEventListener('click', e => { if (e.target === overlay) { overlay.remove(); } });
+  card.querySelector('#idModalCancel').addEventListener('click', () => overlay.remove());
+  card.querySelector('#idModalConfirm').addEventListener('click', async () => {
+    const values = {};
+    fields.forEach(f => {
+      if (f.type === 'info') return;
+      const el = document.getElementById(`idModal_${f.id}`);
+      if (el) values[f.id] = el.value;
+    });
+    
+    const confirmBtn = card.querySelector('#idModalConfirm');
+    confirmBtn.disabled = true;
+    confirmBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Processing...';
+    
+    try {
+      await onSubmit(values);
+      overlay.remove();
+      showToast('Success!', 'success');
+      await loadIdentityTab();
+    } catch (err) {
+      showToast(err.message, 'error');
+      confirmBtn.disabled = false;
+      confirmBtn.innerHTML = 'Confirm';
+    }
+  });
+}
+
+async function showIdentityRegisterModal() {
+  const wallet = getActiveWallet();
+  if (!wallet) return;
+
+  showIdentityPrompt('Register MoltyID', [
+    { type: 'info', html: 'Create your on-chain identity. Choose a display name and agent type.<br><small>Free — only the 0.0001 MOLT tx fee applies.</small>' },
+    { id: 'displayName', label: 'Display Name', type: 'text', placeholder: 'e.g. CryptoBuilder' },
+    { id: 'agentType', label: 'Agent Type', type: 'select', options: AGENT_TYPES.map(t => ({ value: t.value, label: `${t.label} — ${t.desc}` })) },
+    { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
+  ], async (values) => {
+    await registerIdentity({
+      wallet, password: values.password, network: state.network?.selected,
+      displayName: values.displayName, agentType: values.agentType
+    });
+  });
+}
+
+async function showIdentityEditProfileModal(currentAgentType) {
+  const wallet = getActiveWallet();
+  if (!wallet) return;
+
+  showIdentityPrompt('Update Agent Type', [
+    { id: 'agentType', label: 'Agent Type', type: 'select', options: AGENT_TYPES.map(t => ({ value: t.value, label: `${t.label} — ${t.desc}`, selected: t.value === Number(currentAgentType) })) },
+    { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
+  ], async (values) => {
+    await updateIdentityAgentType({
+      wallet, password: values.password, network: state.network?.selected,
+      agentType: values.agentType
+    });
+  });
+}
+
+async function showIdentityAddSkillModal() {
+  const wallet = getActiveWallet();
+  if (!wallet) return;
+
+  showIdentityPrompt('Add Skill', [
+    { id: 'skillName', label: 'Skill Name', type: 'text', placeholder: 'e.g. Rust, Trading, Security' },
+    { id: 'proficiency', label: 'Proficiency (1-100)', type: 'number', placeholder: '50' },
+    { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
+  ], async (values) => {
+    await addIdentitySkill({
+      wallet, password: values.password, network: state.network?.selected,
+      skillName: values.skillName, proficiency: values.proficiency
+    });
+  });
+}
+
+async function showIdentityVouchModal() {
+  const wallet = getActiveWallet();
+  if (!wallet) return;
+
+  showIdentityPrompt('Vouch for Identity', [
+    { type: 'info', html: 'Vouch for another MoltyID holder. Both parties must have registered identities.' },
+    { id: 'vouchee', label: 'Address to Vouch For', type: 'text', placeholder: 'Base58 address' },
+    { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
+  ], async (values) => {
+    await vouchForIdentity({
+      wallet, password: values.password, network: state.network?.selected,
+      vouchee: values.vouchee
+    });
+  });
+}
+
+async function showIdentityRegisterNameModal() {
+  const wallet = getActiveWallet();
+  if (!wallet) return;
+
+  showIdentityPrompt('Register .molt Name', [
+    { type: 'info', html: '<div style="display:flex;flex-direction:column;gap:0.25rem;"><div><strong>5+ chars</strong> — 20 MOLT/year</div><div style="opacity:0.6;"><strong>4 chars</strong> — 100 MOLT/year (auction only)</div><div style="opacity:0.6;"><strong>3 chars</strong> — 500 MOLT/year (auction only)</div></div><small>Names: lowercase, 3-32 chars (a-z, 0-9, hyphens). Duration: 1-10 years.</small>' },
+    { id: 'name', label: 'Name (without .molt)', type: 'text', placeholder: 'myname' },
+    { id: 'duration', label: 'Duration (years)', type: 'number', placeholder: '1', value: '1' },
+    { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
+  ], async (values) => {
+    await registerMoltName({
+      wallet, password: values.password, network: state.network?.selected,
+      name: values.name, durationYears: values.duration
+    });
+  });
+}
+
+async function showIdentityRenewNameModal(currentName) {
+  const wallet = getActiveWallet();
+  if (!wallet) return;
+  const name = (currentName || '').replace(/\.molt$/, '');
+
+  showIdentityPrompt(`Renew ${name}.molt`, [
+    { id: 'years', label: 'Additional Years', type: 'number', placeholder: '1', value: '1' },
+    { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
+  ], async (values) => {
+    await renewMoltName({
+      wallet, password: values.password, network: state.network?.selected,
+      name, additionalYears: values.years
+    });
+  });
+}
+
+async function showIdentityTransferNameModal(currentName) {
+  const wallet = getActiveWallet();
+  if (!wallet) return;
+  const name = (currentName || '').replace(/\.molt$/, '');
+
+  showIdentityPrompt(`Transfer ${name}.molt`, [
+    { type: 'info', html: 'Transfer ownership to another address. <strong>This is irreversible.</strong>' },
+    { id: 'recipient', label: 'Recipient Address', type: 'text', placeholder: 'Base58 address' },
+    { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
+  ], async (values) => {
+    await transferMoltName({
+      wallet, password: values.password, network: state.network?.selected,
+      name, recipient: values.recipient
+    });
+  });
+}
+
+async function showIdentityReleaseNameModal(currentName) {
+  const wallet = getActiveWallet();
+  if (!wallet) return;
+  const name = (currentName || '').replace(/\.molt$/, '');
+
+  if (!confirm(`Release ${name}.molt? This is permanent and cannot be undone.`)) return;
+
+  showIdentityPrompt(`Confirm Release: ${name}.molt`, [
+    { type: 'info', html: `You are about to permanently release <strong>${name}.molt</strong>. It can be re-registered by anyone.` },
+    { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
+  ], async (values) => {
+    await releaseMoltName({
+      wallet, password: values.password, network: state.network?.selected,
+      name
+    });
+  });
+}
+
+async function showIdentityAgentConfigModal(data) {
+  const wallet = getActiveWallet();
+  if (!wallet) return;
+
+  showIdentityPrompt('Agent Service Configuration', [
+    { type: 'info', html: 'Configure how other agents discover and interact with your identity.' },
+    { id: 'endpoint', label: 'Service Endpoint URL', type: 'text', placeholder: 'https://api.example.com/agent', value: data.endpoint || '' },
+    { id: 'rate', label: 'Rate (MOLT per request)', type: 'number', placeholder: '0.001', value: String(data.rate || 0) },
+    { id: 'availability', label: 'Availability', type: 'select', options: [
+      { value: 'online', label: 'Online', selected: data.availability === 'online' },
+      { value: 'offline', label: 'Offline', selected: data.availability !== 'online' }
+    ]},
+    { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Sign transaction' }
+  ], async (values) => {
+    const tasks = [];
+    if (values.endpoint !== (data.endpoint || '')) {
+      tasks.push(() => setIdentityEndpoint({ wallet, password: values.password, network: state.network?.selected, endpoint: values.endpoint }));
+    }
+    if (Number(values.rate || 0) !== data.rate) {
+      tasks.push(() => setIdentityRate({ wallet, password: values.password, network: state.network?.selected, rateMolt: values.rate }));
+    }
+    const newOnline = values.availability === 'online';
+    const oldOnline = data.availability === 'online';
+    if (newOnline !== oldOnline) {
+      tasks.push(() => setIdentityAvailability({ wallet, password: values.password, network: state.network?.selected, online: newOnline }));
+    }
+    if (tasks.length === 0) throw new Error('No changes to save');
+    for (const task of tasks) await task();
+  });
 }
 
 async function loadAssets() {
@@ -565,58 +1031,120 @@ async function loadAssets() {
   }
 }
 
-async function loadActivity() {
+let _activityPage = 0;
+const ACTIVITY_PER_PAGE = 20;
+
+async function loadActivity(reset = true) {
   const wallet = getActiveWallet();
   const list = $('activityList');
   if (!wallet || !list) return;
 
-  list.innerHTML = '<div class="empty-state"><span class="spinner"></span></div>';
+  if (reset) {
+    _activityPage = 0;
+    list.innerHTML = '<div class="empty-state"><span class="spinner"></span></div>';
+  }
 
   try {
-    const result = await rpc().getTransactionsByAddress(wallet.address, { limit: 15 });
+    const result = await rpc().getTransactionsByAddress(wallet.address, { limit: ACTIVITY_PER_PAGE, offset: _activityPage * ACTIVITY_PER_PAGE });
     const txs = result?.transactions || (Array.isArray(result) ? result : []);
 
-    if (!txs.length) {
+    if (!txs.length && _activityPage === 0) {
       list.innerHTML = '<div class="empty-state"><span class="empty-icon"><i class="fas fa-history"></i></span><p>No recent activity</p></div>';
       return;
     }
 
-    list.innerHTML = txs.map(tx => {
+    const explorerBase = '../explorer/transaction.html?sig=';
+    const html = txs.map(tx => {
       const sig = tx.signature || tx.hash || 'unknown';
       const shortSig = `${String(sig).slice(0, 8)}…${String(sig).slice(-4)}`;
       const isSend = (tx.from === wallet.address);
+
+      // 14 type mappings — aligned with wallet website
       const typeMap = {
         'Transfer': isSend ? 'Sent' : 'Received',
-        'Stake': 'Staked', 'Unstake': 'Unstaked', 'ClaimUnstake': 'Claimed',
-        'RegisterEvmAddress': 'EVM Registration',
-        'Contract': 'Contract Call', 'Reward': 'Reward',
-        'GenesisTransfer': 'Genesis', 'GenesisMint': 'Genesis Mint',
         'Airdrop': 'Airdrop',
+        'Stake': 'Staked',
+        'Unstake': 'Unstaked',
+        'ClaimUnstake': 'Claimed Unstake',
+        'RegisterEvmAddress': 'EVM Registration',
+        'Contract': 'Contract Call',
+        'CreateCollection': 'Created Collection',
+        'MintNFT': 'Minted NFT',
+        'TransferNFT': isSend ? 'Sent NFT' : 'Received NFT',
+        'Reward': 'Reward',
+        'GenesisTransfer': 'Genesis Transfer',
+        'GenesisMint': 'Genesis Mint',
       };
       const type = typeMap[tx.type] || (isSend ? 'Sent' : 'Received');
+
+      // Icons & colors — aligned with wallet website
+      let icon = isSend ? 'fa-arrow-up' : 'fa-arrow-down';
+      let color = isSend ? '#ff6b35' : '#4ade80';
+      let sign = isSend ? '-' : '+';
+
+      if (tx.type === 'Stake' || tx.type === 'Unstake' || tx.type === 'ClaimUnstake') {
+        icon = 'fa-coins'; color = '#a78bfa';
+      } else if (tx.type === 'RegisterEvmAddress') {
+        icon = 'fa-link'; color = '#94a3b8';
+      } else if (tx.type === 'Contract') {
+        icon = 'fa-file-code'; color = '#f59e0b';
+      } else if (tx.type === 'Reward' || tx.type === 'GenesisTransfer' || tx.type === 'GenesisMint') {
+        icon = 'fa-gift'; color = '#4ade80'; sign = '+';
+      } else if (tx.type === 'Airdrop') {
+        icon = 'fa-parachute-box'; color = '#60a5fa';
+      }
+
+      const address = isSend ? (tx.to || '') : (tx.from || '');
+      const displayAddr = address && address.length > 20 ? address.slice(0, 8) + '…' + address.slice(-4) : (address || '');
       const amountVal = tx.amount_shells ? tx.amount_shells : (tx.amount || 0);
       const amt = (Number(amountVal) / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 4 });
-      const sign = isSend ? '-' : '+';
-      const color = isSend ? '#ff6b35' : '#4ade80';
       const ts = tx.timestamp ? new Date(tx.timestamp * 1000).toLocaleString() : '';
-      const isEvm = (tx.type === 'RegisterEvmAddress');
+      const explorerLink = sig !== 'unknown' ? `${explorerBase}${sig}` : '#';
+
+      // Fee display: "Fee only" for EVM registration and 0-amount contract calls
+      const isZeroAmount = Number(amountVal) === 0;
+      const amountStr = (tx.type === 'RegisterEvmAddress' || (tx.type === 'Contract' && isZeroAmount))
+        ? 'Fee only'
+        : `${sign}${amt} MOLT`;
+
       return `
-        <div class="activity-item" style="cursor:pointer;" title="${sig}">
-          <div class="activity-icon ${isSend ? 'send' : 'receive'}">
-            <i class="fas fa-arrow-${isSend ? 'up' : 'down'}"></i>
+        <a href="${explorerLink}" target="_blank" class="activity-item" style="text-decoration:none;color:inherit;display:flex;">
+          <div class="activity-icon" style="background:${color}22;color:${color};">
+            <i class="fas ${icon}"></i>
           </div>
           <div class="activity-details" style="flex:1;min-width:0;">
-            <div class="activity-type">${type}</div>
+            <div class="activity-type">${type}${displayAddr ? `<span class="activity-addr" style="margin-left:0.5rem;font-size:0.75rem;opacity:0.5;">${displayAddr}</span>` : ''}</div>
             <div class="activity-date" style="font-size:0.75rem;opacity:0.5;">${shortSig}</div>
           </div>
-          <div style="text-align:right;">
-            <div style="font-weight:600;color:${color};">${isEvm ? 'Fee only' : `${sign}${amt} MOLT`}</div>
+          <div style="text-align:right;flex-shrink:0;">
+            <div class="activity-amount" style="font-weight:600;color:${color};">${amountStr}</div>
             <div style="font-size:0.7rem;opacity:0.5;">${ts}</div>
           </div>
-        </div>`;
+        </a>`;
     }).join('');
+
+    if (reset) {
+      list.innerHTML = html;
+    } else {
+      // Remove previous "Load More" button before appending
+      const prevBtn = list.querySelector('.activity-load-more');
+      if (prevBtn) prevBtn.remove();
+      list.insertAdjacentHTML('beforeend', html);
+    }
+
+    // Add "Load More" if we got a full page
+    if (txs.length >= ACTIVITY_PER_PAGE) {
+      _activityPage++;
+      list.insertAdjacentHTML('beforeend', `
+        <div class="activity-load-more" style="text-align:center;padding:1rem;">
+          <button onclick="loadActivity(false)" class="btn btn-small btn-secondary" style="padding:0.5rem 1.5rem;font-size:0.85rem;">
+            Load More
+          </button>
+        </div>
+      `);
+    }
   } catch {
-    list.innerHTML = '<div class="empty-state"><p>Failed to load activity</p></div>';
+    if (_activityPage === 0) list.innerHTML = '<div class="empty-state"><p>Failed to load activity</p></div>';
   }
 }
 
@@ -1057,6 +1585,13 @@ async function boot() {
     showScreen('unlockScreen');
   } else {
     await showDashboard();
+    
+    // Handle hash-based tab navigation (e.g. full.html#identity)
+    const hash = window.location.hash.replace('#', '');
+    if (hash) {
+      const tabBtn = document.querySelector(`.dashboard-tab[data-tab="${hash}"]`);
+      if (tabBtn) tabBtn.click();
+    }
   }
 
   if (!state.isLocked) {
