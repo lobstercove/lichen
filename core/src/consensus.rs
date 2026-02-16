@@ -1958,6 +1958,84 @@ impl VoteAggregator {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// FINALITY TRACKER — Lock-free commitment level tracking
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Number of confirmed slots before a block is considered finalized.
+/// Matches Solana's 32-slot finality depth.
+pub const FINALITY_DEPTH: u64 = 32;
+
+/// Lock-free finality tracker shared between validator consensus and RPC.
+///
+/// Tracks three commitment levels (Solana-compatible):
+///   - **Processed**: Block stored on chain tip (existing behavior via `last_slot`)
+///   - **Confirmed**: Block has received 2/3 stake-weighted supermajority votes
+///   - **Finalized**: Confirmed + FINALITY_DEPTH slots deep (safe from rollback)
+///
+/// Uses `AtomicU64` for zero-cost reads from RPC without locking the vote aggregator.
+#[derive(Debug, Clone)]
+pub struct FinalityTracker {
+    /// Highest slot that has reached 2/3 supermajority
+    confirmed_slot: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Highest slot considered finalized (confirmed_slot - FINALITY_DEPTH)
+    finalized_slot: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl FinalityTracker {
+    /// Create a new finality tracker, optionally loading persisted values
+    pub fn new(initial_confirmed: u64, initial_finalized: u64) -> Self {
+        use std::sync::atomic::AtomicU64;
+        use std::sync::Arc;
+        FinalityTracker {
+            confirmed_slot: Arc::new(AtomicU64::new(initial_confirmed)),
+            finalized_slot: Arc::new(AtomicU64::new(initial_finalized)),
+        }
+    }
+
+    /// Called when a block reaches supermajority. Updates confirmed and finalized slots.
+    /// Returns true if the confirmed slot was actually advanced.
+    pub fn mark_confirmed(&self, slot: u64) -> bool {
+        use std::sync::atomic::Ordering;
+        let prev = self.confirmed_slot.fetch_max(slot, Ordering::Relaxed);
+        if slot > prev {
+            // Advance finalized slot: any confirmed slot >= FINALITY_DEPTH behind tip
+            let new_finalized = slot.saturating_sub(FINALITY_DEPTH);
+            self.finalized_slot.fetch_max(new_finalized, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Get the current confirmed slot (2/3 supermajority reached)
+    pub fn confirmed_slot(&self) -> u64 {
+        self.confirmed_slot.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Get the current finalized slot (confirmed + FINALITY_DEPTH deep)
+    pub fn finalized_slot(&self) -> u64 {
+        self.finalized_slot.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Determine the commitment level of a transaction in a given slot.
+    ///   - `None` if the slot hasn't been processed
+    ///   - `"processed"` if the tx is in a block but not yet confirmed
+    ///   - `"confirmed"` if the block has 2/3 votes but isn't finalized yet
+    ///   - `"finalized"` if the block is confirmed + 32 slots deep
+    pub fn commitment_for_slot(&self, slot: u64) -> &'static str {
+        let finalized = self.finalized_slot();
+        let confirmed = self.confirmed_slot();
+        if slot <= finalized {
+            "finalized"
+        } else if slot <= confirmed {
+            "confirmed"
+        } else {
+            "processed"
+        }
+    }
+}
+
 /// T4.1: Fork choice rule — heaviest observed chain
 /// Tracks competing chain heads by (slot, block_hash, cumulative_stake_weight)
 /// and selects the canonical head using highest-slot-first, then most stake,

@@ -20,8 +20,8 @@ pub mod updater;
 use moltchain_core::nft::decode_token_state;
 use moltchain_core::{
     evm_tx_hash, Account, Block, ContractAccount, ContractContext, ContractInstruction,
-    ContractRuntime, FeeConfig, GenesisConfig, GenesisWallet, Hash, Instruction, Keypair,
-    MarketActivity, MarketActivityKind, Mempool, Message, NftActivity, NftActivityKind,
+    ContractRuntime, FeeConfig, FinalityTracker, GenesisConfig, GenesisWallet, Hash, Instruction,
+    Keypair, MarketActivity, MarketActivityKind, Mempool, Message, NftActivity, NftActivityKind,
     ProgramCallActivity, Pubkey, SlashingEvidence, SlashingOffense, SlashingTracker, StakePool,
     StateStore, SymbolRegistryEntry, Transaction, TxProcessor, ValidatorInfo, ValidatorSet, Vote,
     VoteAggregator, BASE_FEE, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID,
@@ -4017,6 +4017,15 @@ async fn run_validator() {
     let vote_aggregator = Arc::new(Mutex::new(VoteAggregator::new()));
     info!("🗳️  BFT voting system initialized");
 
+    // Initialize finality tracker — lock-free commitment level tracking
+    let initial_confirmed = state.get_last_confirmed_slot().unwrap_or(0);
+    let initial_finalized = state.get_last_finalized_slot().unwrap_or(0);
+    let finality_tracker = FinalityTracker::new(initial_confirmed, initial_finalized);
+    info!(
+        "🔒 Finality tracker initialized (confirmed={}, finalized={})",
+        initial_confirmed, initial_finalized
+    );
+
     // Initialize slashing tracker
     let slashing_tracker = Arc::new(Mutex::new(SlashingTracker::new()));
     info!("⚔️  Slashing system initialized");
@@ -4346,6 +4355,7 @@ async fn run_validator() {
         let received_slots_for_rx = received_network_slots_for_blocks.clone();
         let tip_notify_for_blocks = tip_notify_for_blocks.clone();
         let data_dir_for_blocks = data_dir.clone();
+        let finality_for_blocks = finality_tracker.clone();
         tokio::spawn(async move {
             info!("🔄 Block receiver started");
             // 1.7: Track (slot, validator) → block_hash to detect double-block equivocation
@@ -4713,6 +4723,11 @@ async fn run_validator() {
                                     let pool = stake_pool_for_blocks.lock().await;
                                     if agg.has_supermajority(block_slot, &block_hash, &vs, &pool) {
                                         info!("🔒 Block {} FINALIZED with stake-weighted supermajority!", block_slot);
+                                        // Update finality tracker + persist to StateStore
+                                        if finality_for_blocks.mark_confirmed(block_slot) {
+                                            let _ = state_for_blocks.set_last_confirmed_slot(finality_for_blocks.confirmed_slot());
+                                            let _ = state_for_blocks.set_last_finalized_slot(finality_for_blocks.finalized_slot());
+                                        }
                                     }
                                     drop(pool);
                                 }
@@ -5034,6 +5049,8 @@ async fn run_validator() {
         let validator_pubkey_for_slash_report = validator_pubkey;
         let peer_mgr_for_slash = p2p_peer_manager.clone();
         let local_addr_for_slash = p2p_config.listen_addr;
+        let finality_for_votes = finality_tracker.clone();
+        let state_for_votes = state.clone();
 
         tokio::spawn(async move {
             info!("🔄 Vote receiver started");
@@ -5124,6 +5141,11 @@ async fn run_validator() {
                             vote_count,
                             vs.validators().len()
                         );
+                        // Update finality tracker + persist to StateStore
+                        if finality_for_votes.mark_confirmed(vote.slot) {
+                            let _ = state_for_votes.set_last_confirmed_slot(finality_for_votes.confirmed_slot());
+                            let _ = state_for_votes.set_last_finalized_slot(finality_for_votes.finalized_slot());
+                        }
                     } else {
                         info!(
                             "🗳️  Vote accepted for block {} ({}/{})",
@@ -6321,6 +6343,7 @@ async fn run_validator() {
         });
 
     // Start RPC server
+    let finality_for_rpc = Some(finality_tracker.clone());
     tokio::spawn(async move {
         if let Err(e) = start_rpc_server(
             state_for_rpc,
@@ -6331,6 +6354,7 @@ async fn run_validator() {
             chain_id_for_rpc,
             network_id_for_rpc,
             admin_token,
+            finality_for_rpc,
         )
         .await
         {
@@ -7164,6 +7188,11 @@ async fn run_validator() {
                 let pool = stake_pool.lock().await;
                 if agg.has_supermajority(slot, &block_hash, &vs, &pool) {
                     info!("🔒 Block {} FINALIZED (stake-weighted self-vote)", slot);
+                    // Update finality tracker + persist to StateStore
+                    if finality_tracker.mark_confirmed(slot) {
+                        let _ = state.set_last_confirmed_slot(finality_tracker.confirmed_slot());
+                        let _ = state.set_last_finalized_slot(finality_tracker.finalized_slot());
+                    }
                 }
             }
             vote
