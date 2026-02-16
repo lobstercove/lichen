@@ -519,15 +519,36 @@ async function loadActivity() {
 
     activityList.innerHTML = txs.map((tx) => {
       const sig = tx.signature || tx.hash || tx.txid || 'unknown';
-      const block = tx.block_height || tx.slot || '—';
-      const shortSig = `${String(sig).slice(0, 10)}...${String(sig).slice(-6)}`;
+      const shortSig = `${String(sig).slice(0, 8)}...${String(sig).slice(-4)}`;
+      const isSent = (tx.from === wallet.address);
+      const typeMap = {
+        'Transfer': isSent ? 'Sent' : 'Received',
+        'Stake': 'Staked', 'Unstake': 'Unstaked', 'ClaimUnstake': 'Claimed',
+        'RegisterEvmAddress': 'EVM Registration',
+        'Contract': 'Contract Call', 'Reward': 'Reward',
+        'GenesisTransfer': 'Genesis', 'GenesisMint': 'Genesis Mint',
+        'Airdrop': 'Airdrop',
+      };
+      const type = typeMap[tx.type] || (isSent ? 'Sent' : 'Received');
+      const amountVal = tx.amount_shells ? tx.amount_shells : (tx.amount || 0);
+      const amt = (amountVal / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 4 });
+      const sign = isSent ? '-' : '+';
+      const ts = tx.timestamp ? new Date(tx.timestamp * 1000).toLocaleString() : '';
+      const color = isSent ? '#ff6b35' : '#4ade80';
+      const icon = isSent ? 'fa-arrow-up' : 'fa-arrow-down';
       return `
-        <div class="popup-activity-item">
-          <div class="top">
-            <strong>Transaction</strong>
-            <span>#${block}</span>
+        <div class="popup-activity-item" style="cursor:pointer;" title="${sig}">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <i class="fas ${icon}" style="color:${color};font-size:0.9rem;"></i>
+            <div style="flex:1;min-width:0;">
+              <div style="font-weight:600;font-size:0.85rem;">${type}</div>
+              <div style="font-size:0.7rem;opacity:0.5;">${shortSig}</div>
+            </div>
+            <div style="text-align:right;">
+              <div style="font-weight:600;font-size:0.85rem;color:${color};">${sign}${amt} MOLT</div>
+              <div style="font-size:0.65rem;opacity:0.5;">${ts}</div>
+            </div>
           </div>
-          <div>${shortSig}</div>
         </div>
       `;
     }).join('');
@@ -599,6 +620,8 @@ async function refreshBalance() {
     const raw = Number(result?.balance || 0);
     const balanceMolt = raw / 1_000_000_000;
     document.getElementById('walletBalance').textContent = `${balanceMolt.toLocaleString(undefined, { maximumFractionDigits: displayDecimals() })} MOLT`;
+    const usdEl = document.getElementById('balanceUsd');
+    if (usdEl) usdEl.textContent = `$${(balanceMolt * 0.05).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD`;
     setStatus(`Connected: ${state.network?.selected || 'local-testnet'}`);
   } catch (error) {
     document.getElementById('walletBalance').textContent = '0.00 MOLT';

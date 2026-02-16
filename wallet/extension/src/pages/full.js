@@ -575,18 +575,35 @@ async function loadActivity() {
 
     list.innerHTML = txs.map(tx => {
       const sig = tx.signature || tx.hash || 'unknown';
-      const block = tx.block_height || tx.slot || '—';
-      const short = `${String(sig).slice(0, 10)}…${String(sig).slice(-6)}`;
+      const shortSig = `${String(sig).slice(0, 8)}…${String(sig).slice(-4)}`;
       const isSend = (tx.from === wallet.address);
-      const amt = tx.amount ? (Number(tx.amount) / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 9 }) : '';
+      const typeMap = {
+        'Transfer': isSend ? 'Sent' : 'Received',
+        'Stake': 'Staked', 'Unstake': 'Unstaked', 'ClaimUnstake': 'Claimed',
+        'RegisterEvmAddress': 'EVM Registration',
+        'Contract': 'Contract Call', 'Reward': 'Reward',
+        'GenesisTransfer': 'Genesis', 'GenesisMint': 'Genesis Mint',
+        'Airdrop': 'Airdrop',
+      };
+      const type = typeMap[tx.type] || (isSend ? 'Sent' : 'Received');
+      const amountVal = tx.amount_shells ? tx.amount_shells : (tx.amount || 0);
+      const amt = (Number(amountVal) / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 4 });
+      const sign = isSend ? '-' : '+';
+      const color = isSend ? '#ff6b35' : '#4ade80';
+      const ts = tx.timestamp ? new Date(tx.timestamp * 1000).toLocaleString() : '';
+      const isEvm = (tx.type === 'RegisterEvmAddress');
       return `
-        <div class="activity-item">
+        <div class="activity-item" style="cursor:pointer;" title="${sig}">
           <div class="activity-icon ${isSend ? 'send' : 'receive'}">
             <i class="fas fa-arrow-${isSend ? 'up' : 'down'}"></i>
           </div>
-          <div class="activity-details">
-            <div class="activity-type">${isSend ? 'Sent' : 'Received'}${amt ? ` ${amt} MOLT` : ''}</div>
-            <div class="activity-date">Block #${block} · ${short}</div>
+          <div class="activity-details" style="flex:1;min-width:0;">
+            <div class="activity-type">${type}</div>
+            <div class="activity-date" style="font-size:0.75rem;opacity:0.5;">${shortSig}</div>
+          </div>
+          <div style="text-align:right;">
+            <div style="font-weight:600;color:${color};">${isEvm ? 'Fee only' : `${sign}${amt} MOLT`}</div>
+            <div style="font-size:0.7rem;opacity:0.5;">${ts}</div>
           </div>
         </div>`;
     }).join('');
@@ -599,7 +616,14 @@ async function loadActivity() {
    Send Modal
    ────────────────────────────────────────── */
 function openModal(id) { $(id)?.classList.add('show'); }
-function closeModal(id) { $(id)?.classList.remove('show'); }
+function closeModal(id) {
+  $(id)?.classList.remove('show');
+  if (id === 'sendModal') {
+    const to = $('sendTo'); if (to) to.value = '';
+    const amt = $('sendAmount'); if (amt) amt.value = '';
+    const pw = $('sendPassword'); if (pw) pw.value = '';
+  }
+}
 
 async function handleSend() {
   const wallet = getActiveWallet();

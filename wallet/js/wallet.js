@@ -80,7 +80,7 @@ function connectBalanceWebSocket() {
     }
     
     balanceWs.onopen = () => {
-        console.log('[WS] Connected, subscribing to account changes + bridge events');
+        console.log('[WS] Connected, subscribing to account changes');
         balanceWsSubscribedAddress = wallet.address;
         // Subscribe to account balance changes
         balanceWs.send(JSON.stringify({
@@ -88,20 +88,6 @@ function connectBalanceWebSocket() {
             id: 1,
             method: 'subscribeAccount',
             params: wallet.address
-        }));
-        // Subscribe to bridge lock events (deposit confirmed on source chain)
-        balanceWs.send(JSON.stringify({
-            jsonrpc: '2.0',
-            id: 10,
-            method: 'subscribeBridgeLocks',
-            params: []
-        }));
-        // Subscribe to bridge mint events (wrapped tokens credited on MoltChain)
-        balanceWs.send(JSON.stringify({
-            jsonrpc: '2.0',
-            id: 11,
-            method: 'subscribeBridgeMints',
-            params: []
         }));
     };
     
@@ -112,19 +98,6 @@ function connectBalanceWebSocket() {
             // Subscription confirmations
             if (msg.id === 1 && msg.result !== undefined) {
                 balanceWsSubId = msg.result;
-                console.log(`[WS] Account subscription active (id: ${balanceWsSubId})`);
-                return;
-            }
-            if (msg.id === 10 && msg.result !== undefined) {
-                bridgeLockSubId = msg.result;
-                bridgeWsActive = true;
-                console.log(`[WS] BridgeLocks subscription active (id: ${bridgeLockSubId})`);
-                return;
-            }
-            if (msg.id === 11 && msg.result !== undefined) {
-                bridgeMintSubId = msg.result;
-                bridgeWsActive = true;
-                console.log(`[WS] BridgeMints subscription active (id: ${bridgeMintSubId})`);
                 return;
             }
             
@@ -135,21 +108,9 @@ function connectBalanceWebSocket() {
                 
                 // Balance notification
                 if (subId === balanceWsSubId) {
-                    console.log('[WS] Balance update received:', result);
                     refreshBalance();
                     loadAssets();
-                    return;
-                }
-                
-                // Bridge lock event — deposit confirmed on source chain
-                if (subId === bridgeLockSubId && result) {
-                    handleBridgeLockEvent(result);
-                    return;
-                }
-                
-                // Bridge mint event — wrapped tokens credited
-                if (subId === bridgeMintSubId && result) {
-                    handleBridgeMintEvent(result);
+                    loadActivity();
                     return;
                 }
             }
@@ -1252,9 +1213,10 @@ async function loadActivity(reset = true) {
         _activityHasMore = transactions.length >= ACTIVITY_PAGE_SIZE;
 
         // Merge new page into accumulated items
+        // RPC returns timestamp as unix seconds — convert to ms for Date()
         const newItems = [...transactions.map(tx => ({
             ...tx,
-            timestamp: tx.block_time ? tx.block_time * 1000 : (tx.timestamp || 0),
+            timestamp: (tx.block_time || tx.timestamp || 0) * 1000,
             isAirdrop: false
         })), ...airdrops];
         _activityItems = [..._activityItems, ...newItems]
@@ -1278,36 +1240,66 @@ async function loadActivity(reset = true) {
                 sign = '+';
             } else {
                 const isSent = tx.from === wallet.address;
+                // Map tx.type to user-friendly labels
+                const typeMap = {
+                    'Transfer': isSent ? 'Sent' : 'Received',
+                    'Airdrop': 'Airdrop',
+                    'Stake': 'Staked',
+                    'Unstake': 'Unstaked',
+                    'ClaimUnstake': 'Claimed Unstake',
+                    'RegisterEvmAddress': 'EVM Registration',
+                    'Contract': 'Contract Call',
+                    'CreateCollection': 'Created Collection',
+                    'MintNFT': 'Minted NFT',
+                    'TransferNFT': isSent ? 'Sent NFT' : 'Received NFT',
+                    'Reward': 'Reward',
+                    'GenesisTransfer': 'Genesis Transfer',
+                    'GenesisMint': 'Genesis Mint',
+                };
+                type = typeMap[tx.type] || (isSent ? 'Sent' : 'Received');
                 icon = isSent ? 'fa-arrow-up' : 'fa-arrow-down';
                 color = isSent ? '#ff6b35' : '#4ade80';
-                type = tx.type === 'Airdrop' ? 'Airdrop' : (isSent ? 'Sent' : 'Received');
-                address = isSent ? (tx.to || 'Unknown') : (tx.from || 'Unknown');
+                // Special icons/colors for non-transfer types
+                if (tx.type === 'Stake' || tx.type === 'Unstake' || tx.type === 'ClaimUnstake') {
+                    icon = 'fa-coins'; color = '#a78bfa';
+                } else if (tx.type === 'RegisterEvmAddress') {
+                    icon = 'fa-link'; color = '#94a3b8';
+                } else if (tx.type === 'Contract') {
+                    icon = 'fa-file-code'; color = '#f59e0b';
+                } else if (tx.type === 'Reward' || tx.type === 'GenesisTransfer' || tx.type === 'GenesisMint') {
+                    icon = 'fa-gift'; color = '#4ade80'; sign = '+';
+                } else if (tx.type === 'Airdrop') {
+                    icon = 'fa-parachute-box'; color = '#60a5fa';
+                }
+                address = isSent ? (tx.to || '') : (tx.from || '');
                 const amountVal = tx.amount_shells ? tx.amount_shells : (tx.amount || 0);
                 amount = fmtToken(amountVal / 1_000_000_000);
-                sign = isSent ? '-' : '+';
-                if (type === 'Airdrop') {
-                    icon = 'fa-parachute-box';
-                    color = '#60a5fa';
-                    sign = '+';
-                }
+                sign = sign || (isSent ? '-' : '+');
             }
 
-            const displayAddr = address.length > 20 ? address.slice(0, 16) + '...' + address.slice(-4) : address;
+            const displayAddr = address && address.length > 20 ? address.slice(0, 8) + '...' + address.slice(-4) : (address || '');
             const date = tx.timestamp ? new Date(tx.timestamp).toLocaleString() : '';
+            const sig = tx.signature || tx.hash || '';
+            const shortSig = sig ? sig.slice(0, 8) + '...' + sig.slice(-4) : '';
+            const explorerLink = sig ? `../explorer/transaction.html?sig=${sig}` : '#';
+            const amountStr = amount !== '0' ? `${sign}${amount} MOLT` : (tx.type === 'RegisterEvmAddress' ? 'Fee only' : `${sign}${amount} MOLT`);
             
             return `
-                <div class="activity-item">
+                <a href="${explorerLink}" target="_blank" class="activity-item" style="text-decoration:none; color:inherit; display:flex;">
                     <div class="activity-icon" style="background: ${color}22; color: ${color};">
                         <i class="fas ${icon}"></i>
                     </div>
-                    <div class="activity-details">
-                        <div class="activity-type">${type}<span class="activity-addr">${displayAddr}</span></div>
-                        <div class="activity-date">${date}</div>
+                    <div class="activity-details" style="flex: 1; min-width: 0;">
+                        <div class="activity-type">${type}${displayAddr ? `<span class="activity-addr">${displayAddr}</span>` : ''}</div>
+                        <div class="activity-date" style="font-size: 0.75rem; opacity: 0.6;">${shortSig}</div>
                     </div>
-                    <div class="activity-amount" style="color: ${color};">
-                        ${sign}${amount} MOLT
+                    <div style="text-align: right; flex-shrink: 0;">
+                        <div class="activity-amount" style="color: ${color};">
+                            ${amountStr}
+                        </div>
+                        <div style="font-size: 0.7rem; opacity: 0.5;">${date}</div>
                     </div>
-                </div>
+                </a>
             `;
         }).join('');
 
@@ -2005,6 +1997,15 @@ function closeModal(modalId) {
     const modal = document.getElementById(modalId);
     if (modal) {
         modal.classList.remove('show');
+        // Reset send form inputs when closing send modal
+        if (modalId === 'sendModal') {
+            const sendTo = document.getElementById('sendTo');
+            const sendAmount = document.getElementById('sendAmount');
+            const sendToken = document.getElementById('sendToken');
+            if (sendTo) sendTo.value = '';
+            if (sendAmount) sendAmount.value = '';
+            if (sendToken) sendToken.value = 'MOLT';
+        }
     }
 }
 
@@ -2377,8 +2378,16 @@ function logoutWallet() {
             settings: {}
         };
         
-        // Remove all dynamically created modals immediately
-        document.querySelectorAll('.password-modal').forEach(m => m.remove());
+        // Remove ALL modals immediately (password modals, confirm modals, send/receive/settings)
+        document.querySelectorAll('.password-modal, .modal.show').forEach(m => {
+            m.classList.remove('show');
+            m.remove();
+        });
+        // Close static modals
+        ['sendModal', 'receiveModal', 'settingsModal'].forEach(id => {
+            const m = document.getElementById(id);
+            if (m) m.classList.remove('show');
+        });
         
         // Hide all screens including dashboard
         document.querySelectorAll('.wallet-screen, .wallet-dashboard').forEach(s => s.style.display = 'none');
@@ -2386,7 +2395,7 @@ function logoutWallet() {
         // Show welcome screen
         document.getElementById('welcomeScreen').style.display = 'flex';
         
-        showToast('✅ Logged out successfully');
+        showToast('Logged out successfully');
     });
 }
 
