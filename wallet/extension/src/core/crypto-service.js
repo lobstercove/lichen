@@ -450,6 +450,88 @@ export function generateId() {
   return crypto.randomUUID();
 }
 
+/**
+ * Keccak-256 hash (pure JS — matches js-sha3 output).
+ * Returns 64-char hex string.
+ */
+export function keccak256(input) {
+  const RC = [
+    0x00000001n, 0x00008082n, 0x0000808An, 0x80008000n,
+    0x0000808Bn, 0x80000001n, 0x80008081n, 0x00008009n,
+    0x0000008An, 0x00000088n, 0x80008009n, 0x8000000An,
+    0x8000808Bn, 0x0000008Bn, 0x00008089n, 0x00008003n,
+    0x00008002n, 0x00000080n, 0x0000800An, 0x8000000An,
+    0x80008081n, 0x00008080n, 0x80000001n, 0x80008008n
+  ];
+  const ROT = [
+    [0,36,3,41,18],[1,44,10,45,2],[62,6,43,15,61],[28,55,25,21,56],[27,20,39,8,14]
+  ];
+  const state = new BigUint64Array(25);
+  const rate = 136; // bytes (1088 bits for keccak-256)
+
+  // Padding
+  const data = input instanceof Uint8Array ? input : new TextEncoder().encode(input);
+  const padded = new Uint8Array(Math.ceil((data.length + 1) / rate) * rate);
+  padded.set(data);
+  padded[data.length] = 0x01;
+  padded[padded.length - 1] |= 0x80;
+
+  // Absorb
+  for (let offset = 0; offset < padded.length; offset += rate) {
+    for (let i = 0; i < rate / 8; i++) {
+      let v = 0n;
+      for (let b = 0; b < 8; b++) v |= BigInt(padded[offset + i * 8 + b]) << BigInt(b * 8);
+      state[i] ^= v;
+    }
+    // Keccak-f[1600]
+    for (let round = 0; round < 24; round++) {
+      // theta
+      const C = new BigUint64Array(5);
+      for (let x = 0; x < 5; x++) C[x] = state[x] ^ state[x+5] ^ state[x+10] ^ state[x+15] ^ state[x+20];
+      for (let x = 0; x < 5; x++) {
+        const D = C[(x+4)%5] ^ ((C[(x+1)%5] << 1n) | (C[(x+1)%5] >> 63n));
+        for (let y = 0; y < 25; y += 5) state[y+x] ^= D;
+      }
+      // rho + pi
+      const T = new BigUint64Array(25);
+      for (let x = 0; x < 5; x++) for (let y = 0; y < 5; y++) {
+        const r = BigInt(ROT[x][y]);
+        const v = state[y*5+x];
+        T[x*5+((2*x+3*y)%5)] = r ? ((v << r) | (v >> (64n - r))) : v;
+      }
+      // chi
+      for (let y = 0; y < 25; y += 5)
+        for (let x = 0; x < 5; x++)
+          state[y+x] = T[y+x] ^ ((~T[y+(x+1)%5]) & T[y+(x+2)%5]);
+      // iota
+      state[0] ^= RC[round];
+    }
+  }
+
+  // Squeeze — 32 bytes
+  const hash = new Uint8Array(32);
+  for (let i = 0; i < 4; i++) {
+    const v = state[i];
+    for (let b = 0; b < 8; b++) hash[i*8+b] = Number((v >> BigInt(b*8)) & 0xFFn);
+  }
+  return Array.from(hash).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Derive EVM address from a MoltChain base58 address.
+ * keccak256(32-byte pubkey) → last 20 bytes → 0x-prefixed hex.
+ */
+export function generateEVMAddress(base58Address) {
+  try {
+    const pubkeyBytes = base58Decode(base58Address);
+    if (pubkeyBytes.length !== 32) return null;
+    const hashHex = keccak256(pubkeyBytes);
+    return '0x' + hashHex.slice(-40);
+  } catch {
+    return null;
+  }
+}
+
 export function isValidAddress(address) {
   if (!address || typeof address !== 'string') return false;
   try {

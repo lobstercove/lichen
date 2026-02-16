@@ -12,7 +12,7 @@ import {
   privateKeyToKeypair,
   bytesToHex
 } from '../core/crypto-service.js';
-import { buildSignedNativeTransferTransaction, encodeTransactionBase64 } from '../core/tx-service.js';
+import { buildSignedNativeTransferTransaction, encodeTransactionBase64, registerEvmAddress } from '../core/tx-service.js';
 import { notify } from '../core/notification-service.js';
 
 let state = null;
@@ -824,6 +824,9 @@ async function createWalletFromMnemonic(mnemonic, password, walletName) {
     activeWalletId: wallet.id,
     isLocked: false
   });
+
+  // Register EVM address on-chain in background
+  registerEvmAddress({ wallet, privateKeyHex: keypair.privateKey, network: state.network?.selected, settings: state.settings }).catch(() => {});
 }
 
 async function createWalletFromPrivateKeyHex(privateKeyHex, password, walletName) {
@@ -847,6 +850,9 @@ async function createWalletFromPrivateKeyHex(privateKeyHex, password, walletName
     activeWalletId: wallet.id,
     isLocked: false
   });
+
+  // Register EVM address on-chain in background
+  registerEvmAddress({ wallet, privateKeyHex: keypair.privateKey, network: state.network?.selected, settings: state.settings }).catch(() => {});
 }
 
 function normalizePrivateKeyHex(privateKeyHex) {

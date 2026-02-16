@@ -15,9 +15,11 @@ import {
   privateKeyToKeypair,
   bytesToHex,
   hexToBytes,
-  base58Encode
+  base58Encode,
+  generateEVMAddress,
+  keccak256
 } from '../core/crypto-service.js';
-import { buildSignedNativeTransferTransaction, encodeTransactionBase64 } from '../core/tx-service.js';
+import { buildSignedNativeTransferTransaction, encodeTransactionBase64, registerEvmAddress } from '../core/tx-service.js';
 import { notify } from '../core/notification-service.js';
 
 /* ──────────────────────────────────────────
@@ -236,6 +238,9 @@ async function handleFinishCreate() {
       isLocked: false
     });
 
+    // Register EVM address on-chain in background (don't block)
+    registerEvmAddress({ wallet, privateKeyHex: createdKeypair.privateKey, network: state.network?.selected, settings: state.settings }).catch(() => {});
+
     showToast('Wallet created successfully!', 'success');
     showDashboard();
   } catch (e) {
@@ -281,6 +286,7 @@ async function handleImportSeed() {
     };
 
     await persist({ ...state, wallets: [...state.wallets, wallet], activeWalletId: wallet.id, isLocked: false });
+    registerEvmAddress({ wallet, privateKeyHex: kp.privateKey, network: state.network?.selected, settings: state.settings }).catch(() => {});
     showToast('Wallet imported!', 'success');
     showDashboard();
   } catch (e) {
@@ -309,6 +315,7 @@ async function handleImportPrivKey() {
     };
 
     await persist({ ...state, wallets: [...state.wallets, wallet], activeWalletId: wallet.id, isLocked: false });
+    registerEvmAddress({ wallet, privateKeyHex: kp.privateKey, network: state.network?.selected, settings: state.settings }).catch(() => {});
     showToast('Wallet imported!', 'success');
     showDashboard();
   } catch (e) {
@@ -348,6 +355,7 @@ async function handleImportJson() {
     };
 
     await persist({ ...state, wallets: [...state.wallets, wallet], activeWalletId: wallet.id, isLocked: false });
+    registerEvmAddress({ wallet, privateKeyHex: kp.privateKey, network: state.network?.selected, settings: state.settings }).catch(() => {});
     showToast('Wallet imported from JSON!', 'success');
     showDashboard();
   } catch (e) {
@@ -766,11 +774,16 @@ function switchReceiveTab(tab) {
 }
 
 function deriveEvmAddress(pubKeyHex) {
-  // Simple placeholder — proper EVM address derivation needs keccak256
-  // Return a truncated hex representation as a stand-in
   if (!pubKeyHex) return '';
   const hex = pubKeyHex.replace(/^0x/, '');
-  return '0x' + hex.slice(0, 40);
+  try {
+    const pubBytes = new Uint8Array(32);
+    for (let i = 0; i < 32; i++) pubBytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+    const hashHex = keccak256(pubBytes);
+    return '0x' + hashHex.slice(-40);
+  } catch {
+    return '0x' + hex.slice(0, 40);
+  }
 }
 
 /* ──────────────────────────────────────────
