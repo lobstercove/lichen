@@ -73,7 +73,7 @@ function escHtml(s) {
 function fmtNumber(n) { return Number(n).toLocaleString(); }
 
 function fmtMolt(shells) {
-    return (Number(shells) / 1_000_000_000).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 });
+    return (Number(shells) / 1_000_000_000).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 9 });
 }
 
 function fmtAddr(addr, len = 8) {
@@ -128,7 +128,7 @@ async function buildContractCall(functionName, args, password, valueMolt = 0) {
         const baseFee = 0.001; // 0.001 MOLT base fee
         const totalNeeded = valueMolt + baseFee;
         if (spendable < totalNeeded) {
-            throw new Error(`Insufficient MOLT: need ${totalNeeded.toFixed(4)} (${valueMolt > 0 ? valueMolt + ' value + ' : ''}${baseFee} fee), have ${spendable.toFixed(4)} spendable`);
+            throw new Error(`Insufficient MOLT: need ${totalNeeded.toLocaleString(undefined, { maximumFractionDigits: 9 })} (${valueMolt > 0 ? valueMolt + ' value + ' : ''}${baseFee} fee), have ${spendable.toLocaleString(undefined, { maximumFractionDigits: 9 })} spendable`);
         }
     } catch (e) {
         if (e.message.includes('Insufficient')) throw e;
@@ -311,7 +311,7 @@ function renderIdentity(container, data) {
     // Agent service data
     const endpoint = profile?.agent?.endpoint || '';
     const availability = profile?.agent?.availability_name || 'offline';
-    const rateMolt = (Number(profile?.agent?.rate || 0) / 1_000_000_000).toFixed(6);
+    const rateMolt = (Number(profile?.agent?.rate || 0) / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 9 });
     
     container.innerHTML = `
         ${renderProfileStrip(displayName, agentType, agentDesc, tier, rep, isActive, moltName)}

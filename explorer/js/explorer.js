@@ -564,10 +564,19 @@ async function updateDashboardStats() {
     } catch (error) {
         console.error('Dashboard update failed:', error);
         
-        // Chain is offline if we got an error
+        // Chain is offline — reset all metrics so stale data doesn't persist
         if (chainStatusEl) {
             chainStatusEl.className = 'stat-box-value status-offline';
             chainStatusEl.innerHTML = '<span class="status-dot"></span> Offline';
+        }
+        const resetMap = {
+            latestBlock: '—', tpsValue: '0', totalTxs: '—', txsToday: '',
+            activeAccounts: '—', accountBreakdown: '', totalBurned: '—',
+            validatorCount: '0', activeValidators: '0', totalStake: '—'
+        };
+        for (const [id, val] of Object.entries(resetMap)) {
+            const el = document.getElementById(id);
+            if (el) el.textContent = val;
         }
     }
 }

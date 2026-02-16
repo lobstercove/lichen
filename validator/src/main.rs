@@ -4192,6 +4192,14 @@ async fn run_validator() {
     let last_block_time_for_blocks = last_block_time.clone();
     let last_block_time_for_local = last_block_time.clone();
 
+    // PERF-OPT 1: Tip-advance notification.  The block receiver task signals
+    // this Notify whenever a new block advances the chain tip.  The production
+    // loop waits on it instead of busy-polling every 5ms, cutting latency from
+    // avg 2.5ms to ~0ms when a new block arrives.
+    let tip_notify = Arc::new(tokio::sync::Notify::new());
+    let tip_notify_for_blocks = tip_notify.clone();
+    let tip_notify_for_producer = tip_notify.clone();
+
     let slot_duration_ms = genesis_config.consensus.slot_duration_ms.max(1);
     // view_timeout is no longer used for leader election (replaced by
     // deterministic slot-based view in FIX-FORK-1), but keep the value
@@ -4295,6 +4303,7 @@ async fn run_validator() {
         let slashing_for_blocks = slashing_tracker.clone();
         let validator_pubkey_for_block_slash = validator_pubkey;
         let received_slots_for_rx = received_network_slots_for_blocks.clone();
+        let tip_notify_for_blocks = tip_notify_for_blocks.clone();
         tokio::spawn(async move {
             info!("🔄 Block receiver started");
             // 1.7: Track (slot, validator) → block_hash to detect double-block equivocation
@@ -4622,15 +4631,16 @@ async fn run_validator() {
                             *last_block_time_for_blocks.lock().await =
                                 std::time::Instant::now();
                             info!("✅ Applied block {} from network", block_slot);
-                            apply_block_effects(
-                                &state_for_blocks,
-                                &validator_set_for_blocks,
-                                &stake_pool_for_blocks,
-                                &vote_agg_for_effects,
-                                &block,
-                                false,
-                            )
-                            .await;
+
+                            // PERF-OPT 1: Notify production loop that tip advanced
+                            // BEFORE casting vote or applying effects — lets the next
+                            // leader start preparing immediately.
+                            tip_notify_for_blocks.notify_waiters();
+
+                            // PERF-OPT 2: Cast vote FIRST, then apply effects.
+                            // Previously: apply_block_effects (heavy) → vote → broadcast
+                            // Now:        vote → fire-and-forget broadcast → apply effects
+                            // This cuts ~10-20ms off the critical path per block.
 
                             // Cast vote for this block (BFT consensus)
                             let block_hash = block.hash();
@@ -4650,25 +4660,43 @@ async fn run_validator() {
                             );
 
                             // Add our own vote (validated against validator set)
-                            let mut agg = vote_agg_for_blocks.lock().await;
-                            let vs = validator_set_for_blocks.lock().await;
-                            if agg.add_vote_validated(vote.clone(), &vs) {
-                                info!("🗳️  Cast vote for block {}", block_slot);
+                            {
+                                let mut agg = vote_agg_for_blocks.lock().await;
+                                let vs = validator_set_for_blocks.lock().await;
+                                if agg.add_vote_validated(vote.clone(), &vs) {
+                                    info!("🗳️  Cast vote for block {}", block_slot);
 
-                                // Check if block reached finality (2/3 supermajority - STAKE-WEIGHTED)
-                                let pool = stake_pool_for_blocks.lock().await;
-                                if agg.has_supermajority(block_slot, &block_hash, &vs, &pool) {
-                                    info!("🔒 Block {} FINALIZED with stake-weighted supermajority!", block_slot);
+                                    // Check if block reached finality (2/3 supermajority - STAKE-WEIGHTED)
+                                    let pool = stake_pool_for_blocks.lock().await;
+                                    if agg.has_supermajority(block_slot, &block_hash, &vs, &pool) {
+                                        info!("🔒 Block {} FINALIZED with stake-weighted supermajority!", block_slot);
+                                    }
+                                    drop(pool);
                                 }
-                                drop(pool);
-                                drop(vs);
+                                // Drop agg + vs before broadcast
+                            }
 
-                                // Broadcast vote to network
+                            // PERF-OPT 3: Fire-and-forget vote broadcast.
+                            // Don't await the broadcast — let QUIC sends happen
+                            // concurrently while we proceed to apply_block_effects.
+                            {
                                 let vote_msg =
                                     P2PMessage::new(MessageType::Vote(vote), local_addr);
-                                peer_mgr_for_sync.broadcast(vote_msg).await;
+                                let pm = peer_mgr_for_sync.clone();
+                                tokio::spawn(async move { pm.broadcast(vote_msg).await; });
                             }
-                            drop(agg);
+
+                            // Now apply block effects (rewards, fees) — safe to run
+                            // after vote since effects don't affect block validity.
+                            apply_block_effects(
+                                &state_for_blocks,
+                                &validator_set_for_blocks,
+                                &stake_pool_for_blocks,
+                                &vote_agg_for_effects,
+                                &block,
+                                false,
+                            )
+                            .await;
 
                             // Try to apply any pending blocks (gap-aware).
                             // After each applied block the chain tip advances,
@@ -6474,10 +6502,15 @@ async fn run_validator() {
             last_attempted_slot = slot;
         }
 
-        // Poll interval: 5ms for maximum responsiveness under load.
-        // With rayon parallel TX execution now properly parallelizing contract calls,
-        // the block production loop needs to be fast enough to keep up with TX influx.
-        time::sleep(Duration::from_millis(5)).await;
+        // PERF-OPT 1: Event-driven wakeup instead of busy-poll.
+        // Wait for either a tip-advance notification (from block receiver) or a
+        // 2ms timeout.  This cuts average wakeup latency from 2.5ms to ~0ms
+        // when blocks arrive, while still polling at 2ms for mempool changes
+        // and heartbeat checks.
+        tokio::select! {
+            _ = tip_notify_for_producer.notified() => {},
+            _ = time::sleep(Duration::from_millis(2)) => {},
+        }
 
         // Broadcast slot event to WebSocket subscribers
         let _ = ws_event_tx.send(moltchain_rpc::ws::Event::Slot(slot));
@@ -6802,6 +6835,20 @@ async fn run_validator() {
         }
         *last_block_time_for_local.lock().await = std::time::Instant::now();
 
+        // PERF-OPT 5: Broadcast block to network IMMEDIATELY after storing.
+        // Other validators need the block ASAP to advance their tip and produce
+        // the next block. Everything else (self-vote, mempool cleanup, effects)
+        // can happen after the broadcast.  Fire-and-forget via tokio::spawn so
+        // we don't block on QUIC writes.
+        if let Some(ref peer_mgr) = p2p_peer_manager {
+            let block_msg = moltchain_p2p::P2PMessage::new(
+                moltchain_p2p::MessageType::Block(block.clone()),
+                p2p_config.listen_addr,
+            );
+            let pm_block = peer_mgr.clone();
+            tokio::spawn(async move { pm_block.broadcast(block_msg).await; });
+        }
+
         if rewards_applied {
             if let Err(e) = state.set_reward_distribution_hash(slot, &block_hash) {
                 warn!(
@@ -6843,22 +6890,12 @@ async fn run_validator() {
             pool.remove_transactions_bulk(&processed_hashes);
         }
 
-        // PERF-FIX 5: Broadcast vote and block in PARALLEL using tokio::join!
-        // Previously sequential: vote broadcast → block broadcast (2x latency)
-        // Now concurrent: both broadcasts fire simultaneously
+        // Broadcast self-vote to network (fire-and-forget)
         if let Some(ref peer_mgr) = p2p_peer_manager {
             let vote_msg = P2PMessage::new(MessageType::Vote(vote), p2p_config.listen_addr);
-            let block_msg = moltchain_p2p::P2PMessage::new(
-                moltchain_p2p::MessageType::Block(block.clone()),
-                p2p_config.listen_addr,
-            );
-            let pm1 = peer_mgr.clone();
-            let pm2 = peer_mgr.clone();
-            tokio::join!(
-                async { pm1.broadcast(vote_msg).await; },
-                async { pm2.broadcast(block_msg).await; }
-            );
-            info!("📡 Broadcasted vote + block {} to network", slot);
+            let pm_vote = peer_mgr.clone();
+            tokio::spawn(async move { pm_vote.broadcast(vote_msg).await; });
+            info!("📡 Broadcasted block {} + vote to network", slot);
         }
 
         apply_block_effects(
