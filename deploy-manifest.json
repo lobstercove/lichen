@@ -1,34 +1,13 @@
 {
   "deployer": "GJQAmTTfYHyuAQ7kj5Syz63pcSwmXdvSPHdHtvNEZn8w",
-  "deployed_at": "2026-02-15T22:59:50.331249Z",
-  "contracts": {
-    "musd_token": "2GATBP2XqZYq8J9JP1iSbYGwjQjXXBwhfwwxc7s8mdEq",
-    "wsol_token": "3Y2gW76RVr2ep5t6hVoQzCXQrHJHRWiBVfTPhzK2ct63",
-    "weth_token": "7m6qVJSCmm3zJokeiPsgWKiP8UNhkiNBuyHS7y2dyde9",
-    "dex_core": "HhTdkUwHHCkmG3gA2x34mB2yBVrCozfDygEBujUhQx2z",
-    "dex_amm": "CNM5ctJukQbs5ec3HBT8AoFzLgEAPWSQcYXYjfqYELCj",
-    "dex_router": "4JTmLs46e38MnhneEPkWaoDkVsrLLJTNhw7tT97fg95x",
-    "dex_margin": "DJyNbte2E3eq9WDKWavMUHegzDzyH91T7Uw2v8hUFo3a",
-    "dex_rewards": "C8J2Vmfon5DwZnDARG4fBob5y9WEBGvgzFfH5YJWhW5A",
-    "dex_governance": "3qzswE9J2MJCeHbPEmVDca9yoymGcu71iNGwpfsnhCfs",
-    "dex_analytics": "8X3jrKkkyeu9uTgZuLqeinB5byxz8MnWM67urnPuj23J",
-    "prediction_market": "3RG4RZTNdHndKyQnZjvPFD6MW4823wwqCM6X8D5VZA8C"
-  },
+  "deployed_at": "2026-02-16T08:30:33.357718Z",
+  "contracts": {},
   "token_contracts": {
-    "mUSD": "2GATBP2XqZYq8J9JP1iSbYGwjQjXXBwhfwwxc7s8mdEq",
-    "wSOL": "3Y2gW76RVr2ep5t6hVoQzCXQrHJHRWiBVfTPhzK2ct63",
-    "wETH": "7m6qVJSCmm3zJokeiPsgWKiP8UNhkiNBuyHS7y2dyde9"
+    "mUSD": null,
+    "wSOL": null,
+    "wETH": null
   },
-  "dex_contracts": {
-    "dex_core": "HhTdkUwHHCkmG3gA2x34mB2yBVrCozfDygEBujUhQx2z",
-    "dex_amm": "CNM5ctJukQbs5ec3HBT8AoFzLgEAPWSQcYXYjfqYELCj",
-    "dex_router": "4JTmLs46e38MnhneEPkWaoDkVsrLLJTNhw7tT97fg95x",
-    "dex_margin": "DJyNbte2E3eq9WDKWavMUHegzDzyH91T7Uw2v8hUFo3a",
-    "dex_rewards": "C8J2Vmfon5DwZnDARG4fBob5y9WEBGvgzFfH5YJWhW5A",
-    "dex_governance": "3qzswE9J2MJCeHbPEmVDca9yoymGcu71iNGwpfsnhCfs",
-    "dex_analytics": "8X3jrKkkyeu9uTgZuLqeinB5byxz8MnWM67urnPuj23J",
-    "prediction_market": "3RG4RZTNdHndKyQnZjvPFD6MW4823wwqCM6X8D5VZA8C"
-  },
+  "dex_contracts": {},
   "trading_pairs": [
     "MOLT/mUSD",
     "wSOL/mUSD",

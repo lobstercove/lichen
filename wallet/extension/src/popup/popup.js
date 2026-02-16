@@ -637,7 +637,7 @@ async function handleSendNow() {
     const spendable = Number(balResult?.spendable || balResult?.balance || 0) / 1_000_000_000;
     const totalNeeded = amount + 0.001;
     if (spendable < totalNeeded) {
-      alert(`Insufficient MOLT: need ${totalNeeded.toFixed(6)}, have ${spendable.toFixed(6)}.`);
+      alert(`Insufficient MOLT: need ${totalNeeded.toLocaleString(undefined, { maximumFractionDigits: 9 })}, have ${spendable.toLocaleString(undefined, { maximumFractionDigits: 9 })}.`);
       return;
     }
 

@@ -1,6 +1,14 @@
 // MoltWallet - Core Wallet Logic
 // Full RPC integration, wallet management, and UI controls
 
+// ── Number formatting helpers ──
+function fmtToken(value) {
+    return Number(value).toLocaleString(undefined, { maximumFractionDigits: 9 });
+}
+function fmtUsd(value, sym = '$') {
+    return sym + Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
 // Network configuration
 const NETWORKS = {
     'mainnet': 'https://rpc.moltchain.network',
@@ -1095,8 +1103,8 @@ async function refreshBalance() {
         const currencySymbols = { USD: '$', EUR: '€', GBP: '£', JPY: '¥' };
         const sym = currencySymbols[currency] || '$';
         
-        document.getElementById('totalBalance').textContent = `${sym}${totalUsd.toFixed(2)} ${currency}`;
-        document.getElementById('balanceUsd').textContent = `${molt.toFixed(decimals)} MOLT`;
+        document.getElementById('totalBalance').textContent = `${fmtUsd(totalUsd, sym)} ${currency}`;
+        document.getElementById('balanceUsd').textContent = `${fmtToken(molt)} MOLT`;
     } catch (error) {
         // Silently handle - new wallet with no on-chain account is expected
         const settings = walletState.settings || {};
@@ -1131,7 +1139,7 @@ async function loadAssets() {
     let html = '';
     
     // MOLT (always first, always shown)
-    const moltUsd = (molt * MOCK_PRICES.MOLT).toFixed(2);
+    const moltUsd = molt * MOCK_PRICES.MOLT;
     html += `
         <div class="asset-item" style="cursor: default;">
             <div class="asset-icon">🦞</div>
@@ -1140,8 +1148,8 @@ async function loadAssets() {
                 <div class="asset-symbol">MOLT</div>
             </div>
             <div class="asset-balance">
-                <div class="asset-amount">${molt.toFixed(decimals)}</div>
-                <div class="asset-value">${sym}${moltUsd}</div>
+                <div class="asset-amount">${fmtToken(molt)}</div>
+                <div class="asset-value">${fmtUsd(moltUsd, sym)}</div>
             </div>
         </div>
     `;
@@ -1149,7 +1157,7 @@ async function loadAssets() {
     // Wrapped tokens
     for (const [symbol, token] of Object.entries(TOKEN_REGISTRY)) {
         const bal = tokenBalances[symbol] || 0;
-        const usdVal = (bal * (MOCK_PRICES[symbol] || 0)).toFixed(2);
+        const usdVal = bal * (MOCK_PRICES[symbol] || 0);
         
         // Show token if it has a balance or a known contract address
         if (bal > 0 || token.address) {
@@ -1161,8 +1169,8 @@ async function loadAssets() {
                         <div class="asset-symbol">${token.symbol}</div>
                     </div>
                     <div class="asset-balance">
-                        <div class="asset-amount">${bal.toFixed(decimals)}</div>
-                        <div class="asset-value">${sym}${usdVal}</div>
+                        <div class="asset-amount">${fmtToken(bal)}</div>
+                        <div class="asset-value">${fmtUsd(usdVal, sym)}</div>
                     </div>
                 </div>
             `;
@@ -1261,7 +1269,7 @@ async function loadActivity(reset = true) {
                 color = '#60a5fa';
                 type = 'Airdrop';
                 address = 'Faucet (Treasury)';
-                amount = (tx.amount / 1_000_000_000).toFixed(4);
+                amount = fmtToken(tx.amount / 1_000_000_000);
                 sign = '+';
             } else {
                 const isSent = tx.from === wallet.address;
@@ -1270,7 +1278,7 @@ async function loadActivity(reset = true) {
                 type = tx.type === 'Airdrop' ? 'Airdrop' : (isSent ? 'Sent' : 'Received');
                 address = isSent ? (tx.to || 'Unknown') : (tx.from || 'Unknown');
                 const amountVal = tx.amount_shells ? tx.amount_shells : (tx.amount || 0);
-                amount = (amountVal / 1_000_000_000).toFixed(4);
+                amount = fmtToken(amountVal / 1_000_000_000);
                 sign = isSent ? '-' : '+';
                 if (type === 'Airdrop') {
                     icon = 'fa-parachute-box';
@@ -1446,15 +1454,15 @@ async function loadStaking() {
         // Get validator account to check actual stake
         const account = await rpc.getAccount(wallet.address);
         const totalStake = account?.shells || 0;
-        const totalStakeMOLT = (totalStake / 1_000_000_000).toFixed(2);
+        const totalStakeMOLT = totalStake / 1_000_000_000;
         
         // Bootstrap grant info
         const BOOTSTRAP_GRANT = 100000; // 100K MOLT
         const bootstrapDebt = myValidator.bootstrap_debt || 0;
-        const debtMOLT = (bootstrapDebt / 1_000_000_000).toFixed(2);
+        const debtMOLT = bootstrapDebt / 1_000_000_000;
         
         // Calculate earned/vested amount
-        const earnedAmount = BOOTSTRAP_GRANT - parseFloat(debtMOLT);
+        const earnedAmount = BOOTSTRAP_GRANT - debtMOLT;
         const vestingPercent = (earnedAmount / BOOTSTRAP_GRANT * 100).toFixed(2);
         
         // Check if graduated
@@ -1462,9 +1470,9 @@ async function loadStaking() {
         const graduationSlot = myValidator.graduation_slot;
         
         // Update UI
-        document.getElementById('totalStake').textContent = `${totalStakeMOLT} MOLT`;
-        document.getElementById('debtRemaining').textContent = `${debtMOLT} MOLT`;
-        document.getElementById('earnedAmount').textContent = `${earnedAmount.toFixed(2)} MOLT`;
+        document.getElementById('totalStake').textContent = `${fmtToken(totalStakeMOLT)} MOLT`;
+        document.getElementById('debtRemaining').textContent = `${fmtToken(debtMOLT)} MOLT`;
+        document.getElementById('earnedAmount').textContent = `${fmtToken(earnedAmount)} MOLT`;
         document.getElementById('vestingPercent').textContent = `${vestingPercent}%`;
         document.getElementById('vestingProgressBar').style.width = `${vestingPercent}%`;
         
@@ -1473,7 +1481,7 @@ async function loadStaking() {
         if (isGraduated) {
             statusHTML = '<span style="color: #10b981;">✓ Active & Graduated</span>';
         } else if (myValidator.status === 'Active') {
-            statusHTML = `<span style="color: #f59e0b;">⚡ Active (Bootstrap phase - ${debtMOLT} MOLT remaining)</span>`;
+            statusHTML = `<span style="color: #f59e0b;">⚡ Active (Bootstrap phase - ${fmtToken(debtMOLT)} MOLT remaining)</span>`;
         } else if (myValidator.status === 'Jailed') {
             statusHTML = '<span style="color: #ef4444;">⚠️ Jailed (Offline or misbehaving)</span>';
         } else {
@@ -1519,9 +1527,9 @@ async function loadReefStakePosition(address) {
         const queue = await rpc.call('getUnstakingQueue', [address]);
         
         // Update UI
-        document.getElementById('userStMolt').textContent = (position.st_molt_amount / 1_000_000_000).toFixed(6);
-        document.getElementById('userStakeValue').textContent = `${(position.current_value_molt / 1_000_000_000).toFixed(6)} MOLT`;
-        document.getElementById('totalPoolStaked').textContent = `${(poolInfo.total_molt_staked / 1_000_000_000).toFixed(2)} MOLT`;
+        document.getElementById('userStMolt').textContent = fmtToken(position.st_molt_amount / 1_000_000_000);
+        document.getElementById('userStakeValue').textContent = `${fmtToken(position.current_value_molt / 1_000_000_000)} MOLT`;
+        document.getElementById('totalPoolStaked').textContent = `${fmtToken(poolInfo.total_molt_staked / 1_000_000_000)} MOLT`;
         
         // Show pending unstakes if any
         if (queue.pending_requests && queue.pending_requests.length > 0) {
@@ -1530,7 +1538,7 @@ async function loadReefStakePosition(address) {
             unstakesList.innerHTML = queue.pending_requests.map(req => `
                 <div style="padding: 1rem; background: var(--card-bg); border-radius: 8px; border: 1px solid var(--border); margin-bottom: 0.5rem;">
                     <div style="display: flex; justify-content: space-between;">
-                        <span>${(req.molt_to_receive / 1_000_000_000).toFixed(6)} MOLT</span>
+                        <span>${fmtToken(req.molt_to_receive / 1_000_000_000)} MOLT</span>
                         <span style="color: var(--text-muted);">Claimable at slot ${req.claimable_at}</span>
                     </div>
                 </div>
@@ -1979,7 +1987,7 @@ function openMarketplace() {
 
 function formatMolt(shells) {
     if (typeof shells === 'string') shells = parseInt(shells) || 0;
-    return (shells / 1_000_000_000).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 }) + ' MOLT';
+    return fmtToken(shells / 1_000_000_000) + ' MOLT';
 }
 
 function escapeHtml(str) {
@@ -2141,14 +2149,14 @@ async function updateSendTokenUI() {
         if (selectedToken === 'MOLT') {
             const balance = await rpc.getBalance(wallet.address);
             const molt = parseFloat(balance.molt) || 0;
-            balanceHint.textContent = `Available: ${molt.toFixed(6)} MOLT`;
+            balanceHint.textContent = `Available: ${fmtToken(molt)} MOLT`;
         } else if (selectedToken === 'stMOLT') {
             const position = await rpc.call('getStakingPosition', [wallet.address]);
             const stMolt = (position?.st_molt_amount || 0) / 1_000_000_000;
-            balanceHint.textContent = `Available: ${stMolt.toFixed(6)} stMOLT`;
+            balanceHint.textContent = `Available: ${fmtToken(stMolt)} stMOLT`;
         } else {
             const bal = await getTokenBalanceFormatted(selectedToken, wallet.address);
-            balanceHint.textContent = `Available: ${bal.toFixed(6)} ${selectedToken}`;
+            balanceHint.textContent = `Available: ${fmtToken(bal)} ${selectedToken}`;
         }
     } catch (error) {
         balanceHint.textContent = 'Available: --';
@@ -2180,7 +2188,7 @@ async function confirmSend() {
         const baseFee = 0.001; // 1M shells = 0.001 MOLT
         const totalNeeded = selectedToken === 'MOLT' ? amount + baseFee : baseFee;
         if (spendable < totalNeeded) {
-            showToast(`Insufficient MOLT balance: need ${totalNeeded.toFixed(4)} MOLT (${selectedToken === 'MOLT' ? 'transfer + fee' : 'fee'}), have ${spendable.toFixed(4)} spendable`);
+            showToast(`Insufficient MOLT balance: need ${fmtToken(totalNeeded)} MOLT (${selectedToken === 'MOLT' ? 'transfer + fee' : 'fee'}), have ${fmtToken(spendable)} spendable`);
             return;
         }
     } catch (e) {

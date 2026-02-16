@@ -1,1243 +1,242 @@
-# MOLTCHAIN PRODUCTION READINESS AUDIT
-## Comprehensive Security & Performance Analysis
+# MOLTCHAIN PRODUCTION READINESS AUDIT (REVALIDATED)
 
-**Audit Date**: February 16, 2026
-**Scope**: Core blockchain (18.2K LOC), 27 contracts, networking, RPC, validator, custody
-**Baseline**: 301/301 tests passing, 3 prior audits completed (188 issues fixed)
-**Status**: **NOT PRODUCTION-READY** — Critical consensus and economic vulnerabilities remain
-
----
-
-## EXECUTIVE SUMMARY
-
-### Overall Health Assessment
-
-**Status: CRITICAL — DO NOT LAUNCH TO MAINNET WITHOUT FIXES**
-
-The MoltChain system has fundamental consensus safety violations, economic exploit vectors, and data integrity issues that would cause immediate loss of user funds and network divergence. While 46 issues from the February 13 audit were addressed, the codebase shows signs of incomplete fixes, regressions, and architectural gaps not fully resolved.
-
-### Vulnerability Counts by Severity
-
-| Severity | Count | Status | Impact |
-|----------|-------|--------|--------|
-| **CRITICAL** | 12 | NOT FULLY FIXED | Consensus divergence, money creation, data corruption |
-| **HIGH** | 18+ | PARTIALLY FIXED | Economic exploits, DoS vectors, key management failures |
-| **MEDIUM** | 20+ | MIXED | Race conditions, validation gaps, integration bugs |
-| **LOW** | 7 | MOSTLY OK | Minor optimizations, logging |
-
-### Why Current Tests Pass But Issues Exist
-
-Your tests run smoothly because:
-- **C1** (voter sorting): Only triggers with multiple validators voting on same block - likely testing single validator
-- **C2** (delegation): Only breaks when delegated_amount != 0 - tests probably don't delegate
-- **C4** (validator announce): Only triggers on P2P announces, not local bootstrap
-- **C5** (highest_seen): Only exploitable by malicious peer sending fake slots
-- **C7** (block reversal): Only triggers on actual forks - devnet probably doesn't fork
-
-**Your tests work because they test happy paths. These bugs are edge cases that WILL trigger in production with 500 validators.**
+**Audit revalidation date**: February 16, 2026  
+**Repository**: `lobstercove/moltchain` (`main`)  
+**Method**: Code inspection of claimed files/functions only (no fixes applied)  
+**Purpose**: Verify whether each previously listed finding is still true in current code
 
 ---
 
-# CRITICAL ISSUES (12 TOTAL)
+## Executive Verdict
 
-## C1: Non-Deterministic Voter Fee Distribution → Consensus Divergence
+The previous report is **partly stale and overstated in several areas**. Many claimed critical/high issues are now fixed in code, but a smaller subset of consensus/economic risks remain, mostly around **fork/rollback completeness**, **validator bootstrap trust flow**, and **sync/fork trust assumptions**.
 
-**Severity**: CRITICAL
-**Category**: Consensus Safety
-**File**: `validator/src/main.rs`
-**Line**: ~2900-2950 (distribute_fees function)
-**Status**: FROM FEB13 AUDIT — Reported as FIXED but requires verification
+### Revalidated Status Summary (all listed tasks)
 
-### Problem
-`HashSet::into_iter()` has randomized iteration order per Rust spec. When distributing `voters_share` reward, remainder goes to last voter. Different validators assign remainder to different voters → different state roots for same block.
+- **Critical (12):** `Fixed/Mitigated: 8`, `Partially Open: 3`, `Mostly Mitigated but feature-risk remains: 1`
+- **High (18):** `Fixed/Mitigated: 11`, `Partially Open: 3`, `Outdated/Not Present: 4`
+- **Medium (20):** `Fixed/Mitigated: 10`, `Open/Partially Open: 6`, `Outdated/Not Verifiable from listed claim: 4`
+- **Low (7):** Mostly process/operational; only partially code-verifiable
 
-### Impact
-- Every block with >1 voter causes silent state divergence
-- Fundamental consensus invariant violated
-- Network cannot finalize — any validator can fork at any time
-- Double-spends and phantom accounts unprovable
-
-### Evidence
-```
-Voter 1: 100 MOLT / 2 voters = 50 each + 0 remainder
-Node A: [voter_B, voter_A] → voter_A gets remainder (order randomized)
-Node B: [voter_A, voter_B] → voter_B gets remainder
-Result: Different state roots for identical input
-```
-
-### Fix
-Sort voter pubkeys deterministically by `pubkey.0` bytes before distribution loop:
-```rust
-let mut voters: Vec<_> = voters.into_iter().collect();
-voters.sort_by_key(|v| v.0);
-```
+> This repo is in significantly better shape than the prior document suggests, but not yet “all clear” for large-scale adversarial mainnet.
 
 ---
 
-## C2: Delegation Reward Over-Distribution → Unbounded Inflation
+## Legend
 
-**Severity**: CRITICAL
-**Category**: Economic Security / Consensus
-**File**: `core/src/consensus.rs`
-**Line**: ~850-900 (distribute_epoch_rewards function)
-**Status**: FROM FEB13 AUDIT — Reported as FIXED but verify delegate() updates total_staked
-
-### Problem
-`distribute_epoch_rewards()` uses `active_stake()` (= `total_staked`) as denominator, but `stake_info.total_stake()` (= `amount + delegated_amount`) as numerator. The `delegate()` function increments `delegated_amount` but **never** adds it to `total_staked`. When distributing:
-- Denominator = total_staked = 1,000,000 MOLT
-- Numerator (sum of all stake_info.total_stake()) = 1,000,000 + 500,000 (delegated) = 1,500,000
-- Reward pool divided by incorrect denominator → 150% of rewards distributed
-
-### Impact
-- Unbounded inflation on every epoch with delegation activity
-- Reward pool exhausted permanently
-- Network economically unsustainable beyond 1-2 epochs
-- Supply cap bypassed
-
-### Fix
-Verify that `delegate(amount)` calls `total_staked += amount` and `undelegate()` calls `total_staked -= amount`.
+- **Fixed**: Claim no longer matches current code behavior
+- **Mitigated**: Core exploit path blocked, residual risk may remain
+- **Partially Open**: Some fixes landed, but root safety property still incomplete
+- **Open**: Claim still materially true
+- **Outdated/Not Present**: Referenced path/behavior no longer exists as described
+- **Not Verifiable**: Requires runtime/integration evidence beyond static inspection
 
 ---
 
-## C3: EVM Batch Serialization Mismatch → Permanent Data Corruption
+## CRITICAL ISSUES (C1–C12)
 
-**Severity**: CRITICAL
-**Category**: Data Integrity
-**File**: `core/src/state.rs`
-**Lines**:
-- Write: ~890-900 (StateBatch::put_evm_tx uses serde_json)
-- Read: ~450-460 (StateStore::get_evm_tx uses bincode)
-**Status**: FROM FEB13 AUDIT — Reported as FIXED but verify bincode consistency
-
-### Problem
-`StateBatch::put_evm_tx` serializes with `serde_json` (writable bytes), but `StateStore::get_evm_tx` deserializes with `bincode`. Same mismatch for receipts. All EVM transactions committed through atomic batch path produce unreadable data when queried.
-
-### Example
-```rust
-// Write path (batch):
-let json = serde_json::to_vec(&tx)?;  // JSON bytes
-batch.put(CF_EVM_TXS, tx_hash, &json);
-
-// Read path (state):
-let data = self.db.get_cf(cf, tx_hash)?;
-let tx: EvmTxRecord = bincode::from_slice(&data)?;  // ERROR: JSON != bincode
-```
-
-### Impact
-- EVM transaction lookups return deserialization errors
-- Historical EVM transaction data permanently lost
-- Bridge operations fail (cannot verify cross-chain transactions)
-- Explorer shows "corrupted data"
-
-### Fix
-Change `StateBatch::put_evm_tx` and `put_evm_receipt` to use `bincode::serialize`, matching read path.
+| ID | Revalidated Status | Assessment vs Current Code |
+|---|---|---|
+| C1 | **Fixed** | Voter pubkeys are deduped and deterministically sorted before remainder allocation in `validator/src/main.rs` fee distribution. |
+| C2 | **Fixed** | `delegate()` now increases `total_staked`; `undelegate()` decreases it in `core/src/consensus.rs`. Denominator/numerator mismatch claim is stale. |
+| C3 | **Fixed** | Batch and non-batch EVM tx/receipt writes now use `bincode` and match read path in `core/src/state.rs`. |
+| C4 | **Partially Open** | Remote announce flow now attempts treasury debit before bootstrap account creation, but stake-pool bootstrap credit can still occur before funding success in announcement handler (`validator/src/main.rs` + `core/src/consensus.rs`). |
+| C5 | **Partially Open** | `StatusResponse` updates are bounded, but `note_seen(block_slot)` still updates from incoming block stream before validator-set membership/stake admission, so fork-choice pressure via high-slot blocks is still plausible. |
+| C6 | **Fixed** | `verify_threshold()` deduplicates signers via `HashSet` before threshold check in `core/src/multisig.rs`. |
+| C7 | **Partially Open** | Fork rollback now includes `revert_block_transactions`, but it is best-effort and explicitly logs non-revertible instructions (contracts/NFT/staking) as unsafe without full snapshot rollback. |
+| C8 | **Mitigated** | Key derivation moved to HMAC(master_seed, path) and production enforces `CUSTODY_MASTER_SEED` (unless explicit insecure dev flag). Not full HSM/BIP32 hardening yet. |
+| C9 | **Fixed** | Signer requests now include bearer auth (`bearer_auth`) with per-signer token fallback in `custody/src/main.rs`. |
+| C10 | **Mitigated** | Placeholder proof verifier is disabled by default (`allow_placeholder_proofs = false`). Privacy module still compiled (not feature-gated), but exploit path is blocked unless explicitly enabled in code/runtime. |
+| C11 | **Fixed** | EVM execution path uses `transact()` + deferred state changes committed via `StateBatch`; no `transact_commit()` path in core EVM execution. |
+| C12 | **Mitigated** | System instruction types 2–5 are now authorization-checked in execution path (`sender == treasury`), blocking free privileged transfer/mint abuse. Fee-calculation path remains zero for these kinds by design. |
 
 ---
 
-## C4: ValidatorAnnounce Creates Tokens Without Treasury Deduction
+## HIGH ISSUES (H1–H18)
 
-**Severity**: CRITICAL
-**Category**: Economic Exploit / Inflation
-**File**: `validator/src/main.rs`
-**Line**: ~3243-3272 (P2P announce handler)
-**Status**: FROM FEB13 AUDIT — Reported as FIXED in bootstrap path only; verify announce handler deducts
-
-### Problem
-When `ValidatorAnnounce` P2P message received, bootstrap account created with `shells: MIN_VALIDATOR_STAKE` (100,000 MOLT) **without deducting from treasury**. Local bootstrap path (lines 2313-2343) properly deducts. Remote path doesn't.
-
-### Attack Scenario
-1. Attacker sends 1,000 fake ValidatorAnnounce messages
-2. Each creates 100,000 MOLT bootstrap account
-3. Creates 100M MOLT from nothing
-4. Attacker controls >50% stake weight
-5. Attacker produces blocks, distributes to self
-
-### Impact
-- Unbounded token creation
-- Supply inflates exponentially with network size
-- Attacker achieves 51% stake control
-- Perfect for 51% attack launching immediately after
-
-### Fix
-Only accept announces from validators whose on-chain stake can be verified from existing stake pool, OR deduct from treasury like the local path does.
+| ID | Revalidated Status | Assessment vs Current Code |
+|---|---|---|
+| H1 | **Mitigated** | Same as C12; execution path now restricts types 2–5 to treasury sender. |
+| H2 | **Outdated (as written)** | EVM fee does not go “producer only”; fee split logic is applied via existing fee pipeline. However, there is still possible accounting mismatch because block-level distribution uses computed fee estimate for EVM tx types. |
+| H3 | **Fixed** | Same as C11. |
+| H4 | **Outdated/Not Present (as written)** | Referenced `process_block` overwrite scenario in `core/src/processor.rs` does not match current architecture/pathing. |
+| H5 | **Fixed** | Native transfer now uses atomic write batch semantics in `core/src/state.rs` (`transfer`). |
+| H6 | **Partially Open** | Some counters are atomicized, but `next_event_seq` remains read-modify-write without CAS/merge atomicity under concurrency in `core/src/state.rs`. |
+| H7 | **Outdated/Not Present (as written)** | Referenced dirty-marker pruning logic in `validator/src/sync.rs` is not present as described. |
+| H8 | **Fixed** | Vote equivocation prevention exists via `(slot, validator)` index in `VoteAggregator` (`core/src/consensus.rs`). |
+| H9 | **Fixed** | Delegation commission now credited to validator (not silently burned) in delegation reward distribution. |
+| H10 | **Fixed** | Weighted leader selection uses non-zero weight floor and `u128` intermediates; truncation-to-zero claim is stale for current logic. |
+| H11 | **Fixed** | `UNSTAKE_COOLDOWN_SLOTS` is `1_512_000` in `core/src/consensus.rs`. |
+| H12 | **Fixed/Mitigated** | Reward application path now handles liquid/debt split correctly and avoids earlier liquid==0 fallback issue in validator reward credit logic. |
+| H13 | **Partially Open** | On-chain stake check exists for some paths, but announce handling can still create stake-pool bootstrap representation ahead of confirmed treasury-funded account state. |
+| H14 | **Fixed** | CORS now performs exact hostname allowlisting in `rpc/src/lib.rs` (no `starts_with` bypass pattern). |
+| H15 | **Fixed** | Solana tx cache insertion now occurs only after successful submit in `handle_solana_send_transaction`. |
+| H16 | **Outdated/Not Present (as written)** | `force_slot_advance` / `inject_transaction` endpoints are not present. Related state-mutating admin RPC exists but is token-protected; single-validator guard is applied to some, not all mutators. |
+| H17 | **Partially Open** | Dead peers are not always removed immediately on connection error; cleanup/score paths eventually remove them. Risk reduced but not fully eliminated. |
+| H18 | **Fixed** | Deserialization failure counter disconnects peers after threshold in P2P connection handler. |
 
 ---
 
-## C5: Malicious `highest_seen` Slot Inflation Allows Block Replacement
+## MEDIUM ISSUES (M1–M20)
 
-**Severity**: CRITICAL
-**Category**: Consensus Safety / Chain Rewrite
-**File**: `validator/src/main.rs`
-**Line**: ~2892 (fork choice logic)
-**Status**: FROM FEB13 AUDIT — Reported as FIXED but verify no unvalidated blocks update highest_seen
-
-### Problem
-Fork choice uses `we_are_behind = highest_seen > current_slot + 5`. The `highest_seen` is updated from incoming block slots **before validation**. Attacker sends block with slot `u64::MAX` → `we_are_behind` becomes true permanently → any block replacement accepted regardless of vote weight.
-
-### Attack Scenario
-1. Attacker sends block with slot=u64::MAX (unvalidated)
-2. `highest_seen` set to u64::MAX
-3. Node thinks it's infinitely behind
-4. Any future block accepted for fork replacement
-5. Finalized blocks replaced with attacker's version
-6. Double-spends, stolen funds
-
-### Impact
-- Complete chain rewriting capability
-- Finality guarantees broken
-- Double-spends on "confirmed" transactions
-- Entire ledger rewriteable by attacker
-
-### Fix
-Only update `highest_seen` from validated, accepted blocks (after signature verification, consensus checks).
+| ID | Revalidated Status | Assessment vs Current Code |
+|---|---|---|
+| M1 | **Fixed** | Symbol normalization + uniqueness checks exist in both batch and non-batch registration paths. |
+| M2 | **Fixed** | EVM mapping includes reverse mapping (`reverse:` keys) and registration helpers in both batch/state paths. |
+| M3 | **Mitigated** | NFT operations are mostly batch-mediated now; claim of routine non-atomic splits appears stale, but full adversarial proof needs integration tests. |
+| M4 | **Fixed** | Fees are charged before instruction execution (`charge_fee_direct`), so failed tx no longer compute for free. |
+| M5 | **Fixed** | Unstake request keyed by `(validator, staker)` and claim path enforces that pairing. |
+| M6 | **Fixed** | NFT token-id secondary indexing exists (`index_nft_token_id`, `nft_token_id_exists`). |
+| M7 | **Partially Open** | `SlashingTracker` is serializable, but explicit durable persistence/reload wiring is still incomplete for full restart-proof evidence continuity. |
+| M8 | **Partially Mitigated** | Many stake math paths now use `u128`/saturating ops, but not every multiplication path is uniformly hardened. |
+| M9 | **Outdated/Partially Mitigated** | WASM runtime has metering and deploy-time validation; blanket “unmetered compile DoS” claim appears stale for current runtime design. |
+| M10 | **Partially Open** | Market order behavior still allows aggressive fills (`price == 0` for market path); explicit user-side slippage bounds are limited. |
+| M11 | **Fixed** | Order expiry validation is present at place/match time in `contracts/dex_core/src/lib.rs`. |
+| M12 | **Open** | Emergency pause/unpause appears immediate admin action; no timelock mechanism observed. |
+| M13 | **Mitigated** | Reserve ledger updates use explicit lock strategy (`RESERVE_LOCK` design notes + mutexed flows), reducing race risk. |
+| M14 | **Partially Open** | Rebalance is not pure 1:1 anymore, but full market-price/slippage correctness depends on external quote execution paths and runtime behavior. |
+| M15 | **Fixed** | Solana deposit watcher now processes multiple signatures (not only first). |
+| M16 | **Fixed** | EVM token sweep funds gas to deposit address before transfer and waits for confirmation. |
+| M17 | **Mitigated** | Withdrawal endpoint now requires bearer auth token and includes rate limits; still centralized API-auth model rather than per-user cryptographic request auth. |
+| M18 | **Fixed** | DashMap guard-across-await issue addressed by cloning handles before async I/O. |
+| M19 | **Fixed** | Block range requests are bounded (`range_size > 1000` rejected; response truncation safeguards). |
+| M20 | **Open/Not Implemented** | No explicit oracle staleness guard found in `dex_core`; if oracle-based pricing is relied upon externally, staleness policy should be explicit. |
 
 ---
 
-## C6: Multisig Duplicate-Signer Bypass
+## LOW ISSUES (L1–L7)
 
-**Severity**: CRITICAL
-**Category**: Security / Authorization
-**File**: `core/src/multisig.rs`
-**Line**: ~40-47 (verify_threshold)
-**Status**: FROM FEB13 AUDIT — Reported as FIXED but verify HashSet deduplication
-
-### Problem
-`verify_threshold` checks that signatures vector length ≥ threshold and all signers are in the authorized set. Does NOT verify uniqueness. A single compromised key repeated N times satisfies N-of-M threshold.
-
-### Example
-```rust
-// 3-of-5 treasury multisig
-// Alice's key is compromised
-// Attacker submits: [Alice, Alice, Alice]
-// verify_threshold returns true (3 ≥ 3, all in authorized set)
-// But only 1 key was actually compromised!
-```
-
-### Impact
-- 3-of-5 treasury drained with single compromised key
-- All multisig-protected operations (reward distribution, slashing, upgrades) bypassable
-- Funds stolen
-- Network degraded or halted
-
-### Fix
-Deduplicate `signed_by` by collecting into `HashSet` before threshold check. Verify `deduplicated_set.len() >= threshold`.
+| ID | Revalidated Status | Assessment vs Current Code |
+|---|---|---|
+| L1 | **Partially True** | Dead code / `allow(dead_code)` still exists in places. |
+| L2 | **Partially True** | Logging quality varies by module and path. |
+| L3 | **Partially True** | Safety invariants are better documented than before, but still inconsistent. |
+| L4 | **Not Fully Verifiable** | Cache tuning requires workload profiling; static code confirms configurable caches exist. |
+| L5 | **Partially True** | No unified Prometheus-grade metrics surface across all services. |
+| L6 | **Partially True** | Error context quality is mixed; many improved, some generic remain. |
+| L7 | **Partially True** | Cargo versions are semver ranges by default (not strict pinning). This is policy-sensitive, not a direct exploit by itself. |
 
 ---
 
-## C7: Incomplete Block Reversal → Double-Spending After Fork
+## Prioritized Execution Checklist (Test-First, No Code Fixes Yet)
 
-**Severity**: CRITICAL
-**Category**: Data Integrity / Consensus
-**File**: `validator/src/main.rs`
-**Line**: ~829-890 (revert_block_effects)
-**Status**: FROM FEB13 AUDIT — Reported as FIXED but verify ALL transaction effects reversed
+Only `Partially Open` / `Open` items are included below. Every item has mandatory verification tests that must be written/executed **before** any fix PR.
 
-### Problem
-`revert_block_effects()` reverses only validator rewards and producer fee share. User transaction effects (transfers, NFT mints, contract calls, token burns) are NOT reversed. Fork resolution applies new block's transactions on top of old block's still-applied state.
+### Priority 0 — Consensus Safety (Ship Blockers)
 
-### Attack Scenario
-1. Block 100 has: Alice sends 100 MOLT to Bob
-2. Alice's account: spendable -= 100, Bob's: spendable += 100 (applied)
-3. Fork: different chain tip
-4. Block 100 reverted, but transaction effects stay
-5. New block 100 applied: Alice sends 100 MOLT to Eve
-6. Final state: Alice -200, Bob +100, Eve +100 (double-spending)
+1. **`C7` Fork rollback completeness (best-effort revert still unsafe)**
+	 - **Pre-fix tests (must fail today):**
+		 - `consensus_fork_revert_contract_state`: create fork where reverted block contains contract storage writes; assert post-fork state exactly matches canonical chain.
+		 - `consensus_fork_revert_nft_state`: reverted block mints/transfers NFT; assert ownership and collection counters are canonical after fork switch.
+		 - `consensus_fork_revert_staking_state`: reverted block mutates stake/unstake; assert pool/account parity after reorg.
+	 - **Pass criteria:** byte-for-byte canonical state root parity across validators after N forced reorgs.
 
-### Impact
-- Double-spending of transactions
-- Phantom account balances
-- Incorrect NFT ownership
-- Total loss of transaction ordering guarantees
+2. **`C4/H13` Validator announce/bootstrap trust coupling**
+	 - **Pre-fix tests (must fail today):**
+		 - `announce_bootstrap_without_treasury_funds`: treasury below `MIN_VALIDATOR_STAKE`; assert no validator admission and no stake-pool inflation.
+		 - `announce_bootstrap_atomicity`: fail treasury debit path intentionally; assert validator-set + stake-pool + account state remain unchanged.
+		 - `announce_prefunded_vs_bootstrap_path_consistency`: compare funded and unfunded announces; assert stake accounting invariants hold.
+	 - **Pass criteria:** no path can increase active stake without corresponding funded on-chain account state.
 
-### Fix
-For each transaction in block being reverted:
-- Reverse all account balance changes
-- Reverse all contract storage writes
-- Reverse all NFT transfers
-- Or: maintain checkpoint state for rollback
+3. **`C5` Highest-seen/fork-pressure from block stream**
+	 - **Pre-fix tests (must fail today):**
+		 - `sync_high_slot_untrusted_block_rejected`: malicious peer sends very high-slot block with valid structure but unadmitted producer; assert `highest_seen` and fork-choice are unaffected.
+		 - `fork_choice_weight_not_overridden_by_untrusted_seen`: higher vote-weight canonical block must win even with spammed high slots.
+	 - **Pass criteria:** fork replacement decisions depend only on validated/admitted chain evidence.
 
----
+### Priority 1 — Economic and Integrity Hardening
 
-## C8: Custody Deposit Key Derivation Predictable → Bridge Funds Theft
+4. **`H6` Sequence counter concurrency (`next_event_seq` RMW race)**
+	 - **Pre-fix tests (must fail/flaky today):**
+		 - `event_seq_concurrent_uniqueness`: 32+ threads write same `(program, slot)` concurrently; assert strictly unique, contiguous sequence IDs.
+		 - `event_seq_no_overwrite_under_contention`: verify no event key collisions in RocksDB.
+	 - **Pass criteria:** zero duplicate sequence IDs across stress iterations.
 
-**Severity**: CRITICAL
-**Category**: Cryptographic Weakness
-**File**: `custody/src/main.rs`
-**Lines**:
-- Solana: ~2436-2444
-- EVM: ~2519-2527
-**Status**: FROM FEB13 AUDIT — Reported as FIXED (HMAC-SHA512 with master seed); verify implementation
+5. **`H17` Dead peer lifecycle cleanup not immediate on all error paths**
+	 - **Pre-fix tests (must fail today):**
+		 - `peer_disconnect_cleanup_on_stream_error`: force stream failure; assert peer removed within bounded interval.
+		 - `peer_set_no_zombie_growth`: long soak with repeated connect/drop; assert active peers map remains bounded.
+	 - **Pass criteria:** no unbounded zombie peer accumulation.
 
-### Problem
-Private keys derived as `SHA256("molt/solana/usdc/{user_id}/{index}")`. Anyone knowing or guessing `user_id` and `index` can derive the private key and drain funds. No master seed entropy, no HSM, no secrets.
+6. **`M7` Slashing evidence durability across restart**
+	 - **Pre-fix tests (must fail today):**
+		 - `slashing_evidence_persists_restart`: add evidence, restart validator, verify evidence still loaded and slash decision unchanged.
+		 - `slashing_prune_consistency_restart`: verify pruned vs retained evidence windows remain correct after restart.
+	 - **Pass criteria:** restart does not erase adjudication-critical evidence.
 
-### Attack Scenario
-1. User IDs are likely sequential or public (e.g., "user_12345")
-2. Index is per-token, low values (typically 0-5)
-3. Attacker computes SHA256 for all user_id/index pairs
-4. Attacker gains private keys to all deposit addresses
-5. Sweeps entire bridge fund to self
+### Priority 2 — Policy / Contract Controls
 
-### Verification Required
-Check if `HMAC-SHA512(master_seed, ...)` with secure `master_seed` from environment is actually used. Verify master_seed cannot be guessed/brute-forced.
+7. **`M12` DEX admin timelock missing**
+	 - **Pre-fix tests (must fail today):**
+		 - `dex_admin_action_requires_delay`: pause/unpause should not execute in same block/slot as scheduling.
+		 - `dex_admin_cancellation_flow`: scheduled action can be canceled before execution window.
+	 - **Pass criteria:** admin emergency controls follow explicit timelock policy.
 
-### Impact
-- Total loss of all bridged funds (USDC, ETH, etc.)
-- Bridge non-functional
-- User funds stolen
+8. **`M20` Oracle staleness guard absent in DEX policy path**
+	 - **Pre-fix tests (must fail today):**
+		 - `oracle_price_staleness_rejected`: stale timestamp beyond policy threshold must reject pricing-dependent operation.
+		 - `oracle_freshness_boundary`: values just inside/outside staleness bound produce deterministic allow/deny behavior.
+	 - **Pass criteria:** stale oracle data cannot be used for execution-critical pricing.
 
-### Fix
-Use proper HD key derivation (BIP-32/BIP-44) with master seed from HSM or secure enclave. Verify seed stored securely, rotated periodically.
+9. **`M10` Market-order slippage control is limited**
+	 - **Pre-fix tests (must fail today):**
+		 - `market_order_worst_price_bound`: market order with bound should fail when execution exceeds bound.
+		 - `market_order_sandwich_resilience_sim`: adversarial book movement should not execute beyond caller-declared tolerance.
+	 - **Pass criteria:** explicit caller slippage constraints are always enforced.
 
----
-
-## C9: Custody Signing Requests Missing Auth Header → Sweep Pipeline Broken
-
-**Severity**: CRITICAL
-**Category**: Integration / Authentication
-**File**: `custody/src/main.rs`
-**Line**: ~1766-1777 (collect_signatures)
-**Status**: FROM FEB13 AUDIT — Reported as FIXED but verify Authorization header included
-
-### Problem
-`collect_signatures()` posts to threshold signers without `Authorization: Bearer <token>` header. Threshold signer enforces bearer auth → all signing silently fails.
-
-```rust
-// Signing request (missing auth):
-let response = http_client.post(&signer_url)
-    .json(&SigningRequest { /* ... */ })
-    .send()
-    .await;  // Returns 401 Unauthorized
-
-// Signer expects:
-// Authorization: Bearer {token}
-```
-
-### Impact
-- Entire deposit sweep pipeline non-functional
-- Deposited funds never swept to custody
-- Users' funds stuck in bridge (not accessible)
-- Bridge reputation destroyed
-
-### Fix
-Include `Authorization: Bearer {token}` header in all signing requests:
-```rust
-.header("Authorization", format!("Bearer {}", signer_token))
-```
+10. **`M14` Rebalance pricing/slippage correctness remains runtime-dependent**
+		- **Pre-fix tests (must fail/unstable today):**
+			- `rebalance_quote_execution_parity`: quoted output vs executed output within tolerance.
+			- `rebalance_extreme_slippage_abort`: operation aborts when realized slippage exceeds configured max.
+		- **Pass criteria:** rebalance never assumes fixed 1:1 behavior and always enforces slippage bounds.
 
 ---
 
-## C10: Privacy Proofs Forgeable — HMAC Keyed With Public Data
+## Test-First Delivery Order
 
-**Severity**: CRITICAL
-**Category**: Cryptographic / Privacy Bypass
-**File**: `core/src/privacy.rs`
-**Line**: ~68-99 (ZK proof generation)
-**Status**: FROM FEB13 AUDIT — Reported as FIXED (disabled by default); verify feature flag set
+1. Build deterministic reorg harness (`C7`, `C5`)  
+2. Add bootstrap/announce atomicity tests (`C4`, `H13`)  
+3. Add concurrency stress suite (`H6`, `H17`)  
+4. Add persistence/restart suite (`M7`)  
+5. Add contract policy tests (`M12`, `M20`, `M10`, `M14`)
 
-### Problem
-"ZK proofs" are actually HMAC-SHA256 keyed with `commitment_root`, which is public state visible to everyone. Anyone can compute valid proofs without knowing actual shielded tokens.
-
-### Attack Scenario
-1. User shielded 100 MOLT (commitment_root public)
-2. Attacker reads commitment_root from blockchain
-3. Attacker computes HMAC-SHA256(commitment_root, ...)
-4. Attacker generates "proof" of owning 1,000,000 MOLT
-5. Attacker mints 1,000,000 MOLT and transfers to self
-
-### Impact
-- Unlimited shielded token minting
-- Entire shielded pool drained
-- Zero actual privacy
-- Funds stolen
-
-### Verification Required
-Check that privacy feature is `#[cfg(feature = "privacy")]` and privacy feature is disabled in Cargo.toml for production builds.
-
-### Fix
-Either:
-1. Disable privacy feature completely (`#![cfg(not(feature = "privacy"))]`)
-2. Implement actual ZK proof system (Groth16, PLONK with trusted setup)
-3. Add prominent warnings and disable by default
+No code fixes should start until the above tests exist and are reproducibly red for their targeted gaps.
 
 ---
 
-## C11: EVM Commit Before Atomic Batch → Atomicity Violation
+## Old Audit Comparison & Consolidation
 
-**Severity**: CRITICAL
-**Category**: Data Integrity
-**File**: `core/src/processor.rs`
-**Line**: ~997-1023 (EVM processing path)
-**Status**: FROM FEB13 AUDIT — Reported as FIXED (H3); verify REVM transact() not transact_commit()
+Compared legacy audit artifacts against this revalidated file. Findings were overlapping, stale, or superseded by current-code verification.
 
-### Problem
-REVM's `transact_commit()` writes EVM account state to database immediately. If batch fails or subsequent instructions fail, EVM state persists without corresponding transaction record. State becomes inconsistent.
+Legacy files compared:
+- `FINAL_AUDIT_FEB13.md`
+- `CONTRACTS_AUDIT_REPORT.md`
+- `DEX_WASM_AUDIT.md`
+- `SECURITY_AUDIT_LEGACY_CONTRACTS.md`
+- `docs/DEFINITIVE_AUDIT_FEB12.md`
+- `docs/COMPREHENSIVE_AUDIT_FEB8.md`
+- `docs/CODE_AUDIT_PROOF_POINTS.md`
+- `AUDIT_SWEEP_PLAN.md`
 
-### Attack Scenario
-1. EVM transaction executes successfully
-2. REVM state committed to database
-3. Native transaction charge fails (insufficient balance)
-4. Batch rollback attempted
-5. EVM state remains in DB but tx record lost
-6. Account balance changed, transaction unrecoverable
-
-### Impact
-- State corruption
-- Funds moved without transaction record
-- Explorer shows phantom balance changes
-- Irrecoverable ledger divergence
-
-### Verification Required
-Verify that EVM execution uses REVM `transact()` (not `transact_commit()`) and state changes applied through StateBatch for atomicity.
-
-### Fix
-1. Use REVM `transact()` instead of `transact_commit()`
-2. Collect state changes into `EvmStateChanges` struct
-3. Apply changes through `StateBatch` for atomic commit
+Consolidation policy: **single source of truth = this file** (`PRODUCTION_READINESS_AUDIT.md`).
 
 ---
 
-## C12: Fee-Free Instructions Usable By Anyone
+## Reassessed Production Readiness (Based on This Revalidation)
 
-**Severity**: CRITICAL
-**Category**: Economic Exploit / DoS
-**File**: `core/src/processor.rs`
-**Line**: ~131-145 (instruction fee calculation)
-**Status**: FROM FEB13 AUDIT — Reported as H1 and should be FIXED; verify authorization check
+### What was exaggerated in prior audits
 
-### Problem
-Instruction types 2-5 (system rewards, grant repayment, genesis transfer, genesis mint) explicitly return `fee = 0` and bypass normal fee charging. No authorization checks — any user can submit these transactions.
+- Broad claims that critical issues remained broadly unfixed are no longer accurate for many C/H findings.
+- Several previously flagged vulnerabilities are now patched in code paths validated in this review.
+- Some old reports reference outdated endpoints/flows no longer present.
 
-```rust
-// Any user can create:
-// - Type 2: Free MOLT transfer (reward distribution)
-// - Type 3: Free grant repayment (treasury extraction)
-// - Type 4: Free genesis transfer
-// - Type 5: Free genesis mint (unlimited token creation)
-```
+### What still blocks confident adversarial launch
 
-### Attack Scenario
-1. Attacker creates type-5 (genesis mint) transaction
-2. Mints 1 billion MOLT to self address
-3. No fee charged
-4. Validator processes (system instruction, so allowed)
-5. Attacker owns entire network
-
-### Impact
-- Unbounded token creation
-- Immediate 100% stake control
-- Network takeover
-- All funds stolen
-
-### Verification Required
-Check that instruction types 2-5 require `sender == TREASURY_ADDRESS || sender == GENESIS_AUTHORITY`.
-
-### Fix
-Add authorization check before returning fee=0:
-```rust
-if matches!(kind, 2..=5) {
-    let caller = tx.message.instructions[0].accounts.first()?;
-    if *caller != TREASURY_AUTHORITY && *caller != GENESIS_AUTHORITY {
-        return Err("Unauthorized");
-    }
-    return 0;  // Only authorized callers get fee=0
-}
-```
+1. Fork/reorg rollback correctness for non-transfer side effects (`C7`).
+2. Bootstrap/announce atomic trust and accounting coupling (`C4/H13`).
+3. Highest-seen/fork-choice trust boundary hardening (`C5`).
+4. Policy/security hardening (timelock, staleness, persistence, concurrency) (`M12`, `M20`, `M7`, `H6`, `H17`, plus `M10/M14`).
 
 ---
 
-# HIGH-PRIORITY ISSUES (18 TOTAL)
-
-## H1: Fee-Free Type Authorization
-**File**: `core/src/processor.rs`
-**Line**: ~131-145
-**Status**: Duplicate of C12 (covered above)
-
----
-
-## H2: EVM Transactions Skip Native Fee Burn/Split
-
-**Severity**: HIGH
-**Category**: Economic Model
-**File**: `core/src/processor.rs`
-**Line**: ~997-1023 (EVM instruction processing)
-
-### Problem
-EVM transactions charge base fee but don't split producer/voter/burn shares like native transactions. Fee goes to producer only, no burn, no voter rewards.
-
-### Impact
-- Economic model broken for EVM transactions
-- No deflationary pressure from EVM activity
-- Validators underpaid for EVM blocks (no voter share)
-- Incentive misalignment
-
-### Fix
-After EVM execution, apply same fee distribution as native instructions:
-```rust
-let producer_share = fee * PRODUCER_FEE_SHARE;
-let voter_share = fee * VOTER_FEE_SHARE;
-let burn_amount = fee - producer_share - voter_share;
-// Distribute accordingly
-```
-
----
-
-## H3: EVM Atomic Batch Issue
-**Status**: Duplicate of C11 (covered above)
-
----
-
-## H4: Concurrent Batch Overwrite
-
-**Severity**: HIGH
-**Category**: Data Integrity / Concurrency
-**File**: `core/src/processor.rs`
-**Line**: ~1200-1250 (process_block)
-
-### Problem
-Multiple threads could process blocks concurrently, creating overlapping `StateBatch` instances. Last write wins, earlier writes lost.
-
-### Impact
-- State corruption under concurrent load
-- Race conditions in block processing
-- Lost state updates
-- Consensus divergence
-
-### Fix
-Guard `process_block` with mutex or verify single-threaded execution:
-```rust
-static PROCESS_LOCK: Mutex<()> = Mutex::new(());
-let _guard = PROCESS_LOCK.lock();
-// process block
-```
-
----
-
-## H5: Non-Atomic Transfer
-
-**Severity**: HIGH
-**Category**: Data Integrity
-**File**: `core/src/processor.rs`
-**Line**: ~200-250 (transfer instruction)
-
-### Problem
-Transfer modifies sender and receiver accounts separately. If second write fails, sender debited but receiver not credited. Funds disappear.
-
-### Impact
-- Funds disappear into void
-- User balances incorrect
-- Supply accounting wrong
-- Unrecoverable losses
-
-### Fix
-Wrap both account updates in single `WriteBatch`:
-```rust
-let mut batch = state.create_batch();
-batch.update_account(sender, sender_balance);
-batch.update_account(receiver, receiver_balance);
-batch.commit()?;
-```
-
----
-
-## H6: Sequence Counter Race Conditions
-
-**Severity**: HIGH
-**Category**: Security / Replay Protection
-**File**: `core/src/state.rs`
-**Line**: ~700-750 (sequence counter increment)
-
-### Problem
-Read-modify-write pattern not atomic. Concurrent increments can use same sequence number. Enables replay attacks.
-
-### Impact
-- Duplicate sequence numbers
-- Replay attack vulnerability
-- Transaction ordering broken
-- Consensus issues
-
-### Fix
-Use RocksDB `merge` operator or atomic increment primitive:
-```rust
-// Use merge operator for atomic increment
-db.merge(key, bincode::serialize(&1)?)?;
-```
-
----
-
-## H7: Dirty Marker Pruning Too Aggressive
-
-**Severity**: HIGH
-**Category**: Data Loss
-**File**: `validator/src/sync.rs`
-**Line**: ~450-500 (dirty marker cleanup)
-
-### Problem
-Removes dirty markers before confirming all replicas synced. If sync fails, data lost without recovery path.
-
-### Impact
-- Data loss during sync failures
-- Chain gaps unrecoverable
-- Network split during high churn
-- Permanent ledger inconsistency
-
-### Fix
-Only prune dirty markers after confirming all validators have block:
-```rust
-if all_validators_confirmed_sync(slot) {
-    remove_dirty_marker(slot);
-}
-```
-
----
-
-## H8: Vote Equivocation Not Prevented
-
-**Severity**: HIGH
-**Category**: Consensus Safety
-**File**: `core/src/consensus.rs`
-**Line**: ~550-600 (VoteAggregator)
-
-### Problem
-Validator can vote multiple times per slot for different blocks. Both votes counted, inflating vote weight.
-
-### Impact
-- Double-voting inflates vote weight
-- Consensus manipulation
-- Validator can support multiple forks simultaneously
-- Finality broken
-
-### Fix
-Deduplicate votes per slot per validator:
-```rust
-let mut voted_this_slot: HashSet<(u64, PublicKey)> = HashSet::new();
-if !voted_this_slot.insert((slot, validator)) {
-    return Err("Equivocation detected");
-}
-```
-
----
-
-## H9: Delegation Commission Goes to Void
-
-**Severity**: HIGH
-**Category**: Economic Incentive
-**File**: `core/src/consensus.rs`
-**Line**: ~750-800 (delegation reward distribution)
-
-### Problem
-Commission deducted from delegator but not credited to validator. Burns commission instead of paying it out.
-
-### Impact
-- Validators lose earned commission
-- Economic incentive broken
-- No reason to accept delegations
-- Delegation feature useless
-
-### Fix
-After deducting commission, credit to validator's spendable balance:
-```rust
-let commission = delegator_reward * validator.commission_rate;
-delegator_reward -= commission;
-validator.spendable += commission;
-```
-
----
-
-## H10: Integer Truncation in Leader Selection
-
-**Severity**: HIGH
-**Category**: Consensus / Centralization
-**File**: `core/src/consensus.rs`
-**Line**: ~200-250 (weighted leader selection)
-
-### Problem
-Weight calculation truncates small stakes to 0. Large validators get 100% weight, small validators never selected.
-
-### Impact
-- Centralization force
-- Small validators never selected as leader
-- 51% attack easier (only large validators matter)
-- Delegation concentrates to top validators
-
-### Fix
-Use proper weighted random selection preserving small stake proportions:
-```rust
-// Use u128 for intermediate calculations
-let weight_u128 = (stake as u128 * u64::MAX as u128) / total_stake as u128;
-let weight = weight_u128 as u64;
-```
-
----
-
-## H11: Unstake Cooldown Constant Wrong
-
-**Severity**: HIGH
-**Category**: Economic Security
-**File**: `core/src/consensus.rs`
-**Line**: ~50 (constants)
-
-### Problem
-`UNSTAKE_COOLDOWN_SLOTS = 604_800` but should be `1_512_000` per whitepaper (7 days at 4 sec/slot = 151,200 slots/day).
-
-### Impact
-- Users unstake 4x faster than designed
-- Economic security window too short
-- Nothing-at-stake easier to execute
-- Validator set too volatile
-
-### Fix
-Update constant to correct value:
-```rust
-pub const UNSTAKE_COOLDOWN_SLOTS: u64 = 1_512_000; // 7 days at 4 sec/slot
-```
-
----
-
-## H12: Reward Credit When liquid==0
-
-**Severity**: HIGH
-**Category**: Economic / Lock Schedule
-**File**: `core/src/consensus.rs`
-**Line**: ~850-900 (distribute_epoch_rewards)
-
-### Problem
-If validator's liquid balance is 0, rewards credited to spendable instead of respecting lock schedule. Bypasses vesting.
-
-### Impact
-- Lock schedule bypass
-- Validators access locked rewards early
-- Vesting mechanism broken
-- Economic design violated
-
-### Fix
-Always credit to liquid, even if 0. Track separately from spendable:
-```rust
-validator.liquid += reward;  // Even if liquid was 0
-// Don't add to spendable
-```
-
----
-
-## H13: Validator Auto-Registration Without Stake Check
-
-**Severity**: HIGH
-**Category**: Sybil Attack
-**File**: `validator/src/main.rs`
-**Line**: ~3243-3272 (announce handler)
-
-### Problem
-Remote announce creates validator account without verifying on-chain MIN_VALIDATOR_STAKE exists. Anyone can announce as validator.
-
-### Impact
-- Sybil attack vector
-- Fake validators with no stake
-- Vote weight diluted
-- Consensus manipulation
-
-### Fix
-Query state for account balance, verify >= MIN_VALIDATOR_STAKE before accepting:
-```rust
-let account = state.get_account(&announced_pubkey)?;
-if account.shells < MIN_VALIDATOR_STAKE {
-    return Err("Insufficient stake");
-}
-```
-
----
-
-## H14: CORS Origin Bypass
-
-**Severity**: HIGH
-**Category**: Web Security
-**File**: `rpc/src/lib.rs`
-**Line**: ~100-150 (CORS middleware)
-
-### Problem
-Uses `origin.starts_with("https://moltchain.com")` instead of exact match. Attacker uses `https://moltchain.com.evil.com` to bypass.
-
-### Impact
-- CORS bypass
-- Cross-origin attacks from phishing sites
-- User funds stolen via malicious dApps
-- XSS vulnerability
-
-### Fix
-Exact match or whitelist:
-```rust
-let allowed_origins = ["https://moltchain.com", "https://wallet.moltchain.com"];
-if !allowed_origins.contains(&origin.as_str()) {
-    return Err("CORS blocked");
-}
-```
-
----
-
-## H15: TX Cache Poisoned on Failure
-
-**Severity**: HIGH
-**Category**: Integration / UX
-**File**: `rpc/src/lib.rs`
-**Line**: ~450-500 (submit_transaction handler)
-
-### Problem
-Caches transaction signature before verifying submission succeeded. Failed TX cached as "submitted", causing retries to appear as "already submitted".
-
-### Impact
-- Users retry failed transactions thinking they succeeded
-- Double-submission errors for legitimate retries
-- Stuck funds (user thinks submitted but wasn't)
-- Bad UX, support burden
-
-### Fix
-Only insert into cache after mempool confirms acceptance:
-```rust
-mempool.submit(tx)?;  // May fail
-tx_cache.insert(signature);  // Only if submit succeeded
-```
-
----
-
-## H16: State-Mutating RPC Endpoints Bypass Consensus
-
-**Severity**: HIGH
-**Category**: Consensus Safety
-**File**: `rpc/src/lib.rs`
-**Line**: ~300-400 (RPC handlers)
-
-### Problem
-Some endpoints (`force_slot_advance`, `inject_transaction`) mutate state directly without going through consensus. In multi-validator mode, causes state divergence.
-
-### Impact
-- State corruption in multi-validator mode
-- Consensus bypass
-- Validators have different state
-- Network split
-
-### Fix
-Guard with single-validator-mode check or route through mempool:
-```rust
-if validator_count > 1 {
-    return Err("Endpoint only available in single-validator mode");
-}
-```
-
----
-
-## H17: Dead Peers Not Removed from DashMap
-
-**Severity**: HIGH
-**Category**: Memory Leak / Performance
-**File**: `p2p/src/peer.rs`
-**Line**: ~200-250 (connection error handling)
-
-### Problem
-Connection errors logged but peer not removed from `active_peers` DashMap. Dead peers accumulate, consuming memory.
-
-### Impact
-- Memory leak
-- Eventually OOM crash
-- Performance degradation (iterating dead peers)
-- Network unreliability
-
-### Fix
-Remove peer from DashMap on connection error:
-```rust
-if let Err(e) = connection_result {
-    active_peers.remove(&peer_id);
-    log::warn!("Peer {} disconnected: {}", peer_id, e);
-}
-```
-
----
-
-## H18: Deserialization Failure DoS
-
-**Severity**: HIGH
-**Category**: Network DoS
-**File**: `p2p/src/gossip.rs`
-**Line**: ~150-200 (message deserialization)
-
-### Problem
-Malformed messages cause deserialization errors but peer not rate-limited or disconnected. Attacker spams bad messages, exhausting CPU.
-
-### Impact
-- CPU exhaustion DoS
-- Network unusable
-- Validator can't keep up with blocks
-- Missed slot penalties
-
-### Fix
-Increment error counter per peer, disconnect after threshold:
-```rust
-if peer.deser_errors.fetch_add(1) > 10 {
-    disconnect_peer(peer_id);
-}
-```
-
----
-
-# MEDIUM-PRIORITY ISSUES (20+ TOTAL)
-
-## M1: Symbol Registry Validation Gaps
-**File**: `core/src/state.rs`
-**Problem**: Symbol registration doesn't verify uniqueness. Multiple tokens can claim same symbol.
-**Impact**: User confusion. Wrong token displayed in wallets.
-**Fix**: Check symbol uniqueness before registration.
-
-## M2: EVM Address Reverse Mapping Missing
-**File**: `core/src/state.rs`
-**Problem**: EVM address → MoltChain account mapping incomplete in some code paths.
-**Impact**: EVM transactions fail to resolve sender. Integration bugs.
-**Fix**: Maintain bidirectional mapping consistently.
-
-## M3: NFT Operations Not Always Atomic
-**File**: `core/src/processor.rs`
-**Problem**: NFT mint/transfer modifies collection and owner separately. Partial failures leave inconsistent state.
-**Impact**: NFT ownership corruption. Lost NFTs.
-**Fix**: Use StateBatch for all NFT state changes.
-
-## M4: Failed Transactions Don't Pay Fees
-**File**: `core/src/processor.rs`
-**Problem**: Fee only charged on successful execution. Failed transactions get free computation.
-**Impact**: DoS via expensive failing transactions.
-**Fix**: Charge fee before execution, refund partial on failure.
-
-## M5: Unstake Claims Missing Staker Identity
-**File**: `core/src/consensus.rs`
-**Problem**: Unstake claim doesn't verify claimer == original staker. Anyone can claim others' unstaked funds.
-**Impact**: Funds stolen after unstake cooldown.
-**Fix**: Verify `claimer_pubkey == unstake_record.original_staker`.
-
-## M6: NFT Token ID Not Indexed
-**File**: `core/src/state.rs`
-**Problem**: NFT lookups iterate entire collection. O(n) for single token query.
-**Impact**: Slow NFT queries. Poor UX at scale.
-**Fix**: Add secondary index: `token_id → owner`.
-
-## M7: Slashing Evidence Not Persistent
-**File**: `core/src/consensus.rs`
-**Problem**: Slashing evidence stored in memory, lost on restart. Can't prove slashing after reboot.
-**Impact**: Dispute resolution impossible. Validator reputation unclear.
-**Fix**: Persist slashing evidence to database.
-
-## M8: Stake Weight Overflow Possible
-**File**: `core/src/consensus.rs`
-**Problem**: `total_stake() * epochs` can overflow u64 for long-running validators.
-**Impact**: Weight calculation wrong. Leader selection biased.
-**Fix**: Use saturating arithmetic or u128.
-
-## M9: Contract Deploy Gas Underestimated
-**File**: `core/src/contract.rs`
-**Problem**: WASM compilation not metered. Large contracts can DoS during deploy.
-**Impact**: Validator CPU exhaustion. Block processing stalls.
-**Fix**: Charge gas for compilation proportional to bytecode size.
-
-## M10: DEX No Slippage Protection
-**File**: `contracts/dex_core/src/lib.rs`
-**Problem**: Market orders accept worst-case price. Attacker sandwiches to extract MEV.
-**Impact**: Users lose value to MEV. Bad UX.
-**Fix**: Add `max_price` parameter to market orders.
-
-## M11: Order Expiry Not Enforced
-**File**: `contracts/dex_core/src/lib.rs`
-**Problem**: Old orders can be filled years later at stale prices.
-**Impact**: User loses funds to price movement.
-**Fix**: Check `block.timestamp < order.expiry` before fill.
-
-## M12: Admin Functions Not Timelocked
-**File**: `contracts/dex_core/src/lib.rs`
-**Problem**: Emergency pause/unpause can be used to trap funds instantly.
-**Impact**: Rug pull vector. User funds trapped.
-**Fix**: Add timelock to admin functions (24-48 hour delay).
-
-## M13: Reserve Ledger Race Conditions
-**File**: `custody/src/main.rs`
-**Problem**: Reserve balance updates not atomic with sweep operations.
-**Impact**: Reserve accounting wrong. Over-withdrawal possible.
-**Fix**: Lock reserve ledger during balance updates.
-
-## M14: Rebalance Assumes 1:1 Swap
-**File**: `custody/src/main.rs`
-**Problem**: Rebalance operation assumes 1:1 USDC:MOLT swap. Ignores slippage.
-**Impact**: Loss of funds to slippage. Arbitrage opportunity.
-**Fix**: Use DEX price oracle, add slippage tolerance.
-
-## M15: Only First Solana Deposit Signature Processed
-**File**: `custody/src/main.rs`
-**Problem**: Multi-signature Solana deposits only process first signature. Additional signers ignored.
-**Impact**: Multisig deposits fail. Funds stuck.
-**Fix**: Process all signatures in transaction.
-
-## M16: EVM Sweep Lacks Gas Funding
-**File**: `custody/src/main.rs`
-**Problem**: EVM sweep doesn't fund deposit address with ETH for gas. Transfer will fail.
-**Impact**: EVM deposits never swept. Funds stuck.
-**Fix**: Send gas ETH to deposit address before sweep.
-
-## M17: Withdrawal Endpoint Unauthenticated
-**File**: `custody/src/main.rs`
-**Problem**: Withdrawal API endpoint doesn't verify user signature/auth.
-**Impact**: Anyone can withdraw anyone's funds.
-**Fix**: Require signed withdrawal request from account owner.
-
-## M18: DashMap Guard Held Across Await
-**File**: `p2p/src/peer.rs`
-**Problem**: DashMap entry guard held across `.await` boundary. Can deadlock.
-**Impact**: Deadlock under high load. Network stalls.
-**Fix**: Drop guard before await or use tokio::sync::RwLock.
-
-## M19: BlockRangeRequest No Bounds Validation
-**File**: `p2p/src/gossip.rs`
-**Problem**: `start_slot..end_slot` range not validated. Attacker requests 0..u64::MAX.
-**Impact**: Memory exhaustion. Node crash.
-**Fix**: Limit range to maximum (e.g., 1000 blocks).
-
-## M20: Oracle Staleness Not Checked
-**File**: `contracts/dex_core/src/lib.rs`
-**Problem**: Uses moltoracle price without staleness validation. Stale price can be hours old.
-**Impact**: Swaps execute at wrong price. Arbitrage opportunity.
-**Fix**: Check `block.timestamp - oracle.timestamp < MAX_STALENESS`.
-
----
-
-# LOW-PRIORITY ISSUES (7 TOTAL)
-
-## L1: Unused Code Paths
-**Multiple files**
-**Problem**: Dead code not removed (`#[allow(dead_code)]` in several places).
-**Impact**: Code bloat. Maintenance burden.
-**Fix**: Remove unused code or document why kept.
-
-## L2: Logging Inconsistencies
-**Multiple files**
-**Problem**: Some errors logged, some not. Inconsistent log levels.
-**Impact**: Harder debugging. Missing incident data.
-**Fix**: Standardize logging patterns.
-
-## L3: Documentation Gaps
-**Multiple files**
-**Problem**: Complex functions lack safety invariant comments.
-**Impact**: Future maintainers may introduce bugs.
-**Fix**: Add documentation for invariants.
-
-## L4: Performance - Cache Sizes Not Tuned
-**File**: `core/src/state.rs`
-**Problem**: Block hash cache (300 slots), WASM module cache (100 entries) not tuned for production load.
-**Impact**: Suboptimal performance. Could be faster.
-**Fix**: Profile production workload, tune cache sizes.
-
-## L5: No Metrics Export
-**Multiple files**
-**Problem**: No Prometheus/metrics endpoint for monitoring.
-**Impact**: Hard to detect performance degradation. No alerting.
-**Fix**: Add metrics export for key operations.
-
-## L6: Error Messages Generic
-**Multiple files**
-**Problem**: Errors like "invalid state" without context.
-**Impact**: Hard to debug user issues.
-**Fix**: Add contextual error information.
-
-## L7: Dependency Versions Unpinned
-**File**: `Cargo.toml` files
-**Problem**: Some dependencies use `^version` (caret) allowing minor updates.
-**Impact**: Supply chain risk. Unexpected breaking changes.
-**Fix**: Pin to exact versions for production.
-
----
-
-# WORK ASSIGNMENT FOR 30 ENGINEERS
-
-## Critical Fixes (Day 1-3)
-
-### Consensus Safety Team (8 engineers)
-- **C1**: Non-deterministic voter sorting → 2 engineers
-- **C2**: Delegation stake tracking → 2 engineers
-- **C5**: highest_seen validation → 2 engineers
-- **C7**: Block reversal → 2 engineers (most complex)
-
-### Economic Security Team (4 engineers)
-- **C4**: Bootstrap treasury deduction → 2 engineers
-- **C12**: Fee-free instruction authorization → 2 engineers
-
-### Data Integrity Team (6 engineers)
-- **C3**: EVM serialization consistency → 2 engineers
-- **C11**: EVM atomic batch → 2 engineers
-- **H5**: Non-atomic transfer → 2 engineers
-
-### Security & Custody Team (8 engineers)
-- **C6**: Multisig deduplication → 2 engineers
-- **C8**: HD key derivation → 3 engineers (needs crypto expertise)
-- **C9**: Signing auth headers → 1 engineer
-- **C10**: Privacy feature disable → 2 engineers
-
-### Infrastructure & Testing (4 engineers)
-- Test framework setup → 2 engineers
-- CI/CD for rapid testing → 2 engineers
-
----
-
-## High-Priority Fixes (Day 4-5)
-
-### Core Systems Team (8 engineers)
-- **H2**: EVM fee distribution → 2 engineers
-- **H4**: Concurrent batch guard → 2 engineers
-- **H6**: Sequence counter atomicity → 2 engineers
-- **H7**: Dirty marker pruning → 2 engineers
-
-### Consensus Team (6 engineers)
-- **H8**: Vote equivocation → 2 engineers
-- **H9**: Delegation commission → 2 engineers
-- **H10**: Leader selection weighting → 2 engineers
-
-### Economic & Constants (3 engineers)
-- **H11**: Unstake cooldown constant → 1 engineer
-- **H12**: Reward credit liquid → 1 engineer
-- **H13**: Validator stake verification → 1 engineer
-
-### Network & RPC Team (6 engineers)
-- **H14**: CORS exact matching → 1 engineer
-- **H15**: TX cache ordering → 2 engineers
-- **H16**: State-mutating RPC guards → 1 engineer
-- **H17**: Dead peer cleanup → 1 engineer
-- **H18**: Deser failure rate limiting → 1 engineer
-
-### Integration & Contracts (7 engineers)
-- Medium-priority contract fixes (M10-M20) → 7 engineers
-
----
-
-## QA/Testing Phase (Day 6-7)
-
-### All 30 Engineers
-- Multi-validator testnet deployment
-- Fork scenario testing
-- Economic exploit testing
-- Load testing (1000+ TPS)
-- State consistency verification
-- Integration testing
-
----
-
-# TESTING REQUIREMENTS
-
-## Phase 1: Unit Tests (After Each Fix)
-- Add tests covering the bug scenario
-- Verify fix prevents the issue
-- Ensure no regressions
-
-## Phase 2: Integration Tests (Day 4-5)
-- Multi-component interaction testing
-- End-to-end transaction flows
-- Contract deployment and execution
-
-## Phase 3: Multi-Validator Consensus (Day 6)
-**CRITICAL - Cannot skip this**
-- Deploy 5-10 validator testnet
-- Generate 10,000+ transactions
-- Force fork scenarios
-- Verify state consistency across all nodes
-- Test delegation, rewards, unstaking
-
-**Success Criteria:**
-- ✅ Zero state divergence between validators
-- ✅ All validators agree on same state root
-- ✅ Fork resolution works correctly
-- ✅ No double-spends detected
-
-## Phase 4: Load & Stress Testing (Day 7)
-- 20-node testnet
-- 100,000 transactions
-- 1000+ TPS sustained
-- Memory/CPU profiling
-- Network partition simulation
-- Malicious validator simulation
-
----
-
-# GO/NO-GO LAUNCH CRITERIA
-
-## GO Criteria (ALL must pass)
-- ✅ Zero state divergence in 48-hour multi-validator test
-- ✅ Zero double-spends in fork resolution test
-- ✅ Supply stays constant (no inflation exploits)
-- ✅ 1000+ TPS sustained for 1 hour
-- ✅ All 12 CRITICAL fixes verified in production scenarios
-- ✅ All 18 HIGH fixes implemented and tested
-- ✅ No memory leaks detected in 24-hour stress test
-- ✅ Bridge custody using HD key derivation with HSM
-
-## NO-GO Criteria (ANY triggers abort)
-- ❌ Any state divergence between validators
-- ❌ Any double-spend detected
-- ❌ Any supply inflation
-- ❌ Any crashes/panics under load
-- ❌ Any fork resolution failures
-- ❌ Consensus finality broken
-- ❌ Bridge key derivation still predictable
-- ❌ EVM data corruption detected
-
----
-
-# RISK ASSESSMENT
-
-## If Launching in 7 Days With 500 Validators
-
-### Probability of Success: <5%
-### Probability of Catastrophic Failure: >95%
-
-### Expected Failure Modes:
-1. **Hour 1**: State divergence from C1 → 500 separate chains
-2. **Hour 2-6**: Unbounded inflation from C2, C4, C12
-3. **Day 1-2**: Double-spends from C7, bridge funds stolen from C8
-4. **Day 3+**: Network collapse, total loss of user funds, project dead
-
-### Recommended Timeline:
-- **Week 1**: Fix all CRITICAL issues
-- **Week 2**: Multi-validator testnet validation
-- **Week 3**: Load testing, stress testing
-- **Week 4**: Launch with confidence
-
----
-
-# POSITIVE FINDINGS
-
-## Well-Implemented Patterns
-1. **Cryptographic Primitives**: SHA-256, Ed25519 used correctly
-2. **Reentrancy Guards**: Implemented in DEX contracts
-3. **Saturating Arithmetic**: Prevents most overflows
-4. **State Atomicity**: StateBatch mechanism solid when used correctly
-5. **Block Hashing Cache**: Good optimization (300 slots)
-6. **WASM Module Caching**: Avoids redundant compilation
-
-## Testing
-- 301 unit tests passing
-- Good happy path coverage
-- Edge case testing for overflow/underflow
-
-## Architecture
-- Clean module boundaries
-- Good separation of concerns
-- Extensible contract system
-
----
-
-# CONCLUSION
-
-**MoltChain has critical vulnerabilities that WILL cause network failure if launched without fixes.**
-
-**Path to Production:**
-1. Fix 12 CRITICAL issues (estimated 21 coding hours + 38 testing hours)
-2. Fix 18 HIGH issues (estimated 30 hours)
-3. Multi-validator consensus testing (minimum 48 hours)
-4. Load and stress testing (24 hours)
-5. **Total: Minimum 4-5 weeks to production readiness**
-
-**The codebase has solid foundations but needs critical consensus, economic, and security fixes before handling real user funds in a multi-validator environment.**
-
----
-
-**Report compiled**: February 16, 2026
-**Audit scope**: 18.2K LOC core + 27 contracts + networking + RPC + validator + custody
-**Confidence**: HIGH (exact line numbers and code analysis provided)
+**Confidence in this revalidation:** Medium-High for static code correctness claims; Medium for distributed/runtime behavior pending test-first verification above.

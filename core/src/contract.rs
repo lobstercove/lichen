@@ -21,9 +21,9 @@ use wasmer_middlewares::Metering;
 static MODULE_CACHE: std::sync::LazyLock<RwLock<HashMap<[u8; 32], Vec<u8>>>> =
     std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
 
-/// PERF-FIX 7: Thread-local ContractRuntime pool.
-/// Avoids creating a new Cranelift compiler + Wasmer Store on every contract call.
-/// Each rayon thread reuses its own runtime instance, eliminating ~1-5ms overhead per TX.
+// PERF-FIX 7: Thread-local ContractRuntime pool.
+// Avoids creating a new Cranelift compiler + Wasmer Store on every contract call.
+// Each rayon thread reuses its own runtime instance, eliminating ~1-5ms overhead per TX.
 thread_local! {
     static RUNTIME_POOL: std::cell::RefCell<Option<ContractRuntime>> = const { std::cell::RefCell::new(None) };
 }

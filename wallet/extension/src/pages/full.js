@@ -458,7 +458,7 @@ async function refreshBalance() {
     const molt = raw / 1_000_000_000;
     const d = decimals();
     $('totalBalance').textContent = `${molt.toLocaleString(undefined, { maximumFractionDigits: d })} MOLT`;
-    $('balanceUsd').textContent = `$${(molt * 0.05).toFixed(2)} USD`;
+    $('balanceUsd').textContent = `$${(molt * 0.05).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD`;
   } catch {
     $('totalBalance').textContent = '0.00 MOLT';
     $('balanceUsd').textContent = '$0.00 USD';
@@ -548,7 +548,7 @@ async function loadAssets() {
         </div>
         <div class="asset-balance">
           <div class="asset-amount">${molt.toLocaleString(undefined, { maximumFractionDigits: d })}</div>
-          <div class="asset-value">$${(molt * 0.05).toFixed(2)}</div>
+          <div class="asset-value">$${(molt * 0.05).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
         </div>
       </div>
     `;
@@ -578,7 +578,7 @@ async function loadActivity() {
       const block = tx.block_height || tx.slot || '—';
       const short = `${String(sig).slice(0, 10)}…${String(sig).slice(-6)}`;
       const isSend = (tx.from === wallet.address);
-      const amt = tx.amount ? (Number(tx.amount) / 1_000_000_000).toFixed(4) : '';
+      const amt = tx.amount ? (Number(tx.amount) / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 9 }) : '';
       return `
         <div class="activity-item">
           <div class="activity-icon ${isSend ? 'send' : 'receive'}">
@@ -617,7 +617,7 @@ async function handleSend() {
     const balResult = await rpc().getBalance(wallet.address);
     const spendable = Number(balResult?.spendable || balResult?.balance || 0) / 1_000_000_000;
     if (spendable < amount + 0.001) {
-      showToast(`Insufficient balance: need ${(amount + 0.001).toFixed(6)}, have ${spendable.toFixed(6)}`, 'error');
+      showToast(`Insufficient balance: need ${(amount + 0.001).toLocaleString(undefined, { maximumFractionDigits: 9 })}, have ${spendable.toLocaleString(undefined, { maximumFractionDigits: 9 })}`, 'error');
       return;
     }
 

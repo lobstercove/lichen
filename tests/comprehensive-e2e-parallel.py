@@ -26,6 +26,11 @@ sys.path.insert(0, str(ROOT / "sdk" / "python"))
 from moltchain import Connection, Instruction, Keypair, PublicKey, TransactionBuilder
 
 RPC_URL = os.getenv("RPC_URL", "http://127.0.0.1:8899")
+# PERF-OPT 4: Distribute TXs across all validators (round-robin).
+# Previously all TXs went to V1 (port 8899) — non-leader validators'
+# TXs had to propagate via P2P before the leader could include them.
+# Now each contract suite is assigned a different validator RPC.
+RPC_ENDPOINTS = os.getenv("RPC_ENDPOINTS", "").split(",") if os.getenv("RPC_ENDPOINTS") else []
 CONTRACT_PROGRAM = PublicKey(b"\xff" * 32)
 TX_CONFIRM_TIMEOUT = int(os.getenv("TX_CONFIRM_TIMEOUT", "30"))  # Higher for parallel load + 3-validator consensus
 DEPLOYER_PATH = os.getenv("AGENT_KEYPAIR") or str(ROOT / "keypairs" / "deployer.json")
@@ -1055,6 +1060,32 @@ async def main() -> int:
         report("FAIL", f"validator unreachable: {e}")
         return 1
 
+    # PERF-OPT 4: Auto-discover available validator RPC endpoints.
+    # Distributes TX load so non-leader validators receive TXs directly
+    # instead of waiting for P2P gossip from a single entry point.
+    rpc_pool: List[str] = []
+    if RPC_ENDPOINTS:
+        rpc_pool = [ep.strip() for ep in RPC_ENDPOINTS if ep.strip()]
+    else:
+        # Auto-detect local validators on ports 8899, 8901, 8903, ...
+        import urllib.request, urllib.error
+        for port in [8899, 8901, 8903, 8905, 8907]:
+            try:
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{port}",
+                    data=b'{"jsonrpc":"2.0","id":1,"method":"getSlot"}',
+                    headers={"Content-Type": "application/json"},
+                )
+                with urllib.request.urlopen(req, timeout=1) as resp:
+                    if resp.status == 200:
+                        rpc_pool.append(f"http://127.0.0.1:{port}")
+            except Exception:
+                pass
+    if not rpc_pool:
+        rpc_pool = [RPC_URL]
+    conns = [Connection(ep) for ep in rpc_pool]
+    print(f"  TX distribution: {len(conns)} validator(s) → {', '.join(rpc_pool)}")
+
     slot = await conn.get_slot()
     report("PASS", f"current slot: {slot}")
 
@@ -1093,6 +1124,33 @@ async def main() -> int:
         for m in sorted(missing):
             report("FAIL", f"missing contract: {m}")
 
+    # PERF-OPT 4b: Wait for all validators to sync funding TXs before
+    # distributing test suites across multiple RPCs.
+    if len(conns) > 1:
+        await asyncio.sleep(3.0)  # Allow blocks to propagate
+        # Ensure deployer account is visible on all endpoints; airdrop if needed
+        for i, c in enumerate(conns[1:], 1):
+            for attempt in range(5):
+                try:
+                    bal = await c.get_balance(deployer.public_key())
+                    bal_val = bal.get("balance", bal) if isinstance(bal, dict) else bal
+                    if isinstance(bal_val, (int, float)) and bal_val >= 1_000_000_000:
+                        break
+                except Exception:
+                    pass
+                # Airdrop directly to this validator to ensure visibility
+                try:
+                    await c._rpc("requestAirdrop", [str(deployer.public_key()), 100])
+                except Exception:
+                    pass
+                await asyncio.sleep(1.0)
+            # Fund secondary on this endpoint too
+            try:
+                await c._rpc("requestAirdrop", [str(secondary.public_key()), 100])
+            except Exception:
+                pass
+        await asyncio.sleep(2.0)  # Final sync settle
+
     # Build all scenarios
     named_scenarios = build_named_scenarios(deployer, secondary, contracts)
     opcode_scenarios = build_opcode_scenarios(deployer, secondary, contracts)
@@ -1104,15 +1162,19 @@ async def main() -> int:
     print(f"{'─' * 70}\n")
 
     # Build list of coroutines — one per contract
+    # PERF-OPT 4: Round-robin connections across validators
     tasks = []
     task_labels = []
+    conn_idx = 0
 
     for contract_name, steps in named_scenarios.items():
         program = contracts.get(contract_name)
         if not program:
             report("FAIL", f"{contract_name}: not deployed")
             continue
-        tasks.append(run_named_contract(conn, deployer, secondary, contract_name, steps, program))
+        c = conns[conn_idx % len(conns)]
+        conn_idx += 1
+        tasks.append(run_named_contract(c, deployer, secondary, contract_name, steps, program))
         task_labels.append(contract_name)
 
     for contract_name, steps in opcode_scenarios.items():
@@ -1120,7 +1182,9 @@ async def main() -> int:
         if not program:
             report("FAIL", f"{contract_name}: not deployed")
             continue
-        tasks.append(run_opcode_contract(conn, deployer, contract_name, steps, program))
+        c = conns[conn_idx % len(conns)]
+        conn_idx += 1
+        tasks.append(run_opcode_contract(c, deployer, contract_name, steps, program))
         task_labels.append(contract_name)
 
     # Run ALL contract suites in parallel
