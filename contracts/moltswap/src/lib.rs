@@ -563,7 +563,10 @@ pub extern "C" fn flash_loan_borrow(amount: u64, token_is_a: u32) -> u64 {
         return 0;
     }
 
-    let fee = (amount * FLASH_LOAN_FEE_BPS + 9999) / 10000; // Round up
+    // AUDIT-FIX NEW-M2: u128 intermediate prevents overflow for large flash loans;
+    // round-up ensures protocol always collects at least 1 shell fee.
+    let fee = ((amount as u128 * FLASH_LOAN_FEE_BPS as u128 + 9999) / 10000) as u64;
+    let fee = if fee == 0 { 1 } else { fee };
 
     // Store loan metadata WITHOUT modifying reserves
     // Reserves only change when repay succeeds (atomic guarantee)
@@ -648,7 +651,9 @@ pub extern "C" fn flash_loan_abort() -> u32 {
 /// Get flash loan fee for a given amount
 #[no_mangle]
 pub extern "C" fn get_flash_loan_fee(amount: u64) -> u64 {
-    (amount * FLASH_LOAN_FEE_BPS + 9999) / 10000
+    // AUDIT-FIX NEW-M2: consistent round-up with u128 intermediate
+    let fee = ((amount as u128 * FLASH_LOAN_FEE_BPS as u128 + 9999) / 10000) as u64;
+    if fee == 0 { 1 } else { fee }
 }
 
 // ============================================================================

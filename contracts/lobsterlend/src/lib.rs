@@ -562,8 +562,8 @@ pub extern "C" fn flash_borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
         return 3;
     }
 
-    // Calculate fee
-    let fee = (amount as u128 * FLASH_LOAN_FEE_BPS as u128 / BPS_SCALE as u128) as u64;
+    // AUDIT-FIX NEW-M2: round-up fee (consistent with moltswap), u128 intermediate
+    let fee = ((amount as u128 * FLASH_LOAN_FEE_BPS as u128 + (BPS_SCALE as u128 - 1)) / BPS_SCALE as u128) as u64;
     let fee = if fee == 0 { 1 } else { fee }; // minimum 1 shell fee
 
     // Record flash loan

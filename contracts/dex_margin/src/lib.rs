@@ -513,10 +513,12 @@ pub fn liquidate(_liquidator: *const u8, position_id: u64) -> u32 {
     if ratio >= effective_maint { reentrancy_exit(); return 2; } // still healthy
 
     // Calculate penalty (tiered by leverage)
+    // AUDIT-FIX NEW-L1: Use u128 intermediates to prevent overflow; derive insurance_add
+    // as remainder so no dust is lost with odd penalty values.
     let notional = (size as u128 * mark_price as u128 / 1_000_000_000) as u64;
-    let penalty = notional * liq_penalty_bps / 10_000;
-    let liquidator_reward = penalty * LIQUIDATOR_SHARE_BPS / 10_000;
-    let insurance_add = penalty * INSURANCE_SHARE_BPS / 10_000;
+    let penalty = (notional as u128 * liq_penalty_bps as u128 / 10_000) as u64;
+    let liquidator_reward = (penalty as u128 * LIQUIDATOR_SHARE_BPS as u128 / 10_000) as u64;
+    let insurance_add = penalty.saturating_sub(liquidator_reward);
 
     // Add to insurance fund (saturating to prevent overflow)
     let insurance = load_u64(INSURANCE_FUND_KEY);
