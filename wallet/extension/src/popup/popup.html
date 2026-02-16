@@ -158,11 +158,11 @@
 
       <div class="form-group" id="importMnemonicRow">
         <label>Recovery Phrase</label>
-        <textarea id="importMnemonic" class="form-textarea" rows="3" placeholder="word1 word2 ... word12"></textarea>
+        <textarea id="importMnemonic" class="form-textarea" rows="3" placeholder="word1 word2 word3 ..."></textarea>
       </div>
       <div class="form-group" id="importPrivateKeyRow" style="display: none;">
-        <label>Private Key (64 hex chars)</label>
-        <textarea id="importPrivateKey" class="form-textarea" rows="2" placeholder="32-byte Ed25519 seed as hex"></textarea>
+        <label>Private Key (hex format)</label>
+        <textarea id="importPrivateKey" class="form-textarea" rows="2" placeholder="0x..."></textarea>
       </div>
       <div class="form-group" id="importJsonRow" style="display: none;">
         <label>JSON Keystore</label>
@@ -170,7 +170,7 @@
       </div>
       <div class="form-group">
         <label>Password</label>
-        <input id="importPassword" type="password" class="form-input" placeholder="Set password" />
+        <input id="importPassword" type="password" class="form-input" placeholder="Encrypt wallet" />
       </div>
       <button id="importSave" class="btn btn-primary popup-btn-block">Import Wallet</button>
       <a href="#" id="backFromImport" class="popup-back-link">← Back</a>
@@ -245,7 +245,7 @@
       <div class="popup-tab-content" data-tab="send" id="sendPanel">
         <div class="form-group">
           <label>Recipient</label>
-          <input id="sendTo" class="form-input" placeholder="Base58 address" />
+          <input id="sendTo" class="form-input" placeholder="Enter Base58 address (e.g. 5Qd7x...)" />
         </div>
         <div class="form-group">
           <label>Amount (MOLT)</label>

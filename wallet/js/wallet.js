@@ -525,8 +525,18 @@ async function unlockWallet() {
     }
 }
 
+// Security: clear all sensitive input fields across all screens
+function clearAllInputs() {
+    document.querySelectorAll('input, textarea').forEach(el => {
+        if (el.type !== 'hidden' && el.type !== 'checkbox' && el.type !== 'radio') {
+            el.value = '';
+        }
+    });
+}
+
 // Show specific screen
 function showScreen(screenId) {
+    clearAllInputs();
     document.querySelectorAll('.welcome-screen, .wallet-screen, .wallet-dashboard').forEach(el => {
         el.style.display = 'none';
     });
@@ -1282,7 +1292,7 @@ async function loadActivity(reset = true) {
             const sig = tx.signature || tx.hash || '';
             const shortSig = sig ? sig.slice(0, 8) + '...' + sig.slice(-4) : '';
             const explorerLink = sig ? `../explorer/transaction.html?sig=${sig}` : '#';
-            const amountStr = amount !== '0' ? `${sign}${amount} MOLT` : (tx.type === 'RegisterEvmAddress' ? 'Fee only' : `${sign}${amount} MOLT`);
+            const amountStr = amount !== '0' ? `${sign}${amount} MOLT` : ((tx.type === 'RegisterEvmAddress' || tx.type === 'Contract') ? 'Fee only' : `${sign}${amount} MOLT`);
             
             return `
                 <a href="${explorerLink}" target="_blank" class="activity-item" style="text-decoration:none; color:inherit; display:flex;">
@@ -2365,6 +2375,7 @@ async function confirmSend() {
 function lockWallet() {
     stopBalancePolling();
     disconnectBalanceWebSocket();
+    clearAllInputs();
     walletState.isLocked = true;
     saveWalletState();
     showToast('Wallet locked');
@@ -2385,19 +2396,27 @@ function logoutWallet() {
         stopBalancePolling();
         disconnectBalanceWebSocket();
         
+        // Security: clear all input fields immediately
+        clearAllInputs();
+        
         // Clear ALL wallet data
         localStorage.clear();
         sessionStorage.clear();
         
-        // Reset state completely
+        // Reset state completely (isLocked false — no wallet exists to lock)
         walletState = {
             hasWallet: false,
-            isLocked: true,
+            isLocked: false,
             wallets: [],
             activeWalletId: null,
             network: 'testnet',
             settings: {}
         };
+        saveWalletState();
+        
+        // Reset identity cache
+        if (typeof _identityCache !== 'undefined') _identityCache = null;
+        if (typeof _moltyidAddress !== 'undefined') _moltyidAddress = null;
         
         // Remove ALL modals immediately (password modals, confirm modals, send/receive/settings)
         document.querySelectorAll('.password-modal, .modal.show').forEach(m => {
