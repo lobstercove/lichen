@@ -82,6 +82,10 @@ pub struct ConsistencyReportMsg {
 pub struct SnapshotRequestMsg {
     pub requester: SocketAddr,
     pub kind: SnapshotKind,
+    /// For StateSnapshotRequest: category, chunk_index, chunk_size
+    pub state_snapshot_params: Option<(String, u64, u64)>,
+    /// True if this is a CheckpointMetaRequest
+    pub is_meta_request: bool,
 }
 
 /// Snapshot response from peer
@@ -91,6 +95,10 @@ pub struct SnapshotResponseMsg {
     pub kind: SnapshotKind,
     pub validator_set: Option<ValidatorSet>,
     pub stake_pool: Option<StakePool>,
+    /// For StateSnapshotResponse: (category, chunk_index, total_chunks, snapshot_slot, state_root, entries)
+    pub state_snapshot_data: Option<(String, u64, u64, u64, [u8; 32], Vec<u8>)>,
+    /// For CheckpointMetaResponse: (slot, state_root, total_accounts)
+    pub checkpoint_meta: Option<(u64, [u8; 32], u64)>,
 }
 
 /// Main P2P network manager
@@ -406,6 +414,8 @@ impl P2PNetwork {
                 let request = SnapshotRequestMsg {
                     requester: peer_addr,
                     kind,
+                    state_snapshot_params: None,
+                    is_meta_request: false,
                 };
                 self.snapshot_request_tx
                     .send(request)
@@ -423,11 +433,84 @@ impl P2PNetwork {
                     kind,
                     validator_set,
                     stake_pool,
+                    state_snapshot_data: None,
+                    checkpoint_meta: None,
                 };
                 self.snapshot_response_tx
                     .send(response)
                     .await
                     .map_err(|_| "Failed to forward snapshot response".to_string())?;
+            }
+
+            MessageType::StateSnapshotRequest {
+                category,
+                chunk_index,
+                chunk_size,
+            } => {
+                let request = SnapshotRequestMsg {
+                    requester: peer_addr,
+                    kind: SnapshotKind::StateCheckpoint,
+                    state_snapshot_params: Some((category, chunk_index, chunk_size)),
+                    is_meta_request: false,
+                };
+                self.snapshot_request_tx
+                    .send(request)
+                    .await
+                    .map_err(|_| "Failed to forward state snapshot request".to_string())?;
+            }
+
+            MessageType::StateSnapshotResponse {
+                category,
+                chunk_index,
+                total_chunks,
+                snapshot_slot,
+                state_root,
+                entries,
+            } => {
+                let response = SnapshotResponseMsg {
+                    requester: peer_addr,
+                    kind: SnapshotKind::StateCheckpoint,
+                    validator_set: None,
+                    stake_pool: None,
+                    state_snapshot_data: Some((category, chunk_index, total_chunks, snapshot_slot, state_root, entries)),
+                    checkpoint_meta: None,
+                };
+                self.snapshot_response_tx
+                    .send(response)
+                    .await
+                    .map_err(|_| "Failed to forward state snapshot response".to_string())?;
+            }
+
+            MessageType::CheckpointMetaRequest => {
+                let request = SnapshotRequestMsg {
+                    requester: peer_addr,
+                    kind: SnapshotKind::StateCheckpoint,
+                    state_snapshot_params: None,
+                    is_meta_request: true,
+                };
+                self.snapshot_request_tx
+                    .send(request)
+                    .await
+                    .map_err(|_| "Failed to forward checkpoint meta request".to_string())?;
+            }
+
+            MessageType::CheckpointMetaResponse {
+                slot,
+                state_root,
+                total_accounts,
+            } => {
+                let response = SnapshotResponseMsg {
+                    requester: peer_addr,
+                    kind: SnapshotKind::StateCheckpoint,
+                    validator_set: None,
+                    stake_pool: None,
+                    state_snapshot_data: None,
+                    checkpoint_meta: Some((slot, state_root, total_accounts)),
+                };
+                self.snapshot_response_tx
+                    .send(response)
+                    .await
+                    .map_err(|_| "Failed to forward checkpoint meta response".to_string())?;
             }
 
             MessageType::ValidatorAnnounce {

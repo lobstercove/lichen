@@ -838,14 +838,16 @@ pub extern "C" fn call() {
     let args = moltchain_sdk::get_args();
     if args.is_empty() { return; }
     match args[0] {
+        // 0: initialize(admin)
         0 => {
             if args.len() >= 33 {
                 let r = initialize(args[1..33].as_ptr());
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
+        // 1: create_pool(caller, token_a, token_b, fee_tier, initial_sqrt_price)
         1 => {
-            // create_pool: caller(32) + token_a(32) + token_b(32) + fee_tier(1) + initial_sqrt_price(8)
+            // caller(32) + token_a(32) + token_b(32) + fee_tier(1) + initial_sqrt_price(8) = 105
             if args.len() >= 1 + 32 + 32 + 32 + 1 + 8 {
                 let r = create_pool(
                     args[1..33].as_ptr(),
@@ -855,6 +857,143 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[98..106]),
                 );
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 2: set_pool_protocol_fee(caller, pool_id, fee_percent)
+        2 => {
+            // caller(32) + pool_id(8) + fee_percent(1) = 41
+            if args.len() >= 1 + 32 + 8 + 1 {
+                let r = set_pool_protocol_fee(
+                    args[1..33].as_ptr(),
+                    bytes_to_u64(&args[33..41]),
+                    args[41],
+                );
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 3: add_liquidity(provider, pool_id, lower_tick, upper_tick, amount_a, amount_b)
+        3 => {
+            // provider(32) + pool_id(8) + lower_tick(4) + upper_tick(4) + amount_a(8) + amount_b(8) = 64
+            if args.len() >= 1 + 32 + 8 + 4 + 4 + 8 + 8 {
+                let r = add_liquidity(
+                    args[1..33].as_ptr(),
+                    bytes_to_u64(&args[33..41]),
+                    bytes_to_i32(&args[41..45]),
+                    bytes_to_i32(&args[45..49]),
+                    bytes_to_u64(&args[49..57]),
+                    bytes_to_u64(&args[57..65]),
+                );
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 4: remove_liquidity(provider, position_id, liquidity_amount)
+        4 => {
+            // provider(32) + position_id(8) + liquidity_amount(8) = 48
+            if args.len() >= 1 + 32 + 8 + 8 {
+                let r = remove_liquidity(
+                    args[1..33].as_ptr(),
+                    bytes_to_u64(&args[33..41]),
+                    bytes_to_u64(&args[41..49]),
+                );
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 5: collect_fees(provider, position_id)
+        5 => {
+            // provider(32) + position_id(8) = 40
+            if args.len() >= 1 + 32 + 8 {
+                let r = collect_fees(
+                    args[1..33].as_ptr(),
+                    bytes_to_u64(&args[33..41]),
+                );
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 6: swap_exact_in(trader, pool_id, is_token_a_in, amount_in, min_out, deadline)
+        6 => {
+            // trader(32) + pool_id(8) + is_token_a_in(1) + amount_in(8) + min_out(8) + deadline(8) = 65
+            if args.len() >= 1 + 32 + 8 + 1 + 8 + 8 + 8 {
+                let r = swap_exact_in(
+                    args[1..33].as_ptr(),
+                    bytes_to_u64(&args[33..41]),
+                    args[41] != 0,
+                    bytes_to_u64(&args[42..50]),
+                    bytes_to_u64(&args[50..58]),
+                    bytes_to_u64(&args[58..66]),
+                );
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 7: swap_exact_out(trader, pool_id, is_token_a_out, amount_out, max_in, deadline)
+        7 => {
+            // trader(32) + pool_id(8) + is_token_a_out(1) + amount_out(8) + max_in(8) + deadline(8) = 65
+            if args.len() >= 1 + 32 + 8 + 1 + 8 + 8 + 8 {
+                let r = swap_exact_out(
+                    args[1..33].as_ptr(),
+                    bytes_to_u64(&args[33..41]),
+                    args[41] != 0,
+                    bytes_to_u64(&args[42..50]),
+                    bytes_to_u64(&args[50..58]),
+                    bytes_to_u64(&args[58..66]),
+                );
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 8: emergency_pause(caller)
+        8 => {
+            if args.len() >= 1 + 32 {
+                let r = emergency_pause(args[1..33].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 9: emergency_unpause(caller)
+        9 => {
+            if args.len() >= 1 + 32 {
+                let r = emergency_unpause(args[1..33].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 10: get_pool_info(pool_id)
+        10 => {
+            if args.len() >= 1 + 8 {
+                let r = get_pool_info(bytes_to_u64(&args[1..9]));
+                moltchain_sdk::set_return_data(&u64_to_bytes(r));
+            }
+        }
+        // 11: get_position(position_id)
+        11 => {
+            if args.len() >= 1 + 8 {
+                let r = get_position(bytes_to_u64(&args[1..9]));
+                moltchain_sdk::set_return_data(&u64_to_bytes(r));
+            }
+        }
+        // 12: get_pool_count()
+        12 => {
+            let r = get_pool_count();
+            moltchain_sdk::set_return_data(&u64_to_bytes(r));
+        }
+        // 13: get_position_count()
+        13 => {
+            let r = get_position_count();
+            moltchain_sdk::set_return_data(&u64_to_bytes(r));
+        }
+        // 14: get_tvl(pool_id)
+        14 => {
+            if args.len() >= 1 + 8 {
+                let r = get_tvl(bytes_to_u64(&args[1..9]));
+                moltchain_sdk::set_return_data(&u64_to_bytes(r));
+            }
+        }
+        // 15: quote_swap(pool_id, is_token_a_in, amount_in)
+        15 => {
+            // pool_id(8) + is_token_a_in(1) + amount_in(8) = 17
+            if args.len() >= 1 + 8 + 1 + 8 {
+                let r = quote_swap(
+                    bytes_to_u64(&args[1..9]),
+                    args[9] != 0,
+                    bytes_to_u64(&args[10..18]),
+                );
+                moltchain_sdk::set_return_data(&u64_to_bytes(r));
             }
         }
         _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }

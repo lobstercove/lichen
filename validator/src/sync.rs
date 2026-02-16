@@ -52,15 +52,13 @@ impl SyncManager {
     }
 
     /// Set checkpoint (for fast bootstrapping from snapshots)
-    #[allow(dead_code)]
     pub async fn set_checkpoint(&self, slot: u64) {
         let mut checkpoint = self.last_checkpoint.lock().await;
         *checkpoint = slot;
         info!("📍 Checkpoint set at slot {}", slot);
     }
 
-    /// Get last checkpoint slot
-    #[allow(dead_code)]
+    /// Get the last recorded checkpoint slot
     pub async fn get_checkpoint(&self) -> u64 {
         *self.last_checkpoint.lock().await
     }
@@ -189,8 +187,7 @@ impl SyncManager {
         info!("✅ Sync batch completed");
     }
 
-    /// Get progress info for sync
-    #[allow(dead_code)]
+    /// Get sync progress relative to highest seen slot
     pub async fn get_sync_progress(&self, current_slot: u64) -> Option<SyncProgress> {
         let is_syncing = *self.is_syncing.lock().await;
         if !is_syncing {
@@ -225,8 +222,7 @@ impl SyncManager {
         self.pending_blocks.lock().await.len()
     }
 
-    /// Check if we've already requested this slot
-    #[allow(dead_code)]
+    /// Check if a slot has been requested
     pub async fn is_requested(&self, slot: u64) -> bool {
         let requested = self.requested_slots.lock().await;
         requested.contains(&slot)
@@ -286,7 +282,6 @@ impl SyncManager {
     }
 
     /// Get sync statistics
-    #[allow(dead_code)]
     pub async fn stats(&self) -> SyncStats {
         SyncStats {
             pending_blocks: self.pending_blocks.lock().await.len(),
@@ -294,10 +289,20 @@ impl SyncManager {
             highest_seen: *self.highest_seen_slot.lock().await,
         }
     }
+
+    /// Check if a checkpoint should be created at this slot.
+    /// Returns true every CHECKPOINT_INTERVAL slots (10K blocks).
+    pub fn should_checkpoint(slot: u64) -> bool {
+        CHECKPOINT_INTERVAL > 0 && slot > 0 && slot % CHECKPOINT_INTERVAL == 0
+    }
+
+    /// Get the checkpoint interval constant.
+    pub fn checkpoint_interval() -> u64 {
+        CHECKPOINT_INTERVAL
+    }
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct SyncStats {
     pub pending_blocks: usize,
     pub is_syncing: bool,
@@ -305,7 +310,6 @@ pub struct SyncStats {
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub struct SyncProgress {
     pub current_slot: u64,
     pub target_slot: u64,
