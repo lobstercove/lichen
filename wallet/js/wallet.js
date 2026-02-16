@@ -372,7 +372,7 @@ class MoltChainRPC {
             return data.result;
         } catch (error) {
             // Don't log expected errors (e.g. new wallets with no on-chain account)
-            if (!error.message?.includes('Account not found')) {
+            if (!error.message?.includes('Account not found') && !error.message?.includes('does not exist on-chain')) {
                 console.error('RPC Call Failed:', error);
             }
             throw error;
@@ -1217,25 +1217,30 @@ async function loadActivity(reset = true) {
             // Account may not exist on-chain yet
         }
 
-        // Fetch airdrops from faucet (only on first page)
+        // Fetch airdrops from faucet (only on first page, only if faucet is configured)
         let airdrops = [];
         if (!_activityBeforeSlot) {
             try {
-                const faucetUrl = (typeof MOLT_CONFIG !== 'undefined' && MOLT_CONFIG.faucet) ? MOLT_CONFIG.faucet : 'http://localhost:9100';
-                const resp = await fetch(`${faucetUrl}/faucet/airdrops?address=${encodeURIComponent(wallet.address)}&limit=50`);
-                if (resp.ok) {
-                    const records = await resp.json();
-                    airdrops = records.map(a => ({
-                        type: 'Airdrop',
-                        from: 'Treasury',
-                        to: a.recipient,
-                        amount: a.amount_molt * 1_000_000_000,
-                        timestamp: a.timestamp_ms,
-                        signature: a.signature,
-                        isAirdrop: true
-                    }));
+                const faucetUrl = (typeof MOLT_CONFIG !== 'undefined' && MOLT_CONFIG.faucet) ? MOLT_CONFIG.faucet : null;
+                if (faucetUrl) {
+                    const abortCtl = new AbortController();
+                    const timer = setTimeout(() => abortCtl.abort(), 2000);
+                    const resp = await fetch(`${faucetUrl}/faucet/airdrops?address=${encodeURIComponent(wallet.address)}&limit=50`, { signal: abortCtl.signal });
+                    clearTimeout(timer);
+                    if (resp.ok) {
+                        const records = await resp.json();
+                        airdrops = records.map(a => ({
+                            type: 'Airdrop',
+                            from: 'Treasury',
+                            to: a.recipient,
+                            amount: a.amount_molt * 1_000_000_000,
+                            timestamp: a.timestamp_ms,
+                            signature: a.signature,
+                            isAirdrop: true
+                        }));
+                    }
                 }
-            } catch (e) { /* faucet API unavailable */ }
+            } catch (e) { /* faucet API unavailable — skip silently */ }
         }
 
         // Track pagination cursor from last TX slot
@@ -2066,6 +2071,12 @@ function generateEVMAddress(base58Address) {
 // Sends system instruction opcode 12 with the 20-byte EVM address
 async function registerEvmAddress(wallet, password) {
     try {
+        // Skip EVM registration if account isn't funded yet (imported wallets)
+        try {
+            const bal = await rpc.getBalance(wallet.address);
+            if (!bal || (bal.balance === 0 && bal.shells === 0 && !bal.spendable)) return;
+        } catch (_) { return; } // Account doesn't exist on-chain yet
+
         const evmAddress = generateEVMAddress(wallet.address);
         if (!evmAddress || evmAddress === '0x' + '0'.repeat(40)) {
             console.warn('EVM address generation failed, skipping registration');
@@ -2363,6 +2374,9 @@ function logoutWallet() {
             network: 'testnet',
             settings: {}
         };
+        
+        // Remove all dynamically created modals immediately
+        document.querySelectorAll('.password-modal').forEach(m => m.remove());
         
         // Hide all screens including dashboard
         document.querySelectorAll('.wallet-screen, .wallet-dashboard').forEach(s => s.style.display = 'none');

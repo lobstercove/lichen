@@ -3367,6 +3367,7 @@ async fn handle_get_metrics(state: &RpcState) -> Result<serde_json::Value, RpcEr
 
     Ok(serde_json::json!({
         "tps": metrics.tps,
+        "peak_tps": metrics.peak_tps,
         "total_transactions": metrics.total_transactions,
         "daily_transactions": metrics.daily_transactions,
         "total_blocks": metrics.total_blocks,
@@ -3754,6 +3755,7 @@ async fn handle_get_chain_status(state: &RpcState) -> Result<serde_json::Value, 
         "total_stake": total_stake,
         "total_staked": total_stake,
         "tps": metrics.tps,
+        "peak_tps": metrics.peak_tps,
         "total_transactions": metrics.total_transactions,
         "total_blocks": metrics.total_blocks,
         "average_block_time": metrics.average_block_time,
