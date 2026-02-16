@@ -4,13 +4,14 @@
 //
 // AUDIT-FIX 1.23: Global Lock Ordering Contract
 // All async code MUST acquire locks in this order to prevent deadlocks:
-//   1. vote_aggregator (VoteAggregator)
-//   2. validator_set   (ValidatorSet)
-//   3. stake_pool      (StakePool)
-//   4. slashing_tracker (SlashingTracker)
-//   5. mempool         (Mempool)
+//   1. vote_aggregator (VoteAggregator) — RwLock
+//   2. validator_set   (ValidatorSet)   — RwLock
+//   3. stake_pool      (StakePool)      — RwLock
+//   4. slashing_tracker (SlashingTracker) — Mutex
+//   5. mempool         (Mempool)          — Mutex
 // NEVER acquire a lower-numbered lock while holding a higher-numbered one.
 // If only a subset is needed, the relative order must still be respected.
+// PERF: 1-3 use RwLock — reads never block each other.
 
 mod keypair_loader;
 mod sync;
@@ -44,7 +45,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use sync::SyncManager;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::time;
 use tracing::{debug, error, info, warn};
 
@@ -1255,9 +1256,9 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
 
 async fn apply_block_effects(
     state: &StateStore,
-    validator_set: &Arc<Mutex<ValidatorSet>>,
-    stake_pool: &Arc<Mutex<StakePool>>,
-    vote_aggregator: &Arc<Mutex<VoteAggregator>>,
+    validator_set: &Arc<RwLock<ValidatorSet>>,
+    stake_pool: &Arc<RwLock<StakePool>>,
+    vote_aggregator: &Arc<RwLock<VoteAggregator>>,
     block: &Block,
     skip_rewards: bool,
 ) {
@@ -1271,14 +1272,14 @@ async fn apply_block_effects(
     let is_heartbeat = !has_user_transactions;
 
     let stake_amount = {
-        let pool = stake_pool.lock().await;
+        let pool = stake_pool.read().await;
         pool.get_stake(&producer)
             .map(|stake_info| stake_info.total_stake())
             .unwrap_or(0)
     };
 
     {
-        let mut vs = validator_set.lock().await;
+        let mut vs = validator_set.write().await;
         if let Some(val_info) = vs.get_validator_mut(&producer) {
             val_info.blocks_proposed += 1;
             val_info.last_active_slot = slot;
@@ -1307,7 +1308,11 @@ async fn apply_block_effects(
             }
         }
 
-        if let Err(e) = state.save_validator_set(&vs) {
+        // PERF-OPT 4: Clone under lock, persist AFTER dropping write guard.
+        // This frees the RwLock while RocksDB I/O runs, unblocking all readers.
+        let vs_snapshot = vs.clone();
+        drop(vs);
+        if let Err(e) = state.save_validator_set(&vs_snapshot) {
             warn!("⚠️  Failed to persist validator set update: {}", e);
         }
     }
@@ -1366,7 +1371,7 @@ async fn apply_block_effects(
             } else {
                 // 2. Update StakePool (tracks rewards, vesting, bootstrap debt)
                 let (liquid, debt_payment, reward) = {
-                    let mut pool = stake_pool.lock().await;
+                    let mut pool = stake_pool.write().await;
                     let is_active = pool
                         .get_stake(&producer)
                         .map(|info| info.is_active)
@@ -1377,7 +1382,10 @@ async fn apply_block_effects(
                         let reward = pool.distribute_block_reward(&producer, slot, is_heartbeat);
                         pool.record_block_produced(&producer);
                         let (liquid, debt_payment) = pool.claim_rewards(&producer, slot);
-                        if let Err(e) = state.put_stake_pool(&pool) {
+                        // PERF-OPT 4: Clone under lock, persist AFTER dropping write guard.
+                        let pool_snapshot = pool.clone();
+                        drop(pool);
+                        if let Err(e) = state.put_stake_pool(&pool_snapshot) {
                             warn!("⚠️  Failed to persist stake pool reward update: {}", e);
                         }
                         (liquid, debt_payment, reward)
@@ -1527,7 +1535,7 @@ async fn apply_block_effects(
 
     if voters_share > 0 {
         let voters = {
-            let agg = vote_aggregator.lock().await;
+            let agg = vote_aggregator.read().await;
             match agg.get_votes(slot, &block_hash) {
                 Some(votes) => votes.clone(),
                 None => Vec::new(),
@@ -1546,7 +1554,7 @@ async fn apply_block_effects(
         voter_pubkeys.sort_by_key(|pk| pk.0);
 
         if !voter_pubkeys.is_empty() {
-            let pool = stake_pool.lock().await;
+            let pool = stake_pool.read().await;
             let total_voter_stake: u64 = voter_pubkeys
                 .iter()
                 .filter_map(|validator| pool.get_stake(validator))
@@ -3896,7 +3904,7 @@ async fn run_validator() {
     // ========================================================================
 
     // Load or initialize validator set (shared across tasks)
-    let validator_set = Arc::new(Mutex::new({
+    let validator_set = Arc::new(RwLock::new({
         let mut set = state
             .load_validator_set()
             .unwrap_or_else(|_| ValidatorSet::new());
@@ -3989,13 +3997,13 @@ async fn run_validator() {
     // clear_all_validators() inside save_validator_set removes ghost entries from old
     // keypairs while preserving reputation/metrics for current validators via the
     // in-memory set that was loaded from DB above.
-    if let Err(e) = state.save_validator_set(&*validator_set.lock().await) {
+    if let Err(e) = state.save_validator_set(&*validator_set.read().await) {
         eprintln!("Failed to save validator set: {e}");
     }
 
     info!(
         "✓ Validator set initialized with {} validators",
-        validator_set.lock().await.validators().len()
+        validator_set.read().await.validators().len()
     );
 
     // ============================================================================
@@ -4098,7 +4106,7 @@ async fn run_validator() {
     }
 
     // Initialize vote aggregator for BFT consensus
-    let vote_aggregator = Arc::new(Mutex::new(VoteAggregator::new()));
+    let vote_aggregator = Arc::new(RwLock::new(VoteAggregator::new()));
     info!("🗳️  BFT voting system initialized");
 
     // Initialize finality tracker — lock-free commitment level tracking
@@ -4123,7 +4131,7 @@ async fn run_validator() {
     }
 
     // Initialize stake pool for economic security
-    let stake_pool = Arc::new(Mutex::new(
+    let stake_pool = Arc::new(RwLock::new(
         state.get_stake_pool().unwrap_or_else(|_| StakePool::new()),
     ));
     info!("💰 Stake pool initialized");
@@ -4135,7 +4143,7 @@ async fn run_validator() {
         let mut interval = time::interval(Duration::from_secs(30));
         loop {
             interval.tick().await;
-            let pool = stake_pool_for_save.lock().await;
+            let pool = stake_pool_for_save.read().await;
             if let Err(e) = state_for_stake_save.put_stake_pool(&pool) {
                 warn!("⚠️  Failed to persist stake pool: {}", e);
             }
@@ -4145,7 +4153,7 @@ async fn run_validator() {
     // Stake tokens for this validator (100,000 MOLT minimum)
     // Uses get_stake() to avoid accumulating on every restart
     {
-        let mut pool = stake_pool.lock().await;
+        let mut pool = stake_pool.write().await;
         let current_slot = state.get_last_slot().unwrap_or(0);
         let existing = pool
             .get_stake(&validator_pubkey)
@@ -4476,8 +4484,10 @@ async fn run_validator() {
                 // AUDIT-FIX C5: Reject blocks from non-member validators BEFORE
                 // note_seen / fork-choice to prevent outsiders from influencing
                 // sync target or fork selection.
-                {
-                    let vs = validator_set_for_blocks.lock().await;
+                // Genesis block (slot 0) uses SYSTEM_ACCOUNT_OWNER as validator,
+                // which is not in the active set — allow it through.
+                if block_slot > 0 {
+                    let vs = validator_set_for_blocks.read().await;
                     if vs.get_validator(&Pubkey(block.header.validator)).is_none() {
                         warn!(
                             "⚠️  Rejecting block {} — validator {} not in active set",
@@ -4821,13 +4831,13 @@ async fn run_validator() {
 
                             // Add our own vote (validated against validator set)
                             {
-                                let mut agg = vote_agg_for_blocks.lock().await;
-                                let vs = validator_set_for_blocks.lock().await;
+                                let mut agg = vote_agg_for_blocks.write().await;
+                                let vs = validator_set_for_blocks.read().await;
                                 if agg.add_vote_validated(vote.clone(), &vs) {
                                     info!("🗳️  Cast vote for block {}", block_slot);
 
                                     // Check if block reached finality (2/3 supermajority - STAKE-WEIGHTED)
-                                    let pool = stake_pool_for_blocks.lock().await;
+                                    let pool = stake_pool_for_blocks.read().await;
                                     if agg.has_supermajority(block_slot, &block_hash, &vs, &pool) {
                                         info!("🔒 Block {} FINALIZED with stake-weighted supermajority!", block_slot);
                                         // Update finality tracker + persist to StateStore
@@ -4980,33 +4990,22 @@ async fn run_validator() {
                             let we_are_behind = highest_seen > current_slot;
                             let has_pending = sync_mgr.pending_count().await > 0;
 
-                            let existing_weight = {
-                                let agg = vote_agg_for_blocks.lock().await;
-                                let vs = validator_set_for_blocks.lock().await;
-                                let pool = stake_pool_for_blocks.lock().await;
-                                let weight = block_vote_weight(
+                            // PERF-OPT 6: Single lock acquisition for both fork-choice weights.
+                            // Previously acquired + dropped 3 locks twice. Now holds once for both.
+                            let (existing_weight, incoming_weight) = {
+                                let agg = vote_agg_for_blocks.read().await;
+                                let vs = validator_set_for_blocks.read().await;
+                                let pool = stake_pool_for_blocks.read().await;
+                                let ew = block_vote_weight(
                                     block_slot,
                                     &existing.hash(),
                                     &agg,
                                     &vs,
                                     &pool,
                                 );
-                                drop(pool);
-                                drop(vs);
-                                drop(agg);
-                                weight
-                            };
-
-                            let incoming_weight = {
-                                let agg = vote_agg_for_blocks.lock().await;
-                                let vs = validator_set_for_blocks.lock().await;
-                                let pool = stake_pool_for_blocks.lock().await;
-                                let weight =
+                                let iw =
                                     block_vote_weight(block_slot, &block.hash(), &agg, &vs, &pool);
-                                drop(pool);
-                                drop(vs);
-                                drop(agg);
-                                weight
+                                (ew, iw)
                             };
 
                             if incoming_weight > existing_weight || we_are_behind || has_pending {
@@ -5234,11 +5233,11 @@ async fn run_validator() {
                     validator_votes.insert(vote_key, vote.clone());
                 }
 
-                let mut agg = vote_agg_for_handler.lock().await;
-                let vs = validator_set_for_votes.lock().await;
+                let mut agg = vote_agg_for_handler.write().await;
+                let vs = validator_set_for_votes.read().await;
                 if agg.add_vote_validated(vote.clone(), &vs) {
                     // Vote added successfully, check if block reached finality
-                    let pool = stake_pool_for_votes.lock().await;
+                    let pool = stake_pool_for_votes.read().await;
                     let vote_count = agg.vote_count(vote.slot, &vote.block_hash);
 
                     if agg.has_supermajority(vote.slot, &vote.block_hash, &vs, &pool) {
@@ -5309,7 +5308,7 @@ async fn run_validator() {
                     announcement.pubkey.to_base58()
                 );
 
-                let mut vs = validator_set_for_announce.lock().await;
+                let mut vs = validator_set_for_announce.write().await;
 
                 // Cap validator set size
                 const MAX_VALIDATORS: usize = 1000;
@@ -5323,7 +5322,7 @@ async fn run_validator() {
 
                     // Check for fingerprint migration (same pubkey, new machine)
                     if announcement.machine_fingerprint != [0u8; 32] {
-                        let mut pool = stake_pool_for_announce.lock().await;
+                        let mut pool = stake_pool_for_announce.write().await;
                         if let Some(stake_info) = pool.get_stake(&announcement.pubkey) {
                             let current_fp = stake_info.machine_fingerprint;
                             if current_fp != [0u8; 32]
@@ -5440,7 +5439,7 @@ async fn run_validator() {
                     // debit succeeds — prevents inflating active stake with unfunded entries.
                     if !needs_bootstrap {
                         // Self-funded: stake immediately in local pool
-                        let mut pool = stake_pool_for_announce.lock().await;
+                        let mut pool = stake_pool_for_announce.write().await;
                         if pool.get_stake(&announcement.pubkey).is_none() {
                             let fingerprint = announcement.machine_fingerprint;
                             match pool.try_bootstrap_with_fingerprint(
@@ -5471,7 +5470,7 @@ async fn run_validator() {
                     if needs_bootstrap {
                         // Check bootstrap cap from stake pool
                         let bootstrap_grants = {
-                            let pool = stake_pool_for_announce.lock().await;
+                            let pool = stake_pool_for_announce.read().await;
                             pool.bootstrap_grants_issued()
                         };
                         let is_bootstrap_eligible =
@@ -5509,7 +5508,7 @@ async fn run_validator() {
                             if funded {
                                 // Treasury debit succeeded — NOW credit stake pool
                                 {
-                                    let mut pool = stake_pool_for_announce.lock().await;
+                                    let mut pool = stake_pool_for_announce.write().await;
                                     if pool.get_stake(&announcement.pubkey).is_none() {
                                         let fingerprint = announcement.machine_fingerprint;
                                         match pool.try_bootstrap_with_fingerprint(
@@ -5797,8 +5796,8 @@ async fn run_validator() {
             let mut last_request: HashMap<(std::net::SocketAddr, u8), std::time::Instant> =
                 HashMap::new();
             while let Some(report) = consistency_report_rx.recv().await {
-                let vs = validator_set_for_consistency.lock().await;
-                let pool = stake_pool_for_consistency.lock().await;
+                let vs = validator_set_for_consistency.read().await;
+                let pool = stake_pool_for_consistency.read().await;
                 let local_vs_hash = hash_validator_set(&vs);
                 let local_pool_hash = hash_stake_pool(&pool);
                 drop(pool);
@@ -5977,7 +5976,7 @@ async fn run_validator() {
                 // Handle regular ValidatorSet / StakePool snapshot requests
                 let response = match request.kind {
                     SnapshotKind::ValidatorSet => {
-                        let vs = validator_set_for_snapshot.lock().await;
+                        let vs = validator_set_for_snapshot.read().await;
                         P2PMessage::new(
                             MessageType::SnapshotResponse {
                                 kind: SnapshotKind::ValidatorSet,
@@ -5988,7 +5987,7 @@ async fn run_validator() {
                         )
                     }
                     SnapshotKind::StakePool => {
-                        let pool = stake_pool_for_snapshot.lock().await;
+                        let pool = stake_pool_for_snapshot.read().await;
                         P2PMessage::new(
                             MessageType::SnapshotResponse {
                                 kind: SnapshotKind::StakePool,
@@ -6137,7 +6136,7 @@ async fn run_validator() {
 
                             let remote_hash = hash_validator_set(&remote_set);
 
-                            let mut vs = validator_set_for_snapshot_apply.lock().await;
+                            let mut vs = validator_set_for_snapshot_apply.write().await;
                             let local_hash = hash_validator_set(&vs);
 
                             if remote_hash != local_hash {
@@ -6236,7 +6235,7 @@ async fn run_validator() {
                             }
 
                             // MERGE remote entries into local pool (full-fidelity)
-                            let mut pool = stake_pool_for_snapshot_apply.lock().await;
+                            let mut pool = stake_pool_for_snapshot_apply.write().await;
                             let local_hash = hash_stake_pool(&pool);
                             let mut merged_count = 0u32;
                             for entry in remote_pool.stake_entries() {
@@ -6557,7 +6556,7 @@ async fn run_validator() {
             let mut interval = time::interval(Duration::from_secs(30));
             loop {
                 let validator_stake = {
-                    let pool = stake_pool_for_announce.lock().await;
+                    let pool = stake_pool_for_announce.read().await;
                     pool.get_stake(&validator_pubkey_for_announce)
                         .map(|s| s.total_stake())
                         .unwrap_or(MIN_VALIDATOR_STAKE)
@@ -6606,8 +6605,8 @@ async fn run_validator() {
             let mut interval = time::interval(Duration::from_secs(30));
             loop {
                 interval.tick().await;
-                let vs = validator_set_for_report.lock().await;
-                let pool = stake_pool_for_report.lock().await;
+                let vs = validator_set_for_report.read().await;
+                let pool = stake_pool_for_report.read().await;
                 let vs_hash = hash_validator_set(&vs);
                 let pool_hash = hash_stake_pool(&pool);
                 drop(pool);
@@ -6647,7 +6646,7 @@ async fn run_validator() {
         loop {
             interval.tick().await;
             let current_slot = state_for_vote_cleanup.get_last_slot().unwrap_or(0);
-            let mut agg = vote_agg_for_cleanup.lock().await;
+            let mut agg = vote_agg_for_cleanup.write().await;
             agg.prune_old_votes(current_slot, 100);
         }
     });
@@ -6661,7 +6660,7 @@ async fn run_validator() {
         loop {
             interval.tick().await;
             if let Ok(loaded_set) = state_for_reconcile.load_validator_set() {
-                let mut vs = validator_set_for_reconcile.lock().await;
+                let mut vs = validator_set_for_reconcile.write().await;
                 if hash_validator_set(&vs) != hash_validator_set(&loaded_set) {
                     *vs = loaded_set;
                     info!("🔄 Validator set reconciled from state");
@@ -6669,7 +6668,7 @@ async fn run_validator() {
             }
 
             if let Ok(loaded_pool) = state_for_reconcile.get_stake_pool() {
-                let mut pool = stake_pool_for_reconcile.lock().await;
+                let mut pool = stake_pool_for_reconcile.write().await;
                 if hash_stake_pool(&pool) != hash_stake_pool(&loaded_pool) {
                     // Full-fidelity merge from disk (includes bootstrap debt, vesting, etc.)
                     for entry in loaded_pool.stake_entries() {
@@ -6701,7 +6700,7 @@ async fn run_validator() {
         loop {
             interval.tick().await;
 
-            let pool = stake_pool_for_rewards.lock().await;
+            let pool = stake_pool_for_rewards.read().await;
 
             // Check accumulated rewards
             if let Some(stake_info) = pool.get_stake(&validator_pubkey_for_rewards) {
@@ -6764,7 +6763,7 @@ async fn run_validator() {
             let current_slot = state_for_downtime.get_last_slot().unwrap_or(0);
 
             // Check all validators for downtime (offline for 100+ slots)
-            let vs = validator_set_for_downtime.lock().await;
+            let vs = validator_set_for_downtime.read().await;
             for validator_info in vs.validators() {
                 let missed_slots = current_slot.saturating_sub(validator_info.last_active_slot);
 
@@ -6927,6 +6926,12 @@ async fn run_validator() {
     let mut slot_start = std::time::Instant::now();
     let mut last_attempted_slot: u64 = 0;
 
+    // PERF-OPT 5: Leader election cache.
+    // Cache the result of select_leader_weighted() to avoid acquiring RwLock
+    // reads on validator_set + stake_pool every 2ms loop iteration (~500x/sec).
+    // Invalidated when slot or view changes.
+    let mut cached_leader: Option<(u64, u64, bool)> = None; // (slot, view, should_produce)
+
     loop {
         // TIP-BASED SLOT: Always derive the next slot to produce from the chain tip.
         // This guarantees consecutive slot numbers — no gaps. Every validator agrees
@@ -6975,7 +6980,7 @@ async fn run_validator() {
                 continue;
             } else {
                 // Genesis synced! But wait for validator discovery AND full chain sync
-                let vs = validator_set.lock().await;
+                let vs = validator_set.read().await;
                 let validator_count = vs.validators().len();
                 drop(vs);
 
@@ -7062,8 +7067,8 @@ async fn run_validator() {
             let mut slasher = slashing_tracker.lock().await;
             // Lock ordering: validator_set before stake_pool (matches global convention
             // used by announcement handler, vote handlers, leader election, etc.)
-            let mut vs = validator_set.lock().await;
-            let mut pool = stake_pool.lock().await;
+            let mut vs = validator_set.write().await;
+            let mut pool = stake_pool.write().await;
 
             for validator_info in vs.validators_mut() {
                 // Grace period: don't slash validators that recently joined (200 slots ≈ 80s).
@@ -7112,19 +7117,23 @@ async fn run_validator() {
 
             // AUDIT-FIX 0.4: Persist stake pool and validator set after slashing
             // so that slashing effects survive node restarts.
-            if let Err(e) = state.put_stake_pool(&pool) {
+            // PERF-OPT 4: Clone under lock, persist AFTER dropping write guards.
+            let pool_snapshot = pool.clone();
+            let vs_snapshot = vs.clone();
+            let slasher_snapshot = slasher.clone();
+            drop(vs);
+            drop(pool);
+            drop(slasher);
+            if let Err(e) = state.put_stake_pool(&pool_snapshot) {
                 error!("Failed to persist stake pool after slashing: {}", e);
             }
-            if let Err(e) = state.save_validator_set(&vs) {
+            if let Err(e) = state.save_validator_set(&vs_snapshot) {
                 error!("Failed to persist validator set after slashing: {}", e);
             }
             // AUDIT-FIX M7: Persist slashing tracker evidence to disk
-            if let Err(e) = state.put_slashing_tracker(&slasher) {
+            if let Err(e) = state.put_slashing_tracker(&slasher_snapshot) {
                 error!("Failed to persist slashing tracker: {}", e);
             }
-
-            drop(vs);
-            drop(pool);
         }
 
         // ── VIEW ROTATION: Wall-clock based for the CURRENT slot ──
@@ -7136,19 +7145,44 @@ async fn run_validator() {
         let view = (slot_start.elapsed().as_millis() as u64 / view_change_interval_ms).min(15);
 
         // Stake-weighted leader election with deterministic fallback
-        let vs = validator_set.lock().await;
-        let pool = stake_pool.lock().await;
-        let leader_slot = if view == 0 {
-            slot
+        // PERF-OPT 5: Use cached result when slot+view haven't changed.
+        let should_produce = if let Some((cs, cv, cp)) = cached_leader {
+            if cs == slot && cv == view {
+                cp
+            } else {
+                let vs = validator_set.read().await;
+                let pool = stake_pool.read().await;
+                let leader_slot = if view == 0 {
+                    slot
+                } else {
+                    slot.saturating_mul(16).saturating_add(view)
+                };
+                let leader = vs.select_leader_weighted(leader_slot, &pool);
+                let sp = leader
+                    .map(|pubkey| pubkey == validator_pubkey)
+                    .unwrap_or(false);
+                drop(pool);
+                drop(vs);
+                cached_leader = Some((slot, view, sp));
+                sp
+            }
         } else {
-            slot.saturating_mul(16).saturating_add(view)
+            let vs = validator_set.read().await;
+            let pool = stake_pool.read().await;
+            let leader_slot = if view == 0 {
+                slot
+            } else {
+                slot.saturating_mul(16).saturating_add(view)
+            };
+            let leader = vs.select_leader_weighted(leader_slot, &pool);
+            let sp = leader
+                .map(|pubkey| pubkey == validator_pubkey)
+                .unwrap_or(false);
+            drop(pool);
+            drop(vs);
+            cached_leader = Some((slot, view, sp));
+            sp
         };
-        let leader = vs.select_leader_weighted(leader_slot, &pool);
-        let should_produce = leader
-            .map(|pubkey| pubkey == validator_pubkey)
-            .unwrap_or(false);
-        drop(pool);
-        drop(vs);
 
         if !should_produce {
             // Not our turn — wait for the assigned leader to produce.
@@ -7314,11 +7348,11 @@ async fn run_validator() {
 
             let vote = Vote::new(slot, block_hash, validator_pubkey, signature);
 
-            let mut agg = vote_aggregator.lock().await;
-            let vs = validator_set.lock().await;
+            let mut agg = vote_aggregator.write().await;
+            let vs = validator_set.read().await;
             if agg.add_vote_validated(vote.clone(), &vs) {
                 // Check if we reached finality immediately (solo validator case)
-                let pool = stake_pool.lock().await;
+                let pool = stake_pool.read().await;
                 if agg.has_supermajority(slot, &block_hash, &vs, &pool) {
                     info!("🔒 Block {} FINALIZED (stake-weighted self-vote)", slot);
                     // Update finality tracker + persist to StateStore
@@ -7385,7 +7419,7 @@ async fn run_validator() {
 
         let tx_count = transactions.len();
         let current_reputation = {
-            let vs = validator_set.lock().await;
+            let vs = validator_set.read().await;
             vs.get_validator(&validator_pubkey)
                 .map(|v| v.reputation)
                 .unwrap_or(0)

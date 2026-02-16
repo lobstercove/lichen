@@ -66,7 +66,7 @@ use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::{info, warn};
 
@@ -114,7 +114,7 @@ struct RpcState {
     /// P2P network (optional, for peer count queries)
     p2p: Option<Arc<dyn P2PNetworkTrait>>,
     /// Stake pool (optional, for staking queries)
-    stake_pool: Option<Arc<tokio::sync::Mutex<moltchain_core::StakePool>>>,
+    stake_pool: Option<Arc<tokio::sync::RwLock<moltchain_core::StakePool>>>,
     chain_id: String,
     network_id: String,
     version: String,
@@ -710,7 +710,7 @@ pub async fn start_rpc_server(
     state: StateStore,
     port: u16,
     tx_sender: Option<mpsc::Sender<Transaction>>,
-    stake_pool: Option<Arc<Mutex<StakePool>>>,
+    stake_pool: Option<Arc<RwLock<StakePool>>>,
     p2p: Option<Arc<dyn P2PNetworkTrait>>,
     chain_id: String,
     network_id: String,
@@ -744,7 +744,7 @@ pub async fn start_rpc_server(
 pub fn build_rpc_router(
     state: StateStore,
     tx_sender: Option<mpsc::Sender<Transaction>>,
-    stake_pool: Option<Arc<Mutex<StakePool>>>,
+    stake_pool: Option<Arc<RwLock<StakePool>>>,
     p2p: Option<Arc<dyn P2PNetworkTrait>>,
     chain_id: String,
     network_id: String,
@@ -3222,7 +3222,7 @@ async fn handle_get_validators(state: &RpcState) -> Result<serde_json::Value, Rp
         .map(|v| {
             // Get stake from StakePool (authoritative source)
             let pool_stake = if let Some(ref pool_arc) = state.stake_pool {
-                if let Ok(pool) = pool_arc.try_lock() {
+                if let Ok(pool) = pool_arc.try_read() {
                     pool.get_stake(&v.pubkey).map(|s| s.amount).unwrap_or(0)
                 } else {
                     0
@@ -3279,7 +3279,7 @@ async fn handle_get_metrics(state: &RpcState) -> Result<serde_json::Value, RpcEr
         message: format!("Database error: {}", e),
     })?;
     let total_staked: u64 = if let Some(ref pool_arc) = state.stake_pool {
-        if let Ok(pool) = pool_arc.try_lock() {
+        if let Ok(pool) = pool_arc.try_read() {
             pool.total_stake()
         } else {
             0
@@ -3531,7 +3531,7 @@ async fn handle_get_cluster_info(state: &RpcState) -> Result<serde_json::Value, 
         .iter()
         .map(|v| {
             let pool_stake = if let Some(ref pool_arc) = state.stake_pool {
-                if let Ok(pool) = pool_arc.try_lock() {
+                if let Ok(pool) = pool_arc.try_read() {
                     pool.get_stake(&v.pubkey).map(|s| s.amount).unwrap_or(0)
                 } else {
                     0
@@ -3724,7 +3724,7 @@ async fn handle_get_chain_status(state: &RpcState) -> Result<serde_json::Value, 
     })?;
 
     let total_stake: u64 = if let Some(ref pool_arc) = state.stake_pool {
-        if let Ok(pool) = pool_arc.try_lock() {
+        if let Ok(pool) = pool_arc.try_read() {
             pool.total_stake()
         } else {
             validators.iter().map(|v| v.stake).sum()
@@ -3921,7 +3921,7 @@ async fn handle_get_staking_status(
 
     if let Some(validator) = validator_info {
         let (live_stake, bootstrap_debt, bootstrap_index, earned_amount, total_debt_repaid, vesting_status, start_slot, graduation_slot) = if let Some(ref pool_arc) = state.stake_pool {
-            if let Ok(pool) = pool_arc.try_lock() {
+            if let Ok(pool) = pool_arc.try_read() {
                 if let Some(s) = pool.get_stake(&pubkey) {
                     (s.amount, s.bootstrap_debt, s.bootstrap_index, s.earned_amount, s.total_debt_repaid, format!("{:?}", s.status), s.start_slot, s.graduation_slot)
                 } else {
@@ -3982,7 +3982,7 @@ async fn handle_get_staking_rewards(
 
     // Get staking rewards from stake pool
     if let Some(ref pool) = state.stake_pool {
-        let pool_guard = pool.lock().await;
+        let pool_guard = pool.read().await;
         if let Some(stake_info) = pool_guard.get_stake(&pubkey) {
             // total_claimed tracks all historically claimed rewards (liquid + debt)
             // rewards_earned is the currently pending (unclaimed) buffer
@@ -7169,7 +7169,7 @@ async fn handle_get_reefstake_pool_info(state: &RpcState) -> Result<serde_json::
 
     // Derive active validators count and APY from the consensus StakePool
     let (active_validators, apy_percent) = if let Some(ref sp_arc) = state.stake_pool {
-        let sp = sp_arc.lock().await;
+        let sp = sp_arc.read().await;
         let stats = sp.get_stats();
         let slots_per_day = SLOTS_PER_YEAR / 365;
         let apy_bp = pool.calculate_apy_bp(slots_per_day, TRANSACTION_BLOCK_REWARD);
@@ -7261,7 +7261,7 @@ async fn handle_get_reward_adjustment_info(
         code: -32000,
         message: "Stake pool not available".to_string(),
     })?;
-    let stake_pool = stake_pool_arc.lock().await;
+    let stake_pool = stake_pool_arc.read().await;
     let stats = stake_pool.get_stats();
     let active_count = stats.active_validators;
     let total_staked = stats.total_staked;
