@@ -64,6 +64,7 @@ pub use processor::{
     NFT_MINT_FEE, SYSTEM_PROGRAM_ID,
 };
 pub use reefstake::{ReefStakePool, StMoltToken, StakingPosition, UnstakeRequest};
+pub use state::CheckpointMeta;
 pub use state::StateBatch;
 pub use state::StateStore;
 pub use state::SymbolRegistryEntry;

@@ -4856,6 +4856,254 @@ impl StateStore {
     }
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// State Snapshot / Checkpoint System
+// ════════════════════════════════════════════════════════════════════════════
+
+/// Metadata stored alongside each checkpoint (serialized as JSON in the
+/// checkpoint directory).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CheckpointMeta {
+    /// Finalized slot at which the checkpoint was taken
+    pub slot: u64,
+    /// State root hash at the checkpoint slot
+    pub state_root: [u8; 32],
+    /// Timestamp (unix seconds) when the checkpoint was created
+    pub created_at: u64,
+    /// Total accounts at checkpoint time
+    pub total_accounts: u64,
+}
+
+impl StateStore {
+    // ── Checkpoint creation (RocksDB native hardlink snapshot) ────────────
+
+    /// Create a point-in-time checkpoint of the entire database.
+    ///
+    /// Uses RocksDB's native `Checkpoint` API which creates hardlinks to SST
+    /// files — effectively O(1) in time and zero additional disk space until
+    /// compaction replaces the SST files.
+    ///
+    /// `checkpoint_dir` is the directory where the checkpoint will be stored,
+    /// e.g. `data/state-8000/checkpoints/slot-10000`.
+    ///
+    /// Returns the `CheckpointMeta` for the created checkpoint.
+    pub fn create_checkpoint(
+        &self,
+        checkpoint_dir: &str,
+        slot: u64,
+    ) -> Result<CheckpointMeta, String> {
+        use rocksdb::checkpoint::Checkpoint;
+
+        // Ensure parent directory exists
+        let parent = std::path::Path::new(checkpoint_dir)
+            .parent()
+            .ok_or_else(|| "Invalid checkpoint path".to_string())?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Failed to create checkpoint parent dir: {}", e))?;
+
+        // Remove stale checkpoint at the same path if it exists
+        if std::path::Path::new(checkpoint_dir).exists() {
+            std::fs::remove_dir_all(checkpoint_dir)
+                .map_err(|e| format!("Failed to remove old checkpoint: {}", e))?;
+        }
+
+        // Create RocksDB checkpoint (hardlink-based, near-instant)
+        let cp = Checkpoint::new(&self.db)
+            .map_err(|e| format!("Failed to create checkpoint object: {}", e))?;
+        cp.create_checkpoint(checkpoint_dir)
+            .map_err(|e| format!("Failed to create checkpoint: {}", e))?;
+
+        // Compute state root and write metadata
+        let state_root = self.compute_state_root();
+        let total_accounts = self.count_accounts().unwrap_or(0);
+        let meta = CheckpointMeta {
+            slot,
+            state_root: state_root.0,
+            created_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+            total_accounts,
+        };
+
+        // Write metadata file inside the checkpoint directory
+        let meta_path = std::path::Path::new(checkpoint_dir).join("checkpoint_meta.json");
+        let meta_json = serde_json::to_string_pretty(&meta)
+            .map_err(|e| format!("Failed to serialize checkpoint meta: {}", e))?;
+        std::fs::write(&meta_path, meta_json)
+            .map_err(|e| format!("Failed to write checkpoint meta: {}", e))?;
+
+        Ok(meta)
+    }
+
+    /// Open a checkpoint as a read-only StateStore for serving snapshot data.
+    pub fn open_checkpoint(checkpoint_dir: &str) -> Result<Self, String> {
+        Self::open(checkpoint_dir)
+    }
+
+    /// List available checkpoints in the data directory.
+    /// Returns sorted (oldest first) list of `(slot, checkpoint_dir_path)`.
+    pub fn list_checkpoints(data_dir: &str) -> Vec<(u64, String)> {
+        let cp_root = std::path::Path::new(data_dir).join("checkpoints");
+        let mut result = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&cp_root) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    let meta_path = path.join("checkpoint_meta.json");
+                    if meta_path.exists() {
+                        if let Ok(data) = std::fs::read_to_string(&meta_path) {
+                            if let Ok(meta) = serde_json::from_str::<CheckpointMeta>(&data) {
+                                result.push((meta.slot, path.to_string_lossy().to_string()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        result.sort_by_key(|(slot, _)| *slot);
+        result
+    }
+
+    /// Get the latest checkpoint metadata from the data directory.
+    pub fn latest_checkpoint(data_dir: &str) -> Option<(CheckpointMeta, String)> {
+        let checkpoints = Self::list_checkpoints(data_dir);
+        checkpoints.last().and_then(|(_, path)| {
+            let meta_path = std::path::Path::new(path).join("checkpoint_meta.json");
+            let data = std::fs::read_to_string(&meta_path).ok()?;
+            let meta: CheckpointMeta = serde_json::from_str(&data).ok()?;
+            Some((meta, path.clone()))
+        })
+    }
+
+    /// Prune old checkpoints, keeping only the most recent `keep_count`.
+    pub fn prune_checkpoints(data_dir: &str, keep_count: usize) -> Result<usize, String> {
+        let checkpoints = Self::list_checkpoints(data_dir);
+        if checkpoints.len() <= keep_count {
+            return Ok(0);
+        }
+        let to_remove = checkpoints.len() - keep_count;
+        let mut removed = 0;
+        for (_, path) in checkpoints.iter().take(to_remove) {
+            if std::fs::remove_dir_all(path).is_ok() {
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
+    // ── Snapshot export / import (for P2P state transfer) ────────────────
+
+    /// Export all accounts from this store as an iterator of (pubkey_bytes, account_bytes).
+    /// Used to stream account state to a joining validator.
+    pub fn export_accounts_iter(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_ACCOUNTS)
+            .ok_or_else(|| "Accounts CF not found".to_string())?;
+
+        let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
+        let mut entries = Vec::new();
+        for item in iter.flatten() {
+            let (key, value) = item;
+            entries.push((key.to_vec(), value.to_vec()));
+        }
+        Ok(entries)
+    }
+
+    /// Export contract storage entries as (key_bytes, value_bytes).
+    pub fn export_contract_storage_iter(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_CONTRACT_STORAGE)
+            .ok_or_else(|| "Contract storage CF not found".to_string())?;
+
+        let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
+        let mut entries = Vec::new();
+        for item in iter.flatten() {
+            let (key, value) = item;
+            entries.push((key.to_vec(), value.to_vec()));
+        }
+        Ok(entries)
+    }
+
+    /// Export programs (WASM bytecode) as (pubkey_bytes, program_bytes).
+    pub fn export_programs_iter(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_PROGRAMS)
+            .ok_or_else(|| "Programs CF not found".to_string())?;
+
+        let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
+        let mut entries = Vec::new();
+        for item in iter.flatten() {
+            let (key, value) = item;
+            entries.push((key.to_vec(), value.to_vec()));
+        }
+        Ok(entries)
+    }
+
+    /// Import a batch of accounts into the store (used by joining validators).
+    /// Returns the number of accounts imported.
+    pub fn import_accounts(&self, entries: &[(Vec<u8>, Vec<u8>)]) -> Result<usize, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_ACCOUNTS)
+            .ok_or_else(|| "Accounts CF not found".to_string())?;
+
+        let mut batch = WriteBatch::default();
+        for (key, value) in entries {
+            batch.put_cf(&cf, key, value);
+        }
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Failed to import accounts: {}", e))?;
+
+        Ok(entries.len())
+    }
+
+    /// Import a batch of contract storage entries.
+    pub fn import_contract_storage(&self, entries: &[(Vec<u8>, Vec<u8>)]) -> Result<usize, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_CONTRACT_STORAGE)
+            .ok_or_else(|| "Contract storage CF not found".to_string())?;
+
+        let mut batch = WriteBatch::default();
+        for (key, value) in entries {
+            batch.put_cf(&cf, key, value);
+        }
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Failed to import contract storage: {}", e))?;
+
+        Ok(entries.len())
+    }
+
+    /// Import a batch of programs (WASM bytecode).
+    pub fn import_programs(&self, entries: &[(Vec<u8>, Vec<u8>)]) -> Result<usize, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_PROGRAMS)
+            .ok_or_else(|| "Programs CF not found".to_string())?;
+
+        let mut batch = WriteBatch::default();
+        for (key, value) in entries {
+            batch.put_cf(&cf, key, value);
+        }
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Failed to import programs: {}", e))?;
+
+        Ok(entries.len())
+    }
+
+    /// Get a reference to the underlying DB Arc for direct access when needed.
+    pub fn db_ref(&self) -> &Arc<DB> {
+        &self.db
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

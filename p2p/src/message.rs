@@ -50,6 +50,8 @@ pub struct P2PMessage {
 pub enum SnapshotKind {
     ValidatorSet,
     StakePool,
+    /// Full state checkpoint — accounts, contract storage, programs
+    StateCheckpoint,
 }
 
 /// Message types in the P2P network
@@ -131,6 +133,47 @@ pub enum MessageType {
         machine_fingerprint: [u8; 32],
     },
 
+    /// State snapshot chunk request — joining validator asks for a chunk of
+    /// account/contract/program state from a peer's latest checkpoint.
+    StateSnapshotRequest {
+        /// Which data category: "accounts", "contract_storage", "programs"
+        category: String,
+        /// Chunk index (0-based) for paginated transfer
+        chunk_index: u64,
+        /// Number of entries per chunk
+        chunk_size: u64,
+    },
+
+    /// State snapshot chunk response — contains a batch of (key, value) pairs
+    /// from the requested category.
+    StateSnapshotResponse {
+        /// Which data category this chunk belongs to
+        category: String,
+        /// Chunk index
+        chunk_index: u64,
+        /// Total number of chunks for this category
+        total_chunks: u64,
+        /// The slot at which the snapshot was taken
+        snapshot_slot: u64,
+        /// State root hash at snapshot slot (for verification)
+        state_root: [u8; 32],
+        /// key-value entries (bincode-serialized Vec<(Vec<u8>, Vec<u8>)>)
+        entries: Vec<u8>,
+    },
+
+    /// Checkpoint metadata request — ask peer for its latest checkpoint info
+    CheckpointMetaRequest,
+
+    /// Checkpoint metadata response
+    CheckpointMetaResponse {
+        /// Slot of the latest checkpoint (0 if none)
+        slot: u64,
+        /// State root at that slot
+        state_root: [u8; 32],
+        /// Total accounts
+        total_accounts: u64,
+    },
+
     /// Slashing evidence broadcast
     SlashingEvidence(SlashingEvidence),
 }
@@ -157,20 +200,21 @@ impl P2PMessage {
         }
     }
 
-    /// Serialize message for network transmission
+    /// Serialize message for network transmission.
+    /// Limit is 16 MB to accommodate state snapshot chunks.
     pub fn serialize(&self) -> Result<Vec<u8>, String> {
         use bincode::Options;
         bincode::options()
-            .with_limit(2 * 1024 * 1024)
+            .with_limit(16 * 1024 * 1024)
             .serialize(self)
             .map_err(|e| format!("Serialization error: {}", e))
     }
 
-    /// Deserialize message from bytes (bounded to 2MB to prevent OOM)
+    /// Deserialize message from bytes (bounded to 16 MB to prevent OOM)
     pub fn deserialize(bytes: &[u8]) -> Result<Self, String> {
         use bincode::Options;
         bincode::options()
-            .with_limit(2 * 1024 * 1024)
+            .with_limit(16 * 1024 * 1024)
             .deserialize(bytes)
             .map_err(|e| format!("Deserialization error: {}", e))
     }
