@@ -814,7 +814,7 @@ async function getMoltyIdProgramAddress() {
 function buildTransferInstruction(fromAddress, toAddress, amountMolt) {
     const fromPubkey = bs58.decode(fromAddress);
     const toPubkey = bs58.decode(toAddress);
-    const systemProgram = new Uint8Array(32).fill(1);
+    const systemProgram = new Uint8Array(32); // SYSTEM_PROGRAM_ID = [0; 32]
     const amountShells = Math.floor(Number(amountMolt) * 1_000_000_000);
     const instructionData = new Uint8Array(9);
     instructionData[0] = 0;

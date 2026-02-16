@@ -1588,7 +1588,7 @@ async function showReefStakeModal() {
         
         const message = {
             instructions: [{
-                program_id: Array.from(new Uint8Array(32).fill(1)),
+                program_id: Array.from(new Uint8Array(32)), // SYSTEM_PROGRAM_ID = [0; 32]
                 accounts: [Array.from(fromPubkey)],
                 data: Array.from(instructionData)
             }],
@@ -1646,7 +1646,7 @@ async function showReefUnstakeModal() {
         
         const message = {
             instructions: [{
-                program_id: Array.from(new Uint8Array(32).fill(1)),
+                program_id: Array.from(new Uint8Array(32)), // SYSTEM_PROGRAM_ID = [0; 32]
                 accounts: [Array.from(fromPubkey)],
                 data: Array.from(instructionData)
             }],
@@ -2095,7 +2095,7 @@ async function registerEvmAddress(wallet, password) {
         instructionData[0] = 12;
         instructionData.set(evmBytes, 1);
 
-        const systemProgram = new Uint8Array(32).fill(1);
+        const systemProgram = new Uint8Array(32); // SYSTEM_PROGRAM_ID = [0; 32]
         const fromPubkey = MoltCrypto.hexToBytes(wallet.publicKey);
         const latestBlock = await rpc.getLatestBlock();
 
@@ -2220,7 +2220,7 @@ async function confirmSend() {
         if (selectedToken === 'MOLT') {
             // Native MOLT transfer
             const shells = Math.floor(amount * 1_000_000_000);
-            const systemProgram = new Uint8Array(32).fill(1);
+            const systemProgram = new Uint8Array(32); // SYSTEM_PROGRAM_ID = [0; 32]
             
             const instructionData = new Uint8Array(9);
             instructionData[0] = 0; // Transfer type
@@ -2238,7 +2238,7 @@ async function confirmSend() {
         } else if (selectedToken === 'stMOLT') {
             // stMOLT transfer via ReefStake opcode 16
             const stMoltShells = Math.floor(amount * 1_000_000_000);
-            const systemProgram = new Uint8Array(32).fill(1);
+            const systemProgram = new Uint8Array(32); // SYSTEM_PROGRAM_ID = [0; 32]
 
             const instructionData = new Uint8Array(9);
             instructionData[0] = 16; // ReefStake transfer
@@ -2324,9 +2324,11 @@ async function confirmSend() {
         showToast(`✅ ${amount} ${selectedToken} sent! Signature: ${String(txSignature).slice(0, 16)}...`);
         closeModal('sendModal');
         
-        // Clear form
+        // Clear form and reset token selector
         document.getElementById('sendTo').value = '';
         document.getElementById('sendAmount').value = '';
+        const tokenSelect = document.getElementById('sendToken');
+        if (tokenSelect) tokenSelect.value = 'MOLT';
         
         // Refresh balance and activity
         await refreshBalance();

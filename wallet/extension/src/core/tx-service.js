@@ -71,7 +71,7 @@ export function buildNativeTransferMessage(fromPublicKeyHex, toAddress, amountMo
     throw new Error('Invalid transfer amount');
   }
 
-  const systemProgram = new Uint8Array(32).fill(1);
+  const systemProgram = new Uint8Array(32); // SYSTEM_PROGRAM_ID = [0; 32]
   const instructionData = new Uint8Array(9);
   instructionData[0] = 0;
   const view = new DataView(instructionData.buffer);
@@ -128,7 +128,7 @@ export async function buildSignedSingleInstructionTransaction({
   instructionDataBytes
 }) {
   const fromPubkey = hexToBytes(fromPublicKeyHex);
-  const programId = programIdBytes || new Uint8Array(32).fill(1);
+  const programId = programIdBytes || new Uint8Array(32); // SYSTEM_PROGRAM_ID = [0; 32]
 
   const accounts = [Array.from(fromPubkey), ...(accountPubkeys || []).map((a) => Array.from(a))];
   const message = {

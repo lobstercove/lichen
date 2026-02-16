@@ -44,7 +44,7 @@ export async function stakeMolt({ wallet, password, amountMolt, network }) {
     privateKeyHex,
     fromPublicKeyHex: wallet.publicKey,
     blockhash: latestBlock.hash,
-    programIdBytes: new Uint8Array(32).fill(1),
+    programIdBytes: new Uint8Array(32), // SYSTEM_PROGRAM_ID = [0; 32]
     accountPubkeys: [],
     instructionDataBytes: instructionData
   });
@@ -67,7 +67,7 @@ export async function unstakeStMolt({ wallet, password, amountMolt, network }) {
     privateKeyHex,
     fromPublicKeyHex: wallet.publicKey,
     blockhash: latestBlock.hash,
-    programIdBytes: new Uint8Array(32).fill(1),
+    programIdBytes: new Uint8Array(32), // SYSTEM_PROGRAM_ID = [0; 32]
     accountPubkeys: [],
     instructionDataBytes: instructionData
   });
