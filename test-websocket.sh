@@ -5,6 +5,15 @@ set -e
 WS_URL="ws://localhost:8900"
 RESULTS_FILE="/tmp/websocket-test-results.txt"
 
+TIMEOUT_CMD="timeout"
+if ! command -v "$TIMEOUT_CMD" >/dev/null 2>&1; then
+    if command -v gtimeout >/dev/null 2>&1; then
+        TIMEOUT_CMD="gtimeout"
+    else
+        TIMEOUT_CMD=""
+    fi
+fi
+
 echo "🧪 MoltChain WebSocket Test" > $RESULTS_FILE
 echo "Started: $(date)" >> $RESULTS_FILE
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" >> $RESULTS_FILE
@@ -17,7 +26,11 @@ echo ""
 
 echo "Testing: WebSocket connection..."
 # Try to connect and send subscribe message
-timeout 5 wscat -c $WS_URL -x '{"method":"subscribe","params":["blocks"]}' > /tmp/ws-test-output.txt 2>&1 &
+if [[ -n "$TIMEOUT_CMD" ]]; then
+    "$TIMEOUT_CMD" 5 wscat -c $WS_URL -x '{"method":"subscribe","params":["blocks"]}' > /tmp/ws-test-output.txt 2>&1 &
+else
+    wscat -c $WS_URL -x '{"method":"subscribe","params":["blocks"]}' > /tmp/ws-test-output.txt 2>&1 &
+fi
 WS_PID=$!
 
 sleep 3
@@ -36,7 +49,14 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 
 echo "Testing: Block subscription (10 sec monitor)..."
-timeout 10 wscat -c $WS_URL -x '{"method":"subscribe","params":["blocks"]}' > /tmp/ws-blocks.txt 2>&1 || true
+if [[ -n "$TIMEOUT_CMD" ]]; then
+    "$TIMEOUT_CMD" 10 wscat -c $WS_URL -x '{"method":"subscribe","params":["blocks"]}' > /tmp/ws-blocks.txt 2>&1 || true
+else
+    wscat -c $WS_URL -x '{"method":"subscribe","params":["blocks"]}' > /tmp/ws-blocks.txt 2>&1 &
+    WS_SUB_PID=$!
+    sleep 10
+    kill "$WS_SUB_PID" 2>/dev/null || true
+fi
 
 if [ -s /tmp/ws-blocks.txt ]; then
     BLOCK_COUNT=$(grep -c "block" /tmp/ws-blocks.txt 2>/dev/null || echo "0")

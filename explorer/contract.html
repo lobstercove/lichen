@@ -53,6 +53,11 @@
         .tab-nav .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
 
         .panel-card { background: var(--card-bg, rgba(255,255,255,0.03)); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+
+        .tab-pagination { display: flex; justify-content: space-between; align-items: center; padding: 0.75rem 1rem; border-top: 1px solid var(--border); background: var(--card-bg, rgba(255,255,255,0.03)); }
+        .tab-pagination .pagination-info { font-size: 0.8rem; color: var(--text-muted); font-weight: 500; }
+        .tab-pagination .pagination-btns { display: flex; gap: 0.5rem; }
+        .tab-pagination .btn-small { padding: 0.3rem 0.75rem; font-size: 0.8rem; }
     </style>
 </head>
 <body>
@@ -68,6 +73,7 @@
                 <li><a href="blocks.html">Blocks</a></li>
                 <li><a href="transactions.html">Transactions</a></li>
                 <li><a href="validators.html">Validators</a></li>
+                <li><a href="agents.html">Agents</a></li>
                 <li><a href="contracts.html" class="active">Contracts</a></li>
             </ul>
             <div class="nav-actions">
@@ -220,7 +226,7 @@
             <div id="panel-calls" class="panel-card" style="display: none;">
                 <table class="data-table" style="width: 100%;">
                     <thead>
-                        <tr><th>Time</th><th>Caller</th><th>Function</th><th>Gas Used</th><th>Status</th></tr>
+                        <tr><th>Time</th><th>Caller</th><th>Function</th><th>Fee</th><th>Status</th></tr>
                     </thead>
                     <tbody id="callsTable">
                         <tr><td colspan="5" class="empty-state"><i class="fas fa-spinner fa-spin"></i><div>Loading calls...</div></td></tr>

@@ -134,20 +134,21 @@ fn get_deposit_cap() -> u64 {
 /// Initialize the lending protocol
 #[no_mangle]
 pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
-    let admin = unsafe { core::slice::from_raw_parts(admin_ptr, 32) };
+    let mut admin = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32); }
 
     if storage_get(ADMIN_KEY).is_some() {
-        log_info("❌ Already initialized");
+        log_info("Already initialized");
         return 1;
     }
 
-    storage_set(ADMIN_KEY, admin);
+    storage_set(ADMIN_KEY, &admin);
     store_u64(b"ll_total_deposits", 0);
     store_u64(b"ll_total_borrows", 0);
     store_u64(b"ll_last_update", get_timestamp());
     store_u64(b"ll_reserve_factor", 10); // 10% of interest goes to reserves
 
-    log_info("🦞 LobsterLend initialized");
+    log_info("LobsterLend initialized");
     0
 }
 
@@ -159,20 +160,21 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
 #[no_mangle]
 pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u32 {
     if amount == 0 {
-        log_info("❌ Cannot deposit zero");
+        log_info("Cannot deposit zero");
         return 1;
     }
     if is_paused() {
-        log_info("❌ Protocol is paused");
+        log_info("Protocol is paused");
         return 20;
     }
     if !reentrancy_enter() {
-        log_info("❌ Reentrancy detected");
+        log_info("Reentrancy detected");
         return 21;
     }
 
-    let depositor = unsafe { core::slice::from_raw_parts(depositor_ptr, 32) };
-    let hex = hex_encode_addr(depositor);
+    let mut depositor = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(depositor_ptr, depositor.as_mut_ptr(), 32); }
+    let hex = hex_encode_addr(&depositor);
 
     accrue_interest();
 
@@ -181,7 +183,7 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u32 {
     let total = load_u64(b"ll_total_deposits");
     if cap > 0 && total + amount > cap {
         reentrancy_exit();
-        log_info("❌ Would exceed deposit cap");
+        log_info("Would exceed deposit cap");
         return 4;
     }
 
@@ -194,7 +196,7 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u32 {
     store_u64(b"ll_total_deposits", total + amount);
 
     reentrancy_exit();
-    log_info("✅ Deposit successful");
+    log_info("Deposit successful");
     0
 }
 
@@ -205,15 +207,16 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, amount: u64) -> u32 {
         return 1;
     }
     if is_paused() {
-        log_info("❌ Protocol is paused");
+        log_info("Protocol is paused");
         return 20;
     }
     if !reentrancy_enter() {
         return 21;
     }
 
-    let depositor = unsafe { core::slice::from_raw_parts(depositor_ptr, 32) };
-    let hex = hex_encode_addr(depositor);
+    let mut depositor = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(depositor_ptr, depositor.as_mut_ptr(), 32); }
+    let hex = hex_encode_addr(&depositor);
 
     accrue_interest();
 
@@ -221,7 +224,7 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, amount: u64) -> u32 {
     let current_deposit = load_u64(&dep_key);
     if amount > current_deposit {
         reentrancy_exit();
-        log_info("❌ Insufficient deposit balance");
+        log_info("Insufficient deposit balance");
         return 2;
     }
 
@@ -234,7 +237,7 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, amount: u64) -> u32 {
         let max_borrow = new_deposit * COLLATERAL_FACTOR_PERCENT / 100;
         if current_borrow > max_borrow {
             reentrancy_exit();
-            log_info("❌ Withdrawal would make position unhealthy");
+            log_info("Withdrawal would make position unhealthy");
             return 3;
         }
     }
@@ -244,7 +247,7 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, amount: u64) -> u32 {
     store_u64(b"ll_total_deposits", total.saturating_sub(amount));
 
     reentrancy_exit();
-    log_info("✅ Withdrawal successful");
+    log_info("Withdrawal successful");
     0
 }
 
@@ -255,15 +258,16 @@ pub extern "C" fn borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
         return 1;
     }
     if is_paused() {
-        log_info("❌ Protocol is paused");
+        log_info("Protocol is paused");
         return 20;
     }
     if !reentrancy_enter() {
         return 21;
     }
 
-    let borrower = unsafe { core::slice::from_raw_parts(borrower_ptr, 32) };
-    let hex = hex_encode_addr(borrower);
+    let mut borrower = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(borrower_ptr, borrower.as_mut_ptr(), 32); }
+    let hex = hex_encode_addr(&borrower);
 
     accrue_interest();
 
@@ -277,7 +281,7 @@ pub extern "C" fn borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
 
     if new_borrow > max_borrow {
         reentrancy_exit();
-        log_info("❌ Borrow exceeds collateral factor");
+        log_info("Borrow exceeds collateral factor");
         return 2;
     }
 
@@ -287,7 +291,7 @@ pub extern "C" fn borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
     let available = total_deposits.saturating_sub(total_borrows);
     if amount > available {
         reentrancy_exit();
-        log_info("❌ Insufficient pool liquidity");
+        log_info("Insufficient pool liquidity");
         return 3;
     }
 
@@ -299,7 +303,7 @@ pub extern "C" fn borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
     store_u64(&ts_key, get_timestamp());
 
     reentrancy_exit();
-    log_info("✅ Borrow successful");
+    log_info("Borrow successful");
     0
 }
 
@@ -313,8 +317,9 @@ pub extern "C" fn repay(borrower_ptr: *const u8, amount: u64) -> u32 {
         return 21;
     }
 
-    let borrower = unsafe { core::slice::from_raw_parts(borrower_ptr, 32) };
-    let hex = hex_encode_addr(borrower);
+    let mut borrower = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(borrower_ptr, borrower.as_mut_ptr(), 32); }
+    let hex = hex_encode_addr(&borrower);
 
     accrue_interest();
 
@@ -323,7 +328,7 @@ pub extern "C" fn repay(borrower_ptr: *const u8, amount: u64) -> u32 {
 
     if current_borrow == 0 {
         reentrancy_exit();
-        log_info("❌ No outstanding borrow");
+        log_info("No outstanding borrow");
         return 2;
     }
 
@@ -334,7 +339,7 @@ pub extern "C" fn repay(borrower_ptr: *const u8, amount: u64) -> u32 {
     store_u64(b"ll_total_borrows", total_borrows.saturating_sub(repay_amount));
 
     reentrancy_exit();
-    log_info("✅ Repayment successful");
+    log_info("Repayment successful");
     0
 }
 
@@ -353,9 +358,11 @@ pub extern "C" fn liquidate(
         return 21;
     }
 
-    let _liquidator = unsafe { core::slice::from_raw_parts(liquidator_ptr, 32) };
-    let borrower = unsafe { core::slice::from_raw_parts(borrower_ptr, 32) };
-    let hex = hex_encode_addr(borrower);
+    let mut _liquidator = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(liquidator_ptr, _liquidator.as_mut_ptr(), 32); }
+    let mut borrower = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(borrower_ptr, borrower.as_mut_ptr(), 32); }
+    let hex = hex_encode_addr(&borrower);
 
     accrue_interest();
 
@@ -366,7 +373,7 @@ pub extern "C" fn liquidate(
 
     if current_borrow == 0 {
         reentrancy_exit();
-        log_info("❌ No borrow to liquidate");
+        log_info("No borrow to liquidate");
         return 2;
     }
 
@@ -374,7 +381,7 @@ pub extern "C" fn liquidate(
     let liquidation_limit = deposit * LIQUIDATION_THRESHOLD_PERCENT / 100;
     if current_borrow <= liquidation_limit {
         reentrancy_exit();
-        log_info("❌ Position is healthy, cannot liquidate");
+        log_info("Position is healthy, cannot liquidate");
         return 3;
     }
 
@@ -383,7 +390,8 @@ pub extern "C" fn liquidate(
     let actual_repay = if repay_amount > max_repay { max_repay } else { repay_amount };
 
     // Collateral seized = repay_amount * (1 + bonus)
-    let collateral_seized = actual_repay + (actual_repay * LIQUIDATION_BONUS_PERCENT / 100);
+    // Use u128 to prevent overflow on large repay amounts
+    let collateral_seized = actual_repay + ((actual_repay as u128 * LIQUIDATION_BONUS_PERCENT as u128 / 100) as u64);
     let actual_seized = if collateral_seized > deposit { deposit } else { collateral_seized };
 
     // Update borrower
@@ -397,7 +405,7 @@ pub extern "C" fn liquidate(
     store_u64(b"ll_total_deposits", total_deposits.saturating_sub(actual_seized));
 
     reentrancy_exit();
-    log_info("⚡ Liquidation executed");
+    log_info("Liquidation executed");
 
     // Return seized collateral amount in return data
     set_return_data(&u64_to_bytes(actual_seized));
@@ -449,12 +457,13 @@ fn accrue_interest() {
     let rate_per_slot = if rate_per_slot > MAX_RATE_PER_SLOT { MAX_RATE_PER_SLOT } else { rate_per_slot };
 
     // Interest accrued = total_borrows * rate * elapsed_slots / SCALE
-    let interest = total_borrows * rate_per_slot * elapsed_slots / RATE_SCALE;
+    // Use u128 intermediate to prevent overflow on large values
+    let interest = ((total_borrows as u128) * (rate_per_slot as u128) * (elapsed_slots as u128) / (RATE_SCALE as u128)) as u64;
 
     if interest > 0 {
         // Reserve factor: portion goes to protocol reserves
         let reserve_factor = load_u64(b"ll_reserve_factor");
-        let reserve_amount = interest * reserve_factor / 100;
+        let reserve_amount = ((interest as u128) * (reserve_factor as u128) / 100) as u64;
         let depositor_interest = interest - reserve_amount;
 
         // Increase total borrows by interest (borrowers owe more)
@@ -476,8 +485,9 @@ fn accrue_interest() {
 /// Get account info: [deposit(8), borrow(8), health_factor_bps(8)]
 #[no_mangle]
 pub extern "C" fn get_account_info(user_ptr: *const u8) -> u32 {
-    let user = unsafe { core::slice::from_raw_parts(user_ptr, 32) };
-    let hex = hex_encode_addr(user);
+    let mut user = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(user_ptr, user.as_mut_ptr(), 32); }
+    let hex = hex_encode_addr(&user);
 
     let deposit = load_u64(&make_key(b"dep:", &hex));
     let borrow = load_u64(&make_key(b"bor:", &hex));
@@ -530,15 +540,16 @@ pub extern "C" fn flash_borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
         return 1;
     }
     if is_paused() {
-        log_info("❌ Protocol is paused");
+        log_info("Protocol is paused");
         return 20;
     }
 
-    let _borrower = unsafe { core::slice::from_raw_parts(borrower_ptr, 32) };
+    let mut _borrower = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(borrower_ptr, _borrower.as_mut_ptr(), 32); }
 
     // Check no active flash loan
     if load_u64(FLASH_BORROWED_KEY) > 0 {
-        log_info("❌ Flash loan already active");
+        log_info("Flash loan already active");
         return 2;
     }
 
@@ -547,7 +558,7 @@ pub extern "C" fn flash_borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
     let total_borrows = load_u64(b"ll_total_borrows");
     let available = total_deposits.saturating_sub(total_borrows);
     if amount > available {
-        log_info("❌ Insufficient pool liquidity for flash loan");
+        log_info("Insufficient pool liquidity for flash loan");
         return 3;
     }
 
@@ -561,25 +572,26 @@ pub extern "C" fn flash_borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
 
     // Return fee in return data so borrower knows what to repay
     set_return_data(&u64_to_bytes(fee));
-    log_info("⚡ Flash loan issued");
+    log_info("Flash loan issued");
     0
 }
 
 /// Repay a flash loan with fee. Must be called after flash_borrow.
 #[no_mangle]
 pub extern "C" fn flash_repay(borrower_ptr: *const u8, repay_amount: u64) -> u32 {
-    let _borrower = unsafe { core::slice::from_raw_parts(borrower_ptr, 32) };
+    let mut _borrower = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(borrower_ptr, _borrower.as_mut_ptr(), 32); }
 
     let borrowed = load_u64(FLASH_BORROWED_KEY);
     if borrowed == 0 {
-        log_info("❌ No active flash loan");
+        log_info("No active flash loan");
         return 1;
     }
 
     let fee = load_u64(FLASH_FEE_KEY);
     let required = borrowed + fee;
     if repay_amount < required {
-        log_info("❌ Insufficient repayment (must include fee)");
+        log_info("Insufficient repayment (must include fee)");
         return 2;
     }
 
@@ -591,7 +603,7 @@ pub extern "C" fn flash_repay(borrower_ptr: *const u8, repay_amount: u64) -> u32
     store_u64(FLASH_BORROWED_KEY, 0);
     store_u64(FLASH_FEE_KEY, 0);
 
-    log_info("✅ Flash loan repaid");
+    log_info("Flash loan repaid");
     0
 }
 
@@ -602,73 +614,78 @@ pub extern "C" fn flash_repay(borrower_ptr: *const u8, repay_amount: u64) -> u32
 /// Admin pauses the protocol (blocks new deposits, borrows, withdrawals)
 #[no_mangle]
 pub extern "C" fn pause(caller_ptr: *const u8) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_admin(caller) {
-        log_info("❌ Not admin");
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_admin(&caller) {
+        log_info("Not admin");
         return 1;
     }
     if is_paused() {
-        log_info("❌ Already paused");
+        log_info("Already paused");
         return 2;
     }
     storage_set(PAUSE_KEY, &[1]);
-    log_info("⏸️ Protocol paused");
+    log_info("Protocol paused");
     0
 }
 
 /// Admin unpauses the protocol
 #[no_mangle]
 pub extern "C" fn unpause(caller_ptr: *const u8) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_admin(caller) {
-        log_info("❌ Not admin");
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_admin(&caller) {
+        log_info("Not admin");
         return 1;
     }
     if !is_paused() {
-        log_info("❌ Not paused");
+        log_info("Not paused");
         return 2;
     }
     storage_set(PAUSE_KEY, &[0]);
-    log_info("▶️ Protocol unpaused");
+    log_info("Protocol unpaused");
     0
 }
 
 /// Admin sets the deposit cap (0 = unlimited)
 #[no_mangle]
 pub extern "C" fn set_deposit_cap(caller_ptr: *const u8, cap: u64) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_admin(caller) {
-        log_info("❌ Not admin");
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_admin(&caller) {
+        log_info("Not admin");
         return 1;
     }
     store_u64(DEPOSIT_CAP_KEY, cap);
-    log_info("✅ Deposit cap updated");
+    log_info("Deposit cap updated");
     0
 }
 
 /// Admin updates reserve factor (0-100)
 #[no_mangle]
 pub extern "C" fn set_reserve_factor(caller_ptr: *const u8, factor: u64) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_admin(caller) {
-        log_info("❌ Not admin");
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_admin(&caller) {
+        log_info("Not admin");
         return 1;
     }
     if factor > 100 {
-        log_info("❌ Factor must be 0-100");
+        log_info("Factor must be 0-100");
         return 2;
     }
     store_u64(b"ll_reserve_factor", factor);
-    log_info("✅ Reserve factor updated");
+    log_info("Reserve factor updated");
     0
 }
 
 /// Admin withdraws protocol reserves
 #[no_mangle]
 pub extern "C" fn withdraw_reserves(caller_ptr: *const u8, amount: u64) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_admin(caller) {
-        log_info("❌ Not admin");
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_admin(&caller) {
+        log_info("Not admin");
         return 1;
     }
     if amount == 0 {
@@ -676,11 +693,11 @@ pub extern "C" fn withdraw_reserves(caller_ptr: *const u8, amount: u64) -> u32 {
     }
     let reserves = load_u64(b"ll_reserves");
     if amount > reserves {
-        log_info("❌ Amount exceeds reserves");
+        log_info("Amount exceeds reserves");
         return 3;
     }
     store_u64(b"ll_reserves", reserves - amount);
-    log_info("✅ Reserves withdrawn");
+    log_info("Reserves withdrawn");
     0
 }
 

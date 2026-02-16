@@ -24,6 +24,7 @@ wasmer = "4.2"  # WASM runtime for smart contracts
 wasmer-compiler-cranelift = "4.2"  # JIT compiler for WASM
 wasmer-middlewares = "4.2"  # Metering middleware for compute limits
 chrono = { version = "0.4", features = ["serde"] }  # For genesis timestamps
+rayon = "1.10"  # Parallel TX processing for non-conflicting account sets
 revm = "34.0.0"
 alloy-consensus = { version = "0.7.3", default-features = false, features = ["k256"] }
 alloy-primitives = "0.8.26"

@@ -25,6 +25,21 @@ impl Hash {
         Hash(hash)
     }
 
+    /// PERF-OPT 7: Hash two byte slices without concatenating them first.
+    /// Avoids a heap allocation (Vec::with_capacity + extend_from_slice)
+    /// on every call in hot paths like Merkle leaf computation where
+    /// we hash(pubkey || account_bytes). With 100+ dirty accounts per
+    /// block, this eliminates 100+ allocations per state root computation.
+    pub fn hash_two_parts(part_a: &[u8], part_b: &[u8]) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(part_a);
+        hasher.update(part_b);
+        let result = hasher.finalize();
+        let mut hash = [0u8; 32];
+        hash.copy_from_slice(&result);
+        Hash(hash)
+    }
+
     /// Convert to hex string
     pub fn to_hex(&self) -> String {
         hex::encode(self.0)

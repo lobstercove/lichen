@@ -149,6 +149,9 @@ class MoltChainWS {
             return;
         }
 
+        // Clear any existing keepalive interval
+        if (this._keepalive) { clearInterval(this._keepalive); this._keepalive = null; }
+
         try {
             this.ws = new WebSocket(this.url);
 
@@ -158,6 +161,13 @@ class MoltChainWS {
                 this.subscriptions.clear();
                 this.resubscribeAll();
                 this.openHandlers.forEach((handler) => handler());
+                // Client-side keepalive: send a tiny message every 20s
+                // to prevent idle-timeout disconnects
+                this._keepalive = setInterval(() => {
+                    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                        try { this.ws.send('{"method":"ping"}'); } catch(_) {}
+                    }
+                }, 20000);
             };
 
             this.ws.onmessage = (event) => {
@@ -195,9 +205,10 @@ class MoltChainWS {
 
             this.ws.onclose = () => {
                 console.log('WebSocket closed, reconnecting...');
+                if (this._keepalive) { clearInterval(this._keepalive); this._keepalive = null; }
                 this.closeHandlers.forEach((handler) => handler());
                 setTimeout(() => this.connect(), this.reconnectDelay);
-                this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
+                this.reconnectDelay = Math.min(this.reconnectDelay * 1.5, 5000);
             };
         } catch (error) {
             console.error('WebSocket connection failed:', error);
@@ -315,6 +326,145 @@ window.getExplorerNetwork = getExplorerNetwork;
 window.setExplorerNetwork = setExplorerNetwork;
 window.initExplorerNetworkSelector = initExplorerNetworkSelector;
 
+const moltNameCache = new Map();
+
+function escapeExplorerHtml(value) {
+    return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+}
+
+function isLikelyMoltAddress(value) {
+    if (!value || typeof value !== 'string') return false;
+    return /^[1-9A-HJ-NP-Za-km-z]{32,64}$/.test(value);
+}
+
+async function resolveMoltNameForAddress(address) {
+    if (!isLikelyMoltAddress(address)) return null;
+    if (moltNameCache.has(address)) return moltNameCache.get(address);
+
+    let resolved = null;
+    try {
+        const result = await rpc.call('reverseMoltName', [address]);
+        if (typeof result === 'string' && result) {
+            resolved = result;
+        } else if (result && typeof result.name === 'string' && result.name) {
+            resolved = result.name;
+        }
+    } catch (_) {
+        resolved = null;
+    }
+    moltNameCache.set(address, resolved);
+    return resolved;
+}
+
+async function batchResolveMoltNames(addresses) {
+    const unique = [...new Set((addresses || []).filter(isLikelyMoltAddress))];
+    const unresolved = unique.filter(address => !moltNameCache.has(address));
+
+    if (unresolved.length > 0) {
+        let batchMap = null;
+        try {
+            batchMap = await rpc.call('batchReverseMoltNames', [unresolved]);
+        } catch (_) {
+            batchMap = null;
+        }
+
+        if (batchMap && typeof batchMap === 'object') {
+            unresolved.forEach(address => {
+                const value = batchMap[address];
+                if (typeof value === 'string' && value) {
+                    moltNameCache.set(address, value);
+                } else if (value && typeof value.name === 'string' && value.name) {
+                    moltNameCache.set(address, value.name);
+                } else {
+                    moltNameCache.set(address, null);
+                }
+            });
+        } else {
+            await Promise.all(unresolved.map(async (address) => {
+                await resolveMoltNameForAddress(address);
+            }));
+        }
+    }
+
+    const result = {};
+    unique.forEach(address => {
+        result[address] = moltNameCache.get(address) || null;
+    });
+    return result;
+}
+
+function formatAddressWithMoltName(address, name, options = {}) {
+    const { includeAddressInLabel = false } = options;
+    if (!address) return 'N/A';
+
+    const addr = String(address);
+    const shortAddress = formatHash(addr, 6);
+
+    if (name && typeof name === 'string') {
+        const safeName = escapeExplorerHtml(name.endsWith('.molt') ? name : `${name}.molt`);
+        if (includeAddressInLabel) {
+            return `<span title="${escapeExplorerHtml(addr)}">${safeName} (${escapeExplorerHtml(shortAddress)})</span>`;
+        }
+        return `<span title="${escapeExplorerHtml(addr)}">${safeName}</span>`;
+    }
+    return `<span title="${escapeExplorerHtml(addr)}">${escapeExplorerHtml(shortAddress)}</span>`;
+}
+
+window.resolveMoltNameForAddress = resolveMoltNameForAddress;
+window.batchResolveMoltNames = batchResolveMoltNames;
+window.formatAddressWithMoltName = formatAddressWithMoltName;
+window.isLikelyMoltAddress = isLikelyMoltAddress;
+
+async function navigateExplorerSearch(query) {
+    const value = String(query || '').trim();
+    if (!value) return;
+
+    if (/^\d+$/.test(value)) {
+        window.location.href = `block.html?slot=${value}`;
+        return;
+    }
+    if (/^[0-9a-fA-F]{64}$/.test(value)) {
+        window.location.href = `transaction.html?sig=${value}`;
+        return;
+    }
+    if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value) || /^0x[0-9a-fA-F]{40}$/i.test(value)) {
+        window.location.href = `address.html?address=${value}`;
+        return;
+    }
+
+    const lower = value.toLowerCase();
+    if (lower.endsWith('.molt')) {
+        const label = lower.slice(0, -5);
+        if (label.length > 0) {
+            try {
+                const resolved = await rpc.call('resolveMoltName', [label]);
+                const owner = resolved?.owner || resolved?.address || null;
+                if (owner) {
+                    window.location.href = `address.html?address=${owner}`;
+                    return;
+                }
+            } catch (_) { /* fallback below */ }
+        }
+    }
+
+    try {
+        const symbol = await rpc.call('getSymbolRegistry', [value.toUpperCase()]);
+        if (symbol && symbol.program) {
+            window.location.href = `address.html?address=${symbol.program}`;
+            return;
+        }
+    } catch (_) { /* fallback below */ }
+
+    window.location.href = `address.html?address=${value}`;
+}
+
+window.navigateExplorerSearch = navigateExplorerSearch;
+
 // Utility functions are in utils.js (loaded before explorer.js).
 // NETWORKS, SYSTEM_PROGRAM_ID, MoltChainRPC, MoltChainWS stay here.
 
@@ -362,8 +512,11 @@ async function updateDashboardStats() {
             }
             if (metrics.total_accounts !== undefined) {
                 const activeAccountsEl = document.getElementById('activeAccounts');
-                const activeCount = metrics.active_accounts !== undefined ? metrics.active_accounts : metrics.total_accounts;
-                if (activeAccountsEl) activeAccountsEl.textContent = formatNumber(activeCount);
+                const totalContracts = metrics.total_contracts || 0;
+                const totalAll = (metrics.total_accounts || 0) + totalContracts;
+                if (activeAccountsEl) activeAccountsEl.textContent = formatNumber(totalAll);
+                const breakdownEl = document.getElementById('accountBreakdown');
+                if (breakdownEl) breakdownEl.textContent = `${formatNumber(metrics.active_accounts || 0)} funded · ${formatNumber(totalContracts)} contracts`;
             }
         }
         
@@ -377,22 +530,21 @@ async function updateDashboardStats() {
         // Get validators
         const validatorsResult = await rpc.getValidators();
         if (validatorsResult) {
-            const validatorCount = validatorsResult.count || validatorsResult.validators?.length || 0;
+            const validators = validatorsResult.validators || [];
+            const onlineCount = slot !== null
+                ? validators.filter((validator) => {
+                    const lastActive = validator.last_active_slot || validator.lastActiveSlot || 0;
+                    return slot - lastActive <= 100;
+                }).length
+                : validators.length;
+
+            // Top metric: "Validators ... Online now" — use online count
             const validatorCountEl = document.getElementById('validatorCount');
-            if (validatorCountEl) validatorCountEl.textContent = validatorCount;
+            if (validatorCountEl) validatorCountEl.textContent = onlineCount;
             
-            // Update Active Validators in network stats
+            // Bottom metric: "Active Validators" — same online count
             const activeValidatorsEl = document.getElementById('activeValidators');
-            if (activeValidatorsEl) {
-                const validators = validatorsResult.validators || [];
-                const onlineCount = slot !== null
-                    ? validators.filter((validator) => {
-                        const lastActive = validator.last_active_slot || validator.lastActiveSlot || 0;
-                        return slot - lastActive <= 100;
-                    }).length
-                    : validators.length;
-                activeValidatorsEl.textContent = onlineCount;
-            }
+            if (activeValidatorsEl) activeValidatorsEl.textContent = onlineCount;
             
             // Calculate total stake from all validators
             const totalStakeEl = document.getElementById('totalStake');
@@ -449,7 +601,7 @@ async function updateLatestBlocks() {
             <tr>
                 <td><a href="block.html?slot=${block.slot}">#${formatSlot(block.slot)}</a></td>
                 <td>
-                    <span class="hash-short">${formatHash(block.hash, 16)}</span>
+                <span class="hash-short" title="${block.hash}">${formatHash(block.hash)}</span>
                     <i class="fas fa-copy copy-hash" onclick="copyToClipboard('${block.hash}')" title="Copy hash"></i>
                 </td>
                 <td><span class="pill pill-info">${block.transaction_count || 0} txs</span></td>
@@ -487,7 +639,7 @@ async function updateLatestTransactions() {
             return `
             <tr>
                 <td>
-                    <a href="transaction.html?sig=${signature}">${formatHash(signature, 16)}</a>
+                    <a href="transaction.html?sig=${signature}" title="${signature}">${formatHash(signature)}</a>
                     <i class="fas fa-copy copy-hash" onclick="copyToClipboard('${signature}')" title="Copy signature"></i>
                 </td>
                 <td><span class="pill pill-${type.toLowerCase()}">${type}</span></td>
@@ -514,32 +666,7 @@ function setupSearch() {
         if (e.key === 'Enter') {
             const query = searchInput.value.trim();
             if (!query) return;
-            
-            // Auto-detect input format
-            if (/^\d+$/.test(query)) {
-                // Pure digits = block slot number
-                window.location.href = `block.html?slot=${query}`;
-            } else if (/^[0-9a-fA-F]{64}$/.test(query)) {
-                // 64 hex chars = transaction signature or block hash
-                window.location.href = `transaction.html?sig=${query}`;
-            } else if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(query)) {
-                // 32-44 base58 chars = address or contract
-                window.location.href = `address.html?address=${query}`;
-            } else if (/^0x[0-9a-fA-F]{40}$/i.test(query)) {
-                // EVM-style 0x address
-                window.location.href = `address.html?address=${query}`;
-            } else {
-                // Short string — try symbol registry lookup first
-                try {
-                    const result = await rpcCall('getSymbolRegistry', [query.toUpperCase()]);
-                    if (result && result.program) {
-                        window.location.href = `address.html?address=${result.program}`;
-                        return;
-                    }
-                } catch (_) { /* not a known symbol */ }
-                // Fallback: treat as address
-                window.location.href = `address.html?address=${query}`;
-            }
+            await navigateExplorerSearch(query);
         }
     });
 }
@@ -561,6 +688,9 @@ document.addEventListener('DOMContentLoaded', () => {
     setupSearch();
     
     let dashboardPolling = null;
+    let lastWsBlockTime = 0;
+    let staleCheckInterval = null;
+    const WS_STALE_THRESHOLD = 10000; // 10 seconds
 
     const startPolling = () => {
         if (dashboardPolling || !isDashboard) return;
@@ -577,17 +707,48 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
+    // Stale data detector: if WS is "connected" but no block event
+    // has arrived in WS_STALE_THRESHOLD ms, force a REST poll and
+    // close + reconnect the WebSocket to re-establish subscriptions.
+    const startStaleCheck = () => {
+        if (staleCheckInterval || !isDashboard) return;
+        staleCheckInterval = setInterval(() => {
+            if (typeof ws !== 'undefined' && ws.isConnected() && lastWsBlockTime > 0) {
+                const elapsed = Date.now() - lastWsBlockTime;
+                if (elapsed > WS_STALE_THRESHOLD) {
+                    console.warn(`WebSocket stale: no block event for ${Math.round(elapsed / 1000)}s — forcing REST poll and WS reconnect`);
+                    // Immediate REST fallback so the UI stays fresh
+                    updateDashboardStats();
+                    updateLatestTransactions();
+                    // Force-close so onclose fires and triggers reconnect + resubscribe
+                    try { ws.ws.close(); } catch (_) {}
+                }
+            }
+        }, WS_STALE_THRESHOLD);
+    };
+
+    const stopStaleCheck = () => {
+        if (staleCheckInterval) {
+            clearInterval(staleCheckInterval);
+            staleCheckInterval = null;
+        }
+    };
+
     if (typeof ws !== 'undefined') {
         ws.onOpen(() => {
             stopPolling();
+            lastWsBlockTime = Date.now();
             ws.subscribe('subscribeBlocks', () => {
+                lastWsBlockTime = Date.now();
                 updateLatestBlocks();
                 updateLatestTransactions();
                 updateDashboardStats();
             });
+            startStaleCheck();
         });
 
         ws.onClose(() => {
+            stopStaleCheck();
             startPolling();
         });
 

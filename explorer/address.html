@@ -26,6 +26,7 @@
                 <li><a href="blocks.html">Blocks</a></li>
                 <li><a href="transactions.html">Transactions</a></li>
                 <li><a href="validators.html">Validators</a></li>
+                <li><a href="agents.html">Agents</a></li>
                 <li><a href="contracts.html">Contracts</a></li>
             </ul>
             <div class="nav-actions">
@@ -87,6 +88,19 @@
                     <div class="detail-stat-value" id="accountType">-</div>
                 </div>
             </div>
+
+            <!-- Address Tabs -->
+            <div class="address-tabs" id="addressTabs">
+                <button class="address-tab active" data-tab="overview">Overview</button>
+                <button class="address-tab" data-tab="tokens">Tokens</button>
+                <button class="address-tab" data-tab="identity">Identity</button>
+                <button class="address-tab" data-tab="staking">Staking</button>
+                <button class="address-tab" data-tab="transactions">Transactions</button>
+                <button class="address-tab" data-tab="data">Data</button>
+            </div>
+
+            <div class="address-tab-content">
+                <div class="address-pane active" data-pane="overview" id="overviewPane">
 
             <!-- Address Information Card -->
             <div class="detail-card">
@@ -180,8 +194,12 @@
                 </div>
             </div>
 
+                </div>
+
+                <div class="address-pane" data-pane="tokens">
+
             <!-- Token Balances -->
-            <div class="detail-card" id="tokensCard" style="display: none;">
+            <div class="detail-card" id="tokensCard">
                 <div class="detail-card-header">
                     <h2><i class="fas fa-coins"></i> Token Balances</h2>
                 </div>
@@ -207,6 +225,14 @@
                     </div>
                 </div>
             </div>
+
+                </div>
+
+                <div class="address-pane" data-pane="identity">
+                    <div id="identityContent"></div>
+                </div>
+
+                <div class="address-pane" data-pane="staking">
 
             <!-- Validator Rewards (shown only for validators) -->
             <div class="detail-card" id="validatorRewardsCard" style="display: none;">
@@ -263,6 +289,10 @@
                 </div>
             </div>
 
+                </div>
+
+                <div class="address-pane" data-pane="transactions">
+
             <!-- Transaction History -->
             <div class="detail-card" id="transactionsCard">
                 <div class="detail-card-header">
@@ -294,6 +324,10 @@
                 </div>
             </div>
 
+                </div>
+
+                <div class="address-pane" data-pane="data">
+
             <!-- Raw Account Data -->
             <div class="detail-card">
                 <div class="detail-card-header">
@@ -306,8 +340,13 @@
                     <pre class="code-block" id="rawData">Loading...</pre>
                 </div>
             </div>
+                </div>
+            </div>
         </div>
     </section>
+
+    <div id="addressActionModal" class="address-action-modal" style="display:none;" aria-hidden="true"></div>
+    <div id="addressToast" class="address-toast" style="display:none;"></div>
 
     <!-- Footer -->
     <footer class="footer">
@@ -358,6 +397,8 @@
     <!-- Cryptographic libraries for proper Solana -> EVM address conversion -->
     <!-- sha3 for keccak_256 (EVM address derivation) -->
     <script src="https://cdn.jsdelivr.net/npm/js-sha3@0.9.2/build/sha3.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tweetnacl/1.0.3/nacl-fast.min.js"></script>
+    <script src="../wallet/js/crypto.js?v=20260211"></script>
     
     <script src="../shared-config.js"></script>
     <script src="js/utils.js?v=20260211"></script>

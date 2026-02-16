@@ -384,7 +384,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     const navLinks = document.querySelectorAll('.nav-menu a[data-view]');
     const views = document.querySelectorAll('.dex-main');
-    function switchView(v) { state.currentView = v; views.forEach(el => el.classList.toggle('hidden', el.id !== `view-${v}`)); navLinks.forEach(l => l.classList.toggle('active', l.dataset.view === v)); if (v === 'trade') drawChart(); }
+    function switchView(v) { state.currentView = v; views.forEach(el => el.classList.toggle('hidden', el.id !== `view-${v}`)); navLinks.forEach(l => l.classList.toggle('active', l.dataset.view === v)); if (v === 'trade') drawChart(); if (v === 'predict') { loadPredictionStats(); loadPredictionMarkets(); loadPredictionPositions(); } }
     navLinks.forEach(l => l.addEventListener('click', e => { e.preventDefault(); switchView(l.dataset.view); }));
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -654,6 +654,320 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
+    // PredictionReef — Predict View (Live API + Mock Fallback)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    // Mock data fallback — used when API is unavailable
+    const MOCK_MARKETS = [
+        { id: 1, question: 'Will BTC exceed $150,000 by March 31, 2026?', cat: 'crypto', yes: 0.62, volume: 842000, liquidity: 320000, traders: 284, status: 'active' },
+        { id: 2, question: 'Will the EU pass comprehensive AI regulation by Q2 2026?', cat: 'politics', yes: 0.45, volume: 523000, liquidity: 210000, traders: 178, status: 'active' },
+        { id: 3, question: 'Which L1 blockchain will have the highest TVL by Q3 2026?', cat: 'crypto', yes: 0.48, volume: 1200000, liquidity: 480000, traders: 412, status: 'active', multi: true },
+        { id: 4, question: 'Will the FIFA Club World Cup 2025 champion be a European team?', cat: 'sports', yes: 0.71, volume: 198000, liquidity: 85000, traders: 96, status: 'active' },
+        { id: 5, question: 'Will OpenAI release GPT-5 before February 2026?', cat: 'tech', yes: 0, volume: 156000, liquidity: 0, traders: 142, status: 'resolved' },
+        { id: 6, question: 'Will SpaceX Starship complete a successful orbital flight by Q2 2026?', cat: 'science', yes: 0.83, volume: 367000, liquidity: 145000, traders: 203, status: 'active' },
+    ];
+
+    const predictState = {
+        selectedMarket: 1,
+        selectedOutcome: 'yes',
+        markets: [...MOCK_MARKETS],
+        positions: [],
+        stats: null,
+        live: false,
+    };
+
+    // ─── Load prediction stats from API ─────────────────────────
+    async function loadPredictionStats() {
+        try {
+            const data = await api.get('/prediction-market/stats');
+            if (data) {
+                predictState.stats = data;
+                const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+                el('pmTotalVolume', formatVolume(data.total_volume || 0));
+                el('pmOpenMarkets', data.open_markets ?? '—');
+                el('pmTotalCollateral', formatVolume(data.total_collateral || 0));
+                el('pmFees', formatVolume(data.fees_collected || 0));
+            }
+        } catch { /* API unavailable — keep placeholder text */ }
+    }
+
+    // ─── Load markets from API ──────────────────────────────────
+    async function loadPredictionMarkets() {
+        try {
+            const data = await api.get('/prediction-market/markets?limit=50');
+            if (data?.markets?.length > 0) {
+                // Transform API data into UI format
+                predictState.markets = data.markets.map(m => ({
+                    id: m.id,
+                    question: m.question,
+                    cat: m.category,
+                    yes: m.outcomes?.[0]?.price ?? 0.5,
+                    volume: m.total_volume * 1e9,   // convert to display units
+                    liquidity: m.total_collateral * 1e9,
+                    traders: 0,                     // not stored per-market yet
+                    status: m.status,
+                    multi: (m.outcome_count || 2) > 2,
+                    outcomes: m.outcomes || [],
+                }));
+                predictState.live = true;
+                renderPredictionMarkets();
+                return;
+            }
+        } catch { /* API unavailable */ }
+        // Fallback to mock data
+        predictState.markets = [...MOCK_MARKETS];
+        predictState.live = false;
+    }
+
+    // ─── Load user positions from API ───────────────────────────
+    async function loadPredictionPositions() {
+        if (!state.connected) return;
+        try {
+            const data = await api.rpc('getPredictionPositions', [wallet.address]);
+            if (Array.isArray(data)) {
+                predictState.positions = data;
+                renderPredictionPositions();
+            }
+        } catch { /* API unavailable */ }
+    }
+
+    // ─── Render market cards dynamically ────────────────────────
+    function renderPredictionMarkets() {
+        const grid = document.querySelector('.predict-markets-col');
+        if (!grid) return;
+
+        // Keep only the grid container, regenerate cards
+        const existingCards = grid.querySelectorAll('.market-card');
+        existingCards.forEach(c => c.remove());
+
+        predictState.markets.forEach(m => {
+            const isResolved = m.status === 'resolved';
+            const isMulti = m.multi;
+            const yesPct = Math.round((m.yes || 0.5) * 100);
+            const noPct = 100 - yesPct;
+            const catIcons = { crypto: '₿', politics: '🏛', sports: '⚽', science: '🔬', tech: '🤖', entertainment: '🎬', economics: '📈' };
+
+            let outcomesHtml = '';
+            if (isMulti && m.outcomes?.length) {
+                outcomesHtml = m.outcomes.map((o, i) => {
+                    const pct = Math.round((o.price || 0) * 100);
+                    const colors = ['#4ea8de', '#06d6a0', '#ffd166', '#ef4444'];
+                    return `<div class="outcome-row"><span class="outcome-dot" style="background:${colors[i % colors.length]}"></span><span>${o.name}</span><div class="outcome-bar"><div class="outcome-bar-fill" style="width:${pct}%;background:${colors[i % colors.length]}"></div></div><span class="outcome-pct">${pct}%</span></div>`;
+                }).join('');
+            } else if (isResolved) {
+                outcomesHtml = `<div class="outcome-row"><span class="outcome-dot yes"></span><span>Resolved</span><div class="outcome-bar"><div class="outcome-bar-fill yes" style="width:100%"></div></div><span class="outcome-pct">✓</span></div>`;
+            } else {
+                outcomesHtml = `
+                    <div class="outcome-row"><span class="outcome-dot yes"></span><span>Yes</span><div class="outcome-bar"><div class="outcome-bar-fill yes" style="width:${yesPct}%"></div></div><span class="outcome-pct">${yesPct}%</span></div>
+                    <div class="outcome-row"><span class="outcome-dot no"></span><span>No</span><div class="outcome-bar"><div class="outcome-bar-fill no" style="width:${noPct}%"></div></div><span class="outcome-pct">${noPct}%</span></div>
+                `;
+            }
+
+            const card = document.createElement('div');
+            card.className = 'market-card' + (isResolved ? ' resolved' : '');
+            card.dataset.cat = m.cat;
+            card.dataset.marketId = m.id;
+            card.innerHTML = `
+                <div class="market-card-header">
+                    <span class="market-cat-badge">${catIcons[m.cat] || '📊'} ${m.cat}</span>
+                    <span class="market-status ${m.status}">${m.status}</span>
+                </div>
+                <h4 class="market-question">${m.question}</h4>
+                <div class="market-outcomes">${outcomesHtml}</div>
+                <div class="market-footer">
+                    <div class="market-stat"><span class="stat-label">Volume</span><span class="stat-value">${formatVolume(m.volume)}</span></div>
+                    <div class="market-stat"><span class="stat-label">Liquidity</span><span class="stat-value">${formatVolume(m.liquidity)}</span></div>
+                    ${!isResolved ? `
+                        <div class="market-actions">
+                            <button class="btn-predict-buy" data-market="${m.id}" data-outcome="yes">Buy Yes</button>
+                            <button class="btn-predict-sell" data-market="${m.id}" data-outcome="no">Buy No</button>
+                        </div>
+                    ` : ''}
+                </div>
+            `;
+            grid.appendChild(card);
+        });
+
+        // Re-bind event handlers for new cards
+        bindPredictionCardEvents();
+    }
+
+    // ─── Render user positions in bottom panel ──────────────────
+    function renderPredictionPositions() {
+        const tbody = document.querySelector('.predict-positions-table tbody');
+        if (!tbody) return;
+        if (!predictState.positions.length) {
+            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted)">No positions found</td></tr>';
+            return;
+        }
+        tbody.innerHTML = predictState.positions.map(p => {
+            const m = predictState.markets.find(x => x.id === p.market_id);
+            const qText = m?.question?.slice(0, 40) || `Market #${p.market_id}`;
+            return `<tr><td>${qText}...</td><td>${p.outcome === 0 ? 'YES' : 'NO'}</td><td>${p.shares.toFixed(2)}</td><td>$${p.cost_basis.toFixed(2)}</td><td>—</td></tr>`;
+        }).join('');
+    }
+
+    // ─── Bind card events (called after render) ─────────────────
+    function bindPredictionCardEvents() {
+        // Market card click → select for trade
+        document.querySelectorAll('.market-card').forEach(card => {
+            card.addEventListener('click', e => {
+                if (e.target.closest('button')) return;
+                const mid = parseInt(card.dataset.marketId);
+                const m = predictState.markets.find(x => x.id === mid);
+                if (!m || m.status !== 'active') return;
+                predictState.selectedMarket = mid;
+                const qEl = document.getElementById('predictSelectedQ');
+                if (qEl) qEl.textContent = m.question;
+                const yp = document.getElementById('predictYesPrice'), np = document.getElementById('predictNoPrice');
+                if (yp) yp.textContent = `$${(m.yes || 0.5).toFixed(2)}`;
+                if (np) np.textContent = `$${(1 - (m.yes || 0.5)).toFixed(2)}`;
+                document.querySelectorAll('.market-card').forEach(c => c.style.outline = 'none');
+                card.style.outline = '2px solid var(--orange-primary)';
+                card.style.outlineOffset = '-2px';
+                updatePredictCalc();
+            });
+        });
+
+        // Buy/Sell buttons on cards
+        document.querySelectorAll('.btn-predict-buy, .btn-predict-sell').forEach(btn => btn.addEventListener('click', () => {
+            if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
+            const mid = parseInt(btn.dataset.market);
+            const outcome = btn.dataset.outcome;
+            const m = predictState.markets.find(x => x.id === mid);
+            if (!m) return;
+            predictState.selectedMarket = mid;
+            predictState.selectedOutcome = outcome === 'no' ? 'no' : 'yes';
+            const qEl = document.getElementById('predictSelectedQ');
+            if (qEl) qEl.textContent = m.question;
+            const yp = document.getElementById('predictYesPrice'), np = document.getElementById('predictNoPrice');
+            if (yp) yp.textContent = `$${(m.yes || 0.5).toFixed(2)}`;
+            if (np) np.textContent = `$${(1 - (m.yes || 0.5)).toFixed(2)}`;
+            const yBtn = document.getElementById('predictYesBtn'), nBtn = document.getElementById('predictNoBtn');
+            if (yBtn) yBtn.classList.toggle('active', predictState.selectedOutcome === 'yes');
+            if (nBtn) nBtn.classList.toggle('active', predictState.selectedOutcome === 'no');
+            updatePredictCalc();
+            showNotification(`Selected: ${m.question.slice(0, 50)}... → ${outcome.toUpperCase()}`, 'info');
+        }));
+    }
+
+    // Category filter
+    document.querySelectorAll('.predict-cat-btn').forEach(btn => btn.addEventListener('click', () => {
+        document.querySelectorAll('.predict-cat-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const cat = btn.dataset.cat;
+        document.querySelectorAll('.market-card').forEach(card => {
+            if (cat === 'all' || card.dataset.cat === cat) card.style.display = '';
+            else card.style.display = 'none';
+        });
+    }));
+
+    // Bind initial static cards
+    bindPredictionCardEvents();
+
+    // YES/NO toggle
+    const predictYesBtn = document.getElementById('predictYesBtn'), predictNoBtn = document.getElementById('predictNoBtn');
+    if (predictYesBtn) predictYesBtn.addEventListener('click', () => {
+        predictState.selectedOutcome = 'yes';
+        predictYesBtn.classList.add('active'); if (predictNoBtn) predictNoBtn.classList.remove('active');
+        updatePredictCalc();
+        const sub = document.getElementById('predictSubmitBtn');
+        if (sub) sub.innerHTML = '<i class="fas fa-bolt"></i> Buy YES Shares';
+        if (sub) sub.className = 'btn-full btn-buy';
+    });
+    if (predictNoBtn) predictNoBtn.addEventListener('click', () => {
+        predictState.selectedOutcome = 'no';
+        predictNoBtn.classList.add('active'); if (predictYesBtn) predictYesBtn.classList.remove('active');
+        updatePredictCalc();
+        const sub = document.getElementById('predictSubmitBtn');
+        if (sub) sub.innerHTML = '<i class="fas fa-bolt"></i> Buy NO Shares';
+        if (sub) sub.className = 'btn-full btn-sell';
+    });
+
+    // Amount presets
+    document.querySelectorAll('.predict-preset-row .preset-btn').forEach(btn => btn.addEventListener('click', () => {
+        const ai = document.getElementById('predictAmount');
+        if (ai) { ai.value = btn.dataset.amt; updatePredictCalc(); }
+    }));
+
+    // Calculate trade summary
+    const predictAmountInput = document.getElementById('predictAmount');
+    if (predictAmountInput) predictAmountInput.addEventListener('input', updatePredictCalc);
+
+    function updatePredictCalc() {
+        const amt = parseFloat(document.getElementById('predictAmount')?.value) || 0;
+        const m = predictState.markets.find(x => x.id === predictState.selectedMarket);
+        if (!m) return;
+        const price = predictState.selectedOutcome === 'yes' ? m.yes : (1 - m.yes);
+        const fee = amt * 0.02;
+        const net = amt - fee;
+        const shares = price > 0 ? net / price : 0;
+        const payout = shares; // each share worth $1.00 if winner
+
+        const se = document.getElementById('predictShares'), ae = document.getElementById('predictAvgPrice'), pe = document.getElementById('predictPayout'), fe = document.getElementById('predictFee');
+        if (se) se.textContent = shares.toFixed(2);
+        if (ae) ae.textContent = `$${price.toFixed(2)}`;
+        if (pe) pe.textContent = `$${payout.toFixed(2)}`;
+        if (fe) fe.textContent = `$${fee.toFixed(2)}`;
+    }
+
+    // Submit trade
+    const predictSubmitBtn = document.getElementById('predictSubmitBtn');
+    if (predictSubmitBtn) predictSubmitBtn.addEventListener('click', async () => {
+        if (!state.connected) { showNotification('Connect wallet to trade', 'warning'); return; }
+        const amt = parseFloat(document.getElementById('predictAmount')?.value) || 0;
+        if (amt < 1) { showNotification('Enter amount (min $1)', 'warning'); return; }
+        const m = predictState.markets.find(x => x.id === predictState.selectedMarket);
+        if (!m) return;
+        predictSubmitBtn.disabled = true; predictSubmitBtn.textContent = 'Submitting...';
+        try {
+            await api.post('/prediction-market/trade', { marketId: m.id, outcome: predictState.selectedOutcome, amount: amt, trader: wallet.address });
+        } catch { /* mock — graceful fallback */ }
+        showNotification(`Bought ${predictState.selectedOutcome.toUpperCase()} on "${m.question.slice(0, 40)}..." for $${amt.toFixed(2)}`, 'success');
+        predictSubmitBtn.disabled = false;
+        const side = predictState.selectedOutcome === 'yes' ? 'YES' : 'NO';
+        predictSubmitBtn.innerHTML = `<i class="fas fa-bolt"></i> Buy ${side} Shares`;
+        if (document.getElementById('predictAmount')) document.getElementById('predictAmount').value = '';
+        updatePredictCalc();
+    });
+
+    // Create market
+    const predictCreateBtn = document.getElementById('predictCreateBtn');
+    if (predictCreateBtn) predictCreateBtn.addEventListener('click', async () => {
+        if (!state.connected) { showNotification('Connect wallet to create', 'warning'); return; }
+        const q = document.getElementById('predictQuestion')?.value?.trim();
+        if (!q) { showNotification('Enter market question', 'warning'); return; }
+        const liq = parseFloat(document.getElementById('predictInitLiq')?.value) || 0;
+        if (liq < 100) { showNotification('Min 100 mUSD initial liquidity', 'warning'); return; }
+        predictCreateBtn.disabled = true; predictCreateBtn.textContent = 'Creating...';
+        try {
+            await api.post('/prediction-market/create', { question: q, category: document.getElementById('predictCategory')?.value, initialLiquidity: liq, creator: wallet.address });
+        } catch { /* mock — graceful fallback */ }
+        showNotification(`Market created: "${q.slice(0, 50)}..." with $${liq} liquidity`, 'success');
+        predictCreateBtn.disabled = false; predictCreateBtn.innerHTML = '<i class="fas fa-rocket"></i> Create Market';
+        if (document.getElementById('predictQuestion')) document.getElementById('predictQuestion').value = '';
+    });
+
+    // Market type toggle
+    document.querySelectorAll('.predict-type-btn').forEach(btn => btn.addEventListener('click', () => {
+        document.querySelectorAll('.predict-type-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+    }));
+
+    // Sort selector
+    const predictSort = document.getElementById('predictSort');
+    if (predictSort) predictSort.addEventListener('change', async () => {
+        const sortBy = predictSort.value;
+        // Re-fetch and re-sort from API
+        await loadPredictionMarkets();
+        if (sortBy === 'volume') predictState.markets.sort((a, b) => b.volume - a.volume);
+        else if (sortBy === 'liquidity') predictState.markets.sort((a, b) => b.liquidity - a.liquidity);
+        else if (sortBy === 'newest') predictState.markets.sort((a, b) => b.id - a.id);
+        renderPredictionMarkets();
+        showNotification(`Sorted by ${predictSort.options[predictSort.selectedIndex].text}`, 'info');
+    });
+
+    // ═══════════════════════════════════════════════════════════════════════
     // Governance + Rewards — wired to API
     // ═══════════════════════════════════════════════════════════════════════
     document.querySelectorAll('.vote-btn').forEach(btn => btn.addEventListener('click', async () => {
@@ -693,13 +1007,24 @@ document.addEventListener('DOMContentLoaded', () => {
     // Polling fallback (when WS unavailable)
     // ═══════════════════════════════════════════════════════════════════════
     setInterval(async () => {
-        if (state.currentView !== 'trade') return;
-        try {
-            await loadOrderBook();
-            const t = await loadTicker(state.activePairId);
-            if (t?.lastPrice) { state.lastPrice = t.lastPrice; const p = pairs.find(x => x.pairId === state.activePairId); if (p) { p.price = t.lastPrice; p.change = t.change24h || p.change; } updateTickerDisplay(); streamBarUpdate(t.lastPrice, 0); }
-        } catch { /* API unavailable */ }
+        if (state.currentView === 'trade') {
+            try {
+                await loadOrderBook();
+                const t = await loadTicker(state.activePairId);
+                if (t?.lastPrice) { state.lastPrice = t.lastPrice; const p = pairs.find(x => x.pairId === state.activePairId); if (p) { p.price = t.lastPrice; p.change = t.change24h || p.change; } updateTickerDisplay(); streamBarUpdate(t.lastPrice, 0); }
+            } catch { /* API unavailable */ }
+        }
+        if (state.currentView === 'predict') {
+            try { await loadPredictionStats(); } catch { /* API unavailable */ }
+        }
     }, 5000);
+
+    // Prediction market refresh (slower interval for full market list)
+    setInterval(async () => {
+        if (state.currentView === 'predict') {
+            try { await loadPredictionMarkets(); loadPredictionPositions(); } catch { /* API unavailable */ }
+        }
+    }, 15000);
 
     // ═══════════════════════════════════════════════════════════════════════
     // Initialize

@@ -30,7 +30,7 @@ async function loadPage(beforeSlot) {
         currentPageData = page.transactions || [];
         nextCursor = page.next_before_slot || null;
 
-        renderTransactions();
+        await renderTransactions();
         updatePaginationUI();
     } catch (error) {
         console.error('Failed to load transactions:', error);
@@ -38,7 +38,7 @@ async function loadPage(beforeSlot) {
     }
 }
 
-function renderTransactions() {
+async function renderTransactions() {
     const table = document.getElementById('transactionsTable');
     if (!table) return;
 
@@ -58,6 +58,18 @@ function renderTransactions() {
         return;
     }
 
+    const addresses = [];
+    txs.forEach(tx => {
+        const instruction = tx.message?.instructions?.[0] || null;
+        const from = tx.from || instruction?.accounts?.[0] || null;
+        const to = tx.to || instruction?.accounts?.[1] || null;
+        if (from) addresses.push(from);
+        if (to) addresses.push(to);
+    });
+    const nameMap = typeof batchResolveMoltNames === 'function'
+        ? await batchResolveMoltNames(addresses)
+        : {};
+
     table.innerHTML = txs.map(tx => {
         const signature = tx.signature || tx.hash || 'unknown';
         const instruction = tx.message?.instructions?.[0] || null;
@@ -75,16 +87,23 @@ function renderTransactions() {
         const slot = tx.slot;
         const timestamp = tx.timestamp;
 
+        const fromDisplay = typeof formatAddressWithMoltName === 'function'
+            ? formatAddressWithMoltName(from, nameMap[from])
+            : formatAddress(from);
+        const toDisplay = typeof formatAddressWithMoltName === 'function'
+            ? formatAddressWithMoltName(to, nameMap[to])
+            : formatAddress(to);
+
         return `
         <tr>
             <td>
-                <a href="transaction.html?sig=${signature}">${formatHash(signature)}</a>
+                <a href="transaction.html?sig=${signature}" title="${signature}">${formatHash(signature)}</a>
                 <i class="fas fa-copy copy-hash" onclick="copyToClipboard('${signature}')" title="Copy signature"></i>
             </td>
             <td><a href="block.html?slot=${slot}">#${formatSlot(slot)}</a></td>
             <td><span class="pill pill-${type.toLowerCase()}">${type}</span></td>
-            <td><span class="hash-short">${formatHash(from)}</span></td>
-            <td><span class="hash-short">${formatHash(to)}</span></td>
+            <td><span class="hash-short">${fromDisplay}</span></td>
+            <td><span class="hash-short">${toDisplay}</span></td>
             <td>${amount}</td>
             <td>${fee}</td>
             <td><span class="pill pill-success"><i class="fas fa-check"></i> Success</span></td>

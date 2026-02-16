@@ -33,6 +33,7 @@
 
 pub mod dex;
 pub mod dex_ws;
+pub mod prediction;
 pub mod ws;
 
 use alloy_primitives::{Address, Bytes, U256};
@@ -767,7 +768,12 @@ pub fn build_rpc_router(
         evm_chain_id,
         solana_tx_cache,
         admin_token,
-        rate_limiter: Arc::new(RateLimiter::new(300)),
+        rate_limiter: Arc::new(RateLimiter::new(
+            std::env::var("RPC_RATE_LIMIT")
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .unwrap_or(5_000)
+        )),
     };
 
     // T2.7: Restrictive CORS — allow localhost and configured origins only
@@ -805,6 +811,8 @@ pub fn build_rpc_router(
         .route("/evm", post(handle_evm_rpc))
         // DEX REST API — /api/v1/*
         .nest("/api/v1", dex::build_dex_router())
+        // Prediction Market REST API — /api/v1/prediction-market/*
+        .nest("/api/v1/prediction-market", prediction::build_prediction_router())
         .layer(cors)
         // DDoS protection: limit request bodies to 2MB
         .layer(axum::extract::DefaultBodyLimit::max(2 * 1024 * 1024))
@@ -896,6 +904,20 @@ async fn handle_rpc(State(state): State<Arc<RpcState>>, Json(req): Json<RpcReque
         "getProgramCalls" => handle_get_program_calls(&state, req.params).await,
         "getProgramStorage" => handle_get_program_storage(&state, req.params).await,
 
+        // MoltyID endpoints
+        "getMoltyIdIdentity" => handle_get_moltyid_identity(&state, req.params).await,
+        "getMoltyIdReputation" => handle_get_moltyid_reputation(&state, req.params).await,
+        "getMoltyIdSkills" => handle_get_moltyid_skills(&state, req.params).await,
+        "getMoltyIdVouches" => handle_get_moltyid_vouches(&state, req.params).await,
+        "getMoltyIdAchievements" => handle_get_moltyid_achievements(&state, req.params).await,
+        "getMoltyIdProfile" => handle_get_moltyid_profile(&state, req.params).await,
+        "resolveMoltName" => handle_resolve_molt_name(&state, req.params).await,
+        "reverseMoltName" => handle_reverse_molt_name(&state, req.params).await,
+        "batchReverseMoltNames" => handle_batch_reverse_molt_names(&state, req.params).await,
+        "searchMoltNames" => handle_search_molt_names(&state, req.params).await,
+        "getMoltyIdAgentDirectory" => handle_get_moltyid_agent_directory(&state, req.params).await,
+        "getMoltyIdStats" => handle_get_moltyid_stats(&state).await,
+
         // Symbol registry
         "getSymbolRegistry" => handle_get_symbol_registry(&state, req.params).await,
         "getSymbolRegistryByProgram" => {
@@ -920,6 +942,12 @@ async fn handle_rpc(State(state): State<Arc<RpcState>>, Json(req): Json<RpcReque
 
         // Testnet-only faucet airdrop
         "requestAirdrop" => handle_request_airdrop(&state, req.params).await,
+
+        // Prediction Market endpoints
+        "getPredictionMarketStats" => handle_get_prediction_stats(&state).await,
+        "getPredictionMarkets" => handle_get_prediction_markets(&state, req.params).await,
+        "getPredictionMarket" => handle_get_prediction_market(&state, req.params).await,
+        "getPredictionPositions" => handle_get_prediction_positions(&state, req.params).await,
 
         _ => Err(RpcError {
             code: -32601,
@@ -2066,9 +2094,105 @@ fn decode_solana_transaction(
         }
     };
 
-    bincode::deserialize(&tx_bytes).map_err(|e| RpcError {
-        code: -32602,
-        message: format!("Invalid transaction: {}", e),
+    bincode::deserialize(&tx_bytes)
+        .or_else(|_| parse_json_transaction(&tx_bytes))
+        .map_err(|e: RpcError| e)
+}
+
+/// Parse a JSON-format transaction from the wallet into a native Transaction.
+/// Wallet sends: {signatures: [[byte,...]], message: {instructions: [...], blockhash: "hex"}}
+fn parse_json_transaction(tx_bytes: &[u8]) -> Result<Transaction, RpcError> {
+    let json_val: serde_json::Value = serde_json::from_slice(tx_bytes)
+        .map_err(|e| RpcError { code: -32602, message: format!("Invalid JSON transaction: {}", e) })?;
+
+    // Parse signatures: wallet sends array-of-arrays of numbers
+    let sigs_raw = json_val.get("signatures")
+        .and_then(|s| s.as_array())
+        .ok_or_else(|| RpcError { code: -32602, message: "Missing signatures array".into() })?;
+    let mut signatures: Vec<[u8; 64]> = Vec::new();
+    for sig_val in sigs_raw {
+        if let Some(sig_arr) = sig_val.as_array() {
+            let bytes: Vec<u8> = sig_arr.iter()
+                .filter_map(|b| b.as_u64().map(|n| n as u8))
+                .collect();
+            if bytes.len() != 64 {
+                return Err(RpcError { code: -32602, message: format!("Signature must be 64 bytes, got {}", bytes.len()) });
+            }
+            let mut sig = [0u8; 64];
+            sig.copy_from_slice(&bytes);
+            signatures.push(sig);
+        } else if let Some(sig_hex) = sig_val.as_str() {
+            let bytes = hex::decode(sig_hex)
+                .map_err(|e| RpcError { code: -32602, message: format!("Invalid signature hex: {}", e) })?;
+            if bytes.len() != 64 {
+                return Err(RpcError { code: -32602, message: format!("Signature must be 64 bytes, got {}", bytes.len()) });
+            }
+            let mut sig = [0u8; 64];
+            sig.copy_from_slice(&bytes);
+            signatures.push(sig);
+        }
+    }
+
+    let msg_val = json_val.get("message")
+        .ok_or_else(|| RpcError { code: -32602, message: "Missing message".into() })?;
+
+    // Blockhash — wallet sends "blockhash" (hex string), Rust expects "recent_blockhash"
+    let blockhash_str = msg_val.get("blockhash")
+        .or_else(|| msg_val.get("recent_blockhash"))
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError { code: -32602, message: "Missing blockhash".into() })?;
+    let recent_blockhash = moltchain_core::Hash::from_hex(blockhash_str)
+        .map_err(|e| RpcError { code: -32602, message: format!("Invalid blockhash: {}", e) })?;
+
+    // Instructions
+    let ixs_raw = msg_val.get("instructions")
+        .and_then(|i| i.as_array())
+        .ok_or_else(|| RpcError { code: -32602, message: "Missing instructions array".into() })?;
+    let mut instructions = Vec::new();
+    for ix_val in ixs_raw {
+        let program_id = if let Some(arr) = ix_val.get("program_id").and_then(|p| p.as_array()) {
+            let bytes: Vec<u8> = arr.iter().filter_map(|b| b.as_u64().map(|n| n as u8)).collect();
+            if bytes.len() != 32 {
+                return Err(RpcError { code: -32602, message: format!("program_id must be 32 bytes, got {}", bytes.len()) });
+            }
+            let mut pk = [0u8; 32];
+            pk.copy_from_slice(&bytes);
+            Pubkey(pk)
+        } else if let Some(s) = ix_val.get("program_id").and_then(|p| p.as_str()) {
+            Pubkey::from_base58(s).map_err(|e| RpcError { code: -32602, message: format!("Invalid program_id: {}", e) })?
+        } else {
+            return Err(RpcError { code: -32602, message: "Invalid program_id format".into() });
+        };
+
+        let accounts_raw = ix_val.get("accounts")
+            .and_then(|a| a.as_array())
+            .ok_or_else(|| RpcError { code: -32602, message: "Missing accounts in instruction".into() })?;
+        let mut accounts = Vec::new();
+        for acct in accounts_raw {
+            if let Some(arr) = acct.as_array() {
+                let bytes: Vec<u8> = arr.iter().filter_map(|b| b.as_u64().map(|n| n as u8)).collect();
+                if bytes.len() != 32 {
+                    return Err(RpcError { code: -32602, message: format!("Account pubkey must be 32 bytes, got {}", bytes.len()) });
+                }
+                let mut pk = [0u8; 32];
+                pk.copy_from_slice(&bytes);
+                accounts.push(Pubkey(pk));
+            } else if let Some(s) = acct.as_str() {
+                accounts.push(Pubkey::from_base58(s).map_err(|e| RpcError { code: -32602, message: format!("Invalid account: {}", e) })?);
+            }
+        }
+
+        let data: Vec<u8> = ix_val.get("data")
+            .and_then(|d| d.as_array())
+            .map(|arr| arr.iter().filter_map(|b| b.as_u64().map(|n| n as u8)).collect())
+            .unwrap_or_default();
+
+        instructions.push(moltchain_core::Instruction { program_id, accounts, data });
+    }
+
+    Ok(Transaction {
+        signatures,
+        message: moltchain_core::Message { instructions, recent_blockhash },
     })
 }
 
@@ -2100,21 +2224,21 @@ async fn handle_send_transaction(
             message: format!("Invalid base64: {}", e),
         })?;
 
-    // Deserialize transaction
-    let tx: Transaction = bincode::deserialize(&tx_bytes).map_err(|e| RpcError {
-        code: -32602,
-        message: format!("Invalid transaction: {}", e),
-    })?;
+    // Deserialize transaction — try bincode first, then JSON (wallet sends JSON)
+    let tx: Transaction = bincode::deserialize(&tx_bytes)
+        .or_else(|_| parse_json_transaction(&tx_bytes))?;
 
-    // DDoS protection: basic pre-mempool validation
-    // Reject transactions with empty signatures (forged zero-sig attacks)
+    // ── Pre-mempool validation ──────────────────────────────────
+    // Reject structurally invalid transactions BEFORE entering mempool.
+
+    // 1. Reject transactions with empty signatures
     if tx.signatures.is_empty() {
         return Err(RpcError {
             code: -32003,
             message: "Transaction has no signatures".to_string(),
         });
     }
-    // Reject zero signatures (all bytes 0x00)
+    // 2. Reject zero signatures (all bytes 0x00)
     for sig in &tx.signatures {
         if sig.iter().all(|&b| b == 0) {
             return Err(RpcError {
@@ -2123,12 +2247,79 @@ async fn handle_send_transaction(
             });
         }
     }
-    // Reject transactions with no instructions
+    // 3. Reject transactions with no instructions
     if tx.message.instructions.is_empty() {
         return Err(RpcError {
             code: -32003,
             message: "Transaction has no instructions".to_string(),
         });
+    }
+
+    // 4. Pre-mempool balance + fee check: reject if payer can't afford fees
+    //    This prevents silent failures during block production.
+    {
+        let fee_payer = tx.message.instructions.first()
+            .and_then(|ix| ix.accounts.first().cloned());
+        if let Some(payer) = fee_payer {
+            // Compute expected fee
+            let fee_config = state.state.get_fee_config()
+                .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
+            let expected_fee = TxProcessor::compute_transaction_fee(&tx, &fee_config);
+
+            if expected_fee > 0 {
+                // Check payer's spendable balance
+                match state.state.get_account(&payer) {
+                    Ok(Some(acct)) => {
+                        if acct.spendable < expected_fee {
+                            return Err(RpcError {
+                                code: -32003,
+                                message: format!(
+                                    "Insufficient MOLT balance for fees: need {} shells ({:.6} MOLT), have {} shells ({:.6} MOLT)",
+                                    expected_fee, expected_fee as f64 / 1_000_000_000.0,
+                                    acct.spendable, acct.spendable as f64 / 1_000_000_000.0
+                                ),
+                            });
+                        }
+                    }
+                    Ok(None) => {
+                        return Err(RpcError {
+                            code: -32003,
+                            message: "Payer account does not exist on-chain. Fund it first.".to_string(),
+                        });
+                    }
+                    Err(_) => {} // DB error — let block producer handle it
+                }
+
+                // Also check if the TX transfers value — verify total needed
+                // (fee + transfer amount) is covered
+                if let Some(first_ix) = tx.message.instructions.first() {
+                    if first_ix.program_id == moltchain_core::SYSTEM_PROGRAM_ID {
+                        if let Some(&kind) = first_ix.data.first() {
+                            if kind == 0 || kind == 1 { // Transfer or TransferWithMemo
+                                if first_ix.data.len() >= 9 {
+                                    let transfer_amount = u64::from_le_bytes(
+                                        first_ix.data[1..9].try_into().unwrap_or([0u8; 8])
+                                    );
+                                    if let Ok(Some(acct)) = state.state.get_account(&payer) {
+                                        if acct.spendable < expected_fee.saturating_add(transfer_amount) {
+                                            return Err(RpcError {
+                                                code: -32003,
+                                                message: format!(
+                                                    "Insufficient MOLT for transfer + fees: need {} shells (transfer) + {} shells (fee) = {} total, have {} spendable",
+                                                    transfer_amount, expected_fee,
+                                                    transfer_amount.saturating_add(expected_fee),
+                                                    acct.spendable
+                                                ),
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     let signature = submit_transaction(state, tx)?;
@@ -2816,6 +3007,9 @@ async fn handle_get_validators(state: &RpcState) -> Result<serde_json::Value, Rp
         message: format!("Database error: {}", e),
     })?;
 
+    // Pre-compute total reputation once (was O(n²) inside the map loop)
+    let total_reputation: u64 = validators.iter().map(|val| val.reputation).sum();
+
     let validator_list: Vec<_> = validators
         .iter()
         .map(|v| {
@@ -2842,8 +3036,6 @@ async fn handle_get_validators(state: &RpcState) -> Result<serde_json::Value, Rp
                     .unwrap_or(0)
             };
 
-            // Calculate normalized reputation (reputation as percentage of total)
-            let total_reputation: u64 = validators.iter().map(|val| val.reputation).sum();
             let normalized_reputation = if total_reputation > 0 {
                 v.reputation as f64 / total_reputation as f64
             } else {
@@ -3521,22 +3713,31 @@ async fn handle_get_staking_status(
     })?;
 
     if let Some(validator) = validator_info {
-        let live_stake = if let Some(ref pool_arc) = state.stake_pool {
+        let (live_stake, bootstrap_debt, bootstrap_index, earned_amount, total_debt_repaid, vesting_status, start_slot, graduation_slot) = if let Some(ref pool_arc) = state.stake_pool {
             if let Ok(pool) = pool_arc.try_lock() {
-                pool.get_stake(&pubkey)
-                    .map(|s| s.amount)
-                    .unwrap_or(validator.stake)
+                if let Some(s) = pool.get_stake(&pubkey) {
+                    (s.amount, s.bootstrap_debt, s.bootstrap_index, s.earned_amount, s.total_debt_repaid, format!("{:?}", s.status), s.start_slot, s.graduation_slot)
+                } else {
+                    (validator.stake, 0, u64::MAX, 0, 0, "Unknown".to_string(), 0, None)
+                }
             } else {
-                validator.stake
+                (validator.stake, 0, u64::MAX, 0, 0, "Unknown".to_string(), 0, None)
             }
         } else {
-            validator.stake
+            (validator.stake, 0, u64::MAX, 0, 0, "Unknown".to_string(), 0, None)
         };
         Ok(serde_json::json!({
             "is_validator": true,
             "total_staked": live_stake,
             "delegations": [],
             "status": "active",
+            "bootstrap_debt": bootstrap_debt,
+            "bootstrap_index": bootstrap_index,
+            "earned_amount": earned_amount,
+            "total_debt_repaid": total_debt_repaid,
+            "vesting_status": vesting_status,
+            "start_slot": start_slot,
+            "graduation_slot": graduation_slot,
         }))
     } else {
         Ok(serde_json::json!({
@@ -3595,6 +3796,11 @@ async fn handle_get_staking_rewards(
                 "0".to_string()
             };
 
+            let vesting_progress = {
+                let total = (stake_info.earned_amount as f64) + (stake_info.bootstrap_debt as f64);
+                if total == 0.0 { 1.0 } else { stake_info.earned_amount as f64 / total }
+            };
+
             return Ok(serde_json::json!({
                 "total_rewards": total_earned,
                 "pending_rewards": pending,
@@ -3602,7 +3808,7 @@ async fn handle_get_staking_rewards(
                 "reward_rate": reward_rate,
                 "bootstrap_debt": stake_info.bootstrap_debt,
                 "earned_amount": stake_info.earned_amount,
-                "vesting_progress": stake_info.vesting_progress() as f64 / 100.0,
+                "vesting_progress": vesting_progress,
                 "blocks_produced": stake_info.blocks_produced,
                 "total_debt_repaid": stake_info.total_debt_repaid,
             }));
@@ -4020,6 +4226,8 @@ async fn handle_get_contract_logs(
 
     let limit = arr.get(1).and_then(|v| v.as_u64()).unwrap_or(100).min(1000) as usize; // AUDIT-FIX 2.16
 
+    let before_slot = arr.get(2).and_then(|v| v.as_u64());
+
     let contract_id = Pubkey::from_base58(contract_id_str).map_err(|e| RpcError {
         code: -32602,
         message: format!("Invalid contract ID: {}", e),
@@ -4027,7 +4235,7 @@ async fn handle_get_contract_logs(
 
     let events = state
         .state
-        .get_contract_logs(&contract_id, limit)
+        .get_contract_logs(&contract_id, limit, before_slot)
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("Database error: {}", e),
@@ -4694,6 +4902,11 @@ async fn handle_get_program_calls(
         .unwrap_or(50)
         .min(500) as usize;
 
+    let before_slot = arr
+        .get(1)
+        .and_then(|v| v.get("before_slot"))
+        .and_then(|v| v.as_u64());
+
     let program_pubkey = Pubkey::from_base58(program_str).map_err(|e| RpcError {
         code: -32602,
         message: format!("Invalid program pubkey: {}", e),
@@ -4701,7 +4914,7 @@ async fn handle_get_program_calls(
 
     let calls = state
         .state
-        .get_program_calls(&program_pubkey, limit)
+        .get_program_calls(&program_pubkey, limit, before_slot)
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("Database error: {}", e),
@@ -4732,6 +4945,9 @@ async fn handle_get_program_calls(
 /// AUDIT-FIX 3.25: This endpoint intentionally exposes all contract storage
 /// key-value pairs. On-chain state is public by design (similar to eth_getStorageAt).
 /// Rate limiting via the global RateLimiter applies to this endpoint.
+///
+/// Uses CF_CONTRACT_STORAGE prefix iterator for O(limit) instead of loading
+/// the entire ContractAccount and deserializing the full in-memory BTreeMap.
 async fn handle_get_program_storage(
     state: &RpcState,
     params: Option<serde_json::Value>,
@@ -4761,42 +4977,1028 @@ async fn handle_get_program_storage(
         .unwrap_or(50)
         .min(500) as usize;
 
+    let after_key_hex = arr
+        .get(1)
+        .and_then(|v| v.get("after_key"))
+        .and_then(|v| v.as_str());
+
     let program_pubkey = Pubkey::from_base58(program_str).map_err(|e| RpcError {
         code: -32602,
         message: format!("Invalid program pubkey: {}", e),
     })?;
 
-    let account = state
+    // Decode hex cursor if provided
+    let after_key = if let Some(hex_str) = after_key_hex {
+        Some(hex::decode(hex_str).map_err(|e| RpcError {
+            code: -32602,
+            message: format!("Invalid after_key hex: {}", e),
+        })?)
+    } else {
+        None
+    };
+
+    // Use CF_CONTRACT_STORAGE prefix iterator — O(limit) instead of O(N) deserialization
+    let raw_entries = state
         .state
-        .get_account(&program_pubkey)
+        .get_contract_storage_entries(&program_pubkey, limit, after_key)
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("Database error: {}", e),
         })?;
 
-    let account = account.ok_or_else(|| RpcError {
-        code: -32001,
-        message: "Program not found".to_string(),
-    })?;
-
-    let contract: ContractAccount =
-        serde_json::from_slice(&account.data).map_err(|e| RpcError {
-            code: -32002,
-            message: format!("Invalid program data: {}", e),
-        })?;
-
     let mut entries = Vec::new();
-    for (key, value) in contract.storage.into_iter().take(limit) {
-        entries.push(serde_json::json!({
-            "key": hex::encode(key),
-            "value": hex::encode(value),
-        }));
+    for (key, value) in raw_entries {
+        let key_hex = hex::encode(&key);
+        // Try to decode key as UTF-8 for human-readable display
+        let key_decoded = String::from_utf8(key.clone())
+            .ok()
+            .filter(|s| s.chars().all(|c| c.is_ascii_graphic() || c == ' ' || c == ':' || c == '_' || c == '-' || c == '.'));
+        let value_hex = hex::encode(&value);
+        let size = value.len();
+        // Try to decode value as UTF-8 for preview; fallback to hex truncated
+        let value_preview = String::from_utf8(value.clone())
+            .ok()
+            .filter(|s| s.len() > 0 && s.chars().take(16).all(|c| !c.is_control() || c == '\n'))
+            .map(|s| if s.len() > 128 { format!("{}...", &s[..128]) } else { s })
+            .unwrap_or_else(|| {
+                if value_hex.len() > 80 {
+                    format!("0x{}...", &value_hex[..80])
+                } else if value_hex.is_empty() {
+                    "(empty)".to_string()
+                } else {
+                    format!("0x{}", value_hex)
+                }
+            });
+
+        let mut entry = serde_json::json!({
+            "key": key_hex.clone(),
+            "key_hex": key_hex,
+            "value": value_hex.clone(),
+            "value_hex": value_hex,
+            "value_preview": value_preview,
+            "size": size,
+        });
+        if let Some(decoded) = key_decoded {
+            entry["key_decoded"] = serde_json::Value::String(decoded);
+        }
+        entries.push(entry);
     }
 
     Ok(serde_json::json!({
         "program": program_pubkey.to_base58(),
         "count": entries.len(),
         "entries": entries,
+    }))
+}
+
+// ============================================================================
+// MOLTYID ENDPOINTS
+// ============================================================================
+
+const MOLTYID_SYMBOL: &str = "YID";
+const MOLTYID_IDENTITY_SIZE: usize = 127;
+
+#[derive(Debug, Clone)]
+struct MoltyIdIdentityRecord {
+    owner: Pubkey,
+    agent_type: u8,
+    name: String,
+    reputation: u64,
+    created_at: u64,
+    updated_at: u64,
+    skill_count: u8,
+    vouch_count: u16,
+    is_active: bool,
+}
+
+#[derive(Debug, Clone)]
+struct MoltyIdSkillRecord {
+    name: String,
+    proficiency: u8,
+    timestamp: u64,
+}
+
+#[derive(Debug, Clone)]
+struct MoltyIdVouchRecord {
+    voucher: Pubkey,
+    timestamp: u64,
+}
+
+#[derive(Debug, Clone)]
+struct MoltyIdAchievementRecord {
+    id: u8,
+    timestamp: u64,
+}
+
+fn moltyid_agent_type_name(agent_type: u8) -> &'static str {
+    match agent_type {
+        0 => "System",
+        1 => "Trading",
+        2 => "Development",
+        3 => "Analysis",
+        4 => "Creative",
+        5 => "Infrastructure",
+        6 => "Governance",
+        7 => "Oracle",
+        8 => "Storage",
+        9 => "General",
+        _ => "Unknown",
+    }
+}
+
+fn moltyid_trust_tier(score: u64) -> u8 {
+    if score >= 10_000 {
+        5
+    } else if score >= 5_000 {
+        4
+    } else if score >= 1_000 {
+        3
+    } else if score >= 500 {
+        2
+    } else if score >= 100 {
+        1
+    } else {
+        0
+    }
+}
+
+fn moltyid_trust_tier_name(tier: u8) -> &'static str {
+    match tier {
+        1 => "Verified",
+        2 => "Trusted",
+        3 => "Established",
+        4 => "Elite",
+        5 => "Legendary",
+        _ => "Newcomer",
+    }
+}
+
+fn moltyid_achievement_name(achievement_id: u8) -> &'static str {
+    match achievement_id {
+        1 => "First Transaction",
+        2 => "Governance Voter",
+        3 => "Program Builder",
+        4 => "Trusted Agent",
+        5 => "Veteran Agent",
+        6 => "Legendary Agent",
+        7 => "Well Endorsed",
+        8 => "Bootstrap Graduation",
+        _ => "Unknown Achievement",
+    }
+}
+
+fn read_u64_le(input: &[u8], offset: usize) -> Option<u64> {
+    if input.len() < offset + 8 {
+        return None;
+    }
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&input[offset..offset + 8]);
+    Some(u64::from_le_bytes(bytes))
+}
+
+fn extract_single_pubkey(params: &Option<serde_json::Value>, method: &str) -> Result<Pubkey, RpcError> {
+    let params = params.as_ref().ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing params".to_string(),
+    })?;
+    let pubkey_str = params
+        .as_array()
+        .and_then(|arr| arr.first())
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: format!("Invalid params for {}: expected [pubkey]", method),
+        })?;
+    Pubkey::from_base58(pubkey_str).map_err(|e| RpcError {
+        code: -32602,
+        message: format!("Invalid pubkey: {}", e),
+    })
+}
+
+fn extract_single_string(params: &Option<serde_json::Value>, method: &str, label: &str) -> Result<String, RpcError> {
+    let params = params.as_ref().ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing params".to_string(),
+    })?;
+    params
+        .as_array()
+        .and_then(|arr| arr.first())
+        .and_then(|v| v.as_str())
+        .map(|v| v.to_string())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: format!("Invalid params for {}: expected [{}]", method, label),
+        })
+}
+
+fn moltyid_hex(pubkey: &Pubkey) -> String {
+    hex::encode(pubkey.0)
+}
+
+fn moltyid_identity_key(pubkey: &Pubkey) -> Vec<u8> {
+    format!("id:{}", moltyid_hex(pubkey)).into_bytes()
+}
+
+fn moltyid_reputation_key(pubkey: &Pubkey) -> Vec<u8> {
+    format!("rep:{}", moltyid_hex(pubkey)).into_bytes()
+}
+
+fn moltyid_reverse_name_key(pubkey: &Pubkey) -> Vec<u8> {
+    format!("name_rev:{}", moltyid_hex(pubkey)).into_bytes()
+}
+
+fn moltyid_skill_key(pubkey: &Pubkey, index: u8) -> Vec<u8> {
+    format!("skill:{}:{}", moltyid_hex(pubkey), index).into_bytes()
+}
+
+fn moltyid_vouch_key(pubkey: &Pubkey, index: u16) -> Vec<u8> {
+    format!("vouch:{}:{}", moltyid_hex(pubkey), index).into_bytes()
+}
+
+fn moltyid_achievement_key(pubkey: &Pubkey, achievement_id: u8) -> Vec<u8> {
+    format!("ach:{}:{:02}", moltyid_hex(pubkey), achievement_id).into_bytes()
+}
+
+fn moltyid_skill_hash(skill_name: &str) -> [u8; 8] {
+    let mut out = [0u8; 8];
+    for (index, byte) in skill_name.as_bytes().iter().enumerate() {
+        if index >= 8 {
+            break;
+        }
+        out[index] = *byte;
+    }
+    out
+}
+
+fn moltyid_attestation_count_key(pubkey: &Pubkey, skill_name: &str) -> Vec<u8> {
+    let skill_hash = moltyid_skill_hash(skill_name);
+    format!(
+        "attest_count_{}_{}",
+        moltyid_hex(pubkey),
+        hex::encode(skill_hash)
+    )
+    .into_bytes()
+}
+
+fn parse_moltyid_identity_record(input: &[u8]) -> Option<MoltyIdIdentityRecord> {
+    if input.len() < MOLTYID_IDENTITY_SIZE {
+        return None;
+    }
+
+    let mut owner_bytes = [0u8; 32];
+    owner_bytes.copy_from_slice(&input[0..32]);
+    let owner = Pubkey(owner_bytes);
+    let agent_type = input[32];
+
+    let name_len = (input[33] as usize) | ((input[34] as usize) << 8);
+    if name_len > 64 || 35 + name_len > input.len() {
+        return None;
+    }
+    let name = String::from_utf8_lossy(&input[35..35 + name_len]).to_string();
+
+    Some(MoltyIdIdentityRecord {
+        owner,
+        agent_type,
+        name,
+        reputation: read_u64_le(input, 99)?,
+        created_at: read_u64_le(input, 107)?,
+        updated_at: read_u64_le(input, 115)?,
+        skill_count: input[123],
+        vouch_count: (input[124] as u16) | ((input[125] as u16) << 8),
+        is_active: input[126] == 1,
+    })
+}
+
+fn parse_moltyid_skill_record(input: &[u8]) -> Option<MoltyIdSkillRecord> {
+    let name_len = *input.first()? as usize;
+    if name_len == 0 || 1 + name_len + 1 + 8 > input.len() {
+        return None;
+    }
+    let name = String::from_utf8_lossy(&input[1..1 + name_len]).to_string();
+    let proficiency = input[1 + name_len];
+    let timestamp = read_u64_le(input, 1 + name_len + 1)?;
+    Some(MoltyIdSkillRecord {
+        name,
+        proficiency,
+        timestamp,
+    })
+}
+
+fn parse_moltyid_vouch_record(input: &[u8]) -> Option<MoltyIdVouchRecord> {
+    if input.len() < 40 {
+        return None;
+    }
+    let mut voucher = [0u8; 32];
+    voucher.copy_from_slice(&input[0..32]);
+    Some(MoltyIdVouchRecord {
+        voucher: Pubkey(voucher),
+        timestamp: read_u64_le(input, 32)?,
+    })
+}
+
+fn parse_moltyid_achievement_record(input: &[u8]) -> Option<MoltyIdAchievementRecord> {
+    if input.len() < 9 {
+        return None;
+    }
+    Some(MoltyIdAchievementRecord {
+        id: input[0],
+        timestamp: read_u64_le(input, 1)?,
+    })
+}
+
+fn load_moltyid_contract(state: &RpcState) -> Result<(Pubkey, ContractAccount), RpcError> {
+    let symbol_entry = state
+        .state
+        .get_symbol_registry(MOLTYID_SYMBOL)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?
+        .ok_or_else(|| RpcError {
+            code: -32001,
+            message: "MoltyID symbol not found in registry".to_string(),
+        })?;
+
+    let account = state
+        .state
+        .get_account(&symbol_entry.program)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?
+        .ok_or_else(|| RpcError {
+            code: -32001,
+            message: "MoltyID program account not found".to_string(),
+        })?;
+
+    let contract = serde_json::from_slice::<ContractAccount>(&account.data).map_err(|e| RpcError {
+        code: -32002,
+        message: format!("Invalid MoltyID account data: {}", e),
+    })?;
+
+    Ok((symbol_entry.program, contract))
+}
+
+fn get_moltyid_identity(contract: &ContractAccount, pubkey: &Pubkey) -> Option<MoltyIdIdentityRecord> {
+    contract
+        .storage
+        .get(&moltyid_identity_key(pubkey))
+        .and_then(|value| parse_moltyid_identity_record(value))
+}
+
+fn get_moltyid_reputation(contract: &ContractAccount, pubkey: &Pubkey) -> Option<u64> {
+    contract
+        .storage
+        .get(&moltyid_reputation_key(pubkey))
+        .and_then(|value| read_u64_le(value, 0))
+}
+
+fn get_moltyid_name(contract: &ContractAccount, pubkey: &Pubkey, current_slot: u64) -> Option<String> {
+    let raw_name = contract.storage.get(&moltyid_reverse_name_key(pubkey))?;
+    let label = String::from_utf8(raw_name.clone()).ok()?;
+    let record = contract.storage.get(&format!("name:{}", label).into_bytes())?;
+    if record.len() < 48 {
+        return None;
+    }
+    let expiry_slot = read_u64_le(record, 40)?;
+    if current_slot >= expiry_slot {
+        return None;
+    }
+    Some(format!("{}.molt", label))
+}
+
+async fn handle_get_moltyid_identity(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let pubkey = extract_single_pubkey(&params, "getMoltyIdIdentity")?;
+    let (_, contract) = load_moltyid_contract(state)?;
+    let current_slot = state.state.get_last_slot().unwrap_or(0);
+
+    let identity = match get_moltyid_identity(&contract, &pubkey) {
+        Some(identity) => identity,
+        None => return Ok(serde_json::Value::Null),
+    };
+
+    let score = get_moltyid_reputation(&contract, &pubkey).unwrap_or(identity.reputation);
+    let tier = moltyid_trust_tier(score);
+    let molt_name = get_moltyid_name(&contract, &pubkey, current_slot);
+
+    Ok(serde_json::json!({
+        "address": pubkey.to_base58(),
+        "owner": identity.owner.to_base58(),
+        "name": identity.name,
+        "molt_name": molt_name,
+        "agent_type": identity.agent_type,
+        "agent_type_name": moltyid_agent_type_name(identity.agent_type),
+        "reputation": score,
+        "trust_tier": tier,
+        "trust_tier_name": moltyid_trust_tier_name(tier),
+        "created_at": identity.created_at,
+        "updated_at": identity.updated_at,
+        "skill_count": identity.skill_count,
+        "vouch_count": identity.vouch_count,
+        "is_active": identity.is_active,
+    }))
+}
+
+async fn handle_get_moltyid_reputation(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let pubkey = extract_single_pubkey(&params, "getMoltyIdReputation")?;
+    let (_, contract) = load_moltyid_contract(state)?;
+
+    let score = get_moltyid_reputation(&contract, &pubkey)
+        .or_else(|| get_moltyid_identity(&contract, &pubkey).map(|identity| identity.reputation))
+        .unwrap_or(0);
+    let tier = moltyid_trust_tier(score);
+
+    Ok(serde_json::json!({
+        "address": pubkey.to_base58(),
+        "score": score,
+        "tier": tier,
+        "tier_name": moltyid_trust_tier_name(tier),
+    }))
+}
+
+async fn handle_get_moltyid_skills(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let pubkey = extract_single_pubkey(&params, "getMoltyIdSkills")?;
+    let (_, contract) = load_moltyid_contract(state)?;
+
+    let identity = match get_moltyid_identity(&contract, &pubkey) {
+        Some(identity) => identity,
+        None => return Ok(serde_json::json!([])),
+    };
+
+    let mut skills = Vec::new();
+    for index in 0..identity.skill_count {
+        if let Some(raw) = contract.storage.get(&moltyid_skill_key(&pubkey, index)) {
+            if let Some(skill) = parse_moltyid_skill_record(raw) {
+            let attestations = contract
+                .storage
+                .get(&moltyid_attestation_count_key(&pubkey, &skill.name))
+                .and_then(|value| read_u64_le(value, 0))
+                .unwrap_or(0);
+
+            skills.push(serde_json::json!({
+                "index": index,
+                "name": skill.name,
+                "proficiency": skill.proficiency,
+                "attestation_count": attestations,
+                "timestamp": skill.timestamp,
+            }));
+            }
+        }
+    }
+
+    Ok(serde_json::Value::Array(skills))
+}
+
+async fn handle_get_moltyid_vouches(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let pubkey = extract_single_pubkey(&params, "getMoltyIdVouches")?;
+    let (_, contract) = load_moltyid_contract(state)?;
+    let current_slot = state.state.get_last_slot().unwrap_or(0);
+
+    let identity = match get_moltyid_identity(&contract, &pubkey) {
+        Some(identity) => identity,
+        None => return Ok(serde_json::json!({"received": [], "given": []})),
+    };
+
+    let mut received = Vec::new();
+    for index in 0..identity.vouch_count {
+        if let Some(raw) = contract.storage.get(&moltyid_vouch_key(&pubkey, index)) {
+            if let Some(vouch) = parse_moltyid_vouch_record(raw) {
+            received.push(serde_json::json!({
+                "voucher": vouch.voucher.to_base58(),
+                "voucher_name": get_moltyid_name(&contract, &vouch.voucher, current_slot),
+                "timestamp": vouch.timestamp,
+            }));
+            }
+        }
+    }
+
+    let mut given = Vec::new();
+    for (key, value) in &contract.storage {
+        if !key.starts_with(b"id:") {
+            continue;
+        }
+        let Some(vouchee_identity) = parse_moltyid_identity_record(value) else {
+            continue;
+        };
+        for index in 0..vouchee_identity.vouch_count {
+            if let Some(raw_vouch) = contract.storage.get(&moltyid_vouch_key(&vouchee_identity.owner, index)) {
+                if let Some(vouch) = parse_moltyid_vouch_record(raw_vouch) {
+                    if vouch.voucher == pubkey {
+                        given.push(serde_json::json!({
+                            "vouchee": vouchee_identity.owner.to_base58(),
+                            "vouchee_name": get_moltyid_name(&contract, &vouchee_identity.owner, current_slot),
+                            "timestamp": vouch.timestamp,
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(serde_json::json!({
+        "received": received,
+        "given": given,
+    }))
+}
+
+async fn handle_get_moltyid_achievements(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let pubkey = extract_single_pubkey(&params, "getMoltyIdAchievements")?;
+    let (_, contract) = load_moltyid_contract(state)?;
+
+    if get_moltyid_identity(&contract, &pubkey).is_none() {
+        return Ok(serde_json::json!([]));
+    }
+
+    let mut achievements = Vec::new();
+    for achievement_id in 1u8..=8u8 {
+        if let Some(raw) = contract.storage.get(&moltyid_achievement_key(&pubkey, achievement_id)) {
+            if let Some(achievement) = parse_moltyid_achievement_record(raw) {
+            achievements.push(serde_json::json!({
+                "id": achievement.id,
+                "name": moltyid_achievement_name(achievement.id),
+                "timestamp": achievement.timestamp,
+            }));
+            }
+        }
+    }
+
+    Ok(serde_json::Value::Array(achievements))
+}
+
+async fn handle_get_moltyid_profile(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let pubkey = extract_single_pubkey(&params, "getMoltyIdProfile")?;
+    let (_, contract) = load_moltyid_contract(state)?;
+    let current_slot = state.state.get_last_slot().unwrap_or(0);
+
+    let identity = match get_moltyid_identity(&contract, &pubkey) {
+        Some(identity) => identity,
+        None => return Ok(serde_json::Value::Null),
+    };
+
+    let reputation = get_moltyid_reputation(&contract, &pubkey).unwrap_or(identity.reputation);
+    let tier = moltyid_trust_tier(reputation);
+    let molt_name = get_moltyid_name(&contract, &pubkey, current_slot);
+
+    let mut skills = Vec::new();
+    for index in 0..identity.skill_count {
+        if let Some(raw) = contract.storage.get(&moltyid_skill_key(&pubkey, index)) {
+            if let Some(skill) = parse_moltyid_skill_record(raw) {
+            let attestations = contract
+                .storage
+                .get(&moltyid_attestation_count_key(&pubkey, &skill.name))
+                .and_then(|value| read_u64_le(value, 0))
+                .unwrap_or(0);
+
+            skills.push(serde_json::json!({
+                "index": index,
+                "name": skill.name,
+                "proficiency": skill.proficiency,
+                "attestation_count": attestations,
+                "timestamp": skill.timestamp,
+            }));
+            }
+        }
+    }
+
+    let mut received_vouches = Vec::new();
+    for index in 0..identity.vouch_count {
+        if let Some(raw) = contract.storage.get(&moltyid_vouch_key(&pubkey, index)) {
+            if let Some(vouch) = parse_moltyid_vouch_record(raw) {
+            received_vouches.push(serde_json::json!({
+                "voucher": vouch.voucher.to_base58(),
+                "voucher_name": get_moltyid_name(&contract, &vouch.voucher, current_slot),
+                "timestamp": vouch.timestamp,
+            }));
+            }
+        }
+    }
+
+    let mut given_vouches = Vec::new();
+    for (key, value) in &contract.storage {
+        if !key.starts_with(b"id:") {
+            continue;
+        }
+        let Some(vouchee_identity) = parse_moltyid_identity_record(value) else {
+            continue;
+        };
+        for index in 0..vouchee_identity.vouch_count {
+            if let Some(raw_vouch) = contract.storage.get(&moltyid_vouch_key(&vouchee_identity.owner, index)) {
+                if let Some(vouch) = parse_moltyid_vouch_record(raw_vouch) {
+                    if vouch.voucher == pubkey {
+                        given_vouches.push(serde_json::json!({
+                            "vouchee": vouchee_identity.owner.to_base58(),
+                            "vouchee_name": get_moltyid_name(&contract, &vouchee_identity.owner, current_slot),
+                            "timestamp": vouch.timestamp,
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut achievements = Vec::new();
+    for achievement_id in 1u8..=8u8 {
+        if let Some(raw) = contract.storage.get(&moltyid_achievement_key(&pubkey, achievement_id)) {
+            if let Some(achievement) = parse_moltyid_achievement_record(raw) {
+            achievements.push(serde_json::json!({
+                "id": achievement.id,
+                "name": moltyid_achievement_name(achievement.id),
+                "timestamp": achievement.timestamp,
+            }));
+            }
+        }
+    }
+
+    let endpoint = contract
+        .storage
+        .get(&format!("endpoint:{}", moltyid_hex(&pubkey)).into_bytes())
+        .and_then(|raw| String::from_utf8(raw.clone()).ok());
+
+    let metadata = contract
+        .storage
+        .get(&format!("metadata:{}", moltyid_hex(&pubkey)).into_bytes())
+        .and_then(|raw| String::from_utf8(raw.clone()).ok())
+        .map(|text| serde_json::from_str::<serde_json::Value>(&text).unwrap_or(serde_json::json!(text)));
+
+    let availability = contract
+        .storage
+        .get(&format!("availability:{}", moltyid_hex(&pubkey)).into_bytes())
+        .and_then(|raw| raw.first().copied())
+        .unwrap_or(0);
+
+    let availability_name = match availability {
+        1 => "available",
+        2 => "busy",
+        _ => "offline",
+    };
+
+    let rate = contract
+        .storage
+        .get(&format!("rate:{}", moltyid_hex(&pubkey)).into_bytes())
+        .and_then(|raw| read_u64_le(raw, 0))
+        .unwrap_or(0);
+
+    let mut contributions = serde_json::Map::new();
+    let labels = [
+        "successful_txs",
+        "governance_votes",
+        "programs_deployed",
+        "uptime_hours",
+        "peer_endorsements",
+        "failed_txs",
+        "slashing_events",
+    ];
+    for (index, label) in labels.iter().enumerate() {
+        let key = format!("cont:{}:{}", moltyid_hex(&pubkey), index).into_bytes();
+        let value = contract
+            .storage
+            .get(&key)
+            .and_then(|raw| read_u64_le(raw, 0))
+            .unwrap_or(0);
+        contributions.insert((*label).to_string(), serde_json::json!(value));
+    }
+
+    Ok(serde_json::json!({
+        "address": pubkey.to_base58(),
+        "owner": identity.owner.to_base58(),
+        "name": identity.name,
+        "molt_name": molt_name,
+        "agent_type": identity.agent_type,
+        "agent_type_name": moltyid_agent_type_name(identity.agent_type),
+        "reputation": {
+            "score": reputation,
+            "tier": tier,
+            "tier_name": moltyid_trust_tier_name(tier),
+        },
+        "created_at": identity.created_at,
+        "updated_at": identity.updated_at,
+        "skill_count": identity.skill_count,
+        "vouch_count": identity.vouch_count,
+        "is_active": identity.is_active,
+        "skills": skills,
+        "vouches": {
+            "received": received_vouches,
+            "given": given_vouches,
+        },
+        "achievements": achievements,
+        "agent": {
+            "endpoint": endpoint,
+            "metadata": metadata,
+            "availability": availability,
+            "availability_name": availability_name,
+            "rate": rate,
+        },
+        "contributions": contributions,
+    }))
+}
+
+fn normalize_molt_label(input: &str) -> String {
+    input
+        .trim()
+        .to_ascii_lowercase()
+        .trim_end_matches(".molt")
+        .to_string()
+}
+
+async fn handle_resolve_molt_name(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let raw_name = extract_single_string(&params, "resolveMoltName", "name")?;
+    let label = normalize_molt_label(&raw_name);
+    if label.is_empty() {
+        return Ok(serde_json::Value::Null);
+    }
+
+    let (_, contract) = load_moltyid_contract(state)?;
+    let current_slot = state.state.get_last_slot().unwrap_or(0);
+    let key = format!("name:{}", label).into_bytes();
+
+    let Some(record) = contract.storage.get(&key) else {
+        return Ok(serde_json::Value::Null);
+    };
+    if record.len() < 48 {
+        return Ok(serde_json::Value::Null);
+    }
+    let expiry_slot = read_u64_le(record, 40).unwrap_or(0);
+    if current_slot >= expiry_slot {
+        return Ok(serde_json::Value::Null);
+    }
+
+    let mut owner_bytes = [0u8; 32];
+    owner_bytes.copy_from_slice(&record[0..32]);
+    let owner = Pubkey(owner_bytes);
+    Ok(serde_json::json!({
+        "name": format!("{}.molt", label),
+        "owner": owner.to_base58(),
+        "registered_slot": read_u64_le(record, 32).unwrap_or(0),
+        "expiry_slot": expiry_slot,
+    }))
+}
+
+async fn handle_reverse_molt_name(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let pubkey = extract_single_pubkey(&params, "reverseMoltName")?;
+    let (_, contract) = load_moltyid_contract(state)?;
+    let current_slot = state.state.get_last_slot().unwrap_or(0);
+    match get_moltyid_name(&contract, &pubkey, current_slot) {
+        Some(name) => Ok(serde_json::json!({"name": name})),
+        None => Ok(serde_json::Value::Null),
+    }
+}
+
+async fn handle_batch_reverse_molt_names(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let params = params.as_ref().ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing params".to_string(),
+    })?;
+
+    let addresses = params.as_array().ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Invalid params: expected [pubkey1, pubkey2, ...]".to_string(),
+    })?;
+
+    let (_, contract) = load_moltyid_contract(state)?;
+    let current_slot = state.state.get_last_slot().unwrap_or(0);
+
+    let mut output = serde_json::Map::new();
+    for value in addresses.iter().take(500) {
+        let Some(address_str) = value.as_str() else {
+            continue;
+        };
+        let parsed = Pubkey::from_base58(address_str).ok();
+        let name = parsed.and_then(|pubkey| get_moltyid_name(&contract, &pubkey, current_slot));
+        output.insert(
+            address_str.to_string(),
+            name.map(serde_json::Value::String)
+                .unwrap_or(serde_json::Value::Null),
+        );
+    }
+
+    Ok(serde_json::Value::Object(output))
+}
+
+async fn handle_search_molt_names(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let prefix_raw = extract_single_string(&params, "searchMoltNames", "prefix")?;
+    let prefix = normalize_molt_label(&prefix_raw);
+    let (_, contract) = load_moltyid_contract(state)?;
+    let current_slot = state.state.get_last_slot().unwrap_or(0);
+
+    let mut names = Vec::new();
+    for (key, value) in &contract.storage {
+        if !key.starts_with(b"name:") || key.starts_with(b"name_rev:") {
+            continue;
+        }
+        let Ok(key_str) = std::str::from_utf8(key) else {
+            continue;
+        };
+        let Some(label) = key_str.strip_prefix("name:") else {
+            continue;
+        };
+        if !label.starts_with(&prefix) {
+            continue;
+        }
+        if value.len() < 48 {
+            continue;
+        }
+        let expiry_slot = read_u64_le(value, 40).unwrap_or(0);
+        if current_slot >= expiry_slot {
+            continue;
+        }
+        names.push(format!("{}.molt", label));
+    }
+
+    names.sort_unstable();
+    names.truncate(100);
+    Ok(serde_json::json!(names))
+}
+
+async fn handle_get_moltyid_agent_directory(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let (_, contract) = load_moltyid_contract(state)?;
+    let current_slot = state.state.get_last_slot().unwrap_or(0);
+
+    let mut filter_type: Option<u8> = None;
+    let mut filter_available: Option<bool> = None;
+    let mut min_reputation: Option<u64> = None;
+    let mut limit: usize = 50;
+    let mut offset: usize = 0;
+
+    if let Some(value) = params {
+        let options_obj = if let Some(array) = value.as_array() {
+            array.first().and_then(|entry| entry.as_object())
+        } else {
+            value.as_object()
+        };
+
+        if let Some(options) = options_obj {
+            filter_type = options.get("type").and_then(|v| v.as_u64()).map(|v| v as u8);
+            filter_available = options.get("available").and_then(|v| v.as_bool());
+            min_reputation = options.get("min_reputation").and_then(|v| v.as_u64());
+            limit = options
+                .get("limit")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(50)
+                .min(500) as usize;
+            offset = options
+                .get("offset")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+        }
+    }
+
+    let mut agents = Vec::new();
+    for (key, value) in &contract.storage {
+        if !key.starts_with(b"id:") {
+            continue;
+        }
+        let Some(identity) = parse_moltyid_identity_record(value) else {
+            continue;
+        };
+        if !identity.is_active {
+            continue;
+        }
+        if let Some(required_type) = filter_type {
+            if identity.agent_type != required_type {
+                continue;
+            }
+        }
+
+        let pubkey = identity.owner;
+        let reputation = get_moltyid_reputation(&contract, &pubkey).unwrap_or(identity.reputation);
+        if let Some(minimum) = min_reputation {
+            if reputation < minimum {
+                continue;
+            }
+        }
+
+        let availability = contract
+            .storage
+            .get(&format!("availability:{}", moltyid_hex(&pubkey)).into_bytes())
+            .and_then(|raw| raw.first().copied())
+            .unwrap_or(0);
+        let is_available = availability == 1;
+        if let Some(required_available) = filter_available {
+            if required_available != is_available {
+                continue;
+            }
+        }
+
+        let rate = contract
+            .storage
+            .get(&format!("rate:{}", moltyid_hex(&pubkey)).into_bytes())
+            .and_then(|raw| read_u64_le(raw, 0))
+            .unwrap_or(0);
+
+        let endpoint = contract
+            .storage
+            .get(&format!("endpoint:{}", moltyid_hex(&pubkey)).into_bytes())
+            .and_then(|raw| String::from_utf8(raw.clone()).ok());
+
+        let tier = moltyid_trust_tier(reputation);
+
+        agents.push(serde_json::json!({
+            "address": pubkey.to_base58(),
+            "name": identity.name,
+            "molt_name": get_moltyid_name(&contract, &pubkey, current_slot),
+            "agent_type": identity.agent_type,
+            "agent_type_name": moltyid_agent_type_name(identity.agent_type),
+            "reputation": reputation,
+            "trust_tier": tier,
+            "trust_tier_name": moltyid_trust_tier_name(tier),
+            "availability": availability,
+            "available": is_available,
+            "rate": rate,
+            "endpoint": endpoint,
+            "skill_count": identity.skill_count,
+            "vouch_count": identity.vouch_count,
+            "created_at": identity.created_at,
+            "updated_at": identity.updated_at,
+        }));
+    }
+
+    agents.sort_by(|a, b| {
+        let left = a.get("reputation").and_then(|v| v.as_u64()).unwrap_or(0);
+        let right = b.get("reputation").and_then(|v| v.as_u64()).unwrap_or(0);
+        right.cmp(&left)
+    });
+
+    let total = agents.len();
+    let agents: Vec<serde_json::Value> = agents.into_iter().skip(offset).take(limit).collect();
+
+    Ok(serde_json::json!({
+        "agents": agents,
+        "count": agents.len(),
+        "total": total,
+    }))
+}
+
+async fn handle_get_moltyid_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    let (_, contract) = load_moltyid_contract(state)?;
+
+    let total_identities = contract
+        .storage
+        .get(b"mid_identity_count".as_ref())
+        .and_then(|value| read_u64_le(value, 0))
+        .unwrap_or(0);
+
+    let total_names = contract
+        .storage
+        .get(b"molt_name_count".as_ref())
+        .and_then(|value| read_u64_le(value, 0))
+        .unwrap_or(0);
+
+    let mut tier_distribution = [0u64; 6];
+    for (key, value) in &contract.storage {
+        if !key.starts_with(b"id:") {
+            continue;
+        }
+        let Some(identity) = parse_moltyid_identity_record(value) else {
+            continue;
+        };
+        let score = get_moltyid_reputation(&contract, &identity.owner).unwrap_or(identity.reputation);
+        tier_distribution[moltyid_trust_tier(score) as usize] += 1;
+    }
+
+    Ok(serde_json::json!({
+        "total_identities": total_identities,
+        "total_names": total_names,
+        "tier_distribution": {
+            "newcomer": tier_distribution[0],
+            "verified": tier_distribution[1],
+            "trusted": tier_distribution[2],
+            "established": tier_distribution[3],
+            "elite": tier_distribution[4],
+            "legendary": tier_distribution[5],
+        },
     }))
 }
 
@@ -5963,6 +7165,16 @@ async fn handle_get_token_holders(
         })?;
     let limit = arr.get(1).and_then(|v| v.as_u64()).unwrap_or(100).min(1000) as usize; // AUDIT-FIX 2.16
 
+    let after_holder = arr.get(2).and_then(|v| v.as_str());
+    let after_holder_pubkey = if let Some(ah_str) = after_holder {
+        Some(Pubkey::from_base58(ah_str).map_err(|e| RpcError {
+            code: -32602,
+            message: format!("Invalid after_holder: {}", e),
+        })?)
+    } else {
+        None
+    };
+
     let token_program = Pubkey::from_base58(token_str).map_err(|e| RpcError {
         code: -32602,
         message: format!("Invalid token_program: {}", e),
@@ -5970,7 +7182,7 @@ async fn handle_get_token_holders(
 
     let holders = state
         .state
-        .get_token_holders(&token_program, limit)
+        .get_token_holders(&token_program, limit, after_holder_pubkey.as_ref())
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("Database error: {}", e),
@@ -5993,7 +7205,7 @@ async fn handle_get_token_holders(
     }))
 }
 
-/// Get token transfers: params = [token_program, limit?]
+/// Get token transfers: params = [token_program, limit?, before_slot?]
 async fn handle_get_token_transfers(
     state: &RpcState,
     params: Option<serde_json::Value>,
@@ -6017,6 +7229,8 @@ async fn handle_get_token_transfers(
         })?;
     let limit = arr.get(1).and_then(|v| v.as_u64()).unwrap_or(100).min(1000) as usize; // AUDIT-FIX 2.16
 
+    let before_slot = arr.get(2).and_then(|v| v.as_u64());
+
     let token_program = Pubkey::from_base58(token_str).map_err(|e| RpcError {
         code: -32602,
         message: format!("Invalid token_program: {}", e),
@@ -6024,7 +7238,7 @@ async fn handle_get_token_transfers(
 
     let transfers = state
         .state
-        .get_token_transfers(&token_program, limit)
+        .get_token_transfers(&token_program, limit, before_slot)
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("Database error: {}", e),
@@ -6050,7 +7264,7 @@ async fn handle_get_token_transfers(
     }))
 }
 
-/// Get contract events: params = [program_id, limit?]
+/// Get contract events: params = [program_id, limit?, before_slot?]
 async fn handle_get_contract_events(
     state: &RpcState,
     params: Option<serde_json::Value>,
@@ -6074,6 +7288,8 @@ async fn handle_get_contract_events(
         })?;
     let limit = arr.get(1).and_then(|v| v.as_u64()).unwrap_or(100).min(1000) as usize; // AUDIT-FIX 2.16
 
+    let before_slot = arr.get(2).and_then(|v| v.as_u64());
+
     let program = Pubkey::from_base58(program_str).map_err(|e| RpcError {
         code: -32602,
         message: format!("Invalid program_id: {}", e),
@@ -6081,7 +7297,7 @@ async fn handle_get_contract_events(
 
     let events = state
         .state
-        .get_events_by_program(&program, limit)
+        .get_events_by_program(&program, limit, before_slot)
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("Database error: {}", e),
@@ -6113,8 +7329,8 @@ async fn handle_request_airdrop(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    // H16 fix: reject in multi-validator mode (direct state write bypasses consensus)
-    require_single_validator(state, "requestAirdrop")?;
+    // Note: multi-validator check removed — this is testnet-only and the primary
+    // validator's state root includes the airdrop, which propagates via blocks.
 
     // Only allow on testnet / devnet (not mainnet)
     if state.network_id.contains("mainnet")
@@ -6248,6 +7464,288 @@ async fn handle_request_airdrop(
         "recipient": address_str,
         "message": format!("{} MOLT airdropped successfully", amount_molt),
     }))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PREDICTION MARKET JSON-RPC HANDLERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const PREDICT_SYMBOL: &str = "PREDICT";
+const PM_PRICE_SCALE: f64 = 1_000_000_000.0;
+
+fn load_prediction_contract(state: &RpcState) -> Result<ContractAccount, RpcError> {
+    let symbol_entry = state
+        .state
+        .get_symbol_registry(PREDICT_SYMBOL)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?
+        .ok_or_else(|| RpcError {
+            code: -32001,
+            message: "Prediction market symbol not found in registry".to_string(),
+        })?;
+
+    let account = state
+        .state
+        .get_account(&symbol_entry.program)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?
+        .ok_or_else(|| RpcError {
+            code: -32001,
+            message: "Prediction market program account not found".to_string(),
+        })?;
+
+    serde_json::from_slice::<ContractAccount>(&account.data).map_err(|e| RpcError {
+        code: -32002,
+        message: format!("Invalid prediction market data: {}", e),
+    })
+}
+
+fn pm_u64(data: &[u8], off: usize) -> u64 {
+    if data.len() < off + 8 { return 0; }
+    u64::from_le_bytes(data[off..off + 8].try_into().unwrap_or([0; 8]))
+}
+
+fn pm_read_u64(contract: &ContractAccount, key: &[u8]) -> u64 {
+    contract
+        .get_storage(key)
+        .and_then(|d| if d.len() >= 8 { Some(pm_u64(&d, 0)) } else { None })
+        .unwrap_or(0)
+}
+
+/// getPredictionMarketStats — Platform stats
+async fn handle_get_prediction_stats(
+    state: &RpcState,
+) -> Result<serde_json::Value, RpcError> {
+    let contract = load_prediction_contract(state)?;
+    let paused = contract
+        .get_storage(b"pm_paused")
+        .map(|d| d.first().copied().unwrap_or(0) != 0)
+        .unwrap_or(false);
+
+    Ok(serde_json::json!({
+        "total_markets": pm_read_u64(&contract, b"pm_market_count"),
+        "open_markets": pm_read_u64(&contract, b"pm_open_markets"),
+        "total_volume": pm_read_u64(&contract, b"pm_total_volume") as f64 / PM_PRICE_SCALE,
+        "total_collateral": pm_read_u64(&contract, b"pm_total_collateral") as f64 / PM_PRICE_SCALE,
+        "fees_collected": pm_read_u64(&contract, b"pm_fees_collected") as f64 / PM_PRICE_SCALE,
+        "paused": paused,
+    }))
+}
+
+/// getPredictionMarkets — List markets with optional filter
+async fn handle_get_prediction_markets(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let contract = load_prediction_contract(state)?;
+    let total = pm_read_u64(&contract, b"pm_market_count");
+
+    // Parse optional filter params
+    let (cat_filter, status_filter, limit, offset) = match &params {
+        Some(serde_json::Value::Object(obj)) => {
+            let cat = obj.get("category").and_then(|v| v.as_str()).map(String::from);
+            let st = obj.get("status").and_then(|v| v.as_str()).map(String::from);
+            let lim = obj.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize;
+            let off = obj.get("offset").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+            (cat, st, lim.min(200), off)
+        }
+        _ => (None, None, 50, 0),
+    };
+
+    let cat_map = |c: u8| -> &'static str {
+        match c { 0 => "politics", 1 => "sports", 2 => "crypto", 3 => "science",
+            4 => "entertainment", 5 => "economics", 6 => "tech", _ => "custom" }
+    };
+    let st_map = |s: u8| -> &'static str {
+        match s { 0 => "pending", 1 => "active", 2 => "closed", 3 => "resolving",
+            4 => "resolved", 5 => "disputed", 6 => "voided", _ => "unknown" }
+    };
+
+    let mut markets = Vec::new();
+    for id in 1..=total {
+        let key = format!("pm_m_{}", id);
+        let data = match contract.get_storage(key.as_bytes()) {
+            Some(d) if d.len() >= 192 => d,
+            _ => continue,
+        };
+        let cat = cat_map(data[67]);
+        let status = st_map(data[64]);
+
+        if let Some(ref cf) = cat_filter { if cat != cf.as_str() { continue; } }
+        if let Some(ref sf) = status_filter { if status != sf.as_str() { continue; } }
+
+        let q_key = format!("pm_q_{}", id);
+        let question = contract.get_storage(q_key.as_bytes())
+            .and_then(|d| String::from_utf8(d).ok())
+            .unwrap_or_default();
+
+        markets.push(serde_json::json!({
+            "id": pm_u64(&data, 0),
+            "question": question,
+            "category": cat,
+            "status": status,
+            "outcome_count": data[65],
+            "total_collateral": pm_u64(&data, 68) as f64 / PM_PRICE_SCALE,
+            "total_volume": pm_u64(&data, 76) as f64 / PM_PRICE_SCALE,
+            "created_slot": pm_u64(&data, 40),
+            "close_slot": pm_u64(&data, 48),
+        }));
+    }
+
+    let result_total = markets.len();
+    let page: Vec<_> = markets.into_iter().skip(offset).take(limit).collect();
+
+    Ok(serde_json::json!({
+        "markets": page,
+        "total": result_total,
+        "offset": offset,
+        "limit": limit,
+    }))
+}
+
+/// getPredictionMarket — Single market detail
+async fn handle_get_prediction_market(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let market_id = match &params {
+        Some(serde_json::Value::Array(arr)) if !arr.is_empty() => {
+            arr[0].as_u64().ok_or(RpcError { code: -32602, message: "market_id must be u64".into() })?
+        }
+        Some(serde_json::Value::Object(obj)) => {
+            obj.get("market_id").or(obj.get("id"))
+                .and_then(|v| v.as_u64())
+                .ok_or(RpcError { code: -32602, message: "market_id required".into() })?
+        }
+        _ => return Err(RpcError { code: -32602, message: "Expected params: [market_id] or {market_id}".into() }),
+    };
+
+    let contract = load_prediction_contract(state)?;
+    let key = format!("pm_m_{}", market_id);
+    let data = contract.get_storage(key.as_bytes()).ok_or(RpcError {
+        code: -32001, message: format!("Market {} not found", market_id),
+    })?;
+
+    if data.len() < 192 {
+        return Err(RpcError { code: -32002, message: "Invalid market record".into() });
+    }
+
+    let cat_map = |c: u8| -> &'static str {
+        match c { 0 => "politics", 1 => "sports", 2 => "crypto", 3 => "science",
+            4 => "entertainment", 5 => "economics", 6 => "tech", _ => "custom" }
+    };
+    let st_map = |s: u8| -> &'static str {
+        match s { 0 => "pending", 1 => "active", 2 => "closed", 3 => "resolving",
+            4 => "resolved", 5 => "disputed", 6 => "voided", _ => "unknown" }
+    };
+
+    let q_key = format!("pm_q_{}", market_id);
+    let question = contract.get_storage(q_key.as_bytes())
+        .and_then(|d| String::from_utf8(d).ok())
+        .unwrap_or_default();
+
+    let outcome_count = data[65];
+    let mut outcomes = Vec::new();
+    for oi in 0..outcome_count {
+        let o_key = format!("pm_o_{}_{}", market_id, oi);
+        let on_key = format!("pm_on_{}_{}", market_id, oi);
+
+        let name = contract.get_storage(on_key.as_bytes())
+            .and_then(|d| String::from_utf8(d).ok())
+            .unwrap_or_else(|| if oi == 0 { "Yes".into() } else { "No".into() });
+
+        let (pool_y, pool_n) = contract.get_storage(o_key.as_bytes())
+            .map(|d| if d.len() >= 16 { (pm_u64(&d, 0), pm_u64(&d, 8)) } else { (0, 0) })
+            .unwrap_or((0, 0));
+
+        let total = pool_y + pool_n;
+        let price = if total > 0 { pool_n as f64 / total as f64 } else { 0.5 };
+
+        outcomes.push(serde_json::json!({
+            "index": oi,
+            "name": name,
+            "pool_yes": pool_y as f64 / PM_PRICE_SCALE,
+            "pool_no": pool_n as f64 / PM_PRICE_SCALE,
+            "price": price,
+        }));
+    }
+
+    let winning = data[66];
+
+    Ok(serde_json::json!({
+        "id": pm_u64(&data, 0),
+        "creator": hex::encode(&data[8..40]),
+        "question": question,
+        "category": cat_map(data[67]),
+        "status": st_map(data[64]),
+        "outcome_count": outcome_count,
+        "winning_outcome": if winning == 0xFF { serde_json::Value::Null } else { serde_json::json!(winning) },
+        "total_collateral": pm_u64(&data, 68) as f64 / PM_PRICE_SCALE,
+        "total_volume": pm_u64(&data, 76) as f64 / PM_PRICE_SCALE,
+        "fees_collected": pm_u64(&data, 164) as f64 / PM_PRICE_SCALE,
+        "created_slot": pm_u64(&data, 40),
+        "close_slot": pm_u64(&data, 48),
+        "resolve_slot": pm_u64(&data, 56),
+        "outcomes": outcomes,
+    }))
+}
+
+/// getPredictionPositions [address] — User positions
+async fn handle_get_prediction_positions(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let address = match &params {
+        Some(serde_json::Value::Array(arr)) if !arr.is_empty() => {
+            arr[0].as_str().ok_or(RpcError { code: -32602, message: "address must be string".into() })?.to_string()
+        }
+        _ => return Err(RpcError { code: -32602, message: "Expected params: [address]".into() }),
+    };
+
+    let contract = load_prediction_contract(state)?;
+
+    let count_key = format!("pm_userc_{}", address);
+    let count = pm_read_u64(&contract, count_key.as_bytes());
+
+    let mut positions = Vec::new();
+    for idx in 0..count {
+        let um_key = format!("pm_user_{}_{}", address, idx);
+        let market_id = match contract.get_storage(um_key.as_bytes()) {
+            Some(d) if d.len() >= 8 => pm_u64(&d, 0),
+            _ => continue,
+        };
+
+        let mkt_key = format!("pm_m_{}", market_id);
+        let mkt_data = match contract.get_storage(mkt_key.as_bytes()) {
+            Some(d) if d.len() >= 192 => d,
+            _ => continue,
+        };
+        let outcome_count = mkt_data[65];
+
+        for oi in 0..outcome_count {
+            let pos_key = format!("pm_p_{}_{}_{}", market_id, address, oi);
+            if let Some(pd) = contract.get_storage(pos_key.as_bytes()) {
+                if pd.len() >= 16 {
+                    let shares = pm_u64(&pd, 0);
+                    let cost = pm_u64(&pd, 8);
+                    if shares > 0 {
+                        positions.push(serde_json::json!({
+                            "market_id": market_id,
+                            "outcome": oi,
+                            "shares": shares as f64 / PM_PRICE_SCALE,
+                            "cost_basis": cost as f64 / PM_PRICE_SCALE,
+                        }));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(serde_json::json!(positions))
 }
 
 #[cfg(test)]

@@ -8,6 +8,7 @@ use crate::evm::{
     EvmReceipt, EvmTxRecord, EVM_PROGRAM_ID,
 };
 use crate::state::{StateBatch, StateStore, SymbolRegistryEntry};
+use crate::Hash;
 use crate::transaction::{Instruction, Transaction};
 use alloy_primitives::U256;
 use serde::Deserialize;
@@ -54,19 +55,25 @@ pub const CONTRACT_PROGRAM_ID: Pubkey = Pubkey([0xFFu8; 32]);
 
 /// Slot-based month length (400ms slots, 216,000 per day)
 pub const SLOTS_PER_MONTH: u64 = 216_000 * 30;
-/// Base transaction fee (0.001 MOLT = 1,000,000 shells — $0.0001 at $0.10/MOLT)
+/// Base transaction fee (0.001 MOLT = 1,000,000 shells)
+/// At $0.10/MOLT: $0.0001 per tx  |  At $1.00/MOLT: $0.001 per tx
+/// Solana ~$0.00025/tx — MoltChain is 2.5x cheaper at $0.10/MOLT
 pub const BASE_FEE: u64 = 1_000_000;
 
-/// Contract deployment fee (25 MOLT = 25,000,000,000 shells — $2.50 at $0.10/MOLT)
+/// Contract deployment fee (25 MOLT = 25,000,000,000 shells)
+/// At $0.10/MOLT: $2.50 per deploy  |  At $1.00/MOLT: $25 per deploy
 pub const CONTRACT_DEPLOY_FEE: u64 = 25_000_000_000;
 
-/// Contract upgrade fee (10 MOLT = 10,000,000,000 shells — $1.00 at $0.10/MOLT)
+/// Contract upgrade fee (10 MOLT = 10,000,000,000 shells)
+/// At $0.10/MOLT: $1.00 per upgrade  |  At $1.00/MOLT: $10 per upgrade
 pub const CONTRACT_UPGRADE_FEE: u64 = 10_000_000_000;
 
-/// NFT mint fee (0.5 MOLT = 500,000,000 shells — $0.05 at $0.10/MOLT)
+/// NFT mint fee (0.5 MOLT = 500,000,000 shells)
+/// At $0.10/MOLT: $0.05 per mint  |  At $1.00/MOLT: $0.50 per mint
 pub const NFT_MINT_FEE: u64 = 500_000_000;
 
-/// NFT collection creation fee (1,000 MOLT = 1,000,000,000,000 shells — $100 at $0.10/MOLT)
+/// NFT collection creation fee (1,000 MOLT = 1,000,000,000,000 shells)
+/// At $0.10/MOLT: $100 per collection  |  At $1.00/MOLT: $1,000 per collection
 pub const NFT_COLLECTION_FEE: u64 = 1_000_000_000_000;
 
 #[derive(Debug, Clone, Copy)]
@@ -331,6 +338,35 @@ impl TxProcessor {
         }
     }
 
+    /// Write contract storage change to CF_CONTRACT_STORAGE for fast-path access.
+    fn b_put_contract_storage(
+        &self,
+        program: &Pubkey,
+        storage_key: &[u8],
+        value: &[u8],
+    ) -> Result<(), String> {
+        let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_mut() {
+            batch.put_contract_storage(program, storage_key, value)
+        } else {
+            self.state.put_contract_storage(program, storage_key, value)
+        }
+    }
+
+    /// Delete contract storage key from CF_CONTRACT_STORAGE.
+    fn b_delete_contract_storage(
+        &self,
+        program: &Pubkey,
+        storage_key: &[u8],
+    ) -> Result<(), String> {
+        let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(batch) = guard.as_mut() {
+            batch.delete_contract_storage(program, storage_key)
+        } else {
+            self.state.delete_contract_storage(program, storage_key)
+        }
+    }
+
     fn b_put_evm_tx(&self, record: &crate::evm::EvmTxRecord) -> Result<(), String> {
         let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(batch) = guard.as_mut() {
@@ -495,6 +531,18 @@ impl TxProcessor {
 
     /// Process a transaction
     pub fn process_transaction(&self, tx: &Transaction, _validator: &Pubkey) -> TxResult {
+        self.process_transaction_inner(tx, _validator, None)
+    }
+
+    /// Process a transaction with optional pre-cached blockhashes (PERF-FIX 10).
+    /// When called from process_transactions_parallel, the blockhash set is fetched ONCE
+    /// for the entire batch instead of per-TX (avoids N × RocksDB reads).
+    fn process_transaction_inner(
+        &self,
+        tx: &Transaction,
+        _validator: &Pubkey,
+        cached_blockhashes: Option<&HashSet<Hash>>,
+    ) -> TxResult {
         // T1.7: Validate transaction structure (size limits)
         if let Err(e) = tx.validate_structure() {
             return TxResult {
@@ -524,9 +572,15 @@ impl TxProcessor {
         }
 
         // Validate recent_blockhash for replay protection
+        // PERF-FIX 10: Use cached blockhashes when available (from parallel batch)
         {
-            let recent = self.state.get_recent_blockhashes(300).unwrap_or_default();
-            if !recent.contains(&tx.message.recent_blockhash) {
+            let valid = if let Some(hashes) = cached_blockhashes {
+                hashes.contains(&tx.message.recent_blockhash)
+            } else {
+                let recent = self.state.get_recent_blockhashes(300).unwrap_or_default();
+                recent.contains(&tx.message.recent_blockhash)
+            };
+            if !valid {
                 return TxResult {
                     success: false,
                     fee_paid: 0,
@@ -585,24 +639,43 @@ impl TxProcessor {
 
         // Verify all signatures against the transaction message and build verified set
         let message_bytes = tx.message.serialize();
-        use crate::account::Keypair;
+        use ed25519_dalek::{Verifier, VerifyingKey, Signature as EdSignature};
         let mut verified_signers: HashSet<Pubkey> = HashSet::new();
 
-        // AUDIT-FIX 3.10: Build a set of unverified signers for O(s * r_remaining)
-        // instead of O(s * r) on every iteration. Each successful verify removes
-        // the signer from the pending set, reducing work for subsequent sigs.
-        let mut unverified: Vec<Pubkey> = required_signers.iter().cloned().collect();
-        for sig in &tx.signatures {
-            let mut matched_idx = None;
-            for (i, signer) in unverified.iter().enumerate() {
-                if Keypair::verify(signer, &message_bytes, sig) {
-                    verified_signers.insert(*signer);
-                    matched_idx = Some(i);
-                    break;
-                }
+        // PERF-FIX 3: Pre-decompress all verifying keys once to avoid redundant
+        // curve point decompression (VerifyingKey::from_bytes) per sig check.
+        // Each decompression costs ~30µs; for N signers × M signatures this
+        // reduces from N×M to just N decompressions.
+        let mut vkeys: Vec<(Pubkey, VerifyingKey)> = Vec::with_capacity(required_signers.len());
+        for signer in &required_signers {
+            if let Ok(vk) = VerifyingKey::from_bytes(&signer.0) {
+                vkeys.push((*signer, vk));
             }
-            if let Some(idx) = matched_idx {
-                unverified.swap_remove(idx);
+        }
+
+        // Fast path: single-sig TX (most common case) — skip inner loop entirely
+        if tx.signatures.len() == 1 && vkeys.len() == 1 {
+            let sig = EdSignature::from_bytes(&tx.signatures[0]);
+            if vkeys[0].1.verify(&message_bytes, &sig).is_ok() {
+                verified_signers.insert(vkeys[0].0);
+            }
+        } else {
+            // Multi-sig: match signatures to pre-decompressed signers.
+            // Each successful verify removes the signer, reducing work.
+            let mut unmatched = vkeys;
+            for sig_bytes in &tx.signatures {
+                let sig = EdSignature::from_bytes(sig_bytes);
+                let mut matched_idx = None;
+                for (i, (pk, vk)) in unmatched.iter().enumerate() {
+                    if vk.verify(&message_bytes, &sig).is_ok() {
+                        verified_signers.insert(*pk);
+                        matched_idx = Some(i);
+                        break;
+                    }
+                }
+                if let Some(idx) = matched_idx {
+                    unmatched.swap_remove(idx);
+                }
             }
         }
 
@@ -697,70 +770,144 @@ impl TxProcessor {
     }
 
     /// Process multiple transactions in parallel where possible.
-    /// Transactions are grouped by account access patterns:
-    /// - Transactions touching disjoint account sets can run in parallel
-    /// - Transactions touching overlapping accounts run sequentially
+    /// Transactions are grouped by account access patterns using union-find:
+    /// - Transactions touching disjoint account sets run in parallel (rayon)
+    /// - Transactions touching overlapping accounts run sequentially within
+    ///   the same group to preserve causal ordering.
     ///
-    /// This is a Phase 1 implementation that identifies parallelizable groups
-    /// but still executes sequentially. Phase 2 will use actual thread pools.
+    /// Each parallel group gets its own TxProcessor (sharing the same
+    /// underlying RocksDB via Arc<DB>) so batches don't contend.
     pub fn process_transactions_parallel(
         &self,
         txs: &[Transaction],
         validator: &Pubkey,
     ) -> Vec<TxResult> {
+        // PERF-FIX 10: Cache blockhashes ONCE for the entire batch
+        let cached_blockhashes: HashSet<Hash> = self.state.get_recent_blockhashes(300).unwrap_or_default().into_iter().collect();
+
         if txs.len() <= 1 {
             return txs
                 .iter()
-                .map(|tx| self.process_transaction(tx, validator))
+                .map(|tx| self.process_transaction_inner(tx, validator, Some(&cached_blockhashes)))
                 .collect();
         }
 
-        // Phase 1: Identify account access sets for each transaction
-        let mut tx_accounts: Vec<HashSet<Pubkey>> = Vec::new();
-        for tx in txs {
-            let mut accounts = HashSet::new();
-            // Add all instruction account keys
-            for ix in &tx.message.instructions {
-                accounts.insert(ix.program_id);
-                for key in &ix.accounts {
-                    accounts.insert(*key);
+        let n = txs.len();
+
+        // Phase 1: Identify account access sets for each transaction.
+        // PERF-CRITICAL: Exclude the shared CONTRACT_PROGRAM_ID from conflict detection.
+        // All contract calls use the same program_id (0xFF..FF) as a dispatch entry point,
+        // but they operate on DIFFERENT contract addresses (ix.accounts[1]). Including program_id
+        // in the conflict set would merge ALL contract TXs into one sequential group, defeating
+        // rayon parallelism entirely. Only actual data accounts (caller, contract address) matter
+        // for conflict detection — like Solana's Sealevel scheduler.
+        let tx_accounts: Vec<HashSet<Pubkey>> = txs
+            .iter()
+            .map(|tx| {
+                let mut accounts = HashSet::new();
+                for ix in &tx.message.instructions {
+                    // Do NOT add program_id to conflict set — it's shared infrastructure
+                    // that dispatches to independent contract instances.
+                    // Only the actual accounts (caller + contract address) determine conflicts.
+                    if ix.program_id != CONTRACT_PROGRAM_ID {
+                        accounts.insert(ix.program_id);
+                    }
+                    for key in &ix.accounts {
+                        accounts.insert(*key);
+                    }
+                }
+                accounts
+            })
+            .collect();
+
+        // Phase 2: Build conflict graph using union-find.
+        // Two transactions conflict if they share any account key.
+        // Conflicting TXs are merged into the same group.
+        let mut parent: Vec<usize> = (0..n).collect();
+
+        fn uf_find(parent: &mut Vec<usize>, x: usize) -> usize {
+            let mut r = x;
+            while parent[r] != r {
+                r = parent[r];
+            }
+            // Path compression
+            let mut c = x;
+            while c != r {
+                let next = parent[c];
+                parent[c] = r;
+                c = next;
+            }
+            r
+        }
+
+        fn uf_union(parent: &mut Vec<usize>, a: usize, b: usize) {
+            let ra = uf_find(parent, a);
+            let rb = uf_find(parent, b);
+            if ra != rb {
+                parent[ra] = rb;
+            }
+        }
+
+        // PERF-OPT 4: Build inverted index (account → tx indices) for O(total_accounts)
+        // conflict detection instead of O(n²) pairwise disjoint checks.
+        {
+            let mut account_to_txs: std::collections::HashMap<Pubkey, Vec<usize>> =
+                std::collections::HashMap::new();
+            for (i, accounts) in tx_accounts.iter().enumerate() {
+                for account in accounts {
+                    account_to_txs.entry(*account).or_default().push(i);
                 }
             }
-            tx_accounts.push(accounts);
-        }
-
-        // Phase 2: Build conflict graph and identify parallel groups
-        // Two transactions conflict if they share any account
-        let mut groups: Vec<Vec<usize>> = Vec::new();
-        let mut assigned: HashSet<usize> = HashSet::new();
-
-        for i in 0..txs.len() {
-            if assigned.contains(&i) {
-                continue;
+            for tx_indices in account_to_txs.values() {
+                for window in tx_indices.windows(2) {
+                    uf_union(&mut parent, window[0], window[1]);
+                }
             }
-            let group = vec![i];
-            assigned.insert(i);
-
-            // Simplified: each independent transaction is its own group for now
-            // TODO: Merge non-conflicting transactions into the same group
-            groups.push(group);
         }
 
-        // Phase 3: Execute groups (currently sequential — Phase 2 will parallelize)
-        // TODO: Use rayon or tokio::task::spawn_blocking for actual parallel execution
-        let default_result = TxResult {
-            success: false,
-            fee_paid: 0,
-            error: Some("not processed".to_string()),
-        };
-        let mut results: Vec<TxResult> = (0..txs.len()).map(|_| default_result.clone()).collect();
-        for group in &groups {
+        // Collect groups by root (preserving original order within each group)
+        let mut group_map: std::collections::HashMap<usize, Vec<usize>> =
+            std::collections::HashMap::new();
+        for i in 0..n {
+            let root = uf_find(&mut parent, i);
+            group_map.entry(root).or_default().push(i);
+        }
+        let groups: Vec<Vec<usize>> = group_map.into_values().collect();
+
+        // Phase 3: Execute groups in parallel with rayon.
+        // Each group gets a fresh TxProcessor (own batch) backed by the same
+        // StateStore (Arc<DB>). TXs within a group run sequentially because
+        // they share accounts and may depend on each other's state changes.
+        use rayon::prelude::*;
+
+        // PERF-OPT 10: Initialize with None errors to avoid N heap allocations
+        // for the "not processed" strings that will be overwritten anyway.
+        let results_mu: std::sync::Mutex<Vec<TxResult>> = std::sync::Mutex::new(
+            (0..n)
+                .map(|_| TxResult {
+                    success: false,
+                    fee_paid: 0,
+                    error: None,
+                })
+                .collect(),
+        );
+
+        groups.par_iter().for_each(|group| {
+            // Each parallel group gets an independent TxProcessor so that
+            // their StateBatch locks do not contend with each other.
+            let group_proc = TxProcessor::new(self.state.clone());
+            let mut group_results: Vec<(usize, TxResult)> = Vec::with_capacity(group.len());
             for &idx in group {
-                results[idx] = self.process_transaction(&txs[idx], validator);
+                let result = group_proc.process_transaction_inner(&txs[idx], validator, Some(&cached_blockhashes));
+                group_results.push((idx, result));
             }
-        }
+            let mut r = results_mu.lock().unwrap();
+            for (idx, result) in group_results {
+                r[idx] = result;
+            }
+        });
 
-        results
+        results_mu.into_inner().unwrap()
     }
 
     /// Simulate a transaction (dry run) — validates everything without persisting.
@@ -888,9 +1035,11 @@ impl TxProcessor {
                                                 contract.storage.clone(),
                                                 args.clone(),
                                             );
-                                            let mut runtime = ContractRuntime::new();
-                                            match runtime
-                                                .execute(&contract, &function, &args, context)
+                                            let mut runtime = ContractRuntime::get_pooled();
+                                            let exec_result = runtime
+                                                .execute(&contract, &function, &args, context);
+                                            runtime.return_to_pool();
+                                            match exec_result
                                             {
                                                 Ok(result) => {
                                                     total_compute += result.compute_used;
@@ -2059,8 +2208,10 @@ impl TxProcessor {
             return Err("Contract account already exists".to_string());
         }
 
-        let mut runtime = ContractRuntime::new();
-        runtime.deploy(&code)?;
+        let mut runtime = ContractRuntime::get_pooled();
+        let deploy_result = runtime.deploy(&code);
+        runtime.return_to_pool();
+        deploy_result?;
 
         let mut owner = *deployer;
         let mut make_public = true;
@@ -2154,8 +2305,11 @@ impl TxProcessor {
             args,
         );
 
-        let mut runtime = ContractRuntime::new();
+        let mut runtime = ContractRuntime::get_pooled();
         let result = runtime.execute(&contract, &function, &context.args.clone(), context)?;
+
+        // Return runtime to thread-local pool for reuse
+        runtime.return_to_pool();
 
         if !result.success {
             return Err(result
@@ -2174,9 +2328,13 @@ impl TxProcessor {
                 match value_opt {
                     Some(val) => {
                         contract.set_storage(key.clone(), val.clone());
+                        // Also write to CF_CONTRACT_STORAGE for fast-path reads
+                        self.b_put_contract_storage(contract_address, key, val)?;
                     }
                     None => {
                         contract.remove_storage(key);
+                        // Also remove from CF_CONTRACT_STORAGE
+                        self.b_delete_contract_storage(contract_address, key)?;
                     }
                 }
             }
@@ -2212,8 +2370,10 @@ impl TxProcessor {
             return Err("Only contract owner can upgrade".to_string());
         }
 
-        let mut runtime = ContractRuntime::new();
-        let new_hash = runtime.deploy(&new_code)?;
+        let mut runtime = ContractRuntime::get_pooled();
+        let new_hash_result = runtime.deploy(&new_code);
+        runtime.return_to_pool();
+        let new_hash = new_hash_result?;
 
         contract.code = new_code;
         contract.code_hash = new_hash;
@@ -2341,7 +2501,7 @@ impl TxProcessor {
                     account
                         .deduct_spendable(actual_rent)
                         .map_err(|e| format!("Rent deduction failed: {}", e))?;
-                    total_rent_collected += actual_rent;
+                    total_rent_collected = total_rent_collected.saturating_add(actual_rent);
                 }
             }
 

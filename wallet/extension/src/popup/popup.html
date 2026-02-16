@@ -1,0 +1,436 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MoltWallet</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+  <link rel="stylesheet" href="../styles/shared-base-styles.css" />
+  <link rel="stylesheet" href="../styles/shared-theme.css" />
+  <link rel="stylesheet" href="../styles/wallet.css" />
+  <link rel="stylesheet" href="../styles/extension-overrides.css" />
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body class="wallet-body">
+  <main class="popup-root">
+    <header class="popup-header">
+      <div class="popup-logo">
+        <img src="../../MoltWallet_Logo_256.png" alt="MoltWallet" class="popup-logo-icon" />
+        <span>MoltWallet</span>
+      </div>
+      <button id="openFullPage" class="btn btn-secondary btn-small">Open Full</button>
+    </header>
+
+    <section id="welcomeScreen" class="wallet-content popup-card screen active">
+      <div class="legacy-welcome">
+        <h3 style="margin-bottom: 0.5rem;">Welcome to MoltWallet</h3>
+        <p class="step-description" style="margin-bottom: 1rem;">Create a new wallet or import an existing seed phrase.</p>
+        <button data-action="goCreate" class="btn btn-primary btn-large popup-btn-block">Create New Wallet</button>
+        <button data-action="goImport" class="btn btn-secondary btn-large popup-btn-block">Import Wallet</button>
+      </div>
+
+      <div class="web-welcome wallet-container welcome-container">
+        <div class="welcome-logo">
+          <img src="../../MoltWallet_Logo_256.png" class="logo-icon" alt="MoltWallet" />
+          <h1>MoltWallet</h1>
+        </div>
+        <p class="welcome-subtitle">Your gateway to the MoltChain ecosystem</p>
+
+        <div class="welcome-carousel">
+          <div class="carousel-track">
+            <div class="carousel-slide active">
+              <div class="carousel-card">
+                <div class="carousel-icon">🛡️</div>
+                <h3>Secure &amp; Open Source</h3>
+                <p>AES-256-GCM encrypted keys, Ed25519 signatures, fully auditable code</p>
+              </div>
+            </div>
+            <div class="carousel-slide">
+              <div class="carousel-card">
+                <div class="carousel-icon">⚡</div>
+                <h3>Ultra-Fast Transactions</h3>
+                <p>400ms finality, low fees, and high-throughput block production.</p>
+              </div>
+            </div>
+            <div class="carousel-slide">
+              <div class="carousel-card">
+                <div class="carousel-icon">🤖</div>
+                <h3>Agent-Native</h3>
+                <p>Built for autonomous agents with on-chain identity and reputation.</p>
+              </div>
+            </div>
+            <div class="carousel-slide">
+              <div class="carousel-card">
+                <div class="carousel-icon">🆔</div>
+                <h3>MoltyID Identity</h3>
+                <p>.molt naming, skill attestations, and 0-10K on-chain reputation.</p>
+              </div>
+            </div>
+            <div class="carousel-slide">
+              <div class="carousel-card">
+                <div class="carousel-icon">🙈</div>
+                <h3>Privacy Layer</h3>
+                <p>Shielded transaction support with privacy-preserving proofs.</p>
+              </div>
+            </div>
+          </div>
+          <div class="carousel-dots">
+            <span class="carousel-dot active" data-slide="0"></span>
+            <span class="carousel-dot" data-slide="1"></span>
+            <span class="carousel-dot" data-slide="2"></span>
+            <span class="carousel-dot" data-slide="3"></span>
+            <span class="carousel-dot" data-slide="4"></span>
+          </div>
+        </div>
+
+        <div class="welcome-actions">
+          <button data-action="goCreate" class="btn btn-primary btn-large">+ Create New Wallet</button>
+          <button data-action="goImport" class="btn btn-secondary btn-large">Import Existing Wallet</button>
+        </div>
+      </div>
+    </section>
+
+    <section id="createScreen" class="wallet-content popup-card screen">
+      <h3 style="margin-bottom: 0.75rem;">Create New Wallet</h3>
+
+      <div class="wizard-steps" style="margin-bottom: 1rem;">
+        <div class="wizard-step-item active" data-create-step="1">
+          <div class="step-circle">1</div>
+          <div class="step-label">Password</div>
+        </div>
+        <div class="wizard-step-item" data-create-step="2">
+          <div class="step-circle">2</div>
+          <div class="step-label">Seed Phrase</div>
+        </div>
+        <div class="wizard-step-item" data-create-step="3">
+          <div class="step-circle">3</div>
+          <div class="step-label">Confirm</div>
+        </div>
+      </div>
+
+      <div class="create-step active" data-create-step-content="1">
+        <h3 style="margin-bottom: 0.35rem;">Set a Password</h3>
+        <p class="step-description" style="margin-bottom: 1rem;">This password encrypts your wallet on this device.</p>
+        <div class="form-group">
+          <label>Password</label>
+          <input id="createPassword" type="password" class="form-input" placeholder="Enter password" />
+        </div>
+        <div class="form-group">
+          <label>Confirm Password</label>
+          <input id="createPasswordConfirm" type="password" class="form-input" placeholder="Confirm password" />
+        </div>
+        <button id="createStep1Continue" class="btn btn-primary popup-btn-block">Continue →</button>
+      </div>
+
+      <div class="create-step" data-create-step-content="2">
+        <h3 style="margin-bottom: 0.35rem;">Your Recovery Phrase</h3>
+        <p class="step-description" style="margin-bottom: 1rem;">Write down these 12 words in order. Keep them safe and secret.</p>
+        <div class="form-group" style="margin-top: 0.75rem;">
+          <label>Recovery Phrase (save this safely)</label>
+          <textarea id="createMnemonic" class="form-textarea" rows="3" readonly></textarea>
+        </div>
+        <button id="createStep2Continue" class="btn btn-primary popup-btn-block">I've Written It Down</button>
+      </div>
+
+      <div class="create-step" data-create-step-content="3">
+        <h3 style="margin-bottom: 0.35rem;">Confirm Your Phrase</h3>
+        <p class="step-description" style="margin-bottom: 1rem;">Select the words in the correct order to verify.</p>
+        <div class="confirm-section" style="margin-bottom: 0.75rem;">
+          <div id="createConfirmSlots" class="confirm-slots-grid"></div>
+        </div>
+        <div class="confirm-section" style="margin-bottom: 0.75rem;">
+          <div id="createConfirmPool" class="seed-word-pool"></div>
+        </div>
+        <button id="createFinish" class="btn btn-primary popup-btn-block" disabled>Create Wallet</button>
+      </div>
+
+      <a href="#" id="backFromCreate" class="popup-back-link">← Back</a>
+    </section>
+
+    <section id="importScreen" class="wallet-content popup-card screen">
+      <h3 style="margin-bottom: 0.5rem;">Import Wallet</h3>
+      <div class="import-tabs">
+        <button type="button" class="import-tab active" data-import-type="mnemonic">Seed Phrase</button>
+        <button type="button" class="import-tab" data-import-type="privateKey">Private Key</button>
+        <button type="button" class="import-tab" data-import-type="json">JSON File</button>
+      </div>
+      <input id="importType" type="hidden" value="mnemonic" />
+
+      <div class="form-group" id="importMnemonicRow">
+        <label>Recovery Phrase</label>
+        <textarea id="importMnemonic" class="form-textarea" rows="3" placeholder="word1 word2 ... word12"></textarea>
+      </div>
+      <div class="form-group" id="importPrivateKeyRow" style="display: none;">
+        <label>Private Key (64 hex chars)</label>
+        <textarea id="importPrivateKey" class="form-textarea" rows="2" placeholder="32-byte Ed25519 seed as hex"></textarea>
+      </div>
+      <div class="form-group" id="importJsonRow" style="display: none;">
+        <label>JSON Keystore</label>
+        <textarea id="importJson" class="form-textarea" rows="4" placeholder='{"name":"...","secretKey":[...],"privateKey":"..."}'></textarea>
+      </div>
+      <div class="form-group">
+        <label>Password</label>
+        <input id="importPassword" type="password" class="form-input" placeholder="Set password" />
+      </div>
+      <button id="importSave" class="btn btn-primary popup-btn-block">Import Wallet</button>
+      <a href="#" id="backFromImport" class="popup-back-link">← Back</a>
+    </section>
+
+    <section id="unlockScreen" class="wallet-content popup-card screen">
+      <h3 style="margin-bottom: 0.5rem;">Unlock Wallet</h3>
+      <p id="unlockWalletName" class="step-description" style="margin-bottom: 1rem;"></p>
+      <div class="form-group">
+        <label>Password</label>
+        <input id="unlockPassword" type="password" class="form-input" placeholder="Enter password" />
+      </div>
+      <button id="unlockSubmit" class="btn btn-primary popup-btn-block">Unlock</button>
+      <div class="unlock-logout" style="margin-top: 1.2rem; text-align: center;">
+        <button id="unlockLogoutBtn" class="btn btn-danger btn-small" style="opacity:0.75;font-size:0.78rem;">
+          <i class="fas fa-sign-out-alt"></i> Logout
+        </button>
+      </div>
+    </section>
+
+    <section id="dashboardScreen" class="wallet-content popup-card screen">
+      <!-- Dashboard Nav -->
+      <div class="popup-dash-nav">
+        <div class="popup-dash-nav-left">
+          <div class="popup-wallet-selector">
+            <select id="walletSelector" class="popup-wallet-select"></select>
+          </div>
+          <select id="networkSelector" class="popup-network-select">
+            <option value="mainnet">Mainnet</option>
+            <option value="testnet">Testnet</option>
+            <option value="local-testnet">Local Testnet</option>
+            <option value="local-mainnet">Local Mainnet</option>
+          </select>
+        </div>
+        <div class="popup-dash-nav-right">
+          <button id="showSettingsPanel" class="btn btn-small btn-secondary"><i class="fas fa-cog"></i></button>
+          <button id="lockWallet" class="btn btn-small btn-primary"><i class="fas fa-lock"></i></button>
+          <button id="logoutWallet" class="btn btn-small btn-danger"><i class="fas fa-sign-out-alt"></i></button>
+        </div>
+      </div>
+
+      <!-- Balance Card -->
+      <div class="popup-balance-card">
+        <div class="popup-balance-header">
+          <span class="popup-balance-label">Total Balance</span>
+          <button id="refreshBalance" class="popup-btn-icon"><i class="fas fa-sync-alt"></i></button>
+        </div>
+        <div class="popup-balance-amount" id="walletBalance">0.00 MOLT</div>
+        <div class="popup-balance-usd" id="balanceUsd">$0.00 USD</div>
+        <div class="popup-balance-actions">
+          <button class="popup-action-btn" id="showSendPanel"><i class="fas fa-arrow-up"></i><span>Send</span></button>
+          <button class="popup-action-btn" id="showReceivePanel"><i class="fas fa-arrow-down"></i><span>Receive</span></button>
+          <button class="popup-action-btn" id="showDepositPanel"><i class="fas fa-plus-circle"></i><span>Deposit</span></button>
+        </div>
+      </div>
+
+      <!-- Dashboard Tabs -->
+      <div class="popup-dashboard-tabs">
+        <button class="popup-dash-tab active" data-tab="assets"><i class="fas fa-coins"></i> Assets</button>
+        <button class="popup-dash-tab" data-tab="activity"><i class="fas fa-history"></i> Activity</button>
+        <button class="popup-dash-tab" data-tab="nfts"><i class="fas fa-image"></i> NFTs</button>
+        <button class="popup-dash-tab" data-tab="staking"><i class="fas fa-layer-group"></i> Staking</button>
+        <button class="popup-dash-tab" data-tab="identity"><i class="fas fa-fingerprint"></i> Identity</button>
+        <button class="popup-dash-tab" data-tab="governance"><i class="fas fa-landmark"></i> Governance</button>
+        <button class="popup-dash-tab" data-tab="bridge"><i class="fas fa-bridge"></i> Bridge</button>
+        <button class="popup-dash-tab" data-tab="prediction"><i class="fas fa-chart-line"></i> Markets</button>
+      </div>
+
+      <!-- Tab Content: Assets -->
+      <div class="popup-tab-content active" data-tab="assets" id="assetsPanel">
+        <div class="popup-assets-list" id="assetsList"></div>
+      </div>
+
+      <!-- Tab Content: Send -->
+      <div class="popup-tab-content" data-tab="send" id="sendPanel">
+        <div class="form-group">
+          <label>Recipient</label>
+          <input id="sendTo" class="form-input" placeholder="Base58 address" />
+        </div>
+        <div class="form-group">
+          <label>Amount (MOLT)</label>
+          <input id="sendAmount" type="number" class="form-input" placeholder="0.00" />
+        </div>
+        <div class="form-group">
+          <label>Password</label>
+          <input id="sendPassword" type="password" class="form-input" placeholder="Unlock to sign" />
+        </div>
+        <button id="sendNow" class="btn btn-primary popup-btn-block">Send Transaction</button>
+      </div>
+
+      <!-- Tab Content: Receive -->
+      <div class="popup-tab-content" data-tab="receive" id="receivePanel">
+        <p style="text-align:center;color:var(--text-secondary);font-size:0.82rem;margin-bottom:0.75rem;">
+          Share your address to receive MOLT and MoltChain tokens
+        </p>
+        <div class="form-group">
+          <label><i class="fas fa-fingerprint"></i> Native Address (Base58)</label>
+          <div class="popup-address-row">
+            <input id="receiveAddress" class="form-input" readonly />
+            <button id="copyAddress" class="btn btn-secondary btn-small"><i class="fas fa-copy"></i></button>
+          </div>
+        </div>
+        <div class="popup-receive-info">
+          <i class="fas fa-info-circle" style="color:#4ade80;"></i>
+          Send MOLT from any MoltChain wallet to this address.
+        </div>
+      </div>
+
+      <!-- Tab Content: Activity -->
+      <div class="popup-tab-content" data-tab="activity" id="activityPanel">
+        <div id="activityList" class="popup-activity-list"></div>
+      </div>
+
+      <!-- Tab Content: NFTs -->
+      <div class="popup-tab-content" data-tab="nfts" id="nftsPanel">
+        <div class="nfts-grid" id="nftsGrid"></div>
+        <div class="nfts-empty" id="nftsEmpty">
+          <div class="nfts-empty-icon"><i class="fas fa-gem"></i></div>
+          <h3>No NFTs Yet</h3>
+          <p>Your MTS-721 and MTS-1155 tokens will appear here</p>
+          <div class="nfts-standards">
+            <span class="nft-badge"><i class="fas fa-certificate"></i> MTS-721</span>
+            <span class="nft-badge"><i class="fas fa-layer-group"></i> MTS-1155</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab Content: Staking -->
+      <div class="popup-tab-content" data-tab="staking" id="stakingPanel">
+        <div id="stakingValidatorInfo"></div>
+        <div class="popup-empty-state">
+          <i class="fas fa-layer-group"></i>
+          <p>Staking info will appear here if your wallet is a validator.</p>
+        </div>
+      </div>
+
+      <!-- Tab Content: Identity -->
+      <div class="popup-tab-content" data-tab="identity" id="identityPanel">
+        <div id="identityContent">
+          <!-- MoltyID identity loaded dynamically -->
+        </div>
+      </div>
+
+      <!-- Tab Content: Governance -->
+      <div class="popup-tab-content" data-tab="governance" id="governancePanel">
+        <div id="governanceContent">
+          <div class="panel-header" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem;">
+            <h4 style="margin:0;"><i class="fas fa-landmark"></i> Governance</h4>
+            <button class="btn btn-small btn-secondary" id="refreshGovernance"><i class="fas fa-sync-alt"></i></button>
+          </div>
+          <div id="govProposalsList">
+            <div class="popup-empty-state"><i class="fas fa-vote-yea"></i><p>Loading proposals...</p></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab Content: Bridge -->
+      <div class="popup-tab-content" data-tab="bridge" id="bridgePanel">
+        <div id="bridgeContent">
+          <div class="panel-header" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem;">
+            <h4 style="margin:0;"><i class="fas fa-bridge"></i> MoltBridge</h4>
+            <button class="btn btn-small btn-secondary" id="refreshBridge"><i class="fas fa-sync-alt"></i></button>
+          </div>
+          <div class="bridge-form">
+            <div class="form-group"><label>Source</label>
+              <select id="bridgeSource" class="form-input"><option value="moltchain">MoltChain</option><option value="ethereum">Ethereum</option><option value="solana">Solana</option></select>
+            </div>
+            <div class="form-group"><label>Destination</label>
+              <select id="bridgeDest" class="form-input"><option value="ethereum">Ethereum</option><option value="moltchain">MoltChain</option><option value="solana">Solana</option></select>
+            </div>
+            <div class="form-group"><label>Amount (MOLT)</label>
+              <input type="number" id="bridgeAmount" class="form-input" placeholder="0.00" />
+            </div>
+            <button class="btn btn-primary popup-btn-block" id="initBridgeTransfer"><i class="fas fa-paper-plane"></i> Bridge Tokens</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab Content: Prediction Markets -->
+      <div class="popup-tab-content" data-tab="prediction" id="predictionPanel">
+        <div id="predictionContent">
+          <div class="panel-header" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem;">
+            <h4 style="margin:0;"><i class="fas fa-chart-line"></i> Markets</h4>
+            <button class="btn btn-small btn-secondary" id="refreshPrediction"><i class="fas fa-sync-alt"></i></button>
+          </div>
+          <div id="predMarketsList">
+            <div class="popup-empty-state"><i class="fas fa-chart-bar"></i><p>Loading markets...</p></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tab Content: Settings -->
+      <div class="popup-tab-content" data-tab="settings" id="settingsPanel">
+        <!-- Network RPC -->
+        <div class="popup-settings-section">
+          <h4><i class="fas fa-server"></i> Network</h4>
+          <div class="form-group"><label>Mainnet RPC</label><input id="settingsMainnetRpc" class="form-input" placeholder="https://rpc.moltchain.network" /></div>
+          <div class="form-group"><label>Testnet RPC</label><input id="settingsTestnetRpc" class="form-input" placeholder="https://testnet-rpc.moltchain.network" /></div>
+          <div class="form-group"><label>Local Testnet RPC</label><input id="settingsLocalTestnetRpc" class="form-input" placeholder="http://localhost:8899" /></div>
+          <div class="form-group"><label>Local Mainnet RPC</label><input id="settingsLocalMainnetRpc" class="form-input" placeholder="http://localhost:8899" /></div>
+          <div class="form-group"><label>Mainnet Custody</label><input id="settingsMainnetCustody" class="form-input" placeholder="https://custody.moltchain.network" /></div>
+          <div class="form-group"><label>Testnet Custody</label><input id="settingsTestnetCustody" class="form-input" placeholder="https://testnet-custody.moltchain.network" /></div>
+          <div class="form-group"><label>Local Custody</label><input id="settingsLocalCustody" class="form-input" placeholder="http://localhost:9105" /></div>
+          <button id="saveRpcSettings" class="btn btn-secondary btn-small popup-btn-block">Save RPC Endpoints</button>
+        </div>
+
+        <!-- Security -->
+        <div class="popup-settings-section">
+          <h4><i class="fas fa-shield-alt"></i> Security</h4>
+          <div class="form-group"><label>Auto-lock timeout</label>
+            <select id="settingsLockTimeout" class="form-input">
+              <option value="0">Never</option><option value="1">1 min</option><option value="5">5 min</option>
+              <option value="15">15 min</option><option value="30">30 min</option><option value="60">60 min</option>
+            </select>
+          </div>
+          <button id="saveLockTimeout" class="btn btn-secondary btn-small popup-btn-block">Save Auto-lock</button>
+          <div class="form-group" style="margin-top:0.5rem;"><label>Current Password</label><input id="settingsCurrentPassword" type="password" class="form-input" placeholder="Current password" /></div>
+          <div class="form-group"><label>New Password</label><input id="settingsNewPassword" type="password" class="form-input" placeholder="Min 8 chars" /></div>
+          <div class="form-group"><label>Confirm New Password</label><input id="settingsNewPasswordConfirm" type="password" class="form-input" placeholder="Confirm" /></div>
+          <button id="changePasswordBtn" class="btn btn-secondary btn-small popup-btn-block">Change Password</button>
+        </div>
+
+        <!-- Display -->
+        <div class="popup-settings-section">
+          <h4><i class="fas fa-palette"></i> Display</h4>
+          <div class="form-group"><label>Currency</label>
+            <select id="settingsCurrency" class="form-input"><option value="USD">USD</option><option value="EUR">EUR</option><option value="GBP">GBP</option><option value="JPY">JPY</option></select>
+          </div>
+          <div class="form-group"><label>Decimal Precision</label>
+            <select id="settingsDecimals" class="form-input"><option value="2">2</option><option value="4">4</option><option value="6">6</option><option value="8">8</option></select>
+          </div>
+          <button id="saveDisplaySettings" class="btn btn-secondary btn-small popup-btn-block">Save Display</button>
+        </div>
+
+        <!-- Export -->
+        <div class="popup-settings-section">
+          <h4><i class="fas fa-key"></i> Export</h4>
+          <div class="form-group"><label>Password (required)</label><input id="settingsPassword" type="password" class="form-input" placeholder="Wallet password" /></div>
+          <div class="popup-export-grid">
+            <button id="exportPrivateKey" class="btn btn-secondary btn-small">Private Key</button>
+            <button id="exportMnemonic" class="btn btn-secondary btn-small">Seed Phrase</button>
+            <button id="exportKeystoreJson" class="btn btn-secondary btn-small">JSON Keystore</button>
+            <button id="downloadPrivateKey" class="btn btn-secondary btn-small">DL Key</button>
+            <button id="downloadMnemonic" class="btn btn-secondary btn-small">DL Seed</button>
+          </div>
+          <div class="form-group" style="margin-top:0.5rem;">
+            <label>Output</label>
+            <textarea id="settingsExportOutput" class="form-textarea" rows="2" readonly placeholder="Sensitive output here"></textarea>
+          </div>
+          <button id="copyExportOutput" class="btn btn-secondary btn-small popup-btn-block">Copy Output</button>
+        </div>
+      </div>
+
+      <!-- Hidden address field for wallet.js compat -->
+      <input id="walletAddress" type="hidden" />
+
+      <div id="statusField" class="popup-status">Ready</div>
+    </section>
+  </main>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

@@ -61,6 +61,19 @@ const CF_EVENTS_BY_SLOT: &str = "events_by_slot"; // slot(8,BE) + seq(8,BE) -> e
 const CF_CONTRACT_STORAGE: &str = "contract_storage"; // Contract storage (MoltyID reputation etc.)
 const CF_MERKLE_LEAVES: &str = "merkle_leaves"; // pubkey(32) -> leaf_hash(32) (incremental Merkle cache)
 
+// ─── PERF-OPT 3: In-process blockhash cache ─────────────────────────────────
+
+/// Cached (slot, hash) pairs for the recent 300 slots.
+struct BlockhashCache {
+    /// Sorted by slot (oldest first). Capped to ~300 entries.
+    entries: Vec<(u64, Hash)>,
+}
+
+/// Global blockhash cache. Populated lazily on first `get_recent_blockhashes`
+/// and kept warm by `push_blockhash_cache` on every `put_block`.
+static BLOCKHASH_CACHE: std::sync::LazyLock<Mutex<Option<BlockhashCache>>> =
+    std::sync::LazyLock::new(|| Mutex::new(None));
+
 /// Token symbol registry entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SymbolRegistryEntry {
@@ -732,33 +745,101 @@ impl StateStore {
     /// Returns a set of block hashes from the most recent `count` slots.
     /// T1.3 fix: Hash::default() is NO LONGER accepted. Only real block hashes
     /// are valid for replay protection. Genesis block hash is included if in range.
+    ///
+    /// PERF-OPT 3: Uses an in-memory cache that is populated on block commit
+    /// and avoids reading up to 300 blocks from RocksDB on every call.
     pub fn get_recent_blockhashes(
         &self,
         count: u64,
     ) -> Result<std::collections::HashSet<Hash>, String> {
-        let mut hashes = std::collections::HashSet::new();
+        // Fast path: check the in-process cache
+        {
+            let cache = BLOCKHASH_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(ref inner) = *cache {
+                // Cache is valid — return all hashes within the requested window
+                let last_slot = self.get_last_slot()?;
+                let start_slot = last_slot.saturating_sub(count);
+                let hashes: std::collections::HashSet<Hash> = inner
+                    .entries
+                    .iter()
+                    .filter(|(slot, _)| *slot >= start_slot)
+                    .map(|(_, hash)| *hash)
+                    .collect();
+                if !hashes.is_empty() {
+                    return Ok(hashes);
+                }
+                // Cache is populated but empty for this range — fall through to cold path
+            }
+        }
 
+        // Cold path: read from RocksDB and populate cache
+        let mut hashes = std::collections::HashSet::new();
         let last_slot = self.get_last_slot()?;
         let start_slot = last_slot.saturating_sub(count);
+        let mut entries: Vec<(u64, Hash)> = Vec::new();
         for slot in start_slot..=last_slot {
             if let Ok(Some(block)) = self.get_block_by_slot(slot) {
-                hashes.insert(block.hash());
+                let h = block.hash();
+                hashes.insert(h);
+                entries.push((slot, h));
             }
+        }
+
+        // Warm the cache
+        {
+            let mut cache = BLOCKHASH_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+            *cache = Some(BlockhashCache { entries });
         }
 
         Ok(hashes)
     }
 
+    /// PERF-OPT 3: Push a new blockhash into the in-memory cache after committing a block.
+    /// Evicts entries older than 300 slots.
+    fn push_blockhash_cache(&self, hash: Hash, slot: u64) {
+        let mut cache = BLOCKHASH_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let inner = cache.get_or_insert_with(|| BlockhashCache {
+            entries: Vec::new(),
+        });
+        inner.entries.push((slot, hash));
+        // Evict anything older than 300 slots from the newest slot
+        let cutoff = slot.saturating_sub(300);
+        inner.entries.retain(|(s, _)| *s >= cutoff);
+    }
+
     /// Store a block
+    ///
+    /// PERF-OPT 1: All block-level, transaction, and index writes are collected
+    /// into a single `WriteBatch` and committed with one WAL sync. This reduces
+    /// ~1500 individual RocksDB puts (for a 500-TX block) to 1 atomic write.
     pub fn put_block(&self, block: &Block) -> Result<(), String> {
         let cf = self
             .db
             .cf_handle(CF_BLOCKS)
             .ok_or_else(|| "Blocks CF not found".to_string())?;
+        let slot_cf = self
+            .db
+            .cf_handle(CF_SLOTS)
+            .ok_or_else(|| "Slots CF not found".to_string())?;
+        let tx_cf = self
+            .db
+            .cf_handle(CF_TRANSACTIONS)
+            .ok_or_else(|| "Transactions CF not found".to_string())?;
+        let tx_to_slot_cf = self
+            .db
+            .cf_handle(CF_TX_TO_SLOT)
+            .ok_or_else(|| "TX to slot CF not found".to_string())?;
+        let tx_by_slot_cf = self
+            .db
+            .cf_handle(CF_TX_BY_SLOT)
+            .ok_or_else(|| "TX by slot CF not found".to_string())?;
 
         let block_hash = block.hash();
-        let value =
-            serde_json::to_vec(block).map_err(|e| format!("Failed to serialize block: {}", e))?;
+        let block_serialized =
+            bincode::serialize(block).map_err(|e| format!("Failed to serialize block: {}", e))?;
+        let mut value = Vec::with_capacity(1 + block_serialized.len());
+        value.push(0xBC);
+        value.extend_from_slice(&block_serialized);
 
         // Check if this is a new slot BEFORE writing the slot index
         // (otherwise the lookup finds our own write and metrics are never tracked)
@@ -767,43 +848,66 @@ impl StateStore {
             .unwrap_or(None)
             .is_none();
 
-        self.db
-            .put_cf(&cf, block_hash.0, &value)
-            .map_err(|e| format!("Failed to store block: {}", e))?;
+        let mut batch = WriteBatch::default();
 
-        // Also index by slot
-        let slot_cf = self
-            .db
-            .cf_handle(CF_SLOTS)
-            .ok_or_else(|| "Slots CF not found".to_string())?;
-        self.db
-            .put_cf(&slot_cf, block.header.slot.to_le_bytes(), block_hash.0)
-            .map_err(|e| format!("Failed to index slot: {}", e))?;
+        // Block data + slot index
+        batch.put_cf(&cf, block_hash.0, &value);
+        batch.put_cf(&slot_cf, block.header.slot.to_le_bytes(), block_hash.0);
 
-        self.index_account_transactions(block)?;
-
-        // Store each transaction individually + index for O(1) lookup
+        // Per-transaction writes: tx body + tx→slot + slot→tx indexes
         for tx in &block.transactions {
             let sig = tx.signature();
-            // Store tx body in CF_TRANSACTIONS so getTransaction RPC can find it
-            if let Err(e) = self.put_transaction(tx) {
-                eprintln!("Warning: failed to store tx {}: {}", sig.to_hex(), e);
+
+            // Serialize tx body into batch
+            match bincode::serialize(tx) {
+                Ok(tx_serialized) => {
+                    let mut tx_value = Vec::with_capacity(1 + tx_serialized.len());
+                    tx_value.push(0xBC);
+                    tx_value.extend_from_slice(&tx_serialized);
+                    batch.put_cf(&tx_cf, sig.0, &tx_value);
+                }
+                Err(e) => eprintln!("Warning: failed to serialize tx {}: {}", sig.to_hex(), e),
             }
-            if let Err(e) = self.index_tx_to_slot(&sig, block.header.slot) {
-                // Non-fatal: log but don't fail block storage
-                eprintln!(
-                    "Warning: failed to index tx {} to slot: {}",
+
+            // tx hash → slot (reverse index)
+            batch.put_cf(&tx_to_slot_cf, sig.0, block.header.slot.to_le_bytes());
+
+            // slot+seq → tx hash (forward index)
+            // next_tx_slot_seq still does a read+write, but the seq counter
+            // must be sequential so we keep it outside the batch for correctness.
+            match self.next_tx_slot_seq(block.header.slot) {
+                Ok(seq) => {
+                    let mut key = Vec::with_capacity(16);
+                    key.extend_from_slice(&block.header.slot.to_be_bytes());
+                    key.extend_from_slice(&seq.to_be_bytes());
+                    batch.put_cf(&tx_by_slot_cf, &key, sig.0);
+                }
+                Err(e) => eprintln!(
+                    "Warning: failed to get seq for tx {} by slot: {}",
                     sig.to_hex(),
                     e
-                );
+                ),
             }
         }
+
+        // Commit all block + tx writes atomically
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Failed to write block batch: {}", e))?;
+
+        // Account-transaction indexes still use individual puts (they have
+        // their own counter logic). This is a smaller number of writes and
+        // can be batched in a follow-up optimization.
+        self.index_account_transactions(block)?;
 
         // Track metrics for new slots (skip fork-choice replacements)
         if is_new_slot {
             self.metrics.track_block(block);
             self.metrics.save(&self.db)?;
         }
+
+        // PERF-OPT 3: Update blockhash cache with newly committed block
+        self.push_blockhash_cache(block_hash, block.header.slot);
 
         Ok(())
     }
@@ -817,8 +921,13 @@ impl StateStore {
 
         match self.db.get_cf(&cf, hash.0) {
             Ok(Some(data)) => {
-                let block: Block = serde_json::from_slice(&data)
-                    .map_err(|e| format!("Failed to deserialize block: {}", e))?;
+                let block: Block = if data.first() == Some(&0xBC) {
+                    bincode::deserialize(&data[1..])
+                        .map_err(|e| format!("Failed to deserialize block (bincode): {}", e))?
+                } else {
+                    serde_json::from_slice(&data)
+                        .map_err(|e| format!("Failed to deserialize block (json): {}", e))?
+                };
                 Ok(Some(block))
             }
             Ok(None) => Ok(None),
@@ -852,8 +961,11 @@ impl StateStore {
             .ok_or_else(|| "Transactions CF not found".to_string())?;
 
         let sig = tx.signature();
-        let value = serde_json::to_vec(tx)
+        let tx_serialized = bincode::serialize(tx)
             .map_err(|e| format!("Failed to serialize transaction: {}", e))?;
+        let mut value = Vec::with_capacity(1 + tx_serialized.len());
+        value.push(0xBC);
+        value.extend_from_slice(&tx_serialized);
 
         self.db
             .put_cf(&cf, sig.0, &value)
@@ -869,8 +981,13 @@ impl StateStore {
 
         match self.db.get_cf(&cf, sig.0) {
             Ok(Some(data)) => {
-                let tx: Transaction = serde_json::from_slice(&data)
-                    .map_err(|e| format!("Failed to deserialize transaction: {}", e))?;
+                let tx: Transaction = if data.first() == Some(&0xBC) {
+                    bincode::deserialize(&data[1..])
+                        .map_err(|e| format!("Failed to deserialize transaction (bincode): {}", e))?
+                } else {
+                    serde_json::from_slice(&data)
+                        .map_err(|e| format!("Failed to deserialize transaction (json): {}", e))?
+                };
                 Ok(Some(tx))
             }
             Ok(None) => Ok(None),
@@ -899,8 +1016,13 @@ impl StateStore {
 
         match self.db.get_cf(&cf, pubkey.0) {
             Ok(Some(data)) => {
-                let mut account: Account = serde_json::from_slice(&data)
-                    .map_err(|e| format!("Failed to deserialize account: {}", e))?;
+                let mut account: Account = if data.first() == Some(&0xBC) {
+                    bincode::deserialize(&data[1..])
+                        .map_err(|e| format!("Failed to deserialize account (bincode): {}", e))?
+                } else {
+                    serde_json::from_slice(&data)
+                        .map_err(|e| format!("Failed to deserialize account (json): {}", e))?
+                };
                 account.fixup_legacy(); // M11 fix: repair legacy accounts missing balance separation
                 Ok(Some(account))
             }
@@ -911,48 +1033,77 @@ impl StateStore {
 
     /// Store account
     pub fn put_account(&self, pubkey: &Pubkey, account: &Account) -> Result<(), String> {
+        // Delegate to the hint variant, which will do the extra read itself
+        self.put_account_with_hint(pubkey, account, None, None)
+    }
+
+    /// PERF-OPT 5: Store account with optional hints to skip the extra read.
+    ///
+    /// When the caller already knows whether the account is new and/or what
+    /// the old balance was (e.g. during parallel batch processing), pass those
+    /// hints to avoid a redundant RocksDB get + deserialize on every put.
+    ///
+    /// `is_new_hint`:     Some(true/false) → skip the existence check
+    /// `old_balance_hint`: Some(balance)    → skip the old-account read
+    pub fn put_account_with_hint(
+        &self,
+        pubkey: &Pubkey,
+        account: &Account,
+        is_new_hint: Option<bool>,
+        old_balance_hint: Option<u64>,
+    ) -> Result<(), String> {
         let cf = self
             .db
             .cf_handle(CF_ACCOUNTS)
             .ok_or_else(|| "Accounts CF not found".to_string())?;
 
-        // Check existing account for counter updates
-        let old_account = self
-            .db
-            .get_cf(&cf, pubkey.0)
-            .map_err(|e| format!("Failed to check account: {}", e))?;
-
-        let old_balance = old_account
-            .as_ref()
-            .and_then(|data| serde_json::from_slice::<Account>(data).ok())
-            .map(|a| a.shells)
-            .unwrap_or(0);
-        let is_new = old_account.is_none();
+        // Only read the old account when we don't have hints
+        let (is_new, old_balance) = match (is_new_hint, old_balance_hint) {
+            (Some(new), Some(bal)) => (new, bal),
+            _ => {
+                // Fallback: read existing account for counter updates
+                let old_account = self
+                    .db
+                    .get_cf(&cf, pubkey.0)
+                    .map_err(|e| format!("Failed to check account: {}", e))?;
+                let old_bal = old_account
+                    .as_ref()
+                    .and_then(|data| {
+                        if data.first() == Some(&0xBC) {
+                            bincode::deserialize::<Account>(&data[1..]).ok()
+                        } else {
+                            serde_json::from_slice::<Account>(data).ok()
+                        }
+                    })
+                    .map(|a| a.shells)
+                    .unwrap_or(0);
+                let new_flag = old_account.is_none();
+                (is_new_hint.unwrap_or(new_flag), old_balance_hint.unwrap_or(old_bal))
+            }
+        };
         let new_balance = account.shells;
 
-        let value = serde_json::to_vec(account)
+        let acct_serialized = bincode::serialize(account)
             .map_err(|e| format!("Failed to serialize account: {}", e))?;
+        let mut value = Vec::with_capacity(1 + acct_serialized.len());
+        value.push(0xBC);
+        value.extend_from_slice(&acct_serialized);
 
         self.db
             .put_cf(&cf, pubkey.0, &value)
             .map_err(|e| format!("Failed to store account: {}", e))?;
 
-        // Update counters
-        let mut needs_save = false;
+        // PERF-OPT 2: Update in-memory counters only — do NOT persist metrics
+        // here. The caller (block processor / commit_batch) is responsible for
+        // calling flush_metrics() once after the full block is processed.
         if is_new {
             self.metrics.increment_accounts();
-            needs_save = true;
         }
         // Track active accounts (non-zero balance transitions)
         if old_balance == 0 && new_balance > 0 {
             self.metrics.increment_active_accounts();
-            needs_save = true;
         } else if old_balance > 0 && new_balance == 0 {
             self.metrics.decrement_active_accounts();
-            needs_save = true;
-        }
-        if needs_save {
-            self.metrics.save(&self.db)?;
         }
 
         // Mark state root as dirty with pubkey for incremental Merkle
@@ -1024,10 +1175,8 @@ impl StateStore {
             match self.db.get_cf(&cf_accounts, pk) {
                 Ok(Some(value)) => {
                     // Account exists: H(pubkey || account_bytes)
-                    let mut data = Vec::with_capacity(32 + value.len());
-                    data.extend_from_slice(pk);
-                    data.extend_from_slice(&value);
-                    let leaf = Hash::hash(&data);
+                    // PERF-OPT 7: Use hash_two_parts to avoid heap allocation
+                    let leaf = Hash::hash_two_parts(pk, &value);
                     batch.put_cf(&cf_leaves, pk, leaf.0);
                 }
                 Ok(None) => {
@@ -1037,9 +1186,10 @@ impl StateStore {
                 Err(_) => continue,
             }
             // Remove dirty marker
-            let mut dirty_key = Vec::with_capacity(dirty_prefix.len() + 32);
-            dirty_key.extend_from_slice(dirty_prefix);
-            dirty_key.extend_from_slice(pk);
+            // PERF-OPT 8: Stack-allocated [u8; 43] instead of Vec for fixed-size key
+            let mut dirty_key = [0u8; 43]; // 11 ("dirty_acct:") + 32 (pubkey)
+            dirty_key[..11].copy_from_slice(dirty_prefix);
+            dirty_key[11..43].copy_from_slice(pk);
             batch.delete_cf(&cf_stats, &dirty_key);
         }
         // Reset dirty count
@@ -1097,10 +1247,8 @@ impl StateStore {
             .iterator_cf(&cf_accounts, rocksdb::IteratorMode::Start);
         for item in iter.flatten() {
             let (key, value) = item;
-            let mut data = Vec::with_capacity(key.len() + value.len());
-            data.extend_from_slice(&key);
-            data.extend_from_slice(&value);
-            let leaf = Hash::hash(&data);
+            // PERF-OPT 7: hash_two_parts avoids alloc per leaf
+            let leaf = Hash::hash_two_parts(&key, &value);
             leaves.push(leaf);
             batch.put_cf(&cf_leaves, &*key, leaf.0);
             count += 1;
@@ -1136,10 +1284,8 @@ impl StateStore {
         let mut leaves: Vec<Hash> = Vec::new();
         let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
         for (key, value) in iter.flatten() {
-            let mut data = Vec::with_capacity(key.len() + value.len());
-            data.extend_from_slice(&key);
-            data.extend_from_slice(&value);
-            leaves.push(Hash::hash(&data));
+            // PERF-OPT 7: hash_two_parts avoids alloc per leaf
+            leaves.push(Hash::hash_two_parts(&key, &value));
         }
 
         if leaves.is_empty() {
@@ -1161,6 +1307,8 @@ impl StateStore {
 
     /// Build a Merkle root from a sorted list of leaf hashes
     /// Uses binary tree: pair adjacent leaves, hash pairs, repeat until single root
+    /// PERF-OPT 6: Double-buffer approach — alternates between two pre-allocated Vecs
+    /// instead of allocating a new Vec per tree level. Eliminates ~log2(N) allocations.
     fn merkle_root_from_leaves(leaves: &[Hash]) -> Hash {
         if leaves.is_empty() {
             return Hash::default();
@@ -1169,28 +1317,45 @@ impl StateStore {
             return leaves[0];
         }
 
-        let mut level = leaves.to_vec();
-        while level.len() > 1 {
-            let mut next_level = Vec::with_capacity(level.len().div_ceil(2));
-            for pair in level.chunks(2) {
-                if pair.len() == 2 {
-                    let mut combined = [0u8; 64];
-                    combined[..32].copy_from_slice(&pair[0].0);
-                    combined[32..].copy_from_slice(&pair[1].0);
-                    next_level.push(Hash::hash(&combined));
-                } else {
-                    // L1 fix: rehash odd leaf with itself instead of promoting verbatim
-                    // Prevents CVE-2012-2459 class attacks (Merkle 2nd preimage)
-                    let mut combined = [0u8; 64];
-                    combined[..32].copy_from_slice(&pair[0].0);
-                    combined[32..].copy_from_slice(&pair[0].0);
-                    next_level.push(Hash::hash(&combined));
-                }
+        // Two alternating buffers to avoid per-level allocation
+        let mut buf_a: Vec<Hash> = Vec::with_capacity(leaves.len().div_ceil(2));
+        let mut buf_b: Vec<Hash> = Vec::with_capacity(leaves.len().div_ceil(4).max(1));
+        let mut combined = [0u8; 64];
+
+        // First level: consume input slice
+        for pair in leaves.chunks(2) {
+            combined[..32].copy_from_slice(&pair[0].0);
+            if pair.len() == 2 {
+                combined[32..].copy_from_slice(&pair[1].0);
+            } else {
+                // L1 fix: rehash odd leaf with itself (CVE-2012-2459 mitigation)
+                combined[32..].copy_from_slice(&pair[0].0);
             }
-            level = next_level;
+            buf_a.push(Hash::hash(&combined));
         }
 
-        level[0]
+        // Subsequent levels: alternate between buf_a and buf_b
+        let mut use_a = true;
+        while (if use_a { &buf_a } else { &buf_b }).len() > 1 {
+            let (src, dst) = if use_a {
+                (&buf_a as &Vec<Hash>, &mut buf_b)
+            } else {
+                (&buf_b as &Vec<Hash>, &mut buf_a)
+            };
+            dst.clear();
+            for pair in src.chunks(2) {
+                combined[..32].copy_from_slice(&pair[0].0);
+                if pair.len() == 2 {
+                    combined[32..].copy_from_slice(&pair[1].0);
+                } else {
+                    combined[32..].copy_from_slice(&pair[0].0);
+                }
+                dst.push(Hash::hash(&combined));
+            }
+            use_a = !use_a;
+        }
+
+        if use_a { buf_a[0] } else { buf_b[0] }
     }
 
     /// Fast state root check: returns cached root if no accounts modified since last computation
@@ -1226,39 +1391,30 @@ impl StateStore {
     pub fn mark_account_dirty_with_key(&self, pubkey: &Pubkey) {
         if let Some(cf) = self.db.cf_handle(CF_STATS) {
             // Add to dirty set: "dirty_acct:" + pubkey(32)
-            let mut key = Vec::with_capacity(11 + 32);
-            key.extend_from_slice(b"dirty_acct:");
-            key.extend_from_slice(&pubkey.0);
+            // PERF-OPT 8: Stack-allocated [u8; 43] instead of heap Vec
+            let mut key = [0u8; 43]; // 11 ("dirty_acct:") + 32 (pubkey)
+            key[..11].copy_from_slice(b"dirty_acct:");
+            key[11..43].copy_from_slice(&pubkey.0);
             let _ = self.db.put_cf(&cf, &key, []);
 
-            // Increment dirty counter
-            let current = match self.db.get_cf(&cf, b"dirty_account_count") {
-                Ok(Some(data)) if data.len() == 8 => {
-                    let bytes: [u8; 8] = data.as_slice().try_into().unwrap_or([0; 8]);
-                    u64::from_le_bytes(bytes)
-                }
-                _ => 0,
-            };
+            // PERF-OPT 9: Write a non-zero marker instead of read-modify-write.
+            // compute_state_root_cached() only checks dirty == 0 vs non-zero,
+            // so incrementing is unnecessary. This eliminates a RocksDB GET on
+            // every account write (hot path during block processing).
             let _ = self
                 .db
-                .put_cf(&cf, b"dirty_account_count", (current + 1).to_le_bytes());
+                .put_cf(&cf, b"dirty_account_count", 1u64.to_le_bytes());
         }
     }
 
-    /// Legacy mark_account_dirty (no pubkey) — increments counter only.
+    /// Legacy mark_account_dirty (no pubkey) — sets dirty flag only.
     /// Prefer mark_account_dirty_with_key() for incremental Merkle support.
     pub fn mark_account_dirty(&self) {
         if let Some(cf) = self.db.cf_handle(CF_STATS) {
-            let current = match self.db.get_cf(&cf, b"dirty_account_count") {
-                Ok(Some(data)) if data.len() == 8 => {
-                    let bytes: [u8; 8] = data.as_slice().try_into().unwrap_or([0; 8]);
-                    u64::from_le_bytes(bytes)
-                }
-                _ => 0,
-            };
+            // PERF-OPT 9: Just write non-zero instead of read-modify-write
             let _ = self
                 .db
-                .put_cf(&cf, b"dirty_account_count", (current + 1).to_le_bytes());
+                .put_cf(&cf, b"dirty_account_count", 1u64.to_le_bytes());
         }
     }
 
@@ -1316,7 +1472,12 @@ impl StateStore {
         let mut count = 0u64;
         let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
         for (_, value) in iter.flatten() {
-            if let Ok(account) = serde_json::from_slice::<Account>(&value) {
+            let maybe_account = if value.first() == Some(&0xBC) {
+                bincode::deserialize::<Account>(&value[1..]).ok()
+            } else {
+                serde_json::from_slice::<Account>(&value).ok()
+            };
+            if let Some(account) = maybe_account {
                 if account.shells > 0 {
                     count += 1;
                 }
@@ -1405,10 +1566,16 @@ impl StateStore {
             .cf_handle(CF_ACCOUNTS)
             .ok_or_else(|| "Accounts CF not found".to_string())?;
         let mut batch = rocksdb::WriteBatch::default();
-        let from_bytes =
-            serde_json::to_vec(&from_account).map_err(|e| format!("Serialize from: {}", e))?;
-        let to_bytes =
-            serde_json::to_vec(&to_account).map_err(|e| format!("Serialize to: {}", e))?;
+        let from_serialized =
+            bincode::serialize(&from_account).map_err(|e| format!("Serialize from: {}", e))?;
+        let mut from_bytes = Vec::with_capacity(1 + from_serialized.len());
+        from_bytes.push(0xBC);
+        from_bytes.extend_from_slice(&from_serialized);
+        let to_serialized =
+            bincode::serialize(&to_account).map_err(|e| format!("Serialize to: {}", e))?;
+        let mut to_bytes = Vec::with_capacity(1 + to_serialized.len());
+        to_bytes.push(0xBC);
+        to_bytes.extend_from_slice(&to_serialized);
         batch.put_cf(&cf, from.0, &from_bytes);
         batch.put_cf(&cf, to.0, &to_bytes);
         self.db
@@ -1655,8 +1822,13 @@ impl StateStore {
             u64::MAX.to_be_bytes().to_vec()
         };
 
-        let iter = self.db.iterator_cf(
+        // Use total_order_seek to bypass prefix bloom filter and scan across slots
+        let mut read_opts = rocksdb::ReadOptions::default();
+        read_opts.set_total_order_seek(true);
+
+        let iter = self.db.iterator_cf_opt(
             &cf,
+            read_opts,
             rocksdb::IteratorMode::From(&seek_key, Direction::Reverse),
         );
 
@@ -2144,6 +2316,7 @@ impl StateStore {
         &self,
         program: &Pubkey,
         limit: usize,
+        before_slot: Option<u64>,
     ) -> Result<Vec<crate::ProgramCallActivity>, String> {
         let cf = self
             .db
@@ -2153,9 +2326,13 @@ impl StateStore {
         let mut prefix = Vec::with_capacity(32);
         prefix.extend_from_slice(&program.0);
 
-        // Reverse iterate from end of prefix range — O(limit) instead of O(N)
+        // Build seek key: use before_slot as upper bound, or 0xFF..FF to start from newest
         let mut end_key = prefix.clone();
-        end_key.extend_from_slice(&[0xFF; 44]); // past any valid slot(8)+seq(4)+hash(32)
+        if let Some(bs) = before_slot {
+            end_key.extend_from_slice(&bs.to_be_bytes());
+        } else {
+            end_key.extend_from_slice(&[0xFF; 44]); // past any valid slot(8)+seq(4)+hash(32)
+        }
 
         let iter = self.db.iterator_cf(
             &cf,
@@ -2167,6 +2344,17 @@ impl StateStore {
             let (key, value) = item.map_err(|e| format!("Iterator error: {}", e))?;
             if !key.starts_with(&prefix) {
                 break;
+            }
+
+            // When paginating, skip entries at or after before_slot (cursor is exclusive)
+            if let Some(bs) = before_slot {
+                if key.len() >= 40 {
+                    let slot_bytes: [u8; 8] = key[32..40].try_into().unwrap_or([0xFF; 8]);
+                    let slot = u64::from_be_bytes(slot_bytes);
+                    if slot >= bs {
+                        continue;
+                    }
+                }
             }
 
             let activity = crate::decode_program_call_activity(&value)?;
@@ -2380,7 +2568,8 @@ impl StateStore {
                 self.metrics.decrement_active_accounts();
             }
         }
-        // Persist metrics to disk (single write of all counters)
+        // PERF-OPT 2: Persist metrics once after the full batch commit,
+        // not on every individual put_account call.
         self.metrics.save(&self.db)?;
 
         // Mark each modified account dirty for incremental Merkle recomputation
@@ -2389,6 +2578,15 @@ impl StateStore {
         }
 
         Ok(())
+    }
+
+    /// PERF-OPT 2: Flush in-memory metrics counters to RocksDB.
+    ///
+    /// Call this once after processing a full block instead of on every
+    /// `put_account`. Reduces per-block metrics I/O from O(num_accounts)
+    /// to O(1) — saving ~6 RocksDB puts per account touched.
+    pub fn flush_metrics(&self) -> Result<(), String> {
+        self.metrics.save(&self.db)
     }
 }
 
@@ -2499,8 +2697,13 @@ impl StateBatch {
             .ok_or_else(|| "Accounts CF not found".to_string())?;
         match self.db.get_cf(&cf, pubkey.0) {
             Ok(Some(data)) => {
-                let mut account: Account = serde_json::from_slice(&data)
-                    .map_err(|e| format!("Failed to deserialize account: {}", e))?;
+                let mut account: Account = if data.first() == Some(&0xBC) {
+                    bincode::deserialize(&data[1..])
+                        .map_err(|e| format!("Failed to deserialize account (bincode): {}", e))?
+                } else {
+                    serde_json::from_slice(&data)
+                        .map_err(|e| format!("Failed to deserialize account (json): {}", e))?
+                };
                 account.fixup_legacy(); // M11 fix
                 Ok(Some(account))
             }
@@ -2522,9 +2725,14 @@ impl StateBatch {
         } else {
             // Check disk
             match self.db.get_cf(&cf, pubkey.0) {
-                Ok(Some(data)) => serde_json::from_slice::<Account>(&data)
-                    .ok()
-                    .map(|a| a.shells),
+                Ok(Some(data)) => {
+                    let acct = if data.first() == Some(&0xBC) {
+                        bincode::deserialize::<Account>(&data[1..]).ok()
+                    } else {
+                        serde_json::from_slice::<Account>(&data).ok()
+                    };
+                    acct.map(|a| a.shells)
+                }
                 _ => None,
             }
         };
@@ -2543,8 +2751,11 @@ impl StateBatch {
             self.active_account_delta -= 1;
         }
 
-        let value = serde_json::to_vec(account)
+        let acct_serialized = bincode::serialize(account)
             .map_err(|e| format!("Failed to serialize account: {}", e))?;
+        let mut value = Vec::with_capacity(1 + acct_serialized.len());
+        value.push(0xBC);
+        value.extend_from_slice(&acct_serialized);
 
         self.batch.put_cf(&cf, pubkey.0, &value);
         self.account_overlay.insert(*pubkey, account.clone());
@@ -2581,8 +2792,11 @@ impl StateBatch {
             .cf_handle(CF_TRANSACTIONS)
             .ok_or_else(|| "Transactions CF not found".to_string())?;
         let sig = tx.signature();
-        let value = serde_json::to_vec(tx)
+        let tx_serialized = bincode::serialize(tx)
             .map_err(|e| format!("Failed to serialize transaction: {}", e))?;
+        let mut value = Vec::with_capacity(1 + tx_serialized.len());
+        value.push(0xBC);
+        value.extend_from_slice(&tx_serialized);
         self.batch.put_cf(&cf, sig.0, &value);
         Ok(())
     }
@@ -2836,6 +3050,43 @@ impl StateBatch {
             self.batch.put_cf(&cf_slot, &slot_key, &key);
         }
 
+        Ok(())
+    }
+
+    /// Write contract storage key/value to CF_CONTRACT_STORAGE in the batch.
+    /// Key format: program(32) + storage_key_bytes  → value_bytes
+    /// Enables fast-path reads via prefix scan without deserializing the whole account.
+    pub fn put_contract_storage(
+        &mut self,
+        program: &Pubkey,
+        storage_key: &[u8],
+        value: &[u8],
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_CONTRACT_STORAGE)
+            .ok_or_else(|| "Contract storage CF not found".to_string())?;
+        let mut key = Vec::with_capacity(32 + storage_key.len());
+        key.extend_from_slice(&program.0);
+        key.extend_from_slice(storage_key);
+        self.batch.put_cf(&cf, &key, value);
+        Ok(())
+    }
+
+    /// Delete a contract storage key from CF_CONTRACT_STORAGE in the batch.
+    pub fn delete_contract_storage(
+        &mut self,
+        program: &Pubkey,
+        storage_key: &[u8],
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_CONTRACT_STORAGE)
+            .ok_or_else(|| "Contract storage CF not found".to_string())?;
+        let mut key = Vec::with_capacity(32 + storage_key.len());
+        key.extend_from_slice(&program.0);
+        key.extend_from_slice(storage_key);
+        self.batch.delete_cf(&cf, &key);
         Ok(())
     }
 
@@ -3982,7 +4233,8 @@ impl StateStore {
 
     // ─── Contract Event Storage ──────────────────────────────────────────────
 
-    /// Store a contract event. Key: program_pubkey + slot(BE) + seq_counter
+    /// Store a contract event. Key: program_pubkey + slot(BE) + name_hash(BE) + seq_counter
+    /// (Matches batch writer key format for consistency)
     pub fn put_contract_event(
         &self,
         program: &Pubkey,
@@ -3996,9 +4248,18 @@ impl StateStore {
         // Atomic sequence counter per program+slot
         let seq = self.next_event_seq(program, event.slot)?;
 
-        let mut key = Vec::with_capacity(32 + 8 + 8);
+        let name_hash = {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut h = DefaultHasher::new();
+            event.name.hash(&mut h);
+            h.finish()
+        };
+
+        let mut key = Vec::with_capacity(32 + 8 + 8 + 8);
         key.extend_from_slice(&program.0);
         key.extend_from_slice(&event.slot.to_be_bytes());
+        key.extend_from_slice(&name_hash.to_be_bytes());
         key.extend_from_slice(&seq.to_be_bytes());
 
         let data =
@@ -4023,11 +4284,94 @@ impl StateStore {
         Ok(())
     }
 
+    /// Write contract storage key/value to CF_CONTRACT_STORAGE (non-batch).
+    /// Key format: program(32) + storage_key_bytes → value_bytes
+    pub fn put_contract_storage(
+        &self,
+        program: &Pubkey,
+        storage_key: &[u8],
+        value: &[u8],
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_CONTRACT_STORAGE)
+            .ok_or_else(|| "Contract storage CF not found".to_string())?;
+        let mut key = Vec::with_capacity(32 + storage_key.len());
+        key.extend_from_slice(&program.0);
+        key.extend_from_slice(storage_key);
+        self.db
+            .put_cf(&cf, &key, value)
+            .map_err(|e| format!("Failed to store contract storage: {}", e))
+    }
+
+    /// Delete contract storage from CF_CONTRACT_STORAGE (non-batch).
+    pub fn delete_contract_storage(
+        &self,
+        program: &Pubkey,
+        storage_key: &[u8],
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_CONTRACT_STORAGE)
+            .ok_or_else(|| "Contract storage CF not found".to_string())?;
+        let mut key = Vec::with_capacity(32 + storage_key.len());
+        key.extend_from_slice(&program.0);
+        key.extend_from_slice(storage_key);
+        self.db
+            .delete_cf(&cf, &key)
+            .map_err(|e| format!("Failed to delete contract storage: {}", e))
+    }
+
+    /// Iterate contract storage entries from CF_CONTRACT_STORAGE using prefix scan.
+    /// Key format: program(32) + storage_key(var) → value(var).
+    /// Uses `after_key` cursor for pagination (entries strictly after the given key).
+    pub fn get_contract_storage_entries(
+        &self,
+        program: &Pubkey,
+        limit: usize,
+        after_key: Option<Vec<u8>>,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_CONTRACT_STORAGE)
+            .ok_or_else(|| "Contract storage CF not found".to_string())?;
+
+        let prefix = program.0.to_vec();
+        let start = if let Some(ak) = after_key {
+            let mut k = prefix.clone();
+            k.extend_from_slice(&ak);
+            k.push(0); // position just past the after_key
+            k
+        } else {
+            prefix.clone()
+        };
+
+        let iter = self.db.iterator_cf(
+            &cf,
+            rocksdb::IteratorMode::From(&start, Direction::Forward),
+        );
+
+        let mut results = Vec::new();
+        for item in iter {
+            let (k, v) = item.map_err(|e| format!("Iterator error: {}", e))?;
+            if !k.starts_with(&prefix) {
+                break;
+            }
+            let storage_key = k[32..].to_vec();
+            results.push((storage_key, v.to_vec()));
+            if results.len() >= limit {
+                break;
+            }
+        }
+        Ok(results)
+    }
+
     /// Get events for a specific program, newest first, with limit
     pub fn get_events_by_program(
         &self,
         program: &Pubkey,
         limit: usize,
+        before_slot: Option<u64>,
     ) -> Result<Vec<ContractEvent>, String> {
         let cf = self
             .db
@@ -4037,9 +4381,13 @@ impl StateStore {
         let mut prefix = Vec::with_capacity(32);
         prefix.extend_from_slice(&program.0);
 
-        // Create an end key that is one past the prefix for reverse iteration
+        // Build seek key: use before_slot as upper bound, or 0xFF..FF to start from newest
         let mut end_key = prefix.clone();
-        end_key.extend_from_slice(&[0xFF; 16]); // past any valid slot+seq
+        if let Some(bs) = before_slot {
+            end_key.extend_from_slice(&bs.to_be_bytes());
+        } else {
+            end_key.extend_from_slice(&[0xFF; 16]); // past any valid slot+seq
+        }
 
         let iter = self.db.iterator_cf(
             &cf,
@@ -4050,6 +4398,16 @@ impl StateStore {
         for (key, value) in iter.flatten() {
             if !key.starts_with(&prefix) {
                 break;
+            }
+            // When paginating, skip entries at or after before_slot (cursor is exclusive)
+            if let Some(bs) = before_slot {
+                if key.len() >= 40 {
+                    let slot_bytes: [u8; 8] = key[32..40].try_into().unwrap_or([0xFF; 8]);
+                    let slot = u64::from_be_bytes(slot_bytes);
+                    if slot >= bs {
+                        continue;
+                    }
+                }
             }
             if let Ok(event) = serde_json::from_slice::<ContractEvent>(&value) {
                 events.push(event);
@@ -4198,6 +4556,7 @@ impl StateStore {
         &self,
         token_program: &Pubkey,
         limit: usize,
+        after_holder: Option<&Pubkey>,
     ) -> Result<Vec<(Pubkey, u64)>, String> {
         let cf = self
             .db
@@ -4205,9 +4564,21 @@ impl StateStore {
             .ok_or_else(|| "Token balances CF not found".to_string())?;
 
         let prefix = token_program.0.to_vec();
+
+        // Build start key: if after_holder is provided, start just past it
+        let start_key = if let Some(ah) = after_holder {
+            let mut k = prefix.clone();
+            k.extend_from_slice(&ah.0);
+            // Add a zero byte to position just past this key
+            k.push(0);
+            k
+        } else {
+            prefix.clone()
+        };
+
         let iter = self.db.iterator_cf(
             &cf,
-            rocksdb::IteratorMode::From(&prefix, Direction::Forward),
+            rocksdb::IteratorMode::From(&start_key, Direction::Forward),
         );
 
         let mut holders = Vec::new();
@@ -4262,6 +4633,7 @@ impl StateStore {
         &self,
         token_program: &Pubkey,
         limit: usize,
+        before_slot: Option<u64>,
     ) -> Result<Vec<TokenTransfer>, String> {
         let cf = self
             .db
@@ -4271,8 +4643,13 @@ impl StateStore {
         let mut prefix = Vec::with_capacity(32);
         prefix.extend_from_slice(&token_program.0);
 
+        // Build seek key: use before_slot as upper bound, or 0xFF..FF to start from newest
         let mut end_key = prefix.clone();
-        end_key.extend_from_slice(&[0xFF; 16]);
+        if let Some(bs) = before_slot {
+            end_key.extend_from_slice(&bs.to_be_bytes());
+        } else {
+            end_key.extend_from_slice(&[0xFF; 16]);
+        }
 
         let iter = self.db.iterator_cf(
             &cf,
@@ -4283,6 +4660,16 @@ impl StateStore {
         for (key, value) in iter.flatten() {
             if !key.starts_with(&prefix) {
                 break;
+            }
+            // When paginating, skip entries at or after before_slot (cursor is exclusive)
+            if let Some(bs) = before_slot {
+                if key.len() >= 40 {
+                    let slot_bytes: [u8; 8] = key[32..40].try_into().unwrap_or([0xFF; 8]);
+                    let slot = u64::from_be_bytes(slot_bytes);
+                    if slot >= bs {
+                        continue;
+                    }
+                }
             }
             if let Ok(transfer) = serde_json::from_slice::<TokenTransfer>(&value) {
                 transfers.push(transfer);
@@ -4456,8 +4843,9 @@ impl StateStore {
         &self,
         program: &Pubkey,
         limit: usize,
+        before_slot: Option<u64>,
     ) -> Result<Vec<ContractEvent>, String> {
-        self.get_events_by_program(program, limit)
+        self.get_events_by_program(program, limit, before_slot)
     }
 
     /// Reconcile active account count with actual database

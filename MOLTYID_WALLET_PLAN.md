@@ -199,7 +199,7 @@ Transform the address page from a scroll of cards to a tabbed interface:
 When no identity is registered, the Identity tab shows a call-to-action:
 ```
 ┌──────────────────────────────────────────────────┐
-│  No MoltyID Identity Found                       │
+│  No MoltyID Found                       │
 │                                                  │
 │  Register your identity to unlock:               │
 │  ✓ .molt name service                           │

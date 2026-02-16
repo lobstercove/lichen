@@ -62,9 +62,9 @@ build-sdk:
 # Test
 # ─────────────────────────────────────────────────────────────────────────────
 
-.PHONY: test test-node test-contracts test-e2e test-dex
+.PHONY: test test-node test-contracts test-e2e test-dex test-prediction-market
 
-test: test-node test-contracts
+test: test-node test-contracts test-prediction-market
 	@echo "✅ All tests passed"
 
 test-node:
@@ -102,6 +102,10 @@ test-dex:
 		echo "  Testing $$c..."; \
 		(cd contracts/$$c && cargo test --release 2>&1 | tail -1) || true; \
 	done
+
+test-prediction-market:
+	@echo "🧪 Running prediction market contract tests..."
+	@cd contracts/prediction_market && cargo test --release
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Deploy
@@ -181,7 +185,7 @@ docker-down:
 # Utilities
 # ─────────────────────────────────────────────────────────────────────────────
 
-.PHONY: clean lint fmt health check
+.PHONY: clean lint fmt health check check-expected-contracts production-gate
 
 clean:
 	@echo "🧹 Cleaning..."
@@ -214,6 +218,14 @@ check:
 		fi; \
 	done
 
+check-expected-contracts:
+	@echo "🔍 Verifying expected contract lockfile..."
+	python3 tests/update-expected-contracts.py --check
+
+production-gate: check-expected-contracts
+	@echo "🚦 Running production E2E gate..."
+	bash tests/production-e2e-gate.sh
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Help
 # ─────────────────────────────────────────────────────────────────────────────
@@ -233,6 +245,7 @@ help:
 	@echo "  make test-contracts     Run contract unit + adversarial tests"
 	@echo "  make test-e2e           Run cross-contract E2E tests"
 	@echo "  make test-dex           Run DEX contract tests only"
+	@echo "  make test-prediction-market  Run prediction_market contract tests"
 	@echo ""
 	@echo "Deploy:"
 	@echo "  make deploy-local       Deploy to local validator"
@@ -256,3 +269,5 @@ help:
 	@echo "  make fmt                Format all Rust code"
 	@echo "  make health             Check node health"
 	@echo "  make check              Cargo check all code"
+	@echo "  make check-expected-contracts  Verify contracts lockfile parity"
+	@echo "  make production-gate    Run lockfile check + production E2E gate"

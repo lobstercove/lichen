@@ -302,7 +302,7 @@ pub extern "C" fn hello() {
     <section class="section" id="examples">
         <div class="container">
             <div class="section-header">
-                <h2 class="section-title">23 Production-Ready Contracts</h2>
+                <h2 class="section-title">37 Production-Ready Contracts</h2>
                 <p class="section-subtitle">Battle-tested with security hardening. 522 tests, 0 failures. Copy, modify, deploy.</p>
             </div>
             
@@ -913,10 +913,397 @@ pub extern "C" fn hello() {
                         </button>
                     </div>
                 </div>
+
+                <!-- ─── Staking ─── -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-layer-group"></i></div>
+                        <div class="example-badge">32 KB</div>
+                    </div>
+                    <h3>MoltStaking</h3>
+                    <p class="example-description">Delegated proof-of-stake with validator registration, delegation, slashing, and epoch rewards</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Stake</span>
+                        <span class="feature-tag">Delegate</span>
+                        <span class="feature-tag">Slash</span>
+                        <span class="feature-tag">Rewards</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 680 lines</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=staking" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('staking')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+
+                <!-- ─── Multisig ─── -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-key"></i></div>
+                        <div class="example-badge">22 KB</div>
+                    </div>
+                    <h3>MoltMultisig</h3>
+                    <p class="example-description">M-of-N multisignature wallet with proposal creation, approval flow, and time-locked execution</p>
+                    <div class="example-features">
+                        <span class="feature-tag">M-of-N</span>
+                        <span class="feature-tag">Proposals</span>
+                        <span class="feature-tag">Timelock</span>
+                        <span class="feature-tag">Execute</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 520 lines</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=multisig" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('multisig')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+
+                <!-- ─── Vesting ─── -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-clock"></i></div>
+                        <div class="example-badge">14 KB</div>
+                    </div>
+                    <h3>MoltVesting</h3>
+                    <p class="example-description">Token vesting schedules with cliff periods, linear unlock, revocation, and beneficiary management</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Cliff</span>
+                        <span class="feature-tag">Linear</span>
+                        <span class="feature-tag">Revoke</span>
+                        <span class="feature-tag">Claim</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 380 lines</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=vesting" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('vesting')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+
+                <!-- ─── Custody ─── -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-shield-alt"></i></div>
+                        <div class="example-badge">18 KB</div>
+                    </div>
+                    <h3>MoltCustody</h3>
+                    <p class="example-description">Institutional-grade custody with deposit/withdrawal policies, whitelists, and audit trails</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Deposit</span>
+                        <span class="feature-tag">Withdraw</span>
+                        <span class="feature-tag">Whitelist</span>
+                        <span class="feature-tag">Audit</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 440 lines</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=custody" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('custody')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+
+                <!-- ─── Faucet ─── -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-faucet"></i></div>
+                        <div class="example-badge">8 KB</div>
+                    </div>
+                    <h3>MoltFaucet</h3>
+                    <p class="example-description">Devnet/testnet token faucet with rate limiting, cooldown periods, and drip amount controls</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Drip</span>
+                        <span class="feature-tag">Cooldown</span>
+                        <span class="feature-tag">Rate Limit</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 200 lines</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=faucet" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('faucet')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+
+                <!-- ─── DAO Treasury ─── -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-piggy-bank"></i></div>
+                        <div class="example-badge">16 KB</div>
+                    </div>
+                    <h3>DAO Treasury</h3>
+                    <p class="example-description">Community treasury with governance-controlled spending proposals, budget allocation, and grant distribution</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Proposals</span>
+                        <span class="feature-tag">Budgets</span>
+                        <span class="feature-tag">Grants</span>
+                        <span class="feature-tag">Spend</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 360 lines</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=dao_treasury" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('dao_treasury')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+
+                <!-- ═══ OPCODE-DISPATCH CONTRACTS ═══ -->
+
+                <!-- ─── Social Protocol ─── -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-comments"></i></div>
+                        <div class="example-badge">28 KB</div>
+                    </div>
+                    <h3>Social Protocol</h3>
+                    <p class="example-description">On-chain social graph with follow/unfollow, posts, likes, and reputation-weighted feeds</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Follow</span>
+                        <span class="feature-tag">Post</span>
+                        <span class="feature-tag">Like</span>
+                        <span class="feature-tag">Feed</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 620 lines</span>
+                        <span><i class="fas fa-vial"></i> 14 tests</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=social_protocol" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('social_protocol')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+
+                <!-- ─── Content Protocol ─── -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-newspaper"></i></div>
+                        <div class="example-badge">24 KB</div>
+                    </div>
+                    <h3>Content Protocol</h3>
+                    <p class="example-description">Decentralized content with IPFS-pinned media, creator monetization, tips, and content moderation</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Publish</span>
+                        <span class="feature-tag">Monetize</span>
+                        <span class="feature-tag">Tip</span>
+                        <span class="feature-tag">Moderate</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 550 lines</span>
+                        <span><i class="fas fa-vial"></i> 12 tests</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=content_protocol" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('content_protocol')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+
+                <!-- ─── AI Marketplace ─── -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-brain"></i></div>
+                        <div class="example-badge">35 KB</div>
+                    </div>
+                    <h3>AI Marketplace</h3>
+                    <p class="example-description">Agent-to-agent service marketplace with task bidding, escrow payments, and quality scoring</p>
+                    <div class="example-features">
+                        <span class="feature-tag">List</span>
+                        <span class="feature-tag">Bid</span>
+                        <span class="feature-tag">Escrow</span>
+                        <span class="feature-tag">Score</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 720 lines</span>
+                        <span><i class="fas fa-vial"></i> 18 tests</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=ai_marketplace" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('ai_marketplace')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+
+                <!-- ─── Prediction Market ─── -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-chart-line"></i></div>
+                        <div class="example-badge">38 KB</div>
+                    </div>
+                    <h3>Prediction Market</h3>
+                    <p class="example-description">Binary outcome markets with AMM pricing, liquidity pools, resolution oracles, and DAO arbitration</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Create</span>
+                        <span class="feature-tag">Trade</span>
+                        <span class="feature-tag">Resolve</span>
+                        <span class="feature-tag">Redeem</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 850 lines</span>
+                        <span><i class="fas fa-vial"></i> 24 tests</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=prediction_market" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('prediction_market')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+
+                <!-- ─── Insurance Protocol ─── -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-umbrella"></i></div>
+                        <div class="example-badge">30 KB</div>
+                    </div>
+                    <h3>Insurance Protocol</h3>
+                    <p class="example-description">Parametric insurance with policy creation, premium pools, oracle-triggered claims, and payouts</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Policy</span>
+                        <span class="feature-tag">Premium</span>
+                        <span class="feature-tag">Claim</span>
+                        <span class="feature-tag">Payout</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 580 lines</span>
+                        <span><i class="fas fa-vial"></i> 16 tests</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=insurance_protocol" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('insurance_protocol')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+
+                <!-- ─── Supply Chain ─── -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-truck"></i></div>
+                        <div class="example-badge">26 KB</div>
+                    </div>
+                    <h3>Supply Chain</h3>
+                    <p class="example-description">End-to-end supply chain tracking with provenance, checkpoints, multi-party attestation, and recalls</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Track</span>
+                        <span class="feature-tag">Verify</span>
+                        <span class="feature-tag">Attest</span>
+                        <span class="feature-tag">Recall</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 490 lines</span>
+                        <span><i class="fas fa-vial"></i> 14 tests</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=supply_chain" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('supply_chain')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+
+                <!-- ─── Time Lock ─── -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-hourglass-half"></i></div>
+                        <div class="example-badge">12 KB</div>
+                    </div>
+                    <h3>Time Lock</h3>
+                    <p class="example-description">Governance time-lock controller with configurable delays, proposal queuing, and cancellation</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Queue</span>
+                        <span class="feature-tag">Execute</span>
+                        <span class="feature-tag">Cancel</span>
+                        <span class="feature-tag">Delay</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 310 lines</span>
+                        <span><i class="fas fa-vial"></i> 10 tests</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=time_lock" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('time_lock')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
+
+                <!-- ─── Cross-Chain Messaging ─── -->
+                <div class="example-card">
+                    <div class="example-header">
+                        <div class="example-icon"><i class="fas fa-globe"></i></div>
+                        <div class="example-badge">20 KB</div>
+                    </div>
+                    <h3>Cross-Chain Messaging</h3>
+                    <p class="example-description">Cross-chain message relay with packet routing, acknowledgements, channel management, and fee estimation</p>
+                    <div class="example-features">
+                        <span class="feature-tag">Send</span>
+                        <span class="feature-tag">Relay</span>
+                        <span class="feature-tag">Ack</span>
+                        <span class="feature-tag">Channel</span>
+                    </div>
+                    <div class="example-stats">
+                        <span><i class="fas fa-code"></i> 420 lines</span>
+                        <span><i class="fas fa-vial"></i> 12 tests</span>
+                    </div>
+                    <div class="example-actions">
+                        <a href="playground.html?example=cross_chain_msg" class="btn btn-primary btn-sm">
+                            <i class="fas fa-play"></i> Load in IDE
+                        </a>
+                        <button class="btn btn-secondary btn-sm" onclick="viewCode('cross_chain_msg')">
+                            <i class="fas fa-eye"></i> View Code
+                        </button>
+                    </div>
+                </div>
             </div>
             
             <div class="cta-box">
-                <p><strong>23 production-ready contracts</strong> with security hardening, pause controls, and adversarial testing. <a href="playground.html" target="_blank">Try them all in the Playground</a></p>
+                <p><strong>37 production-ready contracts</strong> with security hardening, pause controls, and adversarial testing. <a href="playground.html" target="_blank">Try them all in the Playground</a></p>
             </div>
         </div>
     </section>

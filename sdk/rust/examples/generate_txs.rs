@@ -2,6 +2,7 @@
 
 use moltchain_sdk::{Client, Keypair, TransactionBuilder};
 use moltchain_core::{Instruction, Hash, SYSTEM_PROGRAM_ID};
+use base64::Engine;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {

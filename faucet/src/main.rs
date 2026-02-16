@@ -9,7 +9,7 @@ use axum::{
     routing::{get, post},
     Router,
 };
-use moltchain_core::{Hash, Instruction, Keypair, Message, Pubkey, Transaction, SYSTEM_PROGRAM_ID};
+use moltchain_core::{Keypair, Pubkey};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -49,6 +49,7 @@ struct AirdropRecord {
 
 /// Faucet state
 #[derive(Clone)]
+#[allow(dead_code)]
 struct FaucetState {
     config: FaucetConfig,
     rate_limiter: Arc<RwLock<RateLimiter>>,
@@ -475,96 +476,39 @@ fn load_or_generate_keypair() -> Keypair {
     kp
 }
 
-/// Build, sign, and send a native MOLT transfer from the faucet wallet.
+/// Send airdrop via the requestAirdrop RPC method.
+/// This bypasses the need for a funded faucet wallet — the RPC debits the
+/// treasury and credits the recipient directly (testnet/devnet only).
 async fn send_faucet_transfer(
     state: &FaucetState,
     recipient_address: &str,
     amount_molt: u64,
 ) -> Result<String, String> {
-    let recipient =
-        Pubkey::from_base58(recipient_address).map_err(|e| format!("Invalid recipient: {}", e))?;
-
-    let amount_shells = amount_molt * 1_000_000_000;
-
-    // 1. Get latest blockhash
     let client = reqwest::Client::new();
-    let block_resp = client
+    let resp = client
         .post(&state.config.rpc_url)
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
-            "method": "getLatestBlock",
-            "params": []
+            "method": "requestAirdrop",
+            "params": [recipient_address, amount_molt]
         }))
         .send()
         .await
         .map_err(|e| format!("RPC request failed: {}", e))?;
 
-    let block_data: serde_json::Value = block_resp.json().await.map_err(|e| e.to_string())?;
-    if let Some(error) = block_data.get("error") {
+    let data: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
+
+    if let Some(error) = data.get("error") {
         return Err(format!(
-            "getLatestBlock error: {}",
+            "Airdrop failed: {}",
             error["message"].as_str().unwrap_or("unknown")
         ));
     }
-
-    let blockhash_hex = block_data["result"]["hash"]
-        .as_str()
-        .ok_or("Missing blockhash in getLatestBlock response")?;
-    let blockhash =
-        Hash::from_hex(blockhash_hex).map_err(|e| format!("Invalid blockhash: {}", e))?;
-
-    // 2. Build transfer instruction (opcode 0 = native transfer)
-    let from_pubkey = state.keypair.pubkey();
-    let mut data = vec![0u8]; // opcode 0 = Transfer
-    data.extend_from_slice(&amount_shells.to_le_bytes());
-
-    let instruction = Instruction {
-        program_id: SYSTEM_PROGRAM_ID,
-        accounts: vec![from_pubkey, recipient],
-        data,
-    };
-
-    // 3. Build, sign, serialize
-    let message = Message::new(vec![instruction], blockhash);
-    let mut tx = Transaction::new(message);
-    let sig = state.keypair.sign(&tx.message.serialize());
-    tx.signatures.push(sig);
-
-    let tx_bytes = bincode::serialize(&tx).map_err(|e| format!("Serialize error: {}", e))?;
-    use base64::{engine::general_purpose, Engine as _};
-    let tx_base64 = general_purpose::STANDARD.encode(&tx_bytes);
-
-    // 4. Send via sendTransaction
-    let send_resp = client
-        .post(&state.config.rpc_url)
-        .json(&serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "sendTransaction",
-            "params": [tx_base64]
-        }))
-        .send()
-        .await
-        .map_err(|e| format!("sendTransaction failed: {}", e))?;
-
-    let send_data: serde_json::Value = send_resp.json().await.map_err(|e| e.to_string())?;
-    if let Some(error) = send_data.get("error") {
-        return Err(format!(
-            "Transaction rejected: {}",
-            error["message"].as_str().unwrap_or("unknown")
-        ));
-    }
-
-    let tx_sig = send_data["result"]
-        .as_str()
-        .unwrap_or("unknown")
-        .to_string();
 
     Ok(format!(
-        "{} MOLT sent. Tx: {}",
-        amount_molt,
-        &tx_sig[..tx_sig.len().min(16)]
+        "{} MOLT airdropped to {}",
+        amount_molt, recipient_address
     ))
 }
 

@@ -28,14 +28,14 @@ test_rpc() {
     if echo "$result" | jq -e '.result' > /dev/null 2>&1; then
         echo "✅ PASS" | tee -a $RESULTS_FILE
         echo "   Response: $(echo $result | jq -c '.result' | head -c 100)" | tee -a $RESULTS_FILE
-        ((PASS++))
+        PASS=$((PASS + 1))
     elif echo "$result" | jq -e '.error' > /dev/null 2>&1; then
         echo "⚠️  ERROR" | tee -a $RESULTS_FILE
         echo "   Error: $(echo $result | jq -c '.error.message')" | tee -a $RESULTS_FILE
-        ((FAIL++))
+        FAIL=$((FAIL + 1))
     else
         echo "❌ FAIL - Invalid response" | tee -a $RESULTS_FILE
-        ((FAIL++))
+        FAIL=$((FAIL + 1))
     fi
 }
 
@@ -57,9 +57,16 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 
 test_rpc "getBlock (slot 0)" "getBlock" "[0]"
-test_rpc "getBlock (latest)" "getBlock" "[]"
 test_rpc "getLatestBlock" "getLatestBlock" "[]"
 test_rpc "getSlot" "getSlot" "[]"
+
+LATEST_SLOT=$(curl -s -X POST $RPC_URL -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":1,"method":"getSlot","params":[]}' | jq -r '.result // 0')
+if [[ "$LATEST_SLOT" =~ ^[0-9]+$ ]]; then
+    test_rpc "getBlock (latest slot)" "getBlock" "[$LATEST_SLOT]"
+else
+    echo "❌ FAIL - could not fetch latest slot" | tee -a $RESULTS_FILE
+    FAIL=$((FAIL + 1))
+fi
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -67,8 +74,16 @@ echo "3️⃣  TRANSACTION METHODS"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
-# Submit transaction requires signed tx - skip for now
-echo "⏭️  sendTransaction - SKIP (requires signed transaction)" | tee -a $RESULTS_FILE
+# sendTransaction with invalid payload should return an RPC error (endpoint works)
+echo -n "Testing: sendTransaction (invalid payload returns error)... "
+INVALID_TX_RESULT=$(curl -s -X POST $RPC_URL -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":1,"method":"sendTransaction","params":["invalid_base64"]}')
+if echo "$INVALID_TX_RESULT" | jq -e '.error' >/dev/null 2>&1; then
+    echo "✅ PASS" | tee -a $RESULTS_FILE
+    PASS=$((PASS + 1))
+else
+    echo "❌ FAIL" | tee -a $RESULTS_FILE
+    FAIL=$((FAIL + 1))
+fi
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -97,9 +112,22 @@ echo "6️⃣  CONTRACT METHODS"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
-# Contract methods require deployed contracts
-echo "⏭️  getContractInfo - SKIP (requires contract address)" | tee -a $RESULTS_FILE
-echo "⏭️  callContract - SKIP (requires contract address)" | tee -a $RESULTS_FILE
+CONTRACT_ADDR=$(curl -s -X POST $RPC_URL -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":1,"method":"getAllContracts","params":[]}' | jq -r '.result.contracts[0].program_id // empty')
+if [[ -n "$CONTRACT_ADDR" ]]; then
+    test_rpc "getContractInfo" "getContractInfo" "[\"$CONTRACT_ADDR\"]"
+    echo -n "Testing: callContract (invalid function returns result/error)... "
+    CALL_RESULT=$(curl -s -X POST $RPC_URL -H "Content-Type: application/json" -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"callContract\",\"params\":[\"$CONTRACT_ADDR\",\"__nonexistent__\",[]]}")
+    if echo "$CALL_RESULT" | jq -e '.result or .error' >/dev/null 2>&1; then
+        echo "✅ PASS" | tee -a $RESULTS_FILE
+        PASS=$((PASS + 1))
+    else
+        echo "❌ FAIL" | tee -a $RESULTS_FILE
+        FAIL=$((FAIL + 1))
+    fi
+else
+    echo "❌ FAIL - no deployed contract found" | tee -a $RESULTS_FILE
+    FAIL=$((FAIL + 1))
+fi
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -119,7 +147,7 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 echo "✅ PASSED: $PASS"
 echo "❌ FAILED/ERROR: $FAIL"
-echo "⏭️  SKIPPED: Methods requiring transactions or contracts"
+echo "SKIPPED: 0"
 echo ""
 echo "Results saved to: $RESULTS_FILE"
 echo ""

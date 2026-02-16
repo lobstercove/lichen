@@ -14,7 +14,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use moltchain_sdk::{
-    Address, log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_timestamp,
+    log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_timestamp,
+    Address, CrossCall, call_contract,
 };
 
 // ============================================================================
@@ -39,6 +40,23 @@ const MAX_REPUTATION: u64 = 100_000;
 const VOUCH_COST: u64 = 5;
 /// Reputation gained by being vouched for
 const VOUCH_REWARD: u64 = 10;
+/// Reputation decay period (90 days, in milliseconds)
+const REPUTATION_DECAY_PERIOD_MS: u64 = 7_776_000_000;
+/// Reputation decay rate per period, in basis points (5%)
+const REPUTATION_DECAY_BPS: u64 = 500;
+/// Maximum decay periods applied in a single call (bounds compute cost)
+const MAX_DECAY_PERIODS_PER_CALL: u64 = 64;
+/// Social recovery guardian count (fixed 5)
+const RECOVERY_GUARDIAN_COUNT: usize = 5;
+/// Social recovery threshold (3 of 5)
+const RECOVERY_THRESHOLD: usize = 3;
+/// Maximum delegation validity window (1 year, in ms)
+const MAX_DELEGATION_TTL_MS: u64 = 31_536_000_000;
+
+const DELEGATE_PERM_PROFILE: u8 = 0b0000_0001;
+const DELEGATE_PERM_AGENT_TYPE: u8 = 0b0000_0010;
+const DELEGATE_PERM_SKILLS: u8 = 0b0000_0100;
+const DELEGATE_PERM_NAMING: u8 = 0b0000_1000;
 
 // ---- Hardening constants ----
 const MID_PAUSE_KEY: &[u8] = b"mid_paused";
@@ -86,6 +104,22 @@ const AGENT_TYPE_ORACLE: u8 = 7;
 const AGENT_TYPE_STORAGE: u8 = 8;
 const AGENT_TYPE_GENERAL: u8 = 9;
 
+fn is_valid_agent_type(agent_type: u8) -> bool {
+    matches!(
+        agent_type,
+        AGENT_TYPE_UNKNOWN
+            | AGENT_TYPE_TRADING
+            | AGENT_TYPE_DEVELOPMENT
+            | AGENT_TYPE_ANALYSIS
+            | AGENT_TYPE_CREATIVE
+            | AGENT_TYPE_INFRASTRUCTURE
+            | AGENT_TYPE_GOVERNANCE
+            | AGENT_TYPE_ORACLE
+            | AGENT_TYPE_STORAGE
+            | AGENT_TYPE_GENERAL
+    )
+}
+
 // ============================================================================
 // .MOLT NAMING SYSTEM
 // ============================================================================
@@ -102,6 +136,12 @@ const NAME_COST_4CHAR: u64 = 100_000_000_000; // 100 MOLT ($10.00 at $0.10)
 const NAME_COST_3CHAR: u64 = 500_000_000_000; // 500 MOLT ($50.00 at $0.10)
 /// Slots per year (approx: 2 slots/sec * 86400 * 365)
 const SLOTS_PER_YEAR: u64 = 63_072_000;
+/// Premium names up to this length are auction-only
+const PREMIUM_AUCTION_MAX_LEN: usize = 4;
+/// Auction minimum duration (1 day)
+const NAME_AUCTION_MIN_SLOTS: u64 = 172_800;
+/// Auction maximum duration (14 days)
+const NAME_AUCTION_MAX_SLOTS: u64 = 2_419_200;
 /// Maximum metadata length
 const MAX_METADATA_LEN: usize = 1024;
 /// Maximum endpoint URL length
@@ -216,6 +256,13 @@ fn name_reverse_key(addr: &[u8]) -> Vec<u8> {
     key
 }
 
+fn name_auction_key(name: &[u8]) -> Vec<u8> {
+    let mut key = Vec::with_capacity(9 + name.len());
+    key.extend_from_slice(b"name_auc:");
+    key.extend_from_slice(name);
+    key
+}
+
 fn endpoint_key(addr: &[u8]) -> Vec<u8> {
     let hex = hex_encode_addr(addr);
     let mut key = Vec::with_capacity(9 + 64);
@@ -248,6 +295,207 @@ fn rate_key(addr: &[u8]) -> Vec<u8> {
     key
 }
 
+fn delegation_key(owner: &[u8], delegate: &[u8]) -> Vec<u8> {
+    let owner_hex = hex_encode_addr(owner);
+    let delegate_hex = hex_encode_addr(delegate);
+    let mut key = Vec::with_capacity(6 + 64 + 1 + 64);
+    key.extend_from_slice(b"dleg:");
+    key.extend_from_slice(&owner_hex);
+    key.push(b':');
+    key.extend_from_slice(&delegate_hex);
+    key
+}
+
+fn has_active_permission(owner: &[u8], actor: &[u8], permission: u8, now_ms: u64) -> bool {
+    if owner == actor {
+        return true;
+    }
+
+    let dk = delegation_key(owner, actor);
+    match storage_get(&dk) {
+        Some(data) if data.len() >= 9 => {
+            let perms = data[0];
+            let expires_at = bytes_to_u64(&data[1..9]);
+            if now_ms > expires_at {
+                moltchain_sdk::storage::remove(&dk);
+                return false;
+            }
+            (perms & permission) != 0
+        }
+        _ => false,
+    }
+}
+
+fn is_premium_name(name: &[u8]) -> bool {
+    name.len() >= MIN_MOLT_NAME_LEN && name.len() <= PREMIUM_AUCTION_MAX_LEN
+}
+
+fn recovery_guardians_key(addr: &[u8]) -> Vec<u8> {
+    let hex = hex_encode_addr(addr);
+    let mut key = Vec::with_capacity(6 + 64);
+    key.extend_from_slice(b"recg:");
+    key.extend_from_slice(&hex);
+    key
+}
+
+fn recovery_nonce_key(addr: &[u8]) -> Vec<u8> {
+    let hex = hex_encode_addr(addr);
+    let mut key = Vec::with_capacity(6 + 64);
+    key.extend_from_slice(b"recn:");
+    key.extend_from_slice(&hex);
+    key
+}
+
+fn recovery_candidate_key(addr: &[u8]) -> Vec<u8> {
+    let hex = hex_encode_addr(addr);
+    let mut key = Vec::with_capacity(6 + 64);
+    key.extend_from_slice(b"recc:");
+    key.extend_from_slice(&hex);
+    key
+}
+
+fn recovery_approval_key(target: &[u8], nonce: u64, guardian: &[u8]) -> Vec<u8> {
+    let target_hex = hex_encode_addr(target);
+    let guardian_hex = hex_encode_addr(guardian);
+    let mut key = Vec::with_capacity(7 + 64 + 1 + 8 + 1 + 64);
+    key.extend_from_slice(b"reca:");
+    key.extend_from_slice(&target_hex);
+    key.push(b':');
+    key.extend_from_slice(&u64_to_bytes(nonce));
+    key.push(b':');
+    key.extend_from_slice(&guardian_hex);
+    key
+}
+
+fn is_zero_address(data: &[u8]) -> bool {
+    data.len() >= 32 && data[0..32].iter().all(|&b| b == 0)
+}
+
+fn vouch_count_from_record(record: &[u8]) -> u16 {
+    if record.len() >= 126 {
+        (record[124] as u16) | ((record[125] as u16) << 8)
+    } else {
+        0
+    }
+}
+
+fn has_vouched_for(vouchee: &[u8], voucher: &[u8]) -> bool {
+    let id_key = identity_key(vouchee);
+    let record = match storage_get(&id_key) {
+        Some(data) => data,
+        None => return false,
+    };
+    let vouch_count = vouch_count_from_record(&record);
+    for i in 0..vouch_count {
+        let vk = vouch_key(vouchee, i);
+        if let Some(data) = storage_get(&vk) {
+            if data.len() >= 32 && &data[0..32] == voucher {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn is_configured_guardian(target: &[u8], guardian: &[u8]) -> bool {
+    let gk = recovery_guardians_key(target);
+    let guardians = match storage_get(&gk) {
+        Some(data) => data,
+        None => return false,
+    };
+    if guardians.len() != RECOVERY_GUARDIAN_COUNT * 32 {
+        return false;
+    }
+    for chunk in guardians.chunks(32) {
+        if chunk == guardian {
+            return true;
+        }
+    }
+    false
+}
+
+fn recovery_nonce(target: &[u8]) -> u64 {
+    let nk = recovery_nonce_key(target);
+    storage_get(&nk).map(|d| bytes_to_u64(&d)).unwrap_or(0)
+}
+
+fn recovery_approval_count(target: &[u8], nonce: u64) -> usize {
+    let gk = recovery_guardians_key(target);
+    let guardians = match storage_get(&gk) {
+        Some(data) if data.len() == RECOVERY_GUARDIAN_COUNT * 32 => data,
+        _ => return 0,
+    };
+
+    let mut count = 0usize;
+    for guardian in guardians.chunks(32) {
+        let ak = recovery_approval_key(target, nonce, guardian);
+        if storage_get(&ak).is_some() {
+            count += 1;
+        }
+    }
+    count
+}
+
+fn apply_reputation_decay(current_rep: u64, last_updated_ms: u64, now_ms: u64) -> u64 {
+    if current_rep <= INITIAL_REPUTATION || now_ms <= last_updated_ms {
+        return current_rep;
+    }
+
+    let elapsed = now_ms - last_updated_ms;
+    let mut periods = elapsed / REPUTATION_DECAY_PERIOD_MS;
+    if periods == 0 {
+        return current_rep;
+    }
+    if periods > MAX_DECAY_PERIODS_PER_CALL {
+        periods = MAX_DECAY_PERIODS_PER_CALL;
+    }
+
+    let mut decayed = current_rep;
+    for _ in 0..periods {
+        decayed = decayed
+            .saturating_mul(10_000 - REPUTATION_DECAY_BPS)
+            / 10_000;
+        if decayed <= MIN_REPUTATION {
+            return MIN_REPUTATION;
+        }
+    }
+
+    decayed
+}
+
+fn apply_decay_to_identity_record(
+    pubkey: &[u8],
+    id_key: &Vec<u8>,
+    record: &mut Vec<u8>,
+    now_ms: u64,
+) -> u64 {
+    let current_rep = if record.len() >= 107 {
+        bytes_to_u64(&record[99..107])
+    } else {
+        INITIAL_REPUTATION
+    };
+
+    let last_updated_ms = if record.len() >= 123 {
+        bytes_to_u64(&record[115..123])
+    } else {
+        now_ms
+    };
+
+    let decayed = apply_reputation_decay(current_rep, last_updated_ms, now_ms);
+    if decayed != current_rep {
+        if record.len() >= 107 {
+            record[99..107].copy_from_slice(&u64_to_bytes(decayed));
+        }
+        if record.len() >= 123 {
+            record[115..123].copy_from_slice(&u64_to_bytes(now_ms));
+        }
+        storage_set(id_key, record);
+        storage_set(&reputation_key(pubkey), &u64_to_bytes(decayed));
+    }
+
+    decayed
+}
+
 /// Validate a .molt name: 3-32 chars, alphanumeric + hyphens, no leading/trailing hyphens, lowercase
 fn validate_molt_name(name: &[u8]) -> bool {
     if name.len() < MIN_MOLT_NAME_LEN || name.len() > MAX_MOLT_NAME_LEN {
@@ -275,9 +523,22 @@ fn validate_molt_name(name: &[u8]) -> bool {
 /// Check if a name is reserved
 fn is_reserved_name(name: &[u8]) -> bool {
     const RESERVED: &[&[u8]] = &[
-        b"admin", b"system", b"validator", b"bridge", b"oracle",
-        b"moltchain", b"molt", b"moltyid", b"reefstake", b"treasury",
-        b"governance", b"dao", b"root", b"node", b"test",
+        // System / admin
+        b"admin", b"system", b"validator", b"root", b"node", b"test",
+        // Chain identity
+        b"moltchain", b"molt", b"moltyid", b"treasury",
+        // Core token + wrapped
+        b"moltcoin", b"musd", b"wsol", b"weth",
+        // DEX
+        b"dex", b"amm", b"router", b"margin", b"rewards", b"governance", b"analytics",
+        // DeFi protocols
+        b"moltswap", b"bridge", b"oracle", b"dao", b"lending",
+        // Marketplaces / NFT
+        b"marketplace", b"auction", b"moltpunks",
+        // Infrastructure
+        b"clawpay", b"clawpump", b"clawvault", b"bountyboard", b"compute", b"reefstake",
+        // Prediction Markets
+        b"predict", b"prediction",
     ];
     for &r in RESERVED {
         if name == r {
@@ -309,19 +570,20 @@ fn name_registration_cost(name_len: usize) -> u64 {
 pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
     log_info("🪪 Initializing MoltyID program...");
 
-    let admin = unsafe { core::slice::from_raw_parts(admin_ptr, 32) };
+    let mut admin = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32); }
 
     // Check not already initialized
     if storage_get(b"mid_admin").is_some() {
-        log_info("❌ MoltyID already initialized");
+        log_info("MoltyID already initialized");
         return 1;
     }
 
-    storage_set(b"mid_admin", admin);
+    storage_set(b"mid_admin", &admin);
     storage_set(b"mid_identity_count", &u64_to_bytes(0));
     storage_set(b"mid_initialized", &[1]);
 
-    log_info("✅ MoltyID initialized");
+    log_info("MoltyID initialized");
     0
 }
 
@@ -348,40 +610,42 @@ pub extern "C" fn register_identity(
     log_info("🪪 Registering new MoltyID identity...");
 
     if is_mid_paused() {
-        log_info("❌ MoltyID is paused");
+        log_info("MoltyID is paused");
         return 20;
     }
 
-    let owner = unsafe { core::slice::from_raw_parts(owner_ptr, 32) };
+    let mut owner = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
     let name_len = name_len as usize;
 
     if name_len == 0 || name_len > MAX_NAME_LEN {
-        log_info("❌ Invalid name length");
+        log_info("Invalid name length");
         return 1;
     }
 
-    let name = unsafe { core::slice::from_raw_parts(name_ptr, name_len) };
+    let mut name = alloc::vec![0u8; name_len];
+    unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
 
     // Validate agent type
-    if agent_type > AGENT_TYPE_GENERAL {
-        log_info("❌ Invalid agent type");
+    if !is_valid_agent_type(agent_type) {
+        log_info("Invalid agent type");
         return 2;
     }
 
     // Check not already registered
-    let id_key = identity_key(owner);
+    let id_key = identity_key(&owner);
     if storage_get(&id_key).is_some() {
-        log_info("❌ Identity already registered for this address");
+        log_info("Identity already registered for this address");
         return 3;
     }
 
     // Hardening: registration cooldown (checked after duplicate to preserve error codes)
     let now = get_timestamp();
-    let rck = register_cooldown_key(owner);
+    let rck = register_cooldown_key(&owner);
     if let Some(last) = storage_get(&rck) {
         let last_ts = bytes_to_u64(&last);
         if now < last_ts + REGISTER_COOLDOWN_MS {
-            log_info("❌ Registration cooldown active");
+            log_info("Registration cooldown active");
             return 21;
         }
     }
@@ -391,14 +655,14 @@ pub extern "C" fn register_identity(
     let mut record = [0u8; IDENTITY_SIZE];
 
     // Bytes 0..32: owner
-    record[0..32].copy_from_slice(owner);
+    record[0..32].copy_from_slice(&owner);
     // Byte 32: agent_type
     record[32] = agent_type;
     // Bytes 33..35: name_len (u16 LE)
     record[33] = (name_len & 0xFF) as u8;
     record[34] = ((name_len >> 8) & 0xFF) as u8;
     // Bytes 35..99: name (padded with zeros)
-    record[35..35 + name_len].copy_from_slice(name);
+    record[35..35 + name_len].copy_from_slice(&name);
     // Bytes 99..107: reputation (u64 LE) — starts at INITIAL_REPUTATION
     let rep_bytes = u64_to_bytes(INITIAL_REPUTATION);
     record[99..107].copy_from_slice(&rep_bytes);
@@ -418,7 +682,7 @@ pub extern "C" fn register_identity(
     storage_set(&id_key, &record);
 
     // Also store reputation separately for quick lookups
-    let rep_key = reputation_key(owner);
+    let rep_key = reputation_key(&owner);
     storage_set(&rep_key, &rep_bytes);
 
     // Increment global identity count
@@ -428,7 +692,7 @@ pub extern "C" fn register_identity(
     };
     storage_set(b"mid_identity_count", &u64_to_bytes(count + 1));
 
-    log_info("✅ Identity registered successfully");
+    log_info("Identity registered successfully");
     0
 }
 
@@ -444,8 +708,9 @@ pub extern "C" fn register_identity(
 ///   - pubkey_ptr: pointer to 32-byte address to look up
 #[no_mangle]
 pub extern "C" fn get_identity(pubkey_ptr: *const u8) -> u32 {
-    let pubkey = unsafe { core::slice::from_raw_parts(pubkey_ptr, 32) };
-    let id_key = identity_key(pubkey);
+    let mut pubkey = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(pubkey_ptr, pubkey.as_mut_ptr(), 32); }
+    let id_key = identity_key(&pubkey);
 
     match storage_get(&id_key) {
         Some(data) => {
@@ -453,7 +718,7 @@ pub extern "C" fn get_identity(pubkey_ptr: *const u8) -> u32 {
             0
         }
         None => {
-            log_info("❌ Identity not found");
+            log_info("Identity not found");
             1
         }
     }
@@ -490,36 +755,35 @@ pub extern "C" fn update_reputation_typed(
     contribution_type: u8,
     count: u64,
 ) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    let target = unsafe { core::slice::from_raw_parts(target_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    let mut target = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(target_ptr, target.as_mut_ptr(), 32); }
 
     // Only admin can update reputation
     let admin = match storage_get(b"mid_admin") {
         Some(data) => data,
         None => {
-            log_info("❌ MoltyID not initialized");
+            log_info("MoltyID not initialized");
             return 1;
         }
     };
-    if caller != admin.as_slice() {
-        log_info("❌ Unauthorized: only admin can update reputation");
+    if caller[..] != admin[..] {
+        log_info("Unauthorized: only admin can update reputation");
         return 2;
     }
 
-    let id_key = identity_key(target);
+    let id_key = identity_key(&target);
     let mut record = match storage_get(&id_key) {
         Some(data) => data,
         None => {
-            log_info("❌ Target identity not found");
+            log_info("Target identity not found");
             return 3;
         }
     };
 
-    let current_rep = if record.len() >= 107 {
-        bytes_to_u64(&record[99..107])
-    } else {
-        INITIAL_REPUTATION
-    };
+    let now = get_timestamp();
+    let current_rep = apply_decay_to_identity_record(&target, &id_key, &mut record, now);
 
     // Calculate delta based on contribution type per whitepaper formula
     let (is_positive, weight) = match contribution_type {
@@ -531,7 +795,7 @@ pub extern "C" fn update_reputation_typed(
         5 => (false, 5u64),   // failed_tx
         6 => (false, 100u64), // slashing_event
         _ => {
-            log_info("❌ Invalid contribution type");
+            log_info("Invalid contribution type");
             return 4;
         }
     };
@@ -548,16 +812,16 @@ pub extern "C" fn update_reputation_typed(
     if record.len() >= 107 {
         record[99..107].copy_from_slice(&rep_bytes);
     }
-    let now_bytes = u64_to_bytes(get_timestamp());
+    let now_bytes = u64_to_bytes(now);
     if record.len() >= 123 {
         record[115..123].copy_from_slice(&now_bytes);
     }
 
     storage_set(&id_key, &record);
-    storage_set(&reputation_key(target), &rep_bytes);
+    storage_set(&reputation_key(&target), &rep_bytes);
 
     // Track contribution counts for the formula
-    let hex = hex_encode_addr(target);
+    let hex = hex_encode_addr(&target);
     let counter_key = {
         let mut k = Vec::with_capacity(6 + 64 + 2);
         k.extend_from_slice(b"cont:");
@@ -572,9 +836,9 @@ pub extern "C" fn update_reputation_typed(
     storage_set(&counter_key, &u64_to_bytes(prev + count));
 
     // Check for graduation and achievements
-    check_achievements(target, new_rep);
+    check_achievements(&target, new_rep);
 
-    log_info(&alloc::format!("✅ Reputation updated: {} → {} (type: {}, Δ: {}{})",
+    log_info(&alloc::format!("Reputation updated: {} → {} (type: {}, Δ: {}{})",
         current_rep, new_rep, contribution_type,
         if is_positive { "+" } else { "-" }, delta));
     0
@@ -595,38 +859,36 @@ pub extern "C" fn update_reputation(
     delta: u64,
     is_increase: u8,
 ) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    let target = unsafe { core::slice::from_raw_parts(target_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    let mut target = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(target_ptr, target.as_mut_ptr(), 32); }
 
     // Only admin can directly update reputation
     let admin = match storage_get(b"mid_admin") {
         Some(data) => data,
         None => {
-            log_info("❌ MoltyID not initialized");
+            log_info("MoltyID not initialized");
             return 1;
         }
     };
-    if caller != admin.as_slice() {
-        log_info("❌ Unauthorized: only admin can update reputation");
+    if caller[..] != admin[..] {
+        log_info("Unauthorized: only admin can update reputation");
         return 2;
     }
 
     // Check identity exists
-    let id_key = identity_key(target);
+    let id_key = identity_key(&target);
     let mut record = match storage_get(&id_key) {
         Some(data) => data,
         None => {
-            log_info("❌ Target identity not found");
+            log_info("Target identity not found");
             return 3;
         }
     };
 
-    // Read current reputation
-    let current_rep = if record.len() >= 107 {
-        bytes_to_u64(&record[99..107])
-    } else {
-        INITIAL_REPUTATION
-    };
+    let now = get_timestamp();
+    let current_rep = apply_decay_to_identity_record(&target, &id_key, &mut record, now);
 
     // Apply delta with bounds
     let new_rep = if is_increase == 1 {
@@ -645,7 +907,7 @@ pub extern "C" fn update_reputation(
     if record.len() >= 107 {
         record[99..107].copy_from_slice(&rep_bytes);
     }
-    let now_bytes = u64_to_bytes(get_timestamp());
+    let now_bytes = u64_to_bytes(now);
     if record.len() >= 123 {
         record[115..123].copy_from_slice(&now_bytes);
     }
@@ -653,10 +915,10 @@ pub extern "C" fn update_reputation(
     storage_set(&id_key, &record);
 
     // Update standalone reputation key
-    let rep_key = reputation_key(target);
+    let rep_key = reputation_key(&target);
     storage_set(&rep_key, &rep_bytes);
 
-    log_info("✅ Reputation updated");
+    log_info("Reputation updated");
     0
 }
 
@@ -679,53 +941,55 @@ pub extern "C" fn add_skill(
     skill_name_len: u32,
     proficiency: u8,
 ) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
     let skill_name_len = skill_name_len as usize;
 
     if skill_name_len == 0 || skill_name_len > MAX_SKILL_LEN {
-        log_info("❌ Invalid skill name length");
+        log_info("Invalid skill name length");
         return 1;
     }
 
     if proficiency > 100 {
-        log_info("❌ Proficiency must be 0-100");
+        log_info("Proficiency must be 0-100");
         return 2;
     }
 
-    let skill_name = unsafe { core::slice::from_raw_parts(skill_name_ptr, skill_name_len) };
+    let mut skill_name = alloc::vec![0u8; skill_name_len];
+    unsafe { core::ptr::copy_nonoverlapping(skill_name_ptr, skill_name.as_mut_ptr(), skill_name_len); }
 
     // Load identity
-    let id_key = identity_key(caller);
+    let id_key = identity_key(&caller);
     let mut record = match storage_get(&id_key) {
         Some(data) => data,
         None => {
-            log_info("❌ Identity not found — register first");
+            log_info("Identity not found — register first");
             return 3;
         }
     };
 
     // Verify caller owns this identity
-    if record.len() < IDENTITY_SIZE || &record[0..32] != caller {
-        log_info("❌ Unauthorized: not identity owner");
+    if record.len() < IDENTITY_SIZE || record[0..32] != caller[..] {
+        log_info("Unauthorized: not identity owner");
         return 4;
     }
 
     // Check skill count limit
     let skill_count = record[123];
     if skill_count as usize >= MAX_SKILLS {
-        log_info("❌ Maximum skills reached");
+        log_info("Maximum skills reached");
         return 5;
     }
 
     // Store skill: [name_len(1), name(up to 32), proficiency(1), timestamp(8)]
     let mut skill_data = Vec::with_capacity(1 + skill_name_len + 1 + 8);
     skill_data.push(skill_name_len as u8);
-    skill_data.extend_from_slice(skill_name);
+    skill_data.extend_from_slice(&skill_name);
     skill_data.push(proficiency);
     let ts_bytes = u64_to_bytes(get_timestamp());
     skill_data.extend_from_slice(&ts_bytes);
 
-    let sk = skill_key(caller, skill_count);
+    let sk = skill_key(&caller, skill_count);
     storage_set(&sk, &skill_data);
 
     // Increment skill count in identity record
@@ -736,7 +1000,80 @@ pub extern "C" fn add_skill(
     }
     storage_set(&id_key, &record);
 
-    log_info("✅ Skill added");
+    log_info("Skill added");
+    0
+}
+
+/// Add a skill to an owner's identity as a delegated actor.
+/// Delegate must have DELEGATE_PERM_SKILLS.
+#[no_mangle]
+pub extern "C" fn add_skill_as(
+    delegate_ptr: *const u8,
+    owner_ptr: *const u8,
+    skill_name_ptr: *const u8,
+    skill_name_len: u32,
+    proficiency: u8,
+) -> u32 {
+    let mut delegate = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
+    let mut owner = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+    let skill_name_len = skill_name_len as usize;
+
+    if skill_name_len == 0 || skill_name_len > MAX_SKILL_LEN {
+        log_info("Invalid skill name length");
+        return 1;
+    }
+
+    if proficiency > 100 {
+        log_info("Proficiency must be 0-100");
+        return 2;
+    }
+
+    let now = get_timestamp();
+    if !has_active_permission(&owner, &delegate, DELEGATE_PERM_SKILLS, now) {
+        log_info("Unauthorized: delegate lacks skill permission");
+        return 3;
+    }
+
+    let mut skill_name = alloc::vec![0u8; skill_name_len];
+    unsafe { core::ptr::copy_nonoverlapping(skill_name_ptr, skill_name.as_mut_ptr(), skill_name_len); }
+
+    // Load owner's identity
+    let id_key = identity_key(&owner);
+    let mut record = match storage_get(&id_key) {
+        Some(data) => data,
+        None => {
+            log_info("Identity not found — register first");
+            return 4;
+        }
+    };
+
+    // Check skill count limit
+    let skill_count = record[123];
+    if skill_count as usize >= MAX_SKILLS {
+        log_info("Maximum skills reached");
+        return 5;
+    }
+
+    // Store skill: [name_len(1), name(up to 32), proficiency(1), timestamp(8)]
+    let mut skill_data = Vec::with_capacity(1 + skill_name_len + 1 + 8);
+    skill_data.push(skill_name_len as u8);
+    skill_data.extend_from_slice(&skill_name);
+    skill_data.push(proficiency);
+    let ts_bytes = u64_to_bytes(now);
+    skill_data.extend_from_slice(&ts_bytes);
+
+    let sk = skill_key(&owner, skill_count);
+    storage_set(&sk, &skill_data);
+
+    record[123] = skill_count + 1;
+    if record.len() >= 123 {
+        record[115..123].copy_from_slice(&ts_bytes);
+    }
+    storage_set(&id_key, &record);
+
+    log_info("Delegated skill added");
     0
 }
 
@@ -751,13 +1088,14 @@ pub extern "C" fn add_skill(
 ///   - pubkey_ptr: 32-byte address to look up
 #[no_mangle]
 pub extern "C" fn get_skills(pubkey_ptr: *const u8) -> u32 {
-    let pubkey = unsafe { core::slice::from_raw_parts(pubkey_ptr, 32) };
+    let mut pubkey = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(pubkey_ptr, pubkey.as_mut_ptr(), 32); }
 
-    let id_key = identity_key(pubkey);
+    let id_key = identity_key(&pubkey);
     let record = match storage_get(&id_key) {
         Some(data) => data,
         None => {
-            log_info("❌ Identity not found");
+            log_info("Identity not found");
             return 1;
         }
     };
@@ -767,7 +1105,7 @@ pub extern "C" fn get_skills(pubkey_ptr: *const u8) -> u32 {
     all_skills.push(skill_count);
 
     for i in 0..skill_count {
-        let sk = skill_key(pubkey, i);
+        let sk = skill_key(&pubkey, i);
         if let Some(data) = storage_get(&sk) {
             all_skills.extend_from_slice(&data);
         }
@@ -789,27 +1127,29 @@ pub extern "C" fn get_skills(pubkey_ptr: *const u8) -> u32 {
 ///   - vouchee_ptr: 32-byte vouchee address
 #[no_mangle]
 pub extern "C" fn vouch(voucher_ptr: *const u8, vouchee_ptr: *const u8) -> u32 {
-    let voucher = unsafe { core::slice::from_raw_parts(voucher_ptr, 32) };
-    let vouchee = unsafe { core::slice::from_raw_parts(vouchee_ptr, 32) };
+    let mut voucher = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(voucher_ptr, voucher.as_mut_ptr(), 32); }
+    let mut vouchee = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(vouchee_ptr, vouchee.as_mut_ptr(), 32); }
 
     if is_mid_paused() {
         return 20;
     }
 
     // Can't vouch for yourself
-    if voucher == vouchee {
-        log_info("❌ Cannot vouch for yourself");
+    if voucher[..] == vouchee[..] {
+        log_info("Cannot vouch for yourself");
         return 1;
     }
 
     // Both must have identities
-    let voucher_id_key = identity_key(voucher);
-    let vouchee_id_key = identity_key(vouchee);
+    let voucher_id_key = identity_key(&voucher);
+    let vouchee_id_key = identity_key(&vouchee);
 
     let mut voucher_record = match storage_get(&voucher_id_key) {
         Some(data) => data,
         None => {
-            log_info("❌ Voucher identity not found");
+            log_info("Voucher identity not found");
             return 2;
         }
     };
@@ -817,20 +1157,18 @@ pub extern "C" fn vouch(voucher_ptr: *const u8, vouchee_ptr: *const u8) -> u32 {
     let mut vouchee_record = match storage_get(&vouchee_id_key) {
         Some(data) => data,
         None => {
-            log_info("❌ Vouchee identity not found");
+            log_info("Vouchee identity not found");
             return 3;
         }
     };
 
-    // Check voucher has enough reputation
-    let voucher_rep = if voucher_record.len() >= 107 {
-        bytes_to_u64(&voucher_record[99..107])
-    } else {
-        0
-    };
+    let now = get_timestamp();
+    let voucher_rep = apply_decay_to_identity_record(&voucher, &voucher_id_key, &mut voucher_record, now);
+    let vouchee_rep = apply_decay_to_identity_record(&vouchee, &vouchee_id_key, &mut vouchee_record, now);
 
+    // Check voucher has enough reputation
     if voucher_rep < VOUCH_COST {
-        log_info("❌ Insufficient reputation to vouch");
+        log_info("Insufficient reputation to vouch");
         return 4;
     }
 
@@ -842,28 +1180,27 @@ pub extern "C" fn vouch(voucher_ptr: *const u8, vouchee_ptr: *const u8) -> u32 {
     };
 
     if vouchee_vouch_count as usize >= MAX_VOUCHES {
-        log_info("❌ Vouchee has reached maximum vouches");
+        log_info("Vouchee has reached maximum vouches");
         return 5;
     }
 
     // Check voucher hasn't already vouched for this vouchee
     for i in 0..vouchee_vouch_count {
-        let vk = vouch_key(vouchee, i);
+        let vk = vouch_key(&vouchee, i);
         if let Some(data) = storage_get(&vk) {
             if data.len() >= 32 && &data[0..32] == voucher {
-                log_info("❌ Already vouched for this agent");
+                log_info("Already vouched for this agent");
                 return 6;
             }
         }
     }
 
     // Hardening: vouch cooldown (after all other checks to preserve error codes)
-    let vck = vouch_cooldown_key(voucher);
-    let now = get_timestamp();
+    let vck = vouch_cooldown_key(&voucher);
     if let Some(last) = storage_get(&vck) {
         let last_ts = bytes_to_u64(&last);
         if now < last_ts + VOUCH_COOLDOWN_MS {
-            log_info("❌ Vouch cooldown active");
+            log_info("Vouch cooldown active");
             return 21;
         }
     }
@@ -873,10 +1210,10 @@ pub extern "C" fn vouch(voucher_ptr: *const u8, vouchee_ptr: *const u8) -> u32 {
 
     // Store vouch record: [voucher_addr(32), timestamp(8)]
     let mut vouch_data = Vec::with_capacity(40);
-    vouch_data.extend_from_slice(voucher);
+    vouch_data.extend_from_slice(&voucher);
     vouch_data.extend_from_slice(&ts_bytes);
 
-    let vk = vouch_key(vouchee, vouchee_vouch_count);
+    let vk = vouch_key(&vouchee, vouchee_vouch_count);
     storage_set(&vk, &vouch_data);
 
     // Deduct reputation from voucher
@@ -887,14 +1224,9 @@ pub extern "C" fn vouch(voucher_ptr: *const u8, vouchee_ptr: *const u8) -> u32 {
         voucher_record[115..123].copy_from_slice(&ts_bytes);
     }
     storage_set(&voucher_id_key, &voucher_record);
-    storage_set(&reputation_key(voucher), &voucher_rep_bytes);
+    storage_set(&reputation_key(&voucher), &voucher_rep_bytes);
 
     // Add reputation to vouchee
-    let vouchee_rep = if vouchee_record.len() >= 107 {
-        bytes_to_u64(&vouchee_record[99..107])
-    } else {
-        INITIAL_REPUTATION
-    };
     let new_vouchee_rep = {
         let sum = vouchee_rep.saturating_add(VOUCH_REWARD);
         if sum > MAX_REPUTATION { MAX_REPUTATION } else { sum }
@@ -910,9 +1242,278 @@ pub extern "C" fn vouch(voucher_ptr: *const u8, vouchee_ptr: *const u8) -> u32 {
         vouchee_record[115..123].copy_from_slice(&ts_bytes);
     }
     storage_set(&vouchee_id_key, &vouchee_record);
-    storage_set(&reputation_key(vouchee), &vouchee_rep_bytes);
+    storage_set(&reputation_key(&vouchee), &vouchee_rep_bytes);
 
-    log_info("✅ Vouch recorded successfully");
+    log_info("Vouch recorded successfully");
+    0
+}
+
+// ============================================================================
+// SOCIAL RECOVERY (3-of-5 guardians)
+// ============================================================================
+
+/// Configure 5 guardians for social recovery.
+/// Guardians must have already vouched for the caller.
+#[no_mangle]
+pub extern "C" fn set_recovery_guardians(
+    caller_ptr: *const u8,
+    guardian1_ptr: *const u8,
+    guardian2_ptr: *const u8,
+    guardian3_ptr: *const u8,
+    guardian4_ptr: *const u8,
+    guardian5_ptr: *const u8,
+) -> u32 {
+    if is_mid_paused() {
+        return 20;
+    }
+
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    let mut guardian1 = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(guardian1_ptr, guardian1.as_mut_ptr(), 32); }
+    let mut guardian2 = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(guardian2_ptr, guardian2.as_mut_ptr(), 32); }
+    let mut guardian3 = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(guardian3_ptr, guardian3.as_mut_ptr(), 32); }
+    let mut guardian4 = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(guardian4_ptr, guardian4.as_mut_ptr(), 32); }
+    let mut guardian5 = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(guardian5_ptr, guardian5.as_mut_ptr(), 32); }
+
+    let caller_id_key = identity_key(&caller);
+    if storage_get(&caller_id_key).is_none() {
+        log_info("Identity not found");
+        return 1;
+    }
+
+    let guardians: [[u8; 32]; RECOVERY_GUARDIAN_COUNT] = [guardian1, guardian2, guardian3, guardian4, guardian5];
+
+    for i in 0..RECOVERY_GUARDIAN_COUNT {
+        if guardians[i] == caller {
+            log_info("Caller cannot be a guardian");
+            return 2;
+        }
+        for j in (i + 1)..RECOVERY_GUARDIAN_COUNT {
+            if guardians[i] == guardians[j] {
+                log_info("Guardians must be unique");
+                return 3;
+            }
+        }
+    }
+
+    for guardian in guardians.iter() {
+        if !has_vouched_for(&caller, guardian) {
+            log_info("Guardian must have vouched for caller");
+            return 4;
+        }
+    }
+
+    let mut data = Vec::with_capacity(RECOVERY_GUARDIAN_COUNT * 32);
+    for guardian in guardians.iter() {
+        data.extend_from_slice(guardian);
+    }
+    let gk = recovery_guardians_key(&caller);
+    storage_set(&gk, &data);
+
+    let next_nonce = recovery_nonce(&caller).saturating_add(1);
+    let nk = recovery_nonce_key(&caller);
+    storage_set(&nk, &u64_to_bytes(next_nonce));
+
+    let ck = recovery_candidate_key(&caller);
+    storage_set(&ck, &[0u8; 32]);
+
+    log_info("Recovery guardians configured");
+    0
+}
+
+/// Guardian approval for recovering a target identity to a new owner key.
+#[no_mangle]
+pub extern "C" fn approve_recovery(
+    guardian_ptr: *const u8,
+    target_ptr: *const u8,
+    new_owner_ptr: *const u8,
+) -> u32 {
+    if is_mid_paused() {
+        return 20;
+    }
+
+    let mut guardian = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(guardian_ptr, guardian.as_mut_ptr(), 32); }
+    let mut target = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(target_ptr, target.as_mut_ptr(), 32); }
+    let mut new_owner = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(new_owner_ptr, new_owner.as_mut_ptr(), 32); }
+
+    if target[..] == new_owner[..] {
+        log_info("Target and new owner cannot be the same");
+        return 1;
+    }
+
+    if !is_configured_guardian(&target, &guardian) {
+        log_info("Caller is not a configured guardian");
+        return 2;
+    }
+
+    let target_id_key = identity_key(&target);
+    if storage_get(&target_id_key).is_none() {
+        log_info("Target identity not found");
+        return 3;
+    }
+
+    let nonce = recovery_nonce(&target);
+    let ck = recovery_candidate_key(&target);
+    if let Some(existing) = storage_get(&ck) {
+        if existing.len() >= 32 && !is_zero_address(&existing) && &existing[0..32] != new_owner {
+            log_info("Recovery candidate already set to a different owner");
+            return 4;
+        }
+    }
+    storage_set(&ck, &new_owner);
+
+    let ak = recovery_approval_key(&target, nonce, &guardian);
+    if storage_get(&ak).is_some() {
+        log_info("Guardian already approved this recovery");
+        return 5;
+    }
+    storage_set(&ak, &[1]);
+
+    log_info("Recovery approval recorded");
+    0
+}
+
+/// Execute social recovery after threshold guardian approvals.
+#[no_mangle]
+pub extern "C" fn execute_recovery(
+    caller_ptr: *const u8,
+    target_ptr: *const u8,
+    new_owner_ptr: *const u8,
+) -> u32 {
+    if is_mid_paused() {
+        return 20;
+    }
+
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    let mut target = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(target_ptr, target.as_mut_ptr(), 32); }
+    let mut new_owner = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(new_owner_ptr, new_owner.as_mut_ptr(), 32); }
+
+    if target[..] == new_owner[..] {
+        log_info("Target and new owner cannot be the same");
+        return 1;
+    }
+
+    if !is_configured_guardian(&target, &caller) {
+        log_info("Caller is not a configured guardian");
+        return 2;
+    }
+
+    let nonce = recovery_nonce(&target);
+    let ck = recovery_candidate_key(&target);
+    let candidate = match storage_get(&ck) {
+        Some(data) if data.len() >= 32 => data,
+        _ => {
+            log_info("No active recovery candidate");
+            return 3;
+        }
+    };
+    if is_zero_address(&candidate) || &candidate[0..32] != new_owner {
+        log_info("Candidate mismatch");
+        return 4;
+    }
+
+    let approvals = recovery_approval_count(&target, nonce);
+    if approvals < RECOVERY_THRESHOLD {
+        log_info("Insufficient guardian approvals");
+        return 5;
+    }
+
+    let old_id_key = identity_key(&target);
+    let mut old_record = match storage_get(&old_id_key) {
+        Some(data) => data,
+        None => {
+            log_info("Target identity not found");
+            return 6;
+        }
+    };
+
+    let new_id_key = identity_key(&new_owner);
+    if storage_get(&new_id_key).is_some() {
+        log_info("New owner already has an identity");
+        return 7;
+    }
+
+    let now = get_timestamp();
+    let now_bytes = u64_to_bytes(now);
+    let old_rep = if old_record.len() >= 107 {
+        bytes_to_u64(&old_record[99..107])
+    } else {
+        INITIAL_REPUTATION
+    };
+
+    let mut new_record = old_record.clone();
+    if new_record.len() >= IDENTITY_SIZE {
+        new_record[0..32].copy_from_slice(&new_owner);
+        new_record[115..123].copy_from_slice(&now_bytes);
+        new_record[126] = 1;
+    }
+    storage_set(&new_id_key, &new_record);
+
+    if old_record.len() >= IDENTITY_SIZE {
+        old_record[99..107].copy_from_slice(&u64_to_bytes(0));
+        old_record[115..123].copy_from_slice(&now_bytes);
+        old_record[126] = 0;
+    }
+    storage_set(&old_id_key, &old_record);
+
+    storage_set(&reputation_key(&new_owner), &u64_to_bytes(old_rep));
+    storage_set(&reputation_key(&target), &u64_to_bytes(0));
+
+    for (old_key, new_key) in [
+        (endpoint_key(&target), endpoint_key(&new_owner)),
+        (metadata_key(&target), metadata_key(&new_owner)),
+        (availability_key(&target), availability_key(&new_owner)),
+        (rate_key(&target), rate_key(&new_owner)),
+    ] {
+        if let Some(data) = storage_get(&old_key) {
+            storage_set(&new_key, &data);
+            moltchain_sdk::storage::remove(&old_key);
+        }
+    }
+
+    let old_rev = name_reverse_key(&target);
+    if let Some(name_bytes) = storage_get(&old_rev) {
+        let nk = name_key(&name_bytes);
+        if let Some(mut name_record) = storage_get(&nk) {
+            if name_record.len() >= 48 && name_record[0..32] == target[..] {
+                name_record[0..32].copy_from_slice(&new_owner);
+                storage_set(&nk, &name_record);
+            }
+        }
+        let new_rev = name_reverse_key(&new_owner);
+        storage_set(&new_rev, &name_bytes);
+        moltchain_sdk::storage::remove(&old_rev);
+    }
+
+    let old_gk = recovery_guardians_key(&target);
+    if let Some(guardians) = storage_get(&old_gk) {
+        let new_gk = recovery_guardians_key(&new_owner);
+        storage_set(&new_gk, &guardians);
+        moltchain_sdk::storage::remove(&old_gk);
+    }
+
+    let old_nk = recovery_nonce_key(&target);
+    let new_nk = recovery_nonce_key(&new_owner);
+    storage_set(&new_nk, &u64_to_bytes(nonce.saturating_add(1)));
+    moltchain_sdk::storage::remove(&old_nk);
+
+    let old_ck = recovery_candidate_key(&target);
+    let new_ck = recovery_candidate_key(&new_owner);
+    storage_set(&new_ck, &[0u8; 32]);
+    moltchain_sdk::storage::remove(&old_ck);
+
+    log_info("Social recovery executed");
     0
 }
 
@@ -926,19 +1527,27 @@ pub extern "C" fn vouch(voucher_ptr: *const u8, vouchee_ptr: *const u8) -> u32 {
 ///   - pubkey_ptr: 32-byte address
 #[no_mangle]
 pub extern "C" fn get_reputation(pubkey_ptr: *const u8) -> u32 {
-    let pubkey = unsafe { core::slice::from_raw_parts(pubkey_ptr, 32) };
+    let mut pubkey = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(pubkey_ptr, pubkey.as_mut_ptr(), 32); }
 
-    let rep_key = reputation_key(pubkey);
-    match storage_get(&rep_key) {
-        Some(data) if data.len() >= 8 => {
-            moltchain_sdk::set_return_data(&data);
-            0
-        }
-        _ => {
-            log_info("❌ No reputation found for address");
-            1
+    let id_key = identity_key(&pubkey);
+    if let Some(mut record) = storage_get(&id_key) {
+        let now = get_timestamp();
+        let rep = apply_decay_to_identity_record(&pubkey, &id_key, &mut record, now);
+        moltchain_sdk::set_return_data(&u64_to_bytes(rep));
+        return 0;
+    }
+
+    let rep_key = reputation_key(&pubkey);
+    if let Some(data) = storage_get(&rep_key) {
+        if data.len() >= 8 {
+            moltchain_sdk::set_return_data(&data[0..8]);
+            return 0;
         }
     }
+
+    log_info("No reputation found for address");
+    1
 }
 
 // ============================================================================
@@ -955,27 +1564,29 @@ pub extern "C" fn deactivate_identity(
     caller_ptr: *const u8,
     target_ptr: *const u8,
 ) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    let target = unsafe { core::slice::from_raw_parts(target_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    let mut target = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(target_ptr, target.as_mut_ptr(), 32); }
 
-    let id_key = identity_key(target);
+    let id_key = identity_key(&target);
     let mut record = match storage_get(&id_key) {
         Some(data) => data,
         None => {
-            log_info("❌ Identity not found");
+            log_info("Identity not found");
             return 1;
         }
     };
 
     // Must be owner or admin
-    let is_owner = record.len() >= 32 && &record[0..32] == caller;
+    let is_owner = record.len() >= 32 && record[0..32] == caller[..];
     let is_admin = match storage_get(b"mid_admin") {
-        Some(admin) => caller == admin.as_slice(),
+        Some(admin) => caller[..] == admin[..],
         None => false,
     };
 
     if !is_owner && !is_admin {
-        log_info("❌ Unauthorized: must be owner or admin");
+        log_info("Unauthorized: must be owner or admin");
         return 2;
     }
 
@@ -988,7 +1599,7 @@ pub extern "C" fn deactivate_identity(
 
     storage_set(&id_key, &record);
 
-    log_info("✅ Identity deactivated");
+    log_info("Identity deactivated");
     0
 }
 
@@ -1025,25 +1636,26 @@ pub extern "C" fn update_agent_type(
     caller_ptr: *const u8,
     new_agent_type: u8,
 ) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
 
-    if new_agent_type > AGENT_TYPE_GENERAL {
-        log_info("❌ Invalid agent type");
+    if !is_valid_agent_type(new_agent_type) {
+        log_info("Invalid agent type");
         return 1;
     }
 
-    let id_key = identity_key(caller);
+    let id_key = identity_key(&caller);
     let mut record = match storage_get(&id_key) {
         Some(data) => data,
         None => {
-            log_info("❌ Identity not found");
+            log_info("Identity not found");
             return 2;
         }
     };
 
     // Verify ownership
-    if record.len() < IDENTITY_SIZE || &record[0..32] != caller {
-        log_info("❌ Unauthorized");
+    if record.len() < IDENTITY_SIZE || record[0..32] != caller[..] {
+        log_info("Unauthorized");
         return 3;
     }
 
@@ -1053,7 +1665,7 @@ pub extern "C" fn update_agent_type(
 
     storage_set(&id_key, &record);
 
-    log_info("✅ Agent type updated");
+    log_info("Agent type updated");
     0
 }
 
@@ -1068,13 +1680,14 @@ pub extern "C" fn update_agent_type(
 ///   - pubkey_ptr: 32-byte address to look up
 #[no_mangle]
 pub extern "C" fn get_vouches(pubkey_ptr: *const u8) -> u32 {
-    let pubkey = unsafe { core::slice::from_raw_parts(pubkey_ptr, 32) };
+    let mut pubkey = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(pubkey_ptr, pubkey.as_mut_ptr(), 32); }
 
-    let id_key = identity_key(pubkey);
+    let id_key = identity_key(&pubkey);
     let record = match storage_get(&id_key) {
         Some(data) => data,
         None => {
-            log_info("❌ Identity not found");
+            log_info("Identity not found");
             return 1;
         }
     };
@@ -1091,7 +1704,7 @@ pub extern "C" fn get_vouches(pubkey_ptr: *const u8) -> u32 {
     all_vouches.push(((vouch_count >> 8) & 0xFF) as u8);
 
     for i in 0..vouch_count {
-        let vk = vouch_key(pubkey, i);
+        let vk = vouch_key(&pubkey, i);
         if let Some(data) = storage_get(&vk) {
             all_vouches.extend_from_slice(&data);
         }
@@ -1159,7 +1772,7 @@ fn award_achievement(target: &[u8], hex: &[u8; 64], achievement_id: u8, name: &s
         .unwrap_or(0);
     storage_set(&count_key, &u64_to_bytes(prev + 1));
 
-    log_info(&alloc::format!("🏆 Achievement unlocked: {}", name));
+    log_info(&alloc::format!("Achievement unlocked: {}", name));
     let _ = target; // suppress unused warning
 }
 
@@ -1170,36 +1783,39 @@ pub extern "C" fn award_contribution_achievement(
     target_ptr: *const u8,
     achievement_id: u8,
 ) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    let target = unsafe { core::slice::from_raw_parts(target_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    let mut target = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(target_ptr, target.as_mut_ptr(), 32); }
 
     let admin = match storage_get(b"mid_admin") {
         Some(data) => data,
         None => return 1,
     };
-    if caller != admin.as_slice() {
-        log_info("❌ Unauthorized");
+    if caller[..] != admin[..] {
+        log_info("Unauthorized");
         return 2;
     }
 
-    let hex = hex_encode_addr(target);
+    let hex = hex_encode_addr(&target);
     let name = match achievement_id {
         ACHIEVEMENT_FIRST_TX => "First Transaction",
         ACHIEVEMENT_VOTER => "Governance Voter",
         ACHIEVEMENT_BUILDER => "Program Builder",
         ACHIEVEMENT_ENDORSED => "Well Endorsed (10+ vouches)",
-        ACHIEVEMENT_GRADUATION => "Bootstrap Graduation 🎓",
+        ACHIEVEMENT_GRADUATION => "Bootstrap Graduation ",
         _ => "Unknown Achievement",
     };
-    award_achievement(target, &hex, achievement_id, name);
+    award_achievement(&target, &hex, achievement_id, name);
     0
 }
 
 /// Get achievements for an identity
 #[no_mangle]
 pub extern "C" fn get_achievements(pubkey_ptr: *const u8) -> u32 {
-    let pubkey = unsafe { core::slice::from_raw_parts(pubkey_ptr, 32) };
-    let hex = hex_encode_addr(pubkey);
+    let mut pubkey = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(pubkey_ptr, pubkey.as_mut_ptr(), 32); }
+    let hex = hex_encode_addr(&pubkey);
 
     let mut count_key = Vec::with_capacity(9 + 64);
     count_key.extend_from_slice(b"ach_count:");
@@ -1233,20 +1849,21 @@ pub extern "C" fn get_achievements(pubkey_ptr: *const u8) -> u32 {
 // SKILL ATTESTATION HELPERS
 // ============================================================================
 
-/// Build a simple hash of a skill name (first 8 bytes, zero-padded)
-fn skill_name_hash(skill_name: &[u8]) -> [u8; 8] {
-    let mut hash = [0u8; 8];
+/// Build a simple hash of a skill name (first 16 bytes, zero-padded)
+/// SECURITY FIX: Increased from 8 to 16 bytes to reduce collision risk
+fn skill_name_hash(skill_name: &[u8]) -> [u8; 16] {
+    let mut hash = [0u8; 16];
     for (i, &b) in skill_name.iter().enumerate() {
-        if i >= 8 { break; }
+        if i >= 16 { break; }
         hash[i] = b;
     }
     hash
 }
 
-fn hex_encode_8(bytes: &[u8; 8]) -> [u8; 16] {
+fn hex_encode_16(bytes: &[u8; 16]) -> [u8; 32] {
     let hex_chars: &[u8; 16] = b"0123456789abcdef";
-    let mut out = [0u8; 16];
-    for i in 0..8 {
+    let mut out = [0u8; 32];
+    for i in 0..16 {
         out[i * 2] = hex_chars[(bytes[i] >> 4) as usize];
         out[i * 2 + 1] = hex_chars[(bytes[i] & 0x0f) as usize];
     }
@@ -1254,11 +1871,11 @@ fn hex_encode_8(bytes: &[u8; 8]) -> [u8; 16] {
 }
 
 /// Storage key for an attestation: "attest_{identity_hex}_{skill_hash_hex}_{attester_hex}"
-fn attestation_key(identity: &[u8], skill_hash: &[u8; 8], attester: &[u8]) -> Vec<u8> {
+fn attestation_key(identity: &[u8], skill_hash: &[u8; 16], attester: &[u8]) -> Vec<u8> {
     let id_hex = hex_encode_addr(identity);
-    let skill_hex = hex_encode_8(skill_hash);
+    let skill_hex = hex_encode_16(skill_hash);
     let att_hex = hex_encode_addr(attester);
-    let mut key = Vec::with_capacity(7 + 64 + 1 + 16 + 1 + 64);
+    let mut key = Vec::with_capacity(7 + 64 + 1 + 32 + 1 + 64);
     key.extend_from_slice(b"attest_");
     key.extend_from_slice(&id_hex);
     key.push(b'_');
@@ -1269,10 +1886,10 @@ fn attestation_key(identity: &[u8], skill_hash: &[u8; 8], attester: &[u8]) -> Ve
 }
 
 /// Storage key for attestation count: "attest_count_{identity_hex}_{skill_hash_hex}"
-fn attestation_count_key(identity: &[u8], skill_hash: &[u8; 8]) -> Vec<u8> {
+fn attestation_count_key(identity: &[u8], skill_hash: &[u8; 16]) -> Vec<u8> {
     let id_hex = hex_encode_addr(identity);
-    let skill_hex = hex_encode_8(skill_hash);
-    let mut key = Vec::with_capacity(13 + 64 + 1 + 16);
+    let skill_hex = hex_encode_16(skill_hash);
+    let mut key = Vec::with_capacity(13 + 64 + 1 + 32);
     key.extend_from_slice(b"attest_count_");
     key.extend_from_slice(&id_hex);
     key.push(b'_');
@@ -1302,48 +1919,51 @@ pub extern "C" fn attest_skill(
     skill_name_len: u32,
     attestation_level: u8,
 ) -> u32 {
-    log_info("🏅 Attesting skill...");
+    log_info("Attesting skill...");
 
-    let attester = unsafe { core::slice::from_raw_parts(attester_ptr, 32) };
-    let identity = unsafe { core::slice::from_raw_parts(identity_ptr, 32) };
+    let mut attester = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(attester_ptr, attester.as_mut_ptr(), 32); }
+    let mut identity = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(identity_ptr, identity.as_mut_ptr(), 32); }
     let skill_name_len = skill_name_len as usize;
 
     if skill_name_len == 0 || skill_name_len > MAX_SKILL_LEN {
-        log_info("❌ Invalid skill name length");
+        log_info("Invalid skill name length");
         return 1;
     }
 
     if attestation_level == 0 || attestation_level > 5 {
-        log_info("❌ Attestation level must be 1-5");
+        log_info("Attestation level must be 1-5");
         return 2;
     }
 
     // Can't attest your own skills
-    if attester == identity {
-        log_info("❌ Cannot attest your own skills");
+    if attester[..] == identity[..] {
+        log_info("Cannot attest your own skills");
         return 3;
     }
 
-    let skill_name = unsafe { core::slice::from_raw_parts(skill_name_ptr, skill_name_len) };
+    let mut skill_name = alloc::vec![0u8; skill_name_len];
+    unsafe { core::ptr::copy_nonoverlapping(skill_name_ptr, skill_name.as_mut_ptr(), skill_name_len); }
 
     // Both must have identities
-    let id_key = identity_key(identity);
+    let id_key = identity_key(&identity);
     if storage_get(&id_key).is_none() {
-        log_info("❌ Target identity not found");
+        log_info("Target identity not found");
         return 4;
     }
 
-    let attester_id_key = identity_key(attester);
+    let attester_id_key = identity_key(&attester);
     if storage_get(&attester_id_key).is_none() {
-        log_info("❌ Attester identity not found");
+        log_info("Attester identity not found");
         return 5;
     }
 
-    let s_hash = skill_name_hash(skill_name);
-    let ak = attestation_key(identity, &s_hash, attester);
+    let s_hash = skill_name_hash(&skill_name);
+    let ak = attestation_key(&identity, &s_hash, &attester);
 
     if storage_get(&ak).is_some() {
-        log_info("❌ Already attested this skill for this identity");
+        log_info("Already attested this skill for this identity");
         return 6;
     }
 
@@ -1354,13 +1974,13 @@ pub extern "C" fn attest_skill(
     storage_set(&ak, &att_data);
 
     // Increment attestation count
-    let ck = attestation_count_key(identity, &s_hash);
+    let ck = attestation_count_key(&identity, &s_hash);
     let count = storage_get(&ck)
         .map(|d| bytes_to_u64(&d))
         .unwrap_or(0);
     storage_set(&ck, &u64_to_bytes(count + 1));
 
-    log_info("✅ Skill attestation recorded");
+    log_info("Skill attestation recorded");
     0
 }
 
@@ -1382,17 +2002,19 @@ pub extern "C" fn get_attestations(
     skill_name_ptr: *const u8,
     skill_name_len: u32,
 ) -> u32 {
-    let identity = unsafe { core::slice::from_raw_parts(identity_ptr, 32) };
+    let mut identity = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(identity_ptr, identity.as_mut_ptr(), 32); }
     let skill_name_len = skill_name_len as usize;
 
     if skill_name_len == 0 || skill_name_len > MAX_SKILL_LEN {
-        log_info("❌ Invalid skill name length");
+        log_info("Invalid skill name length");
         return 1;
     }
 
-    let skill_name = unsafe { core::slice::from_raw_parts(skill_name_ptr, skill_name_len) };
-    let s_hash = skill_name_hash(skill_name);
-    let ck = attestation_count_key(identity, &s_hash);
+    let mut skill_name = alloc::vec![0u8; skill_name_len];
+    unsafe { core::ptr::copy_nonoverlapping(skill_name_ptr, skill_name.as_mut_ptr(), skill_name_len); }
+    let s_hash = skill_name_hash(&skill_name);
+    let ck = attestation_count_key(&identity, &s_hash);
 
     let count = storage_get(&ck)
         .map(|d| bytes_to_u64(&d))
@@ -1422,23 +2044,26 @@ pub extern "C" fn revoke_attestation(
     skill_name_ptr: *const u8,
     skill_name_len: u32,
 ) -> u32 {
-    log_info("🔄 Revoking attestation...");
+    log_info("Revoking attestation...");
 
-    let attester = unsafe { core::slice::from_raw_parts(attester_ptr, 32) };
-    let identity = unsafe { core::slice::from_raw_parts(identity_ptr, 32) };
+    let mut attester = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(attester_ptr, attester.as_mut_ptr(), 32); }
+    let mut identity = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(identity_ptr, identity.as_mut_ptr(), 32); }
     let skill_name_len = skill_name_len as usize;
 
     if skill_name_len == 0 || skill_name_len > MAX_SKILL_LEN {
-        log_info("❌ Invalid skill name length");
+        log_info("Invalid skill name length");
         return 1;
     }
 
-    let skill_name = unsafe { core::slice::from_raw_parts(skill_name_ptr, skill_name_len) };
-    let s_hash = skill_name_hash(skill_name);
-    let ak = attestation_key(identity, &s_hash, attester);
+    let mut skill_name = alloc::vec![0u8; skill_name_len];
+    unsafe { core::ptr::copy_nonoverlapping(skill_name_ptr, skill_name.as_mut_ptr(), skill_name_len); }
+    let s_hash = skill_name_hash(&skill_name);
+    let ak = attestation_key(&identity, &s_hash, &attester);
 
     if storage_get(&ak).is_none() {
-        log_info("❌ No attestation found to revoke");
+        log_info("No attestation found to revoke");
         return 2;
     }
 
@@ -1446,7 +2071,7 @@ pub extern "C" fn revoke_attestation(
     moltchain_sdk::storage::remove(&ak);
 
     // Decrement count
-    let ck = attestation_count_key(identity, &s_hash);
+    let ck = attestation_count_key(&identity, &s_hash);
     let count = storage_get(&ck)
         .map(|d| bytes_to_u64(&d))
         .unwrap_or(0);
@@ -1454,7 +2079,7 @@ pub extern "C" fn revoke_attestation(
         storage_set(&ck, &u64_to_bytes(count - 1));
     }
 
-    log_info("✅ Attestation revoked");
+    log_info("Attestation revoked");
     0
 }
 
@@ -1480,45 +2105,53 @@ pub extern "C" fn register_name(
     name_len: u32,
     duration_years: u8,
 ) -> u32 {
-    log_info("🔤 Registering .molt name...");
+    log_info("Registering .molt name...");
 
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
     let name_len = name_len as usize;
-    let name = unsafe { core::slice::from_raw_parts(name_ptr, name_len) };
+    let mut name = alloc::vec![0u8; name_len];
+    unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
 
     // Must have a MoltyID
-    let id_key = identity_key(caller);
+    let id_key = identity_key(&caller);
     if storage_get(&id_key).is_none() {
-        log_info("❌ Must register MoltyID first");
+        log_info("Must register MoltyID first");
         return 1;
     }
 
     // Validate name
-    if !validate_molt_name(name) {
-        log_info("❌ Invalid .molt name (3-32 chars, a-z 0-9 hyphens, no leading/trailing hyphens)");
+    if !validate_molt_name(&name) {
+        log_info("Invalid .molt name (3-32 chars, a-z 0-9 hyphens, no leading/trailing hyphens)");
         return 2;
     }
 
     // Check reserved
-    if is_reserved_name(name) {
-        log_info("❌ Name is reserved");
+    if is_reserved_name(&name) {
+        log_info("Name is reserved");
         return 3;
+    }
+
+    // Premium short names must be sold via auction
+    if is_premium_name(&name) {
+        log_info("Premium short names are auction-only");
+        return 8;
     }
 
     // Duration: 1-10 years
     if duration_years == 0 || duration_years > 10 {
-        log_info("❌ Duration must be 1-10 years");
+        log_info("Duration must be 1-10 years");
         return 4;
     }
 
     // Check if name is already taken and not expired
-    let nk = name_key(name);
+    let nk = name_key(&name);
     if let Some(existing) = storage_get(&nk) {
         if existing.len() >= 48 {
             let expiry = bytes_to_u64(&existing[40..48]);
             let current_slot = moltchain_sdk::get_slot();
             if current_slot < expiry {
-                log_info("❌ Name already registered and not expired");
+                log_info("Name already registered and not expired");
                 return 5;
             }
             // Name expired — can be re-registered (clear old reverse mapping)
@@ -1529,7 +2162,7 @@ pub extern "C" fn register_name(
     }
 
     // Check caller doesn't already have a name (one name per identity)
-    let rev_key = name_reverse_key(caller);
+    let rev_key = name_reverse_key(&caller);
     if let Some(existing_name) = storage_get(&rev_key) {
         // Check if the existing name is still valid
         let existing_nk = name_key(&existing_name);
@@ -1537,7 +2170,7 @@ pub extern "C" fn register_name(
             if nr.len() >= 48 {
                 let expiry = bytes_to_u64(&nr[40..48]);
                 if moltchain_sdk::get_slot() < expiry {
-                    log_info("❌ Already have a .molt name; release it first");
+                    log_info("Already have a .molt name; release it first");
                     return 6;
                 }
             }
@@ -1548,7 +2181,7 @@ pub extern "C" fn register_name(
     let required_cost = name_registration_cost(name_len) * (duration_years as u64);
     let paid = moltchain_sdk::get_value();
     if paid < required_cost {
-        log_info("❌ Insufficient payment for name registration");
+        log_info("Insufficient payment for name registration");
         return 7;
     }
 
@@ -1557,14 +2190,14 @@ pub extern "C" fn register_name(
     let expiry_slot = current_slot + (SLOTS_PER_YEAR * duration_years as u64);
 
     let mut record = [0u8; 48];
-    record[0..32].copy_from_slice(caller);
+    record[0..32].copy_from_slice(&caller);
     record[32..40].copy_from_slice(&u64_to_bytes(current_slot));
     record[40..48].copy_from_slice(&u64_to_bytes(expiry_slot));
 
     storage_set(&nk, &record);
 
     // Set reverse mapping: address → name
-    storage_set(&rev_key, name);
+    storage_set(&rev_key, &name);
 
     // Increment name count
     let count = storage_get(b"molt_name_count")
@@ -1572,7 +2205,7 @@ pub extern "C" fn register_name(
         .unwrap_or(0);
     storage_set(b"molt_name_count", &u64_to_bytes(count + 1));
 
-    log_info("✅ .molt name registered!");
+    log_info(".molt name registered!");
     0
 }
 
@@ -1589,22 +2222,23 @@ pub extern "C" fn register_name(
 #[no_mangle]
 pub extern "C" fn resolve_name(name_ptr: *const u8, name_len: u32) -> u32 {
     let name_len = name_len as usize;
-    let name = unsafe { core::slice::from_raw_parts(name_ptr, name_len) };
+    let mut name = alloc::vec![0u8; name_len];
+    unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
 
-    let nk = name_key(name);
+    let nk = name_key(&name);
     match storage_get(&nk) {
         Some(data) if data.len() >= 48 => {
             let expiry = bytes_to_u64(&data[40..48]);
             let current_slot = moltchain_sdk::get_slot();
             if current_slot >= expiry {
-                log_info("❌ Name expired");
+                log_info("Name expired");
                 return 1;
             }
             moltchain_sdk::set_return_data(&data);
             0
         }
         _ => {
-            log_info("❌ Name not found");
+            log_info("Name not found");
             1
         }
     }
@@ -1621,9 +2255,10 @@ pub extern "C" fn resolve_name(name_ptr: *const u8, name_len: u32) -> u32 {
 ///   - addr_ptr: 32-byte address
 #[no_mangle]
 pub extern "C" fn reverse_resolve(addr_ptr: *const u8) -> u32 {
-    let addr = unsafe { core::slice::from_raw_parts(addr_ptr, 32) };
+    let mut addr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32); }
 
-    let rev_key = name_reverse_key(addr);
+    let rev_key = name_reverse_key(&addr);
     match storage_get(&rev_key) {
         Some(name_bytes) => {
             // Verify the name is still valid
@@ -1637,11 +2272,304 @@ pub extern "C" fn reverse_resolve(addr_ptr: *const u8) -> u32 {
                     }
                 }
             }
-            log_info("❌ Name expired or invalid");
+            log_info("Name expired or invalid");
             1
         }
         None => {
-            log_info("❌ No .molt name for this address");
+            log_info("No .molt name for this address");
+            1
+        }
+    }
+}
+
+// ============================================================================
+// PREMIUM NAME AUCTION
+// ============================================================================
+
+/// Create an auction for a premium short name (3-4 chars).
+/// Auction record: [active(1), start_slot(8), end_slot(8), reserve_bid(8), highest_bid(8), highest_bidder(32)]
+#[no_mangle]
+pub extern "C" fn create_name_auction(
+    caller_ptr: *const u8,
+    name_ptr: *const u8,
+    name_len: u32,
+    reserve_bid: u64,
+    end_slot: u64,
+) -> u32 {
+    if is_mid_paused() {
+        return 20;
+    }
+
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_mid_admin(&caller) {
+        log_info("Unauthorized: only admin can create name auction");
+        return 1;
+    }
+
+    let name_len = name_len as usize;
+    let mut name = alloc::vec![0u8; name_len];
+    unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
+
+    if !validate_molt_name(&name) {
+        log_info("Invalid .molt name for auction");
+        return 2;
+    }
+
+    if !is_premium_name(&name) {
+        log_info("Only premium short names can be auctioned");
+        return 3;
+    }
+
+    if is_reserved_name(&name) {
+        log_info("Reserved name cannot be auctioned");
+        return 4;
+    }
+
+    let nk = name_key(&name);
+    if let Some(existing) = storage_get(&nk) {
+        if existing.len() >= 48 {
+            let expiry = bytes_to_u64(&existing[40..48]);
+            if moltchain_sdk::get_slot() < expiry {
+                log_info("Name already registered");
+                return 5;
+            }
+        }
+    }
+
+    let now_slot = moltchain_sdk::get_slot();
+    if end_slot <= now_slot {
+        log_info("Auction end slot must be in the future");
+        return 6;
+    }
+
+    let duration = end_slot - now_slot;
+    if !(NAME_AUCTION_MIN_SLOTS..=NAME_AUCTION_MAX_SLOTS).contains(&duration) {
+        log_info("Auction duration out of bounds");
+        return 7;
+    }
+
+    let ak = name_auction_key(&name);
+    if let Some(existing) = storage_get(&ak) {
+        if existing.len() >= 65 && existing[0] == 1 {
+            let existing_end = bytes_to_u64(&existing[9..17]);
+            if now_slot < existing_end {
+                log_info("Auction already active for this name");
+                return 8;
+            }
+        }
+    }
+
+    let mut record = Vec::with_capacity(65);
+    record.push(1); // active
+    record.extend_from_slice(&u64_to_bytes(now_slot));
+    record.extend_from_slice(&u64_to_bytes(end_slot));
+    record.extend_from_slice(&u64_to_bytes(reserve_bid));
+    record.extend_from_slice(&u64_to_bytes(0)); // highest_bid
+    record.extend_from_slice(&[0u8; 32]); // highest_bidder
+    storage_set(&ak, &record);
+
+    log_info("Name auction created");
+    0
+}
+
+/// Place a bid on a premium-name auction.
+#[no_mangle]
+pub extern "C" fn bid_name_auction(
+    bidder_ptr: *const u8,
+    name_ptr: *const u8,
+    name_len: u32,
+    bid_amount: u64,
+) -> u32 {
+    if is_mid_paused() {
+        return 20;
+    }
+
+    let mut bidder = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(bidder_ptr, bidder.as_mut_ptr(), 32); }
+    let name_len = name_len as usize;
+    let mut name = alloc::vec![0u8; name_len];
+    unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
+
+    if storage_get(&identity_key(&bidder)).is_none() {
+        log_info("Bidder must have a MoltyID");
+        return 1;
+    }
+
+    let ak = name_auction_key(&name);
+    let mut record = match storage_get(&ak) {
+        Some(data) if data.len() >= 65 => data,
+        _ => {
+            log_info("Auction not found");
+            return 2;
+        }
+    };
+
+    if record[0] != 1 {
+        log_info("Auction not active");
+        return 3;
+    }
+
+    let now_slot = moltchain_sdk::get_slot();
+    let end_slot = bytes_to_u64(&record[9..17]);
+    if now_slot >= end_slot {
+        log_info("Auction ended");
+        return 4;
+    }
+
+    let reserve_bid = bytes_to_u64(&record[17..25]);
+    let current_highest = bytes_to_u64(&record[25..33]);
+    if bid_amount < reserve_bid || bid_amount <= current_highest {
+        log_info("Bid too low");
+        return 5;
+    }
+
+    let paid = moltchain_sdk::get_value();
+    if paid < bid_amount {
+        log_info("Insufficient payment for bid");
+        return 6;
+    }
+
+    // SECURITY FIX: Refund previous highest bidder before accepting new bid
+    let prev_bid_amount = bytes_to_u64(&record[25..33]);
+    let mut prev_bidder = [0u8; 32];
+    prev_bidder.copy_from_slice(&record[33..65]);
+    if prev_bid_amount > 0 && !prev_bidder.iter().all(|&b| b == 0) {
+        // Refund previous bidder via host-level transfer
+        let refund_call = CrossCall::new(
+            Address([0u8; 32]), // host-level runtime call
+            "transfer",
+            {
+                let mut args = alloc::vec::Vec::with_capacity(40);
+                args.extend_from_slice(&prev_bidder);
+                args.extend_from_slice(&u64_to_bytes(prev_bid_amount));
+                args
+            },
+        );
+        let _ = call_contract(refund_call);
+        log_info("Previous highest bidder refunded");
+    }
+
+    record[25..33].copy_from_slice(&u64_to_bytes(bid_amount));
+    record[33..65].copy_from_slice(&bidder);
+    storage_set(&ak, &record);
+
+    log_info("Auction bid accepted");
+    0
+}
+
+/// Finalize a premium-name auction and register the name to the winner.
+#[no_mangle]
+pub extern "C" fn finalize_name_auction(
+    caller_ptr: *const u8,
+    name_ptr: *const u8,
+    name_len: u32,
+    duration_years: u8,
+) -> u32 {
+    let mut _caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, _caller.as_mut_ptr(), 32); }
+    let name_len = name_len as usize;
+    let mut name = alloc::vec![0u8; name_len];
+    unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
+
+    if duration_years == 0 || duration_years > 10 {
+        log_info("Duration must be 1-10 years");
+        return 1;
+    }
+
+    let ak = name_auction_key(&name);
+    let mut auction = match storage_get(&ak) {
+        Some(data) if data.len() >= 65 => data,
+        _ => {
+            log_info("Auction not found");
+            return 2;
+        }
+    };
+
+    if auction[0] != 1 {
+        log_info("Auction not active");
+        return 3;
+    }
+
+    let now_slot = moltchain_sdk::get_slot();
+    let end_slot = bytes_to_u64(&auction[9..17]);
+    if now_slot < end_slot {
+        log_info("Auction still active");
+        return 4;
+    }
+
+    let highest_bid = bytes_to_u64(&auction[25..33]);
+    if highest_bid == 0 {
+        log_info("Auction has no bids");
+        return 5;
+    }
+
+    let winner = &auction[33..65];
+    if storage_get(&identity_key(winner)).is_none() {
+        log_info("Winner identity not found");
+        return 6;
+    }
+
+    // Enforce one-name-per-identity
+    let winner_rev = name_reverse_key(winner);
+    if let Some(existing_name) = storage_get(&winner_rev) {
+        let existing_nk = name_key(&existing_name);
+        if let Some(nr) = storage_get(&existing_nk) {
+            if nr.len() >= 48 {
+                let expiry = bytes_to_u64(&nr[40..48]);
+                if now_slot < expiry {
+                    log_info("Winner already has an active .molt name");
+                    return 7;
+                }
+            }
+        }
+    }
+
+    // Name must not be active now
+    let nk = name_key(&name);
+    if let Some(existing) = storage_get(&nk) {
+        if existing.len() >= 48 {
+            let expiry = bytes_to_u64(&existing[40..48]);
+            if now_slot < expiry {
+                log_info("Name already active");
+                return 8;
+            }
+        }
+    }
+
+    let expiry_slot = now_slot + (SLOTS_PER_YEAR * duration_years as u64);
+    let mut name_record = [0u8; 48];
+    name_record[0..32].copy_from_slice(winner);
+    name_record[32..40].copy_from_slice(&u64_to_bytes(now_slot));
+    name_record[40..48].copy_from_slice(&u64_to_bytes(expiry_slot));
+    storage_set(&nk, &name_record);
+    storage_set(&winner_rev, &name);
+
+    // Increment name count
+    let count = storage_get(b"molt_name_count").map(|d| bytes_to_u64(&d)).unwrap_or(0);
+    storage_set(b"molt_name_count", &u64_to_bytes(count + 1));
+
+    auction[0] = 0; // inactive
+    storage_set(&ak, &auction);
+
+    log_info("Name auction finalized");
+    0
+}
+
+/// Get raw auction record for a name.
+#[no_mangle]
+pub extern "C" fn get_name_auction(name_ptr: *const u8, name_len: u32) -> u32 {
+    let name_len = name_len as usize;
+    let mut name = alloc::vec![0u8; name_len];
+    unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
+    let ak = name_auction_key(&name);
+    match storage_get(&ak) {
+        Some(data) if data.len() >= 65 => {
+            moltchain_sdk::set_return_data(&data);
+            0
+        }
+        _ => {
+            log_info("Auction not found");
             1
         }
     }
@@ -1666,50 +2594,53 @@ pub extern "C" fn transfer_name(
     name_len: u32,
     new_owner_ptr: *const u8,
 ) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
     let name_len = name_len as usize;
-    let name = unsafe { core::slice::from_raw_parts(name_ptr, name_len) };
-    let new_owner = unsafe { core::slice::from_raw_parts(new_owner_ptr, 32) };
+    let mut name = alloc::vec![0u8; name_len];
+    unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
+    let mut new_owner = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(new_owner_ptr, new_owner.as_mut_ptr(), 32); }
 
     // Look up the name record
-    let nk = name_key(name);
+    let nk = name_key(&name);
     let mut record = match storage_get(&nk) {
         Some(data) if data.len() >= 48 => data,
         _ => {
-            log_info("❌ Name not found");
+            log_info("Name not found");
             return 1;
         }
     };
 
     // Verify caller is current owner
-    if &record[0..32] != caller {
-        log_info("❌ Not the owner of this name");
+    if record[0..32] != caller[..] {
+        log_info("Not the owner of this name");
         return 2;
     }
 
     // Check name is not expired
     let expiry = bytes_to_u64(&record[40..48]);
     if moltchain_sdk::get_slot() >= expiry {
-        log_info("❌ Name has expired");
+        log_info("Name has expired");
         return 3;
     }
 
     // New owner must have a MoltyID
-    let new_owner_id = identity_key(new_owner);
+    let new_owner_id = identity_key(&new_owner);
     if storage_get(&new_owner_id).is_none() {
-        log_info("❌ New owner must have a MoltyID");
+        log_info("New owner must have a MoltyID");
         return 4;
     }
 
     // New owner must not already have a name
-    let new_rev = name_reverse_key(new_owner);
+    let new_rev = name_reverse_key(&new_owner);
     if let Some(existing_name) = storage_get(&new_rev) {
         let existing_nk = name_key(&existing_name);
         if let Some(nr) = storage_get(&existing_nk) {
             if nr.len() >= 48 {
                 let ex = bytes_to_u64(&nr[40..48]);
                 if moltchain_sdk::get_slot() < ex {
-                    log_info("❌ New owner already has a .molt name");
+                    log_info("New owner already has a .molt name");
                     return 5;
                 }
             }
@@ -1717,15 +2648,15 @@ pub extern "C" fn transfer_name(
     }
 
     // Update name record with new owner
-    record[0..32].copy_from_slice(new_owner);
+    record[0..32].copy_from_slice(&new_owner);
     storage_set(&nk, &record);
 
     // Update reverse mappings
-    let old_rev = name_reverse_key(caller);
+    let old_rev = name_reverse_key(&caller);
     moltchain_sdk::storage::remove(&old_rev);
-    storage_set(&new_rev, name);
+    storage_set(&new_rev, &name);
 
-    log_info("✅ .molt name transferred");
+    log_info(".molt name transferred");
     0
 }
 
@@ -1747,27 +2678,29 @@ pub extern "C" fn renew_name(
     name_len: u32,
     additional_years: u8,
 ) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
     let name_len = name_len as usize;
-    let name = unsafe { core::slice::from_raw_parts(name_ptr, name_len) };
+    let mut name = alloc::vec![0u8; name_len];
+    unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
 
     if additional_years == 0 || additional_years > 10 {
-        log_info("❌ Additional years must be 1-10");
+        log_info("Additional years must be 1-10");
         return 1;
     }
 
-    let nk = name_key(name);
+    let nk = name_key(&name);
     let mut record = match storage_get(&nk) {
         Some(data) if data.len() >= 48 => data,
         _ => {
-            log_info("❌ Name not found");
+            log_info("Name not found");
             return 2;
         }
     };
 
     // Must be owner
-    if &record[0..32] != caller {
-        log_info("❌ Not the owner of this name");
+    if record[0..32] != caller[..] {
+        log_info("Not the owner of this name");
         return 3;
     }
 
@@ -1775,7 +2708,7 @@ pub extern "C" fn renew_name(
     let required_cost = name_registration_cost(name_len) * (additional_years as u64);
     let paid = moltchain_sdk::get_value();
     if paid < required_cost {
-        log_info("❌ Insufficient payment for renewal");
+        log_info("Insufficient payment for renewal");
         return 4;
     }
 
@@ -1788,7 +2721,7 @@ pub extern "C" fn renew_name(
     record[40..48].copy_from_slice(&u64_to_bytes(new_expiry));
     storage_set(&nk, &record);
 
-    log_info("✅ .molt name renewed");
+    log_info(".molt name renewed");
     0
 }
 
@@ -1808,22 +2741,24 @@ pub extern "C" fn release_name(
     name_ptr: *const u8,
     name_len: u32,
 ) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
     let name_len = name_len as usize;
-    let name = unsafe { core::slice::from_raw_parts(name_ptr, name_len) };
+    let mut name = alloc::vec![0u8; name_len];
+    unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
 
-    let nk = name_key(name);
+    let nk = name_key(&name);
     let record = match storage_get(&nk) {
         Some(data) if data.len() >= 48 => data,
         _ => {
-            log_info("❌ Name not found");
+            log_info("Name not found");
             return 1;
         }
     };
 
     // Must be owner
-    if &record[0..32] != caller {
-        log_info("❌ Not the owner of this name");
+    if record[0..32] != caller[..] {
+        log_info("Not the owner of this name");
         return 2;
     }
 
@@ -1831,7 +2766,7 @@ pub extern "C" fn release_name(
     moltchain_sdk::storage::remove(&nk);
 
     // Remove reverse mapping
-    let rev_key = name_reverse_key(caller);
+    let rev_key = name_reverse_key(&caller);
     moltchain_sdk::storage::remove(&rev_key);
 
     // Decrement name count
@@ -1842,7 +2777,193 @@ pub extern "C" fn release_name(
         storage_set(b"molt_name_count", &u64_to_bytes(count - 1));
     }
 
-    log_info("✅ .molt name released");
+    log_info(".molt name released");
+    0
+}
+
+/// Delegated transfer of a .molt name.
+#[no_mangle]
+pub extern "C" fn transfer_name_as(
+    delegate_ptr: *const u8,
+    owner_ptr: *const u8,
+    name_ptr: *const u8,
+    name_len: u32,
+    new_owner_ptr: *const u8,
+) -> u32 {
+    let mut delegate = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
+    let mut owner = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+    let name_len = name_len as usize;
+    let mut name = alloc::vec![0u8; name_len];
+    unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
+    let mut new_owner = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(new_owner_ptr, new_owner.as_mut_ptr(), 32); }
+
+    let now = get_timestamp();
+    if !has_active_permission(&owner, &delegate, DELEGATE_PERM_NAMING, now) {
+        log_info("Unauthorized delegate for name transfer");
+        return 1;
+    }
+
+    let nk = name_key(&name);
+    let mut record = match storage_get(&nk) {
+        Some(data) if data.len() >= 48 => data,
+        _ => {
+            log_info("Name not found");
+            return 2;
+        }
+    };
+
+    if record[0..32] != owner[..] {
+        log_info("Not the owner of this name");
+        return 3;
+    }
+
+    let expiry = bytes_to_u64(&record[40..48]);
+    if moltchain_sdk::get_slot() >= expiry {
+        log_info("Name has expired");
+        return 4;
+    }
+
+    let new_owner_id = identity_key(&new_owner);
+    if storage_get(&new_owner_id).is_none() {
+        log_info("New owner must have a MoltyID");
+        return 5;
+    }
+
+    let new_rev = name_reverse_key(&new_owner);
+    if let Some(existing_name) = storage_get(&new_rev) {
+        let existing_nk = name_key(&existing_name);
+        if let Some(nr) = storage_get(&existing_nk) {
+            if nr.len() >= 48 {
+                let ex = bytes_to_u64(&nr[40..48]);
+                if moltchain_sdk::get_slot() < ex {
+                    log_info("New owner already has a .molt name");
+                    return 6;
+                }
+            }
+        }
+    }
+
+    record[0..32].copy_from_slice(&new_owner);
+    storage_set(&nk, &record);
+
+    let old_rev = name_reverse_key(&owner);
+    moltchain_sdk::storage::remove(&old_rev);
+    storage_set(&new_rev, &name);
+
+    log_info("Delegated .molt name transferred");
+    0
+}
+
+/// Delegated renewal of a .molt name.
+#[no_mangle]
+pub extern "C" fn renew_name_as(
+    delegate_ptr: *const u8,
+    owner_ptr: *const u8,
+    name_ptr: *const u8,
+    name_len: u32,
+    additional_years: u8,
+) -> u32 {
+    let mut delegate = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
+    let mut owner = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+    let name_len = name_len as usize;
+    let mut name = alloc::vec![0u8; name_len];
+    unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
+
+    if additional_years == 0 || additional_years > 10 {
+        log_info("Additional years must be 1-10");
+        return 1;
+    }
+
+    let now = get_timestamp();
+    if !has_active_permission(&owner, &delegate, DELEGATE_PERM_NAMING, now) {
+        log_info("Unauthorized delegate for name renewal");
+        return 2;
+    }
+
+    let nk = name_key(&name);
+    let mut record = match storage_get(&nk) {
+        Some(data) if data.len() >= 48 => data,
+        _ => {
+            log_info("Name not found");
+            return 3;
+        }
+    };
+
+    if record[0..32] != owner[..] {
+        log_info("Not the owner of this name");
+        return 4;
+    }
+
+    let required_cost = name_registration_cost(name_len) * (additional_years as u64);
+    let paid = moltchain_sdk::get_value();
+    if paid < required_cost {
+        log_info("Insufficient payment for renewal");
+        return 5;
+    }
+
+    let current_expiry = bytes_to_u64(&record[40..48]);
+    let current_slot = moltchain_sdk::get_slot();
+    let base = if current_slot > current_expiry { current_slot } else { current_expiry };
+    let new_expiry = base + (SLOTS_PER_YEAR * additional_years as u64);
+
+    record[40..48].copy_from_slice(&u64_to_bytes(new_expiry));
+    storage_set(&nk, &record);
+
+    log_info("Delegated .molt name renewed");
+    0
+}
+
+/// Delegated release of a .molt name.
+#[no_mangle]
+pub extern "C" fn release_name_as(
+    delegate_ptr: *const u8,
+    owner_ptr: *const u8,
+    name_ptr: *const u8,
+    name_len: u32,
+) -> u32 {
+    let mut delegate = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
+    let mut owner = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+    let name_len = name_len as usize;
+    let mut name = alloc::vec![0u8; name_len];
+    unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
+
+    let now = get_timestamp();
+    if !has_active_permission(&owner, &delegate, DELEGATE_PERM_NAMING, now) {
+        log_info("Unauthorized delegate for name release");
+        return 1;
+    }
+
+    let nk = name_key(&name);
+    let record = match storage_get(&nk) {
+        Some(data) if data.len() >= 48 => data,
+        _ => {
+            log_info("Name not found");
+            return 2;
+        }
+    };
+
+    if record[0..32] != owner[..] {
+        log_info("Not the owner of this name");
+        return 3;
+    }
+
+    moltchain_sdk::storage::remove(&nk);
+    let rev_key = name_reverse_key(&owner);
+    moltchain_sdk::storage::remove(&rev_key);
+
+    let count = storage_get(b"molt_name_count").map(|d| bytes_to_u64(&d)).unwrap_or(0);
+    if count > 0 {
+        storage_set(b"molt_name_count", &u64_to_bytes(count - 1));
+    }
+
+    log_info("Delegated .molt name released");
     0
 }
 
@@ -1859,27 +2980,29 @@ pub extern "C" fn release_name(
 ///   - url_len: length of URL
 #[no_mangle]
 pub extern "C" fn set_endpoint(caller_ptr: *const u8, url_ptr: *const u8, url_len: u32) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
     let url_len = url_len as usize;
 
     if url_len == 0 || url_len > MAX_ENDPOINT_LEN {
-        log_info("❌ Invalid endpoint URL length");
+        log_info("Invalid endpoint URL length");
         return 1;
     }
 
-    let url = unsafe { core::slice::from_raw_parts(url_ptr, url_len) };
+    let mut url = alloc::vec![0u8; url_len];
+    unsafe { core::ptr::copy_nonoverlapping(url_ptr, url.as_mut_ptr(), url_len); }
 
     // Must have identity
-    let idk = identity_key(caller);
+    let idk = identity_key(&caller);
     if storage_get(&idk).is_none() {
-        log_info("❌ Identity not found — register first");
+        log_info("Identity not found — register first");
         return 2;
     }
 
-    let ek = endpoint_key(caller);
-    storage_set(&ek, url);
+    let ek = endpoint_key(&caller);
+    storage_set(&ek, &url);
 
-    log_info("✅ Endpoint set");
+    log_info("Endpoint set");
     0
 }
 
@@ -1889,16 +3012,17 @@ pub extern "C" fn set_endpoint(caller_ptr: *const u8, url_ptr: *const u8, url_le
 ///   - addr_ptr: 32-byte address
 #[no_mangle]
 pub extern "C" fn get_endpoint(addr_ptr: *const u8) -> u32 {
-    let addr = unsafe { core::slice::from_raw_parts(addr_ptr, 32) };
+    let mut addr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32); }
 
-    let ek = endpoint_key(addr);
+    let ek = endpoint_key(&addr);
     match storage_get(&ek) {
         Some(data) => {
             moltchain_sdk::set_return_data(&data);
             0
         }
         None => {
-            log_info("❌ No endpoint set");
+            log_info("No endpoint set");
             1
         }
     }
@@ -1912,27 +3036,29 @@ pub extern "C" fn get_endpoint(addr_ptr: *const u8) -> u32 {
 ///   - json_len: length of metadata
 #[no_mangle]
 pub extern "C" fn set_metadata(caller_ptr: *const u8, json_ptr: *const u8, json_len: u32) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
     let json_len = json_len as usize;
 
     if json_len == 0 || json_len > MAX_METADATA_LEN {
-        log_info("❌ Invalid metadata length");
+        log_info("Invalid metadata length");
         return 1;
     }
 
-    let json = unsafe { core::slice::from_raw_parts(json_ptr, json_len) };
+    let mut json = alloc::vec![0u8; json_len];
+    unsafe { core::ptr::copy_nonoverlapping(json_ptr, json.as_mut_ptr(), json_len); }
 
     // Must have identity
-    let idk = identity_key(caller);
+    let idk = identity_key(&caller);
     if storage_get(&idk).is_none() {
-        log_info("❌ Identity not found — register first");
+        log_info("Identity not found — register first");
         return 2;
     }
 
-    let mk = metadata_key(caller);
-    storage_set(&mk, json);
+    let mk = metadata_key(&caller);
+    storage_set(&mk, &json);
 
-    log_info("✅ Metadata set");
+    log_info("Metadata set");
     0
 }
 
@@ -1942,16 +3068,17 @@ pub extern "C" fn set_metadata(caller_ptr: *const u8, json_ptr: *const u8, json_
 ///   - addr_ptr: 32-byte address
 #[no_mangle]
 pub extern "C" fn get_metadata(addr_ptr: *const u8) -> u32 {
-    let addr = unsafe { core::slice::from_raw_parts(addr_ptr, 32) };
+    let mut addr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32); }
 
-    let mk = metadata_key(addr);
+    let mk = metadata_key(&addr);
     match storage_get(&mk) {
         Some(data) => {
             moltchain_sdk::set_return_data(&data);
             0
         }
         None => {
-            log_info("❌ No metadata set");
+            log_info("No metadata set");
             1
         }
     }
@@ -1964,24 +3091,25 @@ pub extern "C" fn get_metadata(addr_ptr: *const u8) -> u32 {
 ///   - status: availability status (0-2)
 #[no_mangle]
 pub extern "C" fn set_availability(caller_ptr: *const u8, status: u8) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
 
     if status > 2 {
-        log_info("❌ Invalid availability status (0=offline, 1=available, 2=busy)");
+        log_info("Invalid availability status (0=offline, 1=available, 2=busy)");
         return 1;
     }
 
     // Must have identity
-    let idk = identity_key(caller);
+    let idk = identity_key(&caller);
     if storage_get(&idk).is_none() {
-        log_info("❌ Identity not found — register first");
+        log_info("Identity not found — register first");
         return 2;
     }
 
-    let ak = availability_key(caller);
+    let ak = availability_key(&caller);
     storage_set(&ak, &[status]);
 
-    log_info("✅ Availability set");
+    log_info("Availability set");
     0
 }
 
@@ -1991,9 +3119,10 @@ pub extern "C" fn set_availability(caller_ptr: *const u8, status: u8) -> u32 {
 ///   - addr_ptr: 32-byte address
 #[no_mangle]
 pub extern "C" fn get_availability(addr_ptr: *const u8) -> u32 {
-    let addr = unsafe { core::slice::from_raw_parts(addr_ptr, 32) };
+    let mut addr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32); }
 
-    let ak = availability_key(addr);
+    let ak = availability_key(&addr);
     match storage_get(&ak) {
         Some(data) if !data.is_empty() => {
             moltchain_sdk::set_return_data(&data);
@@ -2014,19 +3143,20 @@ pub extern "C" fn get_availability(addr_ptr: *const u8) -> u32 {
 ///   - molt_per_unit: rate in MOLT
 #[no_mangle]
 pub extern "C" fn set_rate(caller_ptr: *const u8, molt_per_unit: u64) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
 
     // Must have identity
-    let idk = identity_key(caller);
+    let idk = identity_key(&caller);
     if storage_get(&idk).is_none() {
-        log_info("❌ Identity not found — register first");
+        log_info("Identity not found — register first");
         return 1;
     }
 
-    let rk = rate_key(caller);
+    let rk = rate_key(&caller);
     storage_set(&rk, &u64_to_bytes(molt_per_unit));
 
-    log_info("✅ Rate set");
+    log_info("Rate set");
     0
 }
 
@@ -2036,9 +3166,10 @@ pub extern "C" fn set_rate(caller_ptr: *const u8, molt_per_unit: u64) -> u32 {
 ///   - addr_ptr: 32-byte address
 #[no_mangle]
 pub extern "C" fn get_rate(addr_ptr: *const u8) -> u32 {
-    let addr = unsafe { core::slice::from_raw_parts(addr_ptr, 32) };
+    let mut addr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32); }
 
-    let rk = rate_key(addr);
+    let rk = rate_key(&addr);
     match storage_get(&rk) {
         Some(data) if data.len() >= 8 => {
             moltchain_sdk::set_return_data(&data);
@@ -2049,6 +3180,307 @@ pub extern "C" fn get_rate(addr_ptr: *const u8) -> u32 {
             0
         }
     }
+}
+
+// ============================================================================
+// IDENTITY DELEGATION
+// ============================================================================
+
+/// Set delegation permissions for a delegate.
+/// delegation record format: [permissions(1), expires_at_ms(8), created_at_ms(8)]
+#[no_mangle]
+pub extern "C" fn set_delegate(
+    owner_ptr: *const u8,
+    delegate_ptr: *const u8,
+    permissions: u8,
+    expires_at_ms: u64,
+) -> u32 {
+    if is_mid_paused() {
+        return 20;
+    }
+
+    let mut owner = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+    let mut delegate = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
+
+    let id_owner = identity_key(&owner);
+    if storage_get(&id_owner).is_none() {
+        log_info("Owner identity not found");
+        return 1;
+    }
+
+    let id_delegate = identity_key(&delegate);
+    if storage_get(&id_delegate).is_none() {
+        log_info("Delegate identity not found");
+        return 2;
+    }
+
+    if owner[..] == delegate[..] {
+        log_info("Owner cannot delegate to self");
+        return 3;
+    }
+
+    if permissions == 0 {
+        log_info("Permissions must be non-zero");
+        return 4;
+    }
+
+    let allowed_mask = DELEGATE_PERM_PROFILE
+        | DELEGATE_PERM_AGENT_TYPE
+        | DELEGATE_PERM_SKILLS
+        | DELEGATE_PERM_NAMING;
+    if permissions & !allowed_mask != 0 {
+        log_info("Invalid delegation permissions mask");
+        return 5;
+    }
+
+    let now = get_timestamp();
+    if expires_at_ms <= now || expires_at_ms > now.saturating_add(MAX_DELEGATION_TTL_MS) {
+        log_info("Invalid delegation expiry");
+        return 6;
+    }
+
+    let mut data = Vec::with_capacity(17);
+    data.push(permissions);
+    data.extend_from_slice(&u64_to_bytes(expires_at_ms));
+    data.extend_from_slice(&u64_to_bytes(now));
+
+    let dk = delegation_key(&owner, &delegate);
+    storage_set(&dk, &data);
+
+    log_info("Delegation set");
+    0
+}
+
+/// Revoke delegation for a delegate.
+#[no_mangle]
+pub extern "C" fn revoke_delegate(owner_ptr: *const u8, delegate_ptr: *const u8) -> u32 {
+    if is_mid_paused() {
+        return 20;
+    }
+
+    let mut owner = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+    let mut delegate = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
+
+    let dk = delegation_key(&owner, &delegate);
+    if storage_get(&dk).is_none() {
+        log_info("Delegation not found");
+        return 1;
+    }
+
+    moltchain_sdk::storage::remove(&dk);
+    log_info("Delegation revoked");
+    0
+}
+
+/// Get delegation record for owner -> delegate.
+/// Returns [permissions(1), expires_at_ms(8), created_at_ms(8)].
+#[no_mangle]
+pub extern "C" fn get_delegate(owner_ptr: *const u8, delegate_ptr: *const u8) -> u32 {
+    let mut owner = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+    let mut delegate = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
+
+    let dk = delegation_key(&owner, &delegate);
+    match storage_get(&dk) {
+        Some(data) if data.len() >= 17 => {
+            moltchain_sdk::set_return_data(&data);
+            0
+        }
+        _ => {
+            log_info("Delegation not found");
+            1
+        }
+    }
+}
+
+/// Delegated endpoint update.
+#[no_mangle]
+pub extern "C" fn set_endpoint_as(
+    delegate_ptr: *const u8,
+    owner_ptr: *const u8,
+    url_ptr: *const u8,
+    url_len: u32,
+) -> u32 {
+    let mut delegate = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
+    let mut owner = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+    let url_len = url_len as usize;
+
+    if url_len == 0 || url_len > MAX_ENDPOINT_LEN {
+        log_info("Invalid endpoint URL length");
+        return 1;
+    }
+
+    let now = get_timestamp();
+    if !has_active_permission(&owner, &delegate, DELEGATE_PERM_PROFILE, now) {
+        log_info("Unauthorized delegate for endpoint update");
+        return 2;
+    }
+
+    let idk = identity_key(&owner);
+    if storage_get(&idk).is_none() {
+        log_info("Identity not found — register first");
+        return 3;
+    }
+
+    let mut url = alloc::vec![0u8; url_len];
+    unsafe { core::ptr::copy_nonoverlapping(url_ptr, url.as_mut_ptr(), url_len); }
+    storage_set(&endpoint_key(&owner), &url);
+    log_info("Delegated endpoint set");
+    0
+}
+
+/// Delegated metadata update.
+#[no_mangle]
+pub extern "C" fn set_metadata_as(
+    delegate_ptr: *const u8,
+    owner_ptr: *const u8,
+    json_ptr: *const u8,
+    json_len: u32,
+) -> u32 {
+    let mut delegate = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
+    let mut owner = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+    let json_len = json_len as usize;
+
+    if json_len == 0 || json_len > MAX_METADATA_LEN {
+        log_info("Invalid metadata length");
+        return 1;
+    }
+
+    let now = get_timestamp();
+    if !has_active_permission(&owner, &delegate, DELEGATE_PERM_PROFILE, now) {
+        log_info("Unauthorized delegate for metadata update");
+        return 2;
+    }
+
+    let idk = identity_key(&owner);
+    if storage_get(&idk).is_none() {
+        log_info("Identity not found — register first");
+        return 3;
+    }
+
+    let mut json = alloc::vec![0u8; json_len];
+    unsafe { core::ptr::copy_nonoverlapping(json_ptr, json.as_mut_ptr(), json_len); }
+    storage_set(&metadata_key(&owner), &json);
+    log_info("Delegated metadata set");
+    0
+}
+
+/// Delegated availability update.
+#[no_mangle]
+pub extern "C" fn set_availability_as(
+    delegate_ptr: *const u8,
+    owner_ptr: *const u8,
+    status: u8,
+) -> u32 {
+    let mut delegate = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
+    let mut owner = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+
+    if status > 2 {
+        log_info("Invalid availability status (0=offline, 1=available, 2=busy)");
+        return 1;
+    }
+
+    let now = get_timestamp();
+    if !has_active_permission(&owner, &delegate, DELEGATE_PERM_PROFILE, now) {
+        log_info("Unauthorized delegate for availability update");
+        return 2;
+    }
+
+    let idk = identity_key(&owner);
+    if storage_get(&idk).is_none() {
+        log_info("Identity not found — register first");
+        return 3;
+    }
+
+    storage_set(&availability_key(&owner), &[status]);
+    log_info("Delegated availability set");
+    0
+}
+
+/// Delegated rate update.
+#[no_mangle]
+pub extern "C" fn set_rate_as(
+    delegate_ptr: *const u8,
+    owner_ptr: *const u8,
+    molt_per_unit: u64,
+) -> u32 {
+    let mut delegate = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
+    let mut owner = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+
+    let now = get_timestamp();
+    if !has_active_permission(&owner, &delegate, DELEGATE_PERM_PROFILE, now) {
+        log_info("Unauthorized delegate for rate update");
+        return 1;
+    }
+
+    let idk = identity_key(&owner);
+    if storage_get(&idk).is_none() {
+        log_info("Identity not found — register first");
+        return 2;
+    }
+
+    storage_set(&rate_key(&owner), &u64_to_bytes(molt_per_unit));
+    log_info("Delegated rate set");
+    0
+}
+
+/// Delegated agent-type update.
+#[no_mangle]
+pub extern "C" fn update_agent_type_as(
+    delegate_ptr: *const u8,
+    owner_ptr: *const u8,
+    new_agent_type: u8,
+) -> u32 {
+    let mut delegate = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
+    let mut owner = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+
+    if !is_valid_agent_type(new_agent_type) {
+        log_info("Invalid agent type");
+        return 1;
+    }
+
+    let now = get_timestamp();
+    if !has_active_permission(&owner, &delegate, DELEGATE_PERM_AGENT_TYPE, now) {
+        log_info("Unauthorized delegate for agent type update");
+        return 2;
+    }
+
+    let id_key = identity_key(&owner);
+    let mut record = match storage_get(&id_key) {
+        Some(data) => data,
+        None => {
+            log_info("Identity not found");
+            return 3;
+        }
+    };
+
+    if record.len() < IDENTITY_SIZE {
+        log_info("Identity record malformed");
+        return 4;
+    }
+
+    record[32] = new_agent_type;
+    let ts_bytes = u64_to_bytes(now);
+    record[115..123].copy_from_slice(&ts_bytes);
+    storage_set(&id_key, &record);
+
+    log_info("Delegated agent type updated");
+    0
 }
 
 // ============================================================================
@@ -2064,17 +3496,21 @@ pub extern "C" fn get_rate(addr_ptr: *const u8) -> u32 {
 ///   - addr_ptr: 32-byte address
 #[no_mangle]
 pub extern "C" fn get_agent_profile(addr_ptr: *const u8) -> u32 {
-    let addr = unsafe { core::slice::from_raw_parts(addr_ptr, 32) };
+    let mut addr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32); }
 
     // Must have identity
-    let idk = identity_key(addr);
-    let id_record = match storage_get(&idk) {
+    let idk = identity_key(&addr);
+    let mut id_record = match storage_get(&idk) {
         Some(data) => data,
         None => {
-            log_info("❌ Identity not found");
+            log_info("Identity not found");
             return 1;
         }
     };
+
+    let now = get_timestamp();
+    let rep = apply_decay_to_identity_record(&addr, &idk, &mut id_record, now);
 
     let mut result = Vec::with_capacity(512);
 
@@ -2087,7 +3523,7 @@ pub extern "C" fn get_agent_profile(addr_ptr: *const u8) -> u32 {
     }
 
     // .molt name
-    let rev_key = name_reverse_key(addr);
+    let rev_key = name_reverse_key(&addr);
     match storage_get(&rev_key) {
         Some(name_bytes) => {
             // Verify not expired
@@ -2117,7 +3553,7 @@ pub extern "C" fn get_agent_profile(addr_ptr: *const u8) -> u32 {
     }
 
     // Endpoint
-    let ek = endpoint_key(addr);
+    let ek = endpoint_key(&addr);
     match storage_get(&ek) {
         Some(ep_data) => {
             result.push(1); // has_endpoint
@@ -2134,24 +3570,20 @@ pub extern "C" fn get_agent_profile(addr_ptr: *const u8) -> u32 {
     }
 
     // Availability
-    let ak = availability_key(addr);
+    let ak = availability_key(&addr);
     let avail = storage_get(&ak)
         .and_then(|d| if !d.is_empty() { Some(d[0]) } else { None })
         .unwrap_or(0);
     result.push(avail);
 
     // Rate
-    let rk = rate_key(addr);
+    let rk = rate_key(&addr);
     let rate = storage_get(&rk)
         .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
         .unwrap_or(0);
     result.extend_from_slice(&u64_to_bytes(rate));
 
     // Reputation
-    let rep_k = reputation_key(addr);
-    let rep = storage_get(&rep_k)
-        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
-        .unwrap_or(0);
     result.extend_from_slice(&u64_to_bytes(rep));
 
     moltchain_sdk::set_return_data(&result);
@@ -2171,12 +3603,21 @@ pub extern "C" fn get_agent_profile(addr_ptr: *const u8) -> u32 {
 /// Tier 5: 10000+ (Legendary)
 #[no_mangle]
 pub extern "C" fn get_trust_tier(pubkey_ptr: *const u8) -> u32 {
-    let pubkey = unsafe { core::slice::from_raw_parts(pubkey_ptr, 32) };
-    let rep_key = reputation_key(pubkey);
-
-    let reputation = match storage_get(&rep_key) {
-        Some(data) if data.len() >= 8 => bytes_to_u64(&data),
-        _ => 0,
+    let mut pubkey = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(pubkey_ptr, pubkey.as_mut_ptr(), 32); }
+    let id_key = identity_key(&pubkey);
+    let reputation = match storage_get(&id_key) {
+        Some(mut record) => {
+            let now = get_timestamp();
+            apply_decay_to_identity_record(&pubkey, &id_key, &mut record, now)
+        }
+        None => {
+            let rep_key = reputation_key(&pubkey);
+            match storage_get(&rep_key) {
+                Some(data) if data.len() >= 8 => bytes_to_u64(&data),
+                _ => 0,
+            }
+        }
     };
 
     let tier: u8 = if reputation >= 10_000 {
@@ -2210,11 +3651,12 @@ pub extern "C" fn get_trust_tier(pubkey_ptr: *const u8) -> u32 {
 /// Returns: 0 success, 1 not admin, 2 already paused
 #[no_mangle]
 pub extern "C" fn mid_pause(caller_ptr: *const u8) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_mid_admin(caller) { return 1; }
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_mid_admin(&caller) { return 1; }
     if is_mid_paused() { return 2; }
     storage_set(MID_PAUSE_KEY, &[1]);
-    log_info("⏸️ MoltyID paused");
+    log_info("MoltyID paused");
     0
 }
 
@@ -2222,11 +3664,12 @@ pub extern "C" fn mid_pause(caller_ptr: *const u8) -> u32 {
 /// Returns: 0 success, 1 not admin, 2 not paused
 #[no_mangle]
 pub extern "C" fn mid_unpause(caller_ptr: *const u8) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_mid_admin(caller) { return 1; }
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_mid_admin(&caller) { return 1; }
     if !is_mid_paused() { return 2; }
     storage_set(MID_PAUSE_KEY, &[0]);
-    log_info("▶️ MoltyID unpaused");
+    log_info("MoltyID unpaused");
     0
 }
 
@@ -2234,11 +3677,165 @@ pub extern "C" fn mid_unpause(caller_ptr: *const u8) -> u32 {
 /// Returns: 0 success, 1 not admin
 #[no_mangle]
 pub extern "C" fn transfer_admin(caller_ptr: *const u8, new_admin_ptr: *const u8) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_mid_admin(caller) { return 1; }
-    let new_admin = unsafe { core::slice::from_raw_parts(new_admin_ptr, 32) };
-    storage_set(b"mid_admin", new_admin);
-    log_info("✅ Admin key transferred");
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_mid_admin(&caller) { return 1; }
+    let mut new_admin = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(new_admin_ptr, new_admin.as_mut_ptr(), 32); }
+    storage_set(b"mid_admin", &new_admin);
+    log_info("Admin key transferred");
+    0
+}
+
+// ============================================================================
+// GENESIS / ADMIN RESERVED NAME REGISTRATION
+// ============================================================================
+
+/// Admin-only: register a reserved .molt name for a system address.
+/// This bypasses the reserved-name check, payment check, and identity requirement.
+/// Used at genesis to assign names like moltchain.molt, treasury.molt, etc.
+///
+/// Parameters:
+///   - admin_ptr: 32-byte admin address (must be current admin)
+///   - owner_ptr: 32-byte owner address to assign the name to
+///   - name_ptr: pointer to name bytes (lowercase, no .molt suffix)
+///   - name_len: length of name
+///   - agent_type: agent type for auto-created identity (0=human, 1=agent, etc.)
+///
+/// Returns: 0 success, 1 not admin, 2 invalid name, 3 malformed args, 5 already taken
+///
+/// Args buffer layout (read via get_args): [admin 32B][owner 32B][name bytes][name_len 4B LE][agent_type 1B]
+#[no_mangle]
+pub extern "C" fn admin_register_reserved_name() -> u32 {
+    // Read args from context buffer (avoids WASM ABI pointer-mapping issues)
+    let args = moltchain_sdk::contract::args();
+
+    // Minimum: 32 (admin) + 32 (owner) + 1 (min name) + 4 (name_len) + 1 (agent_type) = 70
+    if args.len() < 70 {
+        log_info("admin_register_reserved_name: args too short");
+        return 3;
+    }
+
+    let admin = &args[0..32];
+    if !is_mid_admin(admin) {
+        log_info("admin_register_reserved_name: not admin");
+        return 1;
+    }
+
+    let owner = &args[32..64];
+    let agent_type = args[args.len() - 1];
+    let name_len_offset = args.len() - 5;
+    let name_len = u32::from_le_bytes([
+        args[name_len_offset],
+        args[name_len_offset + 1],
+        args[name_len_offset + 2],
+        args[name_len_offset + 3],
+    ]) as usize;
+
+    // Validate: 64 + name_len + 5 should equal total args length
+    if 64 + name_len + 5 != args.len() {
+        log_info("admin_register_reserved_name: malformed args");
+        return 3;
+    }
+
+    let name = &args[64..64 + name_len];
+
+    // Validate name format (but NOT reserved check — that's the whole point)
+    if !validate_molt_name(name) {
+        log_info("admin_register_reserved_name: invalid name format");
+        return 2;
+    }
+
+    // Check not already taken
+    let nk = name_key(&name);
+    if let Some(existing) = storage_get(&nk) {
+        if existing.len() >= 48 {
+            let expiry = bytes_to_u64(&existing[40..48]);
+            let current_slot = moltchain_sdk::get_slot();
+            if current_slot < expiry {
+                log_info("admin_register_reserved_name: name already taken");
+                return 5;
+            }
+        }
+    }
+
+    // Auto-create identity if owner doesn't have one yet
+    let id_key = identity_key(owner);
+    if storage_get(&id_key).is_none() {
+        let now = get_timestamp();
+        let mut record = [0u8; IDENTITY_SIZE];
+        record[0..32].copy_from_slice(owner);
+        record[32] = agent_type;
+        // name_len
+        let padded_name_len = if name_len > 64 { 64 } else { name_len };
+        record[33] = (padded_name_len & 0xFF) as u8;
+        record[34] = ((padded_name_len >> 8) & 0xFF) as u8;
+        record[35..35 + padded_name_len].copy_from_slice(&name[..padded_name_len]);
+        // reputation = 10,000 (Legendary tier for genesis reserved names)
+        const GENESIS_RESERVED_REPUTATION: u64 = 10_000;
+        let rep_bytes = u64_to_bytes(GENESIS_RESERVED_REPUTATION);
+        record[99..107].copy_from_slice(&rep_bytes);
+        // created_at, updated_at
+        let ts_bytes = u64_to_bytes(now);
+        record[107..115].copy_from_slice(&ts_bytes);
+        record[115..123].copy_from_slice(&ts_bytes);
+
+        // Add 3 default system skills: Infrastructure, Consensus, Security
+        // Skill format: [name_len(1), name(up to 32), proficiency(1), timestamp(8)]
+        let genesis_skills: &[&[u8]] = &[
+            b"Infrastructure",
+            b"Consensus",
+            b"Security",
+        ];
+        let mut skill_idx: u8 = 0;
+        for skill_name in genesis_skills {
+            let mut skill_data = Vec::with_capacity(1 + skill_name.len() + 1 + 8);
+            skill_data.push(skill_name.len() as u8);
+            skill_data.extend_from_slice(skill_name);
+            skill_data.push(100); // proficiency 100 (max)
+            skill_data.extend_from_slice(&u64_to_bytes(now));
+            let sk = skill_key(owner, skill_idx);
+            storage_set(&sk, &skill_data);
+            skill_idx += 1;
+        }
+
+        record[123] = skill_idx; // skill_count = 3
+        record[124] = 0; // vouch_count low
+        record[125] = 0; // vouch_count high
+        record[126] = 1; // is_active
+
+        storage_set(&id_key, &record);
+        storage_set(&reputation_key(owner), &rep_bytes);
+
+        // Increment identity count
+        let count = storage_get(b"mid_identity_count")
+            .map(|d| bytes_to_u64(&d))
+            .unwrap_or(0);
+        storage_set(b"mid_identity_count", &u64_to_bytes(count + 1));
+    }
+
+    // Register the name with 10-year expiry (max duration)
+    let current_slot = moltchain_sdk::get_slot();
+    let expiry_slot = current_slot + (SLOTS_PER_YEAR * 10);
+
+    let mut record = [0u8; 48];
+    record[0..32].copy_from_slice(owner);
+    record[32..40].copy_from_slice(&u64_to_bytes(current_slot));
+    record[40..48].copy_from_slice(&u64_to_bytes(expiry_slot));
+
+    storage_set(&nk, &record);
+
+    // Set reverse mapping: address → name
+    let rev_key = name_reverse_key(owner);
+    storage_set(&rev_key, name);
+
+    // Increment name count
+    let count = storage_get(b"molt_name_count")
+        .map(|d| bytes_to_u64(&d))
+        .unwrap_or(0);
+    storage_set(b"molt_name_count", &u64_to_bytes(count + 1));
+
+    log_info("Reserved .molt name registered by admin");
     0
 }
 
@@ -2445,6 +4042,265 @@ mod tests {
     }
 
     #[test]
+    fn test_social_recovery_happy_path() {
+        setup();
+        test_mock::set_timestamp(5_000);
+
+        let admin = [1u8; 32];
+        initialize(admin.as_ptr());
+
+        let target = [2u8; 32];
+        let new_owner = [3u8; 32];
+        let guardians = [[4u8; 32], [5u8; 32], [6u8; 32], [7u8; 32], [8u8; 32]];
+
+        let target_name = b"Target";
+        assert_eq!(register_identity(target.as_ptr(), AGENT_TYPE_GENERAL, target_name.as_ptr(), target_name.len() as u32), 0);
+
+        for (idx, guardian) in guardians.iter().enumerate() {
+            let g_name = match idx {
+                0 => b"G0".as_slice(),
+                1 => b"G1".as_slice(),
+                2 => b"G2".as_slice(),
+                3 => b"G3".as_slice(),
+                _ => b"G4".as_slice(),
+            };
+            assert_eq!(register_identity(guardian.as_ptr(), AGENT_TYPE_GENERAL, g_name.as_ptr(), g_name.len() as u32), 0);
+            assert_eq!(vouch(guardian.as_ptr(), target.as_ptr()), 0);
+        }
+
+        assert_eq!(
+            set_recovery_guardians(
+                target.as_ptr(),
+                guardians[0].as_ptr(),
+                guardians[1].as_ptr(),
+                guardians[2].as_ptr(),
+                guardians[3].as_ptr(),
+                guardians[4].as_ptr(),
+            ),
+            0
+        );
+
+        assert_eq!(approve_recovery(guardians[0].as_ptr(), target.as_ptr(), new_owner.as_ptr()), 0);
+        assert_eq!(approve_recovery(guardians[1].as_ptr(), target.as_ptr(), new_owner.as_ptr()), 0);
+        assert_eq!(approve_recovery(guardians[2].as_ptr(), target.as_ptr(), new_owner.as_ptr()), 0);
+
+        assert_eq!(execute_recovery(guardians[2].as_ptr(), target.as_ptr(), new_owner.as_ptr()), 0);
+
+        let new_id = identity_key(&new_owner);
+        let new_record = test_mock::get_storage(&new_id).unwrap();
+        assert_eq!(&new_record[0..32], &new_owner);
+        assert_eq!(new_record[126], 1);
+
+        let old_id = identity_key(&target);
+        let old_record = test_mock::get_storage(&old_id).unwrap();
+        assert_eq!(old_record[126], 0);
+    }
+
+    #[test]
+    fn test_social_recovery_rejects_non_guardian_and_insufficient_approvals() {
+        setup();
+        test_mock::set_timestamp(5_000);
+
+        let admin = [1u8; 32];
+        initialize(admin.as_ptr());
+
+        let target = [2u8; 32];
+        let new_owner = [3u8; 32];
+        let outsider = [9u8; 32];
+        let guardians = [[4u8; 32], [5u8; 32], [6u8; 32], [7u8; 32], [8u8; 32]];
+
+        assert_eq!(register_identity(target.as_ptr(), AGENT_TYPE_GENERAL, b"Target".as_ptr(), 6), 0);
+        assert_eq!(register_identity(outsider.as_ptr(), AGENT_TYPE_GENERAL, b"Out".as_ptr(), 3), 0);
+
+        for (idx, guardian) in guardians.iter().enumerate() {
+            let g_name = match idx {
+                0 => b"A0".as_slice(),
+                1 => b"A1".as_slice(),
+                2 => b"A2".as_slice(),
+                3 => b"A3".as_slice(),
+                _ => b"A4".as_slice(),
+            };
+            assert_eq!(register_identity(guardian.as_ptr(), AGENT_TYPE_GENERAL, g_name.as_ptr(), g_name.len() as u32), 0);
+            assert_eq!(vouch(guardian.as_ptr(), target.as_ptr()), 0);
+        }
+
+        assert_eq!(
+            set_recovery_guardians(
+                target.as_ptr(),
+                guardians[0].as_ptr(),
+                guardians[1].as_ptr(),
+                guardians[2].as_ptr(),
+                guardians[3].as_ptr(),
+                guardians[4].as_ptr(),
+            ),
+            0
+        );
+
+        assert_eq!(approve_recovery(outsider.as_ptr(), target.as_ptr(), new_owner.as_ptr()), 2);
+        assert_eq!(approve_recovery(guardians[0].as_ptr(), target.as_ptr(), new_owner.as_ptr()), 0);
+        assert_eq!(approve_recovery(guardians[1].as_ptr(), target.as_ptr(), new_owner.as_ptr()), 0);
+
+        assert_eq!(execute_recovery(guardians[1].as_ptr(), target.as_ptr(), new_owner.as_ptr()), 5);
+    }
+
+    #[test]
+    fn test_identity_delegation_profile_and_type_updates() {
+        setup();
+        test_mock::set_timestamp(10_000);
+
+        let admin = [1u8; 32];
+        initialize(admin.as_ptr());
+
+        let owner = [2u8; 32];
+        let delegate = [3u8; 32];
+
+        assert_eq!(register_identity(owner.as_ptr(), AGENT_TYPE_GENERAL, b"Owner".as_ptr(), 5), 0);
+        assert_eq!(register_identity(delegate.as_ptr(), AGENT_TYPE_GENERAL, b"Agent".as_ptr(), 5), 0);
+
+        let expires = 10_000 + 60_000;
+        let perms = DELEGATE_PERM_PROFILE | DELEGATE_PERM_AGENT_TYPE;
+        assert_eq!(set_delegate(owner.as_ptr(), delegate.as_ptr(), perms, expires), 0);
+
+        let endpoint = b"https://agent.example/api";
+        assert_eq!(
+            set_endpoint_as(delegate.as_ptr(), owner.as_ptr(), endpoint.as_ptr(), endpoint.len() as u32),
+            0
+        );
+        let ek = endpoint_key(&owner);
+        assert_eq!(test_mock::get_storage(&ek), Some(endpoint.to_vec()));
+
+        assert_eq!(set_rate_as(delegate.as_ptr(), owner.as_ptr(), 77_000), 0);
+        let rk = rate_key(&owner);
+        let rb = test_mock::get_storage(&rk).unwrap();
+        assert_eq!(bytes_to_u64(&rb), 77_000);
+
+        assert_eq!(update_agent_type_as(delegate.as_ptr(), owner.as_ptr(), AGENT_TYPE_TRADING), 0);
+        let idk = identity_key(&owner);
+        let record = test_mock::get_storage(&idk).unwrap();
+        assert_eq!(record[32], AGENT_TYPE_TRADING);
+    }
+
+    #[test]
+    fn test_identity_delegation_permissions_and_expiry() {
+        setup();
+        test_mock::set_timestamp(20_000);
+
+        let admin = [1u8; 32];
+        initialize(admin.as_ptr());
+
+        let owner = [2u8; 32];
+        let delegate = [3u8; 32];
+        let outsider = [4u8; 32];
+
+        assert_eq!(register_identity(owner.as_ptr(), AGENT_TYPE_GENERAL, b"Owner".as_ptr(), 5), 0);
+        assert_eq!(register_identity(delegate.as_ptr(), AGENT_TYPE_GENERAL, b"Agent".as_ptr(), 5), 0);
+        assert_eq!(register_identity(outsider.as_ptr(), AGENT_TYPE_GENERAL, b"Other".as_ptr(), 5), 0);
+
+        // only profile permission
+        assert_eq!(
+            set_delegate(
+                owner.as_ptr(),
+                delegate.as_ptr(),
+                DELEGATE_PERM_PROFILE,
+                20_000 + 100,
+            ),
+            0
+        );
+
+        // Missing agent-type permission
+        assert_eq!(update_agent_type_as(delegate.as_ptr(), owner.as_ptr(), AGENT_TYPE_TRADING), 2);
+
+        // Outsider cannot act
+        assert_eq!(set_rate_as(outsider.as_ptr(), owner.as_ptr(), 55_000), 1);
+
+        // Expired delegation should fail
+        test_mock::set_timestamp(20_500);
+        assert_eq!(set_rate_as(delegate.as_ptr(), owner.as_ptr(), 55_000), 1);
+
+        // Revoke idempotence path
+        assert_eq!(revoke_delegate(owner.as_ptr(), delegate.as_ptr()), 1);
+    }
+
+    #[test]
+    fn test_identity_delegation_naming_refinement() {
+        setup();
+        test_mock::set_timestamp(30_000);
+
+        let admin = [1u8; 32];
+        initialize(admin.as_ptr());
+
+        let owner = [2u8; 32];
+        let delegate = [3u8; 32];
+        assert_eq!(register_identity(owner.as_ptr(), AGENT_TYPE_GENERAL, b"Owner".as_ptr(), 5), 0);
+        assert_eq!(register_identity(delegate.as_ptr(), AGENT_TYPE_GENERAL, b"Agent".as_ptr(), 5), 0);
+
+        test_mock::set_slot(5_000);
+        test_mock::set_value(50_000_000_000);
+        let name = b"delegated-name";
+        assert_eq!(register_name(owner.as_ptr(), name.as_ptr(), name.len() as u32, 1), 0);
+
+        // without naming permission should fail
+        assert_eq!(
+            set_delegate(owner.as_ptr(), delegate.as_ptr(), DELEGATE_PERM_PROFILE, 31_000),
+            0
+        );
+        test_mock::set_value(100_000_000);
+        assert_eq!(renew_name_as(delegate.as_ptr(), owner.as_ptr(), name.as_ptr(), name.len() as u32, 1), 2);
+
+        // with naming permission should succeed
+        assert_eq!(
+            set_delegate(
+                owner.as_ptr(),
+                delegate.as_ptr(),
+                DELEGATE_PERM_PROFILE | DELEGATE_PERM_NAMING,
+                31_000,
+            ),
+            0
+        );
+        test_mock::set_value(50_000_000_000);
+        assert_eq!(renew_name_as(delegate.as_ptr(), owner.as_ptr(), name.as_ptr(), name.len() as u32, 1), 0);
+        assert_eq!(release_name_as(delegate.as_ptr(), owner.as_ptr(), name.as_ptr(), name.len() as u32), 0);
+        assert!(test_mock::get_storage(&name_key(name)).is_none());
+    }
+
+    #[test]
+    fn test_premium_name_auction_lifecycle() {
+        setup();
+        let admin = [1u8; 32];
+        initialize(admin.as_ptr());
+
+        let bidder1 = [2u8; 32];
+        let bidder2 = [3u8; 32];
+        assert_eq!(register_identity(bidder1.as_ptr(), AGENT_TYPE_GENERAL, b"Bid1".as_ptr(), 4), 0);
+        assert_eq!(register_identity(bidder2.as_ptr(), AGENT_TYPE_GENERAL, b"Bid2".as_ptr(), 4), 0);
+
+        test_mock::set_slot(10_000);
+        let premium = b"xya";
+
+        // Premium names are auction-only in direct registration path
+        test_mock::set_value(1_000_000_000);
+        assert_eq!(register_name(bidder1.as_ptr(), premium.as_ptr(), premium.len() as u32, 1), 8);
+
+        assert_eq!(
+            create_name_auction(admin.as_ptr(), premium.as_ptr(), premium.len() as u32, 500_000_000, 200_500),
+            0
+        );
+
+        test_mock::set_value(600_000_000);
+        assert_eq!(bid_name_auction(bidder1.as_ptr(), premium.as_ptr(), premium.len() as u32, 600_000_000), 0);
+
+        test_mock::set_value(700_000_000);
+        assert_eq!(bid_name_auction(bidder2.as_ptr(), premium.as_ptr(), premium.len() as u32, 700_000_000), 0);
+
+        test_mock::set_slot(200_501);
+        assert_eq!(finalize_name_auction(admin.as_ptr(), premium.as_ptr(), premium.len() as u32, 1), 0);
+
+        let nk = name_key(premium);
+        let record = test_mock::get_storage(&nk).unwrap();
+        assert_eq!(&record[0..32], &bidder2);
+    }
+
+    #[test]
     fn test_update_reputation() {
         setup();
         test_mock::set_timestamp(5000);
@@ -2520,6 +4376,38 @@ mod tests {
         let ret = test_mock::get_return_data();
         assert!(ret.len() >= 8);
         assert_eq!(bytes_to_u64(&ret), INITIAL_REPUTATION);
+    }
+
+    #[test]
+    fn test_reputation_decay_on_lookup() {
+        setup();
+        let admin = [1u8; 32];
+        initialize(admin.as_ptr());
+
+        let agent = [2u8; 32];
+        let name = b"DecayBot";
+
+        test_mock::set_timestamp(1_000_000);
+        register_identity(agent.as_ptr(), AGENT_TYPE_GENERAL, name.as_ptr(), name.len() as u32);
+
+        // Raise from 100 -> 1000
+        let result = update_reputation(admin.as_ptr(), agent.as_ptr(), 900, 1);
+        assert_eq!(result, 0);
+
+        // Move forward by ~180 days to trigger two decay periods (5% each)
+        test_mock::set_timestamp(1_000_000 + (REPUTATION_DECAY_PERIOD_MS * 2) + 1);
+        let result = get_reputation(agent.as_ptr());
+        assert_eq!(result, 0);
+
+        // 1000 * 0.95 * 0.95 = 902.5 -> 902 (integer math)
+        let ret = test_mock::get_return_data();
+        assert!(ret.len() >= 8);
+        assert_eq!(bytes_to_u64(&ret), 902);
+
+        // Ensure decayed value is persisted to storage
+        let rep_key = reputation_key(&agent);
+        let rep_bytes = test_mock::get_storage(&rep_key).unwrap();
+        assert_eq!(bytes_to_u64(&rep_bytes), 902);
     }
 
     #[test]
@@ -2633,7 +4521,7 @@ mod tests {
     fn test_register_name() {
         setup();
         let owner = [2u8; 32];
-        setup_identity_with_slot(&owner, 1000, 100_000_000);
+        setup_identity_with_slot(&owner, 1000, 100_000_000_000);
 
         let name = b"myagent";
         let result = register_name(
@@ -2715,7 +4603,7 @@ mod tests {
     fn test_resolve_name() {
         setup();
         let owner = [2u8; 32];
-        setup_identity_with_slot(&owner, 1000, 100_000_000);
+        setup_identity_with_slot(&owner, 1000, 100_000_000_000);
 
         let name = b"resolver";
         register_name(owner.as_ptr(), name.as_ptr(), name.len() as u32, 1);
@@ -2732,7 +4620,7 @@ mod tests {
     fn test_reverse_resolve() {
         setup();
         let owner = [2u8; 32];
-        setup_identity_with_slot(&owner, 1000, 100_000_000);
+        setup_identity_with_slot(&owner, 1000, 100_000_000_000);
 
         let name = b"reverse";
         register_name(owner.as_ptr(), name.as_ptr(), name.len() as u32, 1);
@@ -2748,7 +4636,7 @@ mod tests {
     fn test_transfer_name() {
         setup();
         let owner = [2u8; 32];
-        setup_identity_with_slot(&owner, 1000, 100_000_000);
+        setup_identity_with_slot(&owner, 1000, 100_000_000_000);
 
         let name = b"xfername";
         register_name(owner.as_ptr(), name.as_ptr(), name.len() as u32, 1);
@@ -2790,7 +4678,7 @@ mod tests {
     fn test_release_name() {
         setup();
         let owner = [2u8; 32];
-        setup_identity_with_slot(&owner, 1000, 100_000_000);
+        setup_identity_with_slot(&owner, 1000, 100_000_000_000);
 
         let name = b"releaseme";
         register_name(owner.as_ptr(), name.as_ptr(), name.len() as u32, 1);
@@ -2818,7 +4706,7 @@ mod tests {
     fn test_renew_name() {
         setup();
         let owner = [2u8; 32];
-        setup_identity_with_slot(&owner, 1000, 100_000_000);
+        setup_identity_with_slot(&owner, 1000, 100_000_000_000);
 
         let name = b"renewable";
         register_name(owner.as_ptr(), name.as_ptr(), name.len() as u32, 1);
@@ -2829,7 +4717,7 @@ mod tests {
         let original_expiry = bytes_to_u64(&record[40..48]);
 
         // Renew for 2 more years (need to set value again for payment)
-        test_mock::set_value(200_000_000);
+        test_mock::set_value(40_000_000_000);
         let result = renew_name(owner.as_ptr(), name.as_ptr(), name.len() as u32, 2);
         assert_eq!(result, 0);
 
@@ -2843,7 +4731,7 @@ mod tests {
     fn test_name_one_per_identity() {
         setup();
         let owner = [2u8; 32];
-        setup_identity_with_slot(&owner, 1000, 100_000_000);
+        setup_identity_with_slot(&owner, 1000, 100_000_000_000);
 
         let name1 = b"first-name";
         assert_eq!(register_name(owner.as_ptr(), name1.as_ptr(), name1.len() as u32, 1), 0);
@@ -2916,7 +4804,7 @@ mod tests {
     fn test_get_agent_profile() {
         setup();
         let owner = [2u8; 32];
-        setup_identity_with_slot(&owner, 1000, 100_000_000);
+        setup_identity_with_slot(&owner, 1000, 100_000_000_000);
 
         // Register name
         let molt_name = b"profiled";
@@ -3121,5 +5009,90 @@ mod tests {
         assert_eq!(mid_pause(admin.as_ptr()), 1);
         // New admin works
         assert_eq!(mid_pause(new_admin.as_ptr()), 0);
+    }
+
+    #[test]
+    fn test_admin_register_reserved_name() {
+        setup();
+        let admin = [1u8; 32];
+        initialize(admin.as_ptr());
+        test_mock::set_timestamp(1_000_000);
+
+        // Owner address that will get the reserved name
+        let owner = [50u8; 32];
+        let name = b"moltchain";
+
+        // Helper: build args buffer [admin 32B][owner 32B][name bytes][name_len 4B LE][agent_type 1B]
+        fn build_args(admin: &[u8; 32], owner: &[u8; 32], name: &[u8], agent_type: u8) -> Vec<u8> {
+            let name_len = name.len() as u32;
+            let mut args = Vec::with_capacity(32 + 32 + name.len() + 4 + 1);
+            args.extend_from_slice(admin);
+            args.extend_from_slice(owner);
+            args.extend_from_slice(name);
+            args.extend_from_slice(&name_len.to_le_bytes());
+            args.push(agent_type);
+            args
+        }
+
+        // Non-admin cannot call
+        let other = [99u8; 32];
+        test_mock::ARGS.with(|a| *a.borrow_mut() = build_args(&other, &owner, name, 0));
+        assert_eq!(admin_register_reserved_name(), 1);
+
+        // Admin can register a reserved name
+        test_mock::ARGS.with(|a| *a.borrow_mut() = build_args(&admin, &owner, name, 0));
+        assert_eq!(admin_register_reserved_name(), 0);
+
+        // Identity was auto-created
+        let id_key = identity_key(&owner);
+        assert!(storage_get(&id_key).is_some());
+
+        // Name record exists
+        let nk = name_key(name);
+        let record = storage_get(&nk).unwrap();
+        assert_eq!(record.len(), 48);
+        assert_eq!(&record[0..32], &owner);
+
+        // Reverse mapping exists
+        let rev = name_reverse_key(&owner);
+        let rev_val = storage_get(&rev).unwrap();
+        assert_eq!(&rev_val, name);
+
+        // Duplicate registration fails
+        let owner2 = [51u8; 32];
+        test_mock::ARGS.with(|a| *a.borrow_mut() = build_args(&admin, &owner2, name, 0));
+        assert_eq!(admin_register_reserved_name(), 5);
+    }
+
+    #[test]
+    fn test_admin_register_reserved_name_treasury() {
+        setup();
+        let admin = [1u8; 32];
+        initialize(admin.as_ptr());
+        test_mock::set_timestamp(1_000_000);
+
+        let treasury_addr = [60u8; 32];
+        let name = b"treasury";
+
+        // Helper
+        fn build_args(admin: &[u8; 32], owner: &[u8; 32], name: &[u8], agent_type: u8) -> Vec<u8> {
+            let name_len = name.len() as u32;
+            let mut args = Vec::with_capacity(32 + 32 + name.len() + 4 + 1);
+            args.extend_from_slice(admin);
+            args.extend_from_slice(owner);
+            args.extend_from_slice(name);
+            args.extend_from_slice(&name_len.to_le_bytes());
+            args.push(agent_type);
+            args
+        }
+
+        // treasury is a reserved name — regular register fails
+        // but admin_register_reserved_name succeeds
+        test_mock::ARGS.with(|a| *a.borrow_mut() = build_args(&admin, &treasury_addr, name, 0));
+        assert_eq!(admin_register_reserved_name(), 0);
+
+        // Verify name count
+        let count = storage_get(b"molt_name_count").map(|d| bytes_to_u64(&d)).unwrap_or(0);
+        assert_eq!(count, 1);
     }
 }

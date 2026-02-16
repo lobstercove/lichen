@@ -52,15 +52,15 @@
 
 ### Fee Structure
 
-| Fee | Amount | In USD (depends on price) |
-|-----|--------|---------------------------|
-| Base transaction fee | **0.00001 MOLT** per tx | — |
-| Contract deploy | **2.5 MOLT** per deploy | — |
-| Contract upgrade | **1 MOLT** per upgrade | — |
-| NFT mint | **0.001 MOLT** per mint | — |
-| NFT collection create | **100 MOLT** per collection | — |
-| ClawPump token create | **0.1 MOLT** per token | — |
-| DAO proposal stake | **1,000 MOLT** (returned after vote) | — |
+| Fee | Amount | At $0.10/MOLT |
+|-----|--------|---------------|
+| Base transaction fee | **0.001 MOLT** per tx (1,000,000 shells) | $0.0001 |
+| Contract deploy | **25 MOLT** per deploy | $2.50 |
+| Contract upgrade | **10 MOLT** per upgrade | $1.00 |
+| NFT mint | **0.5 MOLT** per mint | $0.05 |
+| NFT collection create | **1,000 MOLT** per collection | $100.00 |
+| ClawPump token create | **0.1 MOLT** per token | $0.01 |
+| DAO proposal stake | **1,000 MOLT** (returned after vote) | $100.00 |
 
 ### Fee Distribution
 
@@ -113,16 +113,16 @@ The validator reward pool is **150,000,000 MOLT** (15% of supply).
 
 ### Fee Burn Estimation
 
-For burn to matter, we need transaction volume. At 0.00001 MOLT base fee:
+For burn to matter, we need transaction volume. At 0.001 MOLT base fee:
 
 | Daily Transactions | Fee Burned/Day | Annual Burn |
 |-------------------|---------------|-------------|
-| 100,000 | 0.5 MOLT | 182 MOLT |
-| 1,000,000 | 5 MOLT | 1,825 MOLT |
-| 10,000,000 | 50 MOLT | 18,250 MOLT |
-| 100,000,000 | 500 MOLT | 182,500 MOLT |
+| 100,000 | 50 MOLT | 18,250 MOLT |
+| 1,000,000 | 500 MOLT | 182,500 MOLT |
+| 10,000,000 | 5,000 MOLT | 1,825,000 MOLT |
+| 100,000,000 | 50,000 MOLT | 18,250,000 MOLT |
 
-**At the current 0.00001 MOLT base fee, burn is negligible.** Even 100M tx/day only burns 182K MOLT/year — less than 0.02% of supply. The burn becomes meaningful only via larger fees (contract deploys at 2.5 MOLT, NFT collections at 100 MOLT, DEX trading fees, etc.)
+**At the current 0.001 MOLT base fee ($0.0001/tx at $0.10), burn is meaningful at scale.** 10M tx/day burns 1.8M MOLT/year (0.18% of supply). Combined with larger fees (contract deploys at 25 MOLT, NFT collections at 1,000 MOLT, DEX trading fees), the deflationary mechanic becomes substantial.
 
 ### DEX Rewards Emission
 
@@ -168,9 +168,9 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 | Metric | Value |
 |--------|-------|
 | Fully Diluted Valuation (FDV) | **$10,000,000** |
-| Transaction fee | $0.0000001 (virtually free) |
+| Transaction fee | $0.00001 (near-free) |
 | Block reward | $0.009/block (~$710K/yr at 100% activity) |
-| Contract deploy | $0.025 (dirt cheap) |
+| Contract deploy | $0.25 (dirt cheap) |
 | DAO proposal | $10 (very accessible) |
 | DEX reward pool | $12M/yr in emissions (unsustainable at this price) |
 | ClawPump token | $0.001 to create (spam risk) |
@@ -181,9 +181,9 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 | Metric | Value |
 |--------|-------|
 | Fully Diluted Valuation (FDV) | **$100,000,000** |
-| Transaction fee | $0.000001 (~1 micro-cent, near-free) |
+| Transaction fee | $0.0001 (sub-penny, agent-friendly) |
 | Block reward | $0.09/block (~$7.1M/yr at 100%) |
-| Contract deploy | $0.25 (very affordable) |
+| Contract deploy | $2.50 (very affordable) |
 | DAO proposal | $100 (moderate barrier) |
 | DEX reward pool | $1.2M/yr emissions (~reasonable) |
 | ClawPump token | $0.01 to create (cheap but not free) |
@@ -195,9 +195,9 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 | Metric | Value |
 |--------|-------|
 | Fully Diluted Valuation (FDV) | **$500,000,000** |
-| Transaction fee | $0.000005 (still near-free) |
+| Transaction fee | $0.0005 (sub-penny) |
 | Block reward | $0.45/block (~$35.5M/yr at 100%) |
-| Contract deploy | $1.25 (fair) |
+| Contract deploy | $12.50 (fair) |
 | DAO proposal | $500 (significant barrier) |
 | DEX reward pool | $6M/yr emissions |
 | ClawPump token | $0.05 to create |
@@ -209,11 +209,11 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 | Metric | Value |
 |--------|-------|
 | Fully Diluted Valuation (FDV) | **$1,000,000,000** |
-| Transaction fee | $0.00001 (negligible) |
+| Transaction fee | $0.001 (still very cheap) |
 | Block reward | $0.90/block (~$71M/yr at 100%) |
-| Contract deploy | $2.50 (standard) |
+| Contract deploy | $25.00 (reasonable) |
 | DAO proposal | $1,000 (high barrier) |
-| NFT collection | $100.00 (serious) |
+| NFT collection | $1,000.00 (serious) |
 | ClawPump token | $0.10 to create |
 | Founding Moltys holding | $100M |
 | **Assessment** | Comparable to mid-cap L1s at launch. Very ambitious. Forces high DAO seriousness. Risk: if price drops significantly, FDV collapse hits credibility. |
@@ -228,7 +228,7 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 
 1. **Fair FDV ($100M)** — credible for a working L1 blockchain with full DEX, lending, NFT marketplace, cross-chain bridge, governance, identity, oracle, and 26 deployed contracts
 
-2. **Agent-friendly fees** — transaction fee is $0.000001 (virtually free), so agents can transact millions of times affordably. Gas is never a blocker.
+2. **Agent-friendly fees** — transaction fee is $0.0001 (sub-penny), so agents can transact millions of times affordably. Gas is never a blocker.
 
 3. **Meaningful governance** — DAO proposal at $100 prevents spam but isn't exclusionary. DEX governance listing at $50 rep barrier makes sense.
 
@@ -246,13 +246,13 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 
 | Parameter | Current | At $0.10 | Verdict |
 |-----------|---------|----------|---------|
-| Base tx fee | 0.00001 MOLT | $0.000001 | OK — trivially cheap, as intended |
+| Base tx fee | 0.001 MOLT | $0.0001 | OK — sub-penny, agent-friendly |
 | Block reward (tx) | 0.9 MOLT | $0.09/block | OK — oracle adjusts down as price rises |
 | Block reward (heartbeat) | 0.135 MOLT | $0.0135/block | OK — 15% of tx reward, adaptive 5s interval |
-| Contract deploy | 2.5 MOLT | $0.25 | OK — cheap enough to deploy, not free |
-| Contract upgrade | 1 MOLT | $0.10 | OK |
-| NFT mint | 0.001 MOLT | $0.0001 | OK — near free, as intended |
-| NFT collection | 100 MOLT | $10.00 | OK — meaningful barrier for collection spam |
+| Contract deploy | 25 MOLT | $2.50 | OK — affordable, not free |
+| Contract upgrade | 10 MOLT | $1.00 | OK |
+| NFT mint | 0.5 MOLT | $0.05 | OK — cheap, not free |
+| NFT collection | 1,000 MOLT | $100.00 | OK — meaningful barrier for collection spam |
 | ClawPump create | 0.1 MOLT | $0.01 | **Maybe too cheap** — consider 1 MOLT ($0.10) |
 | DAO proposal stake | 1,000 MOLT | $100.00 | OK — serious but not exclusionary |
 | ClawPump graduation | 100K MOLT | $10,000 | OK — meaningful milestone |
@@ -283,15 +283,14 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 | `CREATION_FEE` | clawpump/lib.rs | 0.1 MOLT | **10 MOLT** ($1.00) | Anti-spam, still accessible |
 | `REWARD_POOL_PER_MONTH` | dex_rewards/lib.rs | 1,000,000 MOLT | **500,000 MOLT** ($50K/mo) | More sustainable, extends pool life |
 | `MIN_LISTING_LIQUIDITY` | dex_governance/lib.rs | 10 MOLT | **10,000 MOLT** ($1K) | Match the comment, prevent dust listings |
-| `NFT_COLLECTION_FEE` | processor.rs | 100 MOLT | **50 MOLT** ($5.00) | Slightly lower barrier for NFT creators |
 
 ### Parameters that are fine as-is:
 
 | Parameter | Value at $0.10 | Verdict |
 |-----------|---------------|---------|
-| Base tx fee ($0.000001) | Virtually free | Perfect for agents |
-| Block reward ($0.018/block) | Meaningful but not excessive | Good |
-| Contract deploy ($0.25) | Very affordable | Good |
+| Base tx fee ($0.0001) | Sub-penny, agent-friendly | Perfect for agents |
+| Block reward ($0.09/block) | Meaningful but not excessive | Good |
+| Contract deploy ($2.50) | Very affordable | Good |
 | DAO proposal ($100) | Serious but fair | Good |
 | Validator stake min ($1,000) | Accessible | Good |
 | Validator stake max ($10,000) | Prevents concentration | Good |

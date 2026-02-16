@@ -30,7 +30,17 @@ class Keypair:
     @classmethod
     def load(cls, path: Path) -> "Keypair":
         data = json.loads(path.read_text())
-        seed = bytes(data["seed"])
+        # Support both SDK format ("seed") and Rust validator format ("privateKey")
+        if "seed" in data:
+            seed = bytes(data["seed"])
+        elif "privateKey" in data:
+            raw = bytes(data["privateKey"])
+            # Rust NaCl keypair is 64 bytes (seed[32] + public[32]); extract seed
+            seed = raw[:32]
+        else:
+            raise ValueError(
+                f"Keypair file missing 'seed' or 'privateKey' field: {path}"
+            )
         return cls.from_seed(seed)
 
     def save(self, path: Path) -> None:

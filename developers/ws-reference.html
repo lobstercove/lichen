@@ -16,8 +16,8 @@
     <nav class="nav">
         <div class="nav-container">
             <div class="nav-logo">
-                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="Molt Dev">
-                <span class="logo-text">Molt Dev</span>
+                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="MoltChain Dev">
+                <span class="logo-text">MoltChain Dev</span>
             </div>
             <ul class="nav-menu">
                 <li><a href="index.html">Hub</a></li>
@@ -70,6 +70,13 @@
                 <a href="#subscribeNftTransfers" class="sidebar-link">subscribeNftTransfers</a>
                 <a href="#subscribeMarketListings" class="sidebar-link">subscribeMarketListings</a>
                 <a href="#subscribeMarketSales" class="sidebar-link">subscribeMarketSales</a>
+                <a href="#subscribeBridgeLocks" class="sidebar-link">subscribeBridgeLocks</a>
+                <a href="#subscribeBridgeMints" class="sidebar-link">subscribeBridgeMints</a>
+                <a href="#subscribeSignatureStatus" class="sidebar-link">subscribeSignatureStatus</a>
+                <a href="#subscribeValidators" class="sidebar-link">subscribeValidators</a>
+                <a href="#subscribeTokenBalance" class="sidebar-link">subscribeTokenBalance</a>
+                <a href="#subscribeEpochs" class="sidebar-link">subscribeEpochs</a>
+                <a href="#subscribeGovernance" class="sidebar-link">subscribeGovernance</a>
             </div>
             <div class="sidebar-section">
                 <h3 class="sidebar-heading">Events</h3>
@@ -79,6 +86,11 @@
                 <a href="#event-account" class="sidebar-link">AccountChange Event</a>
                 <a href="#event-log" class="sidebar-link">Log Event</a>
                 <a href="#event-market" class="sidebar-link">Market Events</a>
+                <a href="#event-signature" class="sidebar-link">Signature Status</a>
+                <a href="#event-validator" class="sidebar-link">Validator Update</a>
+                <a href="#event-tokenbalance" class="sidebar-link">Token Balance</a>
+                <a href="#event-epoch" class="sidebar-link">Epoch Change</a>
+                <a href="#event-governance" class="sidebar-link">Governance Event</a>
             </div>
             <div class="sidebar-section">
                 <h3 class="sidebar-heading">Best Practices</h3>
@@ -548,6 +560,137 @@ await conn.offMarketListings(subId);</pre></code>
   console.log(`Sold: token #${event.token_id} for ${event.price_molt} MOLT`);
 });
 await conn.offMarketSales(subId);</pre></code>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ═══ NEW SUBSCRIPTIONS ═══ -->
+
+            <!-- subscribeSignatureStatus -->
+            <div class="method-card" id="subscribeSignatureStatus">
+                <h3 class="method-name">subscribeSignatureStatus / signatureSubscribe</h3>
+                <p class="method-desc">Track the confirmation status of a specific transaction signature through processed → confirmed → finalized.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table"><tr><th>Name</th><th>Type</th><th>Description</th></tr>
+                        <tr><td>signature</td><td>string</td><td>Transaction signature hex string</td></tr>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Notification Payload</h4>
+                    <div class="code-block"><div class="code-block-header"><span class="code-lang">JSON</span></div>
+                        <code><pre>{
+  "event": "SignatureStatus",
+  "signature": "abc123...",
+  "status": "finalized",
+  "slot": 1234,
+  "error": null
+}</pre></code>
+                    </div>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">SDK Usage</h4>
+                    <div class="code-block"><div class="code-block-header"><span class="code-lang">JavaScript</span></div>
+                        <code><pre>const subId = await conn.onSignatureStatus(txSig, (status) => {
+  console.log(`TX ${status.status} at slot ${status.slot}`);
+});
+await conn.offSignatureStatus(subId);</pre></code>
+                    </div>
+                </div>
+            </div>
+
+            <!-- subscribeValidators -->
+            <div class="method-card" id="subscribeValidators">
+                <h3 class="method-name">subscribeValidators / validatorSubscribe</h3>
+                <p class="method-desc">Receive notifications when the validator set changes — new validators joining, leaving, becoming delinquent, or stake changes.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p>None</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Notification Payload</h4>
+                    <div class="code-block"><div class="code-block-header"><span class="code-lang">JSON</span></div>
+                        <code><pre>{
+  "event": "ValidatorUpdate",
+  "pubkey": "8GCKfyj...",
+  "kind": "joined",
+  "stake": 100000000000000,
+  "stake_display": 100000.0,
+  "slot": 500
+}</pre></code>
+                    </div>
+                </div>
+            </div>
+
+            <!-- subscribeTokenBalance -->
+            <div class="method-card" id="subscribeTokenBalance">
+                <h3 class="method-name">subscribeTokenBalance / tokenBalanceSubscribe</h3>
+                <p class="method-desc">Track token balance changes for a specific owner, optionally filtered by mint address.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <table class="param-table"><tr><th>Name</th><th>Type</th><th>Description</th></tr>
+                        <tr><td>owner</td><td>string</td><td>Owner public key (required)</td></tr>
+                        <tr><td>mint</td><td>string?</td><td>Token mint address (optional — omit for all tokens)</td></tr>
+                    </table>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Notification Payload</h4>
+                    <div class="code-block"><div class="code-block-header"><span class="code-lang">JSON</span></div>
+                        <code><pre>{
+  "event": "TokenBalanceChange",
+  "owner": "UserPub...",
+  "mint": "MintPub...",
+  "old_balance": 1000000000,
+  "new_balance": 2000000000,
+  "delta": 1000000000,
+  "slot": 789
+}</pre></code>
+                    </div>
+                </div>
+            </div>
+
+            <!-- subscribeEpochs -->
+            <div class="method-card" id="subscribeEpochs">
+                <h3 class="method-name">subscribeEpochs / epochSubscribe</h3>
+                <p class="method-desc">Receive a notification at each epoch boundary with epoch statistics.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p>None</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Notification Payload</h4>
+                    <div class="code-block"><div class="code-block-header"><span class="code-lang">JSON</span></div>
+                        <code><pre>{
+  "event": "EpochChange",
+  "epoch": 5,
+  "slot": 2160000,
+  "total_stake": 500000000000000,
+  "total_stake_display": 500000.0,
+  "validator_count": 42
+}</pre></code>
+                    </div>
+                </div>
+            </div>
+
+            <!-- subscribeGovernance -->
+            <div class="method-card" id="subscribeGovernance">
+                <h3 class="method-name">subscribeGovernance / governanceSubscribe</h3>
+                <p class="method-desc">Receive notifications for on-chain governance events: proposal creation, votes, execution, and cancellation.</p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Parameters</h4>
+                    <p>None</p>
+                </div>
+                <div class="method-section">
+                    <h4 class="method-section-title">Notification Payload</h4>
+                    <div class="code-block"><div class="code-block-header"><span class="code-lang">JSON</span></div>
+                        <code><pre>{
+  "event": "GovernanceEvent",
+  "proposal_id": 7,
+  "kind": "voted",
+  "voter": "VoterPub...",
+  "vote_weight": 50000000000,
+  "slot": 1234
+}</pre></code>
                     </div>
                 </div>
             </div>

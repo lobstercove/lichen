@@ -12,6 +12,10 @@ const TEMPLATE_CATEGORY = {
     governance: 'infra', dao: 'infra', identity: 'infra', storage: 'infra',
     payments: 'infra', launchpad: 'infra', vault: 'infra',
     bounty: 'infra', compute: 'infra', marketplace: 'infra', auction: 'infra',
+    staking: 'defi', vesting: 'defi', custody: 'defi', multisig: 'infra',
+    faucet: 'infra', registry: 'infra', treasury: 'infra', escrow: 'infra',
+    social: 'infra', content: 'infra', ai: 'infra', prediction: 'defi',
+    insurance: 'defi', supply: 'infra', timelock: 'infra', crosschain: 'defi',
 };
 
 const TEMPLATE_FA_ICON = {
@@ -25,6 +29,12 @@ const TEMPLATE_FA_ICON = {
     storage: 'fa-database', marketplace: 'fa-store', auction: 'fa-gavel',
     payments: 'fa-credit-card', launchpad: 'fa-rocket', vault: 'fa-vault',
     bounty: 'fa-bullseye', compute: 'fa-microchip',
+    staking: 'fa-layer-group', vesting: 'fa-clock', custody: 'fa-shield-alt',
+    multisig: 'fa-key', faucet: 'fa-faucet', registry: 'fa-list-alt',
+    treasury: 'fa-piggy-bank', escrow: 'fa-handshake',
+    social: 'fa-comments', content: 'fa-newspaper', ai: 'fa-brain',
+    prediction: 'fa-chart-line', insurance: 'fa-umbrella',
+    supply: 'fa-truck', timelock: 'fa-hourglass-half', crosschain: 'fa-globe',
 };
 
 const CATEGORY_BADGE = {
@@ -74,7 +84,9 @@ async function loadContract() {
         return;
     }
 
-    document.getElementById('contractAddress').textContent = contractAddress;
+    document.getElementById('contractAddress').textContent = formatHash(contractAddress);
+    document.getElementById('contractAddress').title = contractAddress;
+    document.getElementById('contractAddress').dataset.full = contractAddress;
     document.title = 'Contract ' + contractAddress.slice(0, 12) + '... - Reef Explorer';
 
     // Fetch all data in parallel
@@ -83,8 +95,8 @@ async function loadContract() {
         rpc.call('getSymbolRegistryByProgram', [contractAddress]).catch(() => null),
         rpc.call('getContractAbi', [contractAddress]).catch(() => null),
         rpc.call('getProgram', [contractAddress]).catch(() => null),
-        rpc.call('getProgramCalls', [contractAddress, { limit: 50 }]).catch(() => null),
-        rpc.call('getContractLogs', [contractAddress, 50]).catch(() => null),
+        rpc.call('getProgramCalls', [contractAddress, { limit: 200 }]).catch(() => null),
+        rpc.call('getContractLogs', [contractAddress, 200]).catch(() => null),
     ]);
 
     // Determine template/category
@@ -96,7 +108,7 @@ async function loadContract() {
     const abiName = (abi?.name && abi.name !== 'unknown') ? abi.name : '';
     const name    = registry?.name || abiName || '';
     const symbol  = registry?.symbol || '';
-    const title   = name ? name + (symbol ? ' (' + symbol + ')' : '') : (symbol || formatHash(contractAddress, 16));
+    const title   = name ? name + (symbol ? ' (' + symbol + ')' : '') : (symbol || formatHash(contractAddress));
 
     // Set icon (Font Awesome only)
     const iconBox = document.getElementById('contractIconBox');
@@ -111,9 +123,16 @@ async function loadContract() {
 
     // Overview stats
     const owner = info?.owner || program?.owner || registry?.owner || '';
+    const addressNames = (typeof batchResolveMoltNames === 'function')
+        ? await batchResolveMoltNames([
+            owner,
+            ...(calls?.calls || calls?.activities || []).map(c => c.caller).filter(Boolean)
+        ])
+        : {};
     if (owner) {
+        const ownerLabel = addressNames[owner] ? `${addressNames[owner]}.molt` : formatHash(owner);
         document.getElementById('statOwner').innerHTML =
-            '<a href="address.html?address=' + owner + '">' + formatHash(owner, 10) + '</a>';
+            '<a href="address.html?address=' + owner + '" title="' + owner + '">' + ownerLabel + '</a>';
     }
     document.getElementById('statCodeSize').textContent =
         info?.code_size ? formatBytes(info.code_size) : (program?.code_size ? formatBytes(program.code_size) : '--');
@@ -208,7 +227,7 @@ async function loadContract() {
     // Render tabs
     renderAbi(abi);
     renderStorage(program);
-    renderCalls(calls);
+    renderCalls(calls, addressNames);
     renderEvents(events);
 }
 
@@ -260,54 +279,132 @@ function renderAbi(abi) {
     }
 }
 
-// ── Storage rendering ────────────────────────────────────────────
+// ── Storage rendering (paginated) ────────────────────────────────
+
+const STORAGE_PAGE_SIZE = 25;
+let storageOffset = 0;
+let storageTotal = 0;
 
 function renderStorage(program) {
     const tbody = document.getElementById('storageTable');
+    const paginationEl = document.getElementById('storagePagination');
 
     if (!program || !program.storage_entries || program.storage_entries === 0) {
         tbody.innerHTML = '<tr><td colspan="3" class="empty-state"><i class="fas fa-database"></i><div>No storage data</div></td></tr>';
+        if (paginationEl) paginationEl.style.display = 'none';
         return;
     }
 
-    rpc.call('getProgramStorage', [contractAddress]).then(res => {
-        const entries = res?.entries || [];
-        if (entries.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="3" class="empty-state"><i class="fas fa-database"></i><div>Storage is empty</div></td></tr>';
-            return;
-        }
-        tbody.innerHTML = entries.map(entry => {
-            const keyDisplay = entry.key_hex ? entry.key_hex.slice(0, 24) + (entry.key_hex.length > 24 ? '...' : '') : entry.key || '--';
-            const valDisplay = entry.value_preview || entry.value_hex?.slice(0, 40) || '--';
-            const size = entry.size || entry.value_hex?.length / 2 || 0;
-            return '<tr>' +
-                '<td style="font-family:\'JetBrains Mono\',monospace;font-size:0.85rem;">' + keyDisplay + '</td>' +
-                '<td style="font-family:\'JetBrains Mono\',monospace;font-size:0.85rem;max-width:300px;overflow:hidden;text-overflow:ellipsis;">' + valDisplay + '</td>' +
-                '<td>' + (size > 0 ? formatBytes(size) : '--') + '</td>' +
-            '</tr>';
-        }).join('');
-    }).catch(() => {
-        tbody.innerHTML = '<tr><td colspan="3" class="empty-state"><i class="fas fa-database"></i><div>Could not load storage</div></td></tr>';
-    });
+    loadStoragePage(0);
 }
 
-// ── Calls rendering ──────────────────────────────────────────────
+async function loadStoragePage(offset) {
+    const tbody = document.getElementById('storageTable');
+    tbody.innerHTML = '<tr><td colspan="3" class="empty-state"><i class="fas fa-spinner fa-spin"></i><div>Loading...</div></td></tr>';
 
-function renderCalls(calls) {
-    const tbody = document.getElementById('callsTable');
-    const list = calls?.calls || calls?.activities || [];
-    if (list.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" class="empty-state"><i class="fas fa-terminal"></i><div>No calls recorded yet</div></td></tr>';
+    try {
+        const res = await rpc.call('getProgramStorage', [contractAddress, { limit: STORAGE_PAGE_SIZE, offset }]);
+        const entries = res?.entries || [];
+        storageTotal = res?.total || entries.length;
+        storageOffset = offset;
+
+        if (entries.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="3" class="empty-state"><i class="fas fa-database"></i><div>Storage is empty</div></td></tr>';
+            updateStoragePagination();
+            return;
+        }
+
+        tbody.innerHTML = entries.map(entry => {
+            const keyDecoded = entry.key_decoded || null;
+            const keyHex = entry.key_hex || entry.key || '--';
+            const keyDisplay = keyDecoded
+                ? '<span title="' + keyHex + '">' + escapeHtml(keyDecoded) + '</span>'
+                : '<span title="' + keyHex + '">' + (keyHex.length > 24 ? keyHex.slice(0, 24) + '...' : keyHex) + '</span>';
+            const valPreview = entry.value_preview || entry.value_hex?.slice(0, 40) || entry.value?.slice(0, 40) || '--';
+            const size = entry.size != null && entry.size > 0 ? formatBytes(entry.size) : '--';
+            return '<tr>' +
+                '<td style="font-family:\'JetBrains Mono\',monospace;font-size:0.85rem;">' + keyDisplay + '</td>' +
+                '<td style="font-family:\'JetBrains Mono\',monospace;font-size:0.85rem;max-width:300px;overflow:hidden;text-overflow:ellipsis;" title="' + escapeHtml(entry.value_hex || entry.value || '') + '">' + escapeHtml(valPreview) + '</td>' +
+                '<td>' + size + '</td>' +
+            '</tr>';
+        }).join('');
+
+        updateStoragePagination();
+    } catch (e) {
+        tbody.innerHTML = '<tr><td colspan="3" class="empty-state"><i class="fas fa-database"></i><div>Could not load storage</div></td></tr>';
+    }
+}
+
+function updateStoragePagination() {
+    let paginationEl = document.getElementById('storagePagination');
+    if (!paginationEl) {
+        const panel = document.getElementById('panel-storage');
+        if (panel) {
+            paginationEl = document.createElement('div');
+            paginationEl.id = 'storagePagination';
+            paginationEl.className = 'tab-pagination';
+            panel.appendChild(paginationEl);
+        } else return;
+    }
+
+    if (storageTotal <= STORAGE_PAGE_SIZE) {
+        paginationEl.style.display = 'none';
         return;
     }
 
-    tbody.innerHTML = list.map(call => {
+    const totalPages = Math.ceil(storageTotal / STORAGE_PAGE_SIZE);
+    const currentPage = Math.floor(storageOffset / STORAGE_PAGE_SIZE) + 1;
+
+    paginationEl.style.display = 'flex';
+    paginationEl.innerHTML =
+        '<span class="pagination-info">Page ' + currentPage + ' of ' + totalPages + ' (' + storageTotal + ' entries)</span>' +
+        '<div class="pagination-btns">' +
+            '<button class="btn btn-secondary btn-small" onclick="loadStoragePage(' + Math.max(0, storageOffset - STORAGE_PAGE_SIZE) + ')"' + (storageOffset <= 0 ? ' disabled' : '') + '><i class="fas fa-arrow-left"></i> Prev</button>' +
+            '<button class="btn btn-secondary btn-small" onclick="loadStoragePage(' + (storageOffset + STORAGE_PAGE_SIZE) + ')"' + (storageOffset + STORAGE_PAGE_SIZE >= storageTotal ? ' disabled' : '') + '>Next <i class="fas fa-arrow-right"></i></button>' +
+        '</div>';
+}
+
+function escapeHtml(str) {
+    if (!str) return '';
+    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// ── Calls rendering (paginated) ──────────────────────────────────
+
+const CALLS_PAGE_SIZE = 25;
+let allCalls = [];
+let callsPage = 1;
+let callsAddressNames = {};
+
+function renderCalls(calls, addressNames = {}) {
+    const list = calls?.calls || calls?.activities || [];
+    allCalls = list;
+    callsAddressNames = addressNames;
+    callsPage = 1;
+    renderCallsPage();
+}
+
+function renderCallsPage() {
+    const tbody = document.getElementById('callsTable');
+    if (allCalls.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="empty-state"><i class="fas fa-terminal"></i><div>No calls recorded yet</div></td></tr>';
+        updateCallsPagination();
+        return;
+    }
+
+    const start = (callsPage - 1) * CALLS_PAGE_SIZE;
+    const pageItems = allCalls.slice(start, start + CALLS_PAGE_SIZE);
+
+    tbody.innerHTML = pageItems.map(call => {
         const time = call.timestamp ? timeAgo(call.timestamp) : (call.slot !== undefined ? 'Slot ' + formatNumber(call.slot) : '--');
-        const caller = call.caller
-            ? '<a href="address.html?address=' + call.caller + '" class="table-link" style="font-family:\'JetBrains Mono\',monospace;font-size:0.85rem;">' + formatHash(call.caller, 8) + '</a>'
+        const callerLabel = call.caller
+            ? (callsAddressNames[call.caller] ? `${callsAddressNames[call.caller]}.molt` : formatHash(call.caller))
             : '--';
-        const fn = call.function_name || call.method || '--';
-        const gas = call.gas_used !== undefined ? formatNumber(call.gas_used) : '--';
+        const caller = call.caller
+            ? '<a href="address.html?address=' + call.caller + '" class="table-link" style="font-family:\'JetBrains Mono\',monospace;font-size:0.85rem;" title="' + call.caller + '">' + callerLabel + '</a>'
+            : '--';
+        const fn_name = call.function_name || call.function || call.method || '--';
+        const fee = call.fee !== undefined ? formatMolt(call.fee) : (call.gas_used !== undefined ? formatNumber(call.gas_used) + ' shells' : '--');
         const status = call.success !== false
             ? '<span class="badge success" style="font-size:0.75rem;"><i class="fas fa-check"></i> OK</span>'
             : '<span class="badge" style="background:rgba(255,70,70,0.15);color:#ff4646;font-size:0.75rem;"><i class="fas fa-times"></i> Failed</span>';
@@ -315,24 +412,67 @@ function renderCalls(calls) {
         return '<tr>' +
             '<td>' + time + '</td>' +
             '<td>' + caller + '</td>' +
-            '<td style="font-family:\'JetBrains Mono\',monospace;font-weight:600;">' + fn + '</td>' +
-            '<td>' + gas + '</td>' +
+            '<td style="font-family:\'JetBrains Mono\',monospace;font-weight:600;">' + fn_name + '</td>' +
+            '<td>' + fee + '</td>' +
             '<td>' + status + '</td>' +
         '</tr>';
     }).join('');
+
+    updateCallsPagination();
 }
 
-// ── Events rendering ─────────────────────────────────────────────
+function updateCallsPagination() {
+    let paginationEl = document.getElementById('callsPagination');
+    if (!paginationEl) {
+        const panel = document.getElementById('panel-calls');
+        if (panel) {
+            paginationEl = document.createElement('div');
+            paginationEl.id = 'callsPagination';
+            paginationEl.className = 'tab-pagination';
+            panel.appendChild(paginationEl);
+        } else return;
+    }
 
-function renderEvents(events) {
-    const tbody = document.getElementById('eventsTable');
-    const list = events?.logs || events?.events || [];
-    if (list.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="3" class="empty-state"><i class="fas fa-bell"></i><div>No events emitted</div></td></tr>';
+    if (allCalls.length <= CALLS_PAGE_SIZE) {
+        paginationEl.style.display = 'none';
         return;
     }
 
-    tbody.innerHTML = list.map(evt => {
+    const totalPages = Math.ceil(allCalls.length / CALLS_PAGE_SIZE);
+    paginationEl.style.display = 'flex';
+    paginationEl.innerHTML =
+        '<span class="pagination-info">Page ' + callsPage + ' of ' + totalPages + ' (' + allCalls.length + ' calls)</span>' +
+        '<div class="pagination-btns">' +
+            '<button class="btn btn-secondary btn-small" onclick="callsPage=Math.max(1,callsPage-1);renderCallsPage()"' + (callsPage <= 1 ? ' disabled' : '') + '><i class="fas fa-arrow-left"></i> Prev</button>' +
+            '<button class="btn btn-secondary btn-small" onclick="callsPage=Math.min(' + totalPages + ',callsPage+1);renderCallsPage()"' + (callsPage >= totalPages ? ' disabled' : '') + '>Next <i class="fas fa-arrow-right"></i></button>' +
+        '</div>';
+}
+
+// ── Events rendering (paginated) ─────────────────────────────────
+
+const EVENTS_PAGE_SIZE = 25;
+let allEvents = [];
+let eventsPage = 1;
+
+function renderEvents(events) {
+    const list = events?.logs || events?.events || [];
+    allEvents = list;
+    eventsPage = 1;
+    renderEventsPage();
+}
+
+function renderEventsPage() {
+    const tbody = document.getElementById('eventsTable');
+    if (allEvents.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="3" class="empty-state"><i class="fas fa-bell"></i><div>No events emitted</div></td></tr>';
+        updateEventsPagination();
+        return;
+    }
+
+    const start = (eventsPage - 1) * EVENTS_PAGE_SIZE;
+    const pageItems = allEvents.slice(start, start + EVENTS_PAGE_SIZE);
+
+    tbody.innerHTML = pageItems.map(evt => {
         const slot = evt.slot !== undefined ? '<a href="block.html?slot=' + evt.slot + '" class="table-link">' + formatNumber(evt.slot) + '</a>' : '--';
         const name = evt.name || evt.event || '--';
         const data = typeof evt.data === 'object' ? JSON.stringify(evt.data) : (evt.data || '--');
@@ -341,9 +481,38 @@ function renderEvents(events) {
         return '<tr>' +
             '<td>' + slot + '</td>' +
             '<td style="font-family:\'JetBrains Mono\',monospace;font-weight:600;color:var(--text-primary);">' + name + '</td>' +
-            '<td style="font-family:\'JetBrains Mono\',monospace;font-size:0.85rem;max-width:400px;overflow:hidden;text-overflow:ellipsis;">' + dataDisplay + '</td>' +
+            '<td style="font-family:\'JetBrains Mono\',monospace;font-size:0.85rem;max-width:400px;overflow:hidden;text-overflow:ellipsis;">' + escapeHtml(dataDisplay) + '</td>' +
         '</tr>';
     }).join('');
+
+    updateEventsPagination();
+}
+
+function updateEventsPagination() {
+    let paginationEl = document.getElementById('eventsPagination');
+    if (!paginationEl) {
+        const panel = document.getElementById('panel-events');
+        if (panel) {
+            paginationEl = document.createElement('div');
+            paginationEl.id = 'eventsPagination';
+            paginationEl.className = 'tab-pagination';
+            panel.appendChild(paginationEl);
+        } else return;
+    }
+
+    if (allEvents.length <= EVENTS_PAGE_SIZE) {
+        paginationEl.style.display = 'none';
+        return;
+    }
+
+    const totalPages = Math.ceil(allEvents.length / EVENTS_PAGE_SIZE);
+    paginationEl.style.display = 'flex';
+    paginationEl.innerHTML =
+        '<span class="pagination-info">Page ' + eventsPage + ' of ' + totalPages + ' (' + allEvents.length + ' events)</span>' +
+        '<div class="pagination-btns">' +
+            '<button class="btn btn-secondary btn-small" onclick="eventsPage=Math.max(1,eventsPage-1);renderEventsPage()"' + (eventsPage <= 1 ? ' disabled' : '') + '><i class="fas fa-arrow-left"></i> Prev</button>' +
+            '<button class="btn btn-secondary btn-small" onclick="eventsPage=Math.min(' + totalPages + ',eventsPage+1);renderEventsPage()"' + (eventsPage >= totalPages ? ' disabled' : '') + '>Next <i class="fas fa-arrow-right"></i></button>' +
+        '</div>';
 }
 
 // ── Init ─────────────────────────────────────────────────────────
@@ -351,13 +520,15 @@ function renderEvents(events) {
 function initSearch() {
     const input = document.getElementById('searchInput');
     if (!input) return;
-    input.addEventListener('keydown', (e) => {
+    input.addEventListener('keydown', async (e) => {
         if (e.key === 'Enter') {
             const q = input.value.trim();
             if (!q) return;
-            if (/^\d+$/.test(q)) window.location.href = 'block.html?slot=' + q;
-            else if (q.length === 64) window.location.href = 'transaction.html?sig=' + q;
-            else window.location.href = 'address.html?address=' + q;
+            if (typeof navigateExplorerSearch === 'function') {
+                await navigateExplorerSearch(q);
+                return;
+            }
+            window.location.href = 'address.html?address=' + q;
         }
     });
 }

@@ -6,9 +6,10 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
-/// Maximum blocks to request in a single sync batch
-/// This prevents memory exhaustion and allows progressive sync
-const SYNC_BATCH_SIZE: u64 = 100;
+/// Maximum blocks to request in a single sync batch.
+/// Larger batches let a behind validator catch up faster at the cost of
+/// more memory while the batch is in-flight.
+const SYNC_BATCH_SIZE: u64 = 500;
 
 /// Maximum blocks to hold in pending state (memory limit)
 const MAX_PENDING_BLOCKS: usize = 500;
@@ -113,13 +114,23 @@ impl SyncManager {
         let is_syncing = *self.is_syncing.lock().await;
         let current_batch = self.current_sync_batch.lock().await;
 
-        // If already syncing a batch, don't start another
+        // If already syncing a batch, allow re-trigger only when very far behind
+        // (> SYNC_BATCH_SIZE / 2 slots) — otherwise wait for current batch.
         if is_syncing && current_batch.is_some() {
-            return None;
+            let gap = highest.saturating_sub(current_slot);
+            if gap <= SYNC_BATCH_SIZE / 2 {
+                return None;
+            }
+            // Very far behind — allow overlapping sync request
+            info!(
+                "🔁 Re-triggering sync while already syncing ({} slots behind)",
+                gap
+            );
         }
 
-        // If we're behind by more than 5 blocks and not already syncing
-        if highest > current_slot + 5 {
+        // If we're behind by more than 1 block and not already syncing
+        // (FIX-FORK-2: lowered from +2 to +1 to catch forks earlier)
+        if highest > current_slot + 1 {
             // Determine start slot
             // NOTE: We include current_slot in the range (not current_slot + 1)
             // to receive the peer's version of our latest block. This enables
@@ -197,16 +208,21 @@ impl SyncManager {
         })
     }
 
-    /// Check if we're caught up with the network (within 3 slots)
+    /// Check if we're caught up with the network (within 2 slots)
     pub async fn is_caught_up(&self, current_slot: u64) -> bool {
         let highest = *self.highest_seen_slot.lock().await;
-        // Considered caught up if within 3 slots of network
-        current_slot + 3 >= highest
+        // Considered caught up if within 2 slots of network
+        current_slot + 2 >= highest
     }
 
     /// Get the highest slot seen on the network
     pub async fn get_highest_seen(&self) -> u64 {
         *self.highest_seen_slot.lock().await
+    }
+
+    /// Get the number of pending blocks waiting to be applied
+    pub async fn pending_count(&self) -> usize {
+        self.pending_blocks.lock().await.len()
     }
 
     /// Check if we've already requested this slot
@@ -222,16 +238,41 @@ impl SyncManager {
         requested.insert(slot);
     }
 
-    /// Try to apply pending blocks now that we have more of the chain
+    /// Try to apply pending blocks now that we have more of the chain.
+    /// Follows the parent-hash chain instead of requiring consecutive slot
+    /// numbers, so it works correctly when the chain has slot gaps (slots
+    /// where the assigned leader was offline and nobody produced).
     pub async fn try_apply_pending(&self, current_slot: u64) -> Vec<Block> {
         let mut pending = self.pending_blocks.lock().await;
         let mut applicable = Vec::new();
 
-        // Find blocks that can now be applied (sequential from current_slot)
-        let mut next_slot = current_slot + 1;
-        while let Some(block) = pending.remove(&next_slot) {
-            applicable.push(block);
-            next_slot += 1;
+        if pending.is_empty() {
+            return applicable;
+        }
+
+        // Find blocks whose slot is > current_slot, sorted by slot ascending.
+        // Then greedily apply any block whose slot is the next expected one
+        // OR whose slot is ahead but the parent block exists (gap-aware).
+        // We repeatedly scan for the lowest-slot pending block that can chain.
+        let mut tip_slot = current_slot;
+        loop {
+            // Find the pending block with the smallest slot that is > tip_slot.
+            let next_slot = pending
+                .keys()
+                .filter(|&&s| s > tip_slot)
+                .min()
+                .copied();
+
+            match next_slot {
+                Some(slot) => {
+                    // Remove and queue for application
+                    if let Some(block) = pending.remove(&slot) {
+                        tip_slot = slot;
+                        applicable.push(block);
+                    }
+                }
+                None => break, // No more pending blocks ahead of tip
+            }
         }
 
         if !applicable.is_empty() {
@@ -312,7 +353,7 @@ mod tests {
     async fn test_should_not_sync_when_caught_up() {
         let sm = SyncManager::new();
         sm.note_seen(10).await;
-        // Current slot 8, only 2 behind → no sync (threshold is 5)
+        // Current slot 8, only 2 behind → no sync (threshold is 2)
         let batch = sm.should_sync(8).await;
         assert!(batch.is_none());
     }

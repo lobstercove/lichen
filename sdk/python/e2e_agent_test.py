@@ -16,7 +16,7 @@ strict verification that every artifact was actually created:
 
 Uses moltcoin.wasm (5392 bytes) as the MT-20 WASM template.
 Passes init_data JSON to auto-register in symbol registry at deploy time.
-Deploy fee: 2.5 MOLT.
+Deploy fee: 25 MOLT.
 """
 
 import asyncio
@@ -262,7 +262,7 @@ async def main():
     # Sends code as base64 + init_data as JSON via the deployContract
     # RPC endpoint (bypasses transaction instruction size limit).
     # Deployer signs SHA-256(code_bytes) to prove ownership.
-    # Deploy fee: 2.5 MOLT deducted from agent.
+    # Deploy fee: 25 MOLT deducted from agent.
     # ------------------------------------------------------------------
     print_step(3, "Agent deploys MT-20 token (TLOBSTER) via deployContract RPC")
 
@@ -337,11 +337,11 @@ async def main():
                 print_fail(f"Symbol registry check failed: {e}")
                 deploy_ok = False
 
-            # VERIFY 3: Deploy fee was charged (agent should have ~97.5 MOLT now: 100 - 2.5)
+            # VERIFY 3: Deploy fee was charged (agent should have ~75 MOLT now: 100 - 25)
             agent_bal_after = await conn.get_balance(agent.public_key())
             agent_molt_after = float(agent_bal_after.get("molt", "0"))
             print_info(f"Agent balance after deploy: {agent_molt_after:.4f} MOLT")
-            if agent_molt_after < 248.0:
+            if agent_molt_after < 230.0:
                 print_ok(f"Deploy fee verified (deducted ~{250 - agent_molt_after:.1f} MOLT)")
             else:
                 print_info(f"Deploy fee may not have been charged (balance: {agent_molt_after})")

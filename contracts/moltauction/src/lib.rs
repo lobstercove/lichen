@@ -13,6 +13,21 @@ use moltchain_sdk::{
     call_token_transfer, call_nft_transfer, call_nft_owner, get_timestamp, get_caller
 };
 
+// Reentrancy guard
+const MA_REENTRANCY_KEY: &[u8] = b"ma_reentrancy";
+
+fn reentrancy_enter() -> bool {
+    if storage_get(MA_REENTRANCY_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false) {
+        return false;
+    }
+    storage_set(MA_REENTRANCY_KEY, &[1u8]);
+    true
+}
+
+fn reentrancy_exit() {
+    storage_set(MA_REENTRANCY_KEY, &[0u8]);
+}
+
 /// T5.2 fix: Hex-encode binary addresses for storage keys (avoids UTF-8 collision)
 fn hex_addr(bytes: &[u8]) -> alloc::string::String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
@@ -68,7 +83,7 @@ fn get_marketplace_addr() -> Address {
     match storage_get(MARKETPLACE_ADDR_KEY) {
         Some(data) if data.len() == 32 => Address(data.try_into().unwrap()),
         _ => {
-            log_info("⚠️  Marketplace address not set, using contract default");
+            log_info(" Marketplace address not set, using contract default");
             // Fallback: derive from a known seed rather than zero address
             Address([0x4D; 32]) // 'M' repeated — identifiable placeholder
         }
@@ -84,26 +99,29 @@ pub extern "C" fn create_auction(
     payment_token_ptr: *const u8,
     duration: u64, // seconds
 ) -> u32 {
-    log_info("🎯 Creating English auction...");
+    log_info("Creating English auction...");
     
     // Parse addresses
-    let seller = unsafe { core::slice::from_raw_parts(seller_ptr, 32) };
-    let nft_contract = unsafe { core::slice::from_raw_parts(nft_contract_ptr, 32) };
-    let payment_token = unsafe { core::slice::from_raw_parts(payment_token_ptr, 32) };
+    let mut seller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(seller_ptr, seller.as_mut_ptr(), 32); }
+    let mut nft_contract = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(nft_contract_ptr, nft_contract.as_mut_ptr(), 32); }
+    let mut payment_token = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(payment_token_ptr, payment_token.as_mut_ptr(), 32); }
     
     // Verify seller owns the NFT
     match call_nft_owner(
-        Address(nft_contract.try_into().unwrap()),
+        Address(nft_contract),
         token_id
     ) {
         Ok(owner) => {
             if owner.0 != seller {
-                log_info("❌ Seller doesn't own NFT");
+                log_info("Seller doesn't own NFT");
                 return 0;
             }
         }
         Err(_) => {
-            log_info("❌ NFT ownership verification failed");
+            log_info("NFT ownership verification failed");
             return 0;
         }
     }
@@ -114,11 +132,11 @@ pub extern "C" fn create_auction(
     
     // Build auction data
     let mut auction = Vec::with_capacity(AUCTION_SIZE);
-    auction.extend_from_slice(seller);                    // 0-31: seller
-    auction.extend_from_slice(nft_contract);              // 32-63: nft_contract
+    auction.extend_from_slice(&seller);                   // 0-31: seller
+    auction.extend_from_slice(&nft_contract);             // 32-63: nft_contract
     auction.extend_from_slice(&u64_to_bytes(token_id));   // 64-71: token_id
     auction.extend_from_slice(&u64_to_bytes(min_bid));    // 72-79: min_bid
-    auction.extend_from_slice(payment_token);             // 80-111: payment_token
+    auction.extend_from_slice(&payment_token);            // 80-111: payment_token
     auction.extend_from_slice(&u64_to_bytes(now));        // 112-119: start_time
     auction.extend_from_slice(&u64_to_bytes(end_time));   // 120-127: end_time
     auction.extend_from_slice(&[0u8; 32]);                // 128-159: highest_bidder (empty)
@@ -127,12 +145,12 @@ pub extern "C" fn create_auction(
     
     // Store auction
     let key = alloc::format!("auction_{}_{}", 
-        hex_addr(nft_contract),
+        hex_addr(&nft_contract),
         token_id
     );
     storage_set(key.as_bytes(), &auction);
     
-    log_info("✅ Auction created!");
+    log_info("Auction created!");
     log_info(&alloc::format!("   Min bid: {}", min_bid));
     log_info(&alloc::format!("   Duration: {} hours", auction_duration / 3600));
     1
@@ -145,32 +163,37 @@ pub extern "C" fn place_bid(
     token_id: u64,
     bid_amount: u64,
 ) -> u32 {
-    log_info("💰 Placing bid...");
+    if !reentrancy_enter() {
+        return 0;
+    }
+    log_info("Placing bid...");
     
-    let bidder = unsafe { core::slice::from_raw_parts(bidder_ptr, 32) };
-    let nft_contract = unsafe { core::slice::from_raw_parts(nft_contract_ptr, 32) };
+    let mut bidder = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(bidder_ptr, bidder.as_mut_ptr(), 32); }
+    let mut nft_contract = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(nft_contract_ptr, nft_contract.as_mut_ptr(), 32); }
     
     // Load auction
     let key = alloc::format!("auction_{}_{}", 
-        hex_addr(nft_contract),
+        hex_addr(&nft_contract),
         token_id
     );
     let auction_data = match storage_get(key.as_bytes()) {
         Some(data) => data,
         None => {
-            log_info("❌ Auction not found");
+            log_info("Auction not found");
             return 0;
         }
     };
     
     if auction_data.len() < AUCTION_SIZE {
-        log_info("❌ Invalid auction data");
+        log_info("Invalid auction data");
         return 0;
     }
     
     // Check if active
     if auction_data[168] != 1 {
-        log_info("❌ Auction not active");
+        log_info("Auction not active");
         return 0;
     }
     
@@ -178,7 +201,7 @@ pub extern "C" fn place_bid(
     let end_time = bytes_to_u64(&auction_data[120..128]);
     let now = get_timestamp();
     if now > end_time {
-        log_info("❌ Auction has ended");
+        log_info("Auction has ended");
         return 0;
     }
     
@@ -193,7 +216,7 @@ pub extern "C" fn place_bid(
     };
     
     if bid_amount < required_bid {
-        log_info("❌ Bid too low");
+        log_info("Bid too low");
         log_info(&alloc::format!("   Required: {}", required_bid));
         return 0;
     }
@@ -211,12 +234,12 @@ pub extern "C" fn place_bid(
             Address(prev_bidder_bytes.try_into().unwrap()),
             current_highest
         ) {
-            Ok(true) => log_info("💸 Refunded previous bidder"),
+            Ok(true) => log_info("Refunded previous bidder"),
             // AUDIT-FIX 1.13: If refund fails, REVERT the entire bid.
             // Previously, the new bid was accepted while the previous
             // bidder's funds were permanently lost.
             _ => {
-                log_info("❌ Refund to previous bidder failed — reverting bid");
+                log_info("Refund to previous bidder failed — reverting bid");
                 return 0;
             }
         }
@@ -228,40 +251,39 @@ pub extern "C" fn place_bid(
     
     match call_token_transfer(
         payment_token_addr,
-        Address(bidder.try_into().unwrap()),
+        Address(bidder),
         marketplace_addr,
         bid_amount
     ) {
-        Ok(true) => log_info("✅ Bid placed in escrow"),
+        Ok(true) => log_info("Bid placed in escrow"),
         _ => {
-            log_info("❌ Token transfer failed");
+            log_info("Token transfer failed");
             return 0;
         }
     }
     
     // Update auction with new highest bid
     let mut updated_auction = auction_data.clone();
-    updated_auction[128..160].copy_from_slice(bidder);
+    updated_auction[128..160].copy_from_slice(&bidder);
     updated_auction[160..168].copy_from_slice(&u64_to_bytes(bid_amount));
 
     // V2: Anti-sniping — if bid within SNIPE_WINDOW of end, extend
     let time_left = end_time.saturating_sub(now);
     if time_left < SNIPE_WINDOW {
-        let ek = ext_count_key(nft_contract, token_id);
+        let ek = ext_count_key(&nft_contract, token_id);
         let extensions = storage_get(&ek).map(|d| bytes_to_u64(&d)).unwrap_or(0);
         if extensions < MAX_EXTENSIONS {
             let new_end = end_time + SNIPE_EXTENSION;
             updated_auction[120..128].copy_from_slice(&u64_to_bytes(new_end));
             storage_set(&ek, &u64_to_bytes(extensions + 1));
-            log_info("⏰ Anti-snipe: auction extended");
+            log_info("Anti-snipe: auction extended");
         }
     }
     
     storage_set(key.as_bytes(), &updated_auction);
     
-    log_info("🎉 Bid accepted!");
-    log_info(&alloc::format!("   Bidder: {}...", &hex_addr(bidder)[..16]));
-    log_info(&alloc::format!("   Amount: {}", bid_amount));
+    log_info("Bid accepted!");
+    reentrancy_exit();
     1
 }
 
@@ -270,19 +292,23 @@ pub extern "C" fn finalize_auction(
     nft_contract_ptr: *const u8,
     token_id: u64,
 ) -> u32 {
-    log_info("🏆 Finalizing auction...");
+    if !reentrancy_enter() {
+        return 0;
+    }
+    log_info("Finalizing auction...");
     
-    let nft_contract = unsafe { core::slice::from_raw_parts(nft_contract_ptr, 32) };
+    let mut nft_contract = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(nft_contract_ptr, nft_contract.as_mut_ptr(), 32); }
     
     // Load auction
     let key = alloc::format!("auction_{}_{}", 
-        hex_addr(nft_contract),
+        hex_addr(&nft_contract),
         token_id
     );
     let auction_data = match storage_get(key.as_bytes()) {
         Some(data) => data,
         None => {
-            log_info("❌ Auction not found");
+            log_info("Auction not found");
             return 0;
         }
     };
@@ -295,7 +321,7 @@ pub extern "C" fn finalize_auction(
     let end_time = bytes_to_u64(&auction_data[120..128]);
     let now = get_timestamp();
     if now <= end_time {
-        log_info("❌ Auction still active");
+        log_info("Auction still active");
         return 0;
     }
     
@@ -305,11 +331,11 @@ pub extern "C" fn finalize_auction(
     let payment_token = &auction_data[80..112];
 
     // V2: Reserve price check — if reserve not met, return NFT to seller
-    let rk = reserve_key(nft_contract, token_id);
+    let rk = reserve_key(&nft_contract, token_id);
     let reserve_price = storage_get(&rk).map(|d| bytes_to_u64(&d)).unwrap_or(0);
     
     if highest_bid > 0 && reserve_price > 0 && highest_bid < reserve_price {
-        log_info("❌ Reserve price not met — auction cancelled, refund bidder");
+        log_info("Reserve price not met — auction cancelled, refund bidder");
         // Copy values before moving auction_data
         let mut bidder_addr = [0u8; 32];
         bidder_addr.copy_from_slice(&auction_data[128..160]);
@@ -330,7 +356,7 @@ pub extern "C" fn finalize_auction(
     }
     
     if highest_bid == 0 {
-        log_info("ℹ️  No bids received");
+        log_info(" No bids received");
         // Mark inactive
         let mut updated_auction = auction_data.clone();
         updated_auction[168] = 0;
@@ -344,7 +370,7 @@ pub extern "C" fn finalize_auction(
     let mut royalty_bps: u64 = 0;
     let mut royalty_recipient: Option<[u8; 32]> = None;
     
-    let royalty_key = alloc::format!("royalty_{}", hex_addr(nft_contract));
+    let royalty_key = alloc::format!("royalty_{}", hex_addr(&nft_contract));
     if let Some(royalty_data) = storage_get(royalty_key.as_bytes()) {
         if royalty_data.len() >= 40 {
             royalty_bps = bytes_to_u64(&royalty_data[32..40]);
@@ -364,9 +390,9 @@ pub extern "C" fn finalize_auction(
         Address(seller.try_into().unwrap()),
         seller_amount
     ) {
-        Ok(true) => log_info("💰 Payment sent to seller"),
+        Ok(true) => log_info("Payment sent to seller"),
         _ => {
-            log_info("❌ Payment transfer failed");
+            log_info("Payment transfer failed");
             return 0;
         }
     }
@@ -383,10 +409,10 @@ pub extern "C" fn finalize_auction(
                     royalty_amount
                 ) {
                     Ok(true) => {
-                        log_info("👑 Royalty paid to creator");
+                        log_info("Royalty paid to creator");
                         log_info(&alloc::format!("   Royalty: {} ({}bps)", royalty_amount, royalty_bps));
                     }
-                    _ => log_info("⚠️  Royalty payment failed (non-critical)"),
+                    _ => log_info(" Royalty payment failed (non-critical)"),
                 }
             }
         }
@@ -394,14 +420,14 @@ pub extern "C" fn finalize_auction(
     
     // CROSS-CONTRACT CALL 2: Transfer NFT to winner
     match call_nft_transfer(
-        Address(nft_contract.try_into().unwrap()),
+        Address(nft_contract),
         Address(seller.try_into().unwrap()),
         Address(highest_bidder.try_into().unwrap()),
         token_id
     ) {
-        Ok(true) => log_info("🎨 NFT transferred to winner"),
+        Ok(true) => log_info("NFT transferred to winner"),
         _ => {
-            log_info("❌ NFT transfer failed");
+            log_info("NFT transfer failed");
             return 0;
         }
     }
@@ -411,7 +437,8 @@ pub extern "C" fn finalize_auction(
     updated_auction[168] = 0;
     storage_set(key.as_bytes(), &updated_auction);
     
-    log_info("🎉 Auction finalized successfully!");
+    log_info("Auction finalized successfully!");
+    reentrancy_exit();
     1
 }
 
@@ -433,34 +460,37 @@ pub extern "C" fn make_offer(
     payment_token_ptr: *const u8,
     duration: u64, // seconds until expiry
 ) -> u32 {
-    log_info("💬 Making offer...");
+    log_info("Making offer...");
     
-    let offerer = unsafe { core::slice::from_raw_parts(offerer_ptr, 32) };
-    let nft_contract = unsafe { core::slice::from_raw_parts(nft_contract_ptr, 32) };
-    let payment_token = unsafe { core::slice::from_raw_parts(payment_token_ptr, 32) };
+    let mut offerer = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(offerer_ptr, offerer.as_mut_ptr(), 32); }
+    let mut nft_contract = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(nft_contract_ptr, nft_contract.as_mut_ptr(), 32); }
+    let mut payment_token = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(payment_token_ptr, payment_token.as_mut_ptr(), 32); }
     
     let now = get_timestamp();
     let expires = now + duration;
     
     // Build offer
     let mut offer = Vec::with_capacity(OFFER_SIZE);
-    offer.extend_from_slice(offerer);                      // 0-31
-    offer.extend_from_slice(nft_contract);                 // 32-63
+    offer.extend_from_slice(&offerer);                     // 0-31
+    offer.extend_from_slice(&nft_contract);                // 32-63
     offer.extend_from_slice(&u64_to_bytes(token_id));      // 64-71
     offer.extend_from_slice(&u64_to_bytes(offer_amount));  // 72-79
-    offer.extend_from_slice(payment_token);                // 80-111
+    offer.extend_from_slice(&payment_token);               // 80-111
     offer.extend_from_slice(&u64_to_bytes(expires));       // 112-119
     offer.push(1);                                          // 120: active
     
     // Store offer
     let key = alloc::format!("offer_{}_{}_{}", 
-        hex_addr(offerer),
-        hex_addr(nft_contract),
+        hex_addr(&offerer),
+        hex_addr(&nft_contract),
         token_id
     );
     storage_set(key.as_bytes(), &offer);
     
-    log_info("✅ Offer created!");
+    log_info("Offer created!");
     log_info(&alloc::format!("   Amount: {}", offer_amount));
     log_info(&alloc::format!("   Expires: {} hours", duration / 3600));
     1
@@ -473,20 +503,23 @@ pub extern "C" fn accept_offer(
     nft_contract_ptr: *const u8,
     token_id: u64,
 ) -> u32 {
-    log_info("✅ Accepting offer...");
+    log_info("Accepting offer...");
     
-    let seller = unsafe { core::slice::from_raw_parts(seller_ptr, 32) };
-    let offerer = unsafe { core::slice::from_raw_parts(offerer_ptr, 32) };
-    let nft_contract = unsafe { core::slice::from_raw_parts(nft_contract_ptr, 32) };
+    let mut seller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(seller_ptr, seller.as_mut_ptr(), 32); }
+    let mut offerer = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(offerer_ptr, offerer.as_mut_ptr(), 32); }
+    let mut nft_contract = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(nft_contract_ptr, nft_contract.as_mut_ptr(), 32); }
     
     // Verify seller owns NFT
     match call_nft_owner(
-        Address(nft_contract.try_into().unwrap()),
+        Address(nft_contract),
         token_id
     ) {
         Ok(owner) => {
             if owner.0 != seller {
-                log_info("❌ Seller doesn't own NFT");
+                log_info("Seller doesn't own NFT");
                 return 0;
             }
         }
@@ -495,14 +528,14 @@ pub extern "C" fn accept_offer(
     
     // Load offer
     let key = alloc::format!("offer_{}_{}_{}", 
-        hex_addr(offerer),
-        hex_addr(nft_contract),
+        hex_addr(&offerer),
+        hex_addr(&nft_contract),
         token_id
     );
     let offer_data = match storage_get(key.as_bytes()) {
         Some(data) => data,
         None => {
-            log_info("❌ Offer not found");
+            log_info("Offer not found");
             return 0;
         }
     };
@@ -514,7 +547,7 @@ pub extern "C" fn accept_offer(
     // Check expiry
     let expires = bytes_to_u64(&offer_data[112..120]);
     if get_timestamp() > expires {
-        log_info("❌ Offer expired");
+        log_info("Offer expired");
         return 0;
     }
     
@@ -526,27 +559,27 @@ pub extern "C" fn accept_offer(
     
     match call_token_transfer(
         Address(payment_token.try_into().unwrap()),
-        Address(offerer.try_into().unwrap()),
-        Address(seller.try_into().unwrap()),
+        Address(offerer),
+        Address(seller),
         seller_amount
     ) {
-        Ok(true) => log_info("💰 Payment transferred"),
+        Ok(true) => log_info("Payment transferred"),
         _ => {
-            log_info("❌ Payment failed");
+            log_info("Payment failed");
             return 0;
         }
     }
     
     // CROSS-CONTRACT CALL 2: Transfer NFT (seller → offerer)
     match call_nft_transfer(
-        Address(nft_contract.try_into().unwrap()),
-        Address(seller.try_into().unwrap()),
-        Address(offerer.try_into().unwrap()),
+        Address(nft_contract),
+        Address(seller),
+        Address(offerer),
         token_id
     ) {
-        Ok(true) => log_info("🎨 NFT transferred"),
+        Ok(true) => log_info("NFT transferred"),
         _ => {
-            log_info("❌ NFT transfer failed");
+            log_info("NFT transfer failed");
             return 0;
         }
     }
@@ -556,7 +589,7 @@ pub extern "C" fn accept_offer(
     updated_offer[120] = 0;
     storage_set(key.as_bytes(), &updated_offer);
     
-    log_info("🎉 Offer accepted!");
+    log_info("Offer accepted!");
     1
 }
 
@@ -570,43 +603,45 @@ pub extern "C" fn set_royalty(
     nft_contract_ptr: *const u8,
     royalty_basis_points: u64, // e.g., 500 = 5%
 ) -> u32 {
-    log_info("👑 Setting royalty...");
+    log_info("Setting royalty...");
 
     // T5.8 fix: Only the NFT collection creator (or marketplace owner) may set royalties
     let caller = get_caller();
-    let creator = unsafe { core::slice::from_raw_parts(creator_ptr, 32) };
+    let mut creator = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(creator_ptr, creator.as_mut_ptr(), 32); }
 
     // The caller must be the creator themselves
-    if caller.0 != *creator {
+    if caller.0 != creator {
         // Fallback: allow marketplace owner
         if let Some(owner_bytes) = storage_get(b"marketplace_owner") {
             if caller.0[..] != owner_bytes[..] {
-                log_info("❌ Unauthorized: only creator or marketplace owner can set royalty");
+                log_info("Unauthorized: only creator or marketplace owner can set royalty");
                 return 0;
             }
         } else {
-            log_info("❌ Unauthorized: only creator can set royalty");
+            log_info("Unauthorized: only creator can set royalty");
             return 0;
         }
     }
 
     if royalty_basis_points > 1000 {
-        log_info("❌ Royalty too high (max 10%)");
+        log_info("Royalty too high (max 10%)");
         return 0;
     }
-    let nft_contract = unsafe { core::slice::from_raw_parts(nft_contract_ptr, 32) };
+    let mut nft_contract = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(nft_contract_ptr, nft_contract.as_mut_ptr(), 32); }
     
     // Store: creator address (32) + basis_points (8)
     let mut royalty_data = Vec::with_capacity(40);
-    royalty_data.extend_from_slice(creator);
+    royalty_data.extend_from_slice(&creator);
     royalty_data.extend_from_slice(&u64_to_bytes(royalty_basis_points));
     
     let key = alloc::format!("royalty_{}", 
-        hex_addr(nft_contract)
+        hex_addr(&nft_contract)
     );
     storage_set(key.as_bytes(), &royalty_data);
     
-    log_info("✅ Royalty set!");
+    log_info("Royalty set!");
     log_info(&alloc::format!("   Rate: {}%", royalty_basis_points as f64 / 100.0));
     1
 }
@@ -620,10 +655,11 @@ pub extern "C" fn update_collection_stats(
     nft_contract_ptr: *const u8,
     sale_price: u64,
 ) -> u32 {
-    let nft_contract = unsafe { core::slice::from_raw_parts(nft_contract_ptr, 32) };
+    let mut nft_contract = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(nft_contract_ptr, nft_contract.as_mut_ptr(), 32); }
     
     let key = alloc::format!("stats_{}", 
-        hex_addr(nft_contract)
+        hex_addr(&nft_contract)
     );
     
     // Load existing stats or create new
@@ -664,10 +700,11 @@ pub extern "C" fn get_collection_stats(
     nft_contract_ptr: *const u8,
     result_ptr: *mut u8,
 ) -> u32 {
-    let nft_contract = unsafe { core::slice::from_raw_parts(nft_contract_ptr, 32) };
+    let mut nft_contract = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(nft_contract_ptr, nft_contract.as_mut_ptr(), 32); }
     
     let key = alloc::format!("stats_{}", 
-        hex_addr(nft_contract)
+        hex_addr(&nft_contract)
     );
     
     match storage_get(key.as_bytes()) {
@@ -687,14 +724,15 @@ pub extern "C" fn get_collection_stats(
 
 #[no_mangle]
 pub extern "C" fn initialize(marketplace_addr_ptr: *const u8) -> u32 {
-    log_info("🦞 Initializing MoltAuction marketplace...");
+    log_info("Initializing MoltAuction marketplace...");
     
     // Store the marketplace escrow address for use in auctions/bids
-    let addr = unsafe { core::slice::from_raw_parts(marketplace_addr_ptr, 32) };
-    storage_set(MARKETPLACE_ADDR_KEY, addr);
+    let mut addr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(marketplace_addr_ptr, addr.as_mut_ptr(), 32); }
+    storage_set(MARKETPLACE_ADDR_KEY, &addr);
     log_info("   Escrow address configured");
     
-    log_info("✅ Marketplace ready!");
+    log_info("Marketplace ready!");
     log_info("   Features: Auctions, Offers, Royalties, Stats");
     1
 }
@@ -715,25 +753,27 @@ pub extern "C" fn set_reserve_price(
     reserve: u64,
 ) -> u32 {
     if is_ma_paused() { return 4; }
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    let nft_contract = unsafe { core::slice::from_raw_parts(nft_contract_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    let mut nft_contract = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(nft_contract_ptr, nft_contract.as_mut_ptr(), 32); }
 
-    let key = alloc::format!("auction_{}_{}", hex_addr(nft_contract), token_id);
+    let key = alloc::format!("auction_{}_{}", hex_addr(&nft_contract), token_id);
     let auction_data = match storage_get(key.as_bytes()) {
         Some(data) if data.len() >= AUCTION_SIZE => data,
         _ => return 1,
     };
 
     // Only seller
-    if caller != &auction_data[0..32] { return 2; }
+    if &caller[..] != &auction_data[0..32] { return 2; }
 
     // No bids yet
     let highest_bid = bytes_to_u64(&auction_data[160..168]);
     if highest_bid > 0 { return 3; }
 
-    let rk = reserve_key(nft_contract, token_id);
+    let rk = reserve_key(&nft_contract, token_id);
     storage_set(&rk, &u64_to_bytes(reserve));
-    log_info("✅ Reserve price set");
+    log_info("Reserve price set");
     0
 }
 
@@ -746,24 +786,26 @@ pub extern "C" fn cancel_auction(
     nft_contract_ptr: *const u8,
     token_id: u64,
 ) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    let nft_contract = unsafe { core::slice::from_raw_parts(nft_contract_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    let mut nft_contract = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(nft_contract_ptr, nft_contract.as_mut_ptr(), 32); }
 
-    let key = alloc::format!("auction_{}_{}", hex_addr(nft_contract), token_id);
+    let key = alloc::format!("auction_{}_{}", hex_addr(&nft_contract), token_id);
     let mut auction_data = match storage_get(key.as_bytes()) {
         Some(data) if data.len() >= AUCTION_SIZE => data,
         _ => return 1,
     };
 
     if auction_data[168] != 1 { return 4; }
-    if caller != &auction_data[0..32] { return 2; }
+    if &caller[..] != &auction_data[0..32] { return 2; }
 
     let highest_bid = bytes_to_u64(&auction_data[160..168]);
     if highest_bid > 0 { return 3; }
 
     auction_data[168] = 0;
     storage_set(key.as_bytes(), &auction_data);
-    log_info("✅ Auction cancelled by seller");
+    log_info("Auction cancelled by seller");
     0
 }
 
@@ -771,10 +813,11 @@ pub extern "C" fn cancel_auction(
 /// Returns: 0 success, 1 already set
 #[no_mangle]
 pub extern "C" fn initialize_ma_admin(admin_ptr: *const u8) -> u32 {
-    let admin = unsafe { core::slice::from_raw_parts(admin_ptr, 32) };
+    let mut admin = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32); }
     if storage_get(MA_ADMIN_KEY).is_some() { return 1; }
-    storage_set(MA_ADMIN_KEY, admin);
-    log_info("✅ MoltAuction admin set");
+    storage_set(MA_ADMIN_KEY, &admin);
+    log_info("MoltAuction admin set");
     0
 }
 
@@ -782,11 +825,12 @@ pub extern "C" fn initialize_ma_admin(admin_ptr: *const u8) -> u32 {
 /// Returns: 0 success, 1 not admin, 2 already paused
 #[no_mangle]
 pub extern "C" fn ma_pause(caller_ptr: *const u8) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_ma_admin(caller) { return 1; }
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_ma_admin(&caller) { return 1; }
     if is_ma_paused() { return 2; }
     storage_set(MA_PAUSE_KEY, &[1]);
-    log_info("⏸️ MoltAuction paused");
+    log_info("MoltAuction paused");
     0
 }
 
@@ -794,11 +838,12 @@ pub extern "C" fn ma_pause(caller_ptr: *const u8) -> u32 {
 /// Returns: 0 success, 1 not admin, 2 not paused
 #[no_mangle]
 pub extern "C" fn ma_unpause(caller_ptr: *const u8) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_ma_admin(caller) { return 1; }
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_ma_admin(&caller) { return 1; }
     if !is_ma_paused() { return 2; }
     storage_set(MA_PAUSE_KEY, &[0]);
-    log_info("▶️ MoltAuction unpaused");
+    log_info("MoltAuction unpaused");
     0
 }
 
@@ -810,16 +855,17 @@ pub extern "C" fn get_auction_info(
     nft_contract_ptr: *const u8,
     token_id: u64,
 ) -> u32 {
-    let nft_contract = unsafe { core::slice::from_raw_parts(nft_contract_ptr, 32) };
-    let key = alloc::format!("auction_{}_{}", hex_addr(nft_contract), token_id);
+    let mut nft_contract = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(nft_contract_ptr, nft_contract.as_mut_ptr(), 32); }
+    let key = alloc::format!("auction_{}_{}", hex_addr(&nft_contract), token_id);
     let auction_data = match storage_get(key.as_bytes()) {
         Some(data) if data.len() >= AUCTION_SIZE => data,
         _ => return 1,
     };
 
-    let rk = reserve_key(nft_contract, token_id);
+    let rk = reserve_key(&nft_contract, token_id);
     let reserve = storage_get(&rk).map(|d| bytes_to_u64(&d)).unwrap_or(0);
-    let ek = ext_count_key(nft_contract, token_id);
+    let ek = ext_count_key(&nft_contract, token_id);
     let extensions = storage_get(&ek).map(|d| bytes_to_u64(&d)).unwrap_or(0);
 
     let mut info = Vec::with_capacity(AUCTION_SIZE + 16);

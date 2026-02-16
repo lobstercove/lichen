@@ -416,7 +416,8 @@ fn compute_swap_output(
 // ============================================================================
 
 /// Initialize the AMM contract
-pub fn initialize(admin: *const u8) -> u32 {
+#[no_mangle]
+pub extern "C" fn initialize(admin: *const u8) -> u32 {
     let existing = load_addr(ADMIN_KEY);
     if !is_zero(&existing) { return 1; }
     let mut addr = [0u8; 32];
@@ -856,7 +857,7 @@ pub extern "C" fn call() {
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
-        _ => {}
+        _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
     }
 }
 

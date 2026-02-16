@@ -19,6 +19,32 @@ use moltchain_sdk::{
     call_token_transfer, call_nft_transfer, call_nft_owner
 };
 
+// Reentrancy guard
+const MM_REENTRANCY_KEY: &[u8] = b"mm_reentrancy";
+
+fn reentrancy_enter() -> bool {
+    if storage_get(MM_REENTRANCY_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false) {
+        return false;
+    }
+    storage_set(MM_REENTRANCY_KEY, &[1u8]);
+    true
+}
+
+fn reentrancy_exit() {
+    storage_set(MM_REENTRANCY_KEY, &[0u8]);
+}
+
+// Emergency pause
+const MM_PAUSE_KEY: &[u8] = b"mm_paused";
+
+fn is_mm_paused() -> bool {
+    storage_get(MM_PAUSE_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false)
+}
+
+fn is_mm_admin(caller: &[u8]) -> bool {
+    storage_get(b"marketplace_owner").map(|d| d.as_slice() == caller).unwrap_or(false)
+}
+
 /// Listing layout (145 bytes):
 ///   0..32   seller
 ///   32..64  nft_contract
@@ -47,11 +73,13 @@ pub extern "C" fn initialize(owner_ptr: *const u8, fee_addr_ptr: *const u8) {
         return;
     }
 
-    let owner = unsafe { core::slice::from_raw_parts(owner_ptr, 32) };
-    let fee_addr = unsafe { core::slice::from_raw_parts(fee_addr_ptr, 32) };
+    let mut owner = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+    let mut fee_addr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(fee_addr_ptr, fee_addr.as_mut_ptr(), 32); }
     storage_set(b"marketplace_fee", &u64_to_bytes(250)); // 2.5% fee
-    storage_set(b"marketplace_owner", owner);
-    storage_set(b"marketplace_fee_addr", fee_addr);
+    storage_set(b"marketplace_owner", &owner);
+    storage_set(b"marketplace_fee_addr", &fee_addr);
     log_info("Molt Market NFT Marketplace initialized");
 }
 
@@ -113,6 +141,13 @@ pub extern "C" fn buy_nft(
     nft_contract_ptr: *const u8,
     token_id: u64,
 ) -> u32 {
+    if is_mm_paused() {
+        log_info("Marketplace is paused");
+        return 0;
+    }
+    if !reentrancy_enter() {
+        return 0;
+    }
     unsafe {
         let buyer = parse_address(buyer_ptr);
         let nft_contract = parse_address(nft_contract_ptr);
@@ -123,12 +158,14 @@ pub extern "C" fn buy_nft(
             Some(data) => data,
             None => {
                 log_info("Listing not found");
+                reentrancy_exit();
                 return 0;
             }
         };
         
         if listing_data.len() < 145 {
             log_info("Invalid listing data");
+            reentrancy_exit();
             return 0;
         }
         
@@ -149,12 +186,14 @@ pub extern "C" fn buy_nft(
         
         if !active {
             log_info("Listing not active");
+            reentrancy_exit();
             return 0;
         }
         
         // Calculate marketplace fee (2.5%)
         let fee = get_marketplace_fee();
-        let fee_amount = (price * fee) / 10000;
+        // Use u128 to prevent overflow on large NFT prices
+        let fee_amount = ((price as u128) * (fee as u128) / 10000) as u64;
         let seller_amount = price - fee_amount;
         
         log_info("Executing purchase with escrow pattern...");
@@ -170,6 +209,7 @@ pub extern "C" fn buy_nft(
             Ok(true) => log_info("Payment escrowed in marketplace"),
             _ => {
                 log_info("Payment escrow failed — aborting purchase");
+                reentrancy_exit();
                 return 0;
             }
         }
@@ -184,8 +224,9 @@ pub extern "C" fn buy_nft(
                 log_info("NFT transfer failed — refunding buyer from escrow");
                 match call_token_transfer(payment_token, marketplace_addr, buyer, price) {
                     Ok(true) => log_info("Buyer refunded from escrow"),
-                    _ => log_info("⚠️  CRITICAL: Escrow refund failed — funds in marketplace"),
+                    _ => log_info("CRITICAL: Escrow refund failed — funds in marketplace"),
                 }
+                reentrancy_exit();
                 return 0;
             }
         }
@@ -193,7 +234,7 @@ pub extern "C" fn buy_nft(
         // STEP 3: Release escrowed funds — seller gets their share
         match call_token_transfer(payment_token, marketplace_addr, seller, seller_amount) {
             Ok(true) => log_info("Seller payment released from escrow"),
-            _ => log_info("⚠️  Seller payment release failed"),
+            _ => log_info(" Seller payment release failed"),
         }
         
         // STEP 4: Marketplace fee stays in marketplace_addr (already there)
@@ -208,6 +249,7 @@ pub extern "C" fn buy_nft(
         storage_set(&listing_key, &updated_data);
         
         log_info("Purchase complete with escrow pattern!");
+        reentrancy_exit();
         1
     }
 }
@@ -276,7 +318,8 @@ pub extern "C" fn set_marketplace_fee(caller_ptr: *const u8, new_fee: u64) -> u3
     }
     
     // Verify caller is owner
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
     let owner = match storage_get(b"marketplace_owner") {
         Some(data) if data.len() == 32 => data,
         _ => {
@@ -284,7 +327,7 @@ pub extern "C" fn set_marketplace_fee(caller_ptr: *const u8, new_fee: u64) -> u3
             return 0;
         }
     };
-    if caller != owner.as_slice() {
+    if caller[..] != owner[..] {
         log_info("Only marketplace owner can set fee");
         return 0;
     }
@@ -360,21 +403,23 @@ pub extern "C" fn make_offer(
         log_info("Offer price must be > 0");
         return 0;
     }
-    let offerer = unsafe { core::slice::from_raw_parts(offerer_ptr, 32) };
+    let mut offerer = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(offerer_ptr, offerer.as_mut_ptr(), 32); }
     let nft_contract = unsafe { parse_address(nft_contract_ptr) };
-    let payment_token = unsafe { core::slice::from_raw_parts(payment_token_ptr, 32) };
+    let mut payment_token = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(payment_token_ptr, payment_token.as_mut_ptr(), 32); }
 
     let mut key = b"offer:".to_vec();
     key.extend_from_slice(&nft_contract.0);
     key.push(b':');
     key.extend_from_slice(&token_id.to_le_bytes());
     key.push(b':');
-    key.extend_from_slice(offerer);
+    key.extend_from_slice(&offerer);
 
     let mut data = alloc::vec![0u8; 73];
-    data[0..32].copy_from_slice(offerer);
+    data[0..32].copy_from_slice(&offerer);
     data[32..40].copy_from_slice(&price.to_le_bytes());
-    data[40..72].copy_from_slice(payment_token);
+    data[40..72].copy_from_slice(&payment_token);
     data[72] = 1; // active
     storage_set(&key, &data);
 
@@ -389,7 +434,8 @@ pub extern "C" fn cancel_offer(
     nft_contract_ptr: *const u8,
     token_id: u64,
 ) -> u32 {
-    let offerer = unsafe { core::slice::from_raw_parts(offerer_ptr, 32) };
+    let mut offerer = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(offerer_ptr, offerer.as_mut_ptr(), 32); }
     let nft_contract = unsafe { parse_address(nft_contract_ptr) };
 
     let mut key = b"offer:".to_vec();
@@ -397,13 +443,13 @@ pub extern "C" fn cancel_offer(
     key.push(b':');
     key.extend_from_slice(&token_id.to_le_bytes());
     key.push(b':');
-    key.extend_from_slice(offerer);
+    key.extend_from_slice(&offerer);
 
     let data = match storage_get(&key) {
         Some(d) if d.len() >= 73 => d,
         _ => return 0,
     };
-    if &data[0..32] != offerer {
+    if &data[0..32] != &offerer[..] {
         return 0;
     }
     let mut updated = data;
@@ -421,10 +467,18 @@ pub extern "C" fn accept_offer(
     token_id: u64,
     offerer_ptr: *const u8,
 ) -> u32 {
+    if is_mm_paused() {
+        log_info("Marketplace is paused");
+        return 0;
+    }
+    if !reentrancy_enter() {
+        return 0;
+    }
     unsafe {
         let seller = parse_address(seller_ptr);
         let nft_contract = parse_address(nft_contract_ptr);
-        let offerer = core::slice::from_raw_parts(offerer_ptr, 32);
+        let mut offerer = [0u8; 32];
+        core::ptr::copy_nonoverlapping(offerer_ptr, offerer.as_mut_ptr(), 32);
 
         // Load offer
         let mut key = b"offer:".to_vec();
@@ -432,7 +486,7 @@ pub extern "C" fn accept_offer(
         key.push(b':');
         key.extend_from_slice(&token_id.to_le_bytes());
         key.push(b':');
-        key.extend_from_slice(offerer);
+        key.extend_from_slice(&offerer);
 
         let data = match storage_get(&key) {
             Some(d) if d.len() >= 73 && d[72] == 1 => d,
@@ -450,19 +504,21 @@ pub extern "C" fn accept_offer(
         pay_bytes.copy_from_slice(&data[40..72]);
         let payment_token = Address(pay_bytes);
 
-        let mut offerer_addr = [0u8; 32];
-        offerer_addr.copy_from_slice(offerer);
-        let buyer = Address(offerer_addr);
+        let buyer = Address(offerer);
 
         // Calculate fee
         let fee = get_marketplace_fee();
-        let fee_amount = (price * fee) / 10000;
+        // Use u128 to prevent overflow on large NFT prices
+        let fee_amount = ((price as u128) * (fee as u128) / 10000) as u64;
         let seller_amount = price - fee_amount;
 
         // Transfer payment
         match call_token_transfer(payment_token, buyer, seller, seller_amount) {
             Ok(true) => {}
-            _ => return 0,
+            _ => {
+                reentrancy_exit();
+                return 0;
+            }
         }
 
         // Transfer NFT
@@ -473,9 +529,13 @@ pub extern "C" fn accept_offer(
                 updated[72] = 0;
                 storage_set(&key, &updated);
                 log_info("Offer accepted, trade executed");
+                reentrancy_exit();
                 1
             }
-            _ => 0,
+            _ => {
+                reentrancy_exit();
+                0
+            }
         }
     }
 }
@@ -515,10 +575,39 @@ fn create_listing_key(nft_contract: Address, token_id: u64) -> Vec<u8> {
 }
 
 unsafe fn parse_address(ptr: *const u8) -> Address {
-    let slice = core::slice::from_raw_parts(ptr, 32);
     let mut addr = [0u8; 32];
-    addr.copy_from_slice(slice);
+    core::ptr::copy_nonoverlapping(ptr, addr.as_mut_ptr(), 32);
     Address(addr)
+}
+
+// ============================================================================
+// EMERGENCY PAUSE (admin only)
+// ============================================================================
+
+/// Pause the marketplace
+#[no_mangle]
+pub extern "C" fn mm_pause(caller_ptr: *const u8) -> u32 {
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_mm_admin(&caller) {
+        return 1;
+    }
+    storage_set(MM_PAUSE_KEY, &[1u8]);
+    log_info("MoltMarket paused");
+    0
+}
+
+/// Unpause the marketplace
+#[no_mangle]
+pub extern "C" fn mm_unpause(caller_ptr: *const u8) -> u32 {
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_mm_admin(&caller) {
+        return 1;
+    }
+    storage_set(MM_PAUSE_KEY, &[0u8]);
+    log_info("MoltMarket unpaused");
+    0
 }
 
 #[cfg(test)]

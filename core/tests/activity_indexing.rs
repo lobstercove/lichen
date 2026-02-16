@@ -78,7 +78,7 @@ fn records_and_reads_program_calls() {
     state.record_program_call(&first, 0).unwrap();
     state.record_program_call(&second, 1).unwrap();
 
-    let calls = state.get_program_calls(&program, 10).unwrap();
+    let calls = state.get_program_calls(&program, 10, None).unwrap();
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[0].function, "pong");
     assert_eq!(calls[1].function, "ping");

@@ -204,6 +204,31 @@ impl Mempool {
         }
     }
 
+    /// PERF-FIX 9: Bulk remove transactions from mempool after block inclusion.
+    /// Rebuilds heaps only ONCE instead of per-transaction (O(n) instead of O(n*m)).
+    pub fn remove_transactions_bulk(&mut self, tx_hashes: &[Hash]) {
+        let hash_set: std::collections::HashSet<&Hash> = tx_hashes.iter().collect();
+        let mut any_removed = false;
+        for h in tx_hashes {
+            if self.transactions.remove(h).is_some() {
+                any_removed = true;
+            }
+        }
+        if any_removed {
+            let regular: Vec<_> = self.queue.drain().collect();
+            self.queue = regular
+                .into_iter()
+                .filter(|ptx| !hash_set.contains(&ptx.hash))
+                .collect();
+
+            let express: Vec<_> = self.express_queue.drain().collect();
+            self.express_queue = express
+                .into_iter()
+                .filter(|ptx| !hash_set.contains(&ptx.hash))
+                .collect();
+        }
+    }
+
     /// Remove expired transactions
     pub fn cleanup_expired(&mut self) {
         let now = SystemTime::now()

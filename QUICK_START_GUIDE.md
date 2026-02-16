@@ -403,7 +403,7 @@ MoltChain comes with 7 production-ready contracts:
 
 ### Key Concepts
 - **1 MOLT** = 1,000,000,000 shells (9 decimals)
-- **Base Fee** = 10,000 shells (0.00001 MOLT)
+- **Base Fee** = 1,000,000 shells (0.001 MOLT)
 - **Fee Burn** = 50% of all fees (deflationary!)
 - **Block Time** = ~1 second (target: 400ms)
 - **Consensus** = Proof of Contribution (PoC)

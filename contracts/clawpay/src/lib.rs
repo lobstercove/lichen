@@ -29,6 +29,21 @@ use moltchain_sdk::{
     Address, CrossCall, call_contract,
 };
 
+// Reentrancy guard
+const CP_REENTRANCY_KEY: &[u8] = b"cp_reentrancy";
+
+fn reentrancy_enter() -> bool {
+    if storage_get(CP_REENTRANCY_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false) {
+        return false;
+    }
+    storage_set(CP_REENTRANCY_KEY, &[1u8]);
+    true
+}
+
+fn reentrancy_exit() {
+    storage_set(CP_REENTRANCY_KEY, &[0u8]);
+}
+
 // ============================================================================
 // STORAGE KEY HELPERS
 // ============================================================================
@@ -180,45 +195,47 @@ pub extern "C" fn create_stream(
     start_slot: u64,
     end_slot: u64,
 ) -> u32 {
-    log_info("💸 Creating payment stream...");
+    log_info("Creating payment stream...");
 
-    let sender = unsafe { core::slice::from_raw_parts(sender_ptr, 32) };
-    let recipient = unsafe { core::slice::from_raw_parts(recipient_ptr, 32) };
+    let mut sender = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(sender_ptr, sender.as_mut_ptr(), 32); }
+    let mut recipient = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(recipient_ptr, recipient.as_mut_ptr(), 32); }
 
     if is_paused() {
-        log_info("❌ Protocol is paused");
+        log_info("Protocol is paused");
         return 20;
     }
 
     if total_amount == 0 {
-        log_info("❌ Amount must be > 0");
+        log_info("Amount must be > 0");
         return 1;
     }
 
     if end_slot <= start_slot {
-        log_info("❌ End slot must be after start slot");
+        log_info("End slot must be after start slot");
         return 2;
     }
 
     if sender == recipient {
-        log_info("❌ Sender and recipient must differ");
+        log_info("Sender and recipient must differ");
         return 3;
     }
 
     // MoltyID identity gate — both sender and recipient must have identity
-    if !check_identity_gate(sender) {
-        log_info("❌ Sender lacks required MoltyID reputation");
+    if !check_identity_gate(&sender) {
+        log_info("Sender lacks required MoltyID reputation");
         return 10;
     }
-    if !check_identity_gate(recipient) {
-        log_info("❌ Recipient lacks required MoltyID reputation");
+    if !check_identity_gate(&recipient) {
+        log_info("Recipient lacks required MoltyID reputation");
         return 11;
     }
 
     let mut sender_arr = [0u8; 32];
-    sender_arr.copy_from_slice(sender);
+    sender_arr.copy_from_slice(&sender);
     let mut recipient_arr = [0u8; 32];
-    recipient_arr.copy_from_slice(recipient);
+    recipient_arr.copy_from_slice(&recipient);
 
     let stream_id = storage_get(b"stream_count")
         .map(|d| bytes_to_u64(&d))
@@ -241,7 +258,7 @@ pub extern "C" fn create_stream(
     storage_set(&sk, &data);
 
     moltchain_sdk::set_return_data(&u64_to_bytes(stream_id));
-    log_info("✅ Payment stream created");
+    log_info("Payment stream created");
     0
 }
 
@@ -263,12 +280,16 @@ pub extern "C" fn withdraw_from_stream(
     stream_id: u64,
     amount: u64,
 ) -> u32 {
-    log_info("💰 Withdrawing from stream...");
+    if !reentrancy_enter() {
+        return 20;
+    }
+    log_info("Withdrawing from stream...");
 
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
 
     if amount == 0 {
-        log_info("❌ Amount must be > 0");
+        log_info("Amount must be > 0");
         return 1;
     }
 
@@ -276,7 +297,7 @@ pub extern "C" fn withdraw_from_stream(
     let mut stream_data = match storage_get(&sk) {
         Some(data) => data,
         None => {
-            log_info("❌ Stream not found");
+            log_info("Stream not found");
             return 2;
         }
     };
@@ -286,13 +307,13 @@ pub extern "C" fn withdraw_from_stream(
     }
 
     // Verify caller is recipient
-    if &stream_data[32..64] != caller {
-        log_info("❌ Only recipient can withdraw");
+    if stream_data[32..64] != caller[..] {
+        log_info("Only recipient can withdraw");
         return 4;
     }
 
     if stream_data[96] == 1 {
-        log_info("❌ Stream is cancelled");
+        log_info("Stream is cancelled");
         return 5;
     }
 
@@ -308,7 +329,7 @@ pub extern "C" fn withdraw_from_stream(
     );
 
     if amount > withdrawable {
-        log_info("❌ Amount exceeds withdrawable balance");
+        log_info("Amount exceeds withdrawable balance");
         return 6;
     }
 
@@ -318,7 +339,8 @@ pub extern "C" fn withdraw_from_stream(
     storage_set(&sk, &stream_data);
 
     moltchain_sdk::set_return_data(&u64_to_bytes(amount));
-    log_info("✅ Withdrawal successful");
+    log_info("Withdrawal successful");
+    reentrancy_exit();
     0
 }
 
@@ -338,15 +360,19 @@ pub extern "C" fn cancel_stream(
     caller_ptr: *const u8,
     stream_id: u64,
 ) -> u32 {
-    log_info("❌ Cancelling payment stream...");
+    if !reentrancy_enter() {
+        return 20;
+    }
+    log_info("Cancelling payment stream...");
 
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
 
     let sk = stream_key(stream_id);
     let mut stream_data = match storage_get(&sk) {
         Some(data) => data,
         None => {
-            log_info("❌ Stream not found");
+            log_info("Stream not found");
             return 1;
         }
     };
@@ -356,13 +382,13 @@ pub extern "C" fn cancel_stream(
     }
 
     // Verify caller is sender
-    if &stream_data[0..32] != caller {
-        log_info("❌ Only sender can cancel");
+    if stream_data[0..32] != caller[..] {
+        log_info("Only sender can cancel");
         return 3;
     }
 
     if stream_data[96] == 1 {
-        log_info("❌ Stream already cancelled");
+        log_info("Stream already cancelled");
         return 4;
     }
 
@@ -395,7 +421,8 @@ pub extern "C" fn cancel_stream(
     storage_set(&sk, &stream_data);
 
     moltchain_sdk::set_return_data(&u64_to_bytes(refund));
-    log_info("✅ Stream cancelled");
+    log_info("Stream cancelled");
+    reentrancy_exit();
     0
 }
 
@@ -418,7 +445,7 @@ pub extern "C" fn get_stream(stream_id: u64) -> u32 {
             0
         }
         None => {
-            log_info("❌ Stream not found");
+            log_info("Stream not found");
             1
         }
     }
@@ -440,7 +467,7 @@ pub extern "C" fn get_withdrawable(stream_id: u64) -> u32 {
     let stream_data = match storage_get(&sk) {
         Some(data) => data,
         None => {
-            log_info("❌ Stream not found");
+            log_info("Stream not found");
             return 1;
         }
     };
@@ -487,8 +514,10 @@ pub extern "C" fn create_stream_with_cliff(
         return 20;
     }
 
-    let sender = unsafe { core::slice::from_raw_parts(sender_ptr, 32) };
-    let recipient = unsafe { core::slice::from_raw_parts(recipient_ptr, 32) };
+    let mut sender = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(sender_ptr, sender.as_mut_ptr(), 32); }
+    let mut recipient = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(recipient_ptr, recipient.as_mut_ptr(), 32); }
 
     if total_amount == 0 || start_slot >= end_slot {
         return 1;
@@ -501,10 +530,10 @@ pub extern "C" fn create_stream_with_cliff(
     }
 
     // Identity gate
-    if !check_identity_gate(sender) {
+    if !check_identity_gate(&sender) {
         return 10;
     }
-    if !check_identity_gate(recipient) {
+    if !check_identity_gate(&recipient) {
         return 11;
     }
 
@@ -517,8 +546,8 @@ pub extern "C" fn create_stream_with_cliff(
     // Build stream data
     let current_slot = get_slot();
     let mut stream = alloc::vec![0u8; STREAM_SIZE];
-    stream[0..32].copy_from_slice(sender);
-    stream[32..64].copy_from_slice(recipient);
+    stream[0..32].copy_from_slice(&sender);
+    stream[32..64].copy_from_slice(&recipient);
     stream[64..72].copy_from_slice(&u64_to_bytes(total_amount));
     // withdrawn = 0
     stream[80..88].copy_from_slice(&u64_to_bytes(start_slot));
@@ -534,7 +563,7 @@ pub extern "C" fn create_stream_with_cliff(
     storage_set(&ck, &u64_to_bytes(cliff_slot));
 
     moltchain_sdk::set_return_data(&u64_to_bytes(stream_id));
-    log_info("✅ Stream created with cliff");
+    log_info("Stream created with cliff");
     0
 }
 
@@ -548,8 +577,10 @@ pub extern "C" fn transfer_stream(
     new_recipient_ptr: *const u8,
     stream_id: u64,
 ) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    let new_recipient = unsafe { core::slice::from_raw_parts(new_recipient_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    let mut new_recipient = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(new_recipient_ptr, new_recipient.as_mut_ptr(), 32); }
 
     let sk = stream_key(stream_id);
     let mut stream_data = match storage_get(&sk) {
@@ -561,7 +592,7 @@ pub extern "C" fn transfer_stream(
     }
 
     // Only current recipient can transfer
-    if caller != &stream_data[32..64] {
+    if caller[..] != stream_data[32..64] {
         return 2;
     }
 
@@ -578,10 +609,10 @@ pub extern "C" fn transfer_stream(
     }
 
     // Update recipient
-    stream_data[32..64].copy_from_slice(new_recipient);
+    stream_data[32..64].copy_from_slice(&new_recipient);
     storage_set(&sk, &stream_data);
 
-    log_info("✅ Stream transferred to new recipient");
+    log_info("Stream transferred to new recipient");
     0
 }
 
@@ -589,12 +620,13 @@ pub extern "C" fn transfer_stream(
 /// Returns: 0 success, 1 already set
 #[no_mangle]
 pub extern "C" fn initialize_cp_admin(admin_ptr: *const u8) -> u32 {
-    let admin = unsafe { core::slice::from_raw_parts(admin_ptr, 32) };
+    let mut admin = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32); }
     if storage_get(ADMIN_KEY).is_some() {
         return 1;
     }
-    storage_set(ADMIN_KEY, admin);
-    log_info("✅ ClawPay admin initialized");
+    storage_set(ADMIN_KEY, &admin);
+    log_info("ClawPay admin initialized");
     0
 }
 
@@ -602,15 +634,16 @@ pub extern "C" fn initialize_cp_admin(admin_ptr: *const u8) -> u32 {
 /// Returns: 0 success, 1 not admin, 2 already paused
 #[no_mangle]
 pub extern "C" fn pause(caller_ptr: *const u8) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_cp_admin(caller) {
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_cp_admin(&caller) {
         return 1;
     }
     if is_paused() {
         return 2;
     }
     storage_set(PAUSE_KEY, &[1]);
-    log_info("⏸️ ClawPay paused");
+    log_info("ClawPay paused");
     0
 }
 
@@ -618,15 +651,16 @@ pub extern "C" fn pause(caller_ptr: *const u8) -> u32 {
 /// Returns: 0 success, 1 not admin, 2 not paused
 #[no_mangle]
 pub extern "C" fn unpause(caller_ptr: *const u8) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_cp_admin(caller) {
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_cp_admin(&caller) {
         return 1;
     }
     if !is_paused() {
         return 2;
     }
     storage_set(PAUSE_KEY, &[0]);
-    log_info("▶️ ClawPay unpaused");
+    log_info("ClawPay unpaused");
     0
 }
 
@@ -667,15 +701,16 @@ const MOLTYID_ADDR_KEY: &[u8] = b"moltyid_address";
 /// Only callable once (first caller becomes admin).
 #[no_mangle]
 pub extern "C" fn set_identity_admin(admin_ptr: *const u8) -> u32 {
-    let admin = unsafe { core::slice::from_raw_parts(admin_ptr, 32) };
+    let mut admin = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32); }
 
     if storage_get(IDENTITY_ADMIN_KEY).is_some() {
-        log_info("❌ Identity admin already set");
+        log_info("Identity admin already set");
         return 1;
     }
 
-    storage_set(IDENTITY_ADMIN_KEY, admin);
-    log_info("✅ Identity admin set");
+    storage_set(IDENTITY_ADMIN_KEY, &admin);
+    log_info("Identity admin set");
     0
 }
 
@@ -683,19 +718,21 @@ pub extern "C" fn set_identity_admin(admin_ptr: *const u8) -> u32 {
 /// Only callable by the identity admin.
 #[no_mangle]
 pub extern "C" fn set_moltyid_address(caller_ptr: *const u8, moltyid_addr_ptr: *const u8) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    let moltyid_addr = unsafe { core::slice::from_raw_parts(moltyid_addr_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    let mut moltyid_addr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(moltyid_addr_ptr, moltyid_addr.as_mut_ptr(), 32); }
 
     let admin = match storage_get(IDENTITY_ADMIN_KEY) {
         Some(data) => data,
         None => return 1,
     };
-    if caller != admin.as_slice() {
+    if caller[..] != admin[..] {
         return 2;
     }
 
-    storage_set(MOLTYID_ADDR_KEY, moltyid_addr);
-    log_info("✅ MoltyID address configured");
+    storage_set(MOLTYID_ADDR_KEY, &moltyid_addr);
+    log_info("MoltyID address configured");
     0
 }
 
@@ -703,18 +740,19 @@ pub extern "C" fn set_moltyid_address(caller_ptr: *const u8, moltyid_addr_ptr: *
 /// Only callable by the identity admin.
 #[no_mangle]
 pub extern "C" fn set_identity_gate(caller_ptr: *const u8, min_reputation: u64) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
 
     let admin = match storage_get(IDENTITY_ADMIN_KEY) {
         Some(data) => data,
         None => return 1,
     };
-    if caller != admin.as_slice() {
+    if caller[..] != admin[..] {
         return 2;
     }
 
     storage_set(MOLTYID_MIN_REP_KEY, &u64_to_bytes(min_reputation));
-    log_info("✅ Identity gate configured");
+    log_info("Identity gate configured");
     0
 }
 

@@ -107,6 +107,7 @@ else
         musd_token wsol_token weth_token
         dex_core dex_amm dex_router
         dex_governance dex_margin dex_rewards dex_analytics
+        prediction_market
     )
     
     NEED_BUILD=false
@@ -235,7 +236,12 @@ if [ -f "$MANIFEST" ]; then
 import json
 m = json.load(open('$MANIFEST'))
 for name, addr in m.get('contracts', {}).items():
-    tag = 'TOKEN' if 'token' in name else 'DEX  '
+    if 'token' in name:
+        tag = 'TOKEN'
+    elif name == 'prediction_market':
+        tag = 'PRED '
+    else:
+        tag = 'DEX  '
     print(f'  [{tag}] {name:20s} → {addr}')
 " 2>/dev/null || true
 else

@@ -94,7 +94,7 @@ Based on `moltchain/core/src/processor.rs` and `contract_instruction.rs`:
 ```javascript
 function createTransferTransaction(to, amount) {
     // Transfers MOLT tokens from wallet to another address
-    // Includes BASE_FEE = 10,000 shells (0.00001 MOLT)
+    // Includes BASE_FEE = 1,000,000 shells (0.001 MOLT)
     // 50% burned, 50% to validator
 }
 ```
@@ -165,7 +165,7 @@ const TRANSACTION_TYPES = {
 ```
 
 ### Fee Structure (from core)
-- **BASE_FEE**: 10,000 shells (0.00001 MOLT)
+- **BASE_FEE**: 1,000,000 shells (0.001 MOLT)
 - **Distribution**: 50% burned, 50% to validator
 - **Gas System**: DEFAULT_GAS_LIMIT = 1,000,000
 

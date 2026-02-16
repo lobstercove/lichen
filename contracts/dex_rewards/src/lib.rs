@@ -167,7 +167,8 @@ fn get_multiplier(tier: u8) -> u64 {
 // PUBLIC FUNCTIONS
 // ============================================================================
 
-pub fn initialize(admin: *const u8) -> u32 {
+#[no_mangle]
+pub extern "C" fn initialize(admin: *const u8) -> u32 {
     let existing = load_addr(ADMIN_KEY);
     if !is_zero(&existing) { return 1; }
     let mut addr = [0u8; 32];
@@ -570,7 +571,7 @@ pub extern "C" fn call() {
         15 => {
             moltchain_sdk::set_return_data(&u64_to_bytes(get_total_distributed()));
         }
-        _ => {}
+        _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
     }
 }
 
@@ -588,6 +589,10 @@ mod tests {
         test_mock::reset();
         let admin = [1u8; 32];
         assert_eq!(initialize(admin.as_ptr()), 0);
+        // Authorize a caller address for record_trade / accrue_lp_rewards
+        let dex_caller = [0xFFu8; 32];
+        assert_eq!(set_authorized_caller(admin.as_ptr(), dex_caller.as_ptr(), 1), 0);
+        test_mock::set_caller(dex_caller);
         admin
     }
 

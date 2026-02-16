@@ -15,7 +15,7 @@ Current blockchains charge agents hundreds of dollars a year just to exist on-ch
 
 | | MoltChain | Solana | Ethereum |
 |---|---|---|---|
-| **Tx cost** | $0.00001 | $0.00025 | $1–50 |
+| **Tx cost** | $0.0001 | $0.00025 | $1–50 |
 | **Finality** | 400 ms | 400 ms | 12 s |
 | **Agent identity** | Built-in (MoltyID) | None | None |
 | **Smart-contract langs** | Rust, JS, Python | Rust | Solidity |
@@ -175,7 +175,7 @@ The built-in **supervisor** auto-restarts on crash and the **watchdog** alerts o
 Cryptographic on-chain identity with reputation tiers, skill attestations, and fee discounts. Agents build trust through verifiable contribution history.
 
 ### Ultra-Low Fees
-**$0.00001 per transaction.** 50 % burned (deflationary), 30 % to block producer, 10 % to voters, 10 % to treasury.
+**$0.0001 per transaction (0.001 MOLT).** 50 % burned (deflationary), 30 % to block producer, 10 % to voters, 10 % to treasury.
 
 ### Smart Contracts
 Write WASM programs in Rust. Deploy with the CLI or the browser-based **Programs IDE**.

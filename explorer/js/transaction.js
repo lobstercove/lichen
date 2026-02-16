@@ -1,7 +1,7 @@
 // Transaction Detail Page - Reef Explorer
 // Uses `rpc` instance from explorer.js (loaded before this file)
 
-const BASE_FEE = 10000; // shells (from core/src/processor.rs)
+const BASE_FEE = 1000000; // shells (from core/src/processor.rs — 0.001 MOLT)
 
 // Utility Functions
 function formatNumber(num) {
@@ -24,11 +24,8 @@ function formatShells(shells) {
     return formatNumber(shells) + ' shells';
 }
 
-function formatHash(hash, full = false) {
-    if (!hash) return 'N/A';
-    if (full) return hash;
-    return hash.substring(0, 16) + '...' + hash.substring(hash.length - 8);
-}
+// NOTE: formatHash, formatAddress, etc. are provided by utils.js (loaded before this file).
+// Only override formatHash locally if utils.js is NOT loaded.
 
 function formatTime(timestamp) {
     if (!timestamp || timestamp <= 0) return 'Genesis';
@@ -45,17 +42,19 @@ function formatTime(timestamp) {
     return date.toLocaleString() + ' (' + timeAgo + ')';
 }
 
-function copyToClipboard(elementId) {
-    const element = document.getElementById(elementId);
-    const text = element.textContent;
+function copyToClipboard(elementIdOrText) {
+    const element = document.getElementById(elementIdOrText);
+    const text = element ? (element.dataset.full || element.textContent) : elementIdOrText;
     navigator.clipboard.writeText(text).then(() => {
-        const original = element.innerHTML;
-        element.innerHTML = '<i class="fas fa-check"></i> Copied!';
-        element.style.color = 'var(--success)';
-        setTimeout(() => {
-            element.innerHTML = original;
-            element.style.color = '';
-        }, 2000);
+        if (element) {
+            const original = element.innerHTML;
+            element.innerHTML = '<i class="fas fa-check"></i> Copied!';
+            element.style.color = 'var(--success)';
+            setTimeout(() => {
+                element.innerHTML = original;
+                element.style.color = '';
+            }, 2000);
+        }
     });
 }
 
@@ -95,7 +94,48 @@ async function loadTransaction() {
     }
     
     // Update page
-    displayTransaction(tx);
+    await displayTransaction(tx);
+}
+
+function upsertParticipants(from, to, nameMap = {}) {
+    const grid = document.querySelector('.detail-card .detail-card-body .detail-grid');
+    const amountEl = document.getElementById('detailAmount');
+    const amountRow = amountEl ? amountEl.closest('.detail-row') : null;
+    if (!grid || !amountRow) return;
+
+    let fromRow = document.getElementById('detailFromRow');
+    let toRow = document.getElementById('detailToRow');
+
+    if (!fromRow) {
+        fromRow = document.createElement('div');
+        fromRow.className = 'detail-row';
+        fromRow.id = 'detailFromRow';
+        amountRow.insertAdjacentElement('afterend', fromRow);
+    }
+    if (!toRow) {
+        toRow = document.createElement('div');
+        toRow.className = 'detail-row';
+        toRow.id = 'detailToRow';
+        fromRow.insertAdjacentElement('afterend', toRow);
+    }
+
+    const fromLabel = (typeof formatAddressWithMoltName === 'function' && from)
+        ? formatAddressWithMoltName(from, nameMap[from], { includeAddressInLabel: true })
+        : (from || 'N/A');
+    const toLabel = (typeof formatAddressWithMoltName === 'function' && to)
+        ? formatAddressWithMoltName(to, nameMap[to], { includeAddressInLabel: true })
+        : (to || 'N/A');
+    const fromIsAddress = typeof isLikelyMoltAddress === 'function' ? isLikelyMoltAddress(from) : false;
+    const toIsAddress = typeof isLikelyMoltAddress === 'function' ? isLikelyMoltAddress(to) : false;
+
+    fromRow.innerHTML = `
+        <div class="detail-label">From</div>
+        <div class="detail-value">${from ? (fromIsAddress ? `<a href="address.html?address=${from}" class="detail-link">${fromLabel}</a>` : fromLabel) : 'N/A'}</div>
+    `;
+    toRow.innerHTML = `
+        <div class="detail-label">To</div>
+        <div class="detail-value">${to ? (toIsAddress ? `<a href="address.html?address=${to}" class="detail-link">${toLabel}</a>` : toLabel) : 'N/A'}</div>
+    `;
 }
 
 // Display airdrop details (airdrops are off-chain treasury operations, not indexed transactions)
@@ -107,7 +147,8 @@ async function displayAirdrop(txHash) {
     // Try fetching from faucet backend API (has airdrop history)
     if (!recipient || !amountMolt) {
         try {
-            const resp = await fetch(`http://localhost:9100/faucet/airdrop/${encodeURIComponent(txHash)}`);
+            const faucetUrl = (typeof MOLT_CONFIG !== 'undefined' && MOLT_CONFIG.faucet) ? MOLT_CONFIG.faucet : 'http://localhost:9100';
+            const resp = await fetch(`${faucetUrl}/faucet/airdrop/${encodeURIComponent(txHash)}`);
             if (resp.ok) {
                 const record = await resp.json();
                 if (!recipient && record.recipient) recipient = record.recipient;
@@ -117,15 +158,17 @@ async function displayAirdrop(txHash) {
     }
 
     if (!recipient) recipient = 'Unknown';
-    if (!amountMolt) amountMolt = 10;
+    if (!amountMolt) amountMolt = null;
 
     const timestampMs = parseInt(txHash.replace('airdrop-', ''), 10);
     const timestampSec = Math.floor(timestampMs / 1000);
-    const amountShells = Math.round(amountMolt * 1_000_000_000);
-    const amountDisplay = formatMolt(amountShells) + ' (' + formatShells(amountShells) + ')';
+    const amountDisplay = amountMolt
+        ? formatMolt(Math.round(amountMolt * 1_000_000_000)) + ' (' + formatShells(Math.round(amountMolt * 1_000_000_000)) + ')'
+        : 'Unknown';
 
     // Header
-    document.getElementById('txHash').textContent = txHash;
+    document.getElementById('txHash').textContent = formatHash(txHash);
+    document.getElementById('txHash').dataset.full = txHash;
     const statusBadge = '<span class="badge badge-success"><i class="fas fa-check-circle"></i> Success</span>';
     document.getElementById('txStatus').innerHTML = statusBadge;
     document.getElementById('detailStatus').innerHTML = statusBadge;
@@ -146,6 +189,17 @@ async function displayAirdrop(txHash) {
     document.getElementById('txAmount').textContent = amountDisplay;
     document.getElementById('detailAmount').textContent = amountDisplay;
 
+    let nameMap = {};
+    try {
+        if (typeof batchResolveMoltNames === 'function') {
+            nameMap = await Promise.race([
+                batchResolveMoltNames([recipient]),
+                new Promise(r => setTimeout(() => r({}), 3000))
+            ]);
+        }
+    } catch (e) { /* name resolution unavailable */ }
+    upsertParticipants('Treasury', recipient, nameMap);
+
     // Fee — airdrops are fee-free
     document.getElementById('txFee').textContent = '0 MOLT';
     document.getElementById('totalFee').textContent = '0 MOLT (fee-free airdrop)';
@@ -161,8 +215,11 @@ async function displayAirdrop(txHash) {
 
     // Instructions — show airdrop details instead
     document.getElementById('instructionCount').textContent = '1';
+    const recipientDisplay = (typeof formatAddressWithMoltName === 'function' && recipient !== 'Unknown')
+        ? formatAddressWithMoltName(recipient, nameMap[recipient], { includeAddressInLabel: true })
+        : recipient;
     const recipientLink = recipient !== 'Unknown'
-        ? `<a href="address.html?address=${recipient}" class="detail-link">${recipient}</a>`
+        ? `<a href="address.html?address=${recipient}" class="detail-link">${recipientDisplay}</a>`
         : 'Unknown';
     document.getElementById('instructionsList').innerHTML = `
         <div class="instruction-item">
@@ -204,7 +261,7 @@ async function displayAirdrop(txHash) {
         signature: txHash,
         recipient: recipient,
         amount_molt: amountMolt,
-        amount_shells: amountShells,
+        amount_shells: amountMolt ? Math.round(amountMolt * 1_000_000_000) : null,
         timestamp: timestampMs,
         source: 'Treasury',
         fee: 0,
@@ -212,7 +269,7 @@ async function displayAirdrop(txHash) {
     }, null, 2);
 }
 
-function displayTransaction(tx) {
+async function displayTransaction(tx) {
     const hash = tx.signature;
     const status = tx.status || 'Success';
     const type = tx.type === 'DebtRepay' ? 'GrantRepay' : (tx.type || 'Unknown');
@@ -229,9 +286,16 @@ function displayTransaction(tx) {
     const instructions = tx.message.instructions || [];
     const signatures = tx.signatures || [];
     const isFeeFree = fee === 0;
+    const fromAddress = tx.from || instructions[0]?.accounts?.[0] || null;
+    const toAddress = tx.to || instructions[0]?.accounts?.[1] || null;
+    const instructionAccounts = instructions.flatMap(inst => inst.accounts || []);
+    const nameMap = typeof batchResolveMoltNames === 'function'
+        ? await batchResolveMoltNames([fromAddress, toAddress, ...instructionAccounts].filter(Boolean))
+        : {};
     
     // Header
-    document.getElementById('txHash').textContent = hash;
+    document.getElementById('txHash').textContent = formatHash(hash);
+    document.getElementById('txHash').dataset.full = hash;
     
     // Status
     const statusBadge = status === 'Success' 
@@ -260,13 +324,14 @@ function displayTransaction(tx) {
     document.getElementById('detailType').textContent = type;
     document.getElementById('txAmount').textContent = amountDisplay;
     document.getElementById('detailAmount').textContent = amountDisplay;
+    upsertParticipants(fromAddress, toAddress, nameMap);
     
     // Fee details
     document.getElementById('txFee').textContent = formatMolt(fee);
     document.getElementById('totalFee').textContent = formatMolt(fee) + ' (' + formatShells(fee) + ')';
     document.getElementById('baseFee').textContent = isFeeFree
         ? '0.000000000 MOLT (fee-free system tx)'
-        : '0.00001 MOLT (10,000 shells)';
+        : '0.001 MOLT (1,000,000 shells)';
     document.getElementById('feeNote').textContent = isFeeFree
         ? 'System reward/repay transactions are fee-free'
         : 'Fee split is applied to this transaction';
@@ -281,6 +346,7 @@ function displayTransaction(tx) {
     
     // Recent blockhash
     document.getElementById('recentBlockhash').textContent = formatHash(recentBlockhash);
+    document.getElementById('recentBlockhash').dataset.full = recentBlockhash;
     
     // Instructions
     document.getElementById('instructionCount').textContent = instructions.length;
@@ -298,7 +364,7 @@ function displayTransaction(tx) {
                     <div class="detail-row">
                         <div class="detail-label">Program ID</div>
                         <div class="detail-value">
-                            <code>${formatHash(inst.program_id)}</code>
+                            <code title="${inst.program_id}">${formatHash(inst.program_id)}</code>
                             <a href="address.html?address=${inst.program_id}" class="detail-link">
                                 <i class="fas fa-external-link-alt"></i>
                             </a>
@@ -307,14 +373,19 @@ function displayTransaction(tx) {
                     <div class="detail-row">
                         <div class="detail-label">Accounts</div>
                         <div class="detail-value">
-                            ${inst.accounts.map(acc => `
+                            ${inst.accounts.map(acc => {
+                                const accountDisplay = (typeof formatAddressWithMoltName === 'function')
+                                    ? formatAddressWithMoltName(acc, nameMap[acc], { includeAddressInLabel: true })
+                                    : acc;
+                                return `
                                 <div>
-                                    <code>${formatHash(acc)}</code>
+                                    <code>${accountDisplay}</code>
                                     <a href="address.html?address=${acc}" class="detail-link">
                                         <i class="fas fa-external-link-alt"></i>
                                     </a>
                                 </div>
-                            `).join('')}
+                                `;
+                            }).join('')}
                         </div>
                     </div>
                     <div class="detail-row">
@@ -344,7 +415,7 @@ function displayTransaction(tx) {
                     <div class="detail-row">
                         <div class="detail-label">Signature #${idx + 1}</div>
                         <div class="detail-value">
-                            <code>${formatHash(sigHex, false)}</code>
+                            <code title="${sigHex}">${formatHash(sigHex)}</code>
                             <button class="copy-icon" onclick="navigator.clipboard.writeText('${sigHex}')">
                                 <i class="fas fa-copy"></i>
                             </button>
@@ -360,17 +431,15 @@ function displayTransaction(tx) {
 }
 
 // Search functionality
-document.getElementById('searchInput')?.addEventListener('keypress', (e) => {
+document.getElementById('searchInput')?.addEventListener('keypress', async (e) => {
     if (e.key === 'Enter') {
         const query = e.target.value.trim();
         if (query) {
-            if (/^\d+$/.test(query)) {
-                window.location.href = `block.html?slot=${query}`;
-            } else if (query.length > 50) {
-                window.location.href = `transaction.html?tx=${query}`;
-            } else {
-                window.location.href = `address.html?address=${query}`;
+            if (typeof navigateExplorerSearch === 'function') {
+                await navigateExplorerSearch(query);
+                return;
             }
+            window.location.href = `address.html?address=${query}`;
         }
     }
 });

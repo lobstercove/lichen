@@ -259,6 +259,15 @@ class MoltCrypto {
     }
 
     /**
+     * Derive Ed25519 public key from 32-byte seed (Uint8Array)
+     * Used for private key import flow
+     */
+    static derivePublicKey(seedBytes) {
+        const keypair = nacl.sign.keyPair.fromSeed(seedBytes);
+        return keypair.publicKey;
+    }
+
+    /**
      * Convert public key bytes to MoltChain address (base58, compatible with Solana)
      */
     static publicKeyToAddress(publicKey) {

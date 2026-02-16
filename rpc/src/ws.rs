@@ -113,6 +113,39 @@ pub enum Event {
         recipient: Pubkey,
         tx_hash: String,
     },
+    // ─── New subscription events ───
+    SignatureStatus {
+        signature: String,
+        status: String, // "processed" | "confirmed" | "finalized"
+        slot: u64,
+        err: Option<String>,
+    },
+    ValidatorUpdate {
+        pubkey: Pubkey,
+        event_kind: String, // "joined" | "left" | "delinquent" | "stakeChanged"
+        stake: u64,
+        slot: u64,
+    },
+    TokenBalanceChange {
+        owner: Pubkey,
+        mint: Pubkey,
+        old_balance: u64,
+        new_balance: u64,
+        slot: u64,
+    },
+    EpochChange {
+        epoch: u64,
+        slot: u64,
+        total_stake: u64,
+        validator_count: u32,
+    },
+    GovernanceEvent {
+        proposal_id: u64,
+        event_kind: String, // "created" | "voted" | "executed" | "cancelled"
+        voter: Option<Pubkey>,
+        vote_weight: Option<u64>,
+        slot: u64,
+    },
 }
 
 /// Subscription manager
@@ -137,6 +170,12 @@ enum SubscriptionType {
     MarketSales,
     BridgeLocks,
     BridgeMints,
+    // ─── New subscription types ───
+    SignatureStatus(String),     // track one tx signature hex
+    Validators,                  // validator set changes
+    TokenBalance { owner: Pubkey, mint: Option<Pubkey> },
+    Epochs,                      // epoch boundary notifications
+    Governance,                  // on-chain governance events
 }
 
 impl SubscriptionManager {
@@ -253,9 +292,26 @@ async fn handle_socket(socket: WebSocket, state: WsState) {
 
     // Task to forward notifications to the client
     let send_task = tokio::spawn(async move {
-        while let Some(msg) = rx.recv().await {
-            if sender.send(Message::Text(msg)).await.is_err() {
-                break;
+        // Send periodic pings to keep the connection alive
+        let mut ping_interval = tokio::time::interval(tokio::time::Duration::from_secs(15));
+        ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            tokio::select! {
+                msg = rx.recv() => {
+                    match msg {
+                        Some(text) => {
+                            if sender.send(Message::Text(text)).await.is_err() {
+                                break;
+                            }
+                        }
+                        None => break,
+                    }
+                }
+                _ = ping_interval.tick() => {
+                    if sender.send(Message::Ping(vec![b'k'])).await.is_err() {
+                        break;
+                    }
+                }
             }
         }
     });
@@ -264,7 +320,15 @@ async fn handle_socket(socket: WebSocket, state: WsState) {
     let tx_clone = tx.clone();
     let event_subscription_manager = subscription_manager.clone();
     let event_task = tokio::spawn(async move {
-        while let Ok(event) = event_rx.recv().await {
+        loop {
+            let event = match event_rx.recv().await {
+                Ok(event) => event,
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    warn!("WebSocket subscriber lagged, skipped {} events", n);
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            };
             // Get all subscriptions
             let subs = event_subscription_manager.subscriptions.read().await;
 
@@ -301,6 +365,14 @@ async fn handle_socket(socket: WebSocket, state: WsState) {
                     (Event::MarketSale { .. }, SubscriptionType::MarketSales) => true,
                     (Event::BridgeLock { .. }, SubscriptionType::BridgeLocks) => true,
                     (Event::BridgeMint { .. }, SubscriptionType::BridgeMints) => true,
+                    // ─── New subscription matching ───
+                    (Event::SignatureStatus { ref signature, .. }, SubscriptionType::SignatureStatus(ref sub_sig)) => signature == sub_sig,
+                    (Event::ValidatorUpdate { .. }, SubscriptionType::Validators) => true,
+                    (Event::TokenBalanceChange { ref owner, ref mint, .. }, SubscriptionType::TokenBalance { owner: ref sub_owner, mint: ref sub_mint }) => {
+                        owner == sub_owner && sub_mint.as_ref().map_or(true, |m| m == mint)
+                    },
+                    (Event::EpochChange { .. }, SubscriptionType::Epochs) => true,
+                    (Event::GovernanceEvent { .. }, SubscriptionType::Governance) => true,
                     _ => false,
                 };
 
@@ -323,6 +395,8 @@ async fn handle_socket(socket: WebSocket, state: WsState) {
                     let _ = tx.send(json).await;
                 }
             }
+        } else if let Message::Pong(_) = msg {
+            // Keepalive pong received — connection is alive
         } else if let Message::Close(_) = msg {
             break;
         }
@@ -749,6 +823,115 @@ async fn handle_subscription_request(
                 })
             }
         }
+
+        // ─── New subscriptions ───
+        "subscribeSignatureStatus" | "signatureSubscribe" => {
+            if let Some(params) = req.params {
+                if let Some(sig) = params.as_str() {
+                    subscription_manager
+                        .subscribe(SubscriptionType::SignatureStatus(sig.to_string()))
+                        .await
+                        .map(|sub_id| serde_json::json!(sub_id))
+                } else {
+                    Err(WsError { code: -32602, message: "Expected signature string".to_string() })
+                }
+            } else {
+                Err(WsError { code: -32602, message: "Missing params: signature string".to_string() })
+            }
+        }
+        "unsubscribeSignatureStatus" | "signatureUnsubscribe" => {
+            if let Some(params) = req.params {
+                if let Some(sub_id) = params.as_u64() {
+                    Ok(serde_json::json!(subscription_manager.unsubscribe(sub_id).await))
+                } else {
+                    Err(WsError { code: -32602, message: "Invalid params: expected subscription ID".to_string() })
+                }
+            } else {
+                Err(WsError { code: -32602, message: "Missing params".to_string() })
+            }
+        }
+
+        "subscribeValidators" | "validatorSubscribe" => subscription_manager
+            .subscribe(SubscriptionType::Validators)
+            .await
+            .map(|sub_id| serde_json::json!(sub_id)),
+        "unsubscribeValidators" | "validatorUnsubscribe" => {
+            if let Some(params) = req.params {
+                if let Some(sub_id) = params.as_u64() {
+                    Ok(serde_json::json!(subscription_manager.unsubscribe(sub_id).await))
+                } else {
+                    Err(WsError { code: -32602, message: "Invalid params".to_string() })
+                }
+            } else {
+                Err(WsError { code: -32602, message: "Missing params".to_string() })
+            }
+        }
+
+        "subscribeTokenBalance" | "tokenBalanceSubscribe" => {
+            if let Some(params) = req.params {
+                if let Some(obj) = params.as_object() {
+                    let owner_str = obj.get("owner").and_then(|v| v.as_str()).unwrap_or("");
+                    let mint_str = obj.get("mint").and_then(|v| v.as_str());
+                    match Pubkey::from_base58(owner_str) {
+                        Ok(owner) => {
+                            let mint = mint_str.and_then(|m| Pubkey::from_base58(m).ok());
+                            subscription_manager
+                                .subscribe(SubscriptionType::TokenBalance { owner, mint })
+                                .await
+                                .map(|sub_id| serde_json::json!(sub_id))
+                        }
+                        Err(_) => Err(WsError { code: -32602, message: "Invalid owner pubkey".to_string() }),
+                    }
+                } else {
+                    Err(WsError { code: -32602, message: "Expected object with 'owner' field".to_string() })
+                }
+            } else {
+                Err(WsError { code: -32602, message: "Missing params".to_string() })
+            }
+        }
+        "unsubscribeTokenBalance" | "tokenBalanceUnsubscribe" => {
+            if let Some(params) = req.params {
+                if let Some(sub_id) = params.as_u64() {
+                    Ok(serde_json::json!(subscription_manager.unsubscribe(sub_id).await))
+                } else {
+                    Err(WsError { code: -32602, message: "Invalid params".to_string() })
+                }
+            } else {
+                Err(WsError { code: -32602, message: "Missing params".to_string() })
+            }
+        }
+
+        "subscribeEpochs" | "epochSubscribe" => subscription_manager
+            .subscribe(SubscriptionType::Epochs)
+            .await
+            .map(|sub_id| serde_json::json!(sub_id)),
+        "unsubscribeEpochs" | "epochUnsubscribe" => {
+            if let Some(params) = req.params {
+                if let Some(sub_id) = params.as_u64() {
+                    Ok(serde_json::json!(subscription_manager.unsubscribe(sub_id).await))
+                } else {
+                    Err(WsError { code: -32602, message: "Invalid params".to_string() })
+                }
+            } else {
+                Err(WsError { code: -32602, message: "Missing params".to_string() })
+            }
+        }
+
+        "subscribeGovernance" | "governanceSubscribe" => subscription_manager
+            .subscribe(SubscriptionType::Governance)
+            .await
+            .map(|sub_id| serde_json::json!(sub_id)),
+        "unsubscribeGovernance" | "governanceUnsubscribe" => {
+            if let Some(params) = req.params {
+                if let Some(sub_id) = params.as_u64() {
+                    Ok(serde_json::json!(subscription_manager.unsubscribe(sub_id).await))
+                } else {
+                    Err(WsError { code: -32602, message: "Invalid params".to_string() })
+                }
+            } else {
+                Err(WsError { code: -32602, message: "Missing params".to_string() })
+            }
+        }
         _ => Err(WsError {
             code: -32601,
             message: format!("Method not found: {}", req.method),
@@ -863,6 +1046,47 @@ fn create_notification(sub_id: u64, event: &Event) -> Notification {
             "amount_display": *amount as f64 / 1_000_000.0,
             "recipient": recipient.to_base58(),
             "tx_hash": tx_hash,
+        }),
+        // ─── New event notifications ───
+        Event::SignatureStatus { signature, status, slot, err } => serde_json::json!({
+            "event": "SignatureStatus",
+            "signature": signature,
+            "status": status,
+            "slot": slot,
+            "error": err,
+        }),
+        Event::ValidatorUpdate { pubkey, event_kind, stake, slot } => serde_json::json!({
+            "event": "ValidatorUpdate",
+            "pubkey": pubkey.to_base58(),
+            "kind": event_kind,
+            "stake": stake,
+            "stake_display": *stake as f64 / 1_000_000_000.0,
+            "slot": slot,
+        }),
+        Event::TokenBalanceChange { owner, mint, old_balance, new_balance, slot } => serde_json::json!({
+            "event": "TokenBalanceChange",
+            "owner": owner.to_base58(),
+            "mint": mint.to_base58(),
+            "old_balance": old_balance,
+            "new_balance": new_balance,
+            "delta": (*new_balance as i128 - *old_balance as i128),
+            "slot": slot,
+        }),
+        Event::EpochChange { epoch, slot, total_stake, validator_count } => serde_json::json!({
+            "event": "EpochChange",
+            "epoch": epoch,
+            "slot": slot,
+            "total_stake": total_stake,
+            "total_stake_display": *total_stake as f64 / 1_000_000_000.0,
+            "validator_count": validator_count,
+        }),
+        Event::GovernanceEvent { proposal_id, event_kind, voter, vote_weight, slot } => serde_json::json!({
+            "event": "GovernanceEvent",
+            "proposal_id": proposal_id,
+            "kind": event_kind,
+            "voter": voter.as_ref().map(|p| p.to_base58()),
+            "vote_weight": vote_weight,
+            "slot": slot,
         }),
     };
 

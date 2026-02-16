@@ -37,11 +37,8 @@ pub extern "C" fn initialize(owner_ptr: *const u8) {
         return;
     }
 
-    let owner_bytes = unsafe {
-        core::slice::from_raw_parts(owner_ptr, 32)
-    };
     let mut owner_array = [0u8; 32];
-    owner_array.copy_from_slice(owner_bytes);
+    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner_array.as_mut_ptr(), 32); }
     let owner = Address::new(owner_array);
 
     // Persist owner to storage
@@ -63,11 +60,8 @@ pub extern "C" fn initialize(owner_ptr: *const u8) {
 /// Get balance of an account
 #[no_mangle]
 pub extern "C" fn balance_of(account_ptr: *const u8) -> u64 {
-    let account_bytes = unsafe {
-        core::slice::from_raw_parts(account_ptr, 32)
-    };
     let mut account_array = [0u8; 32];
-    account_array.copy_from_slice(account_bytes);
+    unsafe { core::ptr::copy_nonoverlapping(account_ptr, account_array.as_mut_ptr(), 32); }
     let account = Address::new(account_array);
 
     make_token().balance_of(account)
@@ -77,13 +71,10 @@ pub extern "C" fn balance_of(account_ptr: *const u8) -> u64 {
 /// AUDIT-FIX 1.8a: verify caller == from to prevent unauthorized transfers
 #[no_mangle]
 pub extern "C" fn transfer(from_ptr: *const u8, to_ptr: *const u8, amount: u64) -> u32 {
-    let from_bytes = unsafe { core::slice::from_raw_parts(from_ptr, 32) };
-    let to_bytes = unsafe { core::slice::from_raw_parts(to_ptr, 32) };
-
     let mut from_array = [0u8; 32];
     let mut to_array = [0u8; 32];
-    from_array.copy_from_slice(from_bytes);
-    to_array.copy_from_slice(to_bytes);
+    unsafe { core::ptr::copy_nonoverlapping(from_ptr, from_array.as_mut_ptr(), 32); }
+    unsafe { core::ptr::copy_nonoverlapping(to_ptr, to_array.as_mut_ptr(), 32); }
 
     // AUDIT-FIX 1.8a: Only the account owner can initiate transfers
     let caller = get_caller();
@@ -110,13 +101,10 @@ pub extern "C" fn transfer(from_ptr: *const u8, to_ptr: *const u8, amount: u64) 
 /// Mint new tokens (owner only)
 #[no_mangle]
 pub extern "C" fn mint(caller_ptr: *const u8, to_ptr: *const u8, amount: u64) -> u32 {
-    let caller_bytes = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    let to_bytes = unsafe { core::slice::from_raw_parts(to_ptr, 32) };
-
     let mut caller_array = [0u8; 32];
     let mut to_array = [0u8; 32];
-    caller_array.copy_from_slice(caller_bytes);
-    to_array.copy_from_slice(to_bytes);
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller_array.as_mut_ptr(), 32); }
+    unsafe { core::ptr::copy_nonoverlapping(to_ptr, to_array.as_mut_ptr(), 32); }
 
     let caller = Address::new(caller_array);
     let to = Address::new(to_array);
@@ -139,9 +127,8 @@ pub extern "C" fn mint(caller_ptr: *const u8, to_ptr: *const u8, amount: u64) ->
 /// AUDIT-FIX 1.8b: verify caller == from to prevent unauthorized burns
 #[no_mangle]
 pub extern "C" fn burn(from_ptr: *const u8, amount: u64) -> u32 {
-    let from_bytes = unsafe { core::slice::from_raw_parts(from_ptr, 32) };
     let mut from_array = [0u8; 32];
-    from_array.copy_from_slice(from_bytes);
+    unsafe { core::ptr::copy_nonoverlapping(from_ptr, from_array.as_mut_ptr(), 32); }
 
     // AUDIT-FIX 1.8b: Only the account owner can burn their tokens
     let caller = get_caller();
@@ -168,13 +155,10 @@ pub extern "C" fn burn(from_ptr: *const u8, amount: u64) -> u32 {
 /// Approve spender
 #[no_mangle]
 pub extern "C" fn approve(owner_ptr: *const u8, spender_ptr: *const u8, amount: u64) -> u32 {
-    let owner_bytes = unsafe { core::slice::from_raw_parts(owner_ptr, 32) };
-    let spender_bytes = unsafe { core::slice::from_raw_parts(spender_ptr, 32) };
-
     let mut owner_array = [0u8; 32];
     let mut spender_array = [0u8; 32];
-    owner_array.copy_from_slice(owner_bytes);
-    spender_array.copy_from_slice(spender_bytes);
+    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner_array.as_mut_ptr(), 32); }
+    unsafe { core::ptr::copy_nonoverlapping(spender_ptr, spender_array.as_mut_ptr(), 32); }
 
     let owner = Address::new(owner_array);
     let spender = Address::new(spender_array);
@@ -250,6 +234,7 @@ mod tests {
         let recipient = [2u8; 32];
         initialize(owner.as_ptr());
 
+        test_mock::set_caller(owner);
         let amount: u64 = 500_000_000; // 0.5 MOLT
         let result = transfer(owner.as_ptr(), recipient.as_ptr(), amount);
         assert_eq!(result, 1); // success
@@ -268,6 +253,7 @@ mod tests {
         initialize(owner.as_ptr());
 
         // Try to transfer more than balance from recipient (who has 0)
+        test_mock::set_caller(recipient);
         let result = transfer(recipient.as_ptr(), owner.as_ptr(), 100);
         assert_eq!(result, 0); // failure
     }
@@ -310,6 +296,7 @@ mod tests {
         let owner = [1u8; 32];
         initialize(owner.as_ptr());
 
+        test_mock::set_caller(owner);
         let burn_amount: u64 = 100_000_000_000;
         let result = burn(owner.as_ptr(), burn_amount);
         assert_eq!(result, 1);
@@ -329,6 +316,7 @@ mod tests {
         initialize(owner.as_ptr());
 
         // Try to burn from account with 0 balance
+        test_mock::set_caller(nobody);
         let result = burn(nobody.as_ptr(), 100);
         assert_eq!(result, 0);
     }

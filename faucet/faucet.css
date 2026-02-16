@@ -2,7 +2,7 @@
 /* Base styles come from shared-base-styles.css + shared-theme.css */
 
 .container-narrow {
-    max-width: 800px;
+    max-width: 920px;
 }
 
 /* Stats Grid */
@@ -95,7 +95,7 @@
 .hero-subtitle {
     font-size: 1.15rem;
     color: var(--text-secondary);
-    max-width: 500px;
+    max-width: 600px;
     margin: 0 auto;
     line-height: 1.6;
 }

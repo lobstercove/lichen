@@ -583,7 +583,8 @@ fn calculate_maker_rebate(notional: u64, fee_bps: i16) -> u64 {
 
 /// Initialize the DEX core contract
 /// Returns: 0=success, 1=already initialized
-pub fn initialize(admin: *const u8) -> u32 {
+#[no_mangle]
+pub extern "C" fn initialize(admin: *const u8) -> u32 {
     let existing = load_addr(ADMIN_KEY);
     if !is_zero(&existing) {
         return 1;
@@ -1618,7 +1619,7 @@ pub extern "C" fn call() {
                 get_order(bytes_to_u64(&args[1..9]));
             }
         }
-        _ => {}
+        _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
     }
 }
 

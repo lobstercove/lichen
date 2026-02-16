@@ -199,18 +199,19 @@ const TOKEN_DATA_SIZE: usize = 65;
 /// Initialize ClawPump
 #[no_mangle]
 pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
-    let admin = unsafe { core::slice::from_raw_parts(admin_ptr, 32) };
+    let mut admin = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32); }
 
     if storage_get(ADMIN_KEY).is_some() {
-        log_info("❌ Already initialized");
+        log_info("Already initialized");
         return 1;
     }
 
-    storage_set(ADMIN_KEY, admin);
+    storage_set(ADMIN_KEY, &admin);
     store_u64(TOKEN_COUNT_KEY, 0);
     store_u64(b"cp_fees_collected", 0);
 
-    log_info("🚀 ClawPump initialized");
+    log_info("ClawPump initialized");
     0
 }
 
@@ -222,10 +223,11 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
 /// Returns token ID (0 on failure)
 #[no_mangle]
 pub extern "C" fn create_token(creator_ptr: *const u8, fee_paid: u64) -> u64 {
-    let creator = unsafe { core::slice::from_raw_parts(creator_ptr, 32) };
+    let mut creator = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(creator_ptr, creator.as_mut_ptr(), 32); }
 
     if fee_paid < CREATION_FEE {
-        log_info("❌ Insufficient creation fee (need 0.1 MOLT)");
+        log_info("Insufficient creation fee (need 0.1 MOLT)");
         return 0;
     }
 
@@ -234,7 +236,7 @@ pub extern "C" fn create_token(creator_ptr: *const u8, fee_paid: u64) -> u64 {
 
     // Store token data
     let mut data = Vec::with_capacity(TOKEN_DATA_SIZE);
-    data.extend_from_slice(creator);             // creator: 32 bytes
+    data.extend_from_slice(&creator);             // creator: 32 bytes
     data.extend_from_slice(&u64_to_bytes(0));    // supply_sold: 0
     data.extend_from_slice(&u64_to_bytes(0));    // molt_raised: 0
     data.extend_from_slice(&u64_to_bytes(DEFAULT_MAX_SUPPLY)); // max_supply
@@ -298,7 +300,8 @@ fn calculate_sell_refund(supply_sold: u64, amount: u64) -> u64 {
 
 /// Get current token price (shells per token)
 fn current_price(supply_sold: u64) -> u64 {
-    BASE_PRICE + supply_sold * SLOPE / SLOPE_SCALE
+    // SECURITY-FIX: Use u128 intermediate to prevent overflow
+    BASE_PRICE + ((supply_sold as u128 * SLOPE as u128 / SLOPE_SCALE as u128) as u64)
 }
 
 // ============================================================================
@@ -313,15 +316,15 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, molt_amount: u64) -> 
         return 0;
     }
     if is_paused() {
-        log_info("❌ Protocol is paused");
+        log_info("Protocol is paused");
         return 0;
     }
     if is_token_frozen(token_id) {
-        log_info("❌ Token is frozen");
+        log_info("Token is frozen");
         return 0;
     }
     if !reentrancy_enter() {
-        log_info("❌ Reentrancy detected");
+        log_info("Reentrancy detected");
         return 0;
     }
 
@@ -329,12 +332,13 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, molt_amount: u64) -> 
     let max_buy = get_max_buy();
     if molt_amount > max_buy {
         reentrancy_exit();
-        log_info("❌ Exceeds max buy per transaction");
+        log_info("Exceeds max buy per transaction");
         return 0;
     }
 
-    let buyer = unsafe { core::slice::from_raw_parts(buyer_ptr, 32) };
-    let buyer_hex = hex_encode_addr(buyer);
+    let mut buyer = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(buyer_ptr, buyer.as_mut_ptr(), 32); }
+    let buyer_hex = hex_encode_addr(&buyer);
 
     // v2: Buy cooldown
     let cooldown = get_buy_cooldown();
@@ -343,7 +347,7 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, molt_amount: u64) -> 
     let now = get_timestamp();
     if last_buy_ts > 0 && now < last_buy_ts + cooldown {
         reentrancy_exit();
-        log_info("❌ Buy cooldown not expired");
+        log_info("Buy cooldown not expired");
         return 0;
     }
 
@@ -353,14 +357,14 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, molt_amount: u64) -> 
     let mut data = match storage_get(&token_key) {
         Some(d) if d.len() >= TOKEN_DATA_SIZE => d,
         _ => {
-            log_info("❌ Token not found");
+            log_info("Token not found");
             return 0;
         }
     };
 
     // Check not graduated
     if data[64] != 0 {
-        log_info("❌ Token graduated to DEX, trade there");
+        log_info("Token graduated to DEX, trade there");
         return 0;
     }
 
@@ -391,7 +395,7 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, molt_amount: u64) -> 
 
     let tokens_bought = lo;
     if tokens_bought == 0 {
-        log_info("❌ Amount too small to buy any tokens");
+        log_info("Amount too small to buy any tokens");
         return 0;
     }
 
@@ -405,7 +409,7 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, molt_amount: u64) -> 
     storage_set(&token_key, &data);
 
     // Track buyer balance
-    let buyer_hex = hex_encode_addr(buyer);
+    let buyer_hex = hex_encode_addr(&buyer);
     let mut bal_key = Vec::with_capacity(4 + 16 + 1 + 64);
     bal_key.extend_from_slice(b"bal:");
     bal_key.extend_from_slice(&id_hex);
@@ -504,16 +508,16 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, molt_amount: u64) -> 
             store_u64(b"cp_graduation_revenue", prev_revenue + platform_molt);
 
             if pair_ok && pool_ok && seed_ok {
-                log_info("🎓 Token graduated! DEX pair created, pool seeded with liquidity");
+                log_info("Token graduated! DEX pair created, pool seeded with liquidity");
             } else {
-                log_info("🎓 Token graduated! DEX migration partially failed — manual intervention needed");
+                log_info("Token graduated! DEX migration partially failed — manual intervention needed");
             }
         } else {
-            log_info("🎓 Token graduated! DEX addresses not configured — manual migration needed");
+            log_info("Token graduated! DEX addresses not configured — manual migration needed");
         }
     }
 
-    log_info("✅ Buy successful");
+    log_info("Buy successful");
     reentrancy_exit();
     tokens_bought
 }
@@ -526,20 +530,21 @@ pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) 
         return 0;
     }
     if is_paused() {
-        log_info("❌ Protocol is paused");
+        log_info("Protocol is paused");
         return 0;
     }
     if is_token_frozen(token_id) {
-        log_info("❌ Token is frozen");
+        log_info("Token is frozen");
         return 0;
     }
     if !reentrancy_enter() {
-        log_info("❌ Reentrancy detected");
+        log_info("Reentrancy detected");
         return 0;
     }
 
-    let seller = unsafe { core::slice::from_raw_parts(seller_ptr, 32) };
-    let seller_hex = hex_encode_addr(seller);
+    let mut seller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(seller_ptr, seller.as_mut_ptr(), 32); }
+    let seller_hex = hex_encode_addr(&seller);
 
     // v2: Sell cooldown — check last buy timestamp
     let sell_cd = get_sell_cooldown();
@@ -548,7 +553,7 @@ pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) 
     let now = get_timestamp();
     if last_buy_ts > 0 && now < last_buy_ts + sell_cd {
         reentrancy_exit();
-        log_info("❌ Sell cooldown not expired (anti-dump)");
+        log_info("Sell cooldown not expired (anti-dump)");
         return 0;
     }
 
@@ -558,13 +563,13 @@ pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) 
     let mut data = match storage_get(&token_key) {
         Some(d) if d.len() >= TOKEN_DATA_SIZE => d,
         _ => {
-            log_info("❌ Token not found");
+            log_info("Token not found");
             return 0;
         }
     };
 
     if data[64] != 0 {
-        log_info("❌ Token graduated, trade on DEX");
+        log_info("Token graduated, trade on DEX");
         return 0;
     }
 
@@ -577,7 +582,7 @@ pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) 
     let balance = load_u64(&bal_key);
 
     if token_amount > balance {
-        log_info("❌ Insufficient token balance");
+        log_info("Insufficient token balance");
         return 0;
     }
 
@@ -602,7 +607,7 @@ pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) 
     let fees = load_u64(b"cp_fees_collected");
     store_u64(b"cp_fees_collected", fees + fee);
 
-    log_info("✅ Sell successful");
+    log_info("Sell successful");
     reentrancy_exit();
     net_refund
 }
@@ -691,54 +696,59 @@ pub extern "C" fn get_platform_stats() -> u32 {
 /// Admin pauses the protocol
 #[no_mangle]
 pub extern "C" fn pause(caller_ptr: *const u8) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_admin(caller) { return 1; }
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_admin(&caller) { return 1; }
     if is_paused() { return 2; }
     storage_set(PAUSE_KEY, &[1]);
-    log_info("⏸️ ClawPump paused");
+    log_info("ClawPump paused");
     0
 }
 
 /// Admin unpauses the protocol
 #[no_mangle]
 pub extern "C" fn unpause(caller_ptr: *const u8) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_admin(caller) { return 1; }
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_admin(&caller) { return 1; }
     if !is_paused() { return 2; }
     storage_set(PAUSE_KEY, &[0]);
-    log_info("▶️ ClawPump unpaused");
+    log_info("ClawPump unpaused");
     0
 }
 
 /// Admin freezes a specific token (blocks buy/sell)
 #[no_mangle]
 pub extern "C" fn freeze_token(caller_ptr: *const u8, token_id: u64) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_admin(caller) { return 1; }
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_admin(&caller) { return 1; }
     let id_hex = u64_to_hex(token_id);
     let key = make_key(b"cpf:", &id_hex);
     storage_set(&key, &[1]);
-    log_info("🧊 Token frozen");
+    log_info("Token frozen");
     0
 }
 
 /// Admin unfreezes a token
 #[no_mangle]
 pub extern "C" fn unfreeze_token(caller_ptr: *const u8, token_id: u64) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_admin(caller) { return 1; }
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_admin(&caller) { return 1; }
     let id_hex = u64_to_hex(token_id);
     let key = make_key(b"cpf:", &id_hex);
     storage_set(&key, &[0]);
-    log_info("🔓 Token unfrozen");
+    log_info("Token unfrozen");
     0
 }
 
 /// Admin sets buy cooldown (ms)
 #[no_mangle]
 pub extern "C" fn set_buy_cooldown(caller_ptr: *const u8, cooldown_ms: u64) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_admin(caller) { return 1; }
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_admin(&caller) { return 1; }
     store_u64(b"cp_buy_cooldown", cooldown_ms);
     0
 }
@@ -746,8 +756,9 @@ pub extern "C" fn set_buy_cooldown(caller_ptr: *const u8, cooldown_ms: u64) -> u
 /// Admin sets sell cooldown (ms)
 #[no_mangle]
 pub extern "C" fn set_sell_cooldown(caller_ptr: *const u8, cooldown_ms: u64) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_admin(caller) { return 1; }
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_admin(&caller) { return 1; }
     store_u64(b"cp_sell_cooldown", cooldown_ms);
     0
 }
@@ -755,8 +766,9 @@ pub extern "C" fn set_sell_cooldown(caller_ptr: *const u8, cooldown_ms: u64) -> 
 /// Admin sets max buy amount per tx
 #[no_mangle]
 pub extern "C" fn set_max_buy(caller_ptr: *const u8, max_amount: u64) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_admin(caller) { return 1; }
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_admin(&caller) { return 1; }
     if max_amount == 0 { return 2; }
     store_u64(b"cp_max_buy", max_amount);
     0
@@ -765,8 +777,9 @@ pub extern "C" fn set_max_buy(caller_ptr: *const u8, max_amount: u64) -> u32 {
 /// Admin sets creator royalty in basis points
 #[no_mangle]
 pub extern "C" fn set_creator_royalty(caller_ptr: *const u8, bps: u64) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_admin(caller) { return 1; }
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_admin(&caller) { return 1; }
     if bps > 1000 { return 2; } // Max 10%
     store_u64(b"cp_creator_royalty", bps);
     0
@@ -775,13 +788,14 @@ pub extern "C" fn set_creator_royalty(caller_ptr: *const u8, bps: u64) -> u32 {
 /// Admin withdraws collected platform fees
 #[no_mangle]
 pub extern "C" fn withdraw_fees(caller_ptr: *const u8, amount: u64) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_admin(caller) { return 1; }
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_admin(&caller) { return 1; }
     if amount == 0 { return 2; }
     let fees = load_u64(b"cp_fees_collected");
     if amount > fees { return 3; }
     store_u64(b"cp_fees_collected", fees - amount);
-    log_info("✅ Fees withdrawn");
+    log_info("Fees withdrawn");
     0
 }
 
@@ -789,26 +803,29 @@ pub extern "C" fn withdraw_fees(caller_ptr: *const u8, amount: u64) -> u32 {
 /// Both addresses must be non-zero 32-byte addresses
 #[no_mangle]
 pub extern "C" fn set_dex_addresses(caller_ptr: *const u8, core_ptr: *const u8, amm_ptr: *const u8) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_admin(caller) {
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_admin(&caller) {
         return 1;
     }
-    let core_addr = unsafe { core::slice::from_raw_parts(core_ptr, 32) };
-    let amm_addr = unsafe { core::slice::from_raw_parts(amm_ptr, 32) };
+    let mut core_addr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(core_ptr, core_addr.as_mut_ptr(), 32); }
+    let mut amm_addr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(amm_ptr, amm_addr.as_mut_ptr(), 32); }
 
     // Validate non-zero
     if core_addr.iter().all(|&b| b == 0) {
-        log_info("❌ DEX core address cannot be zero");
+        log_info("DEX core address cannot be zero");
         return 2;
     }
     if amm_addr.iter().all(|&b| b == 0) {
-        log_info("❌ DEX AMM address cannot be zero");
+        log_info("DEX AMM address cannot be zero");
         return 3;
     }
 
-    storage_set(DEX_CORE_ADDRESS_KEY, core_addr);
-    storage_set(DEX_AMM_ADDRESS_KEY, amm_addr);
-    log_info("✅ DEX addresses configured for graduation migration");
+    storage_set(DEX_CORE_ADDRESS_KEY, &core_addr);
+    storage_set(DEX_AMM_ADDRESS_KEY, &amm_addr);
+    log_info("DEX addresses configured for graduation migration");
     0
 }
 

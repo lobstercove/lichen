@@ -578,7 +578,7 @@ impl StakeInfo {
             ));
         }
 
-        self.amount += additional;
+        self.amount = self.amount.saturating_add(additional);
         Ok(())
     }
 
@@ -723,14 +723,14 @@ impl StakePool {
         }
 
         if let Some(stake_info) = self.stakes.get_mut(&validator) {
-            stake_info.amount += amount;
+            stake_info.amount = stake_info.amount.saturating_add(amount);
             stake_info.is_active = stake_info.meets_minimum();
         } else {
             let stake_info = StakeInfo::new(validator, amount, current_slot);
             self.stakes.insert(validator, stake_info);
         }
 
-        self.total_staked += amount;
+        self.total_staked = self.total_staked.saturating_add(amount);
         Ok(())
     }
 
@@ -749,6 +749,62 @@ impl StakePool {
             let stake_info = StakeInfo::new(validator, amount, current_slot);
             self.total_staked = self.total_staked.saturating_add(amount);
             self.stakes.insert(validator, stake_info);
+        }
+    }
+
+    /// Full-fidelity upsert: merge a complete StakeInfo from a remote snapshot.
+    /// For existing entries, syncs bootstrap debt, vesting status, earned amounts,
+    /// and fingerprint data — only if the remote has more progress (higher debt_repaid
+    /// or higher earned_amount). For new entries, inserts the full StakeInfo as-is.
+    pub fn upsert_stake_full(&mut self, entry: StakeInfo) {
+        if let Some(local) = self.stakes.get_mut(&entry.validator) {
+            let old_amount = local.amount;
+            // Accept higher stake amount
+            if entry.amount > old_amount {
+                self.total_staked = self.total_staked.saturating_add(entry.amount - old_amount);
+                local.amount = entry.amount;
+            }
+            // Sync bootstrap fields if remote has more progress
+            if entry.total_debt_repaid > local.total_debt_repaid {
+                local.bootstrap_debt = entry.bootstrap_debt;
+                local.total_debt_repaid = entry.total_debt_repaid;
+                local.earned_amount = entry.earned_amount;
+                local.status = entry.status.clone();
+                local.graduation_slot = entry.graduation_slot;
+            }
+            // Accept bootstrap_index if local is unset (u64::MAX)
+            if local.bootstrap_index == u64::MAX && entry.bootstrap_index != u64::MAX {
+                local.bootstrap_index = entry.bootstrap_index;
+                // If we just learned this is a bootstrap validator, set debt if missing
+                if local.bootstrap_debt == 0 && entry.bootstrap_debt > 0 {
+                    local.bootstrap_debt = entry.bootstrap_debt;
+                    local.status = entry.status.clone();
+                }
+            }
+            // Sync fingerprint if local is empty
+            if local.machine_fingerprint == [0u8; 32] && entry.machine_fingerprint != [0u8; 32] {
+                local.machine_fingerprint = entry.machine_fingerprint;
+            }
+            // Accept higher blocks produced count
+            if entry.blocks_produced > local.blocks_produced {
+                local.blocks_produced = entry.blocks_produced;
+            }
+            local.is_active = local.meets_minimum();
+        } else {
+            // New entry — insert as-is with full fidelity
+            self.total_staked = self.total_staked.saturating_add(entry.amount);
+            let validator = entry.validator;
+            // Sync fingerprint registry
+            if entry.machine_fingerprint != [0u8; 32] {
+                self.fingerprint_registry.insert(entry.machine_fingerprint, validator);
+            }
+            // Track bootstrap grants
+            if entry.bootstrap_index != u64::MAX
+                && entry.bootstrap_index >= self.bootstrap_grants_issued
+            {
+                self.bootstrap_grants_issued = entry.bootstrap_index + 1;
+            }
+            self.stakes.insert(validator, entry);
         }
     }
 
@@ -910,7 +966,7 @@ impl StakePool {
 
         // Delegations contribute to total active stake (used as denominator
         // in reward distribution and voting power calculations).
-        self.total_staked += amount;
+        self.total_staked = self.total_staked.saturating_add(amount);
 
         // Track individual delegation
         let validator_delegations = self.delegations.entry(*validator).or_default();
@@ -978,7 +1034,7 @@ impl StakePool {
     ) -> Result<(), String> {
         if let Some(stake_info) = self.stakes.get_mut(validator) {
             stake_info.add_stake(additional)?;
-            self.total_staked += additional;
+            self.total_staked = self.total_staked.saturating_add(additional);
             Ok(())
         } else {
             Err("Validator not found".to_string())
@@ -1230,7 +1286,7 @@ impl StakePool {
         }
 
         if let Some(stake_info) = self.stakes.get_mut(&validator) {
-            stake_info.amount += amount;
+            stake_info.amount = stake_info.amount.saturating_add(amount);
             stake_info.is_active = stake_info.meets_minimum();
         } else {
             let stake_info =
@@ -1238,7 +1294,7 @@ impl StakePool {
             self.stakes.insert(validator, stake_info);
         }
 
-        self.total_staked += amount;
+        self.total_staked = self.total_staked.saturating_add(amount);
         Ok(())
     }
 
@@ -1360,10 +1416,10 @@ impl StakePool {
         // If validator already exists, just update amount (no new bootstrap)
         if self.stakes.contains_key(&validator) {
             let stake_info = self.stakes.get_mut(&validator).unwrap();
-            stake_info.amount += amount;
+            stake_info.amount = stake_info.amount.saturating_add(amount);
             stake_info.is_active = stake_info.meets_minimum();
             let existing_index = stake_info.bootstrap_index;
-            self.total_staked += amount;
+            self.total_staked = self.total_staked.saturating_add(amount);
             // Register fingerprint (idempotent for same validator)
             if fingerprint != [0u8; 32] {
                 self.register_fingerprint(&validator, fingerprint)?;
@@ -1404,7 +1460,7 @@ impl StakePool {
 
         let stake_info = StakeInfo::with_bootstrap_index(validator, amount, current_slot, bootstrap_index);
         self.stakes.insert(validator, stake_info);
-        self.total_staked += amount;
+        self.total_staked = self.total_staked.saturating_add(amount);
 
         // Register fingerprint
         if fingerprint != [0u8; 32] {
@@ -1420,6 +1476,51 @@ impl StakePool {
     /// Get mutable reference to stake info (for direct field updates in validator)
     pub fn get_stake_mut(&mut self, validator: &Pubkey) -> Option<&mut StakeInfo> {
         self.stakes.get_mut(validator)
+    }
+
+    /// One-time migration: re-assign bootstrap indices to validators that were
+    /// staked before the contributory-stake system existed. These validators have
+    /// `bootstrap_index == u64::MAX` (the default from `StakeInfo::new()`) even
+    /// though they joined within the first 200 and deserve a bootstrap grant.
+    ///
+    /// Returns the number of validators migrated.
+    pub fn migrate_legacy_bootstrap_indices(&mut self) -> u64 {
+        // Collect validators that need migration: index==MAX, amount==MIN_VALIDATOR_STAKE,
+        // and status is FullyVested (incorrectly — they were never vested, just default)
+        let mut to_migrate: Vec<Pubkey> = self
+            .stakes
+            .iter()
+            .filter(|(_, info)| {
+                info.bootstrap_index == u64::MAX
+                    && info.amount >= MIN_VALIDATOR_STAKE
+                    && info.bootstrap_debt == 0
+                    && info.graduation_slot.is_none()
+                    && info.total_debt_repaid == 0
+            })
+            .map(|(pubkey, _)| *pubkey)
+            .collect();
+
+        // Sort by start_slot for deterministic ordering
+        to_migrate.sort_by_key(|pk| {
+            self.stakes.get(pk).map(|s| s.start_slot).unwrap_or(u64::MAX)
+        });
+
+        let mut migrated = 0u64;
+        for pubkey in to_migrate {
+            if self.bootstrap_grants_issued >= MAX_BOOTSTRAP_VALIDATORS {
+                break; // No more bootstrap slots available
+            }
+            let idx = self.bootstrap_grants_issued;
+            self.bootstrap_grants_issued += 1;
+
+            if let Some(stake_info) = self.stakes.get_mut(&pubkey) {
+                stake_info.bootstrap_index = idx;
+                stake_info.bootstrap_debt = stake_info.amount; // Full debt = 100K MOLT
+                stake_info.status = BootstrapStatus::Bootstrapping;
+                migrated += 1;
+            }
+        }
+        migrated
     }
 }
 
@@ -1507,7 +1608,8 @@ impl Vote {
 pub struct ValidatorInfo {
     /// Validator's public key
     pub pubkey: Pubkey,
-    /// Reputation score (0-1000)
+    /// Reputation score (50-1000)
+    /// Unified rules: init=100, +10/block (cap 1000), slashing subtracts severity (floor 50)
     pub reputation: u64,
     /// Total blocks proposed
     pub blocks_proposed: u64,
@@ -1528,7 +1630,7 @@ impl ValidatorInfo {
     pub fn new(pubkey: Pubkey, joined_slot: u64) -> Self {
         ValidatorInfo {
             pubkey,
-            reputation: 500, // Start at mid-reputation
+            reputation: 100, // Unified: all validators start at 100
             blocks_proposed: 0,
             votes_cast: 0,
             correct_votes: 0,
@@ -1539,13 +1641,14 @@ impl ValidatorInfo {
     }
 
     /// Update reputation based on performance
+    /// Unified rules: +10 per block (capped at 1000), -50 penalty (floor 50)
     pub fn update_reputation(&mut self, correct: bool) {
         if correct {
             // Increase reputation (max 1000)
             self.reputation = (self.reputation + 10).min(1000);
         } else {
-            // Decrease reputation (min 0)
-            self.reputation = self.reputation.saturating_sub(50);
+            // Decrease reputation (floor 50 — prevents "Newcomer" death spiral)
+            self.reputation = self.reputation.saturating_sub(50).max(50);
         }
     }
 
@@ -1654,6 +1757,8 @@ impl ValidatorSet {
     }
 
     /// Select leader using stake-weighted contribution
+    /// Reputation influence uses sqrt() to prevent snowball: rep 1000 gets ~3.16x weight
+    /// vs rep 100 (instead of 10x with linear).  Ensures fairer block distribution.
     pub fn select_leader_weighted(&self, slot: u64, stake_pool: &StakePool) -> Option<Pubkey> {
         if self.validators.is_empty() {
             return None;
@@ -1670,9 +1775,12 @@ impl ValidatorSet {
                     .unwrap_or_else(|| v.stake.min(MAX_VALIDATOR_STAKE));
 
                 let base = integer_sqrt(stake.max(1));
-                // H10 fix: multiply before divide to preserve granularity
-                let reputation = v.reputation.max(100) as u128;
-                ((base as u128).saturating_mul(reputation) / 100u128 + 1) as u64
+                // Use sqrt(reputation) instead of linear to flatten leader advantage.
+                // rep=100 → sqrt(100)/10 = 1.0
+                // rep=500 → sqrt(500)/10 ≈ 2.24
+                // rep=1000 → sqrt(1000)/10 ≈ 3.16
+                let rep_sqrt = integer_sqrt(v.reputation.max(100)) as u128;
+                ((base as u128).saturating_mul(rep_sqrt) / 10u128 + 1) as u64
                 // +1 avoids zero weight
             })
             .collect();
@@ -1735,6 +1843,12 @@ pub fn governance_voting_power(tokens_held: u64, reputation: u64) -> u64 {
 pub struct VoteAggregator {
     /// Votes collected per (slot, block_hash)
     votes: std::collections::HashMap<(u64, Hash), Vec<Vote>>,
+    /// PERF-OPT 5: Secondary index for O(1) equivocation detection.
+    /// Maps (slot, validator) → true. Previously the equivocation check
+    /// scanned ALL votes across ALL slots = O(total_votes). With 500
+    /// validators and 100s of retained slots, this was ~50k iterations
+    /// per add_vote call. Now it's a single HashMap lookup.
+    voted_in_slot: std::collections::HashMap<(u64, Pubkey), bool>,
 }
 
 impl Default for VoteAggregator {
@@ -1748,6 +1862,7 @@ impl VoteAggregator {
     pub fn new() -> Self {
         VoteAggregator {
             votes: std::collections::HashMap::new(),
+            voted_in_slot: std::collections::HashMap::new(),
         }
     }
 
@@ -1760,12 +1875,12 @@ impl VoteAggregator {
 
         // H8 fix: Prevent equivocation — reject second vote from same validator
         // at the same slot, regardless of block hash.
-        for ((slot, _hash), votes) in &self.votes {
-            if *slot == vote.slot && votes.iter().any(|v| v.validator == vote.validator) {
-                return false; // equivocation attempt
-            }
+        // PERF-OPT 5: O(1) lookup via secondary index instead of full scan.
+        if self.voted_in_slot.contains_key(&(vote.slot, vote.validator)) {
+            return false; // equivocation attempt
         }
 
+        self.voted_in_slot.insert((vote.slot, vote.validator), true);
         let key = (vote.slot, vote.block_hash);
         let votes = self.votes.entry(key).or_default();
         votes.push(vote);
@@ -1838,6 +1953,8 @@ impl VoteAggregator {
     pub fn prune_old_votes(&mut self, current_slot: u64, keep_slots: u64) {
         let cutoff_slot = current_slot.saturating_sub(keep_slots);
         self.votes.retain(|(slot, _), _| *slot >= cutoff_slot);
+        // PERF-OPT 5: Keep secondary equivocation index in sync with pruning
+        self.voted_in_slot.retain(|(slot, _), _| *slot >= cutoff_slot);
     }
 }
 

@@ -67,7 +67,11 @@ PHASE_3_DEX_MODULES = [
     {"name": "dex_analytics",  "wasm": "dex_analytics.wasm"},
 ]
 
-ALL_CONTRACTS = PHASE_1_TOKENS + PHASE_2_DEX_CORE + PHASE_3_DEX_MODULES
+PHASE_4_PREDICTION = [
+    {"name": "prediction_market", "wasm": "prediction_market.wasm"},
+]
+
+ALL_CONTRACTS = PHASE_1_TOKENS + PHASE_2_DEX_CORE + PHASE_3_DEX_MODULES + PHASE_4_PREDICTION
 
 WASM_SEARCH_DIRS = [
     Path(__file__).resolve().parent.parent / "contracts" / "target" / "wasm32-unknown-unknown" / "release",
@@ -364,6 +368,75 @@ async def phase_initialize_dex(
             print(f"  ⚠️  dex_analytics.set_core_contract() failed: {e}")
 
 
+async def phase_initialize_prediction_market(
+    conn: Connection, deployer: Keypair, addrs: Dict[str, PublicKey],
+    admin_pubkey: PublicKey
+) -> None:
+    """Initialize prediction_market and wire its cross-contract references."""
+    print(f"\n{'═' * 60}")
+    print(f"  INITIALIZING PREDICTION MARKET")
+    print(f"{'═' * 60}")
+
+    name = "prediction_market"
+    if name not in addrs:
+        print(f"  ⚠️  {name} not deployed, skipping init")
+        return
+
+    # Initialize with admin key
+    admin_bytes = list(admin_pubkey.to_bytes())
+    try:
+        sig = await call_contract_raw(
+            conn, deployer, addrs[name], "initialize", admin_bytes
+        )
+        print(f"  ✅ {name}.initialize() — sig={sig}")
+    except Exception as e:
+        print(f"  ⚠️  {name}.initialize() failed: {e}")
+
+    # Wire MoltyID address (for reputation checks)
+    if "moltyid" in addrs:
+        try:
+            sig = await call_contract(
+                conn, deployer, addrs[name], "set_moltyid_address",
+                {"address": str(addrs["moltyid"])}
+            )
+            print(f"  ✅ {name}.set_moltyid_address() — sig={sig}")
+        except Exception as e:
+            print(f"  ⚠️  {name}.set_moltyid_address() failed: {e}")
+
+    # Wire MoltOracle address (for resolution attestation)
+    if "moltoracle" in addrs:
+        try:
+            sig = await call_contract(
+                conn, deployer, addrs[name], "set_oracle_address",
+                {"address": str(addrs["moltoracle"])}
+            )
+            print(f"  ✅ {name}.set_oracle_address() — sig={sig}")
+        except Exception as e:
+            print(f"  ⚠️  {name}.set_oracle_address() failed: {e}")
+
+    # Wire mUSD token address (collateral token)
+    if "musd_token" in addrs:
+        try:
+            sig = await call_contract(
+                conn, deployer, addrs[name], "set_musd_address",
+                {"address": str(addrs["musd_token"])}
+            )
+            print(f"  ✅ {name}.set_musd_address() — sig={sig}")
+        except Exception as e:
+            print(f"  ⚠️  {name}.set_musd_address() failed: {e}")
+
+    # Wire DEX governance address (for DAO dispute resolution)
+    if "dex_governance" in addrs:
+        try:
+            sig = await call_contract(
+                conn, deployer, addrs[name], "set_dex_gov_address",
+                {"address": str(addrs["dex_governance"])}
+            )
+            print(f"  ✅ {name}.set_dex_gov_address() — sig={sig}")
+        except Exception as e:
+            print(f"  ⚠️  {name}.set_dex_gov_address() failed: {e}")
+
+
 async def phase_verify(
     conn: Connection, addrs: Dict[str, PublicKey]
 ) -> None:
@@ -393,7 +466,8 @@ def save_manifest(deployer_pubkey: PublicKey, addrs: Dict[str, PublicKey]) -> No
         "dex_contracts": {
             name: str(addrs[name])
             for name in ["dex_core", "dex_amm", "dex_router",
-                         "dex_margin", "dex_rewards", "dex_governance", "dex_analytics"]
+                         "dex_margin", "dex_rewards", "dex_governance", "dex_analytics",
+                         "prediction_market"]
             if name in addrs
         },
         "trading_pairs": [
@@ -453,6 +527,13 @@ async def main():
     # Initialize DEX + wire everything together
     await phase_initialize_dex(conn, deployer, all_addrs, admin_pubkey)
 
+    # ── Phase 4: Prediction Market ──
+    addrs = await phase_deploy(conn, deployer, PHASE_4_PREDICTION, "PHASE 4 — PREDICTION MARKET")
+    all_addrs.update(addrs)
+
+    # Initialize prediction market + wire cross-references
+    await phase_initialize_prediction_market(conn, deployer, all_addrs, admin_pubkey)
+
     # Verify
     await phase_verify(conn, all_addrs)
 
@@ -468,7 +549,12 @@ async def main():
     print(f"  Contracts: {len(all_addrs)}/{len(ALL_CONTRACTS)}")
     print()
     for name, pubkey in all_addrs.items():
-        tag = "TOKEN" if "token" in name else "DEX  "
+        if "token" in name:
+            tag = "TOKEN"
+        elif name == "prediction_market":
+            tag = "PRED "
+        else:
+            tag = "DEX  "
         print(f"  [{tag}] {name:20s} → {pubkey}")
     print()
 

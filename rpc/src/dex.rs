@@ -27,14 +27,14 @@ use moltchain_core::contract::ContractAccount;
 const PRICE_SCALE: u64 = 1_000_000_000;
 const PNL_BIAS: u64 = 1u64 << 63;
 
-// Contract storage key maps (program IDs resolved at runtime from deploy-manifest)
-const DEX_CORE_PROGRAM: &str = "dex_core";
-const DEX_AMM_PROGRAM: &str = "dex_amm";
-const DEX_MARGIN_PROGRAM: &str = "dex_margin";
-const DEX_ANALYTICS_PROGRAM: &str = "dex_analytics";
-const DEX_ROUTER_PROGRAM: &str = "dex_router";
-const DEX_REWARDS_PROGRAM: &str = "dex_rewards";
-const DEX_GOVERNANCE_PROGRAM: &str = "dex_governance";
+// Contract storage key maps — must match genesis symbol registry (uppercase, alphanumeric only)
+const DEX_CORE_PROGRAM: &str = "DEX";
+const DEX_AMM_PROGRAM: &str = "DEXAMM";
+const DEX_MARGIN_PROGRAM: &str = "DEXMARGIN";
+const DEX_ANALYTICS_PROGRAM: &str = "ANALYTICS";
+const DEX_ROUTER_PROGRAM: &str = "DEXROUTER";
+const DEX_REWARDS_PROGRAM: &str = "DEXREWARDS";
+const DEX_GOVERNANCE_PROGRAM: &str = "DEXGOV";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // JSON Response Types
@@ -754,7 +754,7 @@ async fn get_pairs(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
     let mut pairs = Vec::new();
 
-    for i in 0..count {
+    for i in 1..=count {
         let key = format!("dex_pair_{}", i);
         if let Some(data) = read_bytes(&state, DEX_CORE_PROGRAM, &key) {
             if let Some(pair) = decode_pair(&data) {
@@ -797,7 +797,7 @@ async fn get_orderbook(
     let order_count = read_u64(&state, DEX_CORE_PROGRAM, "dex_order_count");
     let scan_limit = order_count.min(10_000);
 
-    for i in 0..scan_limit {
+    for i in 1..=scan_limit {
         let key = format!("dex_order_{}", i);
         if let Some(data) = read_bytes(&state, DEX_CORE_PROGRAM, &key) {
             if let Some(order) = decode_order(&data) {
@@ -1134,7 +1134,7 @@ async fn get_orders(State(state): State<Arc<RpcState>>, Query(q): Query<TraderQu
     let count = read_u64(&state, DEX_CORE_PROGRAM, &count_key);
 
     let mut orders = Vec::new();
-    for i in 0..count.min(200) {
+    for i in 1..=count.min(200) {
         let idx_key = format!("dex_uo_{}_{}", trader_hex, i);
         let order_id = read_u64(&state, DEX_CORE_PROGRAM, &idx_key);
         let key = format!("dex_order_{}", order_id);
@@ -1182,7 +1182,7 @@ async fn get_pools(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
     let mut pools = Vec::new();
 
-    for i in 0..count {
+    for i in 1..=count {
         let key = format!("amm_pool_{}", i);
         if let Some(data) = read_bytes(&state, DEX_AMM_PROGRAM, &key) {
             if let Some(pool) = decode_pool(&data) {
@@ -1224,7 +1224,7 @@ async fn get_lp_positions(
     let count = read_u64(&state, DEX_AMM_PROGRAM, &count_key);
 
     let mut positions = Vec::new();
-    for i in 0..count.min(100) {
+    for i in 1..=count.min(100) {
         let idx_key = format!("amm_op_{}_{}", owner_hex, i);
         let pos_id = read_u64(&state, DEX_AMM_PROGRAM, &idx_key);
         let key = format!("amm_pos_{}", pos_id);
@@ -1361,7 +1361,7 @@ async fn post_router_swap(
     let mut best_output: u64 = 0;
     let mut best_impact: f64 = 0.0;
 
-    for i in 0..route_count {
+    for i in 1..=route_count {
         let key = format!("rtr_route_{}", i);
         if let Some(data) = read_bytes(&state, DEX_ROUTER_PROGRAM, &key) {
             if let Some(route) = decode_route(&data) {
@@ -1477,7 +1477,7 @@ async fn get_routes(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
     let mut routes = Vec::new();
 
-    for i in 0..count {
+    for i in 1..=count {
         let key = format!("rtr_route_{}", i);
         if let Some(data) = read_bytes(&state, DEX_ROUTER_PROGRAM, &key) {
             if let Some(route) = decode_route(&data) {
@@ -1569,7 +1569,7 @@ async fn get_margin_positions(
     let count = read_u64(&state, DEX_MARGIN_PROGRAM, &count_key);
 
     let mut positions = Vec::new();
-    for i in 0..count.min(100) {
+    for i in 1..=count.min(100) {
         let idx_key = format!("mrg_up_{}_{}", trader_hex, i);
         let pos_id = read_u64(&state, DEX_MARGIN_PROGRAM, &idx_key);
         let key = format!("mrg_pos_{}", pos_id);
@@ -1706,7 +1706,7 @@ async fn get_proposals(
     let slot = current_slot(&state);
     let mut proposals = Vec::new();
 
-    for i in 0..count {
+    for i in 1..=count {
         let key = format!("gov_prop_{}", i);
         if let Some(data) = read_bytes(&state, DEX_GOVERNANCE_PROGRAM, &key) {
             if let Some(p) = decode_proposal(&data) {

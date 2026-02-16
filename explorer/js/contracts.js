@@ -13,6 +13,10 @@ var TEMPLATE_CATEGORIES = {
     marketplace: 'infra', auction: 'infra', nft: 'infra',
     payments: 'infra', launchpad: 'infra', vault: 'infra',
     bounty: 'infra', compute: 'infra',
+    staking: 'defi', vesting: 'defi', custody: 'defi', multisig: 'infra',
+    faucet: 'infra', registry: 'infra', treasury: 'infra', escrow: 'infra',
+    social: 'infra', content: 'infra', ai: 'infra', prediction: 'defi',
+    insurance: 'defi', supply: 'infra', timelock: 'infra', crosschain: 'defi',
 };
 
 // Template → Font Awesome icon class
@@ -27,6 +31,12 @@ var TEMPLATE_ICONS = {
     marketplace: 'fa-store', auction: 'fa-gavel', nft: 'fa-image',
     payments: 'fa-credit-card', launchpad: 'fa-rocket', vault: 'fa-vault',
     bounty: 'fa-bullseye', compute: 'fa-microchip',
+    staking: 'fa-layer-group', vesting: 'fa-clock', custody: 'fa-shield-alt',
+    multisig: 'fa-key', faucet: 'fa-faucet', registry: 'fa-list-alt',
+    treasury: 'fa-piggy-bank', escrow: 'fa-handshake',
+    social: 'fa-comments', content: 'fa-newspaper', ai: 'fa-brain',
+    prediction: 'fa-chart-line', insurance: 'fa-umbrella',
+    supply: 'fa-truck', timelock: 'fa-hourglass-half', crosschain: 'fa-globe',
 };
 
 var CATEGORY_LABELS = {
@@ -83,7 +93,7 @@ async function loadContracts() {
             var abiName = (abi && abi.name && abi.name !== 'unknown') ? abi.name : '';
             var name = (reg && reg.name) || abiName || (prog.metadata && prog.metadata.name) || '';
             var symbol = (reg && reg.symbol) || (prog.metadata && prog.metadata.symbol) || '';
-            var displayName = name || symbol || formatHash(pid, 14);
+            var displayName = name || symbol || formatHash(pid);
 
             return {
                 address: pid,
@@ -140,13 +150,21 @@ function renderContracts() {
         return;
     }
 
-    tbody.innerHTML = filtered.map(function(c) {
+    var renderRows = async function() {
+        var ownerAddresses = filtered.map(function(c) { return c.owner; }).filter(Boolean);
+        var nameMap = (typeof batchResolveMoltNames === 'function')
+            ? await batchResolveMoltNames(ownerAddresses)
+            : {};
+
+        tbody.innerHTML = filtered.map(function(c) {
         var link = 'contract.html?address=' + c.address;
-        var addr = '<a href="' + link + '" class="hash-link">' + formatHash(c.address, 10) + '</a>';
+        var addr = '<a href="' + link + '" class="hash-link hash-short" title="' + c.address + '">' + formatHash(c.address) + '</a>';
         var codeSize = c.codeSize > 0 ? formatBytes(c.codeSize) : '<span class="text-muted">\u2014</span>';
         var abiFuncs = c.abiFuncs > 0 ? c.abiFuncs : '<span class="text-muted">\u2014</span>';
+        var ownerName = c.owner ? nameMap[c.owner] : null;
+        var ownerLabel = ownerName ? (ownerName + '.molt') : formatHash(c.owner);
         var owner = c.owner
-            ? '<a href="address.html?address=' + c.owner + '" class="hash-link">' + formatHash(c.owner, 8) + '</a>'
+            ? '<a href="address.html?address=' + c.owner + '" class="hash-link" title="' + c.owner + '">' + ownerLabel + '</a>'
             : '<span class="text-muted">\u2014</span>';
         var catLabel = CATEGORY_LABELS[c.category] || c.category;
 
@@ -164,6 +182,11 @@ function renderContracts() {
             '<td><span class="status-success"><i class="fas fa-check-circle"></i> Live</span></td>' +
         '</tr>';
     }).join('');
+    };
+
+    renderRows().catch(function() {
+        tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; color: #FF6B6B;">Failed to resolve owner names</td></tr>';
+    });
 }
 
 function filterContracts(cat) {
@@ -191,13 +214,15 @@ function updateStats() {
 function initSearch() {
     var input = document.getElementById('searchInput');
     if (!input) return;
-    input.addEventListener('keydown', function(e) {
+    input.addEventListener('keydown', async function(e) {
         if (e.key === 'Enter') {
             var q = input.value.trim();
             if (!q) return;
-            if (/^\d+$/.test(q)) window.location.href = 'block.html?slot=' + q;
-            else if (q.length === 64) window.location.href = 'transaction.html?sig=' + q;
-            else window.location.href = 'address.html?address=' + q;
+            if (typeof navigateExplorerSearch === 'function') {
+                await navigateExplorerSearch(q);
+                return;
+            }
+            window.location.href = 'address.html?address=' + q;
         }
     });
 }

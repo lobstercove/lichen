@@ -255,12 +255,88 @@ function scheduleWsReconnect() {
     if (balanceWsReconnectTimer) return;
     balanceWsReconnectTimer = setTimeout(() => {
         balanceWsReconnectTimer = null;
-        // Only reconnect if we're on the dashboard
         const dashboard = document.getElementById('walletDashboard');
         if (dashboard && dashboard.style.display !== 'none') {
             connectBalanceWebSocket();
         }
-    }, 5000); // Reconnect after 5 seconds
+    }, 5000);
+}
+
+// ===== HTTP BALANCE POLLING FALLBACK =====
+// Polls for balance updates via RPC as a supplement to WebSocket.
+let _balancePollTimer = null;
+
+function startBalancePolling() {
+    if (_balancePollTimer) return;
+    _balancePollTimer = setInterval(async () => {
+        const dashboard = document.getElementById('walletDashboard');
+        if (!dashboard || dashboard.style.display === 'none') return;
+        try { await refreshBalance(); } catch (_) { /* ignore */ }
+    }, 8000); // Poll every 8 seconds as supplement
+}
+
+function stopBalancePolling() {
+    if (_balancePollTimer) {
+        clearInterval(_balancePollTimer);
+        _balancePollTimer = null;
+    }
+}
+
+// ── Bincode Message Serializer ──
+// Produces the same bytes as Rust's `bincode::serialize(&Message)` so signatures match.
+// Message = { instructions: Vec<Instruction>, recent_blockhash: Hash([u8;32]) }
+// Instruction = { program_id: Pubkey([u8;32]), accounts: Vec<Pubkey>, data: Vec<u8> }
+function serializeMessageBincode(message) {
+    const parts = [];
+
+    // Helper: write u64 little-endian (8 bytes) — bincode uses fixint u64 for Vec lengths
+    function writeU64LE(n) {
+        const buf = new ArrayBuffer(8);
+        const view = new DataView(buf);
+        view.setBigUint64(0, BigInt(n), true);
+        parts.push(new Uint8Array(buf));
+    }
+
+    // Helper: write raw bytes
+    function writeBytes(bytes) {
+        parts.push(new Uint8Array(bytes));
+    }
+
+    // instructions: Vec<Instruction>
+    const ixs = message.instructions || [];
+    writeU64LE(ixs.length);
+    for (const ix of ixs) {
+        // program_id: [u8; 32] — fixed-size, no length prefix
+        writeBytes(ix.program_id);
+        // accounts: Vec<Pubkey> — u64 length + N * 32 bytes
+        const accounts = ix.accounts || [];
+        writeU64LE(accounts.length);
+        for (const acct of accounts) {
+            writeBytes(acct);
+        }
+        // data: Vec<u8> — u64 length + N bytes
+        const data = ix.data || [];
+        writeU64LE(data.length);
+        writeBytes(data);
+    }
+
+    // recent_blockhash: Hash([u8; 32]) — parse hex string to 32 bytes
+    const hashHex = message.blockhash || message.recent_blockhash;
+    const hashBytes = new Uint8Array(32);
+    for (let i = 0; i < 32; i++) {
+        hashBytes[i] = parseInt(hashHex.substr(i * 2, 2), 16);
+    }
+    writeBytes(hashBytes);
+
+    // Concatenate all parts
+    const totalLen = parts.reduce((s, p) => s + p.length, 0);
+    const result = new Uint8Array(totalLen);
+    let offset = 0;
+    for (const p of parts) {
+        result.set(p, offset);
+        offset += p.length;
+    }
+    return result;
 }
 
 // RPC Client (same as explorer)
@@ -911,6 +987,7 @@ async function showDashboard() {
     await loadActivity();
     await loadStaking();
     connectBalanceWebSocket();
+    startBalancePolling();
 }
 
 function setupDashboardTabs() {
@@ -933,6 +1010,18 @@ function setupDashboardTabs() {
             }
             if (tabName === 'nfts') {
                 refreshNFTs();
+            }
+            if (tabName === 'identity' && typeof loadIdentity === 'function') {
+                loadIdentity();
+            }
+            if (tabName === 'governance') {
+                loadGovernance();
+            }
+            if (tabName === 'bridge') {
+                loadBridge();
+            }
+            if (tabName === 'prediction') {
+                loadPredictionMarkets();
             }
         });
     });
@@ -984,7 +1073,8 @@ function switchWallet(walletId) {
     saveWalletState();
     // Close dropdown before refreshing dashboard
     document.getElementById('walletDropdown').classList.remove('show');
-    // Reconnect WS to new wallet address
+    // Reconnect WS + polling for new wallet address
+    stopBalancePolling();
     disconnectBalanceWebSocket();
     showDashboard();
 }
@@ -1088,23 +1178,26 @@ async function loadAssets() {
         }
     }
     
-    // If no token contracts are configured yet, show setup hint
-    const hasTokenContracts = Object.values(TOKEN_REGISTRY).some(t => t.address);
-    if (!hasTokenContracts) {
-        html += `
-            <div style="padding: 1rem; text-align: center; color: var(--text-muted); font-size: 0.9rem;">
-                <i class="fas fa-info-circle"></i> Token addresses not yet configured. Add them in <a href="#" onclick="openSettings(); return false;" style="color: var(--primary);">Settings</a> or deploy a token manifest.
-            </div>
-        `;
-    }
+    // Token contracts are loaded dynamically from deploy-manifest; nothing to show if absent
     
     assetsList.innerHTML = html;
 }
 
-async function loadActivity() {
+let _activityBeforeSlot = null; // Pagination cursor for activity
+let _activityItems = [];        // Accumulated activity items
+let _activityHasMore = true;    // Whether more items may exist
+const ACTIVITY_PAGE_SIZE = 20;  // Items per page
+
+async function loadActivity(reset = true) {
     const activityList = document.getElementById('activityList');
     const wallet = getActiveWallet();
     if (!wallet) return;
+
+    if (reset) {
+        _activityBeforeSlot = null;
+        _activityItems = [];
+        _activityHasMore = true;
+    }
     
     const emptyHtml = `
         <div style="text-align: center; padding: 3rem; color: var(--text-muted);">
@@ -1114,47 +1207,62 @@ async function loadActivity() {
     `;
     
     try {
-        // Fetch on-chain transactions via proper RPC
+        // Fetch on-chain transactions via proper RPC (paginated)
         let transactions = [];
         try {
-            const result = await rpc.call('getTransactionsByAddress', [wallet.address, { limit: 50 }]);
+            const opts = { limit: ACTIVITY_PAGE_SIZE };
+            if (_activityBeforeSlot) opts.before_slot = _activityBeforeSlot;
+            const result = await rpc.call('getTransactionsByAddress', [wallet.address, opts]);
             transactions = result?.transactions || (Array.isArray(result) ? result : []);
         } catch (e) {
             // Account may not exist on-chain yet
         }
 
-        // Fetch airdrops from faucet backend API (cross-origin safe via CORS)
+        // Fetch airdrops from faucet (only on first page)
         let airdrops = [];
-        try {
-            const resp = await fetch(`http://localhost:9100/faucet/airdrops?address=${encodeURIComponent(wallet.address)}&limit=50`);
-            if (resp.ok) {
-                const records = await resp.json();
-                airdrops = records.map(a => ({
-                    type: 'Airdrop',
-                    from: 'Treasury',
-                    to: a.recipient,
-                    amount: a.amount_molt * 1_000_000_000,
-                    timestamp: a.timestamp_ms,
-                    signature: a.signature,
-                    isAirdrop: true
-                }));
-            }
-        } catch (e) { /* faucet API unavailable */ }
+        if (!_activityBeforeSlot) {
+            try {
+                const faucetUrl = (typeof MOLT_CONFIG !== 'undefined' && MOLT_CONFIG.faucet) ? MOLT_CONFIG.faucet : 'http://localhost:9100';
+                const resp = await fetch(`${faucetUrl}/faucet/airdrops?address=${encodeURIComponent(wallet.address)}&limit=50`);
+                if (resp.ok) {
+                    const records = await resp.json();
+                    airdrops = records.map(a => ({
+                        type: 'Airdrop',
+                        from: 'Treasury',
+                        to: a.recipient,
+                        amount: a.amount_molt * 1_000_000_000,
+                        timestamp: a.timestamp_ms,
+                        signature: a.signature,
+                        isAirdrop: true
+                    }));
+                }
+            } catch (e) { /* faucet API unavailable */ }
+        }
 
-        // Merge on-chain txs and airdrops, sort by timestamp descending
-        const allActivity = [...transactions.map(tx => ({
+        // Track pagination cursor from last TX slot
+        if (transactions.length > 0) {
+            const lastTx = transactions[transactions.length - 1];
+            const lastSlot = lastTx.slot || lastTx.block_slot;
+            if (lastSlot) _activityBeforeSlot = lastSlot;
+        }
+        _activityHasMore = transactions.length >= ACTIVITY_PAGE_SIZE;
+
+        // Merge new page into accumulated items
+        const newItems = [...transactions.map(tx => ({
             ...tx,
             timestamp: tx.block_time ? tx.block_time * 1000 : (tx.timestamp || 0),
             isAirdrop: false
-        })), ...airdrops].sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+        })), ...airdrops];
+        _activityItems = [..._activityItems, ...newItems]
+            .sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
         
-        if (allActivity.length === 0) {
+        if (_activityItems.length === 0) {
             activityList.innerHTML = emptyHtml;
             return;
         }
         
-        // Display activity
-        activityList.innerHTML = allActivity.map(tx => {
+        // Render activity
+        activityList.innerHTML = _activityItems.map(tx => {
             let icon, color, type, address, amount, sign;
 
             if (tx.isAirdrop) {
@@ -1188,9 +1296,8 @@ async function loadActivity() {
                     <div class="activity-icon" style="background: ${color}22; color: ${color};">
                         <i class="fas ${icon}"></i>
                     </div>
-                    <div class="activity-info">
-                        <div class="activity-title">${type}</div>
-                        <div class="activity-address">${displayAddr}</div>
+                    <div class="activity-details">
+                        <div class="activity-type">${type}<span class="activity-addr">${displayAddr}</span></div>
                         <div class="activity-date">${date}</div>
                     </div>
                     <div class="activity-amount" style="color: ${color};">
@@ -1199,10 +1306,21 @@ async function loadActivity() {
                 </div>
             `;
         }).join('');
+
+        // Add "Load More" button if there are more
+        if (_activityHasMore) {
+            activityList.innerHTML += `
+                <div style="text-align: center; padding: 1rem;">
+                    <button onclick="loadActivity(false)" class="btn btn-small btn-secondary" style="padding: 0.5rem 1.5rem; font-size: 0.85rem;">
+                        <i class="fas fa-chevron-down"></i> Load More
+                    </button>
+                </div>
+            `;
+        }
         
     } catch (error) {
         console.error('Failed to load activity:', error);
-        activityList.innerHTML = emptyHtml;
+        if (_activityItems.length === 0) activityList.innerHTML = emptyHtml;
     }
 }
 
@@ -1474,7 +1592,7 @@ async function showReefStakeModal() {
         };
         
         const privateKey = await MoltCrypto.decryptPrivateKey(wallet.encryptedKey, values.password);
-        const messageBytes = new TextEncoder().encode(JSON.stringify(message));
+        const messageBytes = serializeMessageBincode(message);
         const signature = await MoltCrypto.signTransaction(privateKey, messageBytes);
         
         const transaction = { signatures: [Array.from(signature)], message };
@@ -1532,7 +1650,7 @@ async function showReefUnstakeModal() {
         };
         
         const privateKey = await MoltCrypto.decryptPrivateKey(wallet.encryptedKey, values.password);
-        const messageBytes = new TextEncoder().encode(JSON.stringify(message));
+        const messageBytes = serializeMessageBincode(message);
         const signature = await MoltCrypto.signTransaction(privateKey, messageBytes);
         
         const transaction = { signatures: [Array.from(signature)], message };
@@ -1868,6 +1986,180 @@ function openMarketplace() {
     showToast('MoltChain NFT Marketplace - launching with mainnet');
 }
 
+// ===== GOVERNANCE TAB =====
+async function loadGovernance() {
+    try {
+        const addr = getCurrentAddress();
+        const govContract = await rpc.call('getSymbolAddress', ['moltchain_governance']);
+        const [proposals, config] = await Promise.all([
+            rpc.call('callContract', [govContract, 'get_proposals', { offset: 0, limit: 20 }]).catch(() => ({ proposals: [], total: 0 })),
+            rpc.call('callContract', [govContract, 'get_config', {}]).catch(() => ({})),
+        ]);
+
+        const el = (id) => document.getElementById(id);
+        el('govTotalProposals').textContent = proposals.total || 0;
+        const active = (proposals.proposals || []).filter(p => p.status === 'active' || p.status === 'voting');
+        el('govActiveProposals').textContent = active.length;
+
+        // Voting power = staked balance
+        const stake = await rpc.call('callContract', [await rpc.call('getSymbolAddress', ['moltchain_staking']), 'get_stake', { addr: addr }]).catch(() => ({ amount: 0 }));
+        el('govVotingPower').textContent = formatMolt(stake.amount || 0);
+
+        const list = document.getElementById('govProposalsList');
+        if (!active.length && !(proposals.proposals || []).length) {
+            list.innerHTML = '<p class="empty-state"><i class="fas fa-vote-yea"></i> No proposals yet. Create the first one!</p>';
+        } else {
+            list.innerHTML = (proposals.proposals || []).map(p => `
+                <div class="proposal-card">
+                    <div class="proposal-status status-${p.status || 'unknown'}">${(p.status || 'unknown').toUpperCase()}</div>
+                    <h4>${escapeHtml(p.title || 'Untitled')}</h4>
+                    <p>${escapeHtml((p.description || '').slice(0, 120))}${(p.description || '').length > 120 ? '...' : ''}</p>
+                    <div class="proposal-votes">
+                        <span class="vote-for"><i class="fas fa-thumbs-up"></i> ${p.votes_for || 0}</span>
+                        <span class="vote-against"><i class="fas fa-thumbs-down"></i> ${p.votes_against || 0}</span>
+                    </div>
+                    <div class="proposal-actions">
+                        <button class="btn btn-sm btn-primary" onclick="voteProposal(${p.id}, true)"><i class="fas fa-check"></i> For</button>
+                        <button class="btn btn-sm btn-secondary" onclick="voteProposal(${p.id}, false)"><i class="fas fa-times"></i> Against</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+    } catch (err) {
+        console.error('Failed to load governance:', err);
+        document.getElementById('govProposalsList').innerHTML = '<p class="empty-state"><i class="fas fa-exclamation-triangle"></i> Failed to load governance data</p>';
+    }
+}
+
+async function voteProposal(proposalId, support) {
+    try {
+        const addr = getCurrentAddress();
+        const govAddr = await rpc.call('getSymbolAddress', ['moltchain_governance']);
+        await rpc.call('callContract', [govAddr, 'vote', { voter: addr, proposal_id: proposalId, support }]);
+        showToast(support ? 'Voted FOR proposal' : 'Voted AGAINST proposal', 'success');
+        loadGovernance();
+    } catch (err) {
+        showToast('Vote failed: ' + err.message, 'error');
+    }
+}
+
+function showCreateProposal() {
+    showToast('Proposal creation — launching with mainnet');
+}
+
+// ===== BRIDGE TAB =====
+async function loadBridge() {
+    try {
+        const addr = getCurrentAddress();
+        const bridgeAddr = await rpc.call('getSymbolAddress', ['moltbridge']);
+        const [info, history] = await Promise.all([
+            rpc.call('callContract', [bridgeAddr, 'get_bridge_info', {}]).catch(() => ({})),
+            rpc.call('callContract', [bridgeAddr, 'get_user_requests', { user: addr }]).catch(() => ({ requests: [] })),
+        ]);
+
+        const el = (id) => document.getElementById(id);
+        el('bridgeTVL').textContent = formatMolt(info.total_locked || 0);
+        el('bridgePending').textContent = (history.requests || []).filter(r => r.status === 'pending').length;
+        el('bridgeCompleted').textContent = (history.requests || []).filter(r => r.status === 'completed').length;
+
+        const historyEl = document.getElementById('bridgeHistory');
+        const reqs = history.requests || [];
+        if (reqs.length) {
+            historyEl.innerHTML = '<h4>Recent Transfers</h4>' + reqs.slice(0, 10).map(r => `
+                <div class="bridge-transfer">
+                    <span class="bridge-dir">${r.direction === 'inbound' ? '<i class="fas fa-arrow-down"></i> IN' : '<i class="fas fa-arrow-up"></i> OUT'}</span>
+                    <span class="bridge-amount">${formatMolt(r.amount || 0)} MOLT</span>
+                    <span class="bridge-status status-${r.status}">${(r.status || '').toUpperCase()}</span>
+                </div>
+            `).join('');
+        }
+    } catch (err) {
+        console.error('Failed to load bridge:', err);
+    }
+}
+
+async function initBridgeTransfer() {
+    const amount = parseFloat(document.getElementById('bridgeAmount').value);
+    if (!amount || amount <= 0) { showToast('Enter a valid amount', 'error'); return; }
+    const source = document.getElementById('bridgeSource').value;
+    const dest = document.getElementById('bridgeDest').value;
+    if (source === dest) { showToast('Source and destination must differ', 'error'); return; }
+
+    try {
+        const addr = getCurrentAddress();
+        const bridgeAddr = await rpc.call('getSymbolAddress', ['moltbridge']);
+        const amountShells = Math.floor(amount * 1_000_000_000);
+        await rpc.call('callContract', [bridgeAddr, 'request_lock', { caller: addr, amount: amountShells, dest_chain: dest }]);
+        showToast(`Bridge transfer of ${amount} MOLT initiated to ${dest}`, 'success');
+        loadBridge();
+    } catch (err) {
+        showToast('Bridge transfer failed: ' + err.message, 'error');
+    }
+}
+
+// ===== PREDICTION MARKETS TAB =====
+async function loadPredictionMarkets() {
+    try {
+        const addr = getCurrentAddress();
+        const pmAddr = await rpc.call('getSymbolAddress', ['prediction_market']);
+        const [stats, markets, positions] = await Promise.all([
+            rpc.call('callContract', [pmAddr, 'get_platform_stats', {}]).catch(() => ({})),
+            rpc.call('callContract', [pmAddr, 'get_all_markets', { offset: 0, limit: 20 }]).catch(() => ({ markets: [], total: 0 })),
+            rpc.call('callContract', [pmAddr, 'get_user_markets', { user: addr }]).catch(() => ({ positions: [] })),
+        ]);
+
+        const el = (id) => document.getElementById(id);
+        el('predActiveMarkets').textContent = (markets.markets || []).filter(m => m.status === 'active').length;
+        el('predTotalVolume').textContent = formatMolt(stats.total_volume || 0);
+        el('predYourPositions').textContent = (positions.positions || []).length;
+
+        const list = document.getElementById('predMarketsList');
+        const mks = markets.markets || [];
+        if (!mks.length) {
+            list.innerHTML = '<p class="empty-state"><i class="fas fa-chart-bar"></i> No prediction markets yet</p>';
+        } else {
+            list.innerHTML = mks.map(m => `
+                <div class="market-card">
+                    <div class="market-status status-${m.status || 'unknown'}">${(m.status || 'unknown').toUpperCase()}</div>
+                    <h4>${escapeHtml(m.question || m.title || 'Market #' + m.id)}</h4>
+                    <div class="market-odds">
+                        <div class="odds-bar">
+                            <div class="odds-yes" style="width:${m.yes_price || 50}%">YES ${m.yes_price || 50}%</div>
+                            <div class="odds-no" style="width:${100 - (m.yes_price || 50)}%">NO ${100 - (m.yes_price || 50)}%</div>
+                        </div>
+                    </div>
+                    <div class="market-meta">
+                        <span><i class="fas fa-money-bill"></i> ${formatMolt(m.liquidity || 0)} liquidity</span>
+                        <span><i class="fas fa-exchange-alt"></i> ${formatMolt(m.volume || 0)} volume</span>
+                    </div>
+                    <div class="market-actions">
+                        <button class="btn btn-sm btn-primary" onclick="showBuyShares(${m.id}, 'yes')"><i class="fas fa-arrow-up"></i> Buy YES</button>
+                        <button class="btn btn-sm btn-secondary" onclick="showBuyShares(${m.id}, 'no')"><i class="fas fa-arrow-down"></i> Buy NO</button>
+                    </div>
+                </div>
+            `).join('');
+        }
+    } catch (err) {
+        console.error('Failed to load prediction markets:', err);
+        document.getElementById('predMarketsList').innerHTML = '<p class="empty-state"><i class="fas fa-exclamation-triangle"></i> Failed to load markets</p>';
+    }
+}
+
+function showBuyShares(marketId, outcome) {
+    showToast(`Share purchase for market #${marketId} — launching with mainnet`);
+}
+
+function formatMolt(shells) {
+    if (typeof shells === 'string') shells = parseInt(shells) || 0;
+    return (shells / 1_000_000_000).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 4 }) + ' MOLT';
+}
+
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
 function closeModal(modalId) {
     const modal = document.getElementById(modalId);
     if (modal) {
@@ -1970,7 +2262,7 @@ async function registerEvmAddress(wallet, password) {
         };
 
         const privateKey = await MoltCrypto.decryptPrivateKey(wallet.encryptedKey, password);
-        const messageBytes = new TextEncoder().encode(JSON.stringify(message));
+        const messageBytes = serializeMessageBincode(message);
         const signature = await MoltCrypto.signTransaction(privateKey, messageBytes);
 
         const transaction = { signatures: [Array.from(signature)], message };
@@ -2052,6 +2344,20 @@ async function confirmSend() {
     
     const wallet = getActiveWallet();
     if (!wallet) return;
+
+    // Pre-flight balance check: ensure enough MOLT for fees (and transfer if MOLT)
+    try {
+        const balResult = await rpc.call('getBalance', [wallet.address]);
+        const spendable = (balResult?.spendable || balResult?.balance || 0) / 1_000_000_000;
+        const baseFee = 0.001; // 1M shells = 0.001 MOLT
+        const totalNeeded = selectedToken === 'MOLT' ? amount + baseFee : baseFee;
+        if (spendable < totalNeeded) {
+            showToast(`Insufficient MOLT balance: need ${totalNeeded.toFixed(4)} MOLT (${selectedToken === 'MOLT' ? 'transfer + fee' : 'fee'}), have ${spendable.toFixed(4)} spendable`);
+            return;
+        }
+    } catch (e) {
+        // Non-blocking: let the RPC reject it if balance is insufficient
+    }
     
     try {
         showToast('Building transaction...');
@@ -2138,7 +2444,7 @@ async function confirmSend() {
         // Sign transaction with Ed25519
         const passwordValues = await showPasswordModal({
             title: 'Sign Transaction',
-            message: `Send ${amount} ${selectedToken} to ${to.slice(0, 12)}...`,
+            message: `Send ${amount} ${selectedToken} to ${to}`,
             icon: 'fas fa-pen-nib',
             confirmText: 'Sign & Send',
             fields: [
@@ -2151,7 +2457,7 @@ async function confirmSend() {
         }
         
         const privateKey = await MoltCrypto.decryptPrivateKey(wallet.encryptedKey, passwordValues.password);
-        const messageBytes = new TextEncoder().encode(JSON.stringify(message));
+        const messageBytes = serializeMessageBincode(message);
         const signature = await MoltCrypto.signTransaction(privateKey, messageBytes);
         
         // Build signed transaction
@@ -2168,7 +2474,7 @@ async function confirmSend() {
         showToast('Sending transaction...');
         const txSignature = await rpc.sendTransaction(txBase64);
         
-        showToast(`✅ ${amount} ${selectedToken} sent! Signature: ${txSignature.slice(0, 16)}...`);
+        showToast(`✅ ${amount} ${selectedToken} sent! Signature: ${String(txSignature).slice(0, 16)}...`);
         closeModal('sendModal');
         
         // Clear form
@@ -2186,6 +2492,7 @@ async function confirmSend() {
 }
 
 function lockWallet() {
+    stopBalancePolling();
     disconnectBalanceWebSocket();
     walletState.isLocked = true;
     saveWalletState();
@@ -2204,6 +2511,7 @@ function logoutWallet() {
     }).then(confirmed => {
         if (!confirmed) return;
         
+        stopBalancePolling();
         disconnectBalanceWebSocket();
         
         // Clear ALL wallet data
@@ -2220,8 +2528,8 @@ function logoutWallet() {
             settings: {}
         };
         
-        // Hide all screens
-        document.querySelectorAll('.wallet-screen').forEach(s => s.style.display = 'none');
+        // Hide all screens including dashboard
+        document.querySelectorAll('.wallet-screen, .wallet-dashboard').forEach(s => s.style.display = 'none');
         
         // Show welcome screen
         document.getElementById('welcomeScreen').style.display = 'flex';
@@ -2474,8 +2782,9 @@ async function exportPrivateKeyWithPassword(password) {
             return;
         }
         
-        // Show private key in modal
-        const privateKeyHex = Array.from(testDecrypt.secretKey)
+        // Show private key in modal — export the 32-byte seed (64 hex chars)
+        // so it matches the import format (which expects 64 hex chars = 32 bytes)
+        const privateKeyHex = testDecrypt.privateKey || Array.from(testDecrypt.secretKey.slice(0, 32))
             .map(b => b.toString(16).padStart(2, '0'))
             .join('');
         
@@ -2805,17 +3114,17 @@ function switchNetwork(network) {
     // Update RPC client endpoint
     rpc.url = getRpcEndpoint();
     
-    // Reconnect WebSocket to new endpoint
+    // Restart WS + polling on new endpoint
+    stopBalancePolling();
     disconnectBalanceWebSocket();
     connectBalanceWebSocket();
+    startBalancePolling();
 
     showToast(`Switched to ${NETWORK_LABELS[network] || network}`);
 
     // Refresh wallet data after network switch
-    if (typeof refreshWalletData === 'function') {
-        refreshWalletData();
-    } else if (typeof loadDashboard === 'function') {
-        loadDashboard();
+    if (typeof showDashboard === 'function') {
+        showDashboard();
     }
 }
 

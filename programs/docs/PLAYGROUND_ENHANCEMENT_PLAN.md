@@ -15,7 +15,7 @@ Transform the Playground into a comprehensive demo matching Solana Playground (b
   - Upgrade: Owner-based contract upgrades
   - Close: Close contract and withdraw
 - ✅ Fee System
-  - BASE_FEE = 10,000 shells (0.00001 MOLT)
+  - BASE_FEE = 1,000,000 shells (0.001 MOLT)
   - 50% burned, 50% to validator
 - ✅ Transaction structure with signatures
 - ✅ Gas metering (DEFAULT_GAS_LIMIT = 1,000,000)

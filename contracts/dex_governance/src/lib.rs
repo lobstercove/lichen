@@ -267,7 +267,8 @@ fn update_prop_no(data: &mut Vec<u8>, val: u64) {
 // PUBLIC FUNCTIONS
 // ============================================================================
 
-pub fn initialize(admin: *const u8) -> u32 {
+#[no_mangle]
+pub extern "C" fn initialize(admin: *const u8) -> u32 {
     let existing = load_addr(ADMIN_KEY);
     if !is_zero(&existing) {
         return 1;
@@ -662,9 +663,9 @@ fn verify_reputation(addr: &[u8; 32], min_rep: u64) -> bool {
             let reputation = bytes_to_u64(&result);
             reputation >= min_rep
         }
-        // CrossCall returned empty (test mode) or failed — fallback to allow
-        // In test mode, call_contract returns Ok(Vec::new()), so this allows
-        _ => true,
+        // SECURITY FIX: CrossCall failure must block, not allow
+        // Previously returned true on failure, allowing all callers
+        _ => false,
     }
 }
 
@@ -808,7 +809,7 @@ pub extern "C" fn call() {
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
-        _ => {}
+        _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
     }
 }
 

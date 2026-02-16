@@ -317,8 +317,8 @@ Needed components beyond shared theme:
 <nav class="nav">
   <div class="nav-container">
     <div class="nav-logo">
-      <img src="assets/MoltDev_Logo_256.png" class="logo-icon" alt="Molt Dev">
-      <span class="logo-text">Molt Dev</span>
+      <img src="assets/MoltDev_Logo_256.png" class="logo-icon" alt="MoltChain Dev">
+      <span class="logo-text">MoltChain Dev</span>
     </div>
     <ul class="nav-menu">
       <li><a href="index.html">Hub</a></li>

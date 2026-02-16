@@ -30,7 +30,7 @@
 const CONFIG = {
     // ... existing config ...
     fees: {
-        baseFee: 10000, // 0.00001 MOLT in shells
+        baseFee: 1000000, // 0.001 MOLT in shells
         burnPercentage: 50
     },
     gas: {

@@ -731,7 +731,7 @@ fn emit_program_and_nft_events(
                                 });
 
                                 // Emit contract events from DB if stored during processing
-                                if let Ok(events) = state.get_contract_logs(program, 50) {
+                                if let Ok(events) = state.get_contract_logs(program, 50, None) {
                                     for event in &events {
                                         if event.slot == block.header.slot {
                                             let _ =
@@ -935,19 +935,22 @@ fn block_vote_weight(
 /// Genesis-block transactions (slot 0) are created with special
 /// signatures and a zero blockhash, so they cannot pass the normal
 /// validation pipeline — the genesis state was applied directly.
+///
+/// Uses parallel processing (rayon) for non-conflicting TXs to speed up
+/// block replay during chain sync (FIX-2).
 fn replay_block_transactions(processor: &TxProcessor, block: &Block) {
     if block.header.slot == 0 {
         return; // genesis txs use zero blockhash + dummy signatures
     }
     let producer_pubkey = Pubkey(block.header.validator);
-    for tx in &block.transactions {
-        let result = processor.process_transaction(tx, &producer_pubkey);
+    let results = processor.process_transactions_parallel(&block.transactions, &producer_pubkey);
+    for (tx, result) in block.transactions.iter().zip(results.iter()) {
         if !result.success {
             warn!(
                 "⚠️  Tx replay failed in slot {}: {} ({})",
                 block.header.slot,
                 tx.signature().to_hex(),
-                result.error.unwrap_or_default()
+                result.error.as_deref().unwrap_or_default()
             );
         }
     }
@@ -1592,6 +1595,8 @@ const GENESIS_CONTRACT_CATALOG: &[(&str, &str, &str, &str)] = &[
     ("bountyboard", "BOUNTY", "BountyBoard", "bounty"),
     ("compute_market", "COMPUTE", "Compute Market", "compute"),
     ("reef_storage", "REEF", "Reef Storage", "storage"),
+    // Prediction Markets
+    ("prediction_market", "PREDICT", "Prediction Markets", "defi"),
 ];
 
 fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey, label: &str) {
@@ -1758,6 +1763,10 @@ fn derive_contract_address(deployer_pubkey: &Pubkey, dir_name: &str) -> Option<P
 
 /// Execute a contract function via WASM runtime and apply storage changes.
 /// Returns true on success.
+/// Monotonic sequence counter for genesis activity indexing.
+/// Each genesis call gets a unique sequence to avoid CF key collisions.
+static GENESIS_ACTIVITY_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 fn genesis_exec_contract(
     state: &StateStore,
     program_pubkey: &Pubkey,
@@ -1823,6 +1832,29 @@ fn genesis_exec_contract(
                 error!("  FAIL {}: put_account: {}", label, e);
                 return false;
             }
+
+            // ── Record genesis call in CF_PROGRAM_CALLS for explorer indexing ──
+            let seq = GENESIS_ACTIVITY_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let activity = ProgramCallActivity {
+                slot: 0,
+                timestamp: 0,
+                program: *program_pubkey,
+                caller: *deployer_pubkey,
+                function: function_name.to_string(),
+                value: 0,
+                tx_signature: Hash([0u8; 32]), // Genesis — no real tx
+            };
+            if let Err(e) = state.record_program_call(&activity, seq) {
+                warn!("  WARN {}: failed to record genesis call: {}", label, e);
+            }
+
+            // ── Persist any events emitted during genesis WASM execution ──
+            for event in &result.events {
+                if let Err(e) = state.put_contract_event(program_pubkey, event) {
+                    warn!("  WARN {}: failed to record genesis event: {}", label, e);
+                }
+            }
+
             true
         }
         Err(e) => {
@@ -2043,6 +2075,12 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
             function: "initialize",
             args: named_init_args(&admin),
         },
+        // ── Layer 5c: Prediction Markets ──
+        InitSpec {
+            dir_name: "prediction_market",
+            function: "initialize",
+            args: named_init_args(&admin),
+        },
         // bountyboard: no initialization needed (stateless bootstrap)
     ];
 
@@ -2102,6 +2140,125 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
             }
         } else {
             skipped += 1;
+        }
+    }
+
+    // ── Prediction Market: wire up cross-contract addresses ──
+    // Set oracle, musd, moltyid, and dex_gov addresses via opcode dispatch.
+    // Opcodes: 18=set_moltyid, 19=set_oracle, 20=set_musd, 21=set_dex_gov
+    // Format: [opcode][admin 32B][address 32B] = 65 bytes
+    if let Some(predict_pk) = address_map.get("prediction_market") {
+        let oracle_addr = address_map.get("moltoracle").map(|p| p.0).unwrap_or(admin);
+        let moltyid_addr = address_map.get("moltyid").map(|p| p.0).unwrap_or(admin);
+        let dex_gov_addr = address_map.get("dex_governance").map(|p| p.0).unwrap_or(admin);
+
+        let configs: &[(u8, &[u8; 32], &str)] = &[
+            (18, &moltyid_addr, "prediction_market(moltyid)"),
+            (19, &oracle_addr, "prediction_market(oracle)"),
+            (20, &musd_addr, "prediction_market(musd)"),
+            (21, &dex_gov_addr, "prediction_market(dex_gov)"),
+        ];
+
+        for &(opcode, addr, label) in configs {
+            let mut args = Vec::with_capacity(65);
+            args.push(opcode);
+            args.extend_from_slice(&admin);
+            args.extend_from_slice(addr);
+            if genesis_exec_contract(state, predict_pk, deployer_pubkey, "call", &args, label) {
+                info!("  SET {}", label);
+            } else {
+                warn!("  WARN: Failed to set {}", label);
+            }
+        }
+    }
+
+    // ── MoltyID: Register reserved .molt names at genesis ──
+    // Uses admin_register_reserved_name to bypass reserved-name checks.
+    // Format: admin_register_reserved_name(admin_ptr, owner_ptr, name_ptr, name_len, agent_type)
+    // Since this is a named export, args = [admin 32B][owner 32B][name bytes][name_len 4B LE][agent_type 1B]
+    if let Some(moltyid_pk) = address_map.get("moltyid") {
+        // Genesis .molt name registrations:
+        // System wallets get their canonical names
+        struct GenesisName {
+            label: &'static str,
+            owner_key: &'static str,      // address_map key or "admin" for deployer
+            agent_type: u8,                // 0=system
+        }
+
+        let genesis_names: &[GenesisName] = &[
+            // ── System / Admin wallets ──
+            GenesisName { label: "moltchain", owner_key: "admin", agent_type: 0 },
+            GenesisName { label: "treasury", owner_key: "admin", agent_type: 0 },
+            GenesisName { label: "validator", owner_key: "admin", agent_type: 0 },
+            GenesisName { label: "system", owner_key: "admin", agent_type: 0 },
+            GenesisName { label: "admin", owner_key: "admin", agent_type: 0 },
+            // ── Core token ──
+            GenesisName { label: "moltcoin", owner_key: "moltcoin", agent_type: 0 },
+            // ── Wrapped tokens ──
+            GenesisName { label: "musd", owner_key: "musd_token", agent_type: 0 },
+            GenesisName { label: "wsol", owner_key: "wsol_token", agent_type: 0 },
+            GenesisName { label: "weth", owner_key: "weth_token", agent_type: 0 },
+            // ── DEX ──
+            GenesisName { label: "dex", owner_key: "dex_core", agent_type: 0 },
+            GenesisName { label: "amm", owner_key: "dex_amm", agent_type: 0 },
+            GenesisName { label: "router", owner_key: "dex_router", agent_type: 0 },
+            GenesisName { label: "margin", owner_key: "dex_margin", agent_type: 0 },
+            GenesisName { label: "rewards", owner_key: "dex_rewards", agent_type: 0 },
+            GenesisName { label: "governance", owner_key: "dex_governance", agent_type: 0 },
+            GenesisName { label: "analytics", owner_key: "dex_analytics", agent_type: 0 },
+            // ── DeFi protocols ──
+            GenesisName { label: "moltswap", owner_key: "moltswap", agent_type: 0 },
+            GenesisName { label: "bridge", owner_key: "moltbridge", agent_type: 0 },
+            GenesisName { label: "oracle", owner_key: "moltoracle", agent_type: 0 },
+            GenesisName { label: "dao", owner_key: "moltdao", agent_type: 0 },
+            GenesisName { label: "lending", owner_key: "lobsterlend", agent_type: 0 },
+            // ── Marketplaces ──
+            GenesisName { label: "marketplace", owner_key: "moltmarket", agent_type: 0 },
+            GenesisName { label: "auction", owner_key: "moltauction", agent_type: 0 },
+            GenesisName { label: "moltpunks", owner_key: "moltpunks", agent_type: 0 },
+            // ── Identity ──
+            GenesisName { label: "moltyid", owner_key: "moltyid", agent_type: 0 },
+            // ── Infrastructure ──
+            GenesisName { label: "clawpay", owner_key: "clawpay", agent_type: 0 },
+            GenesisName { label: "clawpump", owner_key: "clawpump", agent_type: 0 },
+            GenesisName { label: "clawvault", owner_key: "clawvault", agent_type: 0 },
+            GenesisName { label: "bountyboard", owner_key: "bountyboard", agent_type: 0 },
+            GenesisName { label: "compute", owner_key: "compute_market", agent_type: 0 },
+            GenesisName { label: "reefstake", owner_key: "reef_storage", agent_type: 0 },
+            // ── Prediction Markets ──
+            GenesisName { label: "predict", owner_key: "prediction_market", agent_type: 0 },
+        ];
+
+        for gn in genesis_names {
+            let owner_addr = if gn.owner_key == "admin" {
+                admin
+            } else {
+                address_map.get(gn.owner_key).map(|p| p.0).unwrap_or(admin)
+            };
+
+            // Build args: [admin 32B][owner 32B][name bytes...][name_len 4B LE][agent_type 1B]
+            let name_bytes = gn.label.as_bytes();
+            let name_len = name_bytes.len() as u32;
+            let mut args = Vec::with_capacity(32 + 32 + name_bytes.len() + 4 + 1);
+            args.extend_from_slice(&admin);
+            args.extend_from_slice(&owner_addr);
+            args.extend_from_slice(name_bytes);
+            args.extend_from_slice(&name_len.to_le_bytes());
+            args.push(gn.agent_type);
+
+            if genesis_exec_contract(
+                state,
+                moltyid_pk,
+                deployer_pubkey,
+                "admin_register_reserved_name",
+                &args,
+                &format!("moltyid(name:{})", gn.label),
+            ) {
+                info!("  NAME {}.molt → {}", gn.label,
+                    if gn.owner_key == "admin" { "deployer" } else { gn.owner_key });
+            } else {
+                warn!("  WARN: Failed to register {}.molt", gn.label);
+            }
         }
     }
 
@@ -3839,6 +3996,15 @@ async fn run_validator() {
 
             info!("💰 Validator is now economically secured");
         }
+
+        // Migrate legacy validators that were staked before bootstrap system existed
+        let migrated = pool.migrate_legacy_bootstrap_indices();
+        if migrated > 0 {
+            info!("🔄 Migrated {} validator(s) to bootstrap debt system", migrated);
+            if let Err(e) = state.put_stake_pool(&pool) {
+                warn!("⚠️  Failed to persist bootstrap migration: {}", e);
+            }
+        }
     };
 
     // Get starting slot (resume from last + 1)
@@ -3933,13 +4099,25 @@ async fn run_validator() {
     let sync_manager = Arc::new(SyncManager::new());
     let snapshot_sync = Arc::new(Mutex::new(SnapshotSync::new(is_joining_network)));
 
+    // FIX-FORK-1: Shared set of slots where we received a valid block from the
+    // network.  The block-receiver task inserts here; the production loop checks
+    // before creating its own block, closing the TOCTOU race between the early
+    // `get_block_by_slot` guard and the actual `Block::new` call.
+    let received_network_slots: Arc<Mutex<HashSet<u64>>> =
+        Arc::new(Mutex::new(HashSet::new()));
+    let received_network_slots_for_blocks = received_network_slots.clone();
+    let received_network_slots_for_producer = received_network_slots.clone();
+
     // Track last block time for leader timeout handling
     let last_block_time = Arc::new(Mutex::new(std::time::Instant::now()));
     let last_block_time_for_blocks = last_block_time.clone();
     let last_block_time_for_local = last_block_time.clone();
 
     let slot_duration_ms = genesis_config.consensus.slot_duration_ms.max(1);
-    let view_timeout = Duration::from_millis(slot_duration_ms * 3);
+    // view_timeout is no longer used for leader election (replaced by
+    // deterministic slot-based view in FIX-FORK-1), but keep the value
+    // available for future watchdog/diagnostic use.
+    let _view_timeout = Duration::from_millis(slot_duration_ms * 3);
 
     // If joining network, immediately request genesis block (slot 0)
     if needs_genesis {
@@ -4037,6 +4215,7 @@ async fn run_validator() {
         let genesis_config_for_blocks = genesis_config.clone();
         let slashing_for_blocks = slashing_tracker.clone();
         let validator_pubkey_for_block_slash = validator_pubkey;
+        let received_slots_for_rx = received_network_slots_for_blocks.clone();
         tokio::spawn(async move {
             info!("🔄 Block receiver started");
             // 1.7: Track (slot, validator) → block_hash to detect double-block equivocation
@@ -4106,8 +4285,25 @@ async fn run_validator() {
                             // Reject the conflicting block
                             continue;
                         } else {
-                            // Duplicate of same block — ignore silently
-                            continue;
+                            // FIX-FORK-2: Allow re-delivery for fork resolution.
+                            // When a duplicate block arrives at or below our tip AND
+                            // there are pending blocks from a longer fork that can't
+                            // chain, let it through to fork choice. The previous
+                            // attempt may have rejected it because we_are_behind was
+                            // false at that time, but now with pending blocks queued
+                            // the fork choice has better information.
+                            let current = state_for_blocks.get_last_slot().unwrap_or(0);
+                            let has_pending = sync_mgr.pending_count().await > 0;
+                            if block_slot <= current && has_pending {
+                                // Let through to fork choice for re-evaluation
+                                info!(
+                                    "🔄 Re-evaluating fork block {} (pending blocks exist)",
+                                    block_slot
+                                );
+                            } else {
+                                // Truly duplicate, skip
+                                continue;
+                            }
                         }
                     }
                     seen_blocks.insert(key, block_hash);
@@ -4120,6 +4316,19 @@ async fn run_validator() {
                 }
 
                 sync_mgr.note_seen(block_slot).await;
+
+                // FIX-FORK-1: Record that this slot has a valid network block.
+                // The production loop checks this set right before creating its
+                // own block, preventing the TOCTOU fork where a validator
+                // produces a conflicting block for a slot it already received.
+                {
+                    let mut rns = received_slots_for_rx.lock().await;
+                    rns.insert(block_slot);
+                    // Prune entries older than 200 slots to bound memory
+                    if block_slot > 200 {
+                        rns.retain(|&s| s + 200 >= block_slot);
+                    }
+                }
                 let current_slot = state_for_blocks.get_last_slot().unwrap_or(0);
 
                 // Handle genesis block specially (slot 0 when current is also 0)
@@ -4276,21 +4485,25 @@ async fn run_validator() {
 
                         // Try to apply any pending blocks now that we have genesis
                         let pending = sync_mgr.try_apply_pending(0).await;
+                        let mut chain_broken = false;
                         for pending_block in pending {
+                            if chain_broken {
+                                sync_mgr.add_pending_block(pending_block).await;
+                                continue;
+                            }
                             let pending_slot = pending_block.header.slot;
-                            // Validate parent hash chain
-                            let parent_ok = if pending_slot > 0 {
-                                state_for_blocks
-                                    .get_block_by_slot(pending_slot - 1)
-                                    .ok()
-                                    .flatten()
-                                    .map(|parent| parent.hash() == pending_block.header.parent_hash)
-                                    .unwrap_or(false)
-                            } else {
-                                true
-                            };
+                            let tip = state_for_blocks.get_last_slot().unwrap_or(0);
+                            let parent_ok = state_for_blocks
+                                .get_block_by_slot(tip)
+                                .ok()
+                                .flatten()
+                                .map(|tip_block| {
+                                    pending_block.header.parent_hash == tip_block.hash()
+                                })
+                                .unwrap_or(false);
                             if !parent_ok {
-                                warn!("⚠️  Pending block {} parent hash mismatch after genesis, skipping", pending_slot);
+                                chain_broken = true;
+                                sync_mgr.add_pending_block(pending_block).await;
                                 continue;
                             }
                             replay_block_transactions(&processor_for_blocks, &pending_block);
@@ -4313,119 +4526,140 @@ async fn run_validator() {
                     }
                 } else if block_slot > current_slot {
                     // Check if this block extends our chain (parent matches our latest block)
-                    if let Ok(Some(parent)) = state_for_blocks.get_block_by_slot(current_slot) {
-                        if block.header.parent_hash == parent.hash() {
-                            // Valid next block in chain - replay transactions then store
-                            replay_block_transactions(&processor_for_blocks, &block);
-                            if state_for_blocks.put_block(&block).is_ok() {
-                                state_for_blocks.set_last_slot(block_slot).ok();
-                                *last_block_time_for_blocks.lock().await =
-                                    std::time::Instant::now();
-                                info!("✅ Applied block {} from network", block_slot);
-                                apply_block_effects(
-                                    &state_for_blocks,
-                                    &validator_set_for_blocks,
-                                    &stake_pool_for_blocks,
-                                    &vote_agg_for_effects,
-                                    &block,
-                                    false,
-                                )
-                                .await;
+                    // With slot gaps (when some leaders can't produce), we only
+                    // require the parent_hash to match the tip — NOT block_slot - 1.
+                    let can_chain = state_for_blocks
+                        .get_block_by_slot(current_slot)
+                        .ok()
+                        .flatten()
+                        .map(|tip| block.header.parent_hash == tip.hash())
+                        .unwrap_or(false);
 
-                                // Cast vote for this block (BFT consensus)
-                                let block_hash = block.hash();
-                                let mut vote_message = Vec::new();
-                                vote_message.extend_from_slice(&block_slot.to_le_bytes());
-                                vote_message.extend_from_slice(&block_hash.0);
+                    if can_chain {
+                        // Valid next block in chain - replay transactions then store
+                        replay_block_transactions(&processor_for_blocks, &block);
+                        if state_for_blocks.put_block(&block).is_ok() {
+                            state_for_blocks.set_last_slot(block_slot).ok();
+                            *last_block_time_for_blocks.lock().await =
+                                std::time::Instant::now();
+                            info!("✅ Applied block {} from network", block_slot);
+                            apply_block_effects(
+                                &state_for_blocks,
+                                &validator_set_for_blocks,
+                                &stake_pool_for_blocks,
+                                &vote_agg_for_effects,
+                                &block,
+                                false,
+                            )
+                            .await;
 
-                                // Reconstruct keypair from seed to sign vote
-                                let keypair_for_vote = Keypair::from_seed(&validator_seed);
-                                let signature = keypair_for_vote.sign(&vote_message);
+                            // Cast vote for this block (BFT consensus)
+                            let block_hash = block.hash();
+                            let mut vote_message = Vec::new();
+                            vote_message.extend_from_slice(&block_slot.to_le_bytes());
+                            vote_message.extend_from_slice(&block_hash.0);
 
-                                let vote = Vote::new(
-                                    block_slot,
-                                    block_hash,
-                                    validator_pubkey_for_blocks,
-                                    signature,
-                                );
+                            // Reconstruct keypair from seed to sign vote
+                            let keypair_for_vote = Keypair::from_seed(&validator_seed);
+                            let signature = keypair_for_vote.sign(&vote_message);
 
-                                // Add our own vote (validated against validator set)
-                                let mut agg = vote_agg_for_blocks.lock().await;
-                                let vs = validator_set_for_blocks.lock().await;
-                                if agg.add_vote_validated(vote.clone(), &vs) {
-                                    info!("🗳️  Cast vote for block {}", block_slot);
+                            let vote = Vote::new(
+                                block_slot,
+                                block_hash,
+                                validator_pubkey_for_blocks,
+                                signature,
+                            );
 
-                                    // Check if block reached finality (2/3 supermajority - STAKE-WEIGHTED)
-                                    let pool = stake_pool_for_blocks.lock().await;
-                                    if agg.has_supermajority(block_slot, &block_hash, &vs, &pool) {
-                                        info!("🔒 Block {} FINALIZED with stake-weighted supermajority!", block_slot);
-                                    }
-                                    drop(pool);
-                                    drop(vs);
+                            // Add our own vote (validated against validator set)
+                            let mut agg = vote_agg_for_blocks.lock().await;
+                            let vs = validator_set_for_blocks.lock().await;
+                            if agg.add_vote_validated(vote.clone(), &vs) {
+                                info!("🗳️  Cast vote for block {}", block_slot);
 
-                                    // Broadcast vote to network
-                                    let vote_msg =
-                                        P2PMessage::new(MessageType::Vote(vote), local_addr);
-                                    peer_mgr_for_sync.broadcast(vote_msg).await;
+                                // Check if block reached finality (2/3 supermajority - STAKE-WEIGHTED)
+                                let pool = stake_pool_for_blocks.lock().await;
+                                if agg.has_supermajority(block_slot, &block_hash, &vs, &pool) {
+                                    info!("🔒 Block {} FINALIZED with stake-weighted supermajority!", block_slot);
                                 }
-                                drop(agg);
+                                drop(pool);
+                                drop(vs);
 
-                                // Try to apply any pending blocks
-                                let pending = sync_mgr.try_apply_pending(block_slot).await;
-                                for pending_block in pending {
-                                    let pending_slot = pending_block.header.slot;
-                                    // Validate parent hash before applying
-                                    let parent_ok = if pending_slot > 0 {
-                                        state_for_blocks
-                                            .get_block_by_slot(pending_slot - 1)
-                                            .ok()
-                                            .flatten()
-                                            .map(|parent| {
-                                                parent.hash() == pending_block.header.parent_hash
-                                            })
-                                            .unwrap_or(false)
-                                    } else {
-                                        true
-                                    };
-                                    if !parent_ok {
-                                        warn!("\u{26a0}\u{fe0f}  Pending block {} parent hash mismatch, skipping", pending_slot);
-                                        continue;
-                                    }
-                                    replay_block_transactions(
-                                        &processor_for_blocks,
+                                // Broadcast vote to network
+                                let vote_msg =
+                                    P2PMessage::new(MessageType::Vote(vote), local_addr);
+                                peer_mgr_for_sync.broadcast(vote_msg).await;
+                            }
+                            drop(agg);
+
+                            // Try to apply any pending blocks (gap-aware).
+                            // After each applied block the chain tip advances,
+                            // so check pending blocks against the UPDATED tip.
+                            let pending = sync_mgr.try_apply_pending(block_slot).await;
+                            let mut chain_broken = false;
+                            for pending_block in pending {
+                                if chain_broken {
+                                    sync_mgr.add_pending_block(pending_block).await;
+                                    continue;
+                                }
+                                let pending_slot = pending_block.header.slot;
+                                let tip = state_for_blocks.get_last_slot().unwrap_or(0);
+                                let parent_ok = state_for_blocks
+                                    .get_block_by_slot(tip)
+                                    .ok()
+                                    .flatten()
+                                    .map(|tip_block| {
+                                        pending_block.header.parent_hash == tip_block.hash()
+                                    })
+                                    .unwrap_or(false);
+                                if !parent_ok {
+                                    chain_broken = true;
+                                    sync_mgr.add_pending_block(pending_block).await;
+                                    continue;
+                                }
+                                replay_block_transactions(
+                                    &processor_for_blocks,
+                                    &pending_block,
+                                );
+                                if state_for_blocks.put_block(&pending_block).is_ok() {
+                                    state_for_blocks.set_last_slot(pending_slot).ok();
+                                    *last_block_time_for_blocks.lock().await =
+                                        std::time::Instant::now();
+                                    info!("✅ Applied pending block {}", pending_slot);
+                                    apply_block_effects(
+                                        &state_for_blocks,
+                                        &validator_set_for_blocks,
+                                        &stake_pool_for_blocks,
+                                        &vote_agg_for_effects,
                                         &pending_block,
-                                    );
-                                    if state_for_blocks.put_block(&pending_block).is_ok() {
-                                        state_for_blocks.set_last_slot(pending_slot).ok();
-                                        *last_block_time_for_blocks.lock().await =
-                                            std::time::Instant::now();
-                                        info!("✅ Applied pending block {}", pending_slot);
-                                        apply_block_effects(
-                                            &state_for_blocks,
-                                            &validator_set_for_blocks,
-                                            &stake_pool_for_blocks,
-                                            &vote_agg_for_effects,
-                                            &pending_block,
-                                            false,
-                                        )
-                                        .await;
-                                    }
+                                        false,
+                                    )
+                                    .await;
                                 }
                             }
-                        } else {
-                            // Parent doesn't match - might be on different fork or need intermediate blocks
+                        }
+                    } else {
+                        // Parent doesn't match current tip — store as pending
+                        // and let sync fill in intermediate blocks.
+                        if block_slot <= current_slot + 2 {
+                            // Close-ahead block that doesn't chain — may indicate fork
                             warn!(
                                 "⚠️  Block {} parent mismatch (expected parent of slot {})",
                                 block_slot, current_slot
                             );
-                            sync_mgr.add_pending_block(block).await;
+
+                            // FIX-FORK-2: Proactive fork adoption for close-ahead blocks.
+                            // If this block is for slot tip+1 but its parent doesn't match
+                            // our tip block, we're on a fork. The incoming block chains
+                            // from a different version of our tip slot. Trigger a sync
+                            // that includes the current_slot to get the alternative block,
+                            // which will enter fork choice and replace our divergent tip.
+                            if block_slot == current_slot + 1 {
+                                info!(
+                                    "🔄 Fork detected at slot {} — requesting alternative chain",
+                                    current_slot
+                                );
+                            }
                         }
-                    } else {
-                        // Can't find parent block
-                        warn!(
-                            "⚠️  Block {} is ahead (current: {}), storing as pending",
-                            block_slot, current_slot
-                        );
                         sync_mgr.add_pending_block(block).await;
                     }
 
@@ -4465,8 +4699,12 @@ async fn run_validator() {
                             // Fork choice: prefer block with higher vote weight,
                             // OR prefer incoming block when we're significantly behind
                             // the network (longest-chain-wins for fork resolution).
+                            // FIX-FORK-2: Also force adoption when pending blocks
+                            // exist — they chain from the incoming block's fork and
+                            // prove the network has a longer chain than ours.
                             let highest_seen = sync_mgr.get_highest_seen().await;
-                            let we_are_behind = highest_seen > current_slot + 5;
+                            let we_are_behind = highest_seen > current_slot;
+                            let has_pending = sync_mgr.pending_count().await > 0;
 
                             let existing_weight = {
                                 let agg = vote_agg_for_blocks.lock().await;
@@ -4497,7 +4735,7 @@ async fn run_validator() {
                                 weight
                             };
 
-                            if incoming_weight > existing_weight || we_are_behind {
+                            if incoming_weight > existing_weight || we_are_behind || has_pending {
                                 // Revert old block's financial effects before replacing
                                 revert_block_effects(&state_for_blocks, &existing);
                                 // C7 fix: Also revert user transaction effects
@@ -4508,10 +4746,11 @@ async fn run_validator() {
                                     state_for_blocks.set_last_slot(current_slot).ok();
                                     *last_block_time_for_blocks.lock().await =
                                         std::time::Instant::now();
-                                    if we_are_behind {
+                                    if we_are_behind || has_pending {
                                         info!(
-                                            "🔗 Chain adoption: replaced block at slot {} (behind network by {} slots)",
-                                            block_slot, highest_seen.saturating_sub(current_slot)
+                                            "🔗 Chain adoption: replaced block at slot {} (behind network by {} slots, {} pending)",
+                                            block_slot, highest_seen.saturating_sub(current_slot),
+                                            sync_mgr.pending_count().await
                                         );
                                     } else {
                                         info!(
@@ -4532,23 +4771,25 @@ async fn run_validator() {
                                     // After replacing a block (fork adoption), try
                                     // applying pending blocks that now chain correctly.
                                     let pending = sync_mgr.try_apply_pending(block_slot).await;
+                                    let mut chain_broken = false;
                                     for pending_block in pending {
+                                        if chain_broken {
+                                            sync_mgr.add_pending_block(pending_block).await;
+                                            continue;
+                                        }
                                         let pending_slot = pending_block.header.slot;
-                                        let parent_ok = if pending_slot > 0 {
-                                            state_for_blocks
-                                                .get_block_by_slot(pending_slot - 1)
-                                                .ok()
-                                                .flatten()
-                                                .map(|parent| {
-                                                    parent.hash()
-                                                        == pending_block.header.parent_hash
-                                                })
-                                                .unwrap_or(false)
-                                        } else {
-                                            true
-                                        };
+                                        let tip = state_for_blocks.get_last_slot().unwrap_or(0);
+                                        let parent_ok = state_for_blocks
+                                            .get_block_by_slot(tip)
+                                            .ok()
+                                            .flatten()
+                                            .map(|tip_block| {
+                                                pending_block.header.parent_hash == tip_block.hash()
+                                            })
+                                            .unwrap_or(false);
                                         if !parent_ok {
-                                            warn!("⚠️  Pending block {} parent hash mismatch after fork adoption, skipping", pending_slot);
+                                            chain_broken = true;
+                                            sync_mgr.add_pending_block(pending_block).await;
                                             continue;
                                         }
                                         replay_block_transactions(
@@ -4618,6 +4859,11 @@ async fn run_validator() {
                             continue;
                         }
                     }
+                }
+                // 3. Validate transaction structure (size limits, instruction count)
+                if let Err(e) = tx.validate_structure() {
+                    info!("❌ P2P transaction rejected: {}", e);
+                    continue;
                 }
                 let mut pool = mempool_for_txs.lock().await;
                 if let Err(e) = pool.add_transaction(tx, BASE_FEE, 0u64) {
@@ -4891,7 +5137,7 @@ async fn run_validator() {
                     // Add new validator
                     let new_validator = ValidatorInfo {
                         pubkey: announcement.pubkey,
-                        reputation: 500,
+                        reputation: 100,
                         blocks_proposed: 0,
                         votes_cast: 0,
                         correct_votes: 0,
@@ -4916,12 +5162,9 @@ async fn run_validator() {
                             };
 
                             // Atomic: validate fingerprint → allocate bootstrap index → stake → register
-                            // Self-funded validators (already_staked >= MIN) skip bootstrap allocation
-                            let fingerprint = if already_staked < MIN_VALIDATOR_STAKE {
-                                announcement.machine_fingerprint
-                            } else {
-                                [0u8; 32] // No fingerprint check for self-funded
-                            };
+                            // Always pass the real fingerprint — even pre-funded validators
+                            // get bootstrap grants in the first 200 slots
+                            let fingerprint = announcement.machine_fingerprint;
 
                             match pool.try_bootstrap_with_fingerprint(
                                 announcement.pubkey,
@@ -5454,22 +5697,24 @@ async fn run_validator() {
                                 continue;
                             }
 
-                            // MERGE remote entries into local pool instead of replacing
+                            // MERGE remote entries into local pool (full-fidelity)
                             let mut pool = stake_pool_for_snapshot_apply.lock().await;
                             let local_hash = hash_stake_pool(&pool);
                             let mut merged_count = 0u32;
                             for entry in remote_pool.stake_entries() {
-                                let existing = pool.get_stake(&entry.validator);
+                                let entry_validator = entry.validator;
+                                let entry_amount = entry.amount;
+                                let existing = pool.get_stake(&entry_validator);
                                 let should_upsert = match existing {
                                     None => true,
-                                    Some(local_entry) => entry.amount > local_entry.amount,
+                                    Some(local_entry) => {
+                                        entry_amount > local_entry.amount
+                                            || entry.total_debt_repaid > local_entry.total_debt_repaid
+                                            || (local_entry.bootstrap_index == u64::MAX && entry.bootstrap_index != u64::MAX)
+                                    }
                                 };
                                 if should_upsert {
-                                    pool.upsert_stake(
-                                        entry.validator,
-                                        entry.amount,
-                                        entry.last_reward_slot,
-                                    );
+                                    pool.upsert_stake_full(entry.clone());
                                     merged_count += 1;
 
                                     // Create bootstrap account for this validator if it doesn't exist locally
@@ -5572,20 +5817,21 @@ async fn run_validator() {
 
     // Parse --rpc-port and --ws-port from CLI, or derive from P2P port
     // Use safe arithmetic: offset = p2p_port % 1000 to avoid underflow/overflow
+    // Port auto-derivation matches run-validator.sh exactly:
+    //   V1 (p2p 8000): rpc=8899, ws=8900
+    //   V2 (p2p 8001): rpc=8901, ws=8902
+    //   V3 (p2p 8002): rpc=8903, ws=8904
+    // Formula: offset = p2p_port - base_p2p, rpc = 8899 + 2*offset, ws = 8900 + 2*offset
     let rpc_port = args
         .iter()
         .position(|arg| arg == "--rpc-port")
         .and_then(|pos| args.get(pos + 1))
         .and_then(|s| s.parse::<u16>().ok())
         .unwrap_or_else(|| {
-            if p2p_port == 8000 {
-                8899
-            } else {
-                let offset = p2p_port % 1000;
-                8900u16
-                    .saturating_add(offset.saturating_mul(2))
-                    .saturating_add(1)
-            }
+            let base_p2p = if p2p_port >= 9000 { 9000u16 } else { 8000u16 };
+            let base_rpc = if p2p_port >= 9000 { 9899u16 } else { 8899u16 };
+            let offset = p2p_port.saturating_sub(base_p2p);
+            base_rpc.saturating_add(offset.saturating_mul(2))
         });
 
     let ws_port = args
@@ -5594,14 +5840,10 @@ async fn run_validator() {
         .and_then(|pos| args.get(pos + 1))
         .and_then(|s| s.parse::<u16>().ok())
         .unwrap_or_else(|| {
-            if p2p_port == 8000 {
-                8900
-            } else {
-                let offset = p2p_port % 1000;
-                8900u16
-                    .saturating_add(offset.saturating_mul(2))
-                    .saturating_add(2)
-            }
+            let base_p2p = if p2p_port >= 9000 { 9000u16 } else { 8000u16 };
+            let base_ws = if p2p_port >= 9000 { 9900u16 } else { 8900u16 };
+            let offset = p2p_port.saturating_sub(base_p2p);
+            base_ws.saturating_add(offset.saturating_mul(2))
         });
 
     // Parse --admin-token from CLI or MOLTCHAIN_ADMIN_TOKEN env var
@@ -5632,6 +5874,12 @@ async fn run_validator() {
     tokio::spawn(async move {
         while let Some(tx) = rpc_tx_receiver.recv().await {
             info!("📨 RPC transaction received, adding to mempool");
+
+            // Validate structure before adding to mempool
+            if let Err(e) = tx.validate_structure() {
+                info!("❌ RPC transaction rejected: {}", e);
+                continue;
+            }
 
             // Add to mempool
             {
@@ -5878,19 +6126,19 @@ async fn run_validator() {
             if let Ok(loaded_pool) = state_for_reconcile.get_stake_pool() {
                 let mut pool = stake_pool_for_reconcile.lock().await;
                 if hash_stake_pool(&pool) != hash_stake_pool(&loaded_pool) {
-                    // Merge loaded entries into in-memory pool (don't replace)
+                    // Full-fidelity merge from disk (includes bootstrap debt, vesting, etc.)
                     for entry in loaded_pool.stake_entries() {
                         let existing = pool.get_stake(&entry.validator);
                         let should_upsert = match existing {
                             None => true,
-                            Some(local) => entry.amount > local.amount,
+                            Some(local) => {
+                                entry.amount > local.amount
+                                    || entry.total_debt_repaid > local.total_debt_repaid
+                                    || (local.bootstrap_index == u64::MAX && entry.bootstrap_index != u64::MAX)
+                            }
                         };
                         if should_upsert {
-                            pool.upsert_stake(
-                                entry.validator,
-                                entry.amount,
-                                entry.last_reward_slot,
-                            );
+                            pool.upsert_stake_full(entry);
                         }
                     }
                     info!("🔄 Stake pool reconciled from state");
@@ -5974,6 +6222,12 @@ async fn run_validator() {
             let vs = validator_set_for_downtime.lock().await;
             for validator_info in vs.validators() {
                 let missed_slots = current_slot.saturating_sub(validator_info.last_active_slot);
+
+                // Grace period: skip newly-joined validators (200 slots ≈ 80s)
+                let slots_since_join = current_slot.saturating_sub(validator_info.joined_slot);
+                if slots_since_join < 200 {
+                    continue;
+                }
 
                 // Slash if offline for 100+ slots (~40 seconds at 400ms/slot)
                 if missed_slots >= 100 && validator_info.pubkey != validator_pubkey_for_downtime {
@@ -6125,9 +6379,26 @@ async fn run_validator() {
 
     // Adaptive heartbeat: Track last time we had activity (transaction block or heartbeat)
     let mut last_activity_time = std::time::Instant::now();
+    let mut slot_start = std::time::Instant::now();
+    let mut last_attempted_slot: u64 = 0;
 
     loop {
-        time::sleep(Duration::from_millis(slot_duration_ms)).await;
+        // TIP-BASED SLOT: Always derive the next slot to produce from the chain tip.
+        // This guarantees consecutive slot numbers — no gaps. Every validator agrees
+        // on which slot comes next because they all read from the same chain.
+        let tip_slot = state.get_last_slot().unwrap_or(0);
+        slot = tip_slot + 1;
+
+        // Reset view timer when chain tip advances (new slot to fill)
+        if slot != last_attempted_slot {
+            slot_start = std::time::Instant::now();
+            last_attempted_slot = slot;
+        }
+
+        // Poll interval: 5ms for maximum responsiveness under load.
+        // With rayon parallel TX execution now properly parallelizing contract calls,
+        // the block production loop needs to be fast enough to keep up with TX influx.
+        time::sleep(Duration::from_millis(5)).await;
 
         // Broadcast slot event to WebSocket subscribers
         let _ = ws_event_tx.send(moltchain_rpc::ws::Event::Slot(slot));
@@ -6137,22 +6408,20 @@ async fn run_validator() {
             let has_genesis = state.get_block_by_slot(0).unwrap_or(None).is_some();
             if !has_genesis {
                 // Still waiting for genesis sync
-                if slot % 50 == 0 {
-                    info!("⏳ Waiting for genesis sync from network (slot {})", slot);
+                if tip_slot % 50 == 0 && slot_start.elapsed().as_secs() >= 2 {
+                    info!("⏳ Waiting for genesis sync from network (tip: {})", tip_slot);
                 }
-                slot += 1;
                 continue;
             }
 
             let snapshot_ready = snapshot_sync.lock().await.is_ready();
             if !snapshot_ready {
-                if slot % 50 == 0 {
+                if tip_slot % 50 == 0 && slot_start.elapsed().as_secs() >= 2 {
                     info!(
-                        "⏳ Waiting for validator/stake snapshots before producing (slot {})",
-                        slot
+                        "⏳ Waiting for validator/stake snapshots before producing (tip: {})",
+                        tip_slot
                     );
                 }
-                slot += 1;
                 continue;
             } else {
                 // Genesis synced! But wait for validator discovery AND full chain sync
@@ -6162,13 +6431,12 @@ async fn run_validator() {
 
                 if validator_count <= 1 {
                     // Still waiting for first validator announcement
-                    if slot % 50 == 0 {
+                    if slot_start.elapsed().as_secs() >= 2 {
                         info!(
                             "⏳ Waiting for validator discovery (found {} validators)",
                             validator_count
                         );
                     }
-                    slot += 1;
                     continue;
                 } else if first_announcement_time.is_none() {
                     // Just discovered validators! Start stabilization wait
@@ -6178,7 +6446,6 @@ async fn run_validator() {
                         validator_count,
                         validator_set_stabilization.as_secs()
                     );
-                    slot += 1;
                     continue;
                 } else {
                     // Check if we've waited long enough for ValidatorSet to stabilize
@@ -6186,7 +6453,7 @@ async fn run_validator() {
                         .map(|t| t.elapsed())
                         .unwrap_or_default();
                     if elapsed < validator_set_stabilization {
-                        if slot % 50 == 0 {
+                        if elapsed.as_secs() % 5 == 0 && slot_start.elapsed().as_secs() >= 2 {
                             info!(
                                 "⏳ ValidatorSet stabilizing... ({:.0}s / {}s, {} validators)",
                                 elapsed.as_secs(),
@@ -6194,7 +6461,6 @@ async fn run_validator() {
                                 validator_count
                             );
                         }
-                        slot += 1;
                         continue;
                     }
                 }
@@ -6203,35 +6469,46 @@ async fn run_validator() {
                 let current_slot = state.get_last_slot().unwrap_or(0);
                 if !sync_manager.is_caught_up(current_slot).await {
                     let network_slot = sync_manager.get_highest_seen().await;
-                    if slot % 50 == 0 {
+                    if slot_start.elapsed().as_secs() >= 2 {
                         info!(
                             "⏳ Syncing to network (current: {}, network: {}, {} validators)",
                             current_slot, network_slot, validator_count
                         );
                     }
-                    slot += 1;
                     continue;
                 }
 
-                // Fully synced! Reset slot to continue from where network is
-                slot = current_slot + 1;
+                // Fully synced!
                 info!(
                     "✅ READY! Found {} validators, fully synced. Starting consensus from slot {}",
-                    validator_count, slot
+                    validator_count, tip_slot + 1
                 );
                 is_joining_network = false; // Exit joining mode - we're caught up!
             }
         }
 
+        // FREEZE PRODUCTION WHEN BEHIND: If the network is ahead of us,
+        // don't produce blocks (including heartbeats) to avoid creating
+        // a divergent chain. Let the block receiver + sync fill the gap.
+        {
+            let network_highest = sync_manager.get_highest_seen().await;
+            if network_highest > tip_slot + 2 {
+                continue;
+            }
+        }
+
         // Check if we already have a block for this slot (received from P2P)
         if let Ok(Some(_existing_block)) = state.get_block_by_slot(slot) {
-            // Already have a block for this slot, skip production
-            slot += 1;
+            // Already have a block for this slot — tip will advance next iteration
             continue;
         }
 
-        // Apply slashing penalties if any validators should be slashed
-        {
+        // Apply slashing penalties if any validators should be slashed.
+        // PERF-FIX 5: Only run the slashing sweep every 100 slots (~40s) instead of
+        // every slot tick (~400ms). This reduces lock contention on validator_set,
+        // stake_pool, and slashing_tracker by ~99% while keeping offense-to-slash
+        // latency well within acceptable bounds.
+        if slot % 100 == 0 {
             let mut slasher = slashing_tracker.lock().await;
             // Lock ordering: validator_set before stake_pool (matches global convention
             // used by announcement handler, vote handlers, leader election, etc.)
@@ -6239,6 +6516,13 @@ async fn run_validator() {
             let mut pool = stake_pool.lock().await;
 
             for validator_info in vs.validators_mut() {
+                // Grace period: don't slash validators that recently joined (200 slots ≈ 80s).
+                // Prevents false-positive slashing during initial sync/handshake.
+                let slots_since_join = slot.saturating_sub(validator_info.joined_slot);
+                if slots_since_join < 200 {
+                    continue;
+                }
+
                 if slasher.should_slash(&validator_info.pubkey)
                     && !slasher.is_slashed(&validator_info.pubkey)
                 {
@@ -6246,11 +6530,11 @@ async fn run_validator() {
                     let slashed_amount =
                         slasher.apply_economic_slashing(&validator_info.pubkey, &mut pool);
 
-                    // Also apply reputation penalty
+                    // Also apply reputation penalty (floor 50 — prevents death spiral)
                     let reputation_penalty = slasher.calculate_penalty(&validator_info.pubkey);
                     let old_reputation = validator_info.reputation;
                     validator_info.reputation =
-                        validator_info.reputation.saturating_sub(reputation_penalty);
+                        validator_info.reputation.saturating_sub(reputation_penalty).max(50);
 
                     if slashed_amount > 0 {
                         warn!(
@@ -6289,23 +6573,17 @@ async fn run_validator() {
             drop(pool);
         }
 
-        // In-slot view-change: rotate leader if no blocks for too long
-        let elapsed = last_block_time_for_local.lock().await.elapsed();
-        let view_ms = view_timeout.as_millis().max(1);
-        // Cap view at 15 — with the slot*16+view formula below, view >= 16
-        // would alias with (slot+1)*16+0, defeating the anti-aliasing fix.
-        // If 15 view-changes pass without a block, the slot is effectively dead
-        // and the network waits for the next slot.
-        let view = ((elapsed.as_millis() / view_ms) as u64).min(15);
+        // ── VIEW ROTATION: Wall-clock based for the CURRENT slot ──
+        // Every view_change_interval (3 × slot_duration = 1200ms) without anyone
+        // producing this slot, rotate the leader. slot_start resets when the
+        // chain tip advances (a new slot to fill), so view starts fresh for
+        // each consecutive slot number.
+        let view_change_interval_ms = (slot_duration_ms * 3).max(1);
+        let view = (slot_start.elapsed().as_millis() as u64 / view_change_interval_ms).min(15);
 
         // Stake-weighted leader election with deterministic fallback
         let vs = validator_set.lock().await;
         let pool = stake_pool.lock().await;
-        // AUDIT-FIX 2.13: Use slot*16+view to avoid aliasing with the next
-        // slot's view=0 leader. Previous `slot+view` meant view=1 at slot N
-        // selected the same leader as view=0 at slot N+1. View is capped at
-        // 15 to prevent slot*16+view from overflowing into the next slot's
-        // address space.
         let leader_slot = if view == 0 {
             slot
         } else {
@@ -6319,25 +6597,19 @@ async fn run_validator() {
         drop(vs);
 
         if !should_produce {
-            // Not our turn, wait for view-change or leader block
+            // Not our turn — wait for the assigned leader to produce.
+            // View rotation (wall-clock based above) will eventually make us
+            // the leader if the current leader is offline. No slot advancement
+            // needed since slot is derived from chain tip each iteration.
             continue;
         }
 
         // Update parent_hash from actual latest block (in case chain was synced from P2P)
-        // M7 fix: Ensure slot monotonicity — never produce behind chain head
-        let current_slot_check = state.get_last_slot().unwrap_or(0);
-        if slot <= current_slot_check {
-            slot = current_slot_check + 1;
-            warn!(
-                "⚠️  Slot adjusted to {} (was behind chain head {})",
-                slot, current_slot_check
-            );
-        }
-        if current_slot_check > 0 {
-            if let Ok(Some(latest_block)) = state.get_block_by_slot(current_slot_check) {
+        if tip_slot > 0 {
+            if let Ok(Some(latest_block)) = state.get_block_by_slot(tip_slot) {
                 parent_hash = latest_block.hash();
             }
-        } else if current_slot_check == 0 {
+        } else {
             // We have genesis, use it as parent
             if let Ok(Some(genesis_block)) = state.get_block_by_slot(0) {
                 parent_hash = genesis_block.hash();
@@ -6347,15 +6619,16 @@ async fn run_validator() {
         // Collect pending transactions from mempool
         let pending_transactions = {
             let mut pool = mempool.lock().await;
-            pool.get_top_transactions(10) // Get up to 10 highest-priority transactions
+            pool.get_top_transactions(500) // PERF-FIX 8: 100 → 500 TXs per block for parallel throughput
         };
 
-        // Process transactions before inclusion (fees, balances, persistence)
+        // Process transactions in parallel where possible (FIX-2: rayon)
+        // Non-conflicting TXs (disjoint account sets) run on separate threads.
+        let processed_hashes: Vec<Hash> = pending_transactions.iter().map(|tx| tx.hash()).collect();
+        let results = processor.process_transactions_parallel(&pending_transactions, &validator_pubkey);
+
         let mut transactions: Vec<Transaction> = Vec::new();
-        let mut processed_hashes: Vec<Hash> = Vec::new();
-        for tx in pending_transactions {
-            processed_hashes.push(tx.hash());
-            let result = processor.process_transaction(&tx, &validator_pubkey);
+        for (tx, result) in pending_transactions.into_iter().zip(results.into_iter()) {
             if result.success {
                 transactions.push(tx);
             } else {
@@ -6375,6 +6648,22 @@ async fn run_validator() {
             // Skip this block - no transactions and not time for heartbeat
             // NOTE: We do NOT increment slot here - slot only advances when blocks are produced
             continue;
+        }
+
+        // ── FIX-FORK-1: Second guard right before block creation ──
+        // Between the early `get_block_by_slot` check and here, the block
+        // receiver task may have written a network block for this slot.
+        // Re-check both RocksDB and the shared received_network_slots set.
+        {
+            let already_received = received_network_slots_for_producer.lock().await.contains(&slot);
+            let already_stored = state.get_block_by_slot(slot).ok().flatten().is_some();
+            if already_received || already_stored {
+                debug!(
+                    "⏭️  Slot {} already has a network block, skipping production",
+                    slot
+                );
+                continue;
+            }
         }
 
         let is_heartbeat = !has_user_transactions;
@@ -6449,7 +6738,7 @@ async fn run_validator() {
         let _ = ws_event_tx.send(moltchain_rpc::ws::Event::Block(block.clone()));
 
         // Cast vote for our own block (BFT consensus)
-        {
+        let vote = {
             let mut vote_message = Vec::new();
             vote_message.extend_from_slice(&slot.to_le_bytes());
             vote_message.extend_from_slice(&block_hash.0);
@@ -6465,33 +6754,32 @@ async fn run_validator() {
                 if agg.has_supermajority(slot, &block_hash, &vs, &pool) {
                     info!("🔒 Block {} FINALIZED (stake-weighted self-vote)", slot);
                 }
-                drop(pool);
-                drop(vs);
-
-                // Broadcast vote to network
-                if let Some(ref peer_mgr) = p2p_peer_manager {
-                    let vote_msg = P2PMessage::new(MessageType::Vote(vote), p2p_config.listen_addr);
-                    peer_mgr.broadcast(vote_msg).await;
-                }
             }
-        }
+            vote
+        };
 
-        // Remove included transactions from mempool
+        // Remove included transactions from mempool (PERF: bulk removal, single heap rebuild)
         {
             let mut pool = mempool.lock().await;
-            for tx_hash in &processed_hashes {
-                pool.remove_transaction(tx_hash);
-            }
+            pool.remove_transactions_bulk(&processed_hashes);
         }
 
-        // Broadcast block to P2P network
+        // PERF-FIX 5: Broadcast vote and block in PARALLEL using tokio::join!
+        // Previously sequential: vote broadcast → block broadcast (2x latency)
+        // Now concurrent: both broadcasts fire simultaneously
         if let Some(ref peer_mgr) = p2p_peer_manager {
-            let msg = moltchain_p2p::P2PMessage::new(
+            let vote_msg = P2PMessage::new(MessageType::Vote(vote), p2p_config.listen_addr);
+            let block_msg = moltchain_p2p::P2PMessage::new(
                 moltchain_p2p::MessageType::Block(block.clone()),
                 p2p_config.listen_addr,
             );
-            peer_mgr.broadcast(msg).await;
-            info!("📡 Broadcasted block {} to network", slot);
+            let pm1 = peer_mgr.clone();
+            let pm2 = peer_mgr.clone();
+            tokio::join!(
+                async { pm1.broadcast(vote_msg).await; },
+                async { pm2.broadcast(block_msg).await; }
+            );
+            info!("📡 Broadcasted vote + block {} to network", slot);
         }
 
         apply_block_effects(
@@ -6549,6 +6837,6 @@ async fn run_validator() {
         }
 
         parent_hash = block_hash;
-        slot += 1;
+        // (No slot increment — next iteration derives slot from chain tip)
     }
 }

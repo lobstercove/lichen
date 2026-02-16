@@ -2,7 +2,7 @@
 // Connects to the MoltChain faucet backend (Rust/axum on port 9100)
 
 const FAUCET_API = 'http://localhost:9100';
-const MOLT_PER_REQUEST = 10;
+const MOLT_PER_REQUEST = 100;
 
 // Generate random captcha
 function generateCaptcha() {

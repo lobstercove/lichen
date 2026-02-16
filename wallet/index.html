@@ -125,7 +125,7 @@
                         <div class="carousel-card">
                             <div class="carousel-icon"><i class="fas fa-fingerprint"></i></div>
                             <h3>MoltyID Identity</h3>
-                            <p>.molt naming, skill attestations, 0–100K reputation score</p>
+                            <p>.molt naming, skill attestations, 0–10K reputation score</p>
                         </div>
                     </div>
                     <div class="carousel-slide">
@@ -413,6 +413,18 @@
                     <button class="dashboard-tab" data-tab="staking">
                         <i class="fas fa-layer-group"></i> Staking
                     </button>
+                    <button class="dashboard-tab" data-tab="identity">
+                        <i class="fas fa-fingerprint"></i> Identity
+                    </button>
+                    <button class="dashboard-tab" data-tab="governance">
+                        <i class="fas fa-landmark"></i> Governance
+                    </button>
+                    <button class="dashboard-tab" data-tab="bridge">
+                        <i class="fas fa-bridge"></i> Bridge
+                    </button>
+                    <button class="dashboard-tab" data-tab="prediction">
+                        <i class="fas fa-chart-line"></i> Markets
+                    </button>
                 </div>
 
                 <!-- Tab Content -->
@@ -429,6 +441,14 @@
                 </div>
 
                 <div class="tab-content" data-tab="nfts">
+                    <div class="nft-banner" style="background: linear-gradient(135deg, rgba(168, 85, 247, 0.1), rgba(236, 72, 153, 0.1)); padding: 1.5rem; border-radius: 12px; margin-bottom: 1.5rem;">
+                        <h3 style="margin: 0 0 0.5rem 0; display: flex; align-items: center; gap: 0.5rem;">
+                            <i class="fas fa-gem" style="color: #a855f7;"></i>
+                            NFT Collection
+                        </h3>
+                        <p style="margin: 0; font-size: 0.9rem; color: var(--text-muted);">Collect, trade, and showcase MTS-721 and MTS-1155 tokens on MoltChain.</p>
+                    </div>
+
                     <div class="nfts-header">
                         <div class="nfts-header-left">
                             <span id="nftCount">0 NFTs</span>
@@ -464,6 +484,94 @@
                     <!-- Content loaded dynamically via JavaScript -->
                     <!-- Only shows if wallet is a validator -->
                     <div id="stakingValidatorInfo" style="display: none;"></div>
+                </div>
+
+                <div class="tab-content" data-tab="identity">
+                    <div id="identityContent">
+                        <!-- MoltyID identity loaded dynamically -->
+                    </div>
+                </div>
+
+                <!-- Governance Tab -->
+                <div class="tab-content" data-tab="governance">
+                    <div id="governanceContent">
+                        <div class="panel-header">
+                            <h3><i class="fas fa-landmark"></i> MoltDAO Governance</h3>
+                            <button class="btn btn-sm btn-secondary" onclick="loadGovernance()"><i class="fas fa-sync-alt"></i></button>
+                        </div>
+                        <div id="govStats" class="stats-row">
+                            <div class="stat-card"><div class="stat-value" id="govActiveProposals">—</div><div class="stat-label">Active Proposals</div></div>
+                            <div class="stat-card"><div class="stat-value" id="govVotingPower">—</div><div class="stat-label">Your Voting Power</div></div>
+                            <div class="stat-card"><div class="stat-value" id="govTotalProposals">—</div><div class="stat-label">Total Proposals</div></div>
+                        </div>
+                        <div id="govProposalsList" class="proposals-list">
+                            <p class="empty-state"><i class="fas fa-vote-yea"></i> Loading proposals...</p>
+                        </div>
+                        <div class="panel-actions">
+                            <button class="btn btn-primary" onclick="showCreateProposal()"><i class="fas fa-plus"></i> Create Proposal</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Bridge Tab -->
+                <div class="tab-content" data-tab="bridge">
+                    <div id="bridgeContent">
+                        <div class="panel-header">
+                            <h3><i class="fas fa-bridge"></i> MoltBridge</h3>
+                            <button class="btn btn-sm btn-secondary" onclick="loadBridge()"><i class="fas fa-sync-alt"></i></button>
+                        </div>
+                        <div id="bridgeStats" class="stats-row">
+                            <div class="stat-card"><div class="stat-value" id="bridgeTVL">—</div><div class="stat-label">TVL</div></div>
+                            <div class="stat-card"><div class="stat-value" id="bridgePending">—</div><div class="stat-label">Pending Transfers</div></div>
+                            <div class="stat-card"><div class="stat-value" id="bridgeCompleted">—</div><div class="stat-label">Your Completed</div></div>
+                        </div>
+                        <div class="bridge-form">
+                            <div class="form-group">
+                                <label>Source Chain</label>
+                                <select id="bridgeSource" class="form-input">
+                                    <option value="moltchain">MoltChain</option>
+                                    <option value="ethereum">Ethereum</option>
+                                    <option value="solana">Solana</option>
+                                </select>
+                            </div>
+                            <div class="bridge-arrow"><i class="fas fa-arrow-right"></i></div>
+                            <div class="form-group">
+                                <label>Destination Chain</label>
+                                <select id="bridgeDest" class="form-input">
+                                    <option value="ethereum">Ethereum</option>
+                                    <option value="moltchain">MoltChain</option>
+                                    <option value="solana">Solana</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Amount (MOLT)</label>
+                                <input type="number" id="bridgeAmount" class="form-input" placeholder="0.00">
+                            </div>
+                            <button class="btn btn-primary btn-block" onclick="initBridgeTransfer()"><i class="fas fa-paper-plane"></i> Bridge Tokens</button>
+                        </div>
+                        <div id="bridgeHistory" class="bridge-history">
+                            <h4>Recent Transfers</h4>
+                            <p class="empty-state"><i class="fas fa-exchange-alt"></i> No bridge transfers yet</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Prediction Markets Tab -->
+                <div class="tab-content" data-tab="prediction">
+                    <div id="predictionContent">
+                        <div class="panel-header">
+                            <h3><i class="fas fa-chart-line"></i> Prediction Markets</h3>
+                            <button class="btn btn-sm btn-secondary" onclick="loadPredictionMarkets()"><i class="fas fa-sync-alt"></i></button>
+                        </div>
+                        <div id="predStats" class="stats-row">
+                            <div class="stat-card"><div class="stat-value" id="predActiveMarkets">—</div><div class="stat-label">Active Markets</div></div>
+                            <div class="stat-card"><div class="stat-value" id="predTotalVolume">—</div><div class="stat-label">Total Volume</div></div>
+                            <div class="stat-card"><div class="stat-value" id="predYourPositions">—</div><div class="stat-label">Your Positions</div></div>
+                        </div>
+                        <div id="predMarketsList" class="markets-list">
+                            <p class="empty-state"><i class="fas fa-chart-bar"></i> Loading markets...</p>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
@@ -859,7 +967,9 @@
         </div>
     </div>
 
+    <script src="shared-config.js"></script>
     <script src="js/wallet.js"></script>
+    <script src="js/identity.js"></script>
     <script src="js/crypto.js"></script>
     <script>
     /* Welcome carousel */

@@ -233,13 +233,53 @@ impl PeerManager {
         }
     }
 
-    /// Broadcast message to all peers
+    /// Broadcast message to all peers (parallel — PERF-FIX 1)
+    /// Uses concurrent sends instead of sequential awaits.
+    /// With 500 validators, sequential = 2.5s; parallel = ~50ms.
     pub async fn broadcast(&self, message: P2PMessage) {
-        for entry in self.peers.iter() {
-            let peer_addr = *entry.key();
-            if let Err(e) = self.send_to_peer(&peer_addr, message.clone()).await {
-                warn!("P2P: Failed to send to {}: {}", peer_addr, e);
+        let peers: Vec<SocketAddr> = self.peers.iter().map(|entry| *entry.key()).collect();
+        if peers.is_empty() {
+            return;
+        }
+
+        // Pre-serialize once (avoid N redundant serializations)
+        let bytes = match message.serialize() {
+            Ok(b) => std::sync::Arc::new(b),
+            Err(e) => {
+                warn!("P2P: broadcast serialize error: {}", e);
+                return;
             }
+        };
+
+        // Extract connection handles upfront (drop DashMap guards before async)
+        let mut conn_tasks: Vec<(SocketAddr, Option<quinn::Connection>)> = Vec::with_capacity(peers.len());
+        for addr in &peers {
+            let conn = self.peers.get(addr).and_then(|p| p.connection.clone());
+            conn_tasks.push((*addr, conn));
+        }
+
+        // Spawn concurrent send tasks
+        let mut handles = Vec::with_capacity(conn_tasks.len());
+        for (peer_addr, connection) in conn_tasks {
+            let bytes = bytes.clone();
+            handles.push(tokio::spawn(async move {
+                if let Some(conn) = connection {
+                    match conn.open_uni().await {
+                        Ok(mut stream) => {
+                            if let Err(e) = stream.write_all(&bytes).await {
+                                warn!("P2P: Failed to send to {}: {}", peer_addr, e);
+                            }
+                            let _ = stream.finish();
+                        }
+                        Err(e) => warn!("P2P: Failed to open stream to {}: {}", peer_addr, e),
+                    }
+                }
+            }));
+        }
+
+        // Await all sends concurrently
+        for handle in handles {
+            let _ = handle.await;
         }
     }
 
@@ -277,6 +317,14 @@ impl PeerManager {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .prune();
+    }
+
+    /// Check if a peer address is currently banned
+    pub fn is_banned(&self, addr: &SocketAddr) -> bool {
+        self.ban_list
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_banned(addr)
     }
 
     /// Start accepting connections

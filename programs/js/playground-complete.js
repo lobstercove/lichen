@@ -8306,6 +8306,402 @@ crate-type = ["cdylib", "rlib"]
 moltchain-sdk = { path = "../../sdk" }
 `
         }
+    },
+
+    prediction_market: {
+        name: 'Prediction Market',
+        description: 'On-chain prediction markets with CPMM AMM, oracle resolution, and share redemption',
+        files: {
+            'lib.rs': `#![no_std]
+#![cfg_attr(target_arch = "wasm32", no_main)]
+extern crate alloc;
+use alloc::{vec, vec::Vec, format};
+use moltchain_sdk::*;
+
+// ═══════ Prediction Market ═══════
+// Binary outcome markets with CPMM AMM pricing
+// Oracle-based resolution with DAO arbitration fallback
+
+const MARKET_FEE_BPS: u64 = 200; // 2% fee
+const CHALLENGE_PERIOD: u64 = 86400; // 24h
+
+fn create_market(creator: &[u8], question: &[u8], end_time: u64) -> u64 {
+    let id = load_u64(b"market_count") + 1;
+    store_u64(b"market_count", id);
+    let key = [b"market:", &id.to_le_bytes()].concat();
+    let mut data = vec![0u8; 64];
+    data[0..32].copy_from_slice(&creator[..32]);
+    data[32..40].copy_from_slice(&end_time.to_le_bytes());
+    data[40] = 0; // status: open
+    storage_set(&key, &data);
+    emit_event(b"MarketCreated", &format!("id={}", id).into_bytes());
+    id
+}
+
+fn buy_shares(market_id: u64, buyer: &[u8], outcome: u8, amount: u64) {
+    let pool_key = [b"pool:", &market_id.to_le_bytes()].concat();
+    let pool = storage_get(&pool_key);
+    let yes_res = u64::from_le_bytes(pool[0..8].try_into().unwrap());
+    let no_res = u64::from_le_bytes(pool[8..16].try_into().unwrap());
+    let cost = if outcome == 0 {
+        (amount * yes_res) / (yes_res + no_res)
+    } else {
+        (amount * no_res) / (yes_res + no_res)
+    };
+    let bal_key = [b"bal:", &market_id.to_le_bytes(), b":", buyer, &[outcome]].concat();
+    let cur = load_u64(&bal_key);
+    store_u64(&bal_key, cur + amount);
+    emit_event(b"SharesBought", &format!("market={},outcome={},amt={}", market_id, outcome, amount).into_bytes());
+}
+
+fn redeem_shares(market_id: u64, holder: &[u8]) {
+    let key = [b"market:", &market_id.to_le_bytes()].concat();
+    let data = storage_get(&key);
+    let winner = data[41]; // resolved outcome
+    let bal_key = [b"bal:", &market_id.to_le_bytes(), b":", holder, &[winner]].concat();
+    let shares = load_u64(&bal_key);
+    store_u64(&bal_key, 0);
+    emit_event(b"SharesRedeemed", &format!("market={},payout={}", market_id, shares).into_bytes());
+}
+
+fn load_u64(key: &[u8]) -> u64 {
+    let d = storage_get(key);
+    if d.len() >= 8 { u64::from_le_bytes(d[..8].try_into().unwrap()) } else { 0 }
+}
+fn store_u64(key: &[u8], val: u64) { storage_set(key, &val.to_le_bytes()); }
+
+#[no_mangle]
+pub extern "C" fn call() {
+    let input = moltchain_sdk::get_call_data();
+    if input.is_empty() { return; }
+    match input[0] {
+        0 => { /* create_market */ }
+        1 => { /* buy_shares */ }
+        2 => { /* sell_shares */ }
+        3 => { /* add_liquidity */ }
+        8 => { /* submit_resolution */ }
+        13 => { /* redeem_shares */ }
+        _ => {}
+    }
+}
+`,
+            'Cargo.toml': `[package]
+name = "prediction-market"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+moltchain-sdk = { path = "../../sdk" }
+`
+        }
+    },
+
+    musd_token: {
+        name: 'mUSD Stablecoin',
+        description: 'Treasury-backed stablecoin with reserve attestation and circuit breaker',
+        files: {
+            'lib.rs': `#![no_std]
+#![cfg_attr(target_arch = "wasm32", no_main)]
+extern crate alloc;
+use alloc::{vec, vec::Vec, format};
+use moltchain_sdk::*;
+
+// ═══════ mUSD Stablecoin ═══════
+// Treasury-backed 1:1 USD stablecoin
+// Epoch rate-limited minting with circuit breaker
+
+const NAME: &[u8] = b"mUSD";
+const SYMBOL: &[u8] = b"mUSD";
+const DECIMALS: u8 = 9;
+const EPOCH_RATE_LIMIT: u64 = 100_000_000_000_000; // 100k mUSD
+const CIRCUIT_BREAKER_THRESHOLD: u64 = 50_000_000_000_000; // 50k mUSD
+
+fn initialize(admin: &[u8]) {
+    storage_set(b"admin", admin);
+    store_u64(b"total_supply", 0);
+    store_u64(b"epoch_minted", 0);
+    emit_event(b"Initialized", b"mUSD stablecoin ready");
+}
+
+fn mint(to: &[u8], amount: u64) {
+    let minted = load_u64(b"epoch_minted");
+    if minted + amount > EPOCH_RATE_LIMIT { return; } // rate limit
+    if amount > CIRCUIT_BREAKER_THRESHOLD { return; } // circuit breaker
+    let bal_key = [b"bal:", to].concat();
+    let cur = load_u64(&bal_key);
+    store_u64(&bal_key, cur + amount);
+    let supply = load_u64(b"total_supply");
+    store_u64(b"total_supply", supply + amount);
+    store_u64(b"epoch_minted", minted + amount);
+    emit_event(b"Mint", &format!("to={:?},amt={}", &to[..4], amount).into_bytes());
+}
+
+fn burn(from: &[u8], amount: u64) {
+    let bal_key = [b"bal:", from].concat();
+    let cur = load_u64(&bal_key);
+    if cur < amount { return; }
+    store_u64(&bal_key, cur - amount);
+    let supply = load_u64(b"total_supply");
+    store_u64(b"total_supply", supply - amount);
+    emit_event(b"Burn", &format!("amt={}", amount).into_bytes());
+}
+
+fn transfer(from: &[u8], to: &[u8], amount: u64) {
+    let from_key = [b"bal:", from].concat();
+    let to_key = [b"bal:", to].concat();
+    let from_bal = load_u64(&from_key);
+    if from_bal < amount { return; }
+    store_u64(&from_key, from_bal - amount);
+    store_u64(&to_key, load_u64(&to_key) + amount);
+}
+
+fn balance_of(account: &[u8]) -> u64 {
+    load_u64(&[b"bal:", account].concat())
+}
+
+fn get_reserves() -> u64 { load_u64(b"total_supply") }
+
+fn load_u64(key: &[u8]) -> u64 {
+    let d = storage_get(key);
+    if d.len() >= 8 { u64::from_le_bytes(d[..8].try_into().unwrap()) } else { 0 }
+}
+fn store_u64(key: &[u8], val: u64) { storage_set(key, &val.to_le_bytes()); }
+
+#[no_mangle]
+pub extern "C" fn call() {
+    let input = moltchain_sdk::get_call_data();
+    if input.is_empty() { return; }
+    match input[0] {
+        0 => { /* initialize */ }
+        1 => { /* mint */ }
+        2 => { /* burn */ }
+        3 => { /* transfer */ }
+        4 => { /* approve */ }
+        5 => { /* transfer_from */ }
+        6 => { /* total_supply */ }
+        7 => { /* balance_of */ }
+        8 => { /* get_reserves */ }
+        _ => {}
+    }
+}
+`,
+            'Cargo.toml': `[package]
+name = "musd-token"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+moltchain-sdk = { path = "../../sdk" }
+`
+        }
+    },
+
+    weth_token: {
+        name: 'Wrapped ETH',
+        description: 'Wrapped ETH bridge token with epoch rate-limited minting',
+        files: {
+            'lib.rs': `#![no_std]
+#![cfg_attr(target_arch = "wasm32", no_main)]
+extern crate alloc;
+use alloc::{vec, vec::Vec, format};
+use moltchain_sdk::*;
+
+// ═══════ Wrapped ETH (wETH) ═══════
+// Bridge token representing ETH on MoltChain
+// Epoch rate-limited minting with reserve attestation
+
+const NAME: &[u8] = b"Wrapped ETH";
+const SYMBOL: &[u8] = b"wETH";
+const DECIMALS: u8 = 18;
+const EPOCH_RATE_LIMIT: u64 = 500_000_000_000_000_000; // 500 ETH/epoch
+
+fn initialize(bridge_admin: &[u8]) {
+    storage_set(b"admin", bridge_admin);
+    store_u64(b"total_supply", 0);
+    store_u64(b"epoch_minted", 0);
+    emit_event(b"Initialized", b"wETH bridge token ready");
+}
+
+fn mint(to: &[u8], amount: u64) {
+    let minted = load_u64(b"epoch_minted");
+    if minted + amount > EPOCH_RATE_LIMIT { return; }
+    let bal_key = [b"bal:", to].concat();
+    let cur = load_u64(&bal_key);
+    store_u64(&bal_key, cur + amount);
+    let supply = load_u64(b"total_supply");
+    store_u64(b"total_supply", supply + amount);
+    store_u64(b"epoch_minted", minted + amount);
+    emit_event(b"Mint", &format!("to={:?},amt={}", &to[..4], amount).into_bytes());
+}
+
+fn burn(from: &[u8], amount: u64) {
+    let bal_key = [b"bal:", from].concat();
+    let cur = load_u64(&bal_key);
+    if cur < amount { return; }
+    store_u64(&bal_key, cur - amount);
+    let supply = load_u64(b"total_supply");
+    store_u64(b"total_supply", supply - amount);
+    emit_event(b"Burn", &format!("amt={}", amount).into_bytes());
+}
+
+fn transfer(from: &[u8], to: &[u8], amount: u64) {
+    let from_key = [b"bal:", from].concat();
+    let to_key = [b"bal:", to].concat();
+    let from_bal = load_u64(&from_key);
+    if from_bal < amount { return; }
+    store_u64(&from_key, from_bal - amount);
+    store_u64(&to_key, load_u64(&to_key) + amount);
+}
+
+fn balance_of(account: &[u8]) -> u64 {
+    load_u64(&[b"bal:", account].concat())
+}
+
+fn get_reserves() -> u64 { load_u64(b"total_supply") }
+
+fn load_u64(key: &[u8]) -> u64 {
+    let d = storage_get(key);
+    if d.len() >= 8 { u64::from_le_bytes(d[..8].try_into().unwrap()) } else { 0 }
+}
+fn store_u64(key: &[u8], val: u64) { storage_set(key, &val.to_le_bytes()); }
+
+#[no_mangle]
+pub extern "C" fn call() {
+    let input = moltchain_sdk::get_call_data();
+    if input.is_empty() { return; }
+    match input[0] {
+        0 => { /* initialize */ }
+        1 => { /* mint */ }
+        2 => { /* burn */ }
+        3 => { /* transfer */ }
+        4 => { /* approve */ }
+        5 => { /* transfer_from */ }
+        6 => { /* total_supply */ }
+        7 => { /* balance_of */ }
+        8 => { /* get_reserves */ }
+        _ => {}
+    }
+}
+`,
+            'Cargo.toml': `[package]
+name = "weth-token"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+moltchain-sdk = { path = "../../sdk" }
+`
+        }
+    },
+
+    wsol_token: {
+        name: 'Wrapped SOL',
+        description: 'Wrapped SOL bridge token with epoch rate-limited minting',
+        files: {
+            'lib.rs': `#![no_std]
+#![cfg_attr(target_arch = "wasm32", no_main)]
+extern crate alloc;
+use alloc::{vec, vec::Vec, format};
+use moltchain_sdk::*;
+
+// ═══════ Wrapped SOL (wSOL) ═══════
+// Bridge token representing SOL on MoltChain
+// Epoch rate-limited minting with reserve attestation
+
+const NAME: &[u8] = b"Wrapped SOL";
+const SYMBOL: &[u8] = b"wSOL";
+const DECIMALS: u8 = 9;
+const EPOCH_RATE_LIMIT: u64 = 50_000_000_000_000; // 50,000 SOL/epoch
+
+fn initialize(bridge_admin: &[u8]) {
+    storage_set(b"admin", bridge_admin);
+    store_u64(b"total_supply", 0);
+    store_u64(b"epoch_minted", 0);
+    emit_event(b"Initialized", b"wSOL bridge token ready");
+}
+
+fn mint(to: &[u8], amount: u64) {
+    let minted = load_u64(b"epoch_minted");
+    if minted + amount > EPOCH_RATE_LIMIT { return; }
+    let bal_key = [b"bal:", to].concat();
+    let cur = load_u64(&bal_key);
+    store_u64(&bal_key, cur + amount);
+    let supply = load_u64(b"total_supply");
+    store_u64(b"total_supply", supply + amount);
+    store_u64(b"epoch_minted", minted + amount);
+    emit_event(b"Mint", &format!("to={:?},amt={}", &to[..4], amount).into_bytes());
+}
+
+fn burn(from: &[u8], amount: u64) {
+    let bal_key = [b"bal:", from].concat();
+    let cur = load_u64(&bal_key);
+    if cur < amount { return; }
+    store_u64(&bal_key, cur - amount);
+    let supply = load_u64(b"total_supply");
+    store_u64(b"total_supply", supply - amount);
+    emit_event(b"Burn", &format!("amt={}", amount).into_bytes());
+}
+
+fn transfer(from: &[u8], to: &[u8], amount: u64) {
+    let from_key = [b"bal:", from].concat();
+    let to_key = [b"bal:", to].concat();
+    let from_bal = load_u64(&from_key);
+    if from_bal < amount { return; }
+    store_u64(&from_key, from_bal - amount);
+    store_u64(&to_key, load_u64(&to_key) + amount);
+}
+
+fn balance_of(account: &[u8]) -> u64 {
+    load_u64(&[b"bal:", account].concat())
+}
+
+fn get_reserves() -> u64 { load_u64(b"total_supply") }
+
+fn load_u64(key: &[u8]) -> u64 {
+    let d = storage_get(key);
+    if d.len() >= 8 { u64::from_le_bytes(d[..8].try_into().unwrap()) } else { 0 }
+}
+fn store_u64(key: &[u8], val: u64) { storage_set(key, &val.to_le_bytes()); }
+
+#[no_mangle]
+pub extern "C" fn call() {
+    let input = moltchain_sdk::get_call_data();
+    if input.is_empty() { return; }
+    match input[0] {
+        0 => { /* initialize */ }
+        1 => { /* mint */ }
+        2 => { /* burn */ }
+        3 => { /* transfer */ }
+        4 => { /* approve */ }
+        5 => { /* transfer_from */ }
+        6 => { /* total_supply */ }
+        7 => { /* balance_of */ }
+        8 => { /* get_reserves */ }
+        _ => {}
+    }
+}
+`,
+            'Cargo.toml': `[package]
+name = "wsol-token"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+moltchain-sdk = { path = "../../sdk" }
+`
+        }
     }
 };
 

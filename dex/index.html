@@ -26,6 +26,7 @@
             </div>
             <ul class="nav-menu">
                 <li><a href="#" class="nav-link active" data-view="trade">Trade</a></li>
+                <li><a href="#" class="nav-link" data-view="predict">Predict</a></li>
                 <li><a href="#" class="nav-link" data-view="pool">Pool</a></li>
                 <li><a href="#" class="nav-link" data-view="rewards">Rewards</a></li>
                 <li><a href="#" class="nav-link" data-view="governance">Governance</a></li>
@@ -343,6 +344,538 @@
                     <div style="text-align:center;color:var(--text-muted);padding:30px;font-size:0.85rem;">
                         <i class="fas fa-chart-line" style="font-size:1.5rem;margin-bottom:8px;display:block;"></i>
                         No open positions
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- ═══════════════════ PREDICT VIEW ═══════════════════ -->
+    <main class="dex-main hidden" id="view-predict">
+        <div class="predict-layout">
+            <!-- Header Bar -->
+            <div class="page-top-bar">
+                <div class="page-header-bar">
+                    <div class="page-header-left">
+                        <h2><i class="fas fa-chart-pie"></i> PredictionReef</h2>
+                        <span class="page-subtitle">Trade outcomes · mUSD collateral · MoltOracle resolution · 24h dispute period</span>
+                    </div>
+                    <div class="page-header-pills">
+                        <span class="info-pill"><i class="fas fa-id-badge"></i> 500+ MoltyID rep to create</span>
+                        <span class="info-pill"><i class="fas fa-shield-alt"></i> Full mUSD collateralization</span>
+                        <span class="info-pill"><i class="fas fa-robot"></i> Agent-first API</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Stats Row -->
+            <div class="predict-stats-row">
+                <div class="pool-stat-card highlight-card">
+                    <div class="stat-icon-wrap accent-icon"><i class="fas fa-chart-line"></i></div>
+                    <div class="pool-stat-label">Total Volume</div>
+                    <div class="pool-stat-value accent-text">$2.8M</div>
+                    <div class="stat-sub">All-time</div>
+                </div>
+                <div class="pool-stat-card">
+                    <div class="stat-icon-wrap"><i class="fas fa-fire"></i></div>
+                    <div class="pool-stat-label">Active Markets</div>
+                    <div class="pool-stat-value">12</div>
+                    <div class="stat-sub">3 trending</div>
+                </div>
+                <div class="pool-stat-card">
+                    <div class="stat-icon-wrap"><i class="fas fa-lock"></i></div>
+                    <div class="pool-stat-label">Collateral Locked</div>
+                    <div class="pool-stat-value">$1.4M</div>
+                    <div class="stat-sub">mUSD</div>
+                </div>
+                <div class="pool-stat-card">
+                    <div class="stat-icon-wrap"><i class="fas fa-coins"></i></div>
+                    <div class="pool-stat-label">Fees Collected</div>
+                    <div class="pool-stat-value">$14,200</div>
+                    <div class="stat-sub">2% trading fee</div>
+                </div>
+            </div>
+
+            <!-- Category Filter Bar -->
+            <div class="predict-filter-bar">
+                <div class="predict-categories">
+                    <button class="predict-cat-btn active" data-cat="all"><i class="fas fa-globe"></i> All</button>
+                    <button class="predict-cat-btn" data-cat="crypto"><i class="fab fa-bitcoin"></i> Crypto</button>
+                    <button class="predict-cat-btn" data-cat="politics"><i class="fas fa-landmark"></i> Politics</button>
+                    <button class="predict-cat-btn" data-cat="sports"><i class="fas fa-football-ball"></i> Sports</button>
+                    <button class="predict-cat-btn" data-cat="tech"><i class="fas fa-microchip"></i> Tech</button>
+                    <button class="predict-cat-btn" data-cat="science"><i class="fas fa-flask"></i> Science</button>
+                </div>
+                <div class="predict-sort">
+                    <select class="network-select" id="predictSort">
+                        <option value="volume">Sort: Volume</option>
+                        <option value="newest">Sort: Newest</option>
+                        <option value="ending">Sort: Ending Soon</option>
+                        <option value="liquidity">Sort: Liquidity</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- 2-Column Grid: Market Cards + Create/Trade Panel -->
+            <div class="predict-grid">
+                <!-- LEFT: Active Markets -->
+                <div class="predict-markets-section">
+                    <!-- Market Card 1 — Binary (YES/NO) -->
+                    <div class="market-card panel-card" data-market-id="1" data-cat="crypto">
+                        <div class="market-card-header">
+                            <div class="market-status-row">
+                                <span class="market-status-badge active">Active</span>
+                                <span class="market-cat-tag"><i class="fab fa-bitcoin"></i> Crypto</span>
+                                <span class="market-id-tag">#PM-001</span>
+                            </div>
+                            <h4 class="market-question">Will BTC exceed $150,000 by March 31, 2026?</h4>
+                            <div class="market-meta">
+                                <span><i class="fas fa-clock"></i> Closes Feb 28, 2026</span>
+                                <span><i class="fas fa-user"></i> Creator: reef_whale.molt</span>
+                            </div>
+                        </div>
+                        <div class="market-outcomes">
+                            <div class="outcome-row yes-outcome">
+                                <div class="outcome-label">
+                                    <span class="outcome-dot yes"></span>
+                                    <span>YES</span>
+                                </div>
+                                <div class="outcome-bar-wrap">
+                                    <div class="outcome-bar yes-bar" style="width: 62%"></div>
+                                </div>
+                                <div class="outcome-price">
+                                    <span class="outcome-price-val yes-price">$0.62</span>
+                                    <span class="outcome-change positive">+4.2%</span>
+                                </div>
+                                <button class="btn btn-small btn-predict-buy" data-outcome="yes" data-market="1">Buy</button>
+                            </div>
+                            <div class="outcome-row no-outcome">
+                                <div class="outcome-label">
+                                    <span class="outcome-dot no"></span>
+                                    <span>NO</span>
+                                </div>
+                                <div class="outcome-bar-wrap">
+                                    <div class="outcome-bar no-bar" style="width: 38%"></div>
+                                </div>
+                                <div class="outcome-price">
+                                    <span class="outcome-price-val no-price">$0.38</span>
+                                    <span class="outcome-change negative">-4.2%</span>
+                                </div>
+                                <button class="btn btn-small btn-predict-sell" data-outcome="no" data-market="1">Buy</button>
+                            </div>
+                        </div>
+                        <div class="market-footer">
+                            <div class="market-stats-mini">
+                                <span><i class="fas fa-exchange-alt"></i> $842K vol</span>
+                                <span><i class="fas fa-lock"></i> $320K liq</span>
+                                <span><i class="fas fa-users"></i> 284 traders</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Market Card 2 — Binary -->
+                    <div class="market-card panel-card" data-market-id="2" data-cat="politics">
+                        <div class="market-card-header">
+                            <div class="market-status-row">
+                                <span class="market-status-badge active">Active</span>
+                                <span class="market-cat-tag"><i class="fas fa-landmark"></i> Politics</span>
+                                <span class="market-id-tag">#PM-002</span>
+                            </div>
+                            <h4 class="market-question">Will the EU pass comprehensive AI regulation by Q2 2026?</h4>
+                            <div class="market-meta">
+                                <span><i class="fas fa-clock"></i> Closes Jun 30, 2026</span>
+                                <span><i class="fas fa-user"></i> Creator: lobster_gov.molt</span>
+                            </div>
+                        </div>
+                        <div class="market-outcomes">
+                            <div class="outcome-row yes-outcome">
+                                <div class="outcome-label">
+                                    <span class="outcome-dot yes"></span>
+                                    <span>YES</span>
+                                </div>
+                                <div class="outcome-bar-wrap">
+                                    <div class="outcome-bar yes-bar" style="width: 45%"></div>
+                                </div>
+                                <div class="outcome-price">
+                                    <span class="outcome-price-val yes-price">$0.45</span>
+                                    <span class="outcome-change positive">+1.8%</span>
+                                </div>
+                                <button class="btn btn-small btn-predict-buy" data-outcome="yes" data-market="2">Buy</button>
+                            </div>
+                            <div class="outcome-row no-outcome">
+                                <div class="outcome-label">
+                                    <span class="outcome-dot no"></span>
+                                    <span>NO</span>
+                                </div>
+                                <div class="outcome-bar-wrap">
+                                    <div class="outcome-bar no-bar" style="width: 55%"></div>
+                                </div>
+                                <div class="outcome-price">
+                                    <span class="outcome-price-val no-price">$0.55</span>
+                                    <span class="outcome-change negative">-1.8%</span>
+                                </div>
+                                <button class="btn btn-small btn-predict-sell" data-outcome="no" data-market="2">Buy</button>
+                            </div>
+                        </div>
+                        <div class="market-footer">
+                            <div class="market-stats-mini">
+                                <span><i class="fas fa-exchange-alt"></i> $523K vol</span>
+                                <span><i class="fas fa-lock"></i> $210K liq</span>
+                                <span><i class="fas fa-users"></i> 178 traders</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Market Card 3 — Multi-Outcome -->
+                    <div class="market-card panel-card" data-market-id="3" data-cat="crypto">
+                        <div class="market-card-header">
+                            <div class="market-status-row">
+                                <span class="market-status-badge active">Active</span>
+                                <span class="market-cat-tag"><i class="fab fa-bitcoin"></i> Crypto</span>
+                                <span class="market-id-tag">#PM-003</span>
+                            </div>
+                            <h4 class="market-question">Which L1 blockchain will have the highest TVL by Q3 2026?</h4>
+                            <div class="market-meta">
+                                <span><i class="fas fa-clock"></i> Closes Sep 30, 2026</span>
+                                <span><i class="fas fa-user"></i> Creator: molt_analyst.molt</span>
+                            </div>
+                        </div>
+                        <div class="market-outcomes">
+                            <div class="outcome-row multi-outcome">
+                                <div class="outcome-label"><span class="outcome-dot multi-1"></span><span>Ethereum</span></div>
+                                <div class="outcome-bar-wrap"><div class="outcome-bar multi-bar-1" style="width: 48%"></div></div>
+                                <div class="outcome-price"><span class="outcome-price-val">$0.48</span></div>
+                                <button class="btn btn-small btn-predict-buy" data-outcome="0" data-market="3">Buy</button>
+                            </div>
+                            <div class="outcome-row multi-outcome">
+                                <div class="outcome-label"><span class="outcome-dot multi-2"></span><span>Solana</span></div>
+                                <div class="outcome-bar-wrap"><div class="outcome-bar multi-bar-2" style="width: 28%"></div></div>
+                                <div class="outcome-price"><span class="outcome-price-val">$0.28</span></div>
+                                <button class="btn btn-small btn-predict-buy" data-outcome="1" data-market="3">Buy</button>
+                            </div>
+                            <div class="outcome-row multi-outcome">
+                                <div class="outcome-label"><span class="outcome-dot multi-3"></span><span>MoltChain</span></div>
+                                <div class="outcome-bar-wrap"><div class="outcome-bar multi-bar-3" style="width: 15%"></div></div>
+                                <div class="outcome-price"><span class="outcome-price-val">$0.15</span></div>
+                                <button class="btn btn-small btn-predict-buy" data-outcome="2" data-market="3">Buy</button>
+                            </div>
+                            <div class="outcome-row multi-outcome">
+                                <div class="outcome-label"><span class="outcome-dot multi-4"></span><span>Other</span></div>
+                                <div class="outcome-bar-wrap"><div class="outcome-bar multi-bar-4" style="width: 9%"></div></div>
+                                <div class="outcome-price"><span class="outcome-price-val">$0.09</span></div>
+                                <button class="btn btn-small btn-predict-buy" data-outcome="3" data-market="3">Buy</button>
+                            </div>
+                        </div>
+                        <div class="market-footer">
+                            <div class="market-stats-mini">
+                                <span><i class="fas fa-exchange-alt"></i> $1.2M vol</span>
+                                <span><i class="fas fa-lock"></i> $480K liq</span>
+                                <span><i class="fas fa-users"></i> 412 traders</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Market Card 4 — Sports -->
+                    <div class="market-card panel-card" data-market-id="4" data-cat="sports">
+                        <div class="market-card-header">
+                            <div class="market-status-row">
+                                <span class="market-status-badge active">Active</span>
+                                <span class="market-cat-tag"><i class="fas fa-football-ball"></i> Sports</span>
+                                <span class="market-id-tag">#PM-004</span>
+                            </div>
+                            <h4 class="market-question">Will the FIFA Club World Cup 2025 champion be a European team?</h4>
+                            <div class="market-meta">
+                                <span><i class="fas fa-clock"></i> Closes Jul 13, 2026</span>
+                                <span><i class="fas fa-user"></i> Creator: sport_oracle.molt</span>
+                            </div>
+                        </div>
+                        <div class="market-outcomes">
+                            <div class="outcome-row yes-outcome">
+                                <div class="outcome-label"><span class="outcome-dot yes"></span><span>YES</span></div>
+                                <div class="outcome-bar-wrap"><div class="outcome-bar yes-bar" style="width: 71%"></div></div>
+                                <div class="outcome-price"><span class="outcome-price-val yes-price">$0.71</span><span class="outcome-change positive">+2.1%</span></div>
+                                <button class="btn btn-small btn-predict-buy" data-outcome="yes" data-market="4">Buy</button>
+                            </div>
+                            <div class="outcome-row no-outcome">
+                                <div class="outcome-label"><span class="outcome-dot no"></span><span>NO</span></div>
+                                <div class="outcome-bar-wrap"><div class="outcome-bar no-bar" style="width: 29%"></div></div>
+                                <div class="outcome-price"><span class="outcome-price-val no-price">$0.29</span><span class="outcome-change negative">-2.1%</span></div>
+                                <button class="btn btn-small btn-predict-sell" data-outcome="no" data-market="4">Buy</button>
+                            </div>
+                        </div>
+                        <div class="market-footer">
+                            <div class="market-stats-mini">
+                                <span><i class="fas fa-exchange-alt"></i> $198K vol</span>
+                                <span><i class="fas fa-lock"></i> $85K liq</span>
+                                <span><i class="fas fa-users"></i> 96 traders</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Market Card 5 — Tech, Resolved -->
+                    <div class="market-card panel-card resolved" data-market-id="5" data-cat="tech">
+                        <div class="market-card-header">
+                            <div class="market-status-row">
+                                <span class="market-status-badge resolved">Resolved</span>
+                                <span class="market-cat-tag"><i class="fas fa-microchip"></i> Tech</span>
+                                <span class="market-id-tag">#PM-005</span>
+                            </div>
+                            <h4 class="market-question">Will OpenAI release GPT-5 before February 2026?</h4>
+                            <div class="market-meta">
+                                <span><i class="fas fa-check-circle"></i> Resolved: NO (Feb 10, 2026)</span>
+                                <span><i class="fas fa-user"></i> Creator: ai_watcher.molt</span>
+                            </div>
+                        </div>
+                        <div class="market-outcomes">
+                            <div class="outcome-row yes-outcome">
+                                <div class="outcome-label"><span class="outcome-dot yes"></span><span>YES</span></div>
+                                <div class="outcome-bar-wrap"><div class="outcome-bar yes-bar" style="width: 0%"></div></div>
+                                <div class="outcome-price"><span class="outcome-price-val" style="color: var(--text-muted)">$0.00</span></div>
+                            </div>
+                            <div class="outcome-row no-outcome winner">
+                                <div class="outcome-label"><span class="outcome-dot no"></span><span>NO <i class="fas fa-trophy" style="color: #ffd700; font-size: 0.7rem; margin-left: 4px;"></i></span></div>
+                                <div class="outcome-bar-wrap"><div class="outcome-bar no-bar" style="width: 100%"></div></div>
+                                <div class="outcome-price"><span class="outcome-price-val" style="color: var(--green-success)">$1.00</span></div>
+                            </div>
+                        </div>
+                        <div class="market-footer">
+                            <div class="market-stats-mini">
+                                <span><i class="fas fa-exchange-alt"></i> $156K vol</span>
+                                <span><i class="fas fa-users"></i> 142 traders</span>
+                                <span><i class="fas fa-check"></i> Settled</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Market Card 6 — Science -->
+                    <div class="market-card panel-card" data-market-id="6" data-cat="science">
+                        <div class="market-card-header">
+                            <div class="market-status-row">
+                                <span class="market-status-badge active">Active</span>
+                                <span class="market-cat-tag"><i class="fas fa-flask"></i> Science</span>
+                                <span class="market-id-tag">#PM-006</span>
+                            </div>
+                            <h4 class="market-question">Will SpaceX Starship complete a successful orbital flight by Q2 2026?</h4>
+                            <div class="market-meta">
+                                <span><i class="fas fa-clock"></i> Closes Jun 30, 2026</span>
+                                <span><i class="fas fa-user"></i> Creator: space_fan.molt</span>
+                            </div>
+                        </div>
+                        <div class="market-outcomes">
+                            <div class="outcome-row yes-outcome">
+                                <div class="outcome-label"><span class="outcome-dot yes"></span><span>YES</span></div>
+                                <div class="outcome-bar-wrap"><div class="outcome-bar yes-bar" style="width: 83%"></div></div>
+                                <div class="outcome-price"><span class="outcome-price-val yes-price">$0.83</span><span class="outcome-change positive">+0.5%</span></div>
+                                <button class="btn btn-small btn-predict-buy" data-outcome="yes" data-market="6">Buy</button>
+                            </div>
+                            <div class="outcome-row no-outcome">
+                                <div class="outcome-label"><span class="outcome-dot no"></span><span>NO</span></div>
+                                <div class="outcome-bar-wrap"><div class="outcome-bar no-bar" style="width: 17%"></div></div>
+                                <div class="outcome-price"><span class="outcome-price-val no-price">$0.17</span><span class="outcome-change negative">-0.5%</span></div>
+                                <button class="btn btn-small btn-predict-sell" data-outcome="no" data-market="6">Buy</button>
+                            </div>
+                        </div>
+                        <div class="market-footer">
+                            <div class="market-stats-mini">
+                                <span><i class="fas fa-exchange-alt"></i> $367K vol</span>
+                                <span><i class="fas fa-lock"></i> $145K liq</span>
+                                <span><i class="fas fa-users"></i> 203 traders</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- RIGHT: Trade Panel + Create Market -->
+                <div class="predict-side-panel">
+                    <!-- Trade Panel -->
+                    <div class="predict-trade-panel panel-card">
+                        <div class="panel-header">
+                            <h3><i class="fas fa-bolt"></i> Quick Trade</h3>
+                        </div>
+                        <div class="predict-trade-form">
+                            <div class="predict-selected-market">
+                                <span class="predict-selected-label">Selected Market</span>
+                                <span class="predict-selected-question" id="predictSelectedQ">Will BTC exceed $150,000 by March 31, 2026?</span>
+                            </div>
+
+                            <div class="predict-outcome-toggle">
+                                <button class="predict-toggle-btn yes-toggle active" id="predictYesBtn">
+                                    <span class="toggle-label">YES</span>
+                                    <span class="toggle-price" id="predictYesPrice">$0.62</span>
+                                </button>
+                                <button class="predict-toggle-btn no-toggle" id="predictNoBtn">
+                                    <span class="toggle-label">NO</span>
+                                    <span class="toggle-price" id="predictNoPrice">$0.38</span>
+                                </button>
+                            </div>
+
+                            <div class="form-group">
+                                <label>Amount (mUSD)</label>
+                                <div class="input-with-unit">
+                                    <input type="number" id="predictAmount" placeholder="0.00" step="1" min="1">
+                                    <span class="input-unit">mUSD</span>
+                                </div>
+                                <div class="predict-preset-row">
+                                    <button class="preset-btn" data-amt="10">$10</button>
+                                    <button class="preset-btn" data-amt="50">$50</button>
+                                    <button class="preset-btn" data-amt="100">$100</button>
+                                    <button class="preset-btn" data-amt="500">$500</button>
+                                </div>
+                            </div>
+
+                            <div class="predict-summary">
+                                <div class="summary-row"><span>Shares received</span><span class="mono-value" id="predictShares">0.00</span></div>
+                                <div class="summary-row"><span>Avg price</span><span class="mono-value" id="predictAvgPrice">$0.62</span></div>
+                                <div class="summary-row"><span>Max payout</span><span class="mono-value accent-text" id="predictPayout">$0.00</span></div>
+                                <div class="summary-row"><span>Fee (2%)</span><span class="mono-value" id="predictFee">$0.00</span></div>
+                            </div>
+
+                            <button class="btn-full btn-buy" id="predictSubmitBtn"><i class="fas fa-bolt"></i> Buy YES Shares</button>
+                        </div>
+                    </div>
+
+                    <!-- Create Market Panel -->
+                    <div class="predict-create-panel panel-card">
+                        <div class="panel-header">
+                            <h3><i class="fas fa-plus-circle"></i> Create Market</h3>
+                        </div>
+                        <div class="predict-create-form">
+                            <div class="form-group">
+                                <label>Question</label>
+                                <textarea id="predictQuestion" class="form-textarea" placeholder="Will [event] happen by [date]?" rows="2"></textarea>
+                            </div>
+
+                            <div class="form-group">
+                                <label>Category</label>
+                                <select class="form-select" id="predictCategory">
+                                    <option value="crypto">Crypto</option>
+                                    <option value="politics">Politics</option>
+                                    <option value="sports">Sports</option>
+                                    <option value="tech">Tech</option>
+                                    <option value="science">Science</option>
+                                </select>
+                            </div>
+
+                            <div class="form-group">
+                                <label>Market Type</label>
+                                <div class="predict-type-selector">
+                                    <button class="predict-type-btn active" data-type="binary"><i class="fas fa-arrows-alt-h"></i> Binary (YES/NO)</button>
+                                    <button class="predict-type-btn" data-type="multi"><i class="fas fa-list"></i> Multi-Outcome</button>
+                                </div>
+                            </div>
+
+                            <div class="form-group">
+                                <label>Close Date</label>
+                                <input type="date" id="predictCloseDate" class="form-input">
+                            </div>
+
+                            <div class="form-group">
+                                <label>Initial Liquidity (mUSD)</label>
+                                <div class="input-with-unit">
+                                    <input type="number" id="predictInitLiq" placeholder="1000" step="100" min="100">
+                                    <span class="input-unit">mUSD</span>
+                                </div>
+                            </div>
+
+                            <div class="predict-create-requirements">
+                                <h4><i class="fas fa-exclamation-circle"></i> Requirements</h4>
+                                <div class="req-row"><span>MoltyID Reputation</span><span class="mono-value">&ge; 500</span></div>
+                                <div class="req-row"><span>Min Initial Liquidity</span><span class="mono-value">100 mUSD</span></div>
+                                <div class="req-row"><span>Resolution Oracle</span><span class="mono-value">MoltOracle</span></div>
+                                <div class="req-row"><span>Dispute Period</span><span class="mono-value">24 hours</span></div>
+                            </div>
+
+                            <button class="btn btn-full btn-primary" id="predictCreateBtn"><i class="fas fa-rocket"></i> Create Market</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- BOTTOM: My Positions -->
+            <div class="predict-bottom-panel">
+                <div class="panel-card">
+                    <div class="positions-tabs">
+                        <button class="pos-tab active" data-target="predict-positions">My Positions <span class="badge">3</span></button>
+                        <button class="pos-tab" data-target="predict-history">Trade History</button>
+                        <button class="pos-tab" data-target="predict-created">My Markets</button>
+                    </div>
+                    <div class="positions-content" id="predict-positions">
+                        <table class="orders-table">
+                            <thead>
+                                <tr><th>Market</th><th>Outcome</th><th>Shares</th><th>Avg Price</th><th>Current</th><th>P&L</th><th>Value</th><th></th></tr>
+                            </thead>
+                            <tbody id="predictPositionsBody">
+                                <tr>
+                                    <td class="predict-market-cell">BTC &gt; $150K by Mar 31</td>
+                                    <td><span class="outcome-tag yes-tag">YES</span></td>
+                                    <td class="mono-value">1,200</td>
+                                    <td class="mono-value">$0.58</td>
+                                    <td class="mono-value">$0.62</td>
+                                    <td class="mono-value positive">+$48.00</td>
+                                    <td class="mono-value">$744.00</td>
+                                    <td><button class="btn btn-small btn-secondary">Sell</button></td>
+                                </tr>
+                                <tr>
+                                    <td class="predict-market-cell">EU AI Regulation by Q2</td>
+                                    <td><span class="outcome-tag no-tag">NO</span></td>
+                                    <td class="mono-value">800</td>
+                                    <td class="mono-value">$0.50</td>
+                                    <td class="mono-value">$0.55</td>
+                                    <td class="mono-value positive">+$40.00</td>
+                                    <td class="mono-value">$440.00</td>
+                                    <td><button class="btn btn-small btn-secondary">Sell</button></td>
+                                </tr>
+                                <tr>
+                                    <td class="predict-market-cell">L1 TVL Leader Q3</td>
+                                    <td><span class="outcome-tag multi-tag">Ethereum</span></td>
+                                    <td class="mono-value">500</td>
+                                    <td class="mono-value">$0.44</td>
+                                    <td class="mono-value">$0.48</td>
+                                    <td class="mono-value positive">+$20.00</td>
+                                    <td class="mono-value">$240.00</td>
+                                    <td><button class="btn btn-small btn-secondary">Sell</button></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="positions-content hidden" id="predict-history">
+                        <table class="orders-table">
+                            <thead>
+                                <tr><th>Market</th><th>Side</th><th>Outcome</th><th>Shares</th><th>Price</th><th>Total</th><th>Time</th></tr>
+                            </thead>
+                            <tbody>
+                                <tr>
+                                    <td>BTC &gt; $150K</td>
+                                    <td class="side-buy">BUY</td>
+                                    <td><span class="outcome-tag yes-tag">YES</span></td>
+                                    <td class="mono-value">500</td>
+                                    <td class="mono-value">$0.60</td>
+                                    <td class="mono-value">$300.00</td>
+                                    <td class="mono-value" style="color:var(--text-muted)">Feb 12, 2026</td>
+                                </tr>
+                                <tr>
+                                    <td>BTC &gt; $150K</td>
+                                    <td class="side-buy">BUY</td>
+                                    <td><span class="outcome-tag yes-tag">YES</span></td>
+                                    <td class="mono-value">700</td>
+                                    <td class="mono-value">$0.57</td>
+                                    <td class="mono-value">$399.00</td>
+                                    <td class="mono-value" style="color:var(--text-muted)">Feb 10, 2026</td>
+                                </tr>
+                                <tr>
+                                    <td>GPT-5 before Feb</td>
+                                    <td class="side-sell">SELL</td>
+                                    <td><span class="outcome-tag yes-tag">YES</span></td>
+                                    <td class="mono-value">300</td>
+                                    <td class="mono-value">$0.22</td>
+                                    <td class="mono-value">$66.00</td>
+                                    <td class="mono-value" style="color:var(--text-muted)">Feb 8, 2026</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="positions-content hidden" id="predict-created">
+                        <div class="empty-state"><i class="fas fa-chart-pie"></i><p>Create a market to see it here</p></div>
                     </div>
                 </div>
             </div>

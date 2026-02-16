@@ -2122,7 +2122,11 @@ ul {
 .hash-full {
     font-family: 'JetBrains Mono', monospace;
     font-size: 0.85rem;
-    word-break: break-all;
+}
+
+.hash-link {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.85rem;
 }
 
 .copy-hash {
@@ -2521,6 +2525,443 @@ select.filter-input option {
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
     gap: 1.5rem;
     margin-bottom: 2.5rem;
+}
+
+.address-summary-card {
+    margin-bottom: 1.5rem;
+}
+
+.address-summary-top {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    align-items: flex-start;
+}
+
+.address-summary-name {
+    font-size: 1.35rem;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.address-summary-address,
+.address-summary-evm {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+    font-family: 'JetBrains Mono', monospace;
+    margin-top: 0.25rem;
+}
+
+.address-summary-balance {
+    margin-top: 1rem;
+    font-size: 2rem;
+    font-weight: 800;
+    color: var(--text-primary);
+}
+
+.address-summary-breakdown {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1rem;
+    margin-top: 0.75rem;
+    color: var(--text-secondary);
+    font-size: 0.95rem;
+}
+
+.address-summary-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    margin-top: 1.25rem;
+}
+
+.address-summary-actions .btn {
+    padding: 0.6rem 1rem;
+    font-size: 0.9rem;
+}
+
+.address-receive-box {
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+}
+
+.address-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-bottom: 1.5rem;
+}
+
+.address-tab {
+    padding: 0.6rem 1rem;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.address-tab:hover {
+    border-color: var(--primary);
+    color: var(--text-primary);
+}
+
+.address-tab.active {
+    background: rgba(255, 107, 53, 0.15);
+    border-color: var(--primary);
+    color: var(--text-primary);
+}
+
+.address-pane {
+    display: none;
+}
+
+.address-pane.active {
+    display: block;
+}
+
+.identity-card-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.identity-header-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 1rem;
+}
+
+.identity-title {
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.identity-subtitle {
+    color: var(--text-secondary);
+    margin-top: 0.25rem;
+    font-size: 0.95rem;
+}
+
+.identity-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.identity-actions .btn {
+    padding: 0.5rem 0.8rem;
+    font-size: 0.85rem;
+}
+
+.identity-rep-score {
+    font-size: 1.3rem;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.identity-progress-wrap {
+    margin-top: 0.75rem;
+    background: var(--bg-darker);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    height: 10px;
+    overflow: hidden;
+}
+
+.identity-progress-bar {
+    height: 100%;
+    background: var(--gradient-1);
+    width: 0;
+    transition: width 0.3s ease;
+}
+
+.identity-meta-line {
+    margin-top: 0.6rem;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.identity-tier-ladder {
+    margin-top: 0.6rem;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.skill-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 0.75rem;
+}
+
+.skill-card {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--bg-darker);
+    padding: 0.9rem;
+}
+
+.skill-name {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.skill-meta {
+    color: var(--text-secondary);
+    font-size: 0.88rem;
+    margin-top: 0.2rem;
+}
+
+.skill-progress {
+    margin-top: 0.5rem;
+    height: 8px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.08);
+    overflow: hidden;
+}
+
+.skill-progress > span {
+    display: block;
+    height: 100%;
+    background: var(--gradient-3);
+}
+
+.identity-chip-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+
+.identity-chip {
+    border: 1px solid var(--border);
+    background: var(--bg-darker);
+    color: var(--text-secondary);
+    border-radius: 999px;
+    padding: 0.3rem 0.7rem;
+    font-size: 0.82rem;
+}
+
+.identity-chip strong {
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.identity-kv-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 0.75rem;
+}
+
+.identity-kv {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--bg-darker);
+    padding: 0.8rem;
+}
+
+.identity-kv-label {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    margin-bottom: 0.2rem;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+.identity-kv-value {
+    color: var(--text-primary);
+    font-size: 0.93rem;
+    word-break: break-word;
+}
+
+.address-action-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.65);
+    z-index: 1200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+}
+
+.address-action-modal .modal-card {
+    width: min(620px, 100%);
+    max-height: 90vh;
+    overflow-y: auto;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+}
+
+.address-action-modal .modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    padding: 1.25rem 1.5rem;
+    border-bottom: 1px solid var(--border);
+    background: rgba(255, 107, 53, 0.05);
+}
+
+.address-action-modal .modal-header h3 {
+    margin: 0;
+    font-size: 1.1rem;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+}
+
+.address-action-modal .modal-body {
+    padding: 1.25rem 1.5rem;
+}
+
+.address-action-modal .modal-body .form-group {
+    margin-bottom: 0.9rem;
+}
+
+.address-action-modal .modal-body label {
+    display: block;
+    margin-bottom: 0.4rem;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    font-weight: 600;
+}
+
+.address-action-modal .modal-body input,
+.address-action-modal .modal-body select,
+.address-action-modal .modal-body textarea {
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    padding: 0.65rem 0.8rem;
+    font-size: 0.95rem;
+}
+
+.address-action-modal .modal-body textarea {
+    min-height: 110px;
+    resize: vertical;
+}
+
+.address-action-modal .modal-note {
+    margin: 0.6rem 0;
+    color: var(--text-muted);
+    font-size: 0.88rem;
+}
+
+.address-action-modal .modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.6rem;
+    padding: 1rem 1.5rem 1.4rem;
+}
+
+.address-inline-actions {
+    display: flex;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+    margin-top: 0.75rem;
+}
+
+.address-toast {
+    position: fixed;
+    right: 1rem;
+    bottom: 1rem;
+    z-index: 1250;
+    background: var(--bg-card);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0.7rem 0.9rem;
+    font-size: 0.9rem;
+    max-width: 420px;
+}
+
+.agent-controls {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(140px, 1fr));
+    gap: 0.9rem;
+}
+
+.agent-control-group label {
+    display: block;
+    margin-bottom: 0.35rem;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+
+.agent-control-group input,
+.agent-control-group select {
+    width: 100%;
+    border: 1px solid var(--border);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    border-radius: 10px;
+    padding: 0.55rem 0.75rem;
+}
+
+.agent-checkbox {
+    display: inline-flex;
+    gap: 0.5rem;
+    align-items: center;
+    margin-top: 0.45rem;
+    color: var(--text-primary);
+    font-size: 0.9rem;
+}
+
+.agent-card-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 1rem;
+}
+
+.agent-directory-card {
+    margin-bottom: 0;
+}
+
+.agent-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    margin-bottom: 0.45rem;
+}
+
+.agent-card-name {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.agent-card-meta {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    margin-bottom: 0.35rem;
+    word-break: break-word;
+}
+
+.agent-card-actions {
+    margin-top: 0.7rem;
+    display: flex;
+    justify-content: flex-end;
+}
+
+.agent-pagination {
+    margin-top: 1rem;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 1rem;
+    color: var(--text-secondary);
 }
 
 .detail-stat {
@@ -3001,6 +3442,50 @@ select.filter-input option {
     
     .detail-card-body {
         padding: 1.5rem;
+    }
+
+    .address-summary-top {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .address-summary-balance {
+        font-size: 1.6rem;
+    }
+
+    .address-tabs {
+        gap: 0.4rem;
+    }
+
+    .address-tab {
+        font-size: 0.85rem;
+        padding: 0.5rem 0.75rem;
+    }
+
+    .identity-header-row {
+        flex-direction: column;
+    }
+
+    .address-action-modal .modal-card {
+        width: 100%;
+        max-height: 94vh;
+    }
+
+    .agent-controls {
+        grid-template-columns: 1fr;
+    }
+
+    .agent-pagination {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .address-action-modal .modal-footer {
+        flex-direction: column-reverse;
+    }
+
+    .address-action-modal .modal-footer .btn {
+        width: 100%;
     }
 }
 

@@ -670,7 +670,7 @@ pub extern "C" fn call() {
         11 => {
             moltchain_sdk::set_return_data(&u64_to_bytes(get_swap_count()));
         }
-        _ => {}
+        _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
     }
 }
 

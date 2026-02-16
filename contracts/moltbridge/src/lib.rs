@@ -35,6 +35,28 @@ use moltchain_sdk::{
     Address, CrossCall, call_contract,
 };
 
+// Reentrancy guard
+const MB_REENTRANCY_KEY: &[u8] = b"mb_reentrancy";
+
+fn reentrancy_enter() -> bool {
+    if storage_get(MB_REENTRANCY_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false) {
+        return false;
+    }
+    storage_set(MB_REENTRANCY_KEY, &[1u8]);
+    true
+}
+
+fn reentrancy_exit() {
+    storage_set(MB_REENTRANCY_KEY, &[0u8]);
+}
+
+// Emergency pause
+const MB_PAUSE_KEY: &[u8] = b"mb_paused";
+
+fn is_mb_paused() -> bool {
+    storage_get(MB_PAUSE_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false)
+}
+
 // ============================================================================
 // CONSTANTS
 // ============================================================================
@@ -227,23 +249,24 @@ fn is_zero(data: &[u8; 32]) -> bool {
 /// Initialize the bridge contract. Sets the owner.
 #[no_mangle]
 pub extern "C" fn initialize(owner_ptr: *const u8) -> u32 {
-    log_info("🌉 Initializing MoltBridge v2 (multi-call confirmation)...");
+    log_info("Initializing MoltBridge v2 (multi-call confirmation)...");
 
-    let owner = unsafe { core::slice::from_raw_parts(owner_ptr, 32) };
+    let mut owner = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
 
     if storage_get(b"bridge_owner").is_some() {
-        log_info("❌ Bridge already initialized");
+        log_info("Bridge already initialized");
         return 1;
     }
 
-    storage_set(b"bridge_owner", owner);
+    storage_set(b"bridge_owner", &owner);
     storage_set(b"bridge_validator_count", &u64_to_bytes(0));
     storage_set(b"bridge_required_confirms", &u64_to_bytes(DEFAULT_REQUIRED_CONFIRMATIONS));
     storage_set(b"bridge_locked_amount", &u64_to_bytes(0));
     storage_set(b"bridge_nonce", &u64_to_bytes(0));
     storage_set(b"bridge_request_timeout", &u64_to_bytes(DEFAULT_REQUEST_TIMEOUT));
 
-    log_info("✅ MoltBridge v2 initialized");
+    log_info("MoltBridge v2 initialized");
     0
 }
 
@@ -261,24 +284,23 @@ pub extern "C" fn add_bridge_validator(
     caller_ptr: *const u8,
     validator_ptr: *const u8,
 ) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    let validator = unsafe { core::slice::from_raw_parts(validator_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    let mut val_arr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(validator_ptr, val_arr.as_mut_ptr(), 32); }
 
-    if let Err(code) = require_owner(caller) {
+    if let Err(code) = require_owner(&caller) {
         return code;
     }
 
-    let mut val_arr = [0u8; 32];
-    val_arr.copy_from_slice(validator);
-
     if is_zero(&val_arr) {
-        log_info("❌ Cannot add zero address as validator");
+        log_info("Cannot add zero address as validator");
         return 4;
     }
 
     let vk = validator_key(&val_arr);
     if is_validator(&val_arr) {
-        log_info("❌ Validator already registered");
+        log_info("Validator already registered");
         return 3;
     }
 
@@ -289,7 +311,7 @@ pub extern "C" fn add_bridge_validator(
         .unwrap_or(0);
     storage_set(b"bridge_validator_count", &u64_to_bytes(count + 1));
 
-    log_info("✅ Bridge validator added");
+    log_info("Bridge validator added");
     0
 }
 
@@ -303,43 +325,44 @@ pub extern "C" fn remove_bridge_validator(
     caller_ptr: *const u8,
     validator_ptr: *const u8,
 ) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    let validator = unsafe { core::slice::from_raw_parts(validator_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    let mut val_arr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(validator_ptr, val_arr.as_mut_ptr(), 32); }
 
-    if let Err(code) = require_owner(caller) {
+    if let Err(code) = require_owner(&caller) {
         return code;
     }
 
-    let mut val_arr = [0u8; 32];
-    val_arr.copy_from_slice(validator);
     let vk = validator_key(&val_arr);
 
     if !is_validator(&val_arr) {
-        log_info("❌ Validator not registered");
+        log_info("Validator not registered");
         return 3;
     }
-
-    // Mark as removed (set to [0] so is_validator returns false)
-    storage_set(&vk, &[0]);
 
     let count = storage_get(b"bridge_validator_count")
         .map(|d| bytes_to_u64(&d))
         .unwrap_or(1);
 
-    // AUDIT-FIX 2.8: Prevent removal if it drops below confirmation threshold
-    let required = storage_get(b"bridge_required_confirmations")
+    // SECURITY-FIX: Check threshold BEFORE removing validator to prevent
+    // state mutation on error (validator was being deleted before this check)
+    let required = storage_get(b"bridge_required_confirms")
         .map(|d| bytes_to_u64(&d))
-        .unwrap_or(1);
+        .unwrap_or(DEFAULT_REQUIRED_CONFIRMATIONS);
     if count > 0 && (count - 1) < required {
-        log_info("❌ Cannot remove validator: would drop below confirmation threshold");
+        log_info("Cannot remove validator: would drop below confirmation threshold");
         return 4;
     }
+
+    // Mark as removed (set to [0] so is_validator returns false)
+    storage_set(&vk, &[0]);
 
     if count > 0 {
         storage_set(b"bridge_validator_count", &u64_to_bytes(count - 1));
     }
 
-    log_info("✅ Bridge validator removed");
+    log_info("Bridge validator removed");
     0
 }
 
@@ -353,19 +376,20 @@ pub extern "C" fn set_required_confirmations(
     caller_ptr: *const u8,
     required: u64,
 ) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
 
-    if let Err(code) = require_owner(caller) {
+    if let Err(code) = require_owner(&caller) {
         return code;
     }
 
     if required == 0 || required > MAX_REQUIRED_CONFIRMATIONS {
-        log_info("❌ Required confirmations must be 1..100");
+        log_info("Required confirmations must be 1..100");
         return 3;
     }
 
     storage_set(b"bridge_required_confirms", &u64_to_bytes(required));
-    log_info("✅ Required confirmations updated");
+    log_info("Required confirmations updated");
     0
 }
 
@@ -379,19 +403,20 @@ pub extern "C" fn set_request_timeout(
     caller_ptr: *const u8,
     timeout_slots: u64,
 ) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
 
-    if let Err(code) = require_owner(caller) {
+    if let Err(code) = require_owner(&caller) {
         return code;
     }
 
     if timeout_slots < MIN_REQUEST_TIMEOUT {
-        log_info("❌ Timeout must be >= 100 slots");
+        log_info("Timeout must be >= 100 slots");
         return 3;
     }
 
     storage_set(b"bridge_request_timeout", &u64_to_bytes(timeout_slots));
-    log_info("✅ Request timeout updated");
+    log_info("Request timeout updated");
     0
 }
 
@@ -415,33 +440,39 @@ pub extern "C" fn lock_tokens(
     dest_chain_ptr: *const u8,
     dest_address_ptr: *const u8,
 ) -> u32 {
-    log_info("🔒 Locking tokens for bridge...");
+    if is_mb_paused() {
+        log_info("Bridge is paused");
+        return 20;
+    }
+    if !reentrancy_enter() {
+        return 21;
+    }
+    log_info("Locking tokens for bridge...");
 
-    let sender = unsafe { core::slice::from_raw_parts(sender_ptr, 32) };
-    let dest_chain = unsafe { core::slice::from_raw_parts(dest_chain_ptr, 32) };
-    let dest_address = unsafe { core::slice::from_raw_parts(dest_address_ptr, 32) };
+    let mut sender_arr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(sender_ptr, sender_arr.as_mut_ptr(), 32); }
+    let mut chain_arr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(dest_chain_ptr, chain_arr.as_mut_ptr(), 32); }
+    let mut addr_arr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(dest_address_ptr, addr_arr.as_mut_ptr(), 32); }
 
     if amount == 0 {
-        log_info("❌ Amount must be > 0");
+        log_info("Amount must be > 0");
+        reentrancy_exit();
         return 1;
     }
 
     // MoltyID reputation gate
-    if !check_identity_gate(sender) {
-        log_info("❌ Insufficient MoltyID reputation for bridge");
+    if !check_identity_gate(&sender_arr) {
+        log_info("Insufficient MoltyID reputation for bridge");
+        reentrancy_exit();
         return 10;
     }
 
-    let mut sender_arr = [0u8; 32];
-    sender_arr.copy_from_slice(sender);
-    let mut chain_arr = [0u8; 32];
-    chain_arr.copy_from_slice(dest_chain);
-    let mut addr_arr = [0u8; 32];
-    addr_arr.copy_from_slice(dest_address);
-
     // Validate destination address is not zero
     if is_zero(&addr_arr) {
-        log_info("❌ Destination address cannot be zero");
+        log_info("Destination address cannot be zero");
+        reentrancy_exit();
         return 5;
     }
 
@@ -468,7 +499,8 @@ pub extern "C" fn lock_tokens(
     storage_set(&bridge_tx_key(nonce), &tx_data);
 
     moltchain_sdk::set_return_data(&u64_to_bytes(nonce));
-    log_info("✅ Tokens locked for bridging");
+    log_info("Tokens locked for bridging");
+    reentrancy_exit();
     0
 }
 
@@ -496,44 +528,42 @@ pub extern "C" fn submit_mint(
     source_chain_ptr: *const u8,
     source_tx_ptr: *const u8,
 ) -> u32 {
-    log_info("📝 Submitting mint request...");
+    log_info("Submitting mint request...");
 
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    let recipient = unsafe { core::slice::from_raw_parts(recipient_ptr, 32) };
-    let source_chain = unsafe { core::slice::from_raw_parts(source_chain_ptr, 32) };
-    let source_tx = unsafe { core::slice::from_raw_parts(source_tx_ptr, 32) };
+    let mut caller_arr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller_arr.as_mut_ptr(), 32); }
+    let mut recipient_arr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(recipient_ptr, recipient_arr.as_mut_ptr(), 32); }
+    let mut chain_arr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(source_chain_ptr, chain_arr.as_mut_ptr(), 32); }
+    let mut tx_hash_arr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(source_tx_ptr, tx_hash_arr.as_mut_ptr(), 32); }
 
     if amount == 0 {
-        log_info("❌ Amount must be > 0");
+        log_info("Amount must be > 0");
         return 1;
     }
 
     // Verify caller is a registered validator
-    let mut caller_arr = [0u8; 32];
-    caller_arr.copy_from_slice(caller);
     if !is_validator(&caller_arr) {
-        log_info("❌ Caller is not an authorized bridge validator");
+        log_info("Caller is not an authorized bridge validator");
         return 2;
     }
 
     // Source TX deduplication — prevent double-minting
-    let mut tx_hash_arr = [0u8; 32];
-    tx_hash_arr.copy_from_slice(source_tx);
     if is_zero(&tx_hash_arr) {
-        log_info("❌ Source transaction hash cannot be zero");
+        log_info("Source transaction hash cannot be zero");
         return 5;
     }
     let stk = source_tx_used_key(&tx_hash_arr);
     if storage_get(&stk).is_some() {
-        log_info("❌ Source transaction already processed (duplicate)");
+        log_info("Source transaction already processed (duplicate)");
         return 4;
     }
 
     // Validate recipient
-    let mut recipient_arr = [0u8; 32];
-    recipient_arr.copy_from_slice(recipient);
     if is_zero(&recipient_arr) {
-        log_info("❌ Recipient address cannot be zero");
+        log_info("Recipient address cannot be zero");
         return 6;
     }
 
@@ -544,8 +574,6 @@ pub extern "C" fn submit_mint(
     storage_set(&stk, &u64_to_bytes(nonce));
 
     // Create bridge TX record as PENDING
-    let mut chain_arr = [0u8; 32];
-    chain_arr.copy_from_slice(source_chain);
     let current_slot = get_slot();
     let tx_data = encode_bridge_tx(
         &recipient_arr,
@@ -566,9 +594,9 @@ pub extern "C" fn submit_mint(
     let required = get_required_confirmations();
     if 1 >= required {
         update_bridge_tx_status(nonce, STATUS_COMPLETED, 1);
-        log_info("✅ Mint auto-completed (threshold met with 1 confirmation)");
+        log_info("Mint auto-completed (threshold met with 1 confirmation)");
     } else {
-        log_info("✅ Mint request submitted, awaiting confirmations");
+        log_info("Mint request submitted, awaiting confirmations");
     }
 
     moltchain_sdk::set_return_data(&u64_to_bytes(nonce));
@@ -592,15 +620,14 @@ pub extern "C" fn confirm_mint(
     caller_ptr: *const u8,
     nonce: u64,
 ) -> u32 {
-    log_info("✍️ Confirming mint request...");
+    log_info("Confirming mint request...");
 
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
+    let mut caller_arr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller_arr.as_mut_ptr(), 32); }
 
     // Verify caller is validator
-    let mut caller_arr = [0u8; 32];
-    caller_arr.copy_from_slice(caller);
     if !is_validator(&caller_arr) {
-        log_info("❌ Caller is not an authorized bridge validator");
+        log_info("Caller is not an authorized bridge validator");
         return 2;
     }
 
@@ -609,18 +636,18 @@ pub extern "C" fn confirm_mint(
     let tx_data = match storage_get(&tx_key) {
         Some(data) if data.len() == BRIDGE_TX_SIZE => data,
         _ => {
-            log_info("❌ Bridge transaction not found");
+            log_info("Bridge transaction not found");
             return 1;
         }
     };
 
     // Verify it's a pending mint
     if tx_data[40] != 1 {
-        log_info("❌ Transaction is not a mint request");
+        log_info("Transaction is not a mint request");
         return 5;
     }
     if tx_data[41] != STATUS_PENDING {
-        log_info("❌ Mint request is not pending");
+        log_info("Mint request is not pending");
         return 6;
     }
 
@@ -630,14 +657,14 @@ pub extern "C" fn confirm_mint(
     let timeout = get_request_timeout();
     if current_slot > created_slot.saturating_add(timeout) {
         update_bridge_tx_status(nonce, STATUS_EXPIRED, tx_data[50]);
-        log_info("❌ Mint request has expired");
+        log_info("Mint request has expired");
         return 7;
     }
 
     // Check duplicate confirmation
     let ck = mint_confirm_key(nonce, &caller_arr);
     if storage_get(&ck).is_some() {
-        log_info("❌ Validator already confirmed this mint");
+        log_info("Validator already confirmed this mint");
         return 8;
     }
 
@@ -649,10 +676,10 @@ pub extern "C" fn confirm_mint(
     let required = get_required_confirmations();
     if (new_count as u64) >= required {
         update_bridge_tx_status(nonce, STATUS_COMPLETED, new_count);
-        log_info("✅ Mint confirmed and completed — threshold reached");
+        log_info("Mint confirmed and completed — threshold reached");
     } else {
         update_bridge_tx_status(nonce, STATUS_PENDING, new_count);
-        log_info("✅ Mint confirmation recorded, awaiting more");
+        log_info("Mint confirmation recorded, awaiting more");
     }
 
     0
@@ -680,35 +707,34 @@ pub extern "C" fn submit_unlock(
     amount: u64,
     burn_proof_ptr: *const u8,
 ) -> u32 {
-    log_info("📝 Submitting unlock request...");
+    log_info("Submitting unlock request...");
 
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    let recipient = unsafe { core::slice::from_raw_parts(recipient_ptr, 32) };
-    let burn_proof = unsafe { core::slice::from_raw_parts(burn_proof_ptr, 32) };
+    let mut caller_arr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller_arr.as_mut_ptr(), 32); }
+    let mut recipient_arr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(recipient_ptr, recipient_arr.as_mut_ptr(), 32); }
+    let mut proof_arr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(burn_proof_ptr, proof_arr.as_mut_ptr(), 32); }
 
     if amount == 0 {
-        log_info("❌ Amount must be > 0");
+        log_info("Amount must be > 0");
         return 1;
     }
 
     // Verify caller is validator
-    let mut caller_arr = [0u8; 32];
-    caller_arr.copy_from_slice(caller);
     if !is_validator(&caller_arr) {
-        log_info("❌ Caller is not an authorized bridge validator");
+        log_info("Caller is not an authorized bridge validator");
         return 2;
     }
 
     // Burn proof deduplication — prevent double-unlocking
-    let mut proof_arr = [0u8; 32];
-    proof_arr.copy_from_slice(burn_proof);
     if is_zero(&proof_arr) {
-        log_info("❌ Burn proof cannot be zero");
+        log_info("Burn proof cannot be zero");
         return 5;
     }
     let bpk = burn_proof_used_key(&proof_arr);
     if storage_get(&bpk).is_some() {
-        log_info("❌ Burn proof already used (duplicate)");
+        log_info("Burn proof already used (duplicate)");
         return 4;
     }
 
@@ -717,17 +743,15 @@ pub extern "C" fn submit_unlock(
         .map(|d| bytes_to_u64(&d))
         .unwrap_or(0);
     if amount > locked {
-        log_info("❌ Insufficient locked balance");
+        log_info("Insufficient locked balance");
         return 3;
     }
     // Reserve the amount immediately to prevent race conditions
     storage_set(b"bridge_locked_amount", &u64_to_bytes(locked - amount));
 
     // Validate recipient
-    let mut recipient_arr = [0u8; 32];
-    recipient_arr.copy_from_slice(recipient);
     if is_zero(&recipient_arr) {
-        log_info("❌ Recipient address cannot be zero");
+        log_info("Recipient address cannot be zero");
         // Unreserve on validation failure
         storage_set(b"bridge_locked_amount", &u64_to_bytes(locked));
         return 6;
@@ -760,9 +784,9 @@ pub extern "C" fn submit_unlock(
     let required = get_required_confirmations();
     if 1 >= required {
         update_bridge_tx_status(nonce, STATUS_COMPLETED, 1);
-        log_info("✅ Unlock auto-completed (threshold met)");
+        log_info("Unlock auto-completed (threshold met)");
     } else {
-        log_info("✅ Unlock request submitted, awaiting confirmations");
+        log_info("Unlock request submitted, awaiting confirmations");
     }
 
     moltchain_sdk::set_return_data(&u64_to_bytes(nonce));
@@ -787,15 +811,14 @@ pub extern "C" fn confirm_unlock(
     caller_ptr: *const u8,
     nonce: u64,
 ) -> u32 {
-    log_info("✍️ Confirming unlock request...");
+    log_info("Confirming unlock request...");
 
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
+    let mut caller_arr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller_arr.as_mut_ptr(), 32); }
 
     // Verify caller is validator
-    let mut caller_arr = [0u8; 32];
-    caller_arr.copy_from_slice(caller);
     if !is_validator(&caller_arr) {
-        log_info("❌ Caller is not an authorized bridge validator");
+        log_info("Caller is not an authorized bridge validator");
         return 2;
     }
 
@@ -804,18 +827,18 @@ pub extern "C" fn confirm_unlock(
     let tx_data = match storage_get(&tx_key) {
         Some(data) if data.len() == BRIDGE_TX_SIZE => data,
         _ => {
-            log_info("❌ Bridge transaction not found");
+            log_info("Bridge transaction not found");
             return 1;
         }
     };
 
     // Verify it's a pending unlock
     if tx_data[40] != 2 {
-        log_info("❌ Transaction is not an unlock request");
+        log_info("Transaction is not an unlock request");
         return 5;
     }
     if tx_data[41] != STATUS_PENDING {
-        log_info("❌ Unlock request is not pending");
+        log_info("Unlock request is not pending");
         return 6;
     }
 
@@ -831,14 +854,14 @@ pub extern "C" fn confirm_unlock(
             .unwrap_or(0);
         storage_set(b"bridge_locked_amount", &u64_to_bytes(locked.saturating_add(amount)));
         update_bridge_tx_status(nonce, STATUS_EXPIRED, tx_data[50]);
-        log_info("❌ Unlock request has expired, funds returned to reserve");
+        log_info("Unlock request has expired, funds returned to reserve");
         return 7;
     }
 
     // Check duplicate confirmation
     let ck = unlock_confirm_key(nonce, &caller_arr);
     if storage_get(&ck).is_some() {
-        log_info("❌ Validator already confirmed this unlock");
+        log_info("Validator already confirmed this unlock");
         return 8;
     }
 
@@ -850,10 +873,10 @@ pub extern "C" fn confirm_unlock(
     let required = get_required_confirmations();
     if (new_count as u64) >= required {
         update_bridge_tx_status(nonce, STATUS_COMPLETED, new_count);
-        log_info("✅ Unlock confirmed and completed — threshold reached");
+        log_info("Unlock confirmed and completed — threshold reached");
     } else {
         update_bridge_tx_status(nonce, STATUS_PENDING, new_count);
-        log_info("✅ Unlock confirmation recorded, awaiting more");
+        log_info("Unlock confirmation recorded, awaiting more");
     }
 
     0
@@ -876,13 +899,13 @@ pub extern "C" fn cancel_expired_request(nonce: u64) -> u32 {
     let tx_data = match storage_get(&tx_key) {
         Some(data) if data.len() == BRIDGE_TX_SIZE => data,
         _ => {
-            log_info("❌ Bridge transaction not found");
+            log_info("Bridge transaction not found");
             return 1;
         }
     };
 
     if tx_data[41] != STATUS_PENDING {
-        log_info("❌ Request is not pending");
+        log_info("Request is not pending");
         return 2;
     }
 
@@ -891,7 +914,7 @@ pub extern "C" fn cancel_expired_request(nonce: u64) -> u32 {
     let timeout = get_request_timeout();
 
     if current_slot <= created_slot.saturating_add(timeout) {
-        log_info("❌ Request has not expired yet");
+        log_info("Request has not expired yet");
         return 3;
     }
 
@@ -905,7 +928,7 @@ pub extern "C" fn cancel_expired_request(nonce: u64) -> u32 {
     }
 
     update_bridge_tx_status(nonce, STATUS_EXPIRED, tx_data[50]);
-    log_info("✅ Expired request cancelled");
+    log_info("Expired request cancelled");
     0
 }
 
@@ -928,7 +951,7 @@ pub extern "C" fn get_bridge_status(nonce: u64) -> u32 {
             0
         }
         None => {
-            log_info("❌ Bridge transaction not found");
+            log_info("Bridge transaction not found");
             1
         }
     }
@@ -943,9 +966,8 @@ pub extern "C" fn get_bridge_status(nonce: u64) -> u32 {
 /// Returns 0 always. Return data: [1] if confirmed, [0] if not.
 #[no_mangle]
 pub extern "C" fn has_confirmed_mint(validator_ptr: *const u8, nonce: u64) -> u32 {
-    let validator = unsafe { core::slice::from_raw_parts(validator_ptr, 32) };
     let mut val_arr = [0u8; 32];
-    val_arr.copy_from_slice(validator);
+    unsafe { core::ptr::copy_nonoverlapping(validator_ptr, val_arr.as_mut_ptr(), 32); }
 
     if storage_get(&mint_confirm_key(nonce, &val_arr)).is_some() {
         moltchain_sdk::set_return_data(&[1]);
@@ -964,9 +986,8 @@ pub extern "C" fn has_confirmed_mint(validator_ptr: *const u8, nonce: u64) -> u3
 /// Returns 0 always. Return data: [1] if confirmed, [0] if not.
 #[no_mangle]
 pub extern "C" fn has_confirmed_unlock(validator_ptr: *const u8, nonce: u64) -> u32 {
-    let validator = unsafe { core::slice::from_raw_parts(validator_ptr, 32) };
     let mut val_arr = [0u8; 32];
-    val_arr.copy_from_slice(validator);
+    unsafe { core::ptr::copy_nonoverlapping(validator_ptr, val_arr.as_mut_ptr(), 32); }
 
     if storage_get(&unlock_confirm_key(nonce, &val_arr)).is_some() {
         moltchain_sdk::set_return_data(&[1]);
@@ -984,9 +1005,8 @@ pub extern "C" fn has_confirmed_unlock(validator_ptr: *const u8, nonce: u64) -> 
 /// Returns 0 always. Return data: [1] if used, [0] if not.
 #[no_mangle]
 pub extern "C" fn is_source_tx_used(tx_hash_ptr: *const u8) -> u32 {
-    let tx_hash = unsafe { core::slice::from_raw_parts(tx_hash_ptr, 32) };
     let mut hash_arr = [0u8; 32];
-    hash_arr.copy_from_slice(tx_hash);
+    unsafe { core::ptr::copy_nonoverlapping(tx_hash_ptr, hash_arr.as_mut_ptr(), 32); }
 
     if storage_get(&source_tx_used_key(&hash_arr)).is_some() {
         moltchain_sdk::set_return_data(&[1]);
@@ -1004,9 +1024,8 @@ pub extern "C" fn is_source_tx_used(tx_hash_ptr: *const u8) -> u32 {
 /// Returns 0 always. Return data: [1] if used, [0] if not.
 #[no_mangle]
 pub extern "C" fn is_burn_proof_used(proof_ptr: *const u8) -> u32 {
-    let proof = unsafe { core::slice::from_raw_parts(proof_ptr, 32) };
     let mut proof_arr = [0u8; 32];
-    proof_arr.copy_from_slice(proof);
+    unsafe { core::ptr::copy_nonoverlapping(proof_ptr, proof_arr.as_mut_ptr(), 32); }
 
     if storage_get(&burn_proof_used_key(&proof_arr)).is_some() {
         moltchain_sdk::set_return_data(&[1]);
@@ -1029,15 +1048,17 @@ const MOLTYID_ADDR_KEY: &[u8] = b"moltyid_address";
 /// Only callable by the bridge owner.
 #[no_mangle]
 pub extern "C" fn set_moltyid_address(caller_ptr: *const u8, moltyid_addr_ptr: *const u8) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    let moltyid_addr = unsafe { core::slice::from_raw_parts(moltyid_addr_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    let mut moltyid_addr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(moltyid_addr_ptr, moltyid_addr.as_mut_ptr(), 32); }
 
-    if let Err(code) = require_owner(caller) {
+    if let Err(code) = require_owner(&caller) {
         return code;
     }
 
-    storage_set(MOLTYID_ADDR_KEY, moltyid_addr);
-    log_info("✅ MoltyID address configured");
+    storage_set(MOLTYID_ADDR_KEY, &moltyid_addr);
+    log_info("MoltyID address configured");
     0
 }
 
@@ -1045,14 +1066,15 @@ pub extern "C" fn set_moltyid_address(caller_ptr: *const u8, moltyid_addr_ptr: *
 /// Only callable by the bridge owner.
 #[no_mangle]
 pub extern "C" fn set_identity_gate(caller_ptr: *const u8, min_reputation: u64) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
 
-    if let Err(code) = require_owner(caller) {
+    if let Err(code) = require_owner(&caller) {
         return code;
     }
 
     storage_set(MOLTYID_MIN_REP_KEY, &u64_to_bytes(min_reputation));
-    log_info("✅ Identity gate configured");
+    log_info("Identity gate configured");
     0
 }
 
@@ -1086,6 +1108,36 @@ fn check_identity_gate(caller: &[u8]) -> bool {
         }
         _ => false,
     }
+}
+
+// ============================================================================
+// PAUSE ADMIN ENDPOINTS
+// ============================================================================
+
+#[no_mangle]
+pub extern "C" fn mb_pause(caller_ptr: *const u8) -> u32 {
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    let owner = storage_get(b"bridge_owner").unwrap_or_default();
+    if caller[..] != owner[..] {
+        return 1;
+    }
+    storage_set(MB_PAUSE_KEY, &[1u8]);
+    log_info("Bridge paused");
+    0
+}
+
+#[no_mangle]
+pub extern "C" fn mb_unpause(caller_ptr: *const u8) -> u32 {
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    let owner = storage_get(b"bridge_owner").unwrap_or_default();
+    if caller[..] != owner[..] {
+        return 1;
+    }
+    storage_set(MB_PAUSE_KEY, &[0u8]);
+    log_info("Bridge unpaused");
+    0
 }
 
 // ============================================================================
@@ -1150,12 +1202,19 @@ mod tests {
         // Duplicate add fails
         assert_eq!(add_bridge_validator(owner.as_ptr(), validator.as_ptr()), 3);
 
-        // Remove
+        // Remove fails: would drop below required_confirmations threshold (default=2)
+        assert_eq!(remove_bridge_validator(owner.as_ptr(), validator.as_ptr()), 4);
+
+        // Lower threshold to 1, add second validator, then remove first
+        set_required_confirmations(owner.as_ptr(), 1);
+        let validator2 = [3u8; 32];
+        assert_eq!(add_bridge_validator(owner.as_ptr(), validator2.as_ptr()), 0);
+        // Now count=2, required=1 → removing one leaves 1 >= 1 → allowed
         assert_eq!(remove_bridge_validator(owner.as_ptr(), validator.as_ptr()), 0);
         let count = test_mock::get_storage(b"bridge_validator_count").unwrap();
-        assert_eq!(bytes_to_u64(&count), 0);
+        assert_eq!(bytes_to_u64(&count), 1);
 
-        // Remove again fails
+        // Remove again fails (already removed)
         assert_eq!(remove_bridge_validator(owner.as_ptr(), validator.as_ptr()), 3);
     }
 
@@ -1802,15 +1861,17 @@ mod tests {
         let val1 = [2u8; 32];
         let val2 = [3u8; 32];
         let val3 = [4u8; 32];
+        let val4 = [6u8; 32];
         add_bridge_validator(owner.as_ptr(), val1.as_ptr());
         add_bridge_validator(owner.as_ptr(), val2.as_ptr());
         add_bridge_validator(owner.as_ptr(), val3.as_ptr());
+        add_bridge_validator(owner.as_ptr(), val4.as_ptr());
 
         // val1 submits mint
         submit_mint(val1.as_ptr(), [5u8; 32].as_ptr(), 500_000, [0xCC; 32].as_ptr(), [0xDD; 32].as_ptr());
 
-        // Owner removes val2
-        remove_bridge_validator(owner.as_ptr(), val2.as_ptr());
+        // Owner removes val2 (count=4→3, required=3, 3>=3 → allowed)
+        assert_eq!(remove_bridge_validator(owner.as_ptr(), val2.as_ptr()), 0);
 
         // val2 tries to confirm — REJECTED (no longer validator)
         assert_eq!(confirm_mint(val2.as_ptr(), 0), 2);

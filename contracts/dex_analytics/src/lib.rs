@@ -127,6 +127,19 @@ fn is_paused() -> bool {
         .unwrap_or(false)
 }
 
+// SECURITY: Reentrancy guard
+const ANA_REENTRANCY_KEY: &[u8] = b"ana_reentrancy";
+fn reentrancy_enter() -> bool {
+    if let Some(v) = storage_get(ANA_REENTRANCY_KEY) {
+        if !v.is_empty() && v[0] == 1 { return false; }
+    }
+    storage_set(ANA_REENTRANCY_KEY, &[1u8]);
+    true
+}
+fn reentrancy_exit() {
+    storage_set(ANA_REENTRANCY_KEY, &[0u8]);
+}
+
 /// Return the maximum number of candles retained for a given interval.
 fn get_retention(interval: u64) -> u64 {
     match interval {
@@ -352,7 +365,8 @@ fn decode_ts_pnl(data: &[u8]) -> u64 {
 // PUBLIC FUNCTIONS
 // ============================================================================
 
-pub fn initialize(admin: *const u8) -> u32 {
+#[no_mangle]
+pub extern "C" fn initialize(admin: *const u8) -> u32 {
     let existing = load_addr(ADMIN_KEY);
     if !is_zero(&existing) {
         return 1;
@@ -371,7 +385,11 @@ pub fn initialize(admin: *const u8) -> u32 {
 /// Record a trade (called by dex_core after settlement)
 /// Returns: 0=success
 pub fn record_trade(pair_id: u64, price: u64, volume: u64, trader: *const u8) -> u32 {
+    // SECURITY-FIX: Check pause state before recording
+    if is_paused() { return 2; }
+    if !reentrancy_enter() { return 3; }
     if price == 0 || volume == 0 {
+        reentrancy_exit();
         return 1;
     }
     let current_slot = get_slot();
@@ -399,6 +417,7 @@ pub fn record_trade(pair_id: u64, price: u64, volume: u64, trader: *const u8) ->
     let count = load_u64(TRADE_RECORD_COUNT_KEY);
     save_u64(TRADE_RECORD_COUNT_KEY, count + 1);
 
+    reentrancy_exit();
     0
 }
 
@@ -653,7 +672,7 @@ pub extern "C" fn call() {
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
-        _ => {}
+        _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
     }
 }
 

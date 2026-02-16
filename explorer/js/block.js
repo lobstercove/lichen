@@ -1,16 +1,11 @@
 // Block Detail Page - Reef Explorer
 // Uses `rpc` instance from explorer.js (loaded before this file)
+// NOTE: formatHash, formatAddress, etc. are provided by utils.js (loaded before this file)
 
-// Utility Functions
+// Utility Functions (block-specific overrides)
 function formatNumber(num) {
     if (num === null || num === undefined) return '0';
     return num.toLocaleString();
-}
-
-function formatHash(hash, full = false) {
-    if (!hash) return 'N/A';
-    if (full) return hash;
-    return hash.substring(0, 16) + '...' + hash.substring(hash.length - 8);
 }
 
 function formatTime(timestamp) {
@@ -35,18 +30,20 @@ function formatBytes(bytes) {
     return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
 }
 
-function copyToClipboard(elementId) {
-    const element = document.getElementById(elementId);
-    const text = element.textContent;
+function copyToClipboard(elementIdOrText) {
+    const element = document.getElementById(elementIdOrText);
+    const text = element ? (element.dataset.full || element.textContent) : elementIdOrText;
     navigator.clipboard.writeText(text).then(() => {
-        // Show feedback
-        const original = element.innerHTML;
-        element.innerHTML = '<i class="fas fa-check"></i> Copied!';
-        element.style.color = 'var(--success)';
-        setTimeout(() => {
-            element.innerHTML = original;
-            element.style.color = '';
-        }, 2000);
+        if (element) {
+            // Show feedback
+            const original = element.innerHTML;
+            element.innerHTML = '<i class="fas fa-check"></i> Copied!';
+            element.style.color = 'var(--success)';
+            setTimeout(() => {
+                element.innerHTML = original;
+                element.style.color = '';
+            }, 2000);
+        }
     });
 }
 
@@ -56,7 +53,6 @@ function getBlockNumber() {
     return params.get('slot') || params.get('block');
 }
 
-// (Dead mock generators removed — all data comes from RPC)
 
 // Load and display block
 async function loadBlock() {
@@ -84,10 +80,10 @@ async function loadBlock() {
     }
     
     // Update page
-    displayBlock(block);
+    await displayBlock(block);
 }
 
-function displayBlock(block) {
+async function displayBlock(block) {
     // Handle both old format (block.header) and new format (block.slot, block.hash)
     const slot = block.slot ?? block.header?.slot;
     const hash = block.hash ?? block.header?.hash ?? 'unknown';
@@ -97,6 +93,7 @@ function displayBlock(block) {
     const validator = block.validator ?? block.header?.validator;
     const txCount = block.transaction_count ?? block.transactions?.length ?? 0;
     const transactions = block.transactions || [];
+    const reward = block.block_reward;
     const size = block.size || JSON.stringify(block).length;
     
     // Header
@@ -106,16 +103,52 @@ function displayBlock(block) {
     document.getElementById('blockTxCount').textContent = txCount;
     document.getElementById('blockSize').textContent = formatBytes(size);
     
-    // Calculate block time (if we have previous block)
-    document.getElementById('blockTime').textContent = '~400ms';
+    // Calculate block time from previous block
+    const blockTimeEl = document.getElementById('blockTime');
+    if (slot > 0 && timestamp) {
+        try {
+            const prevBlock = await rpc.getBlock(slot - 1);
+            const prevTs = prevBlock?.timestamp ?? prevBlock?.header?.timestamp;
+            if (prevTs && timestamp >= prevTs) {
+                const deltaSec = timestamp - prevTs;
+                if (deltaSec > 0) {
+                    const deltaMs = deltaSec * 1000;
+                    blockTimeEl.textContent = deltaMs >= 1000 ? (deltaMs / 1000).toFixed(1) + 's' : deltaMs + 'ms';
+                } else {
+                    // Same-second timestamps (sub-second block production)
+                    blockTimeEl.textContent = '<1s';
+                }
+            } else {
+                blockTimeEl.textContent = '—';
+            }
+        } catch (e) {
+            blockTimeEl.textContent = '—';
+        }
+    } else {
+        blockTimeEl.textContent = slot === 0 ? 'Genesis' : '—';
+    }
     
     // Detail grid
     document.getElementById('detailSlot').textContent = formatNumber(slot);
     document.getElementById('blockHash').textContent = formatHash(hash);
+    document.getElementById('blockHash').dataset.full = hash;
     document.getElementById('parentHash').textContent = formatHash(parentHash);
+    document.getElementById('parentHash').dataset.full = parentHash;
     document.getElementById('stateRoot').textContent = formatHash(stateRoot);
+    document.getElementById('stateRoot').dataset.full = stateRoot;
     document.getElementById('detailTimestamp').textContent = formatTime(timestamp);
-    document.getElementById('validator').textContent = formatHash(validator);
+    const addressNames = typeof batchResolveMoltNames === 'function'
+        ? await batchResolveMoltNames([
+            validator,
+            ...transactions.flatMap(tx => [tx.from, tx.to]),
+            reward?.recipient
+        ])
+        : {};
+
+    const validatorDisplay = addressNames[validator] && typeof formatAddressWithMoltName === 'function'
+        ? formatAddressWithMoltName(validator, addressNames[validator])
+        : formatAddress(validator);
+    document.getElementById('validator').innerHTML = validatorDisplay;
     document.getElementById('detailTxCount').textContent = formatNumber(txCount);
     document.getElementById('detailSize').textContent = formatBytes(size);
     
@@ -149,21 +182,28 @@ function displayBlock(block) {
             </tr>
         `;
     } else {
-        tbody.innerHTML = transactions.map(tx => `
+        tbody.innerHTML = transactions.map(tx => {
+            const fromDisplay = addressNames[tx.from] && typeof formatAddressWithMoltName === 'function'
+                ? formatAddressWithMoltName(tx.from, addressNames[tx.from])
+                : formatAddress(tx.from);
+            const toDisplay = addressNames[tx.to] && typeof formatAddressWithMoltName === 'function'
+                ? formatAddressWithMoltName(tx.to, addressNames[tx.to])
+                : formatAddress(tx.to);
+            return `
             <tr>
                 <td>
-                    <a href="transaction.html?tx=${tx.signature}" class="hash-link">
+                    <a href="transaction.html?tx=${tx.signature}" class="hash-link" title="${tx.signature}">
                         ${formatHash(tx.signature)}
                     </a>
                 </td>
                 <td>
                     <a href="address.html?address=${tx.from}" class="hash-link">
-                        ${formatHash(tx.from, false)}
+                        ${fromDisplay}
                     </a>
                 </td>
                 <td>
                     <a href="address.html?address=${tx.to}" class="hash-link">
-                        ${formatHash(tx.to, false)}
+                        ${toDisplay}
                     </a>
                 </td>
                 <td><span class="badge badge-info">${tx.type || 'Transfer'}</span></td>
@@ -178,11 +218,11 @@ function displayBlock(block) {
                     </a>
                 </td>
             </tr>
-        `).join('');
+        `;
+        }).join('');
     }
     
     // Block Reward (protocol-level coinbase)
-    const reward = block.block_reward;
     const rewardCard = document.getElementById('rewardCard');
     if (reward && reward.amount > 0 && rewardCard && slot > 0) {
         rewardCard.style.display = '';
@@ -191,7 +231,10 @@ function displayBlock(block) {
         const typeLabel = reward.type === 'heartbeat' ? 'Heartbeat' : 'Transaction Block';
         document.getElementById('rewardType').innerHTML =
             '<span class="badge badge-info">' + typeLabel + '</span>';
-        document.getElementById('rewardRecipient').textContent = formatHash(reward.recipient);
+        const rewardDisplay = addressNames[reward.recipient] && typeof formatAddressWithMoltName === 'function'
+            ? formatAddressWithMoltName(reward.recipient, addressNames[reward.recipient])
+            : formatAddress(reward.recipient);
+        document.getElementById('rewardRecipient').innerHTML = rewardDisplay;
         document.getElementById('rewardRecipientLink').href = 'address.html?address=' + reward.recipient;
     }
 
@@ -227,21 +270,15 @@ function displayBlock(block) {
 }
 
 // Search functionality
-document.getElementById('searchInput')?.addEventListener('keypress', (e) => {
+document.getElementById('searchInput')?.addEventListener('keypress', async (e) => {
     if (e.key === 'Enter') {
         const query = e.target.value.trim();
         if (query) {
-            // Determine if it's a block number, tx hash, or address
-            if (/^\d+$/.test(query)) {
-                window.location.href = `block.html?slot=${query}`;
-            } else if (query.startsWith('0x') || query.startsWith('molt1')) {
-                // Could be tx or address
-                if (query.length > 50) {
-                    window.location.href = `transaction.html?tx=${query}`;
-                } else {
-                    window.location.href = `address.html?address=${query}`;
-                }
+            if (typeof navigateExplorerSearch === 'function') {
+                await navigateExplorerSearch(query);
+                return;
             }
+            window.location.href = `address.html?address=${query}`;
         }
     }
 });

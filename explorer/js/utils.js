@@ -12,17 +12,24 @@ function formatSlot(slot) {
     return slot.toLocaleString();
 }
 
-function formatHash(hash, length = 12) {
+function formatHash(hash, length = 6) {
     if (!hash) return 'N/A';
-    if (hash.length <= length + 8) return hash;
-    return hash.substring(0, length) + '...' + hash.substring(hash.length - 8);
+    if (hash.length <= length * 2 + 3) return hash;
+    return hash.substring(0, length) + '...' + hash.substring(hash.length - length);
+}
+
+// Truncated display for addresses — always use formatHash for consistent ABCDEF...GHIJKL format.
+// Copy and links always use the full address; this is display only.
+function formatAddress(addr) {
+    if (!addr) return 'N/A';
+    return formatHash(addr, 6);
 }
 
 function formatMolt(shells) {
     const molt = shells / 1_000_000_000;
     return molt.toLocaleString(undefined, {
-        minimumFractionDigits: 0,
-        maximumFractionDigits: 9,
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 4,
     }) + ' MOLT';
 }
 
@@ -61,7 +68,7 @@ function formatValidator(validator) {
         validator === '1111111111111111111111111111111111111111') {
         return '<span class="pill pill-info" style="background: var(--bg-secondary);">Genesis</span>';
     }
-    return formatHash(validator, 16);
+    return formatAddress(validator);
 }
 
 function readLeU64(bytes) {
@@ -130,6 +137,43 @@ if (!document.getElementById('_utils_toast_css')) {
     s.id = '_utils_toast_css';
     s.textContent = `@keyframes slideIn { from { transform: translateX(400px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }`;
     document.head.appendChild(s);
+}
+
+// ── Bincode Message Serializer ──
+// Produces the same bytes as Rust's `bincode::serialize(&Message)` so signatures match.
+// Shared between wallet and explorer for any page that signs transactions.
+function serializeMessageBincode(message) {
+    const parts = [];
+    function writeU64LE(n) {
+        const buf = new ArrayBuffer(8);
+        const view = new DataView(buf);
+        view.setBigUint64(0, BigInt(n), true);
+        parts.push(new Uint8Array(buf));
+    }
+    function writeBytes(bytes) { parts.push(new Uint8Array(bytes)); }
+
+    const ixs = message.instructions || [];
+    writeU64LE(ixs.length);
+    for (const ix of ixs) {
+        writeBytes(ix.program_id);
+        const accounts = ix.accounts || [];
+        writeU64LE(accounts.length);
+        for (const acct of accounts) writeBytes(acct);
+        const data = ix.data || [];
+        writeU64LE(data.length);
+        writeBytes(data);
+    }
+
+    const hashHex = message.blockhash || message.recent_blockhash;
+    const hashBytes = new Uint8Array(32);
+    for (let i = 0; i < 32; i++) hashBytes[i] = parseInt(hashHex.substr(i * 2, 2), 16);
+    writeBytes(hashBytes);
+
+    const totalLen = parts.reduce((s, p) => s + p.length, 0);
+    const result = new Uint8Array(totalLen);
+    let offset = 0;
+    for (const p of parts) { result.set(p, offset); offset += p.length; }
+    return result;
 }
 
 console.log('✅ Shared utils.js loaded');

@@ -18,16 +18,23 @@ function formatMolt(shells) {
     return raw + ' MOLT';
 }
 
-function formatHash(hash, full = false) {
-    if (!hash) return 'N/A';
-    if (full) return hash;
-    return hash.substring(0, 8) + '...' + hash.substring(hash.length - 6);
-}
+// formatHash is provided by utils.js
 
 function copyToClipboard(text) {
     navigator.clipboard.writeText(text).then(() => {
         console.log('Copied:', text);
     });
+}
+
+function trustTierFromReputation(score) {
+    const rep = Number(score || 0);
+    if (rep >= 950) return 'Legendary';
+    if (rep >= 800) return 'Elite';
+    if (rep >= 600) return 'Established';
+    if (rep >= 400) return 'Trusted';
+    if (rep >= 200) return 'Verified';
+    if (rep >= 100) return 'Newcomer';
+    return 'Probation';
 }
 
 async function loadValidators() {
@@ -58,8 +65,12 @@ async function loadValidators() {
         
         const totalStake = validators.reduce((sum, v) => sum + (v.stake || 0), 0);
         document.getElementById('totalStake').textContent = formatMolt(totalStake);
-        const maxReputation = validators.reduce((max, v) => Math.max(max, v.reputation || 0), 0);
+        const MAX_REPUTATION = 1000; // absolute scale — reputation ranges 50..1000
         
+        const nameMap = typeof batchResolveMoltNames === 'function'
+            ? await batchResolveMoltNames(validators.map(v => v.pubkey).filter(Boolean))
+            : {};
+
         // Render validators
         table.innerHTML = validators.map((validator, index) => {
             const stake = validator.stake || 0;
@@ -68,13 +79,18 @@ async function loadValidators() {
             const votingPower = totalStake > 0 ? ((stake / totalStake) * 100).toFixed(2) : '0.00';
             const lastActiveSlot = validator.last_active_slot || validator.lastActiveSlot || 0;
             const isOnline = currentSlot - lastActiveSlot <= 100;
-            const reputationScale = maxReputation > 0 ? (reputation / maxReputation) * 100 : 0;
+            const reputationScale = (reputation / MAX_REPUTATION) * 100;
+            const moltName = nameMap[validator.pubkey] || null;
+            const tier = trustTierFromReputation(reputation);
+            const addressLabel = moltName
+                ? `${moltName}.molt`
+                : formatHash(validator.pubkey);
             
             return `
             <tr>
                 <td><span style="font-weight: 700; color: var(--text-muted);">${index + 1}</span></td>
                 <td>
-                    <span class="hash-short">${formatHash(validator.pubkey)}</span>
+                    <span class="hash-short" title="${validator.pubkey}">${addressLabel}</span>
                     <i class="fas fa-copy copy-hash" onclick="copyToClipboard('${validator.pubkey}')" title="Copy address"></i>
                 </td>
                 <td><span style="font-family: 'JetBrains Mono', monospace; font-weight: 600;">${formatMolt(stake)}</span></td>
@@ -84,6 +100,7 @@ async function loadValidators() {
                             <div style="background: var(--primary); height: 100%; width: ${Math.min(reputationScale, 100)}%;"></div>
                         </div>
                         <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;">${reputation.toFixed(4)}</span>
+                        <span class="pill pill-info">${tier}</span>
                     </div>
                 </td>
                 <td><span class="pill pill-info">${formatNumber(blocksProduced)}</span></td>

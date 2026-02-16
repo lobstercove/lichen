@@ -70,7 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n📝 Testing multi-instruction transaction...");
     let memo_data = b"Hello MoltChain!".to_vec();
     let memo_instruction = Instruction {
-        program_id: system_program,
+        program_id: SYSTEM_PROGRAM_ID,
         accounts: vec![sender.pubkey()],
         data: memo_data,
     };

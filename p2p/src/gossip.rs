@@ -4,11 +4,68 @@ use crate::message::{MessageType, P2PMessage, PeerInfoMsg};
 use crate::peer::PeerManager;
 use crate::peer_store::PeerStore;
 use moltchain_core::Pubkey;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::interval;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
+
+/// Minimum active peer count before aggressive reconnection to all known peers
+const MIN_PEER_COUNT: usize = 2;
+
+/// Maximum backoff interval (5 minutes)
+const MAX_BACKOFF_SECS: u64 = 300;
+
+/// Initial backoff interval (5 seconds)
+const INITIAL_BACKOFF_SECS: u64 = 5;
+
+/// Tracks reconnection attempts with exponential backoff so we don't
+/// hammer unreachable peers on every gossip tick.
+struct ReconnectTracker {
+    /// Maps peer address → (next_attempt_unix_secs, current_backoff_secs)
+    backoff: HashMap<SocketAddr, (u64, u64)>,
+}
+
+impl ReconnectTracker {
+    fn new() -> Self {
+        Self {
+            backoff: HashMap::new(),
+        }
+    }
+
+    /// Returns true if enough time has elapsed to retry this peer.
+    fn should_attempt(&self, addr: &SocketAddr) -> bool {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        match self.backoff.get(addr) {
+            Some((next_attempt, _)) => now >= *next_attempt,
+            None => true,
+        }
+    }
+
+    /// Record a failed reconnection attempt — doubles the backoff (capped).
+    fn record_failure(&mut self, addr: SocketAddr) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        let current_backoff = self
+            .backoff
+            .get(&addr)
+            .map(|(_, b)| *b)
+            .unwrap_or(INITIAL_BACKOFF_SECS);
+        let new_backoff = (current_backoff * 2).min(MAX_BACKOFF_SECS);
+        self.backoff.insert(addr, (now + new_backoff, new_backoff));
+    }
+
+    /// Record a successful reconnection — reset backoff for this peer.
+    fn record_success(&mut self, addr: SocketAddr) {
+        self.backoff.remove(&addr);
+    }
+}
 
 /// Manages peer discovery and gossip
 pub struct GossipManager {
@@ -88,16 +145,28 @@ impl GossipManager {
             }
         }
 
-        // Start periodic gossip
+        // Start periodic gossip + reconnection
         let peer_manager = self.peer_manager.clone();
         let gossip_interval = self.gossip_interval;
         let local_addr = self.local_addr;
         let validator_pubkey = self.validator_pubkey;
+        let seed_peers = self.seed_peers.clone();
+        let peer_store = self.peer_store.clone();
         tokio::spawn(async move {
             let mut interval = interval(Duration::from_secs(gossip_interval));
+            let mut reconnect_tracker = ReconnectTracker::new();
             loop {
                 interval.tick().await;
                 Self::do_gossip(&peer_manager, local_addr, validator_pubkey).await;
+
+                // Reconnect to disconnected seed / known peers
+                Self::reconnect_peers(
+                    &peer_manager,
+                    &seed_peers,
+                    peer_store.as_ref(),
+                    &mut reconnect_tracker,
+                )
+                .await;
             }
         });
 
@@ -149,6 +218,70 @@ impl GossipManager {
         peer_manager.broadcast(message).await;
 
         info!("🦞 P2P: Gossip round complete ({} peers)", peers.len());
+    }
+
+    /// Attempt to reconnect to seed peers (and, if peer count is critically low,
+    /// all known peers from the durable peer store).  Uses exponential backoff
+    /// per-address so unreachable peers are not hammered every tick.
+    async fn reconnect_peers(
+        peer_manager: &Arc<PeerManager>,
+        seed_peers: &[SocketAddr],
+        peer_store: Option<&Arc<PeerStore>>,
+        tracker: &mut ReconnectTracker,
+    ) {
+        let connected = peer_manager.get_peers();
+        let connected_count = connected.len();
+
+        // Build the set of candidate addresses to reconnect.
+        // Always include seed peers; if below MIN_PEER_COUNT also include
+        // all historically-known peers from the durable store.
+        let mut candidates: Vec<SocketAddr> = seed_peers.to_vec();
+
+        if connected_count < MIN_PEER_COUNT {
+            if let Some(store) = peer_store {
+                for addr in store.peers() {
+                    if !candidates.contains(&addr) {
+                        candidates.push(addr);
+                    }
+                }
+            }
+            debug!(
+                "P2P reconnect: peer count {} < {}, trying all {} known peers",
+                connected_count,
+                MIN_PEER_COUNT,
+                candidates.len()
+            );
+        }
+
+        for addr in &candidates {
+            // Already connected — make sure backoff is clear
+            if connected.contains(addr) {
+                tracker.record_success(*addr);
+                continue;
+            }
+
+            // Don't reconnect to banned peers
+            if peer_manager.is_banned(addr) {
+                continue;
+            }
+
+            // Respect exponential backoff
+            if !tracker.should_attempt(addr) {
+                continue;
+            }
+
+            // Attempt reconnection
+            match peer_manager.connect_peer(*addr).await {
+                Ok(()) => {
+                    info!("🦞 P2P: Reconnected to peer {}", addr);
+                    tracker.record_success(*addr);
+                }
+                Err(e) => {
+                    warn!("P2P: Failed to reconnect to peer {}: {}", addr, e);
+                    tracker.record_failure(*addr);
+                }
+            }
+        }
     }
 
     /// Handle incoming peer info

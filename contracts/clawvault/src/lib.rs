@@ -72,6 +72,21 @@ fn get_deposit_cap() -> u64 {
     storage_get(b"cv_dep_cap").map(|d| bytes_to_u64(&d)).unwrap_or(DEFAULT_DEPOSIT_CAP)
 }
 
+// Reentrancy guard
+const CV_REENTRANCY_KEY: &[u8] = b"cv_reentrancy";
+
+fn reentrancy_enter() -> bool {
+    if storage_get(CV_REENTRANCY_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false) {
+        return false;
+    }
+    storage_set(CV_REENTRANCY_KEY, &[1u8]);
+    true
+}
+
+fn reentrancy_exit() {
+    storage_set(CV_REENTRANCY_KEY, &[0u8]);
+}
+
 // ============================================================================
 // STRATEGY TYPES
 // ============================================================================
@@ -117,21 +132,22 @@ fn store_u64(key: &[u8], val: u64) {
 /// Initialize the vault
 #[no_mangle]
 pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
-    let admin = unsafe { core::slice::from_raw_parts(admin_ptr, 32) };
+    let mut admin = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32); }
 
     if storage_get(ADMIN_KEY).is_some() {
-        log_info("❌ Already initialized");
+        log_info("Already initialized");
         return 1;
     }
 
-    storage_set(ADMIN_KEY, admin);
+    storage_set(ADMIN_KEY, &admin);
     store_u64(b"cv_total_shares", 0);
     store_u64(b"cv_total_assets", 0);
     store_u64(b"cv_strategy_count", 0);
     store_u64(b"cv_last_harvest", get_timestamp());
     store_u64(b"cv_total_earned", 0);
 
-    log_info("🏦 ClawVault initialized");
+    log_info("ClawVault initialized");
     0
 }
 
@@ -148,24 +164,25 @@ pub extern "C" fn add_strategy(
     strategy_type: u8,
     allocation_percent: u64,
 ) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
     let admin = match storage_get(ADMIN_KEY) {
         Some(a) => a,
         None => return 1,
     };
-    if caller != admin.as_slice() {
-        log_info("❌ Unauthorized");
+    if caller[..] != admin[..] {
+        log_info("Unauthorized");
         return 2;
     }
 
     if strategy_type < STRATEGY_LENDING || strategy_type > STRATEGY_STAKING {
-        log_info("❌ Invalid strategy type");
+        log_info("Invalid strategy type");
         return 3;
     }
 
     let count = load_u64(b"cv_strategy_count") as usize;
     if count >= MAX_STRATEGIES {
-        log_info("❌ Max strategies reached");
+        log_info("Max strategies reached");
         return 4;
     }
 
@@ -176,7 +193,7 @@ pub extern "C" fn add_strategy(
         total_alloc += load_u64(alloc_key.as_bytes());
     }
     if total_alloc > 100 {
-        log_info("❌ Total allocation exceeds 100%");
+        log_info("Total allocation exceeds 100%");
         return 5;
     }
 
@@ -190,7 +207,7 @@ pub extern "C" fn add_strategy(
     store_u64(deployed_key.as_bytes(), 0);
     store_u64(b"cv_strategy_count", (count + 1) as u64);
 
-    log_info("✅ Strategy added");
+    log_info("Strategy added");
     0
 }
 
@@ -206,7 +223,10 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u64 {
         return 0;
     }
     if is_cv_paused() {
-        log_info("❌ Vault is paused");
+        log_info("Vault is paused");
+        return 0;
+    }
+    if !reentrancy_enter() {
         return 0;
     }
 
@@ -215,14 +235,14 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u64 {
     if cap > 0 {
         let total_assets = load_u64(b"cv_total_assets");
         if total_assets + amount > cap {
-            log_info("❌ Deposit cap exceeded");
+            log_info("Deposit cap exceeded");
             return 0;
         }
     }
 
     // V2: Deposit fee
     let fee_bps = get_deposit_fee_bps();
-    let fee = amount * fee_bps / 10_000;
+    let fee = ((amount as u128) * (fee_bps as u128) / 10_000) as u64;
     let net_amount = amount - fee;
     if net_amount == 0 { return 0; }
 
@@ -232,8 +252,9 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u64 {
         store_u64(b"cv_protocol_fees", prev_fees + fee);
     }
 
-    let depositor = unsafe { core::slice::from_raw_parts(depositor_ptr, 32) };
-    let hex = hex_encode_addr(depositor);
+    let mut depositor = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(depositor_ptr, depositor.as_mut_ptr(), 32); }
+    let hex = hex_encode_addr(&depositor);
 
     let total_shares = load_u64(b"cv_total_shares");
     let total_assets = load_u64(b"cv_total_assets");
@@ -242,7 +263,7 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u64 {
     let shares = if total_shares == 0 || total_assets == 0 {
         // T5.9: On first deposit, lock MIN_LOCKED_SHARES to a dead address
         if net_amount <= MIN_LOCKED_SHARES {
-            log_info("❌ First deposit must exceed minimum locked shares");
+            log_info("First deposit must exceed minimum locked shares");
             return 0;
         }
         let dead_hex = [b'0'; 64];
@@ -252,11 +273,12 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u64 {
         store_u64(b"cv_total_assets", MIN_LOCKED_SHARES);
         net_amount - MIN_LOCKED_SHARES
     } else {
-        net_amount * total_shares / total_assets
+        // Use u128 to prevent overflow on large values
+        ((net_amount as u128) * (total_shares as u128) / (total_assets as u128)) as u64
     };
 
     if shares == 0 {
-        log_info("❌ Deposit too small");
+        log_info("Deposit too small");
         return 0;
     }
 
@@ -278,7 +300,8 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u64 {
     };
     store_u64(b"cv_total_assets", total_assets + additional_assets);
 
-    log_info("✅ Vault deposit successful");
+    reentrancy_exit();
+    log_info("Vault deposit successful");
     shares
 }
 
@@ -289,14 +312,18 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, shares_to_burn: u64) -> u64
     if shares_to_burn == 0 {
         return 0;
     }
+    if !reentrancy_enter() {
+        return 0;
+    }
 
-    let depositor = unsafe { core::slice::from_raw_parts(depositor_ptr, 32) };
-    let hex = hex_encode_addr(depositor);
+    let mut depositor = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(depositor_ptr, depositor.as_mut_ptr(), 32); }
+    let hex = hex_encode_addr(&depositor);
 
     let share_key = make_key(b"cv_shares:", &hex);
     let user_shares = load_u64(&share_key);
     if shares_to_burn > user_shares {
-        log_info("❌ Insufficient shares");
+        log_info("Insufficient shares");
         return 0;
     }
 
@@ -304,14 +331,16 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, shares_to_burn: u64) -> u64
     let total_assets = load_u64(b"cv_total_assets");
 
     // Calculate MOLT to return
-    let gross_amount = shares_to_burn * total_assets / total_shares;
+    // Use u128 to prevent overflow on large values
+    let gross_amount = ((shares_to_burn as u128) * (total_assets as u128) / (total_shares as u128)) as u64;
     if gross_amount == 0 {
+        reentrancy_exit();
         return 0;
     }
 
     // V2: Withdrawal fee
     let fee_bps = get_withdrawal_fee_bps();
-    let fee = gross_amount * fee_bps / 10_000;
+    let fee = ((gross_amount as u128) * (fee_bps as u128) / 10_000) as u64;
     let amount = gross_amount - fee;
 
     if fee > 0 {
@@ -326,7 +355,8 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, shares_to_burn: u64) -> u64
     store_u64(b"cv_total_shares", total_shares - shares_to_burn);
     store_u64(b"cv_total_assets", total_assets.saturating_sub(gross_amount));
 
-    log_info("✅ Vault withdrawal successful");
+    reentrancy_exit();
+    log_info("Vault withdrawal successful");
     amount
 }
 
@@ -337,7 +367,8 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, shares_to_burn: u64) -> u64
 /// Compute simulated yield using a fixed APY rate (fallback when no protocol configured).
 /// yield = deployed * rate * slots / FEE_SCALE / 100
 fn simulated_yield(rate_bps: u64, deployed: u64, elapsed_slots: u64) -> u64 {
-    deployed * rate_bps * elapsed_slots / FEE_SCALE / 100
+    // Use u128 to prevent overflow on large values
+    ((deployed as u128) * (rate_bps as u128) * (elapsed_slots as u128) / (FEE_SCALE as u128) / 100) as u64
 }
 
 /// Query a real DeFi protocol for accrued yield via CrossCall.
@@ -376,21 +407,24 @@ pub extern "C" fn set_protocol_addresses(
     lobsterlend_ptr: *const u8,
     moltswap_ptr: *const u8,
 ) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_cv_admin(caller) {
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_cv_admin(&caller) {
         return 1;
     }
 
-    let lobsterlend = unsafe { core::slice::from_raw_parts(lobsterlend_ptr, 32) };
-    let moltswap = unsafe { core::slice::from_raw_parts(moltswap_ptr, 32) };
+    let mut lobsterlend = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(lobsterlend_ptr, lobsterlend.as_mut_ptr(), 32); }
+    let mut moltswap = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(moltswap_ptr, moltswap.as_mut_ptr(), 32); }
 
     if lobsterlend.iter().any(|&b| b != 0) {
-        storage_set(LOBSTERLEND_ADDRESS_KEY, lobsterlend);
-        log_info("✅ LobsterLend address configured");
+        storage_set(LOBSTERLEND_ADDRESS_KEY, &lobsterlend);
+        log_info("LobsterLend address configured");
     }
     if moltswap.iter().any(|&b| b != 0) {
-        storage_set(MOLTSWAP_ADDRESS_KEY, moltswap);
-        log_info("✅ MoltSwap address configured");
+        storage_set(MOLTSWAP_ADDRESS_KEY, &moltswap);
+        log_info("MoltSwap address configured");
     }
     0
 }
@@ -403,9 +437,13 @@ pub extern "C" fn set_protocol_addresses(
 /// Can be called by anyone (typically a cron job or keeper)
 #[no_mangle]
 pub extern "C" fn harvest() -> u32 {
+    if !reentrancy_enter() {
+        return 1;
+    }
     let last_harvest = load_u64(b"cv_last_harvest");
     let now = get_timestamp();
     if now <= last_harvest {
+        reentrancy_exit();
         return 0; // Nothing to harvest
     }
 
@@ -471,10 +509,11 @@ pub extern "C" fn harvest() -> u32 {
         let earned = load_u64(b"cv_total_earned");
         store_u64(b"cv_total_earned", earned + net_yield);
 
-        log_info("🔄 Harvest & auto-compound complete");
+        log_info("Harvest & auto-compound complete");
     }
 
     store_u64(b"cv_last_harvest", now);
+    reentrancy_exit();
     0
 }
 
@@ -489,7 +528,8 @@ pub extern "C" fn get_vault_stats() -> u32 {
     let total_assets = load_u64(b"cv_total_assets");
     let total_shares = load_u64(b"cv_total_shares");
     let share_price = if total_shares > 0 {
-        total_assets * 1_000_000_000 / total_shares // Price per share in shells * 10^9
+        // Use u128 to prevent overflow
+        ((total_assets as u128) * 1_000_000_000 / (total_shares as u128)) as u64
     } else {
         1_000_000_000 // 1:1 initially
     };
@@ -511,8 +551,9 @@ pub extern "C" fn get_vault_stats() -> u32 {
 /// Get user position: [shares(8), estimated_value(8)]
 #[no_mangle]
 pub extern "C" fn get_user_position(user_ptr: *const u8) -> u32 {
-    let user = unsafe { core::slice::from_raw_parts(user_ptr, 32) };
-    let hex = hex_encode_addr(user);
+    let mut user = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(user_ptr, user.as_mut_ptr(), 32); }
+    let hex = hex_encode_addr(&user);
 
     let share_key = make_key(b"cv_shares:", &hex);
     let shares = load_u64(&share_key);
@@ -566,11 +607,12 @@ pub extern "C" fn get_strategy_info(index: u64) -> u32 {
 /// Returns: 0 success, 1 not admin, 2 already paused
 #[no_mangle]
 pub extern "C" fn cv_pause(caller_ptr: *const u8) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_cv_admin(caller) { return 1; }
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_cv_admin(&caller) { return 1; }
     if is_cv_paused() { return 2; }
     storage_set(CV_PAUSE_KEY, &[1]);
-    log_info("⏸️ ClawVault paused");
+    log_info("ClawVault paused");
     0
 }
 
@@ -578,11 +620,12 @@ pub extern "C" fn cv_pause(caller_ptr: *const u8) -> u32 {
 /// Returns: 0 success, 1 not admin, 2 not paused
 #[no_mangle]
 pub extern "C" fn cv_unpause(caller_ptr: *const u8) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_cv_admin(caller) { return 1; }
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_cv_admin(&caller) { return 1; }
     if !is_cv_paused() { return 2; }
     storage_set(CV_PAUSE_KEY, &[0]);
-    log_info("▶️ ClawVault unpaused");
+    log_info("ClawVault unpaused");
     0
 }
 
@@ -590,8 +633,9 @@ pub extern "C" fn cv_unpause(caller_ptr: *const u8) -> u32 {
 /// Returns: 0 success, 1 not admin, 2 too high
 #[no_mangle]
 pub extern "C" fn set_deposit_fee(caller_ptr: *const u8, fee_bps: u64) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_cv_admin(caller) { return 1; }
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_cv_admin(&caller) { return 1; }
     if fee_bps > MAX_DEPOSIT_FEE_BPS { return 2; }
     store_u64(b"cv_dep_fee", fee_bps);
     0
@@ -601,8 +645,9 @@ pub extern "C" fn set_deposit_fee(caller_ptr: *const u8, fee_bps: u64) -> u32 {
 /// Returns: 0 success, 1 not admin, 2 too high
 #[no_mangle]
 pub extern "C" fn set_withdrawal_fee(caller_ptr: *const u8, fee_bps: u64) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_cv_admin(caller) { return 1; }
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_cv_admin(&caller) { return 1; }
     if fee_bps > MAX_WITHDRAWAL_FEE_BPS { return 2; }
     store_u64(b"cv_wd_fee", fee_bps);
     0
@@ -612,8 +657,9 @@ pub extern "C" fn set_withdrawal_fee(caller_ptr: *const u8, fee_bps: u64) -> u32
 /// Returns: 0 success, 1 not admin
 #[no_mangle]
 pub extern "C" fn set_deposit_cap(caller_ptr: *const u8, cap: u64) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_cv_admin(caller) { return 1; }
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_cv_admin(&caller) { return 1; }
     store_u64(b"cv_dep_cap", cap);
     0
 }
@@ -626,8 +672,9 @@ pub extern "C" fn set_deposit_cap(caller_ptr: *const u8, cap: u64) -> u32 {
 /// Returns: 0 success, 1 not admin, 2 invalid tier
 #[no_mangle]
 pub extern "C" fn set_risk_tier(caller_ptr: *const u8, tier: u8) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_cv_admin(caller) { return 1; }
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_cv_admin(&caller) { return 1; }
     if tier < RISK_CONSERVATIVE || tier > RISK_AGGRESSIVE { return 2; }
     store_u64(b"cv_risk_tier", tier as u64);
     0
@@ -637,8 +684,9 @@ pub extern "C" fn set_risk_tier(caller_ptr: *const u8, tier: u8) -> u32 {
 /// Returns: 0 success, 1 not admin, 2 out of bounds
 #[no_mangle]
 pub extern "C" fn remove_strategy(caller_ptr: *const u8, index: u64) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_cv_admin(caller) { return 1; }
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_cv_admin(&caller) { return 1; }
     let count = load_u64(b"cv_strategy_count");
     if index >= count { return 2; }
     let i = index as usize;
@@ -646,7 +694,7 @@ pub extern "C" fn remove_strategy(caller_ptr: *const u8, index: u64) -> u32 {
     store_u64(alloc_key.as_bytes(), 0);
     let deployed_key = alloc::format!("cv_strat_deployed:{}", i);
     store_u64(deployed_key.as_bytes(), 0);
-    log_info("✅ Strategy removed (allocation zeroed)");
+    log_info("Strategy removed (allocation zeroed)");
     0
 }
 
@@ -654,12 +702,13 @@ pub extern "C" fn remove_strategy(caller_ptr: *const u8, index: u64) -> u32 {
 /// Returns fee amount withdrawn (0 if none or not admin).
 #[no_mangle]
 pub extern "C" fn withdraw_protocol_fees(caller_ptr: *const u8) -> u64 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_cv_admin(caller) { return 0; }
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_cv_admin(&caller) { return 0; }
     let fees = load_u64(b"cv_protocol_fees");
     if fees == 0 { return 0; }
     store_u64(b"cv_protocol_fees", 0);
-    log_info("✅ Protocol fees withdrawn");
+    log_info("Protocol fees withdrawn");
     fees
 }
 
@@ -667,8 +716,9 @@ pub extern "C" fn withdraw_protocol_fees(caller_ptr: *const u8) -> u64 {
 /// Returns: 0 success, 1 not admin, 2 out of bounds, 3 total > 100%
 #[no_mangle]
 pub extern "C" fn update_strategy_allocation(caller_ptr: *const u8, index: u64, new_alloc: u64) -> u32 {
-    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
-    if !is_cv_admin(caller) { return 1; }
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    if !is_cv_admin(&caller) { return 1; }
     let count = load_u64(b"cv_strategy_count");
     if index >= count { return 2; }
 
