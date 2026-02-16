@@ -835,11 +835,10 @@ impl StateStore {
             .ok_or_else(|| "TX by slot CF not found".to_string())?;
 
         let block_hash = block.hash();
-        let block_serialized =
-            bincode::serialize(block).map_err(|e| format!("Failed to serialize block: {}", e))?;
-        let mut value = Vec::with_capacity(1 + block_serialized.len());
+        let mut value = Vec::with_capacity(4096);
         value.push(0xBC);
-        value.extend_from_slice(&block_serialized);
+        bincode::serialize_into(&mut value, block)
+            .map_err(|e| format!("Failed to serialize block: {}", e))?;
 
         // Check if this is a new slot BEFORE writing the slot index
         // (otherwise the lookup finds our own write and metrics are never tracked)
@@ -859,14 +858,15 @@ impl StateStore {
             let sig = tx.signature();
 
             // Serialize tx body into batch
-            match bincode::serialize(tx) {
-                Ok(tx_serialized) => {
-                    let mut tx_value = Vec::with_capacity(1 + tx_serialized.len());
-                    tx_value.push(0xBC);
-                    tx_value.extend_from_slice(&tx_serialized);
-                    batch.put_cf(&tx_cf, sig.0, &tx_value);
+            {
+                let mut tx_value = Vec::with_capacity(512);
+                tx_value.push(0xBC);
+                match bincode::serialize_into(&mut tx_value, tx) {
+                    Ok(()) => {
+                        batch.put_cf(&tx_cf, sig.0, &tx_value);
+                    }
+                    Err(e) => eprintln!("Warning: failed to serialize tx {}: {}", sig.to_hex(), e),
                 }
-                Err(e) => eprintln!("Warning: failed to serialize tx {}: {}", sig.to_hex(), e),
             }
 
             // tx hash → slot (reverse index)
@@ -961,11 +961,10 @@ impl StateStore {
             .ok_or_else(|| "Transactions CF not found".to_string())?;
 
         let sig = tx.signature();
-        let tx_serialized = bincode::serialize(tx)
-            .map_err(|e| format!("Failed to serialize transaction: {}", e))?;
-        let mut value = Vec::with_capacity(1 + tx_serialized.len());
+        let mut value = Vec::with_capacity(512);
         value.push(0xBC);
-        value.extend_from_slice(&tx_serialized);
+        bincode::serialize_into(&mut value, tx)
+            .map_err(|e| format!("Failed to serialize transaction: {}", e))?;
 
         self.db
             .put_cf(&cf, sig.0, &value)
@@ -1083,11 +1082,10 @@ impl StateStore {
         };
         let new_balance = account.shells;
 
-        let acct_serialized = bincode::serialize(account)
-            .map_err(|e| format!("Failed to serialize account: {}", e))?;
-        let mut value = Vec::with_capacity(1 + acct_serialized.len());
+        let mut value = Vec::with_capacity(256);
         value.push(0xBC);
-        value.extend_from_slice(&acct_serialized);
+        bincode::serialize_into(&mut value, account)
+            .map_err(|e| format!("Failed to serialize account: {}", e))?;
 
         self.db
             .put_cf(&cf, pubkey.0, &value)
@@ -1566,16 +1564,14 @@ impl StateStore {
             .cf_handle(CF_ACCOUNTS)
             .ok_or_else(|| "Accounts CF not found".to_string())?;
         let mut batch = rocksdb::WriteBatch::default();
-        let from_serialized =
-            bincode::serialize(&from_account).map_err(|e| format!("Serialize from: {}", e))?;
-        let mut from_bytes = Vec::with_capacity(1 + from_serialized.len());
+        let mut from_bytes = Vec::with_capacity(256);
         from_bytes.push(0xBC);
-        from_bytes.extend_from_slice(&from_serialized);
-        let to_serialized =
-            bincode::serialize(&to_account).map_err(|e| format!("Serialize to: {}", e))?;
-        let mut to_bytes = Vec::with_capacity(1 + to_serialized.len());
+        bincode::serialize_into(&mut from_bytes, &from_account)
+            .map_err(|e| format!("Serialize from: {}", e))?;
+        let mut to_bytes = Vec::with_capacity(256);
         to_bytes.push(0xBC);
-        to_bytes.extend_from_slice(&to_serialized);
+        bincode::serialize_into(&mut to_bytes, &to_account)
+            .map_err(|e| format!("Serialize to: {}", e))?;
         batch.put_cf(&cf, from.0, &from_bytes);
         batch.put_cf(&cf, to.0, &to_bytes);
         self.db
@@ -2751,11 +2747,10 @@ impl StateBatch {
             self.active_account_delta -= 1;
         }
 
-        let acct_serialized = bincode::serialize(account)
-            .map_err(|e| format!("Failed to serialize account: {}", e))?;
-        let mut value = Vec::with_capacity(1 + acct_serialized.len());
+        let mut value = Vec::with_capacity(256);
         value.push(0xBC);
-        value.extend_from_slice(&acct_serialized);
+        bincode::serialize_into(&mut value, account)
+            .map_err(|e| format!("Failed to serialize account: {}", e))?;
 
         self.batch.put_cf(&cf, pubkey.0, &value);
         self.account_overlay.insert(*pubkey, account.clone());
@@ -2792,11 +2787,10 @@ impl StateBatch {
             .cf_handle(CF_TRANSACTIONS)
             .ok_or_else(|| "Transactions CF not found".to_string())?;
         let sig = tx.signature();
-        let tx_serialized = bincode::serialize(tx)
-            .map_err(|e| format!("Failed to serialize transaction: {}", e))?;
-        let mut value = Vec::with_capacity(1 + tx_serialized.len());
+        let mut value = Vec::with_capacity(512);
         value.push(0xBC);
-        value.extend_from_slice(&tx_serialized);
+        bincode::serialize_into(&mut value, tx)
+            .map_err(|e| format!("Failed to serialize transaction: {}", e))?;
         self.batch.put_cf(&cf, sig.0, &value);
         Ok(())
     }

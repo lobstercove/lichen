@@ -2300,13 +2300,25 @@ fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey, la
         }
     };
 
-    // Resolve token addresses (only MOLT/mUSD at genesis)
+    // Resolve token addresses
     let molt_addr = derive_contract_address(deployer_pubkey, "moltcoin")
         .map(|p| p.0)
         .unwrap_or([0u8; 32]);
     let musd_addr = derive_contract_address(deployer_pubkey, "musd_token")
         .map(|p| p.0)
         .unwrap_or([0u8; 32]);
+    let wsol_addr = derive_contract_address(deployer_pubkey, "wsol_token")
+        .map(|p| p.0)
+        .unwrap_or([0u8; 32]);
+    let weth_addr = derive_contract_address(deployer_pubkey, "weth_token")
+        .map(|p| p.0)
+        .unwrap_or([0u8; 32]);
+    let reef_addr = derive_contract_address(deployer_pubkey, "reef_storage")
+        .map(|p| p.0)
+        .unwrap_or([0u8; 32]);
+
+    // Resolve dex_governance for allowed-quote setup
+    let dex_gov_pk = derive_contract_address(deployer_pubkey, "dex_governance");
 
     // Genesis pair parameters (reasonable defaults for launch):
     // tick_size: 1 (minimum price increment in shells)
@@ -2316,16 +2328,66 @@ fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey, la
     let lot_size: u64 = 1_000_000;
     let min_order: u64 = 1_000;
 
-    // Only MOLT/mUSD at genesis. WSOL/mUSD and WETH/mUSD will be created
-    // when the bridge + custody go live and wrapped tokens have real supply.
-    let pairs: [(&str, [u8; 32], [u8; 32]); 1] = [
+    // All genesis CLOB pairs: 4 mUSD-quoted + 3 MOLT-quoted = 7 pairs
+    let pairs: [(&str, [u8; 32], [u8; 32]); 7] = [
         ("MOLT/mUSD", molt_addr, musd_addr),
+        ("wSOL/mUSD", wsol_addr, musd_addr),
+        ("wETH/mUSD", weth_addr, musd_addr),
+        ("REEF/mUSD", reef_addr, musd_addr),
+        ("wSOL/MOLT", wsol_addr, molt_addr),
+        ("wETH/MOLT", weth_addr, molt_addr),
+        ("REEF/MOLT", reef_addr, molt_addr),
     ];
 
     let mut created_pairs: usize = 0;
     let mut created_pools: usize = 0;
+    let mut allowed_quotes_set: usize = 0;
 
-    // Create CLOB trading pairs via dex_core opcode 1 (create_pair)
+    // ── Step 1: Set allowed quote tokens (mUSD + MOLT) on dex_core ──
+    // opcode 21 = add_allowed_quote: [0x15][caller 32B][quote_addr 32B]
+    for (sym, addr) in &[("mUSD", musd_addr), ("MOLT", molt_addr)] {
+        let mut args = Vec::with_capacity(65);
+        args.push(0x15); // opcode 21  = add_allowed_quote
+        args.extend_from_slice(&admin);
+        args.extend_from_slice(addr);
+
+        if genesis_exec_contract(
+            state,
+            &dex_core_pk,
+            deployer_pubkey,
+            "call",
+            &args,
+            &format!("dex_core.add_allowed_quote({})", sym),
+        ) {
+            info!("  ALLOWED QUOTE {} (dex_core)", sym);
+            allowed_quotes_set += 1;
+        }
+    }
+
+    // ── Step 1b: Set allowed quote tokens on dex_governance too ──
+    // opcode 15 = add_allowed_quote: [0x0F][caller 32B][quote_addr 32B]
+    if let Some(ref gov_pk) = dex_gov_pk {
+        for (sym, addr) in &[("mUSD", musd_addr), ("MOLT", molt_addr)] {
+            let mut args = Vec::with_capacity(65);
+            args.push(0x0F); // opcode 15 = add_allowed_quote
+            args.extend_from_slice(&admin);
+            args.extend_from_slice(addr);
+
+            if genesis_exec_contract(
+                state,
+                gov_pk,
+                deployer_pubkey,
+                "call",
+                &args,
+                &format!("dex_governance.add_allowed_quote({})", sym),
+            ) {
+                info!("  ALLOWED QUOTE {} (dex_governance)", sym);
+                allowed_quotes_set += 1;
+            }
+        }
+    }
+
+    // ── Step 2: Create CLOB trading pairs via dex_core opcode 1 (create_pair) ──
     // Args: [0x01][caller 32B][base 32B][quote 32B][tick_size 8B][lot_size 8B][min_order 8B]
     for (label, base, quote) in &pairs {
         let mut args = Vec::with_capacity(121);
@@ -2350,20 +2412,37 @@ fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey, la
         }
     }
 
-    // Create AMM pools via dex_amm opcode 1 (create_pool)
+    // ── Step 3: Create AMM pools via dex_amm opcode 1 (create_pool) ──
     // Args: [0x01][caller 32B][token_a 32B][token_b 32B][fee_tier 1B][initial_sqrt_price 8B]
-    // fee_tier = 2 (30bps), initial_sqrt_price = 1 << 32 (1.0 in Q32 fixed-point)
+    // fee_tier = 2 (30bps)
+    // sqrt_price in Q32 fixed-point: value = (1 << 32) * sqrt(real_price)
+    //   MOLT/mUSD  = 1.0          → sqrt_price = 1 << 32  (4_294_967_296)
+    //   wSOL/mUSD  ~ $178         → sqrt_price = 13_360_000_000
+    //   wETH/mUSD  ~ $3,521       → sqrt_price = 59_345_000_000
+    //   REEF/mUSD  ~ $0.018       → sqrt_price =    135_700_000
+    //   wSOL/MOLT  ~ 424 MOLT     → sqrt_price = 20_591_000_000
+    //   wETH/MOLT  ~ 8,383 MOLT   → sqrt_price = 91_558_000_000
+    //   REEF/MOLT  ~ 0.043 MOLT   → sqrt_price =    207_400_000
     let fee_tier: u8 = 2; // FEE_TIER_30BPS
-    let initial_sqrt_price: u64 = 1u64 << 32; // 1.0 price
 
-    for (label, base, quote) in &pairs {
+    let pool_configs: [(&str, [u8; 32], [u8; 32], u64); 7] = [
+        ("MOLT/mUSD",  molt_addr, musd_addr, 1u64 << 32),        // 1.0
+        ("wSOL/mUSD",  wsol_addr, musd_addr, 13_360_000_000),    // ~$178
+        ("wETH/mUSD",  weth_addr, musd_addr, 59_345_000_000),    // ~$3,521
+        ("REEF/mUSD",  reef_addr, musd_addr,    135_700_000),     // ~$0.018
+        ("wSOL/MOLT",  wsol_addr, molt_addr, 20_591_000_000),    // ~424 MOLT
+        ("wETH/MOLT",  weth_addr, molt_addr, 91_558_000_000),    // ~8,383 MOLT
+        ("REEF/MOLT",  reef_addr, molt_addr,    207_400_000),     // ~0.043 MOLT
+    ];
+
+    for (label, token_a, token_b, sqrt_price) in &pool_configs {
         let mut args = Vec::with_capacity(106);
         args.push(0x01); // opcode 1 = create_pool
         args.extend_from_slice(&admin); // caller
-        args.extend_from_slice(base); // token_a
-        args.extend_from_slice(quote); // token_b
+        args.extend_from_slice(token_a); // token_a
+        args.extend_from_slice(token_b); // token_b
         args.push(fee_tier);
-        args.extend_from_slice(&initial_sqrt_price.to_le_bytes());
+        args.extend_from_slice(&sqrt_price.to_le_bytes());
 
         if genesis_exec_contract(
             state,
@@ -2380,8 +2459,8 @@ fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey, la
 
     info!("──────────────────────────────────────────────────────");
     info!(
-        "  Genesis pairs: {} pairs, {} pools created",
-        created_pairs, created_pools
+        "  Genesis DEX: {} pairs, {} pools, {} allowed quotes",
+        created_pairs, created_pools, allowed_quotes_set
     );
     info!("──────────────────────────────────────────────────────");
 }

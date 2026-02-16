@@ -547,9 +547,8 @@ async function loadIdentityPanel() {
   const rpcClient = new MoltChainRPC(endpoint);
 
   try {
-    const result = await rpcClient.call('getIdentity', [wallet.address]);
-    const identity = result?.identity || result;
-    if (!identity || !identity.name) {
+    const profile = await rpcClient.call('getMoltyIdProfile', [wallet.address]).catch(() => null);
+    if (!profile || !profile.name) {
       container.innerHTML = `
         <div class="popup-empty-state">
           <i class="fas fa-fingerprint"></i>
@@ -559,15 +558,23 @@ async function loadIdentityPanel() {
       `;
       return;
     }
-    const rep = Number(identity.reputation || 0);
+    const rep = Number(profile.reputation?.score || 0);
+    const moltName = profile.molt_name;
+    const tierName = profile.reputation?.tier_name || 'Newcomer';
+    const skills = Array.isArray(profile.skills) ? profile.skills : [];
+    const vouchesReceived = Array.isArray(profile.vouches?.received) ? profile.vouches.received : [];
+    const repPct = Math.min(100, (rep / 10000) * 100);
     container.innerHTML = `
       <div style="text-align:center;padding:0.75rem 0;">
         <div style="font-size:1.5rem;"><i class="fas fa-fingerprint" style="color:var(--primary);"></i></div>
-        <h4 style="margin:0.5rem 0 0.25rem;">${identity.name}${identity.molt_name ? ' <span style="color:var(--primary);">' + identity.molt_name + '</span>' : ''}</h4>
+        <h4 style="margin:0.5rem 0 0.25rem;">${profile.name}${moltName ? ' <span style="color:var(--primary);">' + moltName + (moltName.endsWith('.molt') ? '' : '.molt') + '</span>' : ''}</h4>
+        <div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.25rem;">${tierName} · ${profile.agent_type_name || 'General'}</div>
         <div style="font-size:0.82rem;color:var(--text-muted);">Reputation: ${rep.toLocaleString()} / 10,000</div>
         <div style="margin-top:0.5rem;height:4px;background:var(--bg-tertiary);border-radius:2px;overflow:hidden;">
-          <div style="height:100%;width:${Math.min(100, rep / 100)}%;background:var(--primary);border-radius:2px;"></div>
+          <div style="height:100%;width:${repPct}%;background:var(--primary);border-radius:2px;"></div>
         </div>
+        ${skills.length > 0 ? `<div style="font-size:0.75rem;color:var(--text-muted);margin-top:0.5rem;">Skills: ${skills.map(s => s.name).join(', ')}</div>` : ''}
+        ${vouchesReceived.length > 0 ? `<div style="font-size:0.75rem;color:var(--text-muted);margin-top:0.25rem;">Vouches: ${vouchesReceived.length} received</div>` : ''}
       </div>
     `;
   } catch {

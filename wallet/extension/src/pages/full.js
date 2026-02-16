@@ -473,9 +473,8 @@ async function loadIdentityTab() {
   container.innerHTML = '<div class="empty-state"><i class="fas fa-spinner fa-spin"></i> Loading MoltyID...</div>';
 
   try {
-    const result = await rpc().call('getIdentity', [wallet.address]);
-    const identity = result?.identity || result;
-    if (!identity || !identity.name) {
+    const profile = await rpc().call('getMoltyIdProfile', [wallet.address]).catch(() => null);
+    if (!profile || !profile.name) {
       container.innerHTML = `
         <div class="empty-state">
           <span class="empty-icon"><i class="fas fa-fingerprint"></i></span>
@@ -485,16 +484,41 @@ async function loadIdentityTab() {
       `;
       return;
     }
-    const rep = Number(identity.reputation || 0);
+    const rep = Number(profile.reputation?.score || 0);
     const repPct = Math.min(100, (rep / 10000) * 100);
+    const moltName = profile.molt_name;
+    const tierName = profile.reputation?.tier_name || 'Newcomer';
+    const agentType = profile.agent_type_name || 'General';
+    const skills = Array.isArray(profile.skills) ? profile.skills : [];
+    const vouchesReceived = Array.isArray(profile.vouches?.received) ? profile.vouches.received : [];
+    const vouchesGiven = Array.isArray(profile.vouches?.given) ? profile.vouches.given : [];
+    const achievements = Array.isArray(profile.achievements) ? profile.achievements : [];
+    const isActive = profile.is_active !== false && profile.is_active !== 0;
+    const agentEndpoint = profile.agent?.endpoint || '';
+    const agentAvailability = profile.agent?.availability_name || 'offline';
+
     container.innerHTML = `
       <div style="text-align:center;padding:1.5rem 0;">
         <div style="font-size:2rem;"><i class="fas fa-fingerprint" style="color:var(--primary);"></i></div>
-        <h3 style="margin:0.75rem 0 0.25rem;">${identity.name}${identity.molt_name ? ' <span style="color:var(--primary);">' + identity.molt_name + '</span>' : ''}</h3>
+        <h3 style="margin:0.75rem 0 0.25rem;">${profile.name}${moltName ? ' <span style="color:var(--primary);">' + moltName + (moltName.endsWith('.molt') ? '' : '.molt') + '</span>' : ''}</h3>
+        <div style="font-size:0.85rem;color:var(--text-muted);margin-bottom:0.25rem;">${tierName} · ${agentType}${isActive ? ' · <span style="color:var(--success);">Active</span>' : ''}</div>
         <div style="font-size:0.9rem;color:var(--text-muted);">Reputation: ${rep.toLocaleString()} / 10,000</div>
         <div style="margin-top:0.75rem;height:6px;background:var(--bg-tertiary);border-radius:3px;overflow:hidden;max-width:300px;margin-left:auto;margin-right:auto;">
           <div style="height:100%;width:${repPct}%;background:var(--primary);border-radius:3px;"></div>
         </div>
+      </div>
+      ${skills.length > 0 ? `
+      <div style="padding:0 1rem 1rem;">
+        <h4 style="font-size:0.85rem;color:var(--text-muted);margin-bottom:0.5rem;"><i class="fas fa-tools"></i> Skills</h4>
+        ${skills.map(s => {
+          const level = Math.max(0, Math.min(5, Math.round((s.proficiency || 0) / 20)));
+          return `<div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.35rem;font-size:0.85rem;"><span style="min-width:80px;">${s.name}</span><div style="flex:1;height:4px;background:var(--bg-tertiary);border-radius:2px;overflow:hidden;"><div style="height:100%;width:${(level/5)*100}%;background:var(--primary);border-radius:2px;"></div></div><span style="color:var(--text-muted);font-size:0.75rem;">${level}/5</span></div>`;
+        }).join('')}
+      </div>` : ''}
+      <div style="display:flex;justify-content:center;gap:1.5rem;padding:0.5rem 1rem;font-size:0.82rem;color:var(--text-muted);">
+        <span><i class="fas fa-handshake"></i> ${vouchesReceived.length} vouches</span>
+        <span><i class="fas fa-award"></i> ${achievements.length} achievements</span>
+        ${agentEndpoint ? `<span><i class="fas fa-satellite-dish"></i> ${agentAvailability}</span>` : ''}
       </div>
     `;
   } catch {
