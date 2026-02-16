@@ -2070,34 +2070,44 @@ function generateEVMAddress(base58Address) {
 
 // Auto-register EVM address on-chain for seamless MetaMask compatibility
 // Sends system instruction opcode 12 with the 20-byte EVM address
+// Flow: localStorage cache → RPC check → tx → cache
 async function registerEvmAddress(wallet, password) {
     try {
-        // On-chain idempotency: query RocksDB via RPC, skip if already registered
+        const cacheKey = `moltEvmRegistered:${wallet.address}`;
+
+        // 1) localStorage cache hit — skip entirely (no RPC, no tx)
+        try { if (localStorage.getItem(cacheKey) === '1') return; } catch (_) {}
+
+        // 2) On-chain check via RPC
         try {
             const existing = await rpc.call('getEvmRegistration', [wallet.address]);
-            if (existing && existing.evmAddress) return; // already registered on-chain
+            if (existing && existing.evmAddress) {
+                // Already registered on-chain — cache locally and return
+                try { localStorage.setItem(cacheKey, '1'); } catch (_) {}
+                return;
+            }
         } catch (_) {} // RPC down — fall through, processor is idempotent anyway
 
-        // Skip EVM registration if account isn't funded yet (imported wallets)
+        // 3) Skip if account not funded yet (imported wallets)
         try {
             const bal = await rpc.getBalance(wallet.address);
             if (!bal || (bal.shells === 0 && !bal.spendable)) return;
-        } catch (_) { return; } // Account doesn't exist on-chain yet
+        } catch (_) { return; }
 
+        // 4) Derive EVM address
         const evmAddress = generateEVMAddress(wallet.address);
         if (!evmAddress || evmAddress === '0x' + '0'.repeat(40)) {
             console.warn('EVM address generation failed, skipping registration');
             return;
         }
 
-        // Strip 0x prefix and decode hex to 20 bytes
+        // 5) Build and send opcode 12 instruction
         const evmHex = evmAddress.slice(2);
         const evmBytes = new Uint8Array(20);
         for (let i = 0; i < 20; i++) {
             evmBytes[i] = parseInt(evmHex.substr(i * 2, 2), 16);
         }
 
-        // Build instruction: opcode 12 + 20-byte EVM address = 21 bytes
         const instructionData = new Uint8Array(21);
         instructionData[0] = 12;
         instructionData.set(evmBytes, 1);
@@ -2125,9 +2135,11 @@ async function registerEvmAddress(wallet, password) {
 
         await rpc.sendTransaction(txBase64);
         console.log('EVM address registered:', evmAddress, '→', wallet.address);
+
+        // 6) Cache after successful registration
+        try { localStorage.setItem(cacheKey, '1'); } catch (_) {}
     } catch (error) {
         // Don't block wallet creation on registration failure
-        // (e.g. network down, account not funded yet)
         console.warn('EVM address registration deferred:', error.message);
     }
 }

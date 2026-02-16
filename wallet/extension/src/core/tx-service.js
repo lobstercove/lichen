@@ -1,4 +1,5 @@
-import { base58Decode, hexToBytes, signTransaction } from './crypto-service.js';
+import { base58Decode, hexToBytes, signTransaction, generateEVMAddress } from './crypto-service.js';
+import { MoltChainRPC, getRpcEndpoint } from './rpc-service.js';
 
 /**
  * Serialize a transaction message using Bincode format (matches Rust bincode::serialize)
@@ -149,4 +150,68 @@ export async function buildSignedSingleInstructionTransaction({
     signatures: [Array.from(signature)],
     message
   };
+}
+
+/**
+ * Register EVM address on-chain for a wallet.
+ * Flow: localStorage cache → RPC check → send tx → cache.
+ * Does NOT block on failure.
+ */
+export async function registerEvmAddress({ wallet, privateKeyHex, network, settings }) {
+  try {
+    const cacheKey = `moltEvmRegistered:${wallet.address}`;
+    // 1) localStorage cache hit — skip entirely
+    if (typeof localStorage !== 'undefined') {
+      try { if (localStorage.getItem(cacheKey) === '1') return; } catch (_) {}
+    }
+
+    const rpcUrl = getRpcEndpoint(network, settings);
+    const rpc = new MoltChainRPC(rpcUrl);
+
+    // 2) On-chain check via RPC
+    try {
+      const existing = await rpc.call('getEvmRegistration', [wallet.address]);
+      if (existing && existing.evmAddress) {
+        // Already registered on-chain — cache and return
+        try { localStorage.setItem(cacheKey, '1'); } catch (_) {}
+        return;
+      }
+    } catch (_) {} // RPC down — fall through, processor is idempotent
+
+    // 3) Skip if account not funded
+    try {
+      const bal = await rpc.getBalance(wallet.address);
+      if (!bal || (bal.shells === 0 && !bal.spendable)) return;
+    } catch (_) { return; }
+
+    // 4) Derive EVM address
+    const evmAddress = generateEVMAddress(wallet.address);
+    if (!evmAddress || evmAddress === '0x' + '0'.repeat(40)) return;
+
+    // 5) Build opcode 12 instruction
+    const evmHex = evmAddress.slice(2);
+    const evmBytes = new Uint8Array(20);
+    for (let i = 0; i < 20; i++) evmBytes[i] = parseInt(evmHex.substr(i * 2, 2), 16);
+
+    const instructionData = new Uint8Array(21);
+    instructionData[0] = 12;
+    instructionData.set(evmBytes, 1);
+
+    const block = await rpc.getLatestBlock();
+    const tx = await buildSignedSingleInstructionTransaction({
+      privateKeyHex,
+      fromPublicKeyHex: wallet.publicKey,
+      blockhash: block.hash,
+      instructionDataBytes: instructionData
+    });
+
+    const txBase64 = encodeTransactionBase64(tx);
+    await rpc.sendTransaction(txBase64);
+    console.log('EVM address registered:', evmAddress, '→', wallet.address);
+
+    // 6) Cache after successful registration
+    try { localStorage.setItem(cacheKey, '1'); } catch (_) {}
+  } catch (err) {
+    console.warn('EVM registration deferred:', err.message);
+  }
 }
