@@ -871,7 +871,16 @@ pub fn unpause_pair(caller: *const u8, pair_id: u64) -> u32 {
 /// Place an order on the order book
 /// Returns: 0=success, 1=paused, 2=pair not found, 3=pair not active,
 ///          4=invalid params, 5=too many orders, 6=reentrancy,
-///          7=post-only would cross, 8=expired order
+///          7=post-only would cross, 8=expired order,
+///          9=market order slippage exceeded (zero fills at worst-price bound)
+///
+/// AUDIT-FIX M10: For market orders (order_type == ORDER_MARKET), the `price`
+/// field serves as a worst-price bound:
+///   - BUY market: `price` = maximum price willing to pay (0 = no limit)
+///   - SELL market: `price` = minimum price willing to accept (0 = no limit)
+/// The matching engine already enforces `price >= best_ask` (buy) and
+/// `price <= best_bid` (sell), so passing a non-zero price activates
+/// slippage protection with no engine changes.
 pub fn place_order(
     trader: *const u8,
     pair_id: u64,
@@ -935,8 +944,14 @@ pub fn place_order(
     }
 
     // Notional value check
+    // AUDIT-FIX M10: For market orders with a worst-price bound, use
+    // worst-price for notional estimation (more accurate than raw quantity).
     let notional = if order_type == ORDER_MARKET {
-        quantity
+        if price > 0 {
+            (price as u128 * quantity as u128 / 1_000_000_000) as u64
+        } else {
+            quantity
+        }
     } else {
         (price as u128 * quantity as u128 / 1_000_000_000) as u64
     };
@@ -1026,6 +1041,13 @@ pub fn place_order(
             },
         );
         storage_set(&order_key(new_order_id), &od);
+
+        // AUDIT-FIX M10: If market order got zero fills and had a worst-price
+        // bound, return slippage error so caller knows the bound was hit.
+        if filled == 0 && price > 0 {
+            reentrancy_exit();
+            return 9;
+        }
     }
 
     reentrancy_exit();

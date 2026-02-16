@@ -87,6 +87,10 @@ struct CustodyConfig {
     rebalance_target_bps: u64,    // swap to reach this ratio (e.g. 5000 = 50/50)
     jupiter_api_url: Option<String>, // Solana DEX aggregator for USDT↔USDC swaps
     uniswap_router: Option<String>, // Ethereum DEX router for USDT↔USDC swaps
+    /// AUDIT-FIX M14: Max tolerable slippage (bps) for rebalance swaps.
+    /// Swaps exceeding this are rejected; unverifiable outputs are not credited.
+    /// Set via CUSTODY_REBALANCE_MAX_SLIPPAGE_BPS (default: 50 = 0.5%).
+    rebalance_max_slippage_bps: u64,
     deposit_ttl_secs: i64,        // Expire unfunded deposits after this many seconds (default: 24h)
     /// C8 fix: Secret master seed for key derivation (HMAC-SHA256 instead of plain SHA256).
     /// Load from CUSTODY_MASTER_SEED env var. Required for production.
@@ -831,6 +835,11 @@ fn load_config() -> CustodyConfig {
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .unwrap_or(5000);
+    // AUDIT-FIX M14: configurable max slippage for rebalance swaps (default 50 bps = 0.5%)
+    let rebalance_max_slippage_bps = std::env::var("CUSTODY_REBALANCE_MAX_SLIPPAGE_BPS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(50);
     let jupiter_api_url = std::env::var("CUSTODY_JUPITER_API_URL").ok();
     let uniswap_router = std::env::var("CUSTODY_UNISWAP_ROUTER").ok();
     let deposit_ttl_secs = std::env::var("CUSTODY_DEPOSIT_TTL_SECS")
@@ -876,6 +885,7 @@ fn load_config() -> CustodyConfig {
         weth_contract_addr,
         rebalance_threshold_bps,
         rebalance_target_bps,
+        rebalance_max_slippage_bps,
         jupiter_api_url,
         uniswap_router,
         deposit_ttl_secs,
@@ -4297,9 +4307,30 @@ async fn process_rebalance_jobs(state: &CustodyState) -> Result<(), String> {
                 _ => None,
             };
 
-            // Use parsed output if available; fall back to input amount with a warning
+            // AUDIT-FIX M14: Validate swap output against max slippage tolerance.
+            // If output is unparseable, mark job as "unverified" — do NOT assume 1:1.
             let credit_amount = match actual_output {
                 Some(output) => {
+                    if job.amount > 0 {
+                        let slippage_bps = (job.amount.saturating_sub(output) as u128 * 10_000 / job.amount as u128) as u64;
+                        if slippage_bps > state.config.rebalance_max_slippage_bps {
+                            tracing::error!(
+                                "rebalance slippage {}bps exceeds max {}bps: input={} output={} (job={})",
+                                slippage_bps, state.config.rebalance_max_slippage_bps,
+                                job.amount, output, job.job_id
+                            );
+                            job.status = "slippage_exceeded".to_string();
+                            store_rebalance_job(&state.db, &job)?;
+                            record_audit_event(
+                                &state.db,
+                                "rebalance_slippage_exceeded",
+                                &job.job_id,
+                                None,
+                                job.swap_tx_hash.as_deref(),
+                            )?;
+                            continue;
+                        }
+                    }
                     if output != job.amount {
                         info!(
                             "rebalance swap output differs from input: input={} output={} (job={})",
@@ -4310,11 +4341,20 @@ async fn process_rebalance_jobs(state: &CustodyState) -> Result<(), String> {
                 }
                 None => {
                     tracing::warn!(
-                        "could not parse swap output for job {}, falling back to input amount {}",
+                        "could not parse swap output for job {}, marking unverified (NOT crediting assumed amount {})",
                         job.job_id,
                         job.amount
                     );
-                    job.amount
+                    job.status = "unverified".to_string();
+                    store_rebalance_job(&state.db, &job)?;
+                    record_audit_event(
+                        &state.db,
+                        "rebalance_output_unverified",
+                        &job.job_id,
+                        None,
+                        job.swap_tx_hash.as_deref(),
+                    )?;
+                    continue;
                 }
             };
 
@@ -4395,11 +4435,13 @@ async fn execute_solana_rebalance_swap(
 
     // Step 1: Get Jupiter quote
     let quote_url = format!(
-        "{}/quote?inputMint={}&outputMint={}&amount={}&slippageBps=10",
+        // AUDIT-FIX M14: configurable slippage tolerance for Jupiter quotes
+        "{}/quote?inputMint={}&outputMint={}&amount={}&slippageBps={}",
         jupiter_url.trim_end_matches('/'),
         from_mint,
         to_mint,
-        job.amount
+        job.amount,
+        state.config.rebalance_max_slippage_bps
     );
     let quote_resp = state
         .http
@@ -4528,6 +4570,7 @@ async fn execute_ethereum_rebalance_swap(
         _to_contract,
         job.amount as u128,
         100, // fee tier 0.01%
+        state.config.rebalance_max_slippage_bps,
     )?;
     let swap_tx = build_evm_signed_transaction_with_data(
         &signing_key,
@@ -4577,6 +4620,7 @@ fn build_uniswap_exact_input_single(
     token_out: &str,
     amount_in: u128,
     fee: u32,
+    max_slippage_bps: u64,
 ) -> Result<Vec<u8>, String> {
     let mut data = Vec::with_capacity(228);
     // exactInputSingle(ExactInputSingleParams) selector: 0x414bf389
@@ -4612,8 +4656,8 @@ fn build_uniswap_exact_input_single(
     amount_padded.extend_from_slice(&amount_in.to_be_bytes());
     data.extend_from_slice(&amount_padded);
 
-    // amountOutMinimum (uint256) — allow 0.1% slippage for stablecoin swap
-    let min_out = amount_in * 999 / 1000;
+    // AUDIT-FIX M14: configurable slippage for Uniswap rebalance swaps
+    let min_out = amount_in * (10_000u128 - max_slippage_bps as u128) / 10_000u128;
     let mut min_padded = vec![0u8; 16];
     min_padded.extend_from_slice(&min_out.to_be_bytes());
     data.extend_from_slice(&min_padded);

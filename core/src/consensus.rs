@@ -550,7 +550,8 @@ impl StakeInfo {
         if total_bootstrap == 0 {
             return 100;
         }
-        (self.earned_amount * 100) / total_bootstrap
+        // AUDIT-FIX M8: u128 intermediate for overflow safety
+        (self.earned_amount as u128 * 100 / total_bootstrap as u128) as u64
     }
 
     /// Calculate staking APY based on current stake and total staked
@@ -561,7 +562,8 @@ impl StakeInfo {
         // APY = (annual_inflation / total_staked) * 100
         // Higher stake concentration = lower individual APY
         // AUDIT-FIX 3.3: APY is display-only (not consensus-critical), f64 is acceptable
-        let annual_rewards = (BLOCK_REWARD * SLOTS_PER_YEAR) as f64;
+        // AUDIT-FIX M8: u128 intermediate before f64 cast
+        let annual_rewards = (BLOCK_REWARD as u128 * SLOTS_PER_YEAR as u128) as f64;
         (annual_rewards / total_staked as f64) * 100.0
     }
 
@@ -2429,17 +2431,19 @@ impl SlashingTracker {
                     }
                     SlashingOffense::DoubleVote { .. } => {
                         // Slash 30% of stake for double voting
+                        // AUDIT-FIX M8: u128 intermediate for overflow safety
                         stake_pool
                             .get_stake(validator)
-                            .map(|s| s.total_stake() * 30 / 100)
+                            .map(|s| (s.total_stake() as u128 * 30 / 100) as u64)
                             .unwrap_or(0)
                     }
                     SlashingOffense::Downtime { missed_slots, .. } => {
                         // Slash proportional to downtime (max 10%)
                         let downtime_penalty = (missed_slots / 100).min(10); // 1% per 100 slots, max 10%
+                        // AUDIT-FIX M8: u128 intermediate for overflow safety
                         stake_pool
                             .get_stake(validator)
-                            .map(|s| s.total_stake() * downtime_penalty / 100)
+                            .map(|s| (s.total_stake() as u128 * downtime_penalty as u128 / 100) as u64)
                             .unwrap_or(0)
                     }
                     SlashingOffense::InvalidStateTransition { .. } => {
@@ -2451,9 +2455,10 @@ impl SlashingTracker {
                     }
                     SlashingOffense::Censorship { .. } => {
                         // Slash 25% of stake for censorship attack (per whitepaper)
+                        // AUDIT-FIX M8: u128 intermediate for overflow safety
                         stake_pool
                             .get_stake(validator)
-                            .map(|s| s.total_stake() * 25 / 100)
+                            .map(|s| (s.total_stake() as u128 * 25 / 100) as u64)
                             .unwrap_or(0)
                     }
                     SlashingOffense::Collusion { .. } => {
