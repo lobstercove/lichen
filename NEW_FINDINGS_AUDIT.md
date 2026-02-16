@@ -15,7 +15,7 @@ Out of 6 reported findings:
 - **Not reproducible / incorrect as stated**: 2
 
 ### Final severity after counter-audit
-- **HIGH**: 1 (`NEW-H2`)
+- **HIGH**: 1 (`NEW-H2`) — **FIXED** (commit bcc34e9)
 - **MEDIUM**: 1 (`NEW-M1`)
 - **LOW**: 2 (`NEW-M2`, `NEW-L1`)
 - **INVALID / CLOSED**: 2 (`NEW-H1`, `NEW-H3`)
@@ -48,7 +48,8 @@ Out of 6 reported findings:
 
 ## NEW-H2 — DEX Margin required margin math
 **Original claim**: HIGH (precision loss)  
-**Counter-audit verdict**: **CONFIRMED HIGH (but root cause is logic/design mismatch, not just rounding)**
+**Counter-audit verdict**: **CONFIRMED HIGH (but root cause is logic/design mismatch, not just rounding)**  
+**Status**: **FIXED** (commit bcc34e9) — Removed `/ leverage` from `required_margin` calculation in `contracts/dex_margin/src/lib.rs`. The tier table's `initial_margin_bps` already encodes leverage-dependent requirements, so the extra division was double-applying the discount.
 
 ### What code does
 - Tier table already encodes leverage-dependent margin requirements (`initial_margin_bps`).
@@ -135,7 +136,7 @@ Out of 6 reported findings:
 ## Corrected Risk Summary
 
 1. **Priority 0 (fix first)**
-   - `NEW-H2` (margin admission math/policy mismatch)
+   - ~~`NEW-H2` (margin admission math/policy mismatch)~~ **FIXED** (commit bcc34e9)
 
 2. **Priority 1**
    - `NEW-M1` (long-inactivity decay cap semantics)

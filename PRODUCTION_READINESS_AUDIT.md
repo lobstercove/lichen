@@ -13,8 +13,8 @@ The previous report is **partly stale and overstated in several areas**. Many cl
 
 ### Revalidated Status Summary (all listed tasks)
 
-- **Critical (12):** `Fixed/Mitigated: 8`, `Partially Open: 3`, `Mostly Mitigated but feature-risk remains: 1`
-- **High (18):** `Fixed/Mitigated: 11`, `Partially Open: 3`, `Outdated/Not Present: 4`
+- **Critical (12):** `Fixed/Mitigated: 10`, `Partially Open: 1`, `Mostly Mitigated but feature-risk remains: 1`
+- **High (18):** `Fixed/Mitigated: 12`, `Partially Open: 2`, `Outdated/Not Present: 4`
 - **Medium (20):** `Fixed/Mitigated: 10`, `Open/Partially Open: 6`, `Outdated/Not Verifiable from listed claim: 4`
 - **Low (7):** Mostly process/operational; only partially code-verifiable
 
@@ -40,8 +40,8 @@ The previous report is **partly stale and overstated in several areas**. Many cl
 | C1 | **Fixed** | Voter pubkeys are deduped and deterministically sorted before remainder allocation in `validator/src/main.rs` fee distribution. |
 | C2 | **Fixed** | `delegate()` now increases `total_staked`; `undelegate()` decreases it in `core/src/consensus.rs`. Denominator/numerator mismatch claim is stale. |
 | C3 | **Fixed** | Batch and non-batch EVM tx/receipt writes now use `bincode` and match read path in `core/src/state.rs`. |
-| C4 | **Partially Open** | Remote announce flow now attempts treasury debit before bootstrap account creation, but stake-pool bootstrap credit can still occur before funding success in announcement handler (`validator/src/main.rs` + `core/src/consensus.rs`). |
-| C5 | **Partially Open** | `StatusResponse` updates are bounded, but `note_seen(block_slot)` still updates from incoming block stream before validator-set membership/stake admission, so fork-choice pressure via high-slot blocks is still plausible. |
+| C4 | **Fixed** | AUDIT-FIX C4/H13 (commit bcc34e9): Bootstrap flow restructured — treasury debit now happens BEFORE stake pool credit. Self-funded validators stake immediately; bootstrap validators only get stake pool entry after successful treasury debit, with rollback on failure. |
+| C5 | **Fixed** | AUDIT-FIX C5 (commit bcc34e9): Blocks from non-member validators are now rejected before `note_seen` and fork-choice. Validator-set membership check added after signature/structure validation, before equivocation detection and sync target update. |
 | C6 | **Fixed** | `verify_threshold()` deduplicates signers via `HashSet` before threshold check in `core/src/multisig.rs`. |
 | C7 | **Partially Open** | Fork rollback now includes `revert_block_transactions`, but it is best-effort and explicitly logs non-revertible instructions (contracts/NFT/staking) as unsafe without full snapshot rollback. |
 | C8 | **Mitigated** | Key derivation moved to HMAC(master_seed, path) and production enforces `CUSTODY_MASTER_SEED` (unless explicit insecure dev flag). Not full HSM/BIP32 hardening yet. |
@@ -68,7 +68,7 @@ The previous report is **partly stale and overstated in several areas**. Many cl
 | H10 | **Fixed** | Weighted leader selection uses non-zero weight floor and `u128` intermediates; truncation-to-zero claim is stale for current logic. |
 | H11 | **Fixed** | `UNSTAKE_COOLDOWN_SLOTS` is `1_512_000` in `core/src/consensus.rs`. |
 | H12 | **Fixed/Mitigated** | Reward application path now handles liquid/debt split correctly and avoids earlier liquid==0 fallback issue in validator reward credit logic. |
-| H13 | **Partially Open** | On-chain stake check exists for some paths, but announce handling can still create stake-pool bootstrap representation ahead of confirmed treasury-funded account state. |
+| H13 | **Fixed** | AUDIT-FIX C4/H13 (commit bcc34e9): Stake pool bootstrap entry is now gated on successful treasury debit. If treasury debit fails, no stake pool entry is created. If stake pool entry fails after debit, treasury is reversed. |
 | H14 | **Fixed** | CORS now performs exact hostname allowlisting in `rpc/src/lib.rs` (no `starts_with` bypass pattern). |
 | H15 | **Fixed** | Solana tx cache insertion now occurs only after successful submit in `handle_solana_send_transaction`. |
 | H16 | **Outdated/Not Present (as written)** | `force_slot_advance` / `inject_transaction` endpoints are not present. Related state-mutating admin RPC exists but is token-protected; single-validator guard is applied to some, not all mutators. |
@@ -233,8 +233,8 @@ Consolidation policy: **single source of truth = this file** (`PRODUCTION_READIN
 ### What still blocks confident adversarial launch
 
 1. Fork/reorg rollback correctness for non-transfer side effects (`C7`).
-2. Bootstrap/announce atomic trust and accounting coupling (`C4/H13`).
-3. Highest-seen/fork-choice trust boundary hardening (`C5`).
+2. ~~Bootstrap/announce atomic trust and accounting coupling (`C4/H13`).~~ **FIXED** (commit bcc34e9)
+3. ~~Highest-seen/fork-choice trust boundary hardening (`C5`).~~ **FIXED** (commit bcc34e9)
 4. Policy/security hardening (timelock, staleness, persistence, concurrency) (`M12`, `M20`, `M7`, `H6`, `H17`, plus `M10/M14`).
 
 ---
