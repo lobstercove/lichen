@@ -101,6 +101,9 @@ def u32le(v: int) -> bytes:
 def u16le(v: int) -> bytes:
     return struct.pack("<H", v & 0xFFFF)
 
+def i32le(v: int) -> bytes:
+    return struct.pack("<i", v)
+
 def i16le(v: int) -> bytes:
     return struct.pack("<h", v)
 
@@ -884,11 +887,39 @@ def build_opcode_scenarios(
             # opcode 9: emergency_unpause(caller 32B)
             {"label": "dex_core.emergency_unpause", "args": bytes([9]) + admin},
         ],
-        # ─── DEX_AMM (2 dispatch opcodes + separate initialize) ───
+        # ─── DEX_AMM (16 dispatch opcodes) ───
         "dex_amm": [
             {"label": "dex_amm.initialize", "args": bytes([0]) + admin},
-            # opcode 1: create_pool(caller 32B, token_a 32B, token_b 32B, fee_tier 8B, initial_sqrt_price 8B)
-            {"label": "dex_amm.create_pool", "args": bytes([1]) + admin + weth_bytes + molt_bytes + u64le(0) + u64le(1_000_000_000)},
+            # opcode 1: create_pool(caller[32]+token_a[32]+token_b[32]+fee_tier(1)+sqrt_price(u64))
+            {"label": "dex_amm.create_pool", "args": bytes([1]) + admin + weth_bytes + molt_bytes + bytes([1]) + u64le(1 << 32)},
+            # opcode 2: set_pool_protocol_fee(caller[32]+pool_id(u64)+fee_percent(1))
+            {"label": "dex_amm.set_protocol_fee", "args": bytes([2]) + admin + u64le(1) + bytes([10])},
+            # opcode 3: add_liquidity(provider[32]+pool_id(u64)+lower_tick(i32)+upper_tick(i32)+amount_a(u64)+amount_b(u64))
+            {"label": "dex_amm.add_liquidity", "args": bytes([3]) + admin + u64le(1) + i32le(-100) + i32le(100) + u64le(1_000_000) + u64le(1_000_000)},
+            # opcode 10: get_pool_info(pool_id(u64))
+            {"label": "dex_amm.get_pool_info", "args": bytes([10]) + u64le(1)},
+            # opcode 11: get_position(position_id(u64))
+            {"label": "dex_amm.get_position", "args": bytes([11]) + u64le(1)},
+            # opcode 12: get_pool_count()
+            {"label": "dex_amm.get_pool_count", "args": bytes([12])},
+            # opcode 13: get_position_count()
+            {"label": "dex_amm.get_position_count", "args": bytes([13])},
+            # opcode 14: get_tvl(pool_id(u64))
+            {"label": "dex_amm.get_tvl", "args": bytes([14]) + u64le(1)},
+            # opcode 15: quote_swap(pool_id(u64)+is_token_a_in(1)+amount_in(u64))
+            {"label": "dex_amm.quote_swap", "args": bytes([15]) + u64le(1) + bytes([1]) + u64le(10_000)},
+            # opcode 6: swap_exact_in(trader[32]+pool_id(u64)+is_token_a_in(1)+amount_in(u64)+min_out(u64)+deadline(u64))
+            {"label": "dex_amm.swap_exact_in", "args": bytes([6]) + admin + u64le(1) + bytes([1]) + u64le(10_000) + u64le(0) + u64le(0)},
+            # opcode 7: swap_exact_out(trader[32]+pool_id(u64)+is_token_a_out(1)+amount_out(u64)+max_in(u64)+deadline(u64))
+            {"label": "dex_amm.swap_exact_out", "args": bytes([7]) + admin + u64le(1) + bytes([1]) + u64le(100) + u64le(50_000) + u64le(0)},
+            # opcode 5: collect_fees(provider[32]+position_id(u64))
+            {"label": "dex_amm.collect_fees", "args": bytes([5]) + admin + u64le(1)},
+            # opcode 4: remove_liquidity(provider[32]+position_id(u64)+liquidity_amount(u64))
+            {"label": "dex_amm.remove_liquidity", "args": bytes([4]) + admin + u64le(1) + u64le(500)},
+            # opcode 8: emergency_pause(caller[32])
+            {"label": "dex_amm.emergency_pause", "args": bytes([8]) + admin},
+            # opcode 9: emergency_unpause(caller[32])
+            {"label": "dex_amm.emergency_unpause", "args": bytes([9]) + admin},
         ],
         # ─── DEX_ANALYTICS (9 opcodes) ───
         "dex_analytics": [
