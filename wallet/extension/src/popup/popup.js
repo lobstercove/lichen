@@ -661,6 +661,7 @@ async function handleSendNow() {
 
     await notify('MoltWallet', 'Transaction submitted successfully');
     setStatus(`Sent • ${String(txSig).slice(0, 12)}...`);
+    document.getElementById('sendTo').value = '';
     document.getElementById('sendAmount').value = '';
     document.getElementById('sendPassword').value = '';
     await refreshBalance();
