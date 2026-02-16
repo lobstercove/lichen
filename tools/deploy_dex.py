@@ -296,7 +296,30 @@ async def phase_initialize_dex(
                 print(f"  ✅ create_pair({base}/{quote}) — sig={sig}")
             except Exception as e:
                 print(f"  ⚠️  create_pair({base}/{quote}) failed: {e}")
+        # Set allowed quote tokens: mUSD + MOLT (for dual-quote trading)
+        print(f"\n  --- Setting allowed quote tokens (mUSD + MOLT) ---")
+        for symbol in ["mUSD", "MOLT"]:
+            try:
+                sig = await call_contract(
+                    conn, deployer, addrs["dex_core"], "add_allowed_quote",
+                    {"symbol": symbol}
+                )
+                print(f"  \u2705 add_allowed_quote({symbol}) \u2014 sig={sig}")
+            except Exception as e:
+                print(f"  \u26a0\ufe0f  add_allowed_quote({symbol}) failed: {e}")
 
+    # Set allowed quotes on dex_governance too
+    if "dex_governance" in addrs:
+        print(f"\n  --- Setting governance allowed quote tokens ---")
+        for symbol in ["mUSD", "MOLT"]:
+            try:
+                sig = await call_contract(
+                    conn, deployer, addrs["dex_governance"], "add_allowed_quote",
+                    {"symbol": symbol}
+                )
+                print(f"  \u2705 dex_governance.add_allowed_quote({symbol}) \u2014 sig={sig}")
+            except Exception as e:
+                print(f"  \u26a0\ufe0f  dex_governance.add_allowed_quote({symbol}) failed: {e}")
     # Wire dex_amm to dex_core
     if "dex_amm" in addrs and "dex_core" in addrs:
         try:

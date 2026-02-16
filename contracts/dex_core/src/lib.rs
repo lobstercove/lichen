@@ -91,6 +91,8 @@ const ORDER_COUNT_KEY: &[u8] = b"dex_order_count";
 const TRADE_COUNT_KEY: &[u8] = b"dex_trade_count";
 const FEE_TREASURY_KEY: &[u8] = b"dex_fee_treasury";
 const PREFERRED_QUOTE_KEY: &[u8] = b"dex_preferred_quote";
+const ALLOWED_QUOTE_COUNT_KEY: &[u8] = b"dex_aq_count";
+const MAX_ALLOWED_QUOTES: u64 = 8;
 
 // ============================================================================
 // HELPERS
@@ -603,9 +605,33 @@ pub extern "C" fn initialize(admin: *const u8) -> u32 {
     0
 }
 
+fn allowed_quote_key(idx: u64) -> Vec<u8> {
+    let mut k = b"dex_aq_".to_vec();
+    k.extend_from_slice(&u64_to_bytes(idx));
+    k
+}
+
+fn is_allowed_quote(addr: &[u8; 32]) -> bool {
+    let count = load_u64(ALLOWED_QUOTE_COUNT_KEY);
+    if count > 0 {
+        for i in 0..count {
+            if load_addr(&allowed_quote_key(i)) == *addr {
+                return true;
+            }
+        }
+        return false;
+    }
+    // Legacy fallback: check single preferred_quote
+    let preferred = load_addr(PREFERRED_QUOTE_KEY);
+    if is_zero(&preferred) {
+        return true; // No restrictions
+    }
+    *addr == preferred
+}
+
 /// Set the preferred quote token address (admin only).
-/// Once set, all new trading pairs must use this address as quote_token.
-/// Intended for mUSD address — enforces TOKEN/mUSD convention.
+/// Legacy API — clears allowed quotes list and sets a single allowed quote.
+/// Use add_allowed_quote() for multi-quote support (e.g. mUSD + MOLT).
 /// Returns: 0=success, 1=not admin, 2=zero address
 pub fn set_preferred_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
     let mut c = [0u8; 32];
@@ -620,9 +646,74 @@ pub fn set_preferred_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
     if is_zero(&q) {
         return 2;
     }
+    // Clear existing allowed quotes
+    let old_count = load_u64(ALLOWED_QUOTE_COUNT_KEY);
+    for i in 0..old_count {
+        storage_set(&allowed_quote_key(i), &[0u8; 32]);
+    }
+    // Set as the sole allowed quote
+    storage_set(&allowed_quote_key(0), &q);
+    save_u64(ALLOWED_QUOTE_COUNT_KEY, 1);
+    // Also set legacy key for get_preferred_quote compat
     storage_set(PREFERRED_QUOTE_KEY, &q);
-    log_info("Preferred quote token set");
+    log_info("Preferred quote token set (single)");
     0
+}
+
+/// Add an allowed quote token (admin only).
+/// Pairs can be created with any quote token in the allowed list.
+/// If the list is empty, any quote token is accepted.
+/// Returns: 0=success, 1=not admin, 2=zero address, 3=already in list, 4=max reached
+pub fn add_allowed_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
+    let mut c = [0u8; 32];
+    let mut q = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(quote_addr, q.as_mut_ptr(), 32);
+    }
+    if !require_admin(&c) { return 1; }
+    if is_zero(&q) { return 2; }
+    let count = load_u64(ALLOWED_QUOTE_COUNT_KEY);
+    for i in 0..count {
+        if load_addr(&allowed_quote_key(i)) == q { return 3; }
+    }
+    if count >= MAX_ALLOWED_QUOTES { return 4; }
+    storage_set(&allowed_quote_key(count), &q);
+    save_u64(ALLOWED_QUOTE_COUNT_KEY, count + 1);
+    log_info("Allowed quote token added");
+    0
+}
+
+/// Remove an allowed quote token (admin only).
+/// Returns: 0=success, 1=not admin, 2=not found
+pub fn remove_allowed_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
+    let mut c = [0u8; 32];
+    let mut q = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(quote_addr, q.as_mut_ptr(), 32);
+    }
+    if !require_admin(&c) { return 1; }
+    let count = load_u64(ALLOWED_QUOTE_COUNT_KEY);
+    for i in 0..count {
+        if load_addr(&allowed_quote_key(i)) == q {
+            // Swap with last and shrink
+            if i < count - 1 {
+                let last = load_addr(&allowed_quote_key(count - 1));
+                storage_set(&allowed_quote_key(i), &last);
+            }
+            storage_set(&allowed_quote_key(count - 1), &[0u8; 32]);
+            save_u64(ALLOWED_QUOTE_COUNT_KEY, count - 1);
+            log_info("Allowed quote token removed");
+            return 0;
+        }
+    }
+    2
+}
+
+/// Get the number of allowed quote tokens.
+pub fn get_allowed_quote_count() -> u64 {
+    load_u64(ALLOWED_QUOTE_COUNT_KEY)
 }
 
 /// Create a new trading pair
@@ -669,11 +760,10 @@ pub fn create_pair(
         return 4;
     }
 
-    // If a preferred quote token is set, enforce it
-    let preferred = load_addr(PREFERRED_QUOTE_KEY);
-    if !is_zero(&preferred) && qt != preferred {
+    // Enforce allowed quote tokens (supports multiple: e.g. mUSD + MOLT)
+    if !is_allowed_quote(&qt) {
         reentrancy_exit();
-        log_info("create_pair rejected: quote token must be preferred quote (mUSD)");
+        log_info("create_pair rejected: quote token not in allowed quotes list");
         return 6;
     }
 
@@ -1618,6 +1708,24 @@ pub extern "C" fn call() {
             if args.len() >= 9 {
                 get_order(bytes_to_u64(&args[1..9]));
             }
+        }
+        21 => {
+            // add_allowed_quote(caller[32] + quote_addr[32])
+            if args.len() >= 1 + 32 + 32 {
+                let result = add_allowed_quote(args[1..33].as_ptr(), args[33..65].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+            }
+        }
+        22 => {
+            // remove_allowed_quote(caller[32] + quote_addr[32])
+            if args.len() >= 1 + 32 + 32 {
+                let result = remove_allowed_quote(args[1..33].as_ptr(), args[33..65].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+            }
+        }
+        23 => {
+            // get_allowed_quote_count
+            moltchain_sdk::set_return_data(&u64_to_bytes(get_allowed_quote_count()));
         }
         _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
     }
@@ -2584,6 +2692,7 @@ mod tests {
         let musd = [42u8; 32];
         assert_eq!(set_preferred_quote(admin.as_ptr(), musd.as_ptr()), 0);
         assert_eq!(get_preferred_quote(), 1); // 1 = preferred is set
+        assert_eq!(get_allowed_quote_count(), 1); // sets exactly one allowed
     }
 
     #[test]
@@ -2633,6 +2742,52 @@ mod tests {
             ),
             6
         );
+    }
+
+    #[test]
+    fn test_add_allowed_quote() {
+        let admin = setup();
+        let musd = [42u8; 32];
+        let molt = [43u8; 32];
+        assert_eq!(add_allowed_quote(admin.as_ptr(), musd.as_ptr()), 0);
+        assert_eq!(add_allowed_quote(admin.as_ptr(), molt.as_ptr()), 0);
+        assert_eq!(get_allowed_quote_count(), 2);
+        // Duplicate rejected
+        assert_eq!(add_allowed_quote(admin.as_ptr(), musd.as_ptr()), 3);
+    }
+
+    #[test]
+    fn test_remove_allowed_quote() {
+        let admin = setup();
+        let musd = [42u8; 32];
+        let molt = [43u8; 32];
+        add_allowed_quote(admin.as_ptr(), musd.as_ptr());
+        add_allowed_quote(admin.as_ptr(), molt.as_ptr());
+        assert_eq!(get_allowed_quote_count(), 2);
+        assert_eq!(remove_allowed_quote(admin.as_ptr(), musd.as_ptr()), 0);
+        assert_eq!(get_allowed_quote_count(), 1);
+        // Not found
+        assert_eq!(remove_allowed_quote(admin.as_ptr(), musd.as_ptr()), 2);
+    }
+
+    #[test]
+    fn test_dual_quote_enforcement() {
+        let admin = setup();
+        let musd = [42u8; 32];
+        let molt = [43u8; 32];
+        let wrong = [99u8; 32];
+        // Add both mUSD and MOLT as allowed quotes
+        add_allowed_quote(admin.as_ptr(), musd.as_ptr());
+        add_allowed_quote(admin.as_ptr(), molt.as_ptr());
+        let base1 = [10u8; 32];
+        let base2 = [11u8; 32];
+        let base3 = [12u8; 32];
+        // TOKEN/mUSD → OK
+        assert_eq!(create_pair(admin.as_ptr(), base1.as_ptr(), musd.as_ptr(), 1000, 100, 1000), 0);
+        // TOKEN/MOLT → OK
+        assert_eq!(create_pair(admin.as_ptr(), base2.as_ptr(), molt.as_ptr(), 1000, 100, 1000), 0);
+        // TOKEN/random → rejected
+        assert_eq!(create_pair(admin.as_ptr(), base3.as_ptr(), wrong.as_ptr(), 1000, 100, 1000), 6);
     }
 
     #[test]

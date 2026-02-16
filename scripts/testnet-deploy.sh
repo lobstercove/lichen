@@ -195,6 +195,10 @@ async def go():
             {'pair_id': 1, 'fee_bps': 30, 'sqrt_price': 13_360_000_000}, # wSOL/mUSD ~178
             {'pair_id': 2, 'fee_bps': 30, 'sqrt_price': 59_345_000_000}, # wETH/mUSD ~3521
             {'pair_id': 3, 'fee_bps': 30, 'sqrt_price': 135_700_000},   # REEF/mUSD ~0.018
+            # MOLT-denominated pools
+            {'pair_id': 4, 'fee_bps': 30, 'sqrt_price': 20_591_000_000},  # wSOL/MOLT ~424
+            {'pair_id': 5, 'fee_bps': 30, 'sqrt_price': 91_558_000_000},  # wETH/MOLT ~8383
+            {'pair_id': 6, 'fee_bps': 30, 'sqrt_price': 207_400_000},     # REEF/MOLT ~0.043
         ]
         for pool in pools:
             try:

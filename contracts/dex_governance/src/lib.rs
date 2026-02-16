@@ -37,6 +37,8 @@ const MIN_LISTING_HOLDERS: u64 = 10;
 const MAX_PROPOSALS: u64 = 500;
 
 const PREFERRED_QUOTE_KEY: &[u8] = b"gov_preferred_quote";
+const ALLOWED_QUOTE_COUNT_KEY: &[u8] = b"gov_aq_count";
+const MAX_ALLOWED_QUOTES: u64 = 8;
 
 // Proposal types
 const PROPOSAL_NEW_PAIR: u8 = 0;
@@ -84,6 +86,29 @@ fn load_addr(key: &[u8]) -> [u8; 32] {
 }
 fn is_zero(addr: &[u8; 32]) -> bool {
     addr.iter().all(|&b| b == 0)
+}
+
+fn allowed_quote_key(idx: u64) -> Vec<u8> {
+    let mut k = b"gov_aq_".to_vec();
+    k.extend_from_slice(&u64_to_bytes(idx));
+    k
+}
+
+fn is_allowed_quote(addr: &[u8; 32]) -> bool {
+    let count = load_u64(ALLOWED_QUOTE_COUNT_KEY);
+    if count > 0 {
+        for i in 0..count {
+            if load_addr(&allowed_quote_key(i)) == *addr {
+                return true;
+            }
+        }
+        return false;
+    }
+    let preferred = load_addr(PREFERRED_QUOTE_KEY);
+    if is_zero(&preferred) {
+        return true;
+    }
+    *addr == preferred
 }
 
 fn u64_to_decimal(mut n: u64) -> Vec<u8> {
@@ -285,7 +310,7 @@ pub extern "C" fn initialize(admin: *const u8) -> u32 {
 }
 
 /// Set the preferred quote token (admin only).
-/// All new pair proposals will be validated against this address.
+/// Legacy API — clears allowed quotes list and sets a single allowed quote.
 /// Returns: 0=success, 1=not admin, 2=zero address
 pub fn set_preferred_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
     let mut c = [0u8; 32];
@@ -300,9 +325,68 @@ pub fn set_preferred_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
     if is_zero(&q) {
         return 2;
     }
+    let old_count = load_u64(ALLOWED_QUOTE_COUNT_KEY);
+    for i in 0..old_count {
+        storage_set(&allowed_quote_key(i), &[0u8; 32]);
+    }
+    storage_set(&allowed_quote_key(0), &q);
+    save_u64(ALLOWED_QUOTE_COUNT_KEY, 1);
     storage_set(PREFERRED_QUOTE_KEY, &q);
-    log_info("Preferred quote token set for governance");
+    log_info("Preferred quote token set for governance (single)");
     0
+}
+
+/// Add an allowed quote token (admin only).
+/// Returns: 0=success, 1=not admin, 2=zero address, 3=already in list, 4=max reached
+pub fn add_allowed_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
+    let mut c = [0u8; 32];
+    let mut q = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(quote_addr, q.as_mut_ptr(), 32);
+    }
+    if !require_admin(&c) { return 1; }
+    if is_zero(&q) { return 2; }
+    let count = load_u64(ALLOWED_QUOTE_COUNT_KEY);
+    for i in 0..count {
+        if load_addr(&allowed_quote_key(i)) == q { return 3; }
+    }
+    if count >= MAX_ALLOWED_QUOTES { return 4; }
+    storage_set(&allowed_quote_key(count), &q);
+    save_u64(ALLOWED_QUOTE_COUNT_KEY, count + 1);
+    log_info("Allowed quote token added (governance)");
+    0
+}
+
+/// Remove an allowed quote token (admin only).
+/// Returns: 0=success, 1=not admin, 2=not found
+pub fn remove_allowed_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
+    let mut c = [0u8; 32];
+    let mut q = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(quote_addr, q.as_mut_ptr(), 32);
+    }
+    if !require_admin(&c) { return 1; }
+    let count = load_u64(ALLOWED_QUOTE_COUNT_KEY);
+    for i in 0..count {
+        if load_addr(&allowed_quote_key(i)) == q {
+            if i < count - 1 {
+                let last = load_addr(&allowed_quote_key(count - 1));
+                storage_set(&allowed_quote_key(i), &last);
+            }
+            storage_set(&allowed_quote_key(count - 1), &[0u8; 32]);
+            save_u64(ALLOWED_QUOTE_COUNT_KEY, count - 1);
+            log_info("Allowed quote token removed (governance)");
+            return 0;
+        }
+    }
+    2
+}
+
+/// Get the number of allowed quote tokens.
+pub fn get_allowed_quote_count() -> u64 {
+    load_u64(ALLOWED_QUOTE_COUNT_KEY)
 }
 
 /// Get the preferred quote token address
@@ -342,11 +426,10 @@ pub fn propose_new_pair(proposer: *const u8, base_token: *const u8, quote_token:
         return 5;
     }
 
-    // Validate quote token matches preferred (mUSD) if set
-    let preferred = load_addr(PREFERRED_QUOTE_KEY);
-    if !is_zero(&preferred) && qt != preferred {
+    // Validate quote token against allowed quotes list
+    if !is_allowed_quote(&qt) {
         reentrancy_exit();
-        log_info("Proposal rejected: quote token must be preferred quote (mUSD)");
+        log_info("Proposal rejected: quote token not in allowed quotes list");
         return 4;
     }
 
@@ -808,6 +891,24 @@ pub extern "C" fn call() {
                 let r = set_moltyid_address(args[1..33].as_ptr(), args[33..65].as_ptr());
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
+        }
+        15 => {
+            // add_allowed_quote(caller[32] + quote_addr[32])
+            if args.len() >= 1 + 32 + 32 {
+                let r = add_allowed_quote(args[1..33].as_ptr(), args[33..65].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        16 => {
+            // remove_allowed_quote(caller[32] + quote_addr[32])
+            if args.len() >= 1 + 32 + 32 {
+                let r = remove_allowed_quote(args[1..33].as_ptr(), args[33..65].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        17 => {
+            // get_allowed_quote_count
+            moltchain_sdk::set_return_data(&u64_to_bytes(get_allowed_quote_count()));
         }
         _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
     }
