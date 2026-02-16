@@ -389,7 +389,9 @@ impl PeerManager {
         });
     }
 
-    /// Clean up stale peers
+    /// Clean up stale peers and detect silent connections.
+    /// AUDIT-FIX H17: Also removes peers connected longer than timeout
+    /// with negative score (indicates repeated failures without recovery).
     pub fn cleanup_stale_peers(&self, timeout_secs: u64) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -398,13 +400,21 @@ impl PeerManager {
         let mut to_remove = Vec::new();
 
         for entry in self.peers.iter() {
-            if now - entry.value().last_seen > timeout_secs {
-                to_remove.push(*entry.key());
+            let age = now.saturating_sub(entry.value().last_seen);
+            // Original: remove peers not seen within timeout
+            if age > timeout_secs {
+                to_remove.push((*entry.key(), "stale"));
+            }
+            // AUDIT-FIX H17: Remove peers that have been idle for half
+            // the timeout AND have a negative score (indicates connection
+            // errors without successful message exchange).
+            else if age > timeout_secs / 2 && entry.value().score < 0 {
+                to_remove.push((*entry.key(), "failing"));
             }
         }
 
-        for addr in to_remove {
-            info!("🦞 P2P: Removing stale peer {}", addr);
+        for (addr, reason) in to_remove {
+            info!("🦞 P2P: Removing {} peer {}", reason, addr);
             self.peers.remove(&addr);
         }
     }

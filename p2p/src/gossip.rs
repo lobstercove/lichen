@@ -178,6 +178,10 @@ impl GossipManager {
             loop {
                 interval.tick().await;
                 peer_manager.cleanup_stale_peers(cleanup_timeout);
+                // AUDIT-FIX H17: Periodically prune expired entries from the
+                // ban list to prevent unbounded memory growth from accumulating
+                // banned peers that have served their timeout.
+                peer_manager.prune_ban_list();
             }
         });
     }

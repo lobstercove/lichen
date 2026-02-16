@@ -20,7 +20,7 @@ use alloc::vec::Vec;
 
 use moltchain_sdk::{
     storage_get, storage_set, log_info,
-    bytes_to_u64, u64_to_bytes, get_slot,
+    bytes_to_u64, u64_to_bytes, get_slot, get_timestamp,
     Address, CrossCall, call_contract, call_token_transfer,
 };
 
@@ -35,6 +35,9 @@ const INSURANCE_SHARE_BPS: u64 = 5000;    // 50% of penalty to insurance
 const FUNDING_INTERVAL_SLOTS: u64 = 28_800; // ~8 hours
 const MAX_POSITIONS: u64 = 10_000;
 const MAX_FUNDING_RATE_BPS: u64 = 100;    // 1% max per interval
+
+// AUDIT-FIX M20: Mark price staleness guard — reject prices older than 30 minutes
+const MAX_PRICE_AGE_SECONDS: u64 = 1800;
 
 // Position side
 const SIDE_LONG: u8 = 0;
@@ -130,6 +133,29 @@ fn user_position_key(addr: &[u8; 32], idx: u64) -> Vec<u8> {
 fn mark_price_key(pair_id: u64) -> Vec<u8> {
     let mut k = Vec::from(&b"mrg_mark_"[..]);
     k.extend_from_slice(&u64_to_decimal(pair_id)); k
+}
+
+/// AUDIT-FIX M20: Load mark price with timestamp. Returns (price, timestamp).
+/// Backward-compatible: if only 8 bytes stored (legacy), timestamp = 0.
+fn load_mark_price(pair_id: u64) -> (u64, u64) {
+    match storage_get(&mark_price_key(pair_id)) {
+        Some(d) if d.len() >= 16 => (bytes_to_u64(&d[..8]), bytes_to_u64(&d[8..16])),
+        Some(d) if d.len() >= 8 => (bytes_to_u64(&d[..8]), 0), // legacy format
+        _ => (0, 0),
+    }
+}
+
+/// AUDIT-FIX M20: Check if a mark price is fresh enough for trading.
+/// Returns the price if fresh, or 0 if missing/stale.
+fn fresh_mark_price(pair_id: u64) -> u64 {
+    let (price, ts) = load_mark_price(pair_id);
+    if price == 0 { return 0; }
+    let now = get_timestamp();
+    if ts == 0 || (now > ts && now - ts > MAX_PRICE_AGE_SECONDS) {
+        log_info("DEX Margin: Mark price stale — rejecting");
+        return 0;
+    }
+    price
 }
 
 // ============================================================================
@@ -259,7 +285,11 @@ pub fn set_mark_price(caller: *const u8, pair_id: u64, price: u64) -> u32 {
     unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
     if !require_admin(&c) { return 1; }
     if price == 0 { return 2; }
-    save_u64(&mark_price_key(pair_id), price);
+    // AUDIT-FIX M20: Store price + timestamp for freshness validation
+    let mut data = Vec::with_capacity(16);
+    data.extend_from_slice(&u64_to_bytes(price));
+    data.extend_from_slice(&u64_to_bytes(get_timestamp()));
+    storage_set(&mark_price_key(pair_id), &data);
     0
 }
 
@@ -282,8 +312,8 @@ pub fn open_position(
     if leverage == 0 || leverage > effective_max { reentrancy_exit(); return 2; }
     if side > SIDE_SHORT { reentrancy_exit(); return 2; }
 
-    // Get mark price
-    let mark_price = load_u64(&mark_price_key(pair_id));
+    // AUDIT-FIX M20: Get mark price with freshness check
+    let mark_price = fresh_mark_price(pair_id);
     if mark_price == 0 { reentrancy_exit(); return 6; }
 
     // Check initial margin (tiered by leverage)
@@ -353,7 +383,8 @@ pub fn close_position(caller: *const u8, position_id: u64) -> u32 {
     let pair_id = decode_pos_pair_id(&data);
     let side = decode_pos_side(&data);
     let entry_price = decode_pos_entry_price(&data);
-    let mark_price = load_u64(&mark_price_key(pair_id));
+    // AUDIT-FIX M20: Use freshness-checked mark price
+    let mark_price = fresh_mark_price(pair_id);
 
     // Calculate PnL and determine unlock amount
     let unlock_amount = if mark_price > 0 {
@@ -436,7 +467,8 @@ pub fn remove_margin(caller: *const u8, position_id: u64, amount: u64) -> u32 {
     let size = decode_pos_size(&data);
     let pair_id = decode_pos_pair_id(&data);
     let leverage = decode_pos_leverage(&data);
-    let mark_price = load_u64(&mark_price_key(pair_id));
+    // AUDIT-FIX M20: Freshness-checked mark price for margin health
+    let mark_price = fresh_mark_price(pair_id);
     if mark_price > 0 {
         let ratio = calculate_margin_ratio(new_margin, size, mark_price);
         let (_init_bps, maint_bps, _liq_bps, _fund_mult) = get_tier_params(leverage);
@@ -469,7 +501,8 @@ pub fn liquidate(_liquidator: *const u8, position_id: u64) -> u32 {
     let size = decode_pos_size(&data);
     let pair_id = decode_pos_pair_id(&data);
     let leverage = decode_pos_leverage(&data);
-    let mark_price = load_u64(&mark_price_key(pair_id));
+    // AUDIT-FIX M20: Freshness-checked mark price for liquidation
+    let mark_price = fresh_mark_price(pair_id);
     if mark_price == 0 { reentrancy_exit(); return 2; }
 
     let ratio = calculate_margin_ratio(margin, size, mark_price);
@@ -637,7 +670,8 @@ pub fn get_margin_ratio(position_id: u64) -> u64 {
     let margin = decode_pos_margin(&data);
     let size = decode_pos_size(&data);
     let pair_id = decode_pos_pair_id(&data);
-    let mark_price = load_u64(&mark_price_key(pair_id));
+    // AUDIT-FIX M20: Freshness-checked mark price for ratio query
+    let mark_price = fresh_mark_price(pair_id);
     if mark_price == 0 { return 0; }
     calculate_margin_ratio(margin, size, mark_price)
 }
@@ -851,7 +885,10 @@ mod tests {
     fn test_set_mark_price() {
         let admin = setup();
         assert_eq!(set_mark_price(admin.as_ptr(), 1, 2_000_000_000), 0);
-        assert_eq!(load_u64(&mark_price_key(1)), 2_000_000_000);
+        // AUDIT-FIX M20: mark price now stored as (price, timestamp)
+        let (price, ts) = load_mark_price(1);
+        assert_eq!(price, 2_000_000_000);
+        assert!(ts > 0);
     }
 
     #[test]
@@ -951,12 +988,9 @@ mod tests {
         let _admin = setup();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
-        // 2x leverage, ≤2x tier: initial margin = 50% / 2 = 25% of notional
-        // size=1000, price=1.0 → notional=1, required = 1 * 5000 / 10000 / 2 = 0
-        // Use larger sizes for meaningful margin
-        // size=1_000_000_000 (1.0 tokens), notional=1_000_000_000 * 1e9 / 1e9 = 1B
-        // required = 1B * 5000 / 10000 / 2 = 250_000_000
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 250_000_000), 0);
+        // AUDIT-FIX NEW-H2: corrected formula — no /leverage.
+        // 2x tier: initial_margin_bps=5000 → required = 1B * 5000/10000 = 500_000_000
+        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
         assert_eq!(get_position_count(), 1);
     }
 
@@ -965,7 +999,7 @@ mod tests {
         let _admin = setup();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_SHORT, 1_000_000_000, 2, 250_000_000), 0);
+        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_SHORT, 1_000_000_000, 2, 500_000_000), 0);
     }
 
     #[test]
@@ -973,9 +1007,8 @@ mod tests {
         let _admin = setup();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
-        // 5x tier: initial margin = 20% / 5 = 4%
-        // notional = 1B, required = 1B * 2000 / 10000 / 5 = 40_000_000
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 5, 40_000_000), 0);
+        // 5x tier: initial_margin_bps=2000 → required = 1B * 2000/10000 = 200_000_000
+        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 5, 200_000_000), 0);
     }
 
     #[test]
@@ -983,9 +1016,8 @@ mod tests {
         let _admin = setup();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
-        // 10x tier: initial margin = 10% / 10 = 1%
-        // notional = 1B, required = 1B * 1000 / 10000 / 10 = 10_000_000
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 10, 10_000_000), 0);
+        // 10x tier: initial_margin_bps=1000 → required = 1B * 1000/10000 = 100_000_000
+        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 10, 100_000_000), 0);
     }
 
     #[test]
@@ -993,9 +1025,8 @@ mod tests {
         let _admin = setup();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
-        // 25x tier: initial margin = 4% / 25 = 0.16%
-        // notional = 1B, required = 1B * 400 / 10000 / 25 = 1_600_000
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 25, 1_600_000), 0);
+        // 25x tier: initial_margin_bps=400 → required = 1B * 400/10000 = 40_000_000
+        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 25, 40_000_000), 0);
     }
 
     #[test]
@@ -1003,9 +1034,8 @@ mod tests {
         let _admin = setup();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
-        // 50x tier: initial margin = 2% / 50 = 0.04%
-        // notional = 1B, required = 1B * 200 / 10000 / 50 = 400_000
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 50, 400_000), 0);
+        // 50x tier: initial_margin_bps=200 → required = 1B * 200/10000 = 20_000_000
+        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 50, 20_000_000), 0);
     }
 
     #[test]
@@ -1013,9 +1043,8 @@ mod tests {
         let _admin = setup();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
-        // 100x tier: initial margin = 1% / 100 = 0.01%
-        // notional = 1B, required = 1B * 100 / 10000 / 100 = 100_000
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 100, 100_000), 0);
+        // 100x tier: initial_margin_bps=100 → required = 1B * 100/10000 = 10_000_000
+        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 100, 10_000_000), 0);
     }
 
     #[test]
@@ -1031,8 +1060,8 @@ mod tests {
         let _admin = setup();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
-        // 5x, notional=1B, required=40_000_000; give less
-        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 5, 39_999_999), 3);
+        // 5x, notional=1B, required=200_000_000; give less
+        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 5, 199_999_999), 3);
     }
 
     #[test]
@@ -1055,7 +1084,7 @@ mod tests {
         let _admin = setup();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
-        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 250_000_000);
+        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000);
         assert_eq!(close_position(trader.as_ptr(), 1), 0);
         let data = storage_get(&position_key(1)).unwrap();
         assert_eq!(decode_pos_status(&data), POS_CLOSED);
@@ -1067,7 +1096,7 @@ mod tests {
         let trader = [2u8; 32];
         let other = [3u8; 32];
         test_mock::set_slot(100);
-        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 250_000_000);
+        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000);
         assert_eq!(close_position(other.as_ptr(), 1), 2);
     }
 
@@ -1076,7 +1105,7 @@ mod tests {
         let _admin = setup();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
-        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 250_000_000);
+        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000);
         close_position(trader.as_ptr(), 1);
         assert_eq!(close_position(trader.as_ptr(), 1), 3);
     }
@@ -1086,10 +1115,10 @@ mod tests {
         let _admin = setup();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
-        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 250_000_000);
+        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000);
         assert_eq!(add_margin(trader.as_ptr(), 1, 100), 0);
         let data = storage_get(&position_key(1)).unwrap();
-        assert_eq!(decode_pos_margin(&data), 250_000_100);
+        assert_eq!(decode_pos_margin(&data), 500_000_100);
     }
 
     #[test]
@@ -1097,7 +1126,7 @@ mod tests {
         let _admin = setup();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
-        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 250_000_000);
+        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000);
         assert_eq!(add_margin(trader.as_ptr(), 1, 0), 5);
     }
 
@@ -1119,8 +1148,9 @@ mod tests {
         let _admin = setup();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
-        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 250_000_000);
-        assert_eq!(remove_margin(trader.as_ptr(), 1, 300_000_000), 5);
+        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000);
+        // 600M > 500M margin → error 5
+        assert_eq!(remove_margin(trader.as_ptr(), 1, 600_000_000), 5);
     }
 
     #[test]
@@ -1128,10 +1158,10 @@ mod tests {
         let _admin = setup();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
-        // 2x: maint = 25% of notional. 1B notional → need 250M
-        // Start with 260M marginally above. Remove 20M → 240M < 250M → fail
-        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 260_000_000);
-        assert_eq!(remove_margin(trader.as_ptr(), 1, 20_000_000), 6);
+        // 2x: maint = 2500bps = 25%. notional=1B → need 250M maint.
+        // Open with 500M (50%), remove 260M → 240M < 250M → fail
+        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000);
+        assert_eq!(remove_margin(trader.as_ptr(), 1, 260_000_000), 6);
     }
 
     #[test]
@@ -1140,11 +1170,11 @@ mod tests {
         let trader = [2u8; 32];
         let liquidator = [3u8; 32];
         test_mock::set_slot(100);
-        // 2x long, margin=250M, size=1B at price 1.0
-        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 250_000_000);
-        // Drop mark price to 2.0 → notional becomes 2B
-        // margin ratio = 250M / 2B = 1250 bps = 12.5% < 25% maint → liquidatable
-        set_mark_price(admin.as_ptr(), 1, 2_000_000_000);
+        // 2x long, margin=500M, size=1B at price 1.0
+        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000);
+        // Raise mark price to 2.5 → notional=2.5B
+        // margin_ratio = 500M / 2.5B = 2000 bps = 20% < 25% maint → liquidatable
+        set_mark_price(admin.as_ptr(), 1, 2_500_000_000);
         assert_eq!(liquidate(liquidator.as_ptr(), 1), 0);
         let data = storage_get(&position_key(1)).unwrap();
         assert_eq!(decode_pos_status(&data), POS_LIQUIDATED);
@@ -1157,12 +1187,11 @@ mod tests {
         let trader = [2u8; 32];
         let liquidator = [3u8; 32];
         test_mock::set_slot(100);
-        // 50x long, 50x tier: maint=100bps=1%
-        // size=1B at 1.0, margin=500_000 (just above min for 50x)
-        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 50, 500_000);
-        // Small mark price increase to 1.1 → notional=1.1B
-        // margin ratio = 500_000 / 1_100_000_000 = ~0.45 bps < 100 bps → liquidatable
-        set_mark_price(admin.as_ptr(), 1, 1_100_000_000);
+        // 50x tier: initial_margin_bps=200 → required = 1B * 200/10000 = 20M
+        // maint_margin_bps=100 = 1%
+        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 50, 20_000_000);
+        // Mark price 3.0 → notional=3B, ratio = 20M/3B ≈ 6.67bps < 100bps → liquidatable
+        set_mark_price(admin.as_ptr(), 1, 3_000_000_000);
         assert_eq!(liquidate(liquidator.as_ptr(), 1), 0);
     }
 
@@ -1185,41 +1214,40 @@ mod tests {
         let liquidator = [4u8; 32];
         test_mock::set_slot(100);
 
-        // For 5x tier: initial_margin_bps=2000, penalty=500bps
-        // notional=1B, required margin = 1B * 2000/10000 / 5 = 40M
-        // Give 80M margin — above initial but below maintenance (1000bps=10%=100M)
-        let r1 = open_position(trader_a.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 5, 80_000_000);
+        // For 5x tier: initial_margin_bps=2000, maint=1000bps=10%, penalty=500bps
+        // notional=1B, required margin = 1B * 2000/10000 = 200M
+        // Give 200M = exactly at initial margin, below maintenance for a 2x price increase
+        let r1 = open_position(trader_a.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 5, 200_000_000);
         assert_eq!(r1, 0, "open_position 5x should succeed");
 
         let before = get_insurance_fund();
-        // margin_ratio = 80M/1B = 800bps < 1000bps maint → liquidatable
+        // Raise mark price to 2.5 → notional=2.5B
+        // margin_ratio = 200M/2.5B = 800bps < 1000bps maint → liquidatable
+        set_mark_price(_admin.as_ptr(), 1, 2_500_000_000);
         let liq1 = liquidate(liquidator.as_ptr(), 1);
         assert_eq!(liq1, 0, "liquidate pos 1 should succeed");
         let after_a = get_insurance_fund();
         let insurance_a = after_a - before;
-        // penalty = 1B * 500/10000 = 50M, capped to min(50M, 80M) = 50M
-        // insurance = 50M / 2 = 25M
-        assert_eq!(insurance_a, 25_000_000);
+        // penalty = 2.5B * 500/10000 = 125M, capped to min(125M, 200M) = 125M
+        // insurance = 125M / 2 = 62.5M → 62_500_000
+        assert_eq!(insurance_a, 62_500_000);
 
-        // For 2x tier: penalty=300bps
-        // notional=1B, required margin = 1B * 5000/10000 / 2 = 250M
-        // Give 200M? That's below required... need at least 250M
-        // Actually need 200M≥required_margin where required_margin=250M for 2x → 200M fails
-        // Use 260M — above initial, below maint (2500bps=250M)
-        let r2 = open_position(trader_b.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 260_000_000);
+        // Reset price for 2nd position
+        set_mark_price(_admin.as_ptr(), 1, 1_000_000_000);
+        // For 2x tier: initial=5000bps, maint=2500bps=25%, penalty=300bps
+        // notional=1B, required = 500M
+        let r2 = open_position(trader_b.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000);
         assert_eq!(r2, 0, "open_position 2x should succeed");
-        // margin_ratio = 260M/1B = 2600bps > 2500bps maint → NOT liquidatable!
-        // Need to make it liquidatable. Increase notional by raising mark price.
-        // After mark price = 2.0: notional = 1B*2B/1B = 2B
-        // margin_ratio = 260M/2B = 1300bps < 2500bps → liquidatable
-        set_mark_price(_admin.as_ptr(), 1, 2_000_000_000);
-        // penalty = 2B * 300/10000 = 60M, capped to min(60M, 260M) = 60M
-        // insurance = 60M / 2 = 30M
+        // Raise mark price to 2.5: notional = 1B * 2.5 = 2.5B
+        // margin_ratio = 500M/2.5B = 2000bps < 2500bps → liquidatable
+        set_mark_price(_admin.as_ptr(), 1, 2_500_000_000);
+        // penalty = 2.5B * 300/10000 = 75M, capped to min(75M, 500M) = 75M
+        // insurance = 75M / 2 = 37_500_000
         let liq2 = liquidate(liquidator.as_ptr(), 2);
         assert_eq!(liq2, 0, "liquidate pos 2 should succeed");
         let after_b = get_insurance_fund();
         let insurance_b = after_b - after_a;
-        assert_eq!(insurance_b, 30_000_000);
+        assert_eq!(insurance_b, 37_500_000);
     }
 
     #[test]
@@ -1228,8 +1256,10 @@ mod tests {
         let trader = [2u8; 32];
         let liq = [3u8; 32];
         test_mock::set_slot(100);
-        open_position(trader.as_ptr(), 1, SIDE_LONG, 10_000_000_000, 5, 500_000_000);
-        set_mark_price(admin.as_ptr(), 1, 2_000_000_000);
+        // 5x tier: required = 1B * 2000/10000 = 200M, maint=1000bps=10%
+        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 5, 200_000_000);
+        // Raise mark price → notional grows → position becomes unhealthy
+        set_mark_price(admin.as_ptr(), 1, 3_000_000_000);
         let before = get_insurance_fund();
         liquidate(liq.as_ptr(), 1);
         let after = get_insurance_fund();
@@ -1311,7 +1341,7 @@ mod tests {
         let _admin = setup();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
-        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 250_000_000);
+        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000);
         assert_eq!(get_position_info(1), 1);
         assert_eq!(get_position_info(999), 0);
     }

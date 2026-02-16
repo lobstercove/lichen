@@ -183,7 +183,8 @@ pub extern "C" fn get_price(
             let now = get_timestamp();
             if now - timestamp > 3600 {
                 log_info(" Price data stale");
-                return 0;
+                // AUDIT-FIX M20: return 2 for stale (distinct from 0 = not found)
+                return 2;
             }
             
             // Return: price (8) + timestamp (8) + decimals (1)
@@ -724,11 +725,13 @@ pub extern "C" fn get_aggregated_price(
     let mut valid_feeds = 0u8;
     
     // Query multiple feeds
+    let mut total_feeds_found = 0u8;
     for i in 0..num_feeds {
         let key = alloc::format!("price_{}_{}", asset_str, i);
         
         if let Some(feed) = storage_get(key.as_bytes()) {
             if feed.len() >= PRICE_FEED_SIZE {
+                total_feeds_found += 1;
                 let timestamp = bytes_to_u64(&feed[8..16]);
                 let now = get_timestamp();
                 
@@ -743,6 +746,11 @@ pub extern "C" fn get_aggregated_price(
     }
     
     if valid_feeds == 0 {
+        // AUDIT-FIX M20: distinguish "no feeds at all" (0) from "all feeds stale" (2)
+        if total_feeds_found > 0 {
+            log_info("All price feeds stale");
+            return 2;
+        }
         log_info("No valid price feeds");
         return 0;
     }
@@ -1013,7 +1021,8 @@ mod tests {
         submit_price(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32, 42_000_000, 6);
         test_mock::set_timestamp(1000 + 3601); // stale
         let mut result = [0u8; 17];
-        assert_eq!(get_price(asset.as_ptr(), asset.len() as u32, result.as_mut_ptr()), 0);
+        // AUDIT-FIX M20: stale now returns 2 (distinct from 0 = not found)
+        assert_eq!(get_price(asset.as_ptr(), asset.len() as u32, result.as_mut_ptr()), 2);
     }
 
     #[test]

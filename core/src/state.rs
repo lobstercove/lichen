@@ -497,6 +497,9 @@ impl MetricsStore {
 pub struct StateStore {
     db: Arc<DB>,
     metrics: Arc<MetricsStore>,
+    /// AUDIT-FIX H6: Mutex to serialize next_event_seq read-modify-write operations,
+    /// preventing duplicate sequence numbers under concurrent access.
+    event_seq_lock: Arc<std::sync::Mutex<()>>,
 }
 
 /// Atomic write batch for transaction processing (T1.4/T3.1).
@@ -706,6 +709,7 @@ impl StateStore {
         Ok(StateStore {
             db: db_arc,
             metrics,
+            event_seq_lock: Arc::new(std::sync::Mutex::new(())),
         })
     }
 
@@ -3697,6 +3701,40 @@ impl StateStore {
         })
     }
 
+    /// AUDIT-FIX M7: Persist slashing tracker to RocksDB for restart-proof evidence.
+    pub fn put_slashing_tracker(
+        &self,
+        tracker: &crate::consensus::SlashingTracker,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let data =
+            bincode::serialize(tracker).map_err(|e| format!("Failed to serialize slashing tracker: {}", e))?;
+        self.db
+            .put_cf(&cf, b"slashing_tracker", &data)
+            .map_err(|e| format!("Failed to persist slashing tracker: {}", e))
+    }
+
+    /// AUDIT-FIX M7: Load slashing tracker from RocksDB.
+    /// Returns default empty tracker if not found or on deserialization error.
+    pub fn get_slashing_tracker(&self) -> crate::consensus::SlashingTracker {
+        let cf = match self.db.cf_handle(CF_STATS) {
+            Some(cf) => cf,
+            None => return crate::consensus::SlashingTracker::new(),
+        };
+        match self.db.get_cf(&cf, b"slashing_tracker") {
+            Ok(Some(data)) => {
+                bincode::deserialize(&data).unwrap_or_else(|e| {
+                    eprintln!("⚠️  Failed to deserialize slashing tracker, starting fresh: {}", e);
+                    crate::consensus::SlashingTracker::new()
+                })
+            }
+            _ => crate::consensus::SlashingTracker::new(),
+        }
+    }
+
     /// Load treasury public key
     pub fn get_treasury_pubkey(&self) -> Result<Option<Pubkey>, String> {
         let cf = self
@@ -4520,7 +4558,11 @@ impl StateStore {
     }
 
     /// Atomic event sequence counter per program+slot
+    /// AUDIT-FIX H6: Protected by event_seq_lock to prevent duplicate sequence
+    /// numbers when called concurrently (e.g., parallel contract execution).
     fn next_event_seq(&self, program: &Pubkey, slot: u64) -> Result<u64, String> {
+        let _guard = self.event_seq_lock.lock().map_err(|e| format!("Event seq lock poisoned: {}", e))?;
+
         let cf = self
             .db
             .cf_handle(CF_STATS)

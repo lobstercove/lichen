@@ -436,15 +436,17 @@ fn recovery_approval_count(target: &[u8], nonce: u64) -> usize {
     count
 }
 
-fn apply_reputation_decay(current_rep: u64, last_updated_ms: u64, now_ms: u64) -> u64 {
+/// AUDIT-FIX NEW-M1: Returns (decayed_rep, periods_applied) so callers can
+/// advance last_updated by exactly the applied periods, preserving remainder.
+fn apply_reputation_decay(current_rep: u64, last_updated_ms: u64, now_ms: u64) -> (u64, u64) {
     if current_rep <= INITIAL_REPUTATION || now_ms <= last_updated_ms {
-        return current_rep;
+        return (current_rep, 0);
     }
 
     let elapsed = now_ms - last_updated_ms;
     let mut periods = elapsed / REPUTATION_DECAY_PERIOD_MS;
     if periods == 0 {
-        return current_rep;
+        return (current_rep, 0);
     }
     if periods > MAX_DECAY_PERIODS_PER_CALL {
         periods = MAX_DECAY_PERIODS_PER_CALL;
@@ -456,11 +458,11 @@ fn apply_reputation_decay(current_rep: u64, last_updated_ms: u64, now_ms: u64) -
             .saturating_mul(10_000 - REPUTATION_DECAY_BPS)
             / 10_000;
         if decayed <= MIN_REPUTATION {
-            return MIN_REPUTATION;
+            return (MIN_REPUTATION, periods);
         }
     }
 
-    decayed
+    (decayed, periods)
 }
 
 fn apply_decay_to_identity_record(
@@ -481,13 +483,17 @@ fn apply_decay_to_identity_record(
         now_ms
     };
 
-    let decayed = apply_reputation_decay(current_rep, last_updated_ms, now_ms);
+    let (decayed, periods_applied) = apply_reputation_decay(current_rep, last_updated_ms, now_ms);
     if decayed != current_rep {
         if record.len() >= 107 {
             record[99..107].copy_from_slice(&u64_to_bytes(decayed));
         }
+        // AUDIT-FIX NEW-M1: Advance last_updated by only the applied periods,
+        // so remaining un-applied decay carries over to the next call.
+        // (Previously set to now_ms, which forgave capped excess periods.)
+        let new_last_updated = last_updated_ms + periods_applied * REPUTATION_DECAY_PERIOD_MS;
         if record.len() >= 123 {
-            record[115..123].copy_from_slice(&u64_to_bytes(now_ms));
+            record[115..123].copy_from_slice(&u64_to_bytes(new_last_updated));
         }
         storage_set(id_key, record);
         storage_set(&reputation_key(pubkey), &u64_to_bytes(decayed));

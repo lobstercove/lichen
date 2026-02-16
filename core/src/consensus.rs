@@ -2345,6 +2345,11 @@ impl SlashingTracker {
         true
     }
 
+    /// Total number of evidence records across all validators
+    pub fn evidence_count(&self) -> usize {
+        self.evidence.values().map(|v| v.len()).sum()
+    }
+
     /// Check if validator should be slashed
     pub fn should_slash(&self, validator: &Pubkey) -> bool {
         if let Some(evidence_list) = self.evidence.get(validator) {
