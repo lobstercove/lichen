@@ -473,7 +473,7 @@ async function loadAssets() {
 
   try {
     const result = await rpc.getBalance(wallet.address);
-    const raw = Number(result?.balance || 0);
+    const raw = Number(result?.shells || result?.spendable || 0);
     const molt = raw / 1_000_000_000;
     const decimals = displayDecimals();
 
@@ -617,7 +617,7 @@ async function refreshBalance() {
 
   try {
     const result = await rpc.getBalance(wallet.address);
-    const raw = Number(result?.balance || 0);
+    const raw = Number(result?.shells || result?.spendable || 0);
     const balanceMolt = raw / 1_000_000_000;
     document.getElementById('walletBalance').textContent = `${balanceMolt.toLocaleString(undefined, { maximumFractionDigits: displayDecimals() })} MOLT`;
     const usdEl = document.getElementById('balanceUsd');
@@ -657,7 +657,7 @@ async function handleSendNow() {
     setStatus('Checking balance...');
 
     const balResult = await rpc.getBalance(wallet.address);
-    const spendable = Number(balResult?.spendable || balResult?.balance || 0) / 1_000_000_000;
+    const spendable = Number(balResult?.spendable || balResult?.shells || 0) / 1_000_000_000;
     const totalNeeded = amount + 0.001;
     if (spendable < totalNeeded) {
       alert(`Insufficient MOLT: need ${totalNeeded.toLocaleString(undefined, { maximumFractionDigits: 9 })}, have ${spendable.toLocaleString(undefined, { maximumFractionDigits: 9 })}.`);

@@ -240,7 +240,7 @@ function startBalancePolling() {
     _balancePollTimer = setInterval(async () => {
         const dashboard = document.getElementById('walletDashboard');
         if (!dashboard || dashboard.style.display === 'none') return;
-        try { await refreshBalance(); } catch (_) { /* ignore */ }
+        try { await refreshBalance(); await loadActivity(); } catch (_) { /* ignore */ }
     }, 8000); // Poll every 8 seconds as supplement
 }
 
@@ -2072,10 +2072,14 @@ function generateEVMAddress(base58Address) {
 // Sends system instruction opcode 12 with the 20-byte EVM address
 async function registerEvmAddress(wallet, password) {
     try {
+        // Skip if already registered (idempotency guard)
+        const evmRegistered = JSON.parse(localStorage.getItem('moltEvmRegistered') || '{}');
+        if (evmRegistered[wallet.address]) return;
+
         // Skip EVM registration if account isn't funded yet (imported wallets)
         try {
             const bal = await rpc.getBalance(wallet.address);
-            if (!bal || (bal.balance === 0 && bal.shells === 0 && !bal.spendable)) return;
+            if (!bal || (bal.shells === 0 && !bal.spendable)) return;
         } catch (_) { return; } // Account doesn't exist on-chain yet
 
         const evmAddress = generateEVMAddress(wallet.address);
@@ -2119,6 +2123,10 @@ async function registerEvmAddress(wallet, password) {
 
         await rpc.sendTransaction(txBase64);
         console.log('EVM address registered:', evmAddress, '→', wallet.address);
+        // Mark as registered to prevent duplicate sends
+        const evmReg = JSON.parse(localStorage.getItem('moltEvmRegistered') || '{}');
+        evmReg[wallet.address] = true;
+        localStorage.setItem('moltEvmRegistered', JSON.stringify(evmReg));
     } catch (error) {
         // Don't block wallet creation on registration failure
         // (e.g. network down, account not funded yet)
@@ -2331,9 +2339,12 @@ async function confirmSend() {
         const tokenSelect = document.getElementById('sendToken');
         if (tokenSelect) tokenSelect.value = 'MOLT';
         
-        // Refresh balance and activity
+        // Wait briefly for block commitment, then refresh balance + activity
+        await new Promise(r => setTimeout(r, 1500));
         await refreshBalance();
         await loadActivity();
+        // Second refresh after another 3s to catch slower block finality
+        setTimeout(async () => { try { await refreshBalance(); await loadActivity(); } catch(_){} }, 3000);
         
     } catch (error) {
         console.error('Send failed:', error);

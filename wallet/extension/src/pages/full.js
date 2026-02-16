@@ -454,7 +454,7 @@ async function refreshBalance() {
 
   try {
     const result = await rpc().getBalance(wallet.address);
-    const raw = Number(result?.balance || 0);
+    const raw = Number(result?.shells || result?.spendable || 0);
     const molt = raw / 1_000_000_000;
     const d = decimals();
     $('totalBalance').textContent = `${molt.toLocaleString(undefined, { maximumFractionDigits: d })} MOLT`;
@@ -535,7 +535,7 @@ async function loadAssets() {
 
   try {
     const result = await rpc().getBalance(wallet.address);
-    const raw = Number(result?.balance || 0);
+    const raw = Number(result?.shells || result?.spendable || 0);
     const molt = raw / 1_000_000_000;
     const d = decimals();
 
@@ -639,7 +639,7 @@ async function handleSend() {
 
   try {
     const balResult = await rpc().getBalance(wallet.address);
-    const spendable = Number(balResult?.spendable || balResult?.balance || 0) / 1_000_000_000;
+    const spendable = Number(balResult?.spendable || balResult?.shells || 0) / 1_000_000_000;
     if (spendable < amount + 0.001) {
       showToast(`Insufficient balance: need ${(amount + 0.001).toLocaleString(undefined, { maximumFractionDigits: 9 })}, have ${spendable.toLocaleString(undefined, { maximumFractionDigits: 9 })}`, 'error');
       return;
@@ -783,7 +783,7 @@ async function updateSendAvailableBalance() {
   if (!wallet) { el.textContent = ''; return; }
   try {
     const result = await rpc().getBalance(wallet.address);
-    const raw = Number(result?.spendable || result?.balance || 0) / 1_000_000_000;
+    const raw = Number(result?.spendable || result?.shells || 0) / 1_000_000_000;
     el.textContent = `Available: ${raw.toLocaleString(undefined, { maximumFractionDigits: decimals() })} MOLT`;
   } catch { el.textContent = ''; }
 }
@@ -950,7 +950,7 @@ function wireEvents() {
     if (!wallet) return;
     try {
       const result = await rpc().getBalance(wallet.address);
-      const spendable = Number(result?.spendable || result?.balance || 0) / 1_000_000_000;
+      const spendable = Number(result?.spendable || result?.shells || 0) / 1_000_000_000;
       $('sendAmount').value = Math.max(0, spendable - 0.001).toFixed(6);
     } catch { /* ignore */ }
   });
