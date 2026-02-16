@@ -289,8 +289,9 @@ pub fn open_position(
     // Check initial margin (tiered by leverage)
     let notional = (size as u128 * mark_price as u128 / 1_000_000_000) as u64;
     let (initial_margin_bps, _maint_bps, _liq_penalty_bps, _funding_mult) = get_tier_params(leverage);
-    // SECURITY FIX: Ensure required_margin is at least 1 to prevent zero-margin positions
-    let required_margin = (notional * initial_margin_bps / 10_000 / leverage).max(1);
+    // AUDIT-FIX NEW-H2: initial_margin_bps already factors in leverage via the tier table
+    // (e.g. 10x → 1000 bps = 10%). Do NOT divide by leverage again — that was double-discounting.
+    let required_margin = (notional * initial_margin_bps / 10_000).max(1);
     if margin_amount < required_margin { reentrancy_exit(); return 3; }
 
     let pos_count = load_u64(POSITION_COUNT_KEY);

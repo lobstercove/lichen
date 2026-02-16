@@ -4381,6 +4381,21 @@ async fn run_validator() {
                     continue;
                 }
 
+                // AUDIT-FIX C5: Reject blocks from non-member validators BEFORE
+                // note_seen / fork-choice to prevent outsiders from influencing
+                // sync target or fork selection.
+                {
+                    let vs = validator_set_for_blocks.lock().await;
+                    if vs.get_validator(&Pubkey(block.header.validator)).is_none() {
+                        warn!(
+                            "⚠️  Rejecting block {} — validator {} not in active set",
+                            block_slot,
+                            Pubkey(block.header.validator).to_base58()
+                        );
+                        continue;
+                    }
+                }
+
                 // 1.7: Double-block equivocation detection
                 {
                     let key = (block_slot, block.header.validator);
@@ -5328,39 +5343,25 @@ async fn run_validator() {
                     vs.add_validator(new_validator);
 
                     // Also stake in local pool so leader election can pick them
-                    {
+                    // AUDIT-FIX C4/H13: For self-funded validators, stake immediately.
+                    // For bootstrap validators, defer stake pool entry until AFTER treasury
+                    // debit succeeds — prevents inflating active stake with unfunded entries.
+                    if !needs_bootstrap {
+                        // Self-funded: stake immediately in local pool
                         let mut pool = stake_pool_for_announce.lock().await;
                         if pool.get_stake(&announcement.pubkey).is_none() {
-                            let stake_amount = if already_staked >= MIN_VALIDATOR_STAKE {
-                                already_staked
-                            } else {
-                                MIN_VALIDATOR_STAKE
-                            };
-
-                            // Atomic: validate fingerprint → allocate bootstrap index → stake → register
-                            // Always pass the real fingerprint — even pre-funded validators
-                            // get bootstrap grants in the first 200 slots
                             let fingerprint = announcement.machine_fingerprint;
-
                             match pool.try_bootstrap_with_fingerprint(
                                 announcement.pubkey,
-                                stake_amount,
+                                already_staked,
                                 announcement.current_slot,
                                 fingerprint,
                             ) {
-                                Ok((bootstrap_index, _)) => {
-                                    if bootstrap_index < moltchain_core::consensus::MAX_BOOTSTRAP_VALIDATORS {
-                                        info!(
-                                            "💰 Bootstrap validator #{} staked in local pool ({} MOLT, with debt)",
-                                            bootstrap_index + 1,
-                                            stake_amount / 1_000_000_000
-                                        );
-                                    } else {
-                                        info!(
-                                            "💰 Self-funded validator staked in local pool ({} MOLT, no debt)",
-                                            stake_amount / 1_000_000_000
-                                        );
-                                    }
+                                Ok(_) => {
+                                    info!(
+                                        "💰 Self-funded validator staked in local pool ({} MOLT, no debt)",
+                                        already_staked / 1_000_000_000
+                                    );
                                 }
                                 Err(e) => {
                                     warn!(
@@ -5391,7 +5392,7 @@ async fn run_validator() {
                                 announcement.pubkey.to_base58()
                             );
                         } else {
-                            // Deduct from treasury to avoid minting tokens ex nihilo
+                            // AUDIT-FIX C4/H13: Deduct from treasury FIRST, only stake if funded
                             let mut funded = false;
                             if let Ok(Some(tpk)) = state_for_validators.get_treasury_pubkey() {
                                 if let Ok(Some(mut treasury)) =
@@ -5414,6 +5415,42 @@ async fn run_validator() {
                             }
 
                             if funded {
+                                // Treasury debit succeeded — NOW credit stake pool
+                                {
+                                    let mut pool = stake_pool_for_announce.lock().await;
+                                    if pool.get_stake(&announcement.pubkey).is_none() {
+                                        let fingerprint = announcement.machine_fingerprint;
+                                        match pool.try_bootstrap_with_fingerprint(
+                                            announcement.pubkey,
+                                            MIN_VALIDATOR_STAKE,
+                                            announcement.current_slot,
+                                            fingerprint,
+                                        ) {
+                                            Ok((bootstrap_index, _)) => {
+                                                info!(
+                                                    "💰 Bootstrap validator #{} staked in local pool ({} MOLT, with debt)",
+                                                    bootstrap_index + 1,
+                                                    MIN_VALIDATOR_STAKE / 1_000_000_000
+                                                );
+                                            }
+                                            Err(e) => {
+                                                warn!(
+                                                    "⚠️  Failed to stake bootstrap validator {}: {}",
+                                                    announcement.pubkey.to_base58(),
+                                                    e
+                                                );
+                                                // Reverse treasury debit since stake failed
+                                                if let Ok(Some(tpk)) = state_for_validators.get_treasury_pubkey() {
+                                                    if let Ok(Some(mut treasury)) = state_for_validators.get_account(&tpk) {
+                                                        treasury.add_spendable(MIN_VALIDATOR_STAKE).ok();
+                                                        let _ = state_for_validators.put_account(&tpk, &treasury);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
                                 let mut bootstrap_account = Account {
                                     shells: MIN_VALIDATOR_STAKE,
                                     spendable: 0,
