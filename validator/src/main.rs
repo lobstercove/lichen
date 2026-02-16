@@ -6962,21 +6962,27 @@ async fn run_validator() {
         if is_joining_network {
             let has_genesis = state.get_block_by_slot(0).unwrap_or(None).is_some();
             if !has_genesis {
-                // Still waiting for genesis sync
-                if tip_slot % 50 == 0 && slot_start.elapsed().as_secs() >= 2 {
+                // Still waiting for genesis sync — sleep 200ms instead of spinning at 2ms
+                if slot_start.elapsed().as_secs() >= 5 {
                     info!("⏳ Waiting for genesis sync from network (tip: {})", tip_slot);
+                    slot_start = std::time::Instant::now();
+                    last_attempted_slot = slot;
                 }
+                time::sleep(Duration::from_millis(200)).await;
                 continue;
             }
 
             let snapshot_ready = snapshot_sync.lock().await.is_ready();
             if !snapshot_ready {
-                if tip_slot % 50 == 0 && slot_start.elapsed().as_secs() >= 2 {
+                if slot_start.elapsed().as_secs() >= 5 {
                     info!(
                         "⏳ Waiting for validator/stake snapshots before producing (tip: {})",
                         tip_slot
                     );
+                    slot_start = std::time::Instant::now();
+                    last_attempted_slot = slot;
                 }
+                time::sleep(Duration::from_millis(200)).await;
                 continue;
             } else {
                 // Genesis synced! But wait for validator discovery AND full chain sync
@@ -6986,12 +6992,15 @@ async fn run_validator() {
 
                 if validator_count <= 1 {
                     // Still waiting for first validator announcement
-                    if slot_start.elapsed().as_secs() >= 2 {
+                    if slot_start.elapsed().as_secs() >= 5 {
                         info!(
                             "⏳ Waiting for validator discovery (found {} validators)",
                             validator_count
                         );
+                        slot_start = std::time::Instant::now();
+                        last_attempted_slot = slot;
                     }
+                    time::sleep(Duration::from_millis(200)).await;
                     continue;
                 } else if first_announcement_time.is_none() {
                     // Just discovered validators! Start stabilization wait
@@ -7024,12 +7033,18 @@ async fn run_validator() {
                 let current_slot = state.get_last_slot().unwrap_or(0);
                 if !sync_manager.is_caught_up(current_slot).await {
                     let network_slot = sync_manager.get_highest_seen().await;
-                    if slot_start.elapsed().as_secs() >= 2 {
+                    // Only log every 5 seconds to avoid log spam during catch-up
+                    if slot_start.elapsed().as_secs() >= 5 {
                         info!(
                             "⏳ Syncing to network (current: {}, network: {}, {} validators)",
                             current_slot, network_slot, validator_count
                         );
+                        slot_start = std::time::Instant::now();
+                        last_attempted_slot = slot;
                     }
+                    // Sleep 100ms during catch-up instead of spinning at 2ms
+                    // The P2P block receiver fills gaps independently
+                    time::sleep(Duration::from_millis(100)).await;
                     continue;
                 }
 
