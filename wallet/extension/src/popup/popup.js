@@ -575,60 +575,6 @@ async function loadIdentityPanel() {
   }
 }
 
-async function loadGovernancePanel() {
-  const container = document.getElementById('govProposalsList');
-  if (!container) return;
-  container.innerHTML = '<div class="popup-status">Loading proposals...</div>';
-
-  const endpoint = resolveRpcEndpoint(state.network?.selected || 'local-testnet');
-  const rpcClient = new MoltChainRPC(endpoint);
-
-  try {
-    const result = await rpcClient.call('getGovernanceProposals', []);
-    const proposals = result?.proposals || (Array.isArray(result) ? result : []);
-    if (!proposals.length) {
-      container.innerHTML = '<div class="popup-empty-state"><i class="fas fa-vote-yea"></i><p>No active proposals</p></div>';
-      return;
-    }
-    container.innerHTML = proposals.slice(0, 5).map(p => `
-      <div class="popup-activity-item">
-        <div class="top"><strong>${p.title || 'Proposal #' + p.id}</strong><span>${p.status || 'active'}</span></div>
-      </div>
-    `).join('');
-  } catch {
-    container.innerHTML = '<div class="popup-status">Failed to load proposals</div>';
-  }
-}
-
-async function loadBridgePanel() {
-  // Bridge form is static; no dynamic load needed
-}
-
-async function loadPredictionPanel() {
-  const container = document.getElementById('predMarketsList');
-  if (!container) return;
-  container.innerHTML = '<div class="popup-status">Loading markets...</div>';
-
-  const endpoint = resolveRpcEndpoint(state.network?.selected || 'local-testnet');
-  const rpcClient = new MoltChainRPC(endpoint);
-
-  try {
-    const result = await rpcClient.call('getPredictionMarkets', []);
-    const markets = result?.markets || (Array.isArray(result) ? result : []);
-    if (!markets.length) {
-      container.innerHTML = '<div class="popup-empty-state"><i class="fas fa-chart-bar"></i><p>No active markets</p></div>';
-      return;
-    }
-    container.innerHTML = markets.slice(0, 5).map(m => `
-      <div class="popup-activity-item">
-        <div class="top"><strong>${m.question || 'Market #' + m.id}</strong><span>${m.status || 'open'}</span></div>
-      </div>
-    `).join('');
-  } catch {
-    container.innerHTML = '<div class="popup-status">Failed to load markets</div>';
-  }
-}
-
 async function refreshBalance() {
   const wallet = getActiveWallet();
   if (!wallet) {
@@ -1173,9 +1119,6 @@ function wireEvents() {
       if (tabName === 'assets') await loadAssets();
       if (tabName === 'activity') await loadActivity();
       if (tabName === 'identity') await loadIdentityPanel();
-      if (tabName === 'governance') await loadGovernancePanel();
-      if (tabName === 'bridge') await loadBridgePanel();
-      if (tabName === 'prediction') await loadPredictionPanel();
     });
   });
 

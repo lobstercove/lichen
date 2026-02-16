@@ -234,9 +234,6 @@
         <button class="popup-dash-tab" data-tab="nfts"><i class="fas fa-image"></i> NFTs</button>
         <button class="popup-dash-tab" data-tab="staking"><i class="fas fa-layer-group"></i> Staking</button>
         <button class="popup-dash-tab" data-tab="identity"><i class="fas fa-fingerprint"></i> Identity</button>
-        <button class="popup-dash-tab" data-tab="governance"><i class="fas fa-landmark"></i> Governance</button>
-        <button class="popup-dash-tab" data-tab="bridge"><i class="fas fa-bridge"></i> Bridge</button>
-        <button class="popup-dash-tab" data-tab="prediction"><i class="fas fa-chart-line"></i> Markets</button>
       </div>
 
       <!-- Tab Content: Assets -->
@@ -311,54 +308,6 @@
       <div class="popup-tab-content" data-tab="identity" id="identityPanel">
         <div id="identityContent">
           <!-- MoltyID identity loaded dynamically -->
-        </div>
-      </div>
-
-      <!-- Tab Content: Governance -->
-      <div class="popup-tab-content" data-tab="governance" id="governancePanel">
-        <div id="governanceContent">
-          <div class="panel-header" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem;">
-            <h4 style="margin:0;"><i class="fas fa-landmark"></i> Governance</h4>
-            <button class="btn btn-small btn-secondary" id="refreshGovernance"><i class="fas fa-sync-alt"></i></button>
-          </div>
-          <div id="govProposalsList">
-            <div class="popup-empty-state"><i class="fas fa-vote-yea"></i><p>Loading proposals...</p></div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Tab Content: Bridge -->
-      <div class="popup-tab-content" data-tab="bridge" id="bridgePanel">
-        <div id="bridgeContent">
-          <div class="panel-header" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem;">
-            <h4 style="margin:0;"><i class="fas fa-bridge"></i> MoltBridge</h4>
-            <button class="btn btn-small btn-secondary" id="refreshBridge"><i class="fas fa-sync-alt"></i></button>
-          </div>
-          <div class="bridge-form">
-            <div class="form-group"><label>Source</label>
-              <select id="bridgeSource" class="form-input"><option value="moltchain">MoltChain</option><option value="ethereum">Ethereum</option><option value="solana">Solana</option></select>
-            </div>
-            <div class="form-group"><label>Destination</label>
-              <select id="bridgeDest" class="form-input"><option value="ethereum">Ethereum</option><option value="moltchain">MoltChain</option><option value="solana">Solana</option></select>
-            </div>
-            <div class="form-group"><label>Amount (MOLT)</label>
-              <input type="number" id="bridgeAmount" class="form-input" placeholder="0.00" />
-            </div>
-            <button class="btn btn-primary popup-btn-block" id="initBridgeTransfer"><i class="fas fa-paper-plane"></i> Bridge Tokens</button>
-          </div>
-        </div>
-      </div>
-
-      <!-- Tab Content: Prediction Markets -->
-      <div class="popup-tab-content" data-tab="prediction" id="predictionPanel">
-        <div id="predictionContent">
-          <div class="panel-header" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.75rem;">
-            <h4 style="margin:0;"><i class="fas fa-chart-line"></i> Markets</h4>
-            <button class="btn btn-small btn-secondary" id="refreshPrediction"><i class="fas fa-sync-alt"></i></button>
-          </div>
-          <div id="predMarketsList">
-            <div class="popup-empty-state"><i class="fas fa-chart-bar"></i><p>Loading markets...</p></div>
-          </div>
         </div>
       </div>
 

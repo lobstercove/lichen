@@ -444,9 +444,6 @@ function setupDashboardTabs() {
       if (name === 'activity') loadActivity();
       if (name === 'assets') loadAssets();
       if (name === 'identity') loadIdentityTab();
-      if (name === 'governance') loadGovernanceTab();
-      if (name === 'bridge') loadBridgeTab();
-      if (name === 'prediction') loadPredictionTab();
     });
   });
 }
@@ -502,56 +499,6 @@ async function loadIdentityTab() {
     `;
   } catch {
     container.innerHTML = '<div class="empty-state"><p>Failed to load identity</p></div>';
-  }
-}
-
-async function loadGovernanceTab() {
-  const container = $('govProposalsList');
-  if (!container) return;
-  container.innerHTML = '<div class="empty-state"><span class="spinner"></span></div>';
-
-  try {
-    const result = await rpc().call('getGovernanceProposals', []);
-    const proposals = result?.proposals || (Array.isArray(result) ? result : []);
-    if (!proposals.length) {
-      container.innerHTML = '<p class="empty-state"><i class="fas fa-vote-yea"></i> No active proposals</p>';
-      return;
-    }
-    container.innerHTML = proposals.slice(0, 10).map(p => `
-      <div class="proposal-item">
-        <strong>${p.title || 'Proposal #' + p.id}</strong>
-        <span class="label-badge">${p.status || 'active'}</span>
-      </div>
-    `).join('');
-  } catch {
-    container.innerHTML = '<p class="empty-state"><i class="fas fa-vote-yea"></i> Failed to load proposals</p>';
-  }
-}
-
-async function loadBridgeTab() {
-  // Bridge form is static HTML; no additional data load needed
-}
-
-async function loadPredictionTab() {
-  const container = $('predMarketsList');
-  if (!container) return;
-  container.innerHTML = '<div class="empty-state"><span class="spinner"></span></div>';
-
-  try {
-    const result = await rpc().call('getPredictionMarkets', []);
-    const markets = result?.markets || (Array.isArray(result) ? result : []);
-    if (!markets.length) {
-      container.innerHTML = '<p class="empty-state"><i class="fas fa-chart-bar"></i> No active markets</p>';
-      return;
-    }
-    container.innerHTML = markets.slice(0, 10).map(m => `
-      <div class="market-item">
-        <strong>${m.question || 'Market #' + m.id}</strong>
-        <span class="label-badge">${m.status || 'open'}</span>
-      </div>
-    `).join('');
-  } catch {
-    container.innerHTML = '<p class="empty-state"><i class="fas fa-chart-bar"></i> Failed to load markets</p>';
   }
 }
 
