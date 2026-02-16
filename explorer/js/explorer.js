@@ -496,6 +496,10 @@ async function updateDashboardStats() {
             if (metrics.tps !== undefined) {
                 const tpsEl = document.getElementById('tpsValue');
                 if (tpsEl) tpsEl.textContent = formatNumber(Math.floor(metrics.tps));
+                const peakEl = document.getElementById('peakTps');
+                if (peakEl && metrics.peak_tps !== undefined) {
+                    peakEl.textContent = metrics.peak_tps.toFixed(1);
+                }
             }
             if (metrics.total_transactions !== undefined) {
                 const totalTxsEl = document.getElementById('totalTxs');

@@ -100,6 +100,7 @@ pub struct TokenTransfer {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Metrics {
     pub tps: f64,
+    pub peak_tps: f64,
     pub total_transactions: u64,
     pub total_blocks: u64,
     pub average_block_time: f64,
@@ -122,6 +123,8 @@ pub struct MetricsStore {
     // Track block times for average calculation
     last_block_time: Mutex<u64>,
     block_times: Mutex<VecDeque<u64>>, // Last 100 block times
+    /// Peak TPS observed (rolling window max)
+    peak_tps: Mutex<f64>,
     /// Daily transaction counter (resets at midnight UTC)
     daily_transactions: Mutex<u64>,
     /// Date string (YYYY-MM-DD) for daily counter reset detection
@@ -145,6 +148,7 @@ impl MetricsStore {
             active_accounts: Mutex::new(0),
             last_block_time: Mutex::new(0),
             block_times: Mutex::new(VecDeque::new()),
+            peak_tps: Mutex::new(0.0),
             daily_transactions: Mutex::new(0),
             daily_date: Mutex::new(today),
         }
@@ -277,6 +281,15 @@ impl MetricsStore {
             0.0
         };
 
+        // Update peak TPS
+        let peak_tps = {
+            let mut peak = self.peak_tps.lock().unwrap_or_else(|e| e.into_inner());
+            if tps > *peak {
+                *peak = tps;
+            }
+            *peak
+        };
+
         // Get average block time
         let avg_block_time = {
             let times = self.block_times.lock().unwrap_or_else(|e| e.into_inner());
@@ -290,6 +303,7 @@ impl MetricsStore {
 
         Metrics {
             tps,
+            peak_tps,
             total_transactions: *self
                 .total_transactions
                 .lock()
