@@ -1466,6 +1466,7 @@ impl TxProcessor {
             17 => self.system_deploy_contract(ix),
             18 => self.system_set_contract_abi(ix),
             19 => self.system_faucet_airdrop(ix),
+            20 => self.system_register_symbol(ix),
             _ => Err(format!("Unknown system instruction: {}", instruction_type)),
         }
     }
@@ -1530,6 +1531,71 @@ impl TxProcessor {
         }
 
         self.b_register_evm_address(&evm_address, &native_pubkey)
+    }
+
+    /// System program: Register symbol for an existing deployed contract (instruction type 20).
+    /// Instruction data: [20 | json_bytes]
+    /// JSON: { "symbol": "MOLT", "name": "MoltCoin", "template": "token", "metadata": {...} }
+    /// Accounts: [contract_owner, contract_id]
+    /// Only the contract owner can register a symbol for their contract.
+    fn system_register_symbol(&self, ix: &Instruction) -> Result<(), String> {
+        if ix.accounts.len() < 2 {
+            return Err("RegisterSymbol requires [owner, contract_id] accounts".to_string());
+        }
+        if ix.data.len() < 2 {
+            return Err("RegisterSymbol: missing symbol data".to_string());
+        }
+
+        let owner = ix.accounts[0];
+        let contract_id = ix.accounts[1];
+
+        // Verify the contract exists and the caller owns it
+        let account = self
+            .b_get_account(&contract_id)?
+            .ok_or_else(|| "Contract account not found".to_string())?;
+        if !account.executable {
+            return Err("Account is not a deployed contract".to_string());
+        }
+        let contract: crate::ContractAccount = serde_json::from_slice(&account.data)
+            .map_err(|e| format!("Failed to decode contract: {}", e))?;
+        if contract.owner != owner {
+            return Err("Only the contract owner can register a symbol".to_string());
+        }
+
+        // Parse the JSON payload
+        let json_bytes = &ix.data[1..];
+        let raw = std::str::from_utf8(json_bytes)
+            .map_err(|_| "RegisterSymbol: invalid UTF-8 data".to_string())?;
+        let payload: serde_json::Value = serde_json::from_str(raw)
+            .map_err(|e| format!("RegisterSymbol: invalid JSON: {}", e))?;
+
+        let symbol = payload
+            .get("symbol")
+            .and_then(|s| s.as_str())
+            .ok_or_else(|| "RegisterSymbol: missing 'symbol' field".to_string())?;
+
+        // Check if this program already has a registered symbol
+        if let Ok(Some(_existing)) = self.state.get_symbol_registry_by_program(&contract_id) {
+            // Update: allow re-registration by same owner (overwrite)
+        }
+
+        let entry = SymbolRegistryEntry {
+            symbol: symbol.to_string(),
+            program: contract_id,
+            owner,
+            name: payload
+                .get("name")
+                .and_then(|n| n.as_str())
+                .map(|s| s.to_string()),
+            template: payload
+                .get("template")
+                .and_then(|t| t.as_str())
+                .map(|s| s.to_string()),
+            metadata: payload.get("metadata").cloned(),
+        };
+
+        self.b_register_symbol(symbol, entry)?;
+        Ok(())
     }
 
     /// System program: Create NFT collection

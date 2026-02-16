@@ -2072,9 +2072,11 @@ function generateEVMAddress(base58Address) {
 // Sends system instruction opcode 12 with the 20-byte EVM address
 async function registerEvmAddress(wallet, password) {
     try {
-        // Skip if already registered (idempotency guard)
-        const evmRegistered = JSON.parse(localStorage.getItem('moltEvmRegistered') || '{}');
-        if (evmRegistered[wallet.address]) return;
+        // On-chain idempotency: query RocksDB via RPC, skip if already registered
+        try {
+            const existing = await rpc.call('getEvmRegistration', [wallet.address]);
+            if (existing && existing.evmAddress) return; // already registered on-chain
+        } catch (_) {} // RPC down — fall through, processor is idempotent anyway
 
         // Skip EVM registration if account isn't funded yet (imported wallets)
         try {
@@ -2123,10 +2125,6 @@ async function registerEvmAddress(wallet, password) {
 
         await rpc.sendTransaction(txBase64);
         console.log('EVM address registered:', evmAddress, '→', wallet.address);
-        // Mark as registered to prevent duplicate sends
-        const evmReg = JSON.parse(localStorage.getItem('moltEvmRegistered') || '{}');
-        evmReg[wallet.address] = true;
-        localStorage.setItem('moltEvmRegistered', JSON.stringify(evmReg));
     } catch (error) {
         // Don't block wallet creation on registration failure
         // (e.g. network down, account not funded yet)
