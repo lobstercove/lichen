@@ -16,7 +16,7 @@ Out of 6 reported findings:
 
 ### Final severity after counter-audit
 - **HIGH**: 1 (`NEW-H2`) — **FIXED** (commit bcc34e9)
-- **MEDIUM**: 1 (`NEW-M1`)
+- **MEDIUM**: 1 (`NEW-M1`) — **FIXED** (commit 52f3aac)
 - **LOW**: 2 (`NEW-M2`, `NEW-L1`)
 - **INVALID / CLOSED**: 2 (`NEW-H1`, `NEW-H3`)
 
@@ -85,7 +85,8 @@ Out of 6 reported findings:
 
 ## NEW-M1 — MoltyID decay cap after long inactivity
 **Original claim**: MEDIUM  
-**Counter-audit verdict**: **CONFIRMED MEDIUM**
+**Counter-audit verdict**: **CONFIRMED MEDIUM**  
+**Status**: **FIXED** (commit 52f3aac) — `apply_reputation_decay` now returns `(rep, periods_applied)` and `last_updated` advances only by actually applied periods, not to current time. Remaining decay is preserved for future calls.
 
 ### What code does
 - Decay periods are capped at `MAX_DECAY_PERIODS_PER_CALL = 64`.
@@ -139,7 +140,7 @@ Out of 6 reported findings:
    - ~~`NEW-H2` (margin admission math/policy mismatch)~~ **FIXED** (commit bcc34e9)
 
 2. **Priority 1**
-   - `NEW-M1` (long-inactivity decay cap semantics)
+   - ~~`NEW-M1` (long-inactivity decay cap semantics)~~ **FIXED** (commit 52f3aac)
 
 3. **Priority 2**
    - `NEW-L1` (penalty remainder accounting)
@@ -179,4 +180,4 @@ Out of 6 reported findings:
 ---
 
 **Counter-audit complete**: February 16, 2026  
-**Result**: 3 confirmed, 1 downgraded/reframed, 2 invalidated
+**Result**: 3 confirmed (all fixed), 1 downgraded/reframed, 2 invalidated
