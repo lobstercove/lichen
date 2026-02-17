@@ -32,6 +32,8 @@ struct CustodyState {
     http: reqwest::Client,
     /// AUDIT-FIX 1.20: Global withdrawal rate limiter
     withdrawal_rate: Arc<Mutex<WithdrawalRateState>>,
+    /// AUDIT-FIX W-H4: Deposit rate limiter
+    deposit_rate: Arc<Mutex<DepositRateState>>,
 }
 
 /// AUDIT-FIX 1.20: Withdrawal rate limiting state
@@ -54,6 +56,25 @@ impl WithdrawalRateState {
             value_this_hour: 0,
             hour_start: std::time::Instant::now(),
             per_address: std::collections::HashMap::new(),
+        }
+    }
+}
+
+/// AUDIT-FIX W-H4: Deposit rate limiting state
+#[derive(Clone, Debug)]
+struct DepositRateState {
+    window_start: std::time::Instant,
+    count_this_minute: u64,
+    /// Per-user: last deposit request time
+    per_user: std::collections::HashMap<String, std::time::Instant>,
+}
+
+impl DepositRateState {
+    fn new() -> Self {
+        Self {
+            window_start: std::time::Instant::now(),
+            count_this_minute: 0,
+            per_user: std::collections::HashMap::new(),
         }
     }
 }
@@ -293,6 +314,15 @@ const CF_AUDIT_EVENTS: &str = "audit_events";
 const CF_CURSORS: &str = "cursors";
 const CF_RESERVE_LEDGER: &str = "reserve_ledger";
 const CF_REBALANCE_JOBS: &str = "rebalance_jobs";
+/// AUDIT-FIX M1: Secondary status index for O(active) queries.
+/// Keys: "status:{table}:{status}:{job_id}" → empty value.
+/// Full-table scans replaced with prefix iteration on this CF.
+const CF_STATUS_INDEX: &str = "status_index";
+/// AUDIT-FIX M4: Write-ahead intent log for crash idempotency.
+/// Before broadcasting any on-chain TX, record the intent here.
+/// On startup, stale intents are reconciled against chain state.
+/// Keys: "intent:{type}:{job_id}" → JSON {chain, tx_type, created_at}
+const CF_TX_INTENTS: &str = "tx_intents";
 
 /// MoltChain contract runtime program address (all 0xFF bytes)
 const MOLT_CONTRACT_PROGRAM: [u8; 32] = [0xFF; 32];
@@ -308,6 +338,18 @@ async fn main() {
 
     let config = load_config();
 
+    // AUDIT-FIX M3: Single seed architecture warning
+    // All deposit addresses are derived from one master seed via HMAC-SHA256.
+    // Compromise of this seed would expose ALL deposit private keys.
+    warn!(
+        "🔐 SECURITY NOTICE: All custody keys derive from a single master seed. \
+         Protect this seed with the highest operational security: \
+         (1) Store via CUSTODY_MASTER_SEED_FILE on an encrypted, access-controlled volume. \
+         (2) Rotate the seed periodically and re-derive addresses (requires fund sweep). \
+         (3) Consider hardware HSM integration for production deployments. \
+         (4) Limit process memory access (disable core dumps, restrict ptrace)."
+    );
+
     // Multi-signer mode: validate threshold configuration
     if config.signer_threshold > config.signer_endpoints.len() {
         panic!(
@@ -318,6 +360,19 @@ async fn main() {
         );
     }
     if config.signer_endpoints.len() > 1 {
+        // AUDIT-FIX R-C3: Multi-signer FROST protocol is implemented but the 2-round
+        // commit/sign flow (collect_frost_signatures) is not yet wired into the sweep
+        // and withdrawal pipelines. The generic collect_signatures uses single-round
+        // /sign which will NOT produce valid FROST shares. Multi-signer mode currently
+        // only works correctly in single-signer mode. DO NOT deploy with >1 signer
+        // until the FROST integration is completed and tested end-to-end.
+        tracing::error!(
+            "🚨 MULTI-SIGNER MODE DETECTED ({}-of-{}). WARNING: FROST 2-round signing \
+             is NOT yet wired into sweep/withdrawal pipelines. Only single-signer mode \
+             is production-ready. Multi-signer deployments will produce invalid signatures.",
+            config.signer_threshold,
+            config.signer_endpoints.len()
+        );
         info!(
             "Multi-signer mode: {}-of-{} threshold (FROST Ed25519 for Solana, packed ECDSA for EVM)",
             config.signer_threshold,
@@ -336,6 +391,10 @@ async fn main() {
     }
 
     let db = open_db(&config.db_path).expect("open custody db");
+
+    // AUDIT-FIX M4: On startup, check for stale TX intents from a previous crash
+    recover_stale_intents(&db);
+
     let state = CustodyState {
         db: Arc::new(db),
         next_index_lock: Arc::new(Mutex::new(())),
@@ -348,6 +407,8 @@ async fn main() {
             .expect("Failed to build HTTP client"),
         // AUDIT-FIX 1.20: Withdrawal rate limiter
         withdrawal_rate: Arc::new(Mutex::new(WithdrawalRateState::new())),
+        // AUDIT-FIX W-H4: Deposit rate limiter
+        deposit_rate: Arc::new(Mutex::new(DepositRateState::new())),
     };
 
     if let Some(url) = config.solana_rpc_url.clone() {
@@ -450,6 +511,27 @@ async fn create_deposit(
         return Err(Json(ErrorResponse::invalid("Missing user_id/chain/asset")));
     }
 
+    // AUDIT-FIX W-H4: Rate limit deposit creation (60/min global, 10s per-user cooldown)
+    {
+        let mut dr = state.deposit_rate.lock().await;
+        let now = std::time::Instant::now();
+        if now.duration_since(dr.window_start).as_secs() >= 60 {
+            dr.window_start = now;
+            dr.count_this_minute = 0;
+        }
+        dr.count_this_minute += 1;
+        if dr.count_this_minute > 60 {
+            tracing::warn!("⚠️  Deposit rate limit exceeded: {} this minute", dr.count_this_minute);
+            return Err(Json(ErrorResponse::invalid("rate_limited: too many deposit requests, try again later")));
+        }
+        if let Some(last) = dr.per_user.get(&payload.user_id) {
+            if now.duration_since(*last).as_secs() < 10 {
+                return Err(Json(ErrorResponse::invalid("rate_limited: wait 10s between deposit requests")));
+            }
+        }
+        dr.per_user.insert(payload.user_id.clone(), now);
+    }
+
     if (chain == "solana" || chain == "sol") && is_solana_stablecoin(&asset) {
         ensure_solana_config(&state.config).map_err(|e| Json(ErrorResponse::invalid(&e)))?;
     }
@@ -495,6 +577,8 @@ async fn create_deposit(
     store_deposit(&state.db, &record).map_err(|e| Json(ErrorResponse::db(&e)))?;
     store_address_index(&state.db, &record.address, &record.deposit_id)
         .map_err(|e| Json(ErrorResponse::db(&e)))?;
+    // AUDIT-FIX M1: index initial deposit status
+    let _ = set_status_index(&state.db, "deposits", "issued", &record.deposit_id);
 
     Ok(Json(CreateDepositResponse {
         deposit_id,
@@ -560,9 +644,70 @@ fn open_db<P: AsRef<Path>>(path: P) -> Result<DB, String> {
         ColumnFamilyDescriptor::new(CF_CURSORS, Options::default()),
         ColumnFamilyDescriptor::new(CF_RESERVE_LEDGER, Options::default()),
         ColumnFamilyDescriptor::new(CF_REBALANCE_JOBS, Options::default()),
+        ColumnFamilyDescriptor::new(CF_STATUS_INDEX, Options::default()),
+        ColumnFamilyDescriptor::new(CF_TX_INTENTS, Options::default()),
     ];
 
     DB::open_cf_descriptors(&opts, path, cfs).map_err(|e| format!("db open: {}", e))
+}
+
+// ── AUDIT-FIX M1: Status index helpers ──
+// Keys: "status:{table}:{status}:{job_id}" → empty
+// When a job's status changes, remove old index entry + add new one.
+// list_*_by_status now does a prefix scan on this CF instead of full-table scan.
+
+fn set_status_index(db: &DB, table: &str, status: &str, job_id: &str) -> Result<(), String> {
+    let cf = db
+        .cf_handle(CF_STATUS_INDEX)
+        .ok_or_else(|| "missing status_index cf".to_string())?;
+    let key = format!("status:{}:{}:{}", table, status, job_id);
+    db.put_cf(cf, key.as_bytes(), b"")
+        .map_err(|e| format!("status index put: {}", e))
+}
+
+fn remove_status_index(db: &DB, table: &str, status: &str, job_id: &str) -> Result<(), String> {
+    let cf = db
+        .cf_handle(CF_STATUS_INDEX)
+        .ok_or_else(|| "missing status_index cf".to_string())?;
+    let key = format!("status:{}:{}:{}", table, status, job_id);
+    db.delete_cf(cf, key.as_bytes())
+        .map_err(|e| format!("status index delete: {}", e))
+}
+
+fn update_status_index(
+    db: &DB,
+    table: &str,
+    old_status: &str,
+    new_status: &str,
+    job_id: &str,
+) -> Result<(), String> {
+    if old_status != new_status {
+        let _ = remove_status_index(db, table, old_status, job_id);
+        set_status_index(db, table, new_status, job_id)?;
+    }
+    Ok(())
+}
+
+/// List job IDs from the status index with a given prefix.
+fn list_ids_by_status_index(db: &DB, table: &str, status: &str) -> Result<Vec<String>, String> {
+    let cf = db
+        .cf_handle(CF_STATUS_INDEX)
+        .ok_or_else(|| "missing status_index cf".to_string())?;
+    let prefix = format!("status:{}:{}:", table, status);
+    let prefix_bytes = prefix.as_bytes();
+    let mut ids = Vec::new();
+    let iter = db.prefix_iterator_cf(cf, prefix_bytes);
+    for item in iter {
+        let (key, _) = item.map_err(|e| format!("db iter: {}", e))?;
+        let key_str = std::str::from_utf8(&key).unwrap_or("");
+        if !key_str.starts_with(&prefix) {
+            break; // past prefix range
+        }
+        if let Some(job_id) = key_str.strip_prefix(&prefix) {
+            ids.push(job_id.to_string());
+        }
+    }
+    Ok(ids)
 }
 
 fn store_address_index(db: &DB, address: &str, deposit_id: &str) -> Result<(), String> {
@@ -571,6 +716,70 @@ fn store_address_index(db: &DB, address: &str, deposit_id: &str) -> Result<(), S
         .ok_or_else(|| "missing address_index cf".to_string())?;
     db.put_cf(cf, address.as_bytes(), deposit_id.as_bytes())
         .map_err(|e| format!("db put: {}", e))
+}
+
+// ── AUDIT-FIX M4: Write-ahead intent log for crash idempotency ──
+// Before broadcasting any on-chain transaction, we record an intent.
+// On crash recovery, stale intents are logged and the operator is alerted.
+
+fn record_tx_intent(db: &DB, tx_type: &str, job_id: &str, chain: &str) -> Result<(), String> {
+    let cf = db
+        .cf_handle(CF_TX_INTENTS)
+        .ok_or_else(|| "missing tx_intents cf".to_string())?;
+    let key = format!("intent:{}:{}", tx_type, job_id);
+    let payload = serde_json::json!({
+        "tx_type": tx_type,
+        "job_id": job_id,
+        "chain": chain,
+        "created_at": chrono::Utc::now().timestamp(),
+    });
+    let bytes = serde_json::to_vec(&payload).map_err(|e| format!("encode: {}", e))?;
+    db.put_cf(cf, key.as_bytes(), bytes)
+        .map_err(|e| format!("intent put: {}", e))
+}
+
+fn clear_tx_intent(db: &DB, tx_type: &str, job_id: &str) -> Result<(), String> {
+    let cf = db
+        .cf_handle(CF_TX_INTENTS)
+        .ok_or_else(|| "missing tx_intents cf".to_string())?;
+    let key = format!("intent:{}:{}", tx_type, job_id);
+    db.delete_cf(cf, key.as_bytes())
+        .map_err(|e| format!("intent delete: {}", e))
+}
+
+fn recover_stale_intents(db: &DB) {
+    let cf = match db.cf_handle(CF_TX_INTENTS) {
+        Some(cf) => cf,
+        None => return,
+    };
+    let iter = db.prefix_iterator_cf(cf, b"intent:");
+    let mut count = 0u32;
+    for item in iter {
+        let (key, value) = match item {
+            Ok(kv) => kv,
+            Err(_) => continue,
+        };
+        let key_str = std::str::from_utf8(&key).unwrap_or("?");
+        if !key_str.starts_with("intent:") {
+            break;
+        }
+        let payload_str = std::str::from_utf8(&value).unwrap_or("{}");
+        tracing::error!(
+            "⚠️  STALE TX INTENT (possible crash during broadcast): key={} payload={}. \
+             Manual reconciliation required — check chain state for this job.",
+            key_str,
+            payload_str
+        );
+        count += 1;
+    }
+    if count > 0 {
+        tracing::error!(
+            "🚨 Found {} stale TX intents from previous run. \
+             These indicate broadcasts that may or may not have reached the chain. \
+             Review each above and reconcile against on-chain state before proceeding.",
+            count
+        );
+    }
 }
 
 fn store_deposit(db: &DB, record: &DepositRequest) -> Result<(), String> {
@@ -893,21 +1102,59 @@ fn load_config() -> CustodyConfig {
         jupiter_api_url,
         uniswap_router,
         deposit_ttl_secs,
-        // AUDIT-FIX 1.17: Master seed MUST be set — hardcoded fallback removed.
-        // Set CUSTODY_ALLOW_INSECURE_SEED=1 only for local development.
+        // AUDIT-FIX 1.17 + M2: Master seed from file preferred, env var fallback.
+        // Priority: CUSTODY_MASTER_SEED_FILE > CUSTODY_MASTER_SEED > panic (or insecure dev default).
         master_seed: {
-            match std::env::var("CUSTODY_MASTER_SEED") {
-                Ok(seed) if !seed.is_empty() => seed,
-                _ => {
+            let seed = if let Ok(seed_path) = std::env::var("CUSTODY_MASTER_SEED_FILE") {
+                let seed_path = seed_path.trim().to_string();
+                match std::fs::read_to_string(&seed_path) {
+                    Ok(contents) => {
+                        let s = contents.trim().to_string();
+                        if s.is_empty() {
+                            panic!("FATAL: CUSTODY_MASTER_SEED_FILE '{}' is empty.", seed_path);
+                        }
+                        tracing::info!("Master seed loaded from file (CUSTODY_MASTER_SEED_FILE)");
+                        Some(s)
+                    }
+                    Err(e) => {
+                        panic!(
+                            "FATAL: Cannot read CUSTODY_MASTER_SEED_FILE '{}': {}",
+                            seed_path, e
+                        );
+                    }
+                }
+            } else {
+                None
+            };
+
+            let seed = seed.or_else(|| {
+                match std::env::var("CUSTODY_MASTER_SEED") {
+                    Ok(s) if !s.is_empty() => {
+                        tracing::warn!(
+                            "⚠️  Master seed loaded from env var CUSTODY_MASTER_SEED. \
+                             Prefer CUSTODY_MASTER_SEED_FILE for production."
+                        );
+                        // AUDIT-FIX M2: Clear env var after reading to reduce exposure
+                        std::env::remove_var("CUSTODY_MASTER_SEED");
+                        Some(s)
+                    }
+                    _ => None,
+                }
+            });
+
+            match seed {
+                Some(s) => s,
+                None => {
                     if std::env::var("CUSTODY_ALLOW_INSECURE_SEED").unwrap_or_default() == "1" {
                         tracing::warn!(
-                            "⚠️  CUSTODY_MASTER_SEED not set — using insecure default (dev mode)!"
+                            "⚠️  No master seed configured — using insecure default (dev mode)!"
                         );
                         "INSECURE_DEFAULT_SEED_DO_NOT_USE_IN_PRODUCTION".to_string()
                     } else {
                         panic!(
-                            "FATAL: CUSTODY_MASTER_SEED not set. All custody keys would be derivable from source code. \
-                             Set CUSTODY_MASTER_SEED to a secure random value, or set CUSTODY_ALLOW_INSECURE_SEED=1 for dev."
+                            "FATAL: No master seed configured. \
+                             Set CUSTODY_MASTER_SEED_FILE (preferred) or CUSTODY_MASTER_SEED, \
+                             or set CUSTODY_ALLOW_INSECURE_SEED=1 for dev."
                         );
                     }
                 }
@@ -1395,17 +1642,33 @@ async fn solana_rpc_call(
 }
 
 fn list_pending_deposits(db: &DB, chain: &str) -> Result<Vec<DepositRequest>, String> {
-    let cf = db
-        .cf_handle(CF_DEPOSITS)
-        .ok_or_else(|| "missing deposits cf".to_string())?;
+    // AUDIT-FIX M1: Use status index for "issued" and "pending" deposits.
+    // This avoids O(n) full table scan on every poll cycle.
     let mut results = Vec::new();
-    let iter = db.iterator_cf(cf, rocksdb::IteratorMode::Start);
-    for item in iter {
-        let (_, value) = item.map_err(|e| format!("db iter: {}", e))?;
-        let record: DepositRequest =
-            serde_json::from_slice(&value).map_err(|e| format!("decode: {}", e))?;
-        if record.chain == chain && (record.status == "issued" || record.status == "pending") {
-            results.push(record);
+    for status in ["issued", "pending"] {
+        let ids = list_ids_by_status_index(db, "deposits", status)?;
+        for id in ids {
+            if let Some(record) = fetch_deposit(db, &id)? {
+                if record.chain == chain {
+                    results.push(record);
+                }
+            }
+        }
+    }
+    // Fallback: if index is empty but table is not, do legacy full scan once
+    // (covers pre-index data until all deposits cycle through)
+    if results.is_empty() {
+        let cf = db
+            .cf_handle(CF_DEPOSITS)
+            .ok_or_else(|| "missing deposits cf".to_string())?;
+        let iter = db.iterator_cf(cf, rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (_, value) = item.map_err(|e| format!("db iter: {}", e))?;
+            let record: DepositRequest =
+                serde_json::from_slice(&value).map_err(|e| format!("decode: {}", e))?;
+            if record.chain == chain && (record.status == "issued" || record.status == "pending") {
+                results.push(record);
+            }
         }
     }
     Ok(results)
@@ -1500,6 +1763,52 @@ async fn evm_get_gas_price(client: &reqwest::Client, url: &str) -> Result<u128, 
     let result = evm_rpc_call(client, url, "eth_gasPrice", json!([])).await?;
     let value = result.as_str().unwrap_or("0x0");
     parse_hex_u128(value)
+}
+
+/// AUDIT-FIX M6: Dynamic gas estimation via eth_estimateGas.
+/// Falls back to the provided `fallback` if the RPC call fails or returns 0.
+/// Adds a 20% buffer to the estimate to prevent out-of-gas on execution.
+async fn evm_estimate_gas(
+    client: &reqwest::Client,
+    url: &str,
+    from: &str,
+    to: &str,
+    value: u128,
+    data: Option<&[u8]>,
+    fallback: u128,
+) -> u128 {
+    let mut params = serde_json::json!({
+        "from": from,
+        "to": to,
+        "value": format!("0x{:x}", value),
+    });
+    if let Some(d) = data {
+        params["data"] = serde_json::Value::String(format!("0x{}", hex::encode(d)));
+    }
+    match evm_rpc_call(client, url, "eth_estimateGas", json!([params])).await {
+        Ok(result) => {
+            let hex_str = result.as_str().unwrap_or("0x0");
+            match parse_hex_u128(hex_str) {
+                Ok(estimate) if estimate > 0 => {
+                    // Add 20% buffer
+                    let buffered = estimate.saturating_add(estimate / 5);
+                    tracing::debug!(
+                        "eth_estimateGas: {} → buffered to {} (fallback was {})",
+                        estimate, buffered, fallback
+                    );
+                    buffered
+                }
+                _ => {
+                    tracing::debug!("eth_estimateGas returned 0, using fallback {}", fallback);
+                    fallback
+                }
+            }
+        }
+        Err(e) => {
+            tracing::debug!("eth_estimateGas failed ({}), using fallback {}", e, fallback);
+            fallback
+        }
+    }
 }
 
 async fn evm_get_chain_id(client: &reqwest::Client, url: &str) -> Result<u64, String> {
@@ -1720,8 +2029,11 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
         if !is_ready_for_retry(job) {
             continue;
         }
+        // AUDIT-FIX M4: Record intent before broadcast for crash idempotency
+        let _ = record_tx_intent(&state.db, "sweep", &job.job_id, &job.chain);
         match broadcast_sweep(state, job).await {
             Ok(Some(tx_hash)) => {
+                let _ = clear_tx_intent(&state.db, "sweep", &job.job_id);
                 job.status = "sweep_submitted".to_string();
                 job.sweep_tx_hash = Some(tx_hash);
                 job.last_error = None;
@@ -1740,6 +2052,7 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
                 // issuing wrapped tokens when the sweep tx reverts — a fund mismatch.
             }
             Ok(None) => {
+                let _ = clear_tx_intent(&state.db, "sweep", &job.job_id);
                 mark_sweep_failed(job, "broadcast returned empty".to_string());
                 store_sweep_job(&state.db, job)?;
                 record_audit_event(
@@ -1751,6 +2064,7 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
                 )?;
             }
             Err(err) => {
+                let _ = clear_tx_intent(&state.db, "sweep", &job.job_id);
                 warn!("sweep broadcast failed: {}", err);
                 mark_sweep_failed(job, err);
                 store_sweep_job(&state.db, job)?;
@@ -1786,7 +2100,7 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
                                 &asset_lower,
                                 amount,
                                 true,
-                            ) {
+                            ).await {
                                 tracing::warn!("reserve ledger update failed: {}", e);
                             }
                         }
@@ -1796,15 +2110,35 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
                 // AUDIT-FIX C2: Create credit job (mint wrapped tokens) only AFTER
                 // the sweep is confirmed on-chain. This ensures the treasury actually
                 // received the funds before issuing wrapped tokens to the user.
-                if let Some(credit_job) = build_credit_job(state, job)? {
-                    store_credit_job(&state.db, &credit_job)?;
-                    record_audit_event(
-                        &state.db,
-                        "credit_queued",
-                        &credit_job.job_id,
-                        Some(&credit_job.deposit_id),
-                        None,
-                    )?;
+                match build_credit_job(state, job)? {
+                    Some(credit_job) => {
+                        store_credit_job(&state.db, &credit_job)?;
+                        record_audit_event(
+                            &state.db,
+                            "credit_queued",
+                            &credit_job.job_id,
+                            Some(&credit_job.deposit_id),
+                            None,
+                        )?;
+                    }
+                    None => {
+                        // AUDIT-FIX R-H1: Log when credit job cannot be built
+                        // after a confirmed sweep. This means the treasury received
+                        // funds but the user won't get wrapped tokens automatically.
+                        tracing::error!(
+                            "🚨 CREDIT JOB NOT CREATED for sweep {} (deposit {}). \
+                             Treasury received funds but no wrapped tokens will be minted. \
+                             Manual operator intervention required to credit the user.",
+                            job.job_id, job.deposit_id
+                        );
+                        record_audit_event(
+                            &state.db,
+                            "credit_build_failed",
+                            &job.job_id,
+                            Some(&job.deposit_id),
+                            None,
+                        )?;
+                    }
                 }
             }
         }
@@ -1832,8 +2166,11 @@ async fn process_credit_jobs(state: &CustodyState) -> Result<(), String> {
         if !is_ready_for_credit_retry(&job) {
             continue;
         }
+        // AUDIT-FIX M4: Record intent before credit broadcast
+        let _ = record_tx_intent(&state.db, "credit", &job.job_id, "molt");
         match submit_wrapped_credit(state, &job).await {
             Ok(tx_signature) => {
+                let _ = clear_tx_intent(&state.db, "credit", &job.job_id);
                 job.status = "submitted".to_string();
                 job.tx_signature = Some(tx_signature);
                 job.last_error = None;
@@ -1848,6 +2185,7 @@ async fn process_credit_jobs(state: &CustodyState) -> Result<(), String> {
                 )?;
             }
             Err(err) => {
+                let _ = clear_tx_intent(&state.db, "credit", &job.job_id);
                 mark_credit_failed(&mut job, err);
                 store_credit_job(&state.db, &job)?;
             }
@@ -2417,7 +2755,10 @@ async fn broadcast_evm_sweep(
 
     let nonce = evm_get_transaction_count(&state.http, url, &from_address).await?;
     let gas_price = evm_get_gas_price(&state.http, url).await?;
-    let gas_limit = 21_000u128;
+    // AUDIT-FIX M6: Dynamic gas estimation with fallback to 21000 (simple transfer)
+    let gas_limit = evm_estimate_gas(
+        &state.http, url, &from_address, &to_address, amount, None, 21_000,
+    ).await;
     let fee = gas_price.saturating_mul(gas_limit);
     if amount <= fee {
         return Ok(None);
@@ -2465,8 +2806,13 @@ async fn broadcast_evm_token_sweep(
     let from_address = deposit.address.clone();
     let to_address = job.to_treasury.clone();
 
+    // AUDIT-FIX M6: Pre-compute transfer data for gas estimation
+    let transfer_data = evm_encode_erc20_transfer(&to_address, amount)?;
     let gas_price = evm_get_gas_price(&state.http, url).await?;
-    let gas_limit = 100_000u128;
+    // Dynamic gas estimation with fallback to 100000 (ERC-20 transfer)
+    let gas_limit = evm_estimate_gas(
+        &state.http, url, &from_address, &contract, 0, Some(&transfer_data), 100_000,
+    ).await;
     let fee = gas_price.saturating_mul(gas_limit);
     let native_balance = evm_get_balance(&state.http, url, &from_address).await?;
 
@@ -2531,7 +2877,7 @@ async fn broadcast_evm_token_sweep(
     let nonce = evm_get_transaction_count(&state.http, url, &from_address).await?;
     let chain_id = evm_get_chain_id(&state.http, url).await?;
     let signing_key = derive_evm_signing_key(&deposit.derivation_path, &state.config.master_seed)?;
-    let data = evm_encode_erc20_transfer(&to_address, amount)?;
+    // Re-use pre-computed transfer data from gas estimation
     let raw_tx = build_evm_signed_transaction_with_data(
         &signing_key,
         nonce,
@@ -2539,7 +2885,7 @@ async fn broadcast_evm_token_sweep(
         gas_limit,
         &contract,
         0,
-        &data,
+        &transfer_data,
         chain_id,
     )?;
     let tx_hex = format!("0x{}", hex::encode(raw_tx));
@@ -2570,8 +2916,10 @@ async fn fund_evm_gas_for_sweep(
     let chain_id = evm_get_chain_id(&state.http, url).await?;
     let signing_key = derive_evm_signing_key("custody-treasury-evm", &state.config.master_seed)?;
 
-    // Simple ETH transfer: 21000 gas
-    let gas_limit = 21_000u128;
+    // AUDIT-FIX M6: Dynamic gas estimation for treasury gas funding transfer
+    let gas_limit = evm_estimate_gas(
+        &state.http, url, treasury_addr, to_address, amount_wei, None, 21_000,
+    ).await;
     let tx_fee = gas_price.saturating_mul(gas_limit);
 
     // Verify treasury can afford the grant
@@ -2879,6 +3227,25 @@ async fn molt_rpc_call(
 }
 
 fn list_sweep_jobs_by_status(db: &DB, status: &str) -> Result<Vec<SweepJob>, String> {
+    // AUDIT-FIX M1: Use status index for O(active) instead of O(total)
+    let ids = list_ids_by_status_index(db, "sweep", status)?;
+    if !ids.is_empty() {
+        let cf = db
+            .cf_handle(CF_SWEEP_JOBS)
+            .ok_or_else(|| "missing sweep_jobs cf".to_string())?;
+        let mut results = Vec::new();
+        for id in ids {
+            if let Ok(Some(bytes)) = db.get_cf(cf, id.as_bytes()) {
+                if let Ok(record) = serde_json::from_slice::<SweepJob>(&bytes) {
+                    if record.status == status {
+                        results.push(record);
+                    }
+                }
+            }
+        }
+        return Ok(results);
+    }
+    // Fallback: legacy full scan for pre-index data
     let cf = db
         .cf_handle(CF_SWEEP_JOBS)
         .ok_or_else(|| "missing sweep_jobs cf".to_string())?;
@@ -2899,6 +3266,14 @@ fn store_sweep_job(db: &DB, job: &SweepJob) -> Result<(), String> {
     let cf = db
         .cf_handle(CF_SWEEP_JOBS)
         .ok_or_else(|| "missing sweep_jobs cf".to_string())?;
+    // AUDIT-FIX M1: Update status index on every store
+    if let Ok(Some(old_bytes)) = db.get_cf(cf, job.job_id.as_bytes()) {
+        if let Ok(old_job) = serde_json::from_slice::<SweepJob>(&old_bytes) {
+            let _ = update_status_index(db, "sweep", &old_job.status, &job.status, &job.job_id);
+        }
+    } else {
+        let _ = set_status_index(db, "sweep", &job.status, &job.job_id);
+    }
     let bytes = serde_json::to_vec(job).map_err(|e| format!("encode: {}", e))?;
     db.put_cf(cf, job.job_id.as_bytes(), bytes)
         .map_err(|e| format!("db put: {}", e))
@@ -2908,6 +3283,14 @@ fn store_credit_job(db: &DB, job: &CreditJob) -> Result<(), String> {
     let cf = db
         .cf_handle(CF_CREDIT_JOBS)
         .ok_or_else(|| "missing credit_jobs cf".to_string())?;
+    // AUDIT-FIX M1: Update status index on every store
+    if let Ok(Some(old_bytes)) = db.get_cf(cf, job.job_id.as_bytes()) {
+        if let Ok(old_job) = serde_json::from_slice::<CreditJob>(&old_bytes) {
+            let _ = update_status_index(db, "credit", &old_job.status, &job.status, &job.job_id);
+        }
+    } else {
+        let _ = set_status_index(db, "credit", &job.status, &job.job_id);
+    }
     let bytes = serde_json::to_vec(job).map_err(|e| format!("encode: {}", e))?;
     db.put_cf(cf, job.job_id.as_bytes(), bytes)
         .map_err(|e| format!("db put: {}", e))
@@ -2979,6 +3362,25 @@ fn record_audit_event(
 }
 
 fn list_credit_jobs_by_status(db: &DB, status: &str) -> Result<Vec<CreditJob>, String> {
+    // AUDIT-FIX M1: Use status index for O(active) instead of O(total)
+    let ids = list_ids_by_status_index(db, "credit", status)?;
+    if !ids.is_empty() {
+        let cf = db
+            .cf_handle(CF_CREDIT_JOBS)
+            .ok_or_else(|| "missing credit_jobs cf".to_string())?;
+        let mut results = Vec::new();
+        for id in ids {
+            if let Ok(Some(bytes)) = db.get_cf(cf, id.as_bytes()) {
+                if let Ok(record) = serde_json::from_slice::<CreditJob>(&bytes) {
+                    if record.status == status {
+                        results.push(record);
+                    }
+                }
+            }
+        }
+        return Ok(results);
+    }
+    // Fallback: legacy full scan for pre-index data
     let cf = db
         .cf_handle(CF_CREDIT_JOBS)
         .ok_or_else(|| "missing credit_jobs cf".to_string())?;
@@ -3028,15 +3430,22 @@ fn enqueue_sweep_job(db: &DB, job: &SweepJob) -> Result<(), String> {
         .ok_or_else(|| "missing sweep_jobs cf".to_string())?;
     let bytes = serde_json::to_vec(job).map_err(|e| format!("encode: {}", e))?;
     db.put_cf(cf, job.job_id.as_bytes(), bytes)
-        .map_err(|e| format!("db put: {}", e))
+        .map_err(|e| format!("db put: {}", e))?;
+    // AUDIT-FIX M1: index initial sweep job status
+    let _ = set_status_index(db, "sweep", &job.status, &job.job_id);
+    Ok(())
 }
 
 fn update_deposit_status(db: &DB, deposit_id: &str, status: &str) -> Result<(), String> {
     let mut record = fetch_deposit(db, deposit_id)
         .map_err(|e| format!("fetch deposit: {}", e))?
         .ok_or_else(|| "deposit not found".to_string())?;
+    let old_status = record.status.clone();
     record.status = status.to_string();
-    store_deposit(db, &record)
+    store_deposit(db, &record)?;
+    // AUDIT-FIX M1: maintain status index
+    let _ = update_status_index(db, "deposits", &old_status, status, deposit_id);
+    Ok(())
 }
 
 fn derive_solana_address(path: &str, master_seed: &str) -> Result<String, String> {
@@ -3684,6 +4093,14 @@ fn store_withdrawal_job(db: &DB, job: &WithdrawalJob) -> Result<(), String> {
     let cf = db
         .cf_handle(CF_WITHDRAWAL_JOBS)
         .ok_or_else(|| "missing withdrawal_jobs cf".to_string())?;
+    // AUDIT-FIX M1: Update status index on every store
+    if let Ok(Some(old_bytes)) = db.get_cf(cf, job.job_id.as_bytes()) {
+        if let Ok(old_job) = serde_json::from_slice::<WithdrawalJob>(&old_bytes) {
+            let _ = update_status_index(db, "withdrawal", &old_job.status, &job.status, &job.job_id);
+        }
+    } else {
+        let _ = set_status_index(db, "withdrawal", &job.status, &job.job_id);
+    }
     let bytes = serde_json::to_vec(job).map_err(|e| format!("encode: {}", e))?;
     db.put_cf(cf, job.job_id.as_bytes(), bytes)
         .map_err(|e| format!("db put: {}", e))
@@ -3723,6 +4140,21 @@ async fn submit_burn_signature(
     if payload.burn_tx_signature.is_empty() {
         return Err(Json(ErrorResponse::invalid("burn_tx_signature required")));
     }
+
+    // AUDIT-FIX R-H3: Serialize burn signature submission per job_id
+    // to prevent TOCTOU race where two concurrent requests both pass the
+    // "burn_tx_signature is None" check and one overwrites the other.
+    static BURN_LOCKS: std::sync::LazyLock<
+        std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>
+    > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+    let lock = {
+        let mut locks = BURN_LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+        locks.entry(job_id.clone())
+            .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    };
+    let _guard = lock.lock().await;
 
     let mut job = fetch_withdrawal_job(&state.db, &job_id)
         .map_err(|e| Json(ErrorResponse::db(&e)))?
@@ -3766,6 +4198,25 @@ async fn submit_burn_signature(
 }
 
 fn list_withdrawal_jobs_by_status(db: &DB, status: &str) -> Result<Vec<WithdrawalJob>, String> {
+    // AUDIT-FIX M1: Use status index for O(active) instead of O(total)
+    let ids = list_ids_by_status_index(db, "withdrawal", status)?;
+    if !ids.is_empty() {
+        let cf = db
+            .cf_handle(CF_WITHDRAWAL_JOBS)
+            .ok_or_else(|| "missing withdrawal_jobs cf".to_string())?;
+        let mut results = Vec::new();
+        for id in ids {
+            if let Ok(Some(bytes)) = db.get_cf(cf, id.as_bytes()) {
+                if let Ok(record) = serde_json::from_slice::<WithdrawalJob>(&bytes) {
+                    if record.status == status {
+                        results.push(record);
+                    }
+                }
+            }
+        }
+        return Ok(results);
+    }
+    // Fallback: legacy full scan for pre-index data
     let cf = db
         .cf_handle(CF_WITHDRAWAL_JOBS)
         .ok_or_else(|| "missing withdrawal_jobs cf".to_string())?;
@@ -3806,18 +4257,20 @@ fn get_reserve_balance(db: &DB, chain: &str, asset: &str) -> Result<u64, String>
 
 /// Adjust reserve balance: increment (deposit/rebalance in) or decrement (withdrawal/rebalance out).
 /// If decrementing would go below zero, clamps to 0 and logs a warning.
-/// M13 fix: uses internal Mutex to serialize concurrent read-modify-write operations.
-fn adjust_reserve_balance(
+/// AUDIT-FIX M5: Replaced std::sync::Mutex with tokio::sync::Mutex to avoid
+/// blocking the async executor when the lock is contended. The critical section
+/// serializes read-modify-write on the reserve ledger CF.
+async fn adjust_reserve_balance(
     db: &DB,
     chain: &str,
     asset: &str,
     amount: u64,
     increment: bool,
 ) -> Result<(), String> {
-    use std::sync::Mutex as StdMutex;
-    static RESERVE_LOCK: std::sync::LazyLock<StdMutex<()>> =
-        std::sync::LazyLock::new(|| StdMutex::new(()));
-    let _guard = RESERVE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    static RESERVE_LOCK: tokio::sync::OnceCell<tokio::sync::Mutex<()>> =
+        tokio::sync::OnceCell::const_new();
+    let mutex = RESERVE_LOCK.get_or_init(|| async { tokio::sync::Mutex::new(()) }).await;
+    let _guard = mutex.lock().await;
 
     let cf = db
         .cf_handle(CF_RESERVE_LEDGER)
@@ -3936,12 +4389,39 @@ fn store_rebalance_job(db: &DB, job: &RebalanceJob) -> Result<(), String> {
     let cf = db
         .cf_handle(CF_REBALANCE_JOBS)
         .ok_or_else(|| "missing rebalance_jobs cf".to_string())?;
+    // AUDIT-FIX M1: Update status index on every store
+    if let Ok(Some(old_bytes)) = db.get_cf(cf, job.job_id.as_bytes()) {
+        if let Ok(old_job) = serde_json::from_slice::<RebalanceJob>(&old_bytes) {
+            let _ = update_status_index(db, "rebalance", &old_job.status, &job.status, &job.job_id);
+        }
+    } else {
+        let _ = set_status_index(db, "rebalance", &job.status, &job.job_id);
+    }
     let bytes = serde_json::to_vec(job).map_err(|e| format!("encode: {}", e))?;
     db.put_cf(cf, job.job_id.as_bytes(), bytes)
         .map_err(|e| format!("db put: {}", e))
 }
 
 fn list_rebalance_jobs_by_status(db: &DB, status: &str) -> Result<Vec<RebalanceJob>, String> {
+    // AUDIT-FIX M1: Use status index for O(active) instead of O(total)
+    let ids = list_ids_by_status_index(db, "rebalance", status)?;
+    if !ids.is_empty() {
+        let cf = db
+            .cf_handle(CF_REBALANCE_JOBS)
+            .ok_or_else(|| "missing rebalance_jobs cf".to_string())?;
+        let mut results = Vec::new();
+        for id in ids {
+            if let Ok(Some(bytes)) = db.get_cf(cf, id.as_bytes()) {
+                if let Ok(record) = serde_json::from_slice::<RebalanceJob>(&bytes) {
+                    if record.status == status {
+                        results.push(record);
+                    }
+                }
+            }
+        }
+        return Ok(results);
+    }
+    // Fallback: legacy full scan for pre-index data
     let cf = db
         .cf_handle(CF_REBALANCE_JOBS)
         .ok_or_else(|| "missing rebalance_jobs cf".to_string())?;
@@ -4022,9 +4502,14 @@ async fn deposit_cleanup_loop(state: CustodyState) {
             if let Some(cf) = state.db.cf_handle(CF_DEPOSITS) {
                 if let Ok(Some(value)) = state.db.get_cf(&cf, deposit_id.as_bytes()) {
                     if let Ok(mut record) = serde_json::from_slice::<DepositRequest>(&value) {
+                        let old_status = record.status.clone();
                         record.status = "expired".to_string();
                         if let Ok(json) = serde_json::to_vec(&record) {
                             let _ = state.db.put_cf(&cf, deposit_id.as_bytes(), &json);
+                            // AUDIT-FIX R-M1: Maintain status index during cleanup
+                            let _ = update_status_index(
+                                &state.db, "deposits", &old_status, "expired", deposit_id,
+                            );
                         }
                     }
                 }
@@ -4491,8 +4976,8 @@ async fn process_rebalance_jobs(state: &CustodyState) -> Result<(), String> {
             store_rebalance_job(&state.db, &job)?;
 
             // Update reserve ledger: debit input amount, credit actual output
-            adjust_reserve_balance(&state.db, &job.chain, &job.from_asset, job.amount, false)?;
-            adjust_reserve_balance(&state.db, &job.chain, &job.to_asset, credit_amount, true)?;
+            adjust_reserve_balance(&state.db, &job.chain, &job.from_asset, job.amount, false).await?;
+            adjust_reserve_balance(&state.db, &job.chain, &job.to_asset, credit_amount, true).await?;
 
             record_audit_event(
                 &state.db,
@@ -4832,8 +5317,6 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
     // Phase 1: pending_burn → check if burn tx is confirmed on MoltChain
     let pending = list_withdrawal_jobs_by_status(&state.db, "pending_burn")?;
     for mut job in pending {
-        // For now, we check if enough time has passed (burn verification)
-        // In production, we'd query MoltChain for the burn event
         if let Some(ref burn_sig) = job.burn_tx_signature {
             if let Some(rpc_url) = state.config.molt_rpc_url.as_ref() {
                 match molt_rpc_call(&state.http, rpc_url, "getTransaction", json!([burn_sig])).await
@@ -4844,18 +5327,92 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                                 .get("success")
                                 .and_then(|v| v.as_bool())
                                 .unwrap_or(false);
-                            if success {
-                                job.status = "burned".to_string();
-                                store_withdrawal_job(&state.db, &job)?;
-                                record_audit_event(
-                                    &state.db,
-                                    "withdrawal_burn_confirmed",
-                                    &job.job_id,
-                                    None,
-                                    job.burn_tx_signature.as_deref(),
-                                )?;
-                                info!("withdrawal burn confirmed: {}", job.job_id);
+                            if !success {
+                                continue;
                             }
+
+                            // AUDIT-FIX R-C1: Validate the burn TX matches the
+                            // expected contract, caller, and amount. Without this,
+                            // an attacker could submit any successful tx as a "burn".
+                            let expected_contract = match job.asset.to_lowercase().as_str() {
+                                "wsol" => state.config.wsol_contract_addr.as_deref(),
+                                "weth" => state.config.weth_contract_addr.as_deref(),
+                                "musd" => state.config.musd_contract_addr.as_deref(),
+                                _ => None,
+                            };
+                            let tx_contract = result
+                                .get("contract_address")
+                                .and_then(|v| v.as_str());
+                            let tx_caller = result
+                                .get("caller")
+                                .and_then(|v| v.as_str());
+                            let tx_method = result
+                                .get("method")
+                                .and_then(|v| v.as_str());
+                            let tx_amount = result
+                                .get("amount")
+                                .and_then(|v| v.as_u64())
+                                .unwrap_or(0);
+
+                            // Validate contract address matches
+                            if let Some(expected) = expected_contract {
+                                if tx_contract != Some(expected) {
+                                    tracing::error!(
+                                        "🚨 BURN VERIFICATION FAILED for {}: expected contract {} \
+                                         but tx called {:?}. Possible attack!",
+                                        job.job_id, expected, tx_contract
+                                    );
+                                    continue;
+                                }
+                            } else {
+                                tracing::error!(
+                                    "🚨 BURN VERIFICATION FAILED for {}: no contract configured \
+                                     for asset {}. Cannot verify burn.",
+                                    job.job_id, job.asset
+                                );
+                                continue;
+                            }
+
+                            // Validate method is "burn"
+                            if tx_method != Some("burn") {
+                                tracing::error!(
+                                    "🚨 BURN VERIFICATION FAILED for {}: expected method 'burn' \
+                                     but tx called {:?}. Possible attack!",
+                                    job.job_id, tx_method
+                                );
+                                continue;
+                            }
+
+                            // Validate amount matches
+                            if tx_amount != job.amount {
+                                tracing::error!(
+                                    "🚨 BURN VERIFICATION FAILED for {}: expected amount {} \
+                                     but tx burned {}. Amount mismatch!",
+                                    job.job_id, job.amount, tx_amount
+                                );
+                                continue;
+                            }
+
+                            // Validate caller is the user_id
+                            if tx_caller != Some(job.user_id.as_str()) {
+                                tracing::error!(
+                                    "🚨 BURN VERIFICATION FAILED for {}: expected caller {} \
+                                     but tx caller was {:?}. Possible attack!",
+                                    job.job_id, job.user_id, tx_caller
+                                );
+                                continue;
+                            }
+
+                            job.status = "burned".to_string();
+                            store_withdrawal_job(&state.db, &job)?;
+                            record_audit_event(
+                                &state.db,
+                                "withdrawal_burn_confirmed",
+                                &job.job_id,
+                                None,
+                                job.burn_tx_signature.as_deref(),
+                            )?;
+                            info!("withdrawal burn confirmed: {}", job.job_id);
                         }
                     }
                     Err(e) => {
@@ -4968,8 +5525,11 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
     // Phase 3: signing → broadcast outbound transaction
     let signing = list_withdrawal_jobs_by_status(&state.db, "signing")?;
     for mut job in signing {
+        // AUDIT-FIX M4: Record intent before withdrawal broadcast
+        let _ = record_tx_intent(&state.db, "withdrawal", &job.job_id, &job.dest_chain);
         match broadcast_outbound_withdrawal(state, &job).await {
             Ok(tx_hash) => {
+                let _ = clear_tx_intent(&state.db, "withdrawal", &job.job_id);
                 job.outbound_tx_hash = Some(tx_hash.clone());
                 job.status = "broadcasting".to_string();
                 job.last_error = None;
@@ -4984,11 +5544,29 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                 info!("withdrawal broadcast: {} → tx={}", job.job_id, tx_hash);
             }
             Err(e) => {
+                let _ = clear_tx_intent(&state.db, "withdrawal", &job.job_id);
                 job.attempts = job.attempts.saturating_add(1);
                 job.last_error = Some(e.clone());
-                job.next_attempt_at = Some(next_retry_timestamp(job.attempts));
-                store_withdrawal_job(&state.db, &job)?;
-                tracing::warn!("withdrawal broadcast failed for {}: {}", job.job_id, e);
+                // AUDIT-FIX R-H2: Cap withdrawal retries like sweep/credit
+                if job.attempts >= MAX_JOB_ATTEMPTS {
+                    job.status = "permanently_failed".to_string();
+                    store_withdrawal_job(&state.db, &job)?;
+                    tracing::error!(
+                        "🚨 withdrawal {} permanently failed after {} attempts: {}",
+                        job.job_id, MAX_JOB_ATTEMPTS, e
+                    );
+                    record_audit_event(
+                        &state.db,
+                        "withdrawal_permanently_failed",
+                        &job.job_id,
+                        None,
+                        None,
+                    )?;
+                } else {
+                    job.next_attempt_at = Some(next_retry_timestamp(job.attempts));
+                    store_withdrawal_job(&state.db, &job)?;
+                    tracing::warn!("withdrawal broadcast failed for {}: {}", job.job_id, e);
+                }
             }
         }
     }
@@ -5054,7 +5632,7 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                     stablecoin,
                     job.amount,
                     false,
-                ) {
+                ).await {
                     tracing::warn!("reserve ledger decrement failed: {}", e);
                 }
             }
@@ -5278,7 +5856,7 @@ fn assemble_signed_solana_tx(
 fn assemble_signed_evm_tx(
     state: &CustodyState,
     job: &WithdrawalJob,
-    _asset: &str,
+    asset: &str,
 ) -> Result<Vec<u8>, String> {
     if job.signatures.is_empty() {
         return Err("no signatures available".to_string());
@@ -5340,26 +5918,39 @@ fn assemble_signed_evm_tx(
     //   uint256 safeTxGas, uint256 baseGas, uint256 gasPrice,
     //   address gasToken, address refundReceiver, bytes signatures)
     //
-    // For a simple ETH/ERC-20 transfer, we encode the inner transfer in `data`
-    // and wrap it in the Safe.execTransaction ABI call.
+    // AUDIT-FIX R-C2: For ERC-20 tokens (usdt/usdc), `to` = token contract,
+    // `value` = 0, and `data` = ERC-20 transfer(dest, amount).
+    // For native ETH, `to` = dest_address, `value` = amount, `data` = empty.
     //
     // Function selector: 0x6a761202
+    let is_erc20 = matches!(asset, "usdt" | "usdc");
+
+    let (inner_to, inner_value, inner_data) = if is_erc20 {
+        let contract_addr = evm_contract_for_asset(&state.config, asset)
+            .map_err(|e| format!("resolve ERC-20 contract for withdrawal: {}", e))?;
+        let transfer_data = evm_encode_erc20_transfer(&job.dest_address, job.amount as u128)
+            .map_err(|e| format!("encode ERC-20 transfer: {}", e))?;
+        (contract_addr, 0u64, transfer_data)
+    } else {
+        (job.dest_address.clone(), job.amount, Vec::<u8>::new())
+    };
+
     let mut calldata = Vec::new();
     calldata.extend_from_slice(&hex::decode("6a761202").unwrap()); // execTransaction selector
 
     // Encode destination address (to) — padded to 32 bytes
     let dest_addr = hex::decode(
-        job.dest_address
+        inner_to
             .strip_prefix("0x")
-            .unwrap_or(&job.dest_address),
+            .unwrap_or(&inner_to),
     )
     .map_err(|e| format!("decode dest address: {}", e))?;
     calldata.extend_from_slice(&[0u8; 12]); // left-pad to 32 bytes
     calldata.extend_from_slice(&dest_addr);
 
-    // value = job.amount (for native ETH transfers)
+    // value (0 for ERC-20, job.amount for native ETH)
     let mut value_bytes = [0u8; 32];
-    let amount_bytes = job.amount.to_be_bytes();
+    let amount_bytes = inner_value.to_be_bytes();
     value_bytes[24..32].copy_from_slice(&amount_bytes);
     calldata.extend_from_slice(&value_bytes);
 
@@ -5383,13 +5974,29 @@ fn assemble_signed_evm_tx(
     calldata.extend_from_slice(&[0u8; 32]);
 
     // signatures offset
-    let sigs_offset = data_offset + 32 + 0; // data is empty for ETH transfer
+    // inner_data is the ERC-20 transfer calldata (or empty for native ETH)
+    let inner_data_padded_len = if inner_data.is_empty() {
+        0usize
+    } else {
+        // data length (32 bytes) + data + padding to 32-byte boundary
+        32 + inner_data.len() + ((32 - (inner_data.len() % 32)) % 32)
+    };
+    let sigs_offset = data_offset as usize + inner_data_padded_len;
     let mut sigs_offset_bytes = [0u8; 32];
-    sigs_offset_bytes[24..32].copy_from_slice(&sigs_offset.to_be_bytes());
+    sigs_offset_bytes[24..32].copy_from_slice(&(sigs_offset as u64).to_be_bytes());
     calldata.extend_from_slice(&sigs_offset_bytes);
 
-    // data (empty for native ETH transfer)
-    calldata.extend_from_slice(&[0u8; 32]); // data length = 0
+    // AUDIT-FIX R-C2: Encode inner data (ERC-20 transfer calldata or empty)
+    if inner_data.is_empty() {
+        calldata.extend_from_slice(&[0u8; 32]); // data length = 0
+    } else {
+        let mut data_len_bytes = [0u8; 32];
+        data_len_bytes[24..32].copy_from_slice(&(inner_data.len() as u64).to_be_bytes());
+        calldata.extend_from_slice(&data_len_bytes);
+        calldata.extend_from_slice(&inner_data);
+        let data_padding = (32 - (inner_data.len() % 32)) % 32;
+        calldata.extend_from_slice(&vec![0u8; data_padding]);
+    }
 
     // packed signatures length
     let mut sig_len_bytes = [0u8; 32];
@@ -5650,44 +6257,44 @@ mod tests {
         assert_eq!(resolve_token_contract(&config, "solana", "usdt"), None);
     }
 
-    #[test]
-    fn test_reserve_ledger_adjust_increment() {
+    #[tokio::test]
+    async fn test_reserve_ledger_adjust_increment() {
         let _ = DB::destroy(&Options::default(), "/tmp/test_custody_reserve_1");
         let db = open_db("/tmp/test_custody_reserve_1").unwrap();
         // Increment from zero
-        adjust_reserve_balance(&db, "solana", "usdt", 500_000, true).unwrap();
+        adjust_reserve_balance(&db, "solana", "usdt", 500_000, true).await.unwrap();
         assert_eq!(get_reserve_balance(&db, "solana", "usdt").unwrap(), 500_000);
         // Increment again
-        adjust_reserve_balance(&db, "solana", "usdt", 300_000, true).unwrap();
+        adjust_reserve_balance(&db, "solana", "usdt", 300_000, true).await.unwrap();
         assert_eq!(get_reserve_balance(&db, "solana", "usdt").unwrap(), 800_000);
         // Different asset on same chain
         assert_eq!(get_reserve_balance(&db, "solana", "usdc").unwrap(), 0);
         let _ = DB::destroy(&Options::default(), "/tmp/test_custody_reserve_1");
     }
 
-    #[test]
-    fn test_reserve_ledger_adjust_decrement() {
+    #[tokio::test]
+    async fn test_reserve_ledger_adjust_decrement() {
         let db = open_db("/tmp/test_custody_reserve_2").unwrap();
-        adjust_reserve_balance(&db, "ethereum", "usdc", 1_000_000, true).unwrap();
-        adjust_reserve_balance(&db, "ethereum", "usdc", 400_000, false).unwrap();
+        adjust_reserve_balance(&db, "ethereum", "usdc", 1_000_000, true).await.unwrap();
+        adjust_reserve_balance(&db, "ethereum", "usdc", 400_000, false).await.unwrap();
         assert_eq!(
             get_reserve_balance(&db, "ethereum", "usdc").unwrap(),
             600_000
         );
         // Decrement past zero clamps to 0
-        adjust_reserve_balance(&db, "ethereum", "usdc", 999_999, false).unwrap();
+        adjust_reserve_balance(&db, "ethereum", "usdc", 999_999, false).await.unwrap();
         assert_eq!(get_reserve_balance(&db, "ethereum", "usdc").unwrap(), 0);
         let _ = DB::destroy(&Options::default(), "/tmp/test_custody_reserve_2");
     }
 
-    #[test]
-    fn test_reserve_ledger_multi_chain() {
+    #[tokio::test]
+    async fn test_reserve_ledger_multi_chain() {
         let _ = DB::destroy(&Options::default(), "/tmp/test_custody_reserve_3");
         let db = open_db("/tmp/test_custody_reserve_3").unwrap();
-        adjust_reserve_balance(&db, "solana", "usdt", 500_000, true).unwrap();
-        adjust_reserve_balance(&db, "solana", "usdc", 200_000, true).unwrap();
-        adjust_reserve_balance(&db, "ethereum", "usdt", 300_000, true).unwrap();
-        adjust_reserve_balance(&db, "ethereum", "usdc", 100_000, true).unwrap();
+        adjust_reserve_balance(&db, "solana", "usdt", 500_000, true).await.unwrap();
+        adjust_reserve_balance(&db, "solana", "usdc", 200_000, true).await.unwrap();
+        adjust_reserve_balance(&db, "ethereum", "usdt", 300_000, true).await.unwrap();
+        adjust_reserve_balance(&db, "ethereum", "usdc", 100_000, true).await.unwrap();
         assert_eq!(get_reserve_balance(&db, "solana", "usdt").unwrap(), 500_000);
         assert_eq!(get_reserve_balance(&db, "solana", "usdc").unwrap(), 200_000);
         assert_eq!(

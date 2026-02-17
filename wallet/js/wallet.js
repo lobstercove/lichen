@@ -147,9 +147,9 @@ function handleBridgeLockEvent(data) {
     // Update deposit status UI if visible
     const statusEl = document.getElementById('depositStatus');
     if (statusEl) {
-        statusEl.innerHTML = `<i class="fas fa-check-circle" style="color: #06D6A0;"></i> <span>Deposit confirmed on ${data.chain}! Sweeping to treasury...</span>`;
+        statusEl.innerHTML = `<i class="fas fa-check-circle" style="color: #06D6A0;"></i> <span>Deposit confirmed on ${escapeHtml(data.chain)}! Sweeping to treasury...</span>`;
     }
-    showToast(`Bridge deposit confirmed on ${data.chain || 'source chain'}!`);
+    showToast(`Bridge deposit confirmed on ${escapeHtml(data.chain) || 'source chain'}!`);
 }
 
 function handleBridgeMintEvent(data) {
@@ -1815,6 +1815,22 @@ async function requestDepositAddress(chain, asset, chainName, icon) {
     const wallet = getActiveWallet();
     if (!wallet) return;
     
+    // AUDIT-FIX W-H1: Validate inputs before sending to custody
+    const validChains = ['solana', 'ethereum'];
+    const validAssets = ['usdc', 'usdt'];
+    if (!validChains.includes(chain)) {
+        showToast('Invalid chain selected', 'error');
+        return;
+    }
+    if (!validAssets.includes(asset)) {
+        showToast('Invalid asset selected', 'error');
+        return;
+    }
+    if (!wallet.address || wallet.address.length < 32 || wallet.address.length > 44) {
+        showToast('Invalid wallet address', 'error');
+        return;
+    }
+    
     // Close any open modals
     document.querySelectorAll('.password-modal').forEach(m => m.remove());
     
@@ -1841,13 +1857,20 @@ async function requestDepositAddress(chain, asset, chainName, icon) {
         const depositAddress = data.address;
         const depositId = data.deposit_id;
         
+        // AUDIT-FIX W-C2: Escape all server-provided values before HTML insertion
+        // to prevent XSS if custody returns malicious data.
+        const safeAddress = escapeHtml(depositAddress);
+        const safeDepositId = escapeHtml(depositId);
+        const safeAsset = escapeHtml(asset.toUpperCase());
+        const safeChainName = escapeHtml(chainName);
+        
         // Show deposit address with copy + status polling
         showConfirmModal({
-            title: `Send ${asset.toUpperCase()} on ${chainName}`,
+            title: `Send ${safeAsset} on ${safeChainName}`,
             message: `<div style="text-align: left; font-size: 0.9rem;">
-                <p style="margin-bottom: 0.75rem;">Send <strong>${asset.toUpperCase()}</strong> to this ${chainName} address:</p>
-                <div style="padding: 0.75rem; background: rgba(255,255,255,0.06); border: 1px solid var(--border); border-radius: 10px; font-family: monospace; font-size: 0.78rem; word-break: break-all; cursor: pointer;" onclick="navigator.clipboard.writeText('${depositAddress}').then(() => { document.getElementById('copyHint').textContent = 'Copied!'; setTimeout(() => { document.getElementById('copyHint').textContent = 'Click to copy'; }, 1500); })">
-                    ${depositAddress}
+                <p style="margin-bottom: 0.75rem;">Send <strong>${safeAsset}</strong> to this ${safeChainName} address:</p>
+                <div id="depositAddrBox" style="padding: 0.75rem; background: rgba(255,255,255,0.06); border: 1px solid var(--border); border-radius: 10px; font-family: monospace; font-size: 0.78rem; word-break: break-all; cursor: pointer;">
+                    ${safeAddress}
                 </div>
                 <p id="copyHint" style="text-align: center; font-size: 0.75rem; color: var(--text-muted); margin-top: 0.35rem;">Click to copy</p>
                 <div id="depositStatus" style="margin-top: 1rem; padding: 0.6rem 0.8rem; background: rgba(255,255,255,0.03); border-radius: 8px; font-size: 0.82rem;">
@@ -1856,7 +1879,7 @@ async function requestDepositAddress(chain, asset, chainName, icon) {
                 </div>
                 <p style="margin-top: 0.75rem; font-size: 0.78rem; color: var(--text-muted);">
                     This address expires in 24 hours. Funds sent after expiry may be lost.<br>
-                    Deposit ID: <code style="font-size: 0.72rem;">${depositId}</code>
+                    Deposit ID: <code style="font-size: 0.72rem;">${safeDepositId}</code>
                 </p>
             </div>`,
             icon: icon,
@@ -1871,6 +1894,20 @@ async function requestDepositAddress(chain, asset, chainName, icon) {
             }
         });
         
+        // AUDIT-FIX W-C2: Attach copy handler via JS instead of inline onclick
+        const addrBox = document.getElementById('depositAddrBox');
+        if (addrBox) {
+            addrBox.addEventListener('click', () => {
+                navigator.clipboard.writeText(depositAddress).then(() => {
+                    const hint = document.getElementById('copyHint');
+                    if (hint) {
+                        hint.textContent = 'Copied!';
+                        setTimeout(() => { hint.textContent = 'Click to copy'; }, 1500);
+                    }
+                });
+            });
+        }
+        
         // Start polling deposit status
         startDepositPolling(depositId);
         
@@ -1881,17 +1918,44 @@ async function requestDepositAddress(chain, asset, chainName, icon) {
 }
 
 let depositPollInterval = null;
+let depositPollTimeout = null;
+const MAX_DEPOSIT_POLL_DURATION = 24 * 60 * 60 * 1000; // 24h — matches deposit TTL
+const MAX_DEPOSIT_POLL_ERRORS = 20; // consecutive fetch failures before giving up
+
+function _onBeforeUnloadStopPolling() { stopDepositPolling(); }
 
 function startDepositPolling(depositId) {
     stopDepositPolling();
+    let consecutiveErrors = 0;
     // Use longer interval when WebSocket bridge subscriptions are active (WS provides real-time updates)
     // Fall back to aggressive 5s polling when WS is disconnected
     const pollInterval = bridgeWsActive ? 30000 : 5000;
-    // console.log(`[Bridge] Starting deposit polling (interval: ${pollInterval}ms, ws: ${bridgeWsActive})`);
+
+    // Hard timeout — stop polling after MAX_DEPOSIT_POLL_DURATION regardless
+    depositPollTimeout = setTimeout(() => {
+        console.warn('[Bridge] Deposit polling timed out after 24h');
+        stopDepositPolling();
+        const statusEl = document.getElementById('depositStatus');
+        if (statusEl) {
+            statusEl.innerHTML = '<i class="fas fa-times-circle" style="color: #EF476F;"></i> <span>Polling timed out. Check deposit status manually.</span>';
+        }
+    }, MAX_DEPOSIT_POLL_DURATION);
+
+    // Clean up polling if user navigates away or closes tab
+    window.addEventListener('beforeunload', _onBeforeUnloadStopPolling);
+
     depositPollInterval = setInterval(async () => {
         try {
             const res = await fetch(`${getCustodyUrl()}/deposits/${depositId}`);
-            if (!res.ok) return;
+            if (!res.ok) {
+                consecutiveErrors++;
+                if (consecutiveErrors >= MAX_DEPOSIT_POLL_ERRORS) {
+                    console.error('[Bridge] Too many consecutive polling failures, stopping');
+                    stopDepositPolling();
+                }
+                return;
+            }
+            consecutiveErrors = 0; // reset on success
             const deposit = await res.json();
             const statusEl = document.getElementById('depositStatus');
             if (!statusEl) {
@@ -1919,7 +1983,11 @@ function startDepositPolling(depositId) {
                 }
             }
         } catch(e) {
-            // Silently retry
+            consecutiveErrors++;
+            if (consecutiveErrors >= MAX_DEPOSIT_POLL_ERRORS) {
+                console.error('[Bridge] Too many consecutive polling failures, stopping');
+                stopDepositPolling();
+            }
         }
     }, pollInterval);
 }
@@ -1929,6 +1997,11 @@ function stopDepositPolling() {
         clearInterval(depositPollInterval);
         depositPollInterval = null;
     }
+    if (depositPollTimeout) {
+        clearTimeout(depositPollTimeout);
+        depositPollTimeout = null;
+    }
+    window.removeEventListener('beforeunload', _onBeforeUnloadStopPolling);
 }
 
 function showSwap() {
