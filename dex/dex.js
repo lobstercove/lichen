@@ -309,6 +309,9 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!Object.keys(balances).length) {
             balances = { MOLT: { available: 125847.32, usd: 53087.21 }, mUSD: { available: 12500.00, usd: 12500.00 },
                 wSOL: { available: 28.45, usd: 5076.15 }, wETH: { available: 3.247, usd: 11435.33 }, REEF: { available: 45000.00, usd: 828.90 } };
+            state._demoBalances = true;
+        } else {
+            state._demoBalances = false;
         }
         renderBalances();
     }
@@ -456,7 +459,9 @@ document.addEventListener('DOMContentLoaded', () => {
     function genCandlesFallback() {
         const c = [], now = Math.floor(Date.now() / 1000); let p = state.lastPrice * (0.85 + Math.random() * 0.3);
         for (let i = 300; i >= 0; i--) { const o = p, ch = (Math.random() - 0.48) * 0.015, cl = o * (1 + ch); c.push({ time: (now - i * 900) * 1000, open: o, high: Math.max(o, cl) * (1 + Math.random() * 0.008), low: Math.min(o, cl) * (1 - Math.random() * 0.008), close: cl, volume: Math.random() * 500000 + 50000 }); p = cl; }
-        if (c.length) c[c.length - 1].close = state.lastPrice; state.candles = c;
+        if (c.length) c[c.length - 1].close = state.lastPrice; state.candles = c; state._demoCandles = true;
+        const el = document.getElementById('tvChartContainer');
+        if (el && !el.querySelector('.demo-badge')) el.insertAdjacentHTML('afterbegin', '<div class="demo-badge" style="position:absolute;top:4px;right:4px;z-index:10;background:#ff6b35;color:#fff;padding:2px 8px;border-radius:4px;font-size:0.7rem;">[DEMO] Sample Chart Data</div>');
     }
 
     function createDatafeed() {
@@ -471,7 +476,7 @@ document.addEventListener('DOMContentLoaded', () => {
             getBars: async (si, res, pp, ok) => {
                 const apiC = await loadCandles(pp.from, pp.to, res);
                 let bars;
-                if (apiC?.length) { bars = apiC; state.candles = apiC; }
+                if (apiC?.length) { bars = apiC; state.candles = apiC; state._demoCandles = false; const badge = document.querySelector('#tvChartContainer > .demo-badge'); if (badge) badge.remove(); }
                 else {
                     if (!state.candles.length) genCandlesFallback();
                     const rm = resolutionToMs(res), bm = new Map();
@@ -639,7 +644,8 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderBalances() {
         const c = document.querySelector('.balance-list'); if (!c) return;
         if (!state.connected) { c.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;">Connect wallet to view balances</div>'; return; }
-        c.innerHTML = Object.entries(balances).map(([t, b]) => `<div class="balance-row"><div class="balance-token"><div class="token-icon ${t.toLowerCase()}-icon">${t[0]}</div><span>${t}</span></div><div class="balance-amounts"><span class="balance-available">${formatAmount(b.available)}</span><span class="balance-usd">≈ $${formatAmount(b.usd)}</span></div></div>`).join('');
+        const demoBadge = state._demoBalances ? '<div class="demo-badge" style="background:#ff6b35;color:#fff;padding:2px 8px;border-radius:4px;font-size:0.7rem;text-align:center;margin-bottom:4px;">[DEMO] Sample Balances — RPC unavailable</div>' : '';
+        c.innerHTML = demoBadge + Object.entries(balances).map(([t, b]) => `<div class="balance-row"><div class="balance-token"><div class="token-icon ${t.toLowerCase()}-icon">${t[0]}</div><span>${t}</span></div><div class="balance-amounts"><span class="balance-available">${formatAmount(b.available)}</span><span class="balance-usd">≈ $${formatAmount(b.usd)}</span></div></div>`).join('');
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -1600,8 +1606,8 @@ document.addEventListener('DOMContentLoaded', () => {
         predictSubmitBtn.disabled = true; predictSubmitBtn.textContent = 'Submitting...';
         try {
             await api.post('/prediction-market/trade', { marketId: m.id, outcome: predictState.selectedOutcome, amount: amt, trader: wallet.address });
-        } catch { /* mock — graceful fallback */ }
-        showNotification(`Bought ${predictState.selectedOutcome.toUpperCase()} on "${m.question.slice(0, 40)}..." for $${amt.toFixed(2)}`, 'success');
+            showNotification(`Bought ${predictState.selectedOutcome.toUpperCase()} on "${m.question.slice(0, 40)}..." for $${amt.toFixed(2)}`, 'success');
+        } catch { showNotification('Trade failed — prediction market API unavailable', 'error'); }
         predictSubmitBtn.disabled = false;
         const side = predictState.selectedOutcome === 'yes' ? 'YES' : 'NO';
         predictSubmitBtn.innerHTML = `<i class="fas fa-bolt"></i> Buy ${side} Shares`;
@@ -1620,8 +1626,8 @@ document.addEventListener('DOMContentLoaded', () => {
         predictCreateBtn.disabled = true; predictCreateBtn.textContent = 'Creating...';
         try {
             await api.post('/prediction-market/create', { question: q, category: document.getElementById('predictCategory')?.value, initialLiquidity: liq, creator: wallet.address });
-        } catch { /* mock — graceful fallback */ }
-        showNotification(`Market created: "${q.slice(0, 50)}..." with $${liq} liquidity`, 'success');
+            showNotification(`Market created: "${q.slice(0, 50)}..." with $${liq} liquidity`, 'success');
+        } catch { showNotification('Create failed — prediction market API unavailable', 'error'); }
         predictCreateBtn.disabled = false; predictCreateBtn.innerHTML = '<i class="fas fa-rocket"></i> Create Market';
         if (document.getElementById('predictQuestion')) document.getElementById('predictQuestion').value = '';
     });

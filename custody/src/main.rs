@@ -5387,6 +5387,7 @@ mod tests {
             weth_contract_addr: None,
             rebalance_threshold_bps: 7000,
             rebalance_target_bps: 5000,
+            rebalance_max_slippage_bps: 50,
             jupiter_api_url: None,
             uniswap_router: None,
             deposit_ttl_secs: 86400,
