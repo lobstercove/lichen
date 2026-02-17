@@ -291,7 +291,7 @@ function renderIdentity(container, data) {
     const rep = Number(profile?.reputation?.score || identity?.reputation || 0);
     const tier = getTrustTier(rep);
     const nextTier = getNextTier(rep);
-    const maxRep = 10000;
+    const maxRep = 100000;
     const repPct = Math.min(100, (rep / maxRep) * 100);
     
     const agentType = getAgentTypeName(identity.agent_type);

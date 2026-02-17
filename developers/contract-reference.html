@@ -113,9 +113,9 @@
     <!-- Header -->
     <div class="doc-header">
         <h1><i class="fas fa-file-contract"></i> MoltChain Contracts Reference</h1>
-        <p>Complete documentation of all 37 production smart contracts</p>
+        <p>Complete documentation of all 27 production smart contracts</p>
         <div class="doc-stats">
-            <div class="doc-stat"><div class="num">40</div><div class="label">Contracts</div></div>
+            <div class="doc-stat"><div class="num">27</div><div class="label">Contracts</div></div>
             <div class="doc-stat"><div class="num">19,395</div><div class="label">Lines of Rust</div></div>
             <div class="doc-stat"><div class="num">227</div><div class="label">Public Functions</div></div>
             <div class="doc-stat"><div class="num">6</div><div class="label">MoltyID Integrations</div></div>
@@ -125,7 +125,7 @@
     <!-- Architecture -->
     <div style="margin-bottom:3rem;">
         <h2 style="font-size:1.3rem; margin-bottom:.5rem;"><i class="fas fa-sitemap"></i> Contract Architecture</h2>
-        <p style="color:var(--text-secondary); margin-bottom:1rem;">MoltChain's 37 contracts span eight categories — DeFi, DEX, NFTs, Identity, Infrastructure &amp; Governance — all compiled to WASM and deployable on-chain.</p>
+        <p style="color:var(--text-secondary); margin-bottom:1rem;">MoltChain's 27 contracts span eight categories — DeFi, DEX, NFTs, Identity, Infrastructure &amp; Governance — all compiled to WASM and deployable on-chain.</p>
         <div class="arch-grid">
             <div class="arch-box"><i class="fas fa-coins" style="color:var(--green)"></i><div class="arch-label">DeFi</div><div class="arch-desc">MoltCoin, MoltSwap, LobsterLend, ClawPump, ClawPay, ClawVault</div></div>
             <div class="arch-box"><i class="fas fa-chart-line" style="color:#f59e0b"></i><div class="arch-label">DEX</div><div class="arch-desc">DEX Core, DEX AMM, DEX Router, DEX Margin, DEX Governance, DEX Rewards, DEX Analytics</div></div>
@@ -163,23 +163,10 @@
             <a href="#dex-rewards"><span class="toc-num">21</span> DEX Rewards</a>
             <a href="#dex-margin"><span class="toc-num">22</span> DEX Margin — Leverage</a>
             <a href="#dex-analytics"><span class="toc-num">23</span> DEX Analytics</a>
-            <a href="#staking"><span class="toc-num">24</span> MoltStaking — PoS</a>
-            <a href="#multisig"><span class="toc-num">25</span> MoltMultisig — M-of-N</a>
-            <a href="#vesting"><span class="toc-num">26</span> MoltVesting — Schedules</a>
-            <a href="#custody"><span class="toc-num">27</span> MoltCustody — Inst. Grade</a>
-            <a href="#faucet"><span class="toc-num">28</span> MoltFaucet — Testnet</a>
-            <a href="#dao-treasury"><span class="toc-num">29</span> DAO Treasury</a>
-            <a href="#social-protocol"><span class="toc-num">30</span> Social Protocol</a>
-            <a href="#content-protocol"><span class="toc-num">31</span> Content Protocol</a>
-            <a href="#ai-marketplace"><span class="toc-num">32</span> AI Marketplace</a>
-            <a href="#prediction-market"><span class="toc-num">33</span> Prediction Market</a>
-            <a href="#insurance-protocol"><span class="toc-num">34</span> Insurance Protocol</a>
-            <a href="#supply-chain"><span class="toc-num">35</span> Supply Chain</a>
-            <a href="#time-lock"><span class="toc-num">36</span> Time Lock</a>
-            <a href="#cross-chain-msg"><span class="toc-num">37</span> Cross-Chain Messaging</a>
-            <a href="#musd-token"><span class="toc-num">38</span> mUSD Stablecoin</a>
-            <a href="#weth-token"><span class="toc-num">39</span> Wrapped ETH</a>
-            <a href="#wsol-token"><span class="toc-num">40</span> Wrapped SOL</a>
+            <a href="#prediction-market"><span class="toc-num">24</span> Prediction Market</a>
+            <a href="#musd-token"><span class="toc-num">25</span> mUSD Stablecoin</a>
+            <a href="#weth-token"><span class="toc-num">26</span> Wrapped ETH</a>
+            <a href="#wsol-token"><span class="toc-num">27</span> Wrapped SOL</a>
         </div>
     </div>
 
@@ -736,163 +723,7 @@
     </div></div>
 
     <!-- 24 STAKING -->
-    <div class="contract-section" id="staking"><div class="contract-card">
-        <div class="contract-header">
-            <div class="contract-icon icon-defi"><i class="fas fa-layer-group"></i></div>
-            <div class="contract-header-text"><h3>MoltStaking</h3><div class="subtitle">Delegated Proof-of-Stake</div></div>
-            <div class="contract-meta"><span class="meta-chip">680 lines</span><span class="meta-chip">12 fns</span><span class="meta-chip">32 KB</span></div>
-        </div>
-        <div class="contract-body">
-            <p>Validator registration, token delegation, epoch-based reward distribution, and slashing for misbehavior. Foundation of MoltChain's consensus layer.</p>
-            <div class="sub-heading">Constants</div>
-            <table class="const-table"><tr><th>Name</th><th>Value</th></tr>
-                <tr><td>MIN_VALIDATOR_STAKE</td><td>100,000 MOLT</td></tr>
-                <tr><td>EPOCH_LENGTH</td><td>432,000 slots (~5 days)</td></tr>
-                <tr><td>SLASH_RATE_DOWNTIME</td><td>0.1%</td></tr>
-                <tr><td>SLASH_RATE_EQUIVOCATION</td><td>5%</td></tr>
-            </table>
-            <div class="sub-heading">Functions (12)</div>
-            <div class="fn-list"><span class="fn-chip">register_validator</span><span class="fn-chip">delegate</span><span class="fn-chip">undelegate</span><span class="fn-chip">withdraw_rewards</span><span class="fn-chip">slash</span><span class="fn-chip">update_commission</span><span class="fn-chip">get_stake</span><span class="fn-chip">get_delegations</span><span class="fn-chip">get_rewards</span><span class="fn-chip">get_validator_info</span><span class="fn-chip">pause</span><span class="fn-chip">unpause</span></div>
-            <div class="badge-row"><span class="badge badge-defi">DeFi</span><span class="badge badge-infra">Consensus</span></div>
-        </div>
-    </div></div>
-
-    <!-- 25 MULTISIG -->
-    <div class="contract-section" id="multisig"><div class="contract-card">
-        <div class="contract-header">
-            <div class="contract-icon icon-infra"><i class="fas fa-key"></i></div>
-            <div class="contract-header-text"><h3>MoltMultisig</h3><div class="subtitle">M-of-N Multisignature Wallet</div></div>
-            <div class="contract-meta"><span class="meta-chip">520 lines</span><span class="meta-chip">10 fns</span><span class="meta-chip">22 KB</span></div>
-        </div>
-        <div class="contract-body">
-            <p>Create M-of-N multisig wallets with proposal/approval workflows, time-locked execution, and configurable signer management.</p>
-            <div class="sub-heading">Functions (10)</div>
-            <div class="fn-list"><span class="fn-chip">create_multisig</span><span class="fn-chip">propose</span><span class="fn-chip">approve</span><span class="fn-chip">reject</span><span class="fn-chip">execute</span><span class="fn-chip">add_signer</span><span class="fn-chip">remove_signer</span><span class="fn-chip">change_threshold</span><span class="fn-chip">get_proposal</span><span class="fn-chip">get_signers</span></div>
-            <div class="badge-row"><span class="badge badge-infra">Infrastructure</span></div>
-        </div>
-    </div></div>
-
-    <!-- 26 VESTING -->
-    <div class="contract-section" id="vesting"><div class="contract-card">
-        <div class="contract-header">
-            <div class="contract-icon icon-defi"><i class="fas fa-clock"></i></div>
-            <div class="contract-header-text"><h3>MoltVesting</h3><div class="subtitle">Token Vesting Schedules</div></div>
-            <div class="contract-meta"><span class="meta-chip">380 lines</span><span class="meta-chip">8 fns</span><span class="meta-chip">14 KB</span></div>
-        </div>
-        <div class="contract-body">
-            <p>Linear and cliff-based vesting schedules. Create vesting grants with cliff periods, linear unlock, and optional revocation by admin.</p>
-            <div class="sub-heading">Functions (8)</div>
-            <div class="fn-list"><span class="fn-chip">create_schedule</span><span class="fn-chip">claim</span><span class="fn-chip">revoke</span><span class="fn-chip">get_schedule</span><span class="fn-chip">get_vested_amount</span><span class="fn-chip">get_claimable</span><span class="fn-chip">pause</span><span class="fn-chip">unpause</span></div>
-            <div class="badge-row"><span class="badge badge-defi">DeFi</span></div>
-        </div>
-    </div></div>
-
-    <!-- 27 CUSTODY -->
-    <div class="contract-section" id="custody"><div class="contract-card">
-        <div class="contract-header">
-            <div class="contract-icon icon-infra"><i class="fas fa-shield-alt"></i></div>
-            <div class="contract-header-text"><h3>MoltCustody</h3><div class="subtitle">Institutional Custody</div></div>
-            <div class="contract-meta"><span class="meta-chip">440 lines</span><span class="meta-chip">10 fns</span><span class="meta-chip">18 KB</span></div>
-        </div>
-        <div class="contract-body">
-            <p>Institutional-grade custody with deposit/withdrawal policies, address whitelisting, spending limits, and immutable audit trails.</p>
-            <div class="sub-heading">Functions (10)</div>
-            <div class="fn-list"><span class="fn-chip">deposit</span><span class="fn-chip">withdraw</span><span class="fn-chip">add_to_whitelist</span><span class="fn-chip">remove_from_whitelist</span><span class="fn-chip">set_daily_limit</span><span class="fn-chip">get_balance</span><span class="fn-chip">get_audit_log</span><span class="fn-chip">freeze</span><span class="fn-chip">unfreeze</span><span class="fn-chip">transfer_admin</span></div>
-            <div class="badge-row"><span class="badge badge-infra">Infrastructure</span></div>
-        </div>
-    </div></div>
-
-    <!-- 28 FAUCET -->
-    <div class="contract-section" id="faucet"><div class="contract-card">
-        <div class="contract-header">
-            <div class="contract-icon icon-infra"><i class="fas fa-faucet"></i></div>
-            <div class="contract-header-text"><h3>MoltFaucet</h3><div class="subtitle">Testnet Token Faucet</div></div>
-            <div class="contract-meta"><span class="meta-chip">200 lines</span><span class="meta-chip">6 fns</span><span class="meta-chip">8 KB</span></div>
-        </div>
-        <div class="contract-body">
-            <p>Devnet/testnet faucet with per-address cooldowns, configurable drip amounts, and rate limiting.</p>
-            <div class="sub-heading">Functions (6)</div>
-            <div class="fn-list"><span class="fn-chip">drip</span><span class="fn-chip">set_drip_amount</span><span class="fn-chip">set_cooldown</span><span class="fn-chip">get_status</span><span class="fn-chip">pause</span><span class="fn-chip">unpause</span></div>
-            <div class="badge-row"><span class="badge badge-infra">Infrastructure</span></div>
-        </div>
-    </div></div>
-
-    <!-- 29 DAO TREASURY -->
-    <div class="contract-section" id="dao-treasury"><div class="contract-card">
-        <div class="contract-header">
-            <div class="contract-icon icon-infra"><i class="fas fa-piggy-bank"></i></div>
-            <div class="contract-header-text"><h3>DAO Treasury</h3><div class="subtitle">Community Treasury &amp; Grants</div></div>
-            <div class="contract-meta"><span class="meta-chip">360 lines</span><span class="meta-chip">8 fns</span><span class="meta-chip">16 KB</span></div>
-        </div>
-        <div class="contract-body">
-            <p>Governance-controlled treasury with spending proposals, budget allocation, grant distribution, and on-chain accounting.</p>
-            <div class="sub-heading">Functions (8)</div>
-            <div class="fn-list"><span class="fn-chip">propose_spend</span><span class="fn-chip">approve_spend</span><span class="fn-chip">execute_spend</span><span class="fn-chip">allocate_budget</span><span class="fn-chip">get_balance</span><span class="fn-chip">get_proposals</span><span class="fn-chip">pause</span><span class="fn-chip">unpause</span></div>
-            <div class="badge-row"><span class="badge badge-infra">Infrastructure</span></div>
-        </div>
-    </div></div>
-
-    <!-- 30 SOCIAL PROTOCOL -->
-    <div class="contract-section" id="social-protocol"><div class="contract-card">
-        <div class="contract-header">
-            <div class="contract-icon icon-infra"><i class="fas fa-comments"></i></div>
-            <div class="contract-header-text"><h3>Social Protocol</h3><div class="subtitle">On-Chain Social Graph</div></div>
-            <div class="contract-meta"><span class="meta-chip">620 lines</span><span class="meta-chip">14 fns</span><span class="meta-chip">28 KB</span></div>
-        </div>
-        <div class="contract-body">
-            <p>Decentralized social graph with follow/unfollow, create/delete posts, likes, reputation-weighted feeds, and profile management. Uses opcode-dispatch ABI.</p>
-            <div class="sub-heading">Opcodes</div>
-            <table class="const-table"><tr><th>Opcode</th><th>Function</th><th>Description</th></tr>
-                <tr><td>0</td><td>create_profile</td><td>Register on-chain social profile</td></tr>
-                <tr><td>1</td><td>follow</td><td>Follow another user</td></tr>
-                <tr><td>2</td><td>unfollow</td><td>Unfollow a user</td></tr>
-                <tr><td>3</td><td>create_post</td><td>Publish on-chain content</td></tr>
-                <tr><td>4</td><td>delete_post</td><td>Remove authored content</td></tr>
-                <tr><td>5</td><td>like_post</td><td>Like a post</td></tr>
-                <tr><td>6</td><td>unlike_post</td><td>Remove a like</td></tr>
-                <tr><td>7</td><td>get_feed</td><td>Reputation-weighted feed</td></tr>
-                <tr><td>8</td><td>get_profile</td><td>Fetch user profile</td></tr>
-                <tr><td>9</td><td>get_followers</td><td>List followers</td></tr>
-                <tr><td>10</td><td>get_following</td><td>List following</td></tr>
-                <tr><td>11</td><td>update_profile</td><td>Update profile metadata</td></tr>
-                <tr><td>12</td><td>emergency_pause</td><td>Admin pause</td></tr>
-                <tr><td>13</td><td>emergency_unpause</td><td>Admin unpause</td></tr>
-            </table>
-            <div class="badge-row"><span class="badge badge-infra">Social</span></div>
-        </div>
-    </div></div>
-
-    <!-- 31 CONTENT PROTOCOL -->
-    <div class="contract-section" id="content-protocol"><div class="contract-card">
-        <div class="contract-header">
-            <div class="contract-icon icon-infra"><i class="fas fa-newspaper"></i></div>
-            <div class="contract-header-text"><h3>Content Protocol</h3><div class="subtitle">Decentralized Content &amp; Monetization</div></div>
-            <div class="contract-meta"><span class="meta-chip">550 lines</span><span class="meta-chip">12 fns</span><span class="meta-chip">24 KB</span></div>
-        </div>
-        <div class="contract-body">
-            <p>Content publishing with IPFS hashes, creator monetization, tipping, content moderation via reputation, and paywall support. Opcode-dispatch ABI.</p>
-            <div class="sub-heading">Key Opcodes</div>
-            <div class="fn-list"><span class="fn-chip">publish</span><span class="fn-chip">update_content</span><span class="fn-chip">delete_content</span><span class="fn-chip">tip_creator</span><span class="fn-chip">set_paywall</span><span class="fn-chip">unlock_content</span><span class="fn-chip">report_content</span><span class="fn-chip">moderate</span><span class="fn-chip">get_content</span><span class="fn-chip">get_creator_stats</span><span class="fn-chip">emergency_pause</span><span class="fn-chip">emergency_unpause</span></div>
-            <div class="badge-row"><span class="badge badge-infra">Content</span></div>
-        </div>
-    </div></div>
-
-    <!-- 32 AI MARKETPLACE -->
-    <div class="contract-section" id="ai-marketplace"><div class="contract-card">
-        <div class="contract-header">
-            <div class="contract-icon icon-infra"><i class="fas fa-brain"></i></div>
-            <div class="contract-header-text"><h3>AI Marketplace</h3><div class="subtitle">Agent Service Exchange</div></div>
-            <div class="contract-meta"><span class="meta-chip">720 lines</span><span class="meta-chip">18 fns</span><span class="meta-chip">35 KB</span></div>
-        </div>
-        <div class="contract-body">
-            <p>Agent-to-agent service marketplace. List AI services, bid on tasks, escrow payments, and quality scoring with MoltyID integration. Opcode-dispatch ABI.</p>
-            <div class="sub-heading">Key Opcodes</div>
-            <div class="fn-list"><span class="fn-chip">list_service</span><span class="fn-chip">delist_service</span><span class="fn-chip">create_task</span><span class="fn-chip">bid_task</span><span class="fn-chip">accept_bid</span><span class="fn-chip">submit_result</span><span class="fn-chip">approve_result</span><span class="fn-chip">dispute</span><span class="fn-chip">resolve_dispute</span><span class="fn-chip">rate_provider</span><span class="fn-chip">get_service</span><span class="fn-chip">get_task</span><span class="fn-chip">get_bids</span><span class="fn-chip">get_ratings</span><span class="fn-chip">withdraw_earnings</span><span class="fn-chip">get_provider_stats</span><span class="fn-chip">emergency_pause</span><span class="fn-chip">emergency_unpause</span></div>
-            <div class="badge-row"><span class="badge badge-infra">AI/Agents</span></div>
-        </div>
-    </div></div>
-
-    <!-- 33 PREDICTION MARKET -->
+    <!-- 24 PREDICTION MARKET -->
     <div class="contract-section" id="prediction-market"><div class="contract-card">
         <div class="contract-header">
             <div class="contract-icon icon-defi"><i class="fas fa-chart-line"></i></div>
@@ -925,67 +756,7 @@
         </div>
     </div></div>
 
-    <!-- 34 INSURANCE PROTOCOL -->
-    <div class="contract-section" id="insurance-protocol"><div class="contract-card">
-        <div class="contract-header">
-            <div class="contract-icon icon-defi"><i class="fas fa-umbrella"></i></div>
-            <div class="contract-header-text"><h3>Insurance Protocol</h3><div class="subtitle">Parametric Insurance</div></div>
-            <div class="contract-meta"><span class="meta-chip">580 lines</span><span class="meta-chip">16 fns</span><span class="meta-chip">30 KB</span></div>
-        </div>
-        <div class="contract-body">
-            <p>Parametric insurance with policy creation, premium pool management, oracle-triggered claims, and automatic payouts. Opcode-dispatch ABI.</p>
-            <div class="sub-heading">Key Opcodes</div>
-            <div class="fn-list"><span class="fn-chip">create_policy</span><span class="fn-chip">purchase_coverage</span><span class="fn-chip">file_claim</span><span class="fn-chip">process_claim</span><span class="fn-chip">payout</span><span class="fn-chip">deposit_premium</span><span class="fn-chip">withdraw_premium</span><span class="fn-chip">get_policy</span><span class="fn-chip">get_coverage</span><span class="fn-chip">get_pool_stats</span><span class="fn-chip">set_oracle</span><span class="fn-chip">trigger_parametric</span><span class="fn-chip">expire_policy</span><span class="fn-chip">renew_policy</span><span class="fn-chip">emergency_pause</span><span class="fn-chip">emergency_unpause</span></div>
-            <div class="badge-row"><span class="badge badge-defi">DeFi</span><span class="badge badge-infra">Insurance</span></div>
-        </div>
-    </div></div>
-
-    <!-- 35 SUPPLY CHAIN -->
-    <div class="contract-section" id="supply-chain"><div class="contract-card">
-        <div class="contract-header">
-            <div class="contract-icon icon-infra"><i class="fas fa-truck"></i></div>
-            <div class="contract-header-text"><h3>Supply Chain</h3><div class="subtitle">Provenance &amp; Tracking</div></div>
-            <div class="contract-meta"><span class="meta-chip">490 lines</span><span class="meta-chip">14 fns</span><span class="meta-chip">26 KB</span></div>
-        </div>
-        <div class="contract-body">
-            <p>End-to-end supply chain: register products, add checkpoints, multi-party attestation, provenance verification, and recall management. Opcode-dispatch ABI.</p>
-            <div class="sub-heading">Key Opcodes</div>
-            <div class="fn-list"><span class="fn-chip">register_product</span><span class="fn-chip">add_checkpoint</span><span class="fn-chip">attest</span><span class="fn-chip">transfer_custody</span><span class="fn-chip">verify_provenance</span><span class="fn-chip">initiate_recall</span><span class="fn-chip">get_product</span><span class="fn-chip">get_checkpoints</span><span class="fn-chip">get_attestations</span><span class="fn-chip">add_participant</span><span class="fn-chip">remove_participant</span><span class="fn-chip">get_chain_of_custody</span><span class="fn-chip">emergency_pause</span><span class="fn-chip">emergency_unpause</span></div>
-            <div class="badge-row"><span class="badge badge-infra">Enterprise</span></div>
-        </div>
-    </div></div>
-
-    <!-- 36 TIME LOCK -->
-    <div class="contract-section" id="time-lock"><div class="contract-card">
-        <div class="contract-header">
-            <div class="contract-icon icon-infra"><i class="fas fa-hourglass-half"></i></div>
-            <div class="contract-header-text"><h3>Time Lock</h3><div class="subtitle">Governance Delay Controller</div></div>
-            <div class="contract-meta"><span class="meta-chip">310 lines</span><span class="meta-chip">10 fns</span><span class="meta-chip">12 KB</span></div>
-        </div>
-        <div class="contract-body">
-            <p>Governance time-lock with configurable delays, proposal queuing, execution after delay, and emergency cancellation. Used by MoltDAO for safe parameter updates.</p>
-            <div class="sub-heading">Key Opcodes</div>
-            <div class="fn-list"><span class="fn-chip">queue_transaction</span><span class="fn-chip">execute_transaction</span><span class="fn-chip">cancel_transaction</span><span class="fn-chip">update_delay</span><span class="fn-chip">get_transaction</span><span class="fn-chip">get_queue</span><span class="fn-chip">get_config</span><span class="fn-chip">set_admin</span><span class="fn-chip">emergency_pause</span><span class="fn-chip">emergency_unpause</span></div>
-            <div class="badge-row"><span class="badge badge-infra">Governance</span></div>
-        </div>
-    </div></div>
-
-    <!-- 37 CROSS-CHAIN MESSAGING -->
-    <div class="contract-section" id="cross-chain-msg"><div class="contract-card">
-        <div class="contract-header">
-            <div class="contract-icon icon-defi"><i class="fas fa-globe"></i></div>
-            <div class="contract-header-text"><h3>Cross-Chain Messaging</h3><div class="subtitle">Inter-Chain Relay</div></div>
-            <div class="contract-meta"><span class="meta-chip">420 lines</span><span class="meta-chip">12 fns</span><span class="meta-chip">20 KB</span></div>
-        </div>
-        <div class="contract-body">
-            <p>Cross-chain message relay with packet routing, acknowledgements, channel management, fee estimation, and light-client verification. Opcode-dispatch ABI.</p>
-            <div class="sub-heading">Key Opcodes</div>
-            <div class="fn-list"><span class="fn-chip">send_message</span><span class="fn-chip">relay_message</span><span class="fn-chip">acknowledge</span><span class="fn-chip">open_channel</span><span class="fn-chip">close_channel</span><span class="fn-chip">get_message</span><span class="fn-chip">get_channel</span><span class="fn-chip">estimate_fee</span><span class="fn-chip">set_relayer</span><span class="fn-chip">get_pending</span><span class="fn-chip">emergency_pause</span><span class="fn-chip">emergency_unpause</span></div>
-            <div class="badge-row"><span class="badge badge-defi">Cross-Chain</span></div>
-        </div>
-    </div></div>
-
-    <!-- 38 mUSD STABLECOIN -->
+    <!-- 25 mUSD STABLECOIN -->
     <div class="contract-section" id="musd-token"><div class="contract-card">
         <div class="contract-header">
             <div class="contract-icon icon-defi"><i class="fas fa-dollar-sign"></i></div>
@@ -1074,7 +845,7 @@
         <table class="const-table" style="max-width:600px;">
             <tr><th>Pattern</th><th>Contracts</th></tr>
             <tr><td>Reentrancy guard</td><td>MoltSwap, LobsterLend, ClawPump, DEX Core, DEX AMM</td></tr>
-            <tr><td>Admin-only initialization</td><td>All 23 contracts</td></tr>
+            <tr><td>Admin-only initialization</td><td>All 27 contracts</td></tr>
             <tr><td>Overflow-safe arithmetic</td><td>All DeFi + DEX contracts</td></tr>
             <tr><td>T5.9 inflation attack prevention</td><td>ClawVault (MIN_LOCKED_SHARES)</td></tr>
             <tr><td>T5.10 caller verification</td><td>MoltOracle</td></tr>
