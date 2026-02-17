@@ -116,6 +116,62 @@ impl StMoltToken {
     }
 }
 
+/// Staking lock tier — determines APY bonus and lock duration
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LockTier {
+    Flexible = 0,  // No lock, 7-day unstake cooldown, 1.0x multiplier
+    Lock30   = 1,  // 30-day lock, 1.5x multiplier
+    Lock90   = 2,  // 90-day lock, 2.0x multiplier
+    Lock365  = 3,  // 365-day lock, 3.0x multiplier
+}
+
+impl Default for LockTier {
+    fn default() -> Self { Self::Flexible }
+}
+
+impl LockTier {
+    pub fn from_u8(v: u8) -> Option<Self> {
+        match v {
+            0 => Some(Self::Flexible),
+            1 => Some(Self::Lock30),
+            2 => Some(Self::Lock90),
+            3 => Some(Self::Lock365),
+            _ => None,
+        }
+    }
+
+    /// Reward multiplier in basis points (10000 = 1.0x)
+    pub fn reward_multiplier_bp(&self) -> u64 {
+        match self {
+            Self::Flexible => 10_000, // 1.0x
+            Self::Lock30   => 15_000, // 1.5x
+            Self::Lock90   => 20_000, // 2.0x
+            Self::Lock365  => 30_000, // 3.0x
+        }
+    }
+
+    /// Lock duration in slots (400ms per slot)
+    /// Flexible: 7 days cooldown (handled separately)
+    /// Locked tiers: funds are locked for this many slots after deposit
+    pub fn lock_duration_slots(&self) -> u64 {
+        match self {
+            Self::Flexible => 0,         // No lock (7-day unstake cooldown applies separately)
+            Self::Lock30   => 6_480_000, // 30 days
+            Self::Lock90   => 19_440_000, // 90 days
+            Self::Lock365  => 78_840_000, // 365 days
+        }
+    }
+
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::Flexible => "Flexible",
+            Self::Lock30   => "30-Day Lock",
+            Self::Lock90   => "90-Day Lock",
+            Self::Lock365  => "365-Day Lock",
+        }
+    }
+}
+
 /// User's staking position
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StakingPosition {
@@ -124,6 +180,10 @@ pub struct StakingPosition {
     pub molt_deposited: u64, // Original MOLT deposited
     pub deposited_at: u64,   // Slot when deposited
     pub rewards_earned: u64, // Accumulated rewards (auto-compound)
+    #[serde(default)]
+    pub lock_tier: LockTier, // Staking tier (Flexible, 30d, 90d, 365d)
+    #[serde(default)]
+    pub lock_until: u64,     // Slot until which funds are locked (0 = no lock)
 }
 
 /// Unstaking request (7-day cooldown)
@@ -173,6 +233,17 @@ impl ReefStakePool {
         molt_amount: u64,
         current_slot: u64,
     ) -> Result<u64, String> {
+        self.stake_with_tier(user, molt_amount, current_slot, LockTier::Flexible)
+    }
+
+    /// Stake MOLT with a specific lock tier
+    pub fn stake_with_tier(
+        &mut self,
+        user: Pubkey,
+        molt_amount: u64,
+        current_slot: u64,
+        tier: LockTier,
+    ) -> Result<u64, String> {
         if molt_amount == 0 {
             return Err("Cannot stake 0 MOLT".to_string());
         }
@@ -185,10 +256,25 @@ impl ReefStakePool {
         self.st_molt_token.total_molt_staked += molt_amount;
         self.st_molt_token.exchange_rate_fp = self.st_molt_token.calculate_exchange_rate_fp();
 
+        // Calculate lock expiry
+        let lock_until = if tier.lock_duration_slots() > 0 {
+            current_slot + tier.lock_duration_slots()
+        } else {
+            0
+        };
+
         // Update user position
         if let Some(position) = self.positions.get_mut(&user) {
             position.st_molt_amount += st_molt_to_mint;
             position.molt_deposited += molt_amount;
+            // Upgrade tier if new tier is higher
+            if (tier as u8) > (position.lock_tier as u8) {
+                position.lock_tier = tier;
+            }
+            // Extend lock if new lock is longer
+            if lock_until > position.lock_until {
+                position.lock_until = lock_until;
+            }
         } else {
             self.positions.insert(
                 user,
@@ -198,6 +284,8 @@ impl ReefStakePool {
                     molt_deposited: molt_amount,
                     deposited_at: current_slot,
                     rewards_earned: 0,
+                    lock_tier: tier,
+                    lock_until,
                 },
             );
         }
@@ -217,6 +305,16 @@ impl ReefStakePool {
             .positions
             .get_mut(&user)
             .ok_or_else(|| "No staking position found".to_string())?;
+
+        // Enforce lock period — cannot unstake before lock expires
+        if position.lock_until > 0 && current_slot < position.lock_until {
+            let remaining_slots = position.lock_until - current_slot;
+            let remaining_days = remaining_slots / 216_000; // slots per day
+            return Err(format!(
+                "Position locked for {} more days ({} tier). Unlock at slot {}",
+                remaining_days, position.lock_tier.display_name(), position.lock_until
+            ));
+        }
 
         if position.st_molt_amount < st_molt_amount {
             return Err(format!(
@@ -364,6 +462,8 @@ impl ReefStakePool {
                     molt_deposited: proportion,
                     deposited_at: current_slot,
                     rewards_earned: 0,
+                    lock_tier: LockTier::Flexible,
+                    lock_until: 0,
                 },
             );
         }
@@ -372,6 +472,7 @@ impl ReefStakePool {
     }
 
     /// Distribute rewards to all stakers (auto-compound)
+    /// Uses tier-weighted distribution: locked stakers get boosted rewards.
     pub fn distribute_rewards(&mut self, total_rewards: u64) {
         if self.st_molt_token.total_supply == 0 {
             return;
@@ -381,13 +482,18 @@ impl ReefStakePool {
         self.st_molt_token.total_molt_staked += total_rewards;
         self.st_molt_token.exchange_rate_fp = self.st_molt_token.calculate_exchange_rate_fp();
 
-        // Update each user's rewards_earned for tracking (integer proportional math)
-        // L3 note: integer division dust is lost in the tracking field only.
-        // The actual MOLT value is preserved in total_molt_staked / exchange rate.
+        // Calculate total weighted stMOLT across all positions
+        let total_weighted: u128 = self.positions.values().map(|p| {
+            (p.st_molt_amount as u128 * p.lock_tier.reward_multiplier_bp() as u128) / 10_000
+        }).sum();
+
+        if total_weighted == 0 { return; }
+
+        // Distribute rewards proportionally to weighted stake
         for position in self.positions.values_mut() {
-            // share = (position.st_molt * total_rewards) / total_supply  (integer division)
-            let reward_share = ((position.st_molt_amount as u128 * total_rewards as u128)
-                / self.st_molt_token.total_supply as u128) as u64;
+            let weighted = (position.st_molt_amount as u128
+                * position.lock_tier.reward_multiplier_bp() as u128) / 10_000;
+            let reward_share = ((weighted * total_rewards as u128) / total_weighted) as u64;
             position.rewards_earned += reward_share;
         }
     }

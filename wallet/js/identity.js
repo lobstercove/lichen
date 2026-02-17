@@ -229,6 +229,23 @@ async function loadIdentity() {
     renderIdentity(container, data);
 }
 
+// Retry loading identity after a state-changing tx (register, edit, etc.)
+// Retries `maxRetries` times with `delayMs` between attempts.
+async function retryLoadIdentity(maxRetries = 5, delayMs = 1200) {
+    for (let i = 0; i < maxRetries; i++) {
+        await new Promise(r => setTimeout(r, delayMs));
+        _identityCache = null;
+        _identityLoading = false;
+        const data = await loadIdentityData();
+        if (data && data.profile?.identity) {
+            await loadIdentity();
+            return;
+        }
+    }
+    // Fallback — just re-render whatever state we have
+    await loadIdentity();
+}
+
 // ── MoltyID Intro Banner ──
 function renderIdentityBanner(compact = false) {
     if (compact) {
@@ -587,9 +604,10 @@ async function showRegisterIdentityModal() {
             name: displayName
         }, values.password);
         await rpc.sendTransaction(tx);
-        showToast('Identity registered!');
+        showToast('Identity registered! Loading profile...');
         _identityCache = null;
-        await loadIdentity();
+        // Retry loading identity — the tx may take 1-2 blocks to be indexed
+        await retryLoadIdentity(5, 1200);
     } catch (e) {
         showToast('Registration failed: ' + e.message);
     }
@@ -671,7 +689,7 @@ async function showRegisterNameModal() {
         await rpc.sendTransaction(tx);
         showToast(`${name}.molt registered!`);
         _identityCache = null;
-        await loadIdentity();
+        await retryLoadIdentity(5, 1200);
     } catch (e) {
         showToast('Name registration failed: ' + e.message);
     }

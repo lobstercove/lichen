@@ -348,17 +348,19 @@ fn parse_transfer_amount(ix: &Instruction) -> Option<u64> {
     if ix.program_id != SYSTEM_PROGRAM_ID {
         return None;
     }
-    if ix.data.len() < 9
-        || (ix.data[0] != 0
-            && ix.data[0] != 2
-            && ix.data[0] != 3
-            && ix.data[0] != 4
-            && ix.data[0] != 5)
-    {
+    if ix.data.len() < 9 {
         return None;
     }
-    let amount_bytes: [u8; 8] = ix.data[1..9].try_into().ok()?;
-    Some(u64::from_le_bytes(amount_bytes))
+    // Parse amount from data[1..9] for instruction types that carry an amount:
+    // 0=Transfer, 2=Reward, 3=GrantRepay, 4=GenesisTransfer, 5=GenesisMint,
+    // 9=Stake, 10=Unstake, 13=ReefStakeDeposit, 14=ReefStakeUnstake
+    match ix.data[0] {
+        0 | 2 | 3 | 4 | 5 | 9 | 10 | 13 | 14 => {
+            let amount_bytes: [u8; 8] = ix.data[1..9].try_into().ok()?;
+            Some(u64::from_le_bytes(amount_bytes))
+        }
+        _ => None,
+    }
 }
 
 fn instruction_type(ix: &Instruction) -> &'static str {
@@ -398,6 +400,30 @@ fn instruction_type(ix: &Instruction) -> &'static str {
         }
         if ix.data.first() == Some(&12) {
             return "RegisterEvmAddress";
+        }
+        if ix.data.first() == Some(&13) {
+            return "ReefStakeDeposit";
+        }
+        if ix.data.first() == Some(&14) {
+            return "ReefStakeUnstake";
+        }
+        if ix.data.first() == Some(&15) {
+            return "ReefStakeClaim";
+        }
+        if ix.data.first() == Some(&16) {
+            return "ReefStakeTransfer";
+        }
+        if ix.data.first() == Some(&17) {
+            return "DeployContract";
+        }
+        if ix.data.first() == Some(&18) {
+            return "SetContractABI";
+        }
+        if ix.data.first() == Some(&19) {
+            return "FaucetAirdrop";
+        }
+        if ix.data.first() == Some(&20) {
+            return "RegisterSymbol";
         }
         return "System";
     }
@@ -1371,6 +1397,18 @@ async fn handle_get_balance(
             let to_molt_str =
                 |shells: u64| -> String { format!("{:.4}", shells as f64 / 1_000_000_000.0) };
 
+            // Include ReefStake liquid staking position
+            let (reef_staked, reef_value) = state
+                .state
+                .get_reefstake_pool()
+                .ok()
+                .and_then(|pool| {
+                    pool.positions.get(&pubkey).map(|p| {
+                        (p.molt_deposited, pool.st_molt_token.st_molt_to_molt(p.st_molt_amount))
+                    })
+                })
+                .unwrap_or((0, 0));
+
             Ok(serde_json::json!({
                 // Total balance (backward compatible)
                 "shells": acc.shells,
@@ -1385,6 +1423,12 @@ async fn handle_get_balance(
 
                 "locked": acc.locked,
                 "locked_molt": to_molt_str(acc.locked),
+
+                // ReefStake liquid staking (separate from native validator staking)
+                "reef_staked": reef_staked,
+                "reef_staked_molt": to_molt_str(reef_staked),
+                "reef_value": reef_value,
+                "reef_value_molt": to_molt_str(reef_value),
             }))
         }
         None => {
@@ -1398,6 +1442,10 @@ async fn handle_get_balance(
                 "staked_molt": "0.0000",
                 "locked": 0,
                 "locked_molt": "0.0000",
+                "reef_staked": 0,
+                "reef_staked_molt": "0.0000",
+                "reef_value": 0,
+                "reef_value_molt": "0.0000",
             }))
         }
     }
@@ -7569,13 +7617,20 @@ async fn handle_get_staking_position(
 
     if let Some(position) = pool.positions.get(&user) {
         let current_value = pool.st_molt_token.st_molt_to_molt(position.st_molt_amount);
+        let tier = position.lock_tier as u8;
+        let tier_name = position.lock_tier.display_name();
+        let multiplier = position.lock_tier.reward_multiplier_bp() as f64 / 10_000.0;
         Ok(serde_json::json!({
             "owner": user_pubkey,
             "st_molt_amount": position.st_molt_amount,
             "molt_deposited": position.molt_deposited,
             "current_value_molt": current_value,
             "rewards_earned": position.rewards_earned,
-            "deposited_at": position.deposited_at
+            "deposited_at": position.deposited_at,
+            "lock_tier": tier,
+            "lock_tier_name": tier_name,
+            "lock_until": position.lock_until,
+            "reward_multiplier": multiplier
         }))
     } else {
         Ok(serde_json::json!({
@@ -7584,7 +7639,11 @@ async fn handle_get_staking_position(
             "molt_deposited": 0,
             "current_value_molt": 0,
             "rewards_earned": 0,
-            "deposited_at": 0
+            "deposited_at": 0,
+            "lock_tier": 0,
+            "lock_tier_name": "Flexible",
+            "lock_until": 0,
+            "reward_multiplier": 1.0
         }))
     }
 }
@@ -7615,7 +7674,14 @@ async fn handle_get_reefstake_pool_info(state: &RpcState) -> Result<serde_json::
         "exchange_rate": pool.st_molt_token.exchange_rate_display(),
         "total_validators": active_validators,
         "average_apy_percent": apy_percent,
-        "total_stakers": pool.positions.len()
+        "total_stakers": pool.positions.len(),
+        "tiers": [
+            { "id": 0, "name": "Flexible", "lock_days": 0, "multiplier": 1.0, "apy_percent": apy_percent },
+            { "id": 1, "name": "30-Day Lock", "lock_days": 30, "multiplier": 1.5, "apy_percent": apy_percent * 1.5 },
+            { "id": 2, "name": "90-Day Lock", "lock_days": 90, "multiplier": 2.0, "apy_percent": apy_percent * 2.0 },
+            { "id": 3, "name": "365-Day Lock", "lock_days": 365, "multiplier": 3.0, "apy_percent": apy_percent * 3.0 },
+        ],
+        "cooldown_days": 7
     }))
 }
 
