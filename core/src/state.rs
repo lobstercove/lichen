@@ -129,6 +129,10 @@ pub struct MetricsStore {
     daily_transactions: Mutex<u64>,
     /// Date string (YYYY-MM-DD) for daily counter reset detection
     daily_date: Mutex<String>,
+    /// Program (contract) count — incremented by index_program(), persisted to CF_STATS
+    program_count: Mutex<u64>,
+    /// Validator count — incremented/decremented by put_validator()/delete_validator()
+    validator_count: Mutex<u64>,
 }
 
 impl Default for MetricsStore {
@@ -151,6 +155,8 @@ impl MetricsStore {
             peak_tps: Mutex::new(0.0),
             daily_transactions: Mutex::new(0),
             daily_date: Mutex::new(today),
+            program_count: Mutex::new(0),
+            validator_count: Mutex::new(0),
         }
     }
 
@@ -372,6 +378,22 @@ impl MetricsStore {
             }
         }
 
+        // Load program count
+        if let Ok(Some(data)) = db.get_cf(&cf, b"program_count") {
+            if let Ok(bytes) = data.as_slice().try_into() {
+                let count = u64::from_le_bytes(bytes);
+                *self.program_count.lock().unwrap_or_else(|e| e.into_inner()) = count;
+            }
+        }
+
+        // Load validator count
+        if let Ok(Some(data)) = db.get_cf(&cf, b"validator_count") {
+            if let Ok(bytes) = data.as_slice().try_into() {
+                let count = u64::from_le_bytes(bytes);
+                *self.validator_count.lock().unwrap_or_else(|e| e.into_inner()) = count;
+            }
+        }
+
         // Load daily transactions + date (reset if date changed)
         let today = Self::today_utc();
         let stored_date = db
@@ -452,6 +474,32 @@ impl MetricsStore {
             .unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Increment program counter
+    pub fn increment_programs(&self) {
+        *self.program_count.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+    }
+
+    /// Get program count (no DB scan)
+    pub fn get_program_count(&self) -> u64 {
+        *self.program_count.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Increment validator counter
+    pub fn increment_validators(&self) {
+        *self.validator_count.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+    }
+
+    /// Decrement validator counter
+    pub fn decrement_validators(&self) {
+        let mut c = self.validator_count.lock().unwrap_or_else(|e| e.into_inner());
+        *c = c.saturating_sub(1);
+    }
+
+    /// Get validator count (no DB scan)
+    pub fn get_validator_count(&self) -> u64 {
+        *self.validator_count.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Save metrics to database
     pub fn save(&self, db: &Arc<DB>) -> Result<(), String> {
         let cf = db
@@ -486,6 +534,16 @@ impl MetricsStore {
             .unwrap_or_else(|e| e.into_inner());
         db.put_cf(&cf, b"active_accounts", active_accounts.to_le_bytes())
             .map_err(|e| format!("Failed to save active accounts: {}", e))?;
+
+        // Save program count
+        let pc = *self.program_count.lock().unwrap_or_else(|e| e.into_inner());
+        db.put_cf(&cf, b"program_count", pc.to_le_bytes())
+            .map_err(|e| format!("Failed to save program count: {}", e))?;
+
+        // Save validator count
+        let vc = *self.validator_count.lock().unwrap_or_else(|e| e.into_inner());
+        db.put_cf(&cf, b"validator_count", vc.to_le_bytes())
+            .map_err(|e| format!("Failed to save validator count: {}", e))?;
 
         // Save daily transactions + date
         let daily_txs = *self
@@ -1541,6 +1599,18 @@ impl StateStore {
         Ok(self.metrics.get_active_accounts())
     }
 
+    /// Get deployed program (contract) count — O(1) via MetricsStore counter.
+    /// Maintained by `index_program()`.
+    pub fn get_program_count(&self) -> u64 {
+        self.metrics.get_program_count()
+    }
+
+    /// Get validator count — O(1) via MetricsStore counter.
+    /// Maintained by `put_validator()` / `delete_validator()`.
+    pub fn get_validator_count(&self) -> u64 {
+        self.metrics.get_validator_count()
+    }
+
     /// Full O(N) scan of active accounts — ONLY for reconciliation/verification
     #[allow(dead_code)]
     fn count_active_accounts_full_scan(&self) -> Result<u64, String> {
@@ -2218,9 +2288,17 @@ impl StateStore {
             .cf_handle(CF_PROGRAMS)
             .ok_or_else(|| "Programs CF not found".to_string())?;
 
+        // Only increment if this is a newly indexed program (not an update)
+        let is_new = self.db.get_cf(&cf, program.0).ok().flatten().is_none();
+
         self.db
             .put_cf(&cf, program.0, [])
-            .map_err(|e| format!("Failed to store program index: {}", e))
+            .map_err(|e| format!("Failed to store program index: {}", e))?;
+
+        if is_new {
+            self.metrics.increment_programs();
+        }
+        Ok(())
     }
 
     pub fn get_programs(&self, limit: usize) -> Result<Vec<Pubkey>, String> {
@@ -3266,12 +3344,20 @@ impl StateStore {
             .ok_or_else(|| "Validators CF not found".to_string())?;
 
         let key = info.pubkey.0;
+        // Only increment counter for newly registered validators (not updates)
+        let is_new = self.db.get_cf(&cf, key).ok().flatten().is_none();
+
         let value = serde_json::to_vec(info)
             .map_err(|e| format!("Failed to serialize validator: {}", e))?;
 
         self.db
             .put_cf(&cf, key, value)
-            .map_err(|e| format!("Failed to store validator: {}", e))
+            .map_err(|e| format!("Failed to store validator: {}", e))?;
+
+        if is_new {
+            self.metrics.increment_validators();
+        }
+        Ok(())
     }
 
     /// Delete validator from state
@@ -3281,9 +3367,17 @@ impl StateStore {
             .cf_handle(CF_VALIDATORS)
             .ok_or_else(|| "Validators CF not found".to_string())?;
 
+        // Only decrement if the validator actually exists
+        let exists = self.db.get_cf(&cf, pubkey.0).ok().flatten().is_some();
+
         self.db
             .delete_cf(&cf, pubkey.0)
-            .map_err(|e| format!("Failed to delete validator: {}", e))
+            .map_err(|e| format!("Failed to delete validator: {}", e))?;
+
+        if exists {
+            self.metrics.decrement_validators();
+        }
+        Ok(())
     }
 
     /// Get validator info
@@ -3359,17 +3453,27 @@ impl StateStore {
             .cf_handle(CF_VALIDATORS)
             .ok_or_else(|| "Validators CF not found".to_string())?;
 
+        // Collect keys, then batch-delete in a single atomic WriteBatch
         let keys: Vec<Box<[u8]>> = self
             .db
             .iterator_cf(&cf, rocksdb::IteratorMode::Start)
             .filter_map(|item| item.ok().map(|(k, _)| k))
             .collect();
 
-        for key in keys {
-            self.db
-                .delete_cf(&cf, &key)
-                .map_err(|e| format!("Failed to delete validator: {}", e))?;
+        if keys.is_empty() {
+            return Ok(());
         }
+
+        let mut batch = rocksdb::WriteBatch::default();
+        for key in &keys {
+            batch.delete_cf(&cf, key);
+        }
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Failed to clear validators: {}", e))?;
+
+        // Reset the validator counter
+        *self.metrics.validator_count.lock().unwrap_or_else(|e| e.into_inner()) = 0;
         Ok(())
     }
 
@@ -4456,6 +4560,65 @@ impl StateStore {
         self.db
             .delete_cf(&cf, &key)
             .map_err(|e| format!("Failed to delete contract storage: {}", e))
+    }
+
+    /// O(1) point-read of a single contract storage key from CF_CONTRACT_STORAGE.
+    /// Avoids deserializing the entire ContractAccount (which includes WASM bytecode).
+    /// Key format: program(32) + storage_key → value.
+    pub fn get_contract_storage(
+        &self,
+        program: &Pubkey,
+        storage_key: &[u8],
+    ) -> Result<Option<Vec<u8>>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_CONTRACT_STORAGE)
+            .ok_or_else(|| "Contract storage CF not found".to_string())?;
+        let mut key = Vec::with_capacity(32 + storage_key.len());
+        key.extend_from_slice(&program.0);
+        key.extend_from_slice(storage_key);
+        self.db
+            .get_cf(&cf, &key)
+            .map(|opt| opt.map(|v| v.to_vec()))
+            .map_err(|e| format!("Failed to read contract storage: {}", e))
+    }
+
+    /// O(1) point-read of a u64 from contract storage.
+    pub fn get_contract_storage_u64(
+        &self,
+        program: &Pubkey,
+        storage_key: &[u8],
+    ) -> u64 {
+        match self.get_contract_storage(program, storage_key) {
+            Ok(Some(data)) if data.len() >= 8 => {
+                u64::from_le_bytes(data[..8].try_into().unwrap_or([0; 8]))
+            }
+            _ => 0,
+        }
+    }
+
+    /// Resolve a symbol name → program Pubkey via the symbol registry, then
+    /// read a single storage key from CF_CONTRACT_STORAGE. This is the fast
+    /// path that avoids deserializing the ContractAccount (no WASM bytecode).
+    pub fn get_program_storage(
+        &self,
+        symbol: &str,
+        storage_key: &[u8],
+    ) -> Option<Vec<u8>> {
+        let entry = self.get_symbol_registry(symbol).ok()??;
+        self.get_contract_storage(&entry.program, storage_key).ok()?
+    }
+
+    /// Resolve symbol → program Pubkey, then read a u64 storage value.
+    pub fn get_program_storage_u64(
+        &self,
+        symbol: &str,
+        storage_key: &[u8],
+    ) -> u64 {
+        match self.get_symbol_registry(symbol) {
+            Ok(Some(entry)) => self.get_contract_storage_u64(&entry.program, storage_key),
+            _ => 0,
+        }
     }
 
     /// Iterate contract storage entries from CF_CONTRACT_STORAGE using prefix scan.
