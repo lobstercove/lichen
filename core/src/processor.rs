@@ -2441,6 +2441,10 @@ impl TxProcessor {
         runtime.return_to_pool();
         let new_hash = new_hash_result?;
 
+        // Version tracking: store previous code hash and bump version
+        contract.previous_code_hash = Some(contract.code_hash);
+        contract.version = contract.version.saturating_add(1);
+
         contract.code = new_code;
         contract.code_hash = new_hash;
         // AUDIT-FIX 3.7: Clear stale ABI from previous code version — the new

@@ -619,6 +619,15 @@ async fn post_trade(
         status: &'static str,
     }
 
+    // Emit prediction market WS event
+    state.prediction_broadcaster.emit_trade(
+        req.market_id,
+        &format!("outcome_{}", req.outcome),
+        shares as u64,
+        price,
+        slot,
+    );
+
     ApiResponse::ok(
         TradePreview {
             market_id: req.market_id,
@@ -668,6 +677,13 @@ async fn post_create(
         creator: String,
         status: &'static str,
     }
+
+    // Emit prediction market WS event
+    state.prediction_broadcaster.emit_market_created(
+        market_count + 1,
+        &req.question,
+        slot,
+    );
 
     ApiResponse::ok(
         CreatePreview {

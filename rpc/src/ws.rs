@@ -13,6 +13,116 @@ use axum::{
 use moltchain_core::{Block, MarketActivity, Pubkey, StateStore, Transaction};
 use crate::dex_ws::{DexChannel, DexEventBroadcaster};
 use serde::{Deserialize, Serialize};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Prediction Market WS types (lightweight — no separate file needed)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Prediction market events pushed over WebSocket
+#[derive(Clone, Debug, Serialize)]
+#[serde(tag = "type")]
+pub enum PredictionEvent {
+    MarketCreated { market_id: u64, question: String, slot: u64 },
+    TradeExecuted { market_id: u64, outcome: String, shares: u64, price: f64, slot: u64 },
+    MarketResolved { market_id: u64, winning_outcome: String, slot: u64 },
+    PriceUpdate { market_id: u64, outcomes: Vec<OutcomePrice>, slot: u64 },
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct OutcomePrice {
+    pub outcome: String,
+    pub price: f64,
+}
+
+/// Channel filter for prediction WS subscriptions
+#[derive(Debug, Clone)]
+pub enum PredictionChannel {
+    AllMarkets,
+    Market(u64),
+}
+
+impl PredictionChannel {
+    pub fn parse(s: &str) -> Option<Self> {
+        if s == "all" || s == "markets" {
+            Some(PredictionChannel::AllMarkets)
+        } else if let Some(id_str) = s.strip_prefix("market:") {
+            id_str.parse::<u64>().ok().map(PredictionChannel::Market)
+        } else if let Ok(id) = s.parse::<u64>() {
+            Some(PredictionChannel::Market(id))
+        } else {
+            None
+        }
+    }
+
+    pub fn matches(&self, event: &PredictionEvent) -> bool {
+        match self {
+            PredictionChannel::AllMarkets => true,
+            PredictionChannel::Market(id) => {
+                let event_id = match event {
+                    PredictionEvent::MarketCreated { market_id, .. } => *market_id,
+                    PredictionEvent::TradeExecuted { market_id, .. } => *market_id,
+                    PredictionEvent::MarketResolved { market_id, .. } => *market_id,
+                    PredictionEvent::PriceUpdate { market_id, .. } => *market_id,
+                };
+                *id == event_id
+            }
+        }
+    }
+}
+
+/// Prediction event broadcaster (same pattern as DexEventBroadcaster)
+pub struct PredictionEventBroadcaster {
+    sender: broadcast::Sender<PredictionEvent>,
+}
+
+impl PredictionEventBroadcaster {
+    pub fn new(capacity: usize) -> Self {
+        let (sender, _) = broadcast::channel(capacity);
+        PredictionEventBroadcaster { sender }
+    }
+
+    pub fn broadcast(&self, event: PredictionEvent) {
+        let _ = self.sender.send(event);
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<PredictionEvent> {
+        self.sender.subscribe()
+    }
+
+    pub fn emit_market_created(&self, market_id: u64, question: &str, slot: u64) {
+        self.broadcast(PredictionEvent::MarketCreated {
+            market_id,
+            question: question.to_string(),
+            slot,
+        });
+    }
+
+    pub fn emit_trade(&self, market_id: u64, outcome: &str, shares: u64, price: f64, slot: u64) {
+        self.broadcast(PredictionEvent::TradeExecuted {
+            market_id,
+            outcome: outcome.to_string(),
+            shares,
+            price,
+            slot,
+        });
+    }
+
+    pub fn emit_market_resolved(&self, market_id: u64, winning_outcome: &str, slot: u64) {
+        self.broadcast(PredictionEvent::MarketResolved {
+            market_id,
+            winning_outcome: winning_outcome.to_string(),
+            slot,
+        });
+    }
+
+    pub fn emit_price_update(&self, market_id: u64, outcomes: Vec<OutcomePrice>, slot: u64) {
+        self.broadcast(PredictionEvent::PriceUpdate {
+            market_id,
+            outcomes,
+            slot,
+        });
+    }
+}
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -178,6 +288,7 @@ enum SubscriptionType {
     Epochs,                      // epoch boundary notifications
     Governance,                  // on-chain governance events
     Dex(DexChannel),             // DEX real-time channels (orderbook, trades, ticker, candles, orders, positions)
+    Prediction(PredictionChannel), // Prediction market real-time channels
 }
 
 impl SubscriptionManager {
@@ -225,21 +336,25 @@ pub struct WsState {
     event_tx: broadcast::Sender<Event>,
     /// DEX real-time event broadcaster
     dex_broadcaster: Arc<DexEventBroadcaster>,
+    /// Prediction market real-time event broadcaster
+    prediction_broadcaster: Arc<PredictionEventBroadcaster>,
     /// DDoS protection: active connection counter
     active_connections: Arc<AtomicUsize>,
 }
 
 impl WsState {
-    pub fn new(state: StateStore) -> (Self, broadcast::Sender<Event>, Arc<DexEventBroadcaster>) {
+    pub fn new(state: StateStore) -> (Self, broadcast::Sender<Event>, Arc<DexEventBroadcaster>, Arc<PredictionEventBroadcaster>) {
         let (event_tx, _) = broadcast::channel(1000);
         let dex_broadcaster = Arc::new(DexEventBroadcaster::new(2048));
+        let prediction_broadcaster = Arc::new(PredictionEventBroadcaster::new(1024));
         let ws_state = Self {
             state,
             event_tx: event_tx.clone(),
             dex_broadcaster: dex_broadcaster.clone(),
+            prediction_broadcaster: prediction_broadcaster.clone(),
             active_connections: Arc::new(AtomicUsize::new(0)),
         };
-        (ws_state, event_tx, dex_broadcaster)
+        (ws_state, event_tx, dex_broadcaster, prediction_broadcaster)
     }
 }
 
@@ -247,8 +362,8 @@ impl WsState {
 pub async fn start_ws_server(
     state: StateStore,
     port: u16,
-) -> Result<(broadcast::Sender<Event>, Arc<DexEventBroadcaster>, tokio::task::JoinHandle<()>), Box<dyn std::error::Error>> {
-    let (ws_state, event_tx, dex_broadcaster) = WsState::new(state);
+) -> Result<(broadcast::Sender<Event>, Arc<DexEventBroadcaster>, Arc<PredictionEventBroadcaster>, tokio::task::JoinHandle<()>), Box<dyn std::error::Error>> {
+    let (ws_state, event_tx, dex_broadcaster, prediction_broadcaster) = WsState::new(state);
 
     let app = Router::new()
         .route("/", get(ws_handler))
@@ -265,7 +380,7 @@ pub async fn start_ws_server(
         }
     });
 
-    Ok((event_tx, dex_broadcaster, handle))
+    Ok((event_tx, dex_broadcaster, prediction_broadcaster, handle))
 }
 
 /// WebSocket handler with connection limit enforcement
@@ -298,6 +413,9 @@ async fn handle_socket(socket: WebSocket, state: WsState) {
 
     // Subscribe to DEX-specific events
     let mut dex_event_rx = state.dex_broadcaster.subscribe();
+
+    // Subscribe to prediction market events
+    let mut prediction_event_rx = state.prediction_broadcaster.subscribe();
 
     // Task to forward notifications to the client
     let send_task = tokio::spawn(async move {
@@ -430,6 +548,41 @@ async fn handle_socket(socket: WebSocket, state: WsState) {
         }
     });
 
+    // Task to forward prediction market events to subscribed clients
+    let tx_pred = tx.clone();
+    let pred_subscription_manager = subscription_manager.clone();
+    let prediction_event_task = tokio::spawn(async move {
+        loop {
+            let pred_event = match prediction_event_rx.recv().await {
+                Ok(event) => event,
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    warn!("Prediction WebSocket subscriber lagged, skipped {} events", n);
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            };
+
+            let subs = pred_subscription_manager.subscriptions.read().await;
+            for (sub_id, sub_type) in subs.iter() {
+                if let SubscriptionType::Prediction(ref channel) = sub_type {
+                    if channel.matches(&pred_event) {
+                        let notification = Notification {
+                            jsonrpc: "2.0".to_string(),
+                            method: "notification".to_string(),
+                            params: NotificationParams {
+                                subscription: *sub_id,
+                                result: serde_json::to_value(&pred_event).unwrap_or_default(),
+                            },
+                        };
+                        if let Ok(json) = serde_json::to_string(&notification) {
+                            let _ = tx_pred.send(json).await;
+                        }
+                    }
+                }
+            }
+        }
+    });
+
     // Handle incoming messages
     while let Some(Ok(msg)) = receiver.next().await {
         if let Message::Text(text) = msg {
@@ -450,6 +603,7 @@ async fn handle_socket(socket: WebSocket, state: WsState) {
     send_task.abort();
     event_task.abort();
     dex_event_task.abort();
+    prediction_event_task.abort();
     // DDoS protection: decrement active connection counter
     conn_guard.fetch_sub(1, Ordering::Relaxed);
 }
@@ -1000,6 +1154,41 @@ async fn handle_subscription_request(
             }
         }
         "unsubscribeDex" => {
+            if let Some(params) = req.params {
+                if let Some(sub_id) = params.as_u64() {
+                    Ok(serde_json::json!(subscription_manager.unsubscribe(sub_id).await))
+                } else if let Some(sub_id) = params.get("subscription").and_then(|v| v.as_u64()) {
+                    Ok(serde_json::json!(subscription_manager.unsubscribe(sub_id).await))
+                } else {
+                    Err(WsError { code: -32602, message: "Invalid params".to_string() })
+                }
+            } else {
+                Err(WsError { code: -32602, message: "Missing params".to_string() })
+            }
+        }
+
+        // ─── Prediction market real-time channels ───
+        "subscribePrediction" | "subscribePredictionMarket" => {
+            if let Some(params) = req.params {
+                let channel_str = params.get("channel")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| params.as_str())
+                    .unwrap_or("all");
+                if let Some(pred_channel) = PredictionChannel::parse(channel_str) {
+                    subscription_manager.subscribe(SubscriptionType::Prediction(pred_channel))
+                        .await
+                        .map(|sub_id| serde_json::json!(sub_id))
+                } else {
+                    Err(WsError { code: -32602, message: format!("Invalid prediction channel: {}", channel_str) })
+                }
+            } else {
+                // No params → subscribe to all markets
+                subscription_manager.subscribe(SubscriptionType::Prediction(PredictionChannel::AllMarkets))
+                    .await
+                    .map(|sub_id| serde_json::json!(sub_id))
+            }
+        }
+        "unsubscribePrediction" | "unsubscribePredictionMarket" => {
             if let Some(params) = req.params {
                 if let Some(sub_id) = params.as_u64() {
                     Ok(serde_json::json!(subscription_manager.unsubscribe(sub_id).await))

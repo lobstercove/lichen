@@ -128,6 +128,10 @@ struct RpcState {
     rate_limiter: Arc<RateLimiter>,
     /// Lock-free finality tracker for commitment levels (processed/confirmed/finalized)
     finality: Option<FinalityTracker>,
+    /// DEX real-time event broadcaster (WS push to subscribers)
+    dex_broadcaster: Arc<dex_ws::DexEventBroadcaster>,
+    /// Prediction market real-time event broadcaster
+    prediction_broadcaster: Arc<ws::PredictionEventBroadcaster>,
 }
 
 /// H16 fix: Guard state-mutating RPC endpoints in multi-validator mode.
@@ -780,6 +784,8 @@ pub fn build_rpc_router(
                 .unwrap_or(5_000)
         )),
         finality,
+        dex_broadcaster: Arc::new(dex_ws::DexEventBroadcaster::new(4096)),
+        prediction_broadcaster: Arc::new(ws::PredictionEventBroadcaster::new(1024)),
     };
 
     // T2.7: Restrictive CORS — allow localhost and configured origins only
@@ -903,6 +909,7 @@ async fn handle_rpc(State(state): State<Arc<RpcState>>, Json(req): Json<RpcReque
         "setContractAbi" => handle_set_contract_abi(&state, req.params).await,
         "getAllContracts" => handle_get_all_contracts(&state).await,
         "deployContract" => handle_deploy_contract(&state, req.params).await,
+        "upgradeContract" => handle_upgrade_contract(&state, req.params).await,
 
         // Program endpoints (draft)
         "getProgram" => handle_get_program(&state, req.params).await,
@@ -5032,6 +5039,258 @@ async fn handle_deploy_contract(
         "code_size": account.data.len(),
         "deploy_fee": deploy_fee,
         "deploy_fee_molt": deploy_fee as f64 / 1_000_000_000.0,
+    }))
+}
+
+/// Upgrade an existing smart contract (owner-only, charges upgrade fee).
+/// Params: [owner_base58, contract_base58, code_base64, signature_hex]
+async fn handle_upgrade_contract(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    use base64::{engine::general_purpose, Engine as _};
+    use moltchain_core::account::Keypair as MoltKeypair;
+    use sha2::{Digest, Sha256};
+
+    require_single_validator(state, "upgradeContract")?;
+    verify_admin_auth(state, &params)?;
+
+    let params = params.ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing params".to_string(),
+    })?;
+
+    let arr = params.as_array().ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Params must be an array: [owner, contract, code_base64, signature]".to_string(),
+    })?;
+
+    if arr.len() < 4 {
+        return Err(RpcError {
+            code: -32602,
+            message: "Expected [owner_base58, contract_base58, code_base64, signature_hex]"
+                .to_string(),
+        });
+    }
+
+    // Parse owner pubkey
+    let owner_str = arr[0].as_str().ok_or_else(|| RpcError {
+        code: -32602,
+        message: "owner must be a base58 string".to_string(),
+    })?;
+    let owner_pubkey = Pubkey::from_base58(owner_str).map_err(|e| RpcError {
+        code: -32602,
+        message: format!("Invalid owner pubkey: {}", e),
+    })?;
+
+    // Parse contract address
+    let contract_str = arr[1].as_str().ok_or_else(|| RpcError {
+        code: -32602,
+        message: "contract must be a base58 string".to_string(),
+    })?;
+    let contract_pubkey = Pubkey::from_base58(contract_str).map_err(|e| RpcError {
+        code: -32602,
+        message: format!("Invalid contract pubkey: {}", e),
+    })?;
+
+    // Parse new WASM code (base64)
+    let code_b64 = arr[2].as_str().ok_or_else(|| RpcError {
+        code: -32602,
+        message: "code must be a base64 string".to_string(),
+    })?;
+    let code_bytes = general_purpose::STANDARD
+        .decode(code_b64)
+        .map_err(|e| RpcError {
+            code: -32602,
+            message: format!("Invalid base64 code: {}", e),
+        })?;
+
+    if code_bytes.is_empty() {
+        return Err(RpcError {
+            code: -32602,
+            message: "Code cannot be empty".to_string(),
+        });
+    }
+
+    // Parse signature (hex-encoded)
+    let sig_hex = arr[3].as_str().ok_or_else(|| RpcError {
+        code: -32602,
+        message: "signature must be a hex string".to_string(),
+    })?;
+    let sig_bytes = hex::decode(sig_hex).map_err(|e| RpcError {
+        code: -32602,
+        message: format!("Invalid hex signature: {}", e),
+    })?;
+    if sig_bytes.len() != 64 {
+        return Err(RpcError {
+            code: -32602,
+            message: format!("Signature must be 64 bytes, got {}", sig_bytes.len()),
+        });
+    }
+    let mut sig_array = [0u8; 64];
+    sig_array.copy_from_slice(&sig_bytes);
+
+    // Verify signature: owner must sign SHA-256(code_bytes)
+    let mut hasher = Sha256::new();
+    hasher.update(&code_bytes);
+    let code_hash_bytes = hasher.finalize();
+    if !MoltKeypair::verify(&owner_pubkey, &code_hash_bytes, &sig_array) {
+        return Err(RpcError {
+            code: -32003,
+            message: "Invalid signature: owner must sign SHA-256(code)".to_string(),
+        });
+    }
+
+    // Load existing contract
+    let contract_account = state
+        .state
+        .get_account(&contract_pubkey)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?
+        .ok_or_else(|| RpcError {
+            code: -32000,
+            message: format!("Contract not found at {}", contract_pubkey.to_base58()),
+        })?;
+
+    let mut contract: ContractAccount =
+        serde_json::from_slice(&contract_account.data).map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Failed to deserialize contract: {}", e),
+        })?;
+
+    // Verify caller is the contract owner
+    if contract.owner != owner_pubkey {
+        return Err(RpcError {
+            code: -32003,
+            message: "Only the contract owner can upgrade".to_string(),
+        });
+    }
+
+    // Charge upgrade fee (10 MOLT)
+    let upgrade_fee = moltchain_core::CONTRACT_UPGRADE_FEE;
+    let owner_account = state
+        .state
+        .get_account(&owner_pubkey)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?
+        .ok_or_else(|| RpcError {
+            code: -32000,
+            message: "Owner account not found".to_string(),
+        })?;
+
+    if owner_account.spendable < upgrade_fee {
+        return Err(RpcError {
+            code: -32000,
+            message: format!(
+                "Insufficient spendable balance: need {} shells ({:.1} MOLT), have {} spendable ({:.1} MOLT)",
+                upgrade_fee,
+                upgrade_fee as f64 / 1_000_000_000.0,
+                owner_account.spendable,
+                owner_account.spendable as f64 / 1_000_000_000.0,
+            ),
+        });
+    }
+
+    let mut updated_owner = owner_account.clone();
+    updated_owner
+        .deduct_spendable(upgrade_fee)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Failed to deduct upgrade fee: {}", e),
+        })?;
+    state
+        .state
+        .put_account(&owner_pubkey, &updated_owner)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Failed to update owner balance: {}", e),
+        })?;
+
+    // Credit fee to treasury
+    let treasury_pubkey = state
+        .state
+        .get_treasury_pubkey()
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?
+        .ok_or_else(|| RpcError {
+            code: -32000,
+            message: "Treasury pubkey not set".to_string(),
+        })?;
+    let mut treasury_account = state
+        .state
+        .get_account(&treasury_pubkey)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?
+        .unwrap_or_else(|| moltchain_core::Account::new(0, treasury_pubkey));
+    treasury_account
+        .add_spendable(upgrade_fee)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Treasury balance overflow: {}", e),
+        })?;
+    state
+        .state
+        .put_account(&treasury_pubkey, &treasury_account)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Failed to credit treasury: {}", e),
+        })?;
+
+    // Perform the upgrade: bump version, store previous hash, replace code
+    let old_version = contract.version;
+    contract.previous_code_hash = Some(contract.code_hash);
+    contract.version = contract.version.saturating_add(1);
+
+    // Compute new code hash
+    let mut code_hasher = Sha256::new();
+    code_hasher.update(&code_bytes);
+    let new_hash = code_hasher.finalize();
+    let mut hash_bytes = [0u8; 32];
+    hash_bytes.copy_from_slice(&new_hash[..32]);
+    contract.code_hash = moltchain_core::Hash(hash_bytes);
+    contract.code = code_bytes;
+
+    // Serialize back
+    let mut updated_account = contract_account.clone();
+    updated_account.data = serde_json::to_vec(&contract).map_err(|e| RpcError {
+        code: -32000,
+        message: format!("Failed to serialize upgraded contract: {}", e),
+    })?;
+
+    state
+        .state
+        .put_account(&contract_pubkey, &updated_account)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Failed to store upgraded contract: {}", e),
+        })?;
+
+    info!(
+        "upgradeContract: {} upgraded {} v{} → v{} (code={} bytes, fee={} shells)",
+        owner_pubkey.to_base58(),
+        contract_pubkey.to_base58(),
+        old_version,
+        contract.version,
+        updated_account.data.len(),
+        upgrade_fee,
+    );
+
+    Ok(serde_json::json!({
+        "program_id": contract_pubkey.to_base58(),
+        "owner": owner_pubkey.to_base58(),
+        "version": contract.version,
+        "previous_version": old_version,
+        "code_size": updated_account.data.len(),
+        "upgrade_fee": upgrade_fee,
+        "upgrade_fee_molt": upgrade_fee as f64 / 1_000_000_000.0,
     }))
 }
 

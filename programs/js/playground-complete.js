@@ -297,6 +297,7 @@ const Playground = {
         // Toolbar buttons
         document.getElementById('buildBtn')?.addEventListener('click', () => this.buildProgram());
         document.getElementById('deployBtn')?.addEventListener('click', () => this.deployProgram());
+        document.getElementById('upgradeProgramBtn')?.addEventListener('click', () => this.upgradeProgram());
         document.getElementById('testBtn')?.addEventListener('click', () => this.runTests());
         document.getElementById('formatBtn')?.addEventListener('click', () => this.formatCode());
         document.getElementById('verifyBtn')?.addEventListener('click', () => this.verifyCode());
@@ -2920,6 +2921,54 @@ pub extern "C" fn total_minted() -> u64 {
             
         } catch (error) {
             this.addTerminalLine('❌ Deployment failed:', 'error');
+            this.addTerminalLine(`   ${error.message}`, 'error');
+        }
+    },
+
+    /**
+     * Upgrade an already-deployed program with new compiled WASM.
+     * Reads the target program ID from the sidebar #upgradeProgramId input
+     * (or falls back to the most recently deployed program).
+     */
+    async upgradeProgram() {
+        if (!this.compiledWasm) {
+            this.addTerminalLine('❌ No compiled WASM. Build first!', 'error');
+            return;
+        }
+
+        if (!this.wallet) {
+            this.addTerminalLine('❌ No wallet connected. Create or import wallet first!', 'error');
+            this.openWalletModal();
+            return;
+        }
+
+        // Determine which program to upgrade
+        let programId = document.getElementById('upgradeProgramId')?.value?.trim();
+        if (!programId && this.deployedPrograms.length > 0) {
+            programId = this.deployedPrograms[this.deployedPrograms.length - 1].programId;
+        }
+        if (!programId) {
+            this.addTerminalLine('❌ No program ID specified and no previously deployed programs found.', 'error');
+            return;
+        }
+
+        this.addTerminalLine(`🔄 Upgrading program ${programId}...`, 'info');
+        this.addTerminalLine('', 'normal');
+
+        try {
+            const deployer = new MoltChain.ProgramDeployer(this.rpc, this.wallet);
+            const result = await deployer.upgrade(programId, this.compiledWasm);
+
+            this.addTerminalLine('✅ Program upgraded successfully!', 'success');
+            this.addTerminalLine(`   Program ID: ${result.programId}`, 'info');
+            this.addTerminalLine(`   Signature:  ${result.signature}`, 'info');
+            this.addTerminalLine(`   Explorer:   ${this.getExplorerUrl()}/program/${result.programId}`, 'link');
+            this.addTerminalLine('', 'normal');
+
+            this.showProgramDetails(result.programId);
+            await this.refreshBalance();
+        } catch (error) {
+            this.addTerminalLine('❌ Upgrade failed:', 'error');
             this.addTerminalLine(`   ${error.message}`, 'error');
         }
     },

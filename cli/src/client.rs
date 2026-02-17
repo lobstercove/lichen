@@ -400,6 +400,55 @@ impl RpcClient {
         Ok(signature_hex)
     }
 
+    /// Upgrade a deployed smart contract (owner only)
+    pub async fn upgrade_contract(
+        &self,
+        owner: &Keypair,
+        wasm_code: Vec<u8>,
+        contract_address: &Pubkey,
+    ) -> Result<String> {
+        use moltchain_core::ContractInstruction;
+
+        let recent_blockhash = self.get_recent_blockhash().await?;
+
+        let contract_ix = ContractInstruction::Upgrade {
+            code: wasm_code,
+        };
+
+        let instruction = Instruction {
+            program_id: Pubkey::new([0xFFu8; 32]), // Contract program
+            accounts: vec![owner.pubkey(), *contract_address],
+            data: contract_ix
+                .serialize()
+                .map_err(|e| anyhow::anyhow!("Serialization error: {}", e))?,
+        };
+
+        let message = Message {
+            instructions: vec![instruction],
+            recent_blockhash,
+        };
+
+        let signature = owner.sign(&message.serialize());
+
+        let transaction = Transaction {
+            signatures: vec![signature],
+            message,
+        };
+
+        let tx_bytes = bincode::serialize(&transaction)?;
+        let tx_base64 = base64_encode(&tx_bytes);
+
+        let params = json!([tx_base64]);
+        let result = self.call("sendTransaction", params).await?;
+
+        let signature_hex = result
+            .as_str()
+            .context("Invalid transaction response")?
+            .to_string();
+
+        Ok(signature_hex)
+    }
+
     /// Call a smart contract function
     pub async fn call_contract(
         &self,

@@ -1123,6 +1123,12 @@ async fn post_order(
         expiry_slot: body.expiry.unwrap_or(0),
     };
 
+    // Emit WS events for real-time subscribers
+    state.dex_broadcaster.emit_order_update(
+        order.order_id, "", "open", 0, order.quantity, slot,
+    );
+    state.dex_broadcaster.emit_orderbook(pair_id, vec![], vec![], slot);
+
     (StatusCode::CREATED, ApiResponse::ok(order, slot)).into_response()
 }
 
@@ -1134,6 +1140,10 @@ async fn delete_order(State(state): State<Arc<RpcState>>, Path(order_id): Path<u
     match read_bytes(&state, DEX_CORE_PROGRAM, &key) {
         Some(_data) => {
             // Actual cancellation would go through sendTransaction
+            state.dex_broadcaster.emit_order_update(
+                order_id, "", "cancelled", 0, 0, slot,
+            );
+
             let body = serde_json::json!({ "cancelled": true, "order_id": order_id });
             ApiResponse::ok(body, slot).into_response()
         }
@@ -1477,6 +1487,21 @@ async fn post_router_swap(
                 "priceImpact": best_impact,
                 "slot": slot,
             });
+            // Emit trade / ticker WS events
+            if let Some(pair_id) = route.pool_or_pair_id.checked_add(0) {
+                let price = if body.amount_in > 0 {
+                    best_output as f64 / body.amount_in as f64
+                } else {
+                    0.0
+                };
+                state.dex_broadcaster.emit_trade(
+                    0, pair_id, price, body.amount_in, "swap", slot,
+                );
+                state.dex_broadcaster.emit_ticker(
+                    pair_id, price, 0.0, 0.0, 0, 0.0,
+                );
+            }
+
             ApiResponse::ok(result, slot).into_response()
         }
         None => api_err("no route found for this token pair"),
@@ -1554,6 +1579,11 @@ async fn post_margin_open(
         accumulated_funding: 0,
     };
 
+    // Emit position update WS event
+    state.dex_broadcaster.emit_position_update(
+        position.position_id, "", "open", 0, 0.0, slot,
+    );
+
     (StatusCode::CREATED, ApiResponse::ok(position, slot)).into_response()
 }
 
@@ -1567,7 +1597,12 @@ async fn post_margin_close(
 
     match read_bytes(&state, DEX_MARGIN_PROGRAM, &key) {
         Some(data) => match decode_margin_position(&data) {
-            Some(pos) => ApiResponse::ok(pos, slot).into_response(),
+            Some(pos) => {
+                state.dex_broadcaster.emit_position_update(
+                    body.position_id, "", "closed", 0, 0.0, slot,
+                );
+                ApiResponse::ok(pos, slot).into_response()
+            }
             None => api_err("invalid position data"),
         },
         None => api_not_found(&format!("position {} not found", body.position_id)),

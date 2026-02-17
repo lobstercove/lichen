@@ -109,6 +109,19 @@ enum Commands {
         keypair: Option<PathBuf>,
     },
 
+    /// Upgrade an existing smart contract
+    Upgrade {
+        /// Contract address (Base58)
+        address: String,
+
+        /// New WASM contract file path
+        contract: PathBuf,
+
+        /// Keypair file (default: ~/.moltchain/keypairs/id.json)
+        #[arg(short, long)]
+        keypair: Option<PathBuf>,
+    },
+
     /// Call a smart contract function
     Call {
         /// Contract address (Base58)
@@ -1328,6 +1341,30 @@ async fn main() -> Result<()> {
             println!("✅ Contract deployed!");
             println!("📝 Signature: {}", signature);
             println!("🔗 Address: {}", contract_addr.to_base58());
+        }
+
+        Commands::Upgrade { address, contract, keypair } => {
+            let path = keypair.unwrap_or_else(|| keypair_mgr.default_keypair_path());
+            let owner = keypair_mgr.load_keypair(&path)?;
+
+            let contract_pubkey = moltchain_core::Pubkey::from_base58(&address)
+                .map_err(|e| anyhow::anyhow!("Invalid contract address: {}", e))?;
+
+            let wasm_code = std::fs::read(&contract)
+                .map_err(|e| anyhow::anyhow!("Failed to read contract file: {}", e))?;
+
+            println!("🦞 Upgrading contract: {}", contract_pubkey.to_base58());
+            println!("📦 New code size: {} KB", wasm_code.len() / 1024);
+            println!("👤 Owner: {}", owner.pubkey().to_base58());
+            println!();
+
+            let signature = client
+                .upgrade_contract(&owner, wasm_code, &contract_pubkey)
+                .await?;
+
+            println!("✅ Contract upgraded!");
+            println!("📝 Signature: {}", signature);
+            println!("🔗 Address: {}", contract_pubkey.to_base58());
         }
 
         Commands::Call {

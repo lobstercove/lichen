@@ -262,6 +262,16 @@ pub struct ContractAccount {
     /// Machine-readable ABI (optional, set at deploy or updated later)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub abi: Option<ContractAbi>,
+    /// Contract version — starts at 1, incremented on each upgrade
+    #[serde(default = "default_version")]
+    pub version: u32,
+    /// Code hash of the previous version (for rollback reference)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_code_hash: Option<Hash>,
+}
+
+fn default_version() -> u32 {
+    1
 }
 
 /// Serialize HashMap<Vec<u8>, Vec<u8>> as a JSON object with string keys.
@@ -313,6 +323,8 @@ impl ContractAccount {
             owner,
             code_hash,
             abi,
+            version: 1,
+            previous_code_hash: None,
         }
     }
 

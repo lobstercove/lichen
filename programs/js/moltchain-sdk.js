@@ -1230,6 +1230,47 @@ class ProgramDeployer {
     }
     
     /**
+     * Upgrade an existing deployed program (owner only).
+     * @param {string} programId - Base58 address of the program to upgrade
+     * @param {Uint8Array} wasmBytes - New WASM bytecode
+     * @param {object} options - Optional: { verify, metadata }
+     * @returns {{ programId, signature, owner, size, timestamp }}
+     */
+    async upgrade(programId, wasmBytes, options = {}) {
+        const { verify = false, metadata = {} } = options;
+        
+        console.log(`🔄 Upgrading program ${programId} (${wasmBytes.length} bytes)...`);
+
+        const tx = new TransactionBuilder(this.rpc);
+        await tx.setRecentBlockhash();
+
+        tx.addInstruction(TransactionBuilder.upgrade(this.wallet.address, programId, wasmBytes));
+        tx.sign(this.wallet);
+
+        const signature = await tx.send();
+        console.log(`✅ Upgrade transaction sent: ${signature}`);
+
+        const confirmed = await this.waitForConfirmation(signature);
+        if (!confirmed) {
+            throw new Error('Upgrade transaction not confirmed');
+        }
+
+        console.log(`✅ Program upgraded: ${programId}`);
+
+        if (verify) {
+            await this.submitVerification(programId, wasmBytes, metadata);
+        }
+
+        return {
+            programId,
+            signature,
+            owner: this.wallet.address,
+            size: wasmBytes.length,
+            timestamp: Date.now()
+        };
+    }
+    
+    /**
      * Derive program address from deployer + code
      */
     async deriveProgramAddress(deployer, code) {
