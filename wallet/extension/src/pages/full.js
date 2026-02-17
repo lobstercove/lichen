@@ -21,6 +21,7 @@ import {
 } from '../core/crypto-service.js';
 import { buildSignedNativeTransferTransaction, encodeTransactionBase64, registerEvmAddress } from '../core/tx-service.js';
 import { notify } from '../core/notification-service.js';
+import { requestBridgeDepositAddress, getBridgeDepositStatus } from '../core/bridge-service.js';
 import {
   loadIdentityDetails,
   registerIdentity,
@@ -1308,6 +1309,174 @@ function switchReceiveTab(tab) {
   if (depositContent) depositContent.classList.toggle('active', tab === 'deposit');
 }
 
+/* ──────────────────────────────────────────
+   Bridge Deposit — wired to custody service
+   ────────────────────────────────────────── */
+const BRIDGE_ASSETS_EXT = ['usdc', 'usdt'];
+let extDepositPollTimer = null;
+let extActiveDepositId = null;
+const EXT_DEPOSIT_MAX_POLL = 24 * 60 * 60 * 1000; // 24h
+const EXT_DEPOSIT_MAX_ERRORS = 20;
+let extDepositTimeout = null;
+
+function clearExtDepositPolling() {
+  if (extDepositPollTimer) { clearInterval(extDepositPollTimer); extDepositPollTimer = null; }
+  if (extDepositTimeout) { clearTimeout(extDepositTimeout); extDepositTimeout = null; }
+}
+
+function escapeHtmlExt(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#x27;');
+}
+
+async function startExtensionDeposit(chain) {
+  const wallet = getActiveWallet();
+  if (!wallet) { showToast('No active wallet', 'error'); return; }
+  if (!isValidAddress(wallet.address)) { showToast('Invalid wallet address', 'error'); return; }
+
+  const chainLabels = { solana: 'Solana', ethereum: 'Ethereum' };
+  const chainLabel = chainLabels[chain] || chain;
+
+  // Show asset picker inline in depositTabContent
+  const container = $('depositTabContent');
+  if (!container) return;
+
+  const tokenButtons = BRIDGE_ASSETS_EXT.map(a =>
+    `<button class="btn btn-secondary" data-bridge-asset="${a}" style="margin:0.25rem;padding:0.5rem 1.25rem;">${a.toUpperCase()}</button>`
+  ).join(' ');
+
+  container.innerHTML = `
+    <p style="text-align:center;color:var(--text-secondary);margin-bottom:0.75rem;font-size:0.95rem;">
+      Select a token to deposit from <strong>${escapeHtmlExt(chainLabel)}</strong>:
+    </p>
+    <div style="display:flex;gap:0.5rem;justify-content:center;margin-bottom:1rem;">${tokenButtons}</div>
+    <div id="extDepositResult" style="display:none;"></div>
+    <button class="btn btn-secondary btn-small" id="extDepositBack" style="margin-top:0.75rem;">← Back</button>
+  `;
+
+  // Back button restores original deposit tab
+  container.querySelector('#extDepositBack')?.addEventListener('click', () => restoreDepositTab(container));
+
+  // Asset buttons
+  container.querySelectorAll('[data-bridge-asset]').forEach(btn => {
+    btn.addEventListener('click', () => executeExtensionDeposit(chain, btn.dataset.bridgeAsset, chainLabel, container));
+  });
+}
+
+async function executeExtensionDeposit(chain, asset, chainLabel, container) {
+  const wallet = getActiveWallet();
+  if (!wallet) return;
+  const network = state?.network?.selected || 'local-testnet';
+
+  const resultEl = container.querySelector('#extDepositResult');
+  if (resultEl) { resultEl.style.display = 'block'; resultEl.innerHTML = '<p style="text-align:center;"><i class="fas fa-spinner fa-spin"></i> Requesting deposit address...</p>'; }
+
+  // Hide asset buttons
+  container.querySelectorAll('[data-bridge-asset]').forEach(b => b.style.display = 'none');
+
+  try {
+    const response = await requestBridgeDepositAddress({
+      userAddress: wallet.address,
+      chain,
+      asset,
+      network
+    });
+
+    extActiveDepositId = response.deposit_id;
+    const safeAddr = escapeHtmlExt(response.address);
+    const safeId = escapeHtmlExt(response.deposit_id);
+    const safeAsset = escapeHtmlExt(asset.toUpperCase());
+
+    if (resultEl) {
+      resultEl.innerHTML = `
+        <div style="background:rgba(255,107,53,0.06);border-radius:8px;padding:1rem;text-align:left;">
+          <div style="margin-bottom:0.5rem;"><strong>Send ${safeAsset} on ${escapeHtmlExt(chainLabel)} to:</strong></div>
+          <div class="mono" style="word-break:break-all;background:rgba(0,0,0,0.15);padding:0.5rem;border-radius:6px;margin-bottom:0.5rem;cursor:pointer;" id="extDepositAddr">${safeAddr}</div>
+          <div style="font-size:0.8rem;color:var(--text-muted);margin-bottom:0.5rem;">Deposit ID: ${safeId}</div>
+          <div id="extDepositStatus" style="font-size:0.85rem;"><i class="fas fa-clock" style="color:var(--text-muted);"></i> Waiting for deposit...</div>
+        </div>
+      `;
+      container.querySelector('#extDepositAddr')?.addEventListener('click', () => {
+        navigator.clipboard.writeText(response.address)
+          .then(() => showToast('Deposit address copied!', 'success'))
+          .catch(() => showToast('Copy failed', 'error'));
+      });
+    }
+
+    // Start polling
+    clearExtDepositPolling();
+    let consecutiveErrors = 0;
+    const pollInterval = 5000;
+
+    extDepositTimeout = setTimeout(() => {
+      clearExtDepositPolling();
+      const statusEl = container.querySelector('#extDepositStatus');
+      if (statusEl) statusEl.innerHTML = '<i class="fas fa-times-circle" style="color:#EF476F;"></i> Polling timed out. Check deposit status manually.';
+    }, EXT_DEPOSIT_MAX_POLL);
+
+    extDepositPollTimer = setInterval(async () => {
+      if (!extActiveDepositId) return;
+      try {
+        const statusResult = await getBridgeDepositStatus(extActiveDepositId, network);
+        const statusValue = String(statusResult.status || 'issued').toLowerCase();
+        const statusEl = container.querySelector('#extDepositStatus');
+        const statusMap = {
+          issued:    '<i class="fas fa-clock" style="color:var(--text-muted);"></i> Waiting for deposit...',
+          pending:   '<i class="fas fa-spinner fa-spin" style="color:#FFD166;"></i> Deposit detected, confirming...',
+          confirmed: '<i class="fas fa-check-circle" style="color:#06D6A0;"></i> Confirmed! Sweeping to treasury...',
+          swept:     '<i class="fas fa-exchange-alt" style="color:#06D6A0;"></i> Swept! Minting wrapped tokens...',
+          credited:  '<i class="fas fa-check-double" style="color:#06D6A0;"></i> Credited to your wallet!',
+          expired:   '<i class="fas fa-times-circle" style="color:#EF476F;"></i> Deposit expired.'
+        };
+        if (statusEl) statusEl.innerHTML = statusMap[statusValue] || statusMap['issued'];
+        consecutiveErrors = 0;
+        if (statusValue === 'credited' || statusValue === 'expired') {
+          clearExtDepositPolling();
+          if (statusValue === 'credited') showToast('Bridge deposit credited!', 'success');
+        }
+      } catch {
+        consecutiveErrors++;
+        if (consecutiveErrors >= EXT_DEPOSIT_MAX_ERRORS) clearExtDepositPolling();
+      }
+    }, pollInterval);
+
+  } catch (error) {
+    if (resultEl) resultEl.innerHTML = `<p style="color:#EF476F;text-align:center;">Bridge request failed: ${escapeHtmlExt(error?.message || error)}</p>`;
+    container.querySelectorAll('[data-bridge-asset]').forEach(b => b.style.display = '');
+  }
+}
+
+function restoreDepositTab(container) {
+  clearExtDepositPolling();
+  extActiveDepositId = null;
+  container.innerHTML = `
+    <p style="text-align:center;color:var(--text-secondary);margin-bottom:1.25rem;font-size:0.95rem;">Deposit assets to your MoltChain wallet via bridge</p>
+    <div class="deposit-options">
+      <div class="deposit-card" id="depositSOL">
+        <div class="deposit-card-icon" style="background:rgba(153,69,255,0.12);color:#9945FF;"><i class="fas fa-sun"></i></div>
+        <div class="deposit-card-info"><strong>Bridge from Solana</strong><span>USDC, USDT</span></div>
+        <i class="fas fa-chevron-right" style="color:var(--text-muted);"></i>
+      </div>
+      <div class="deposit-card" id="depositETH">
+        <div class="deposit-card-icon" style="background:rgba(98,126,234,0.12);color:#627EEA;"><i class="fab fa-ethereum"></i></div>
+        <div class="deposit-card-info"><strong>Bridge from Ethereum</strong><span>USDC, USDT</span></div>
+        <i class="fas fa-chevron-right" style="color:var(--text-muted);"></i>
+      </div>
+      <div class="deposit-card disabled">
+        <div class="deposit-card-icon" style="background:rgba(255,107,53,0.12);color:var(--primary);"><i class="fas fa-credit-card"></i></div>
+        <div class="deposit-card-info"><strong>Buy with Fiat</strong><span>Coming with mainnet launch</span></div>
+        <span class="label-badge">Soon</span>
+      </div>
+    </div>
+    <div style="text-align:center;margin-top:1.5rem;padding:0.75rem;background:rgba(255,107,53,0.08);border-radius:8px;font-size:0.85rem;color:var(--text-secondary);">
+      <i class="fas fa-shield-alt" style="color:var(--primary);"></i> Bridge contracts are audited. Deposits typically confirm in 2-5 minutes.
+    </div>
+  `;
+  // Re-wire click handlers
+  container.querySelector('#depositSOL')?.addEventListener('click', () => startExtensionDeposit('solana'));
+  container.querySelector('#depositETH')?.addEventListener('click', () => startExtensionDeposit('ethereum'));
+}
+
 function deriveEvmAddress(pubKeyHex) {
   if (!pubKeyHex) return '';
   const hex = pubKeyHex.replace(/^0x/, '');
@@ -1517,8 +1686,8 @@ function wireEvents() {
     const addr = $('walletAddressEVM')?.value;
     if (addr) { await navigator.clipboard.writeText(addr); showToast('EVM address copied!', 'success'); }
   });
-  $('depositSOL')?.addEventListener('click', () => showToast('Solana bridge coming soon'));
-  $('depositETH')?.addEventListener('click', () => showToast('Ethereum bridge coming soon'));
+  $('depositSOL')?.addEventListener('click', () => startExtensionDeposit('solana'));
+  $('depositETH')?.addEventListener('click', () => startExtensionDeposit('ethereum'));
 
   // Settings modal
   $('navSettingsBtn')?.addEventListener('click', () => { loadSettingsValues(); openModal('settingsModal'); });
