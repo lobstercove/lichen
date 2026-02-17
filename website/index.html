@@ -729,6 +729,14 @@
                     <span class="contract-size">450 lines · 16 tests</span>
                 </div>
 
+                <!-- Prediction Market -->
+                <div class="contract-card animate-on-scroll" data-category="defi">
+                    <div class="contract-icon"><i class="fas fa-chart-pie"></i></div>
+                    <h3>Prediction Market</h3>
+                    <p>Binary outcome markets. Create markets, place bets, oracle resolution, automated payouts.</p>
+                    <span class="contract-size">21.5 KB WASM</span>
+                </div>
+
                 <!-- ═══ Stablecoin & Wrapped Bridge Tokens ═══ -->
                 <div class="contract-card animate-on-scroll" data-category="defi">
                     <div class="contract-icon"><i class="fas fa-dollar-sign"></i></div>
@@ -748,99 +756,11 @@
                     <p>Wrapped SOL bridge token. Epoch rate-limited minting with reserve attestation.</p>
                     <span class="contract-size">23.5 KB WASM</span>
                 </div>
-
-                <!-- ═══ New Contracts: Staking, Multisig, Vesting, Custody, Faucet, DAO Treasury ═══ -->
-                <div class="contract-card animate-on-scroll" data-category="defi">
-                    <div class="contract-icon"><i class="fas fa-layer-group"></i></div>
-                    <h3>MoltStaking</h3>
-                    <p>Delegated proof-of-stake. Validator registration, delegation, slashing, epoch rewards.</p>
-                    <span class="contract-size">680 lines · 12 fns</span>
-                </div>
-                <div class="contract-card animate-on-scroll" data-category="infra">
-                    <div class="contract-icon"><i class="fas fa-key"></i></div>
-                    <h3>MoltMultisig</h3>
-                    <p>M-of-N multisig wallet. Proposal creation, approval flow, time-locked execution.</p>
-                    <span class="contract-size">520 lines · 10 fns</span>
-                </div>
-                <div class="contract-card animate-on-scroll" data-category="defi">
-                    <div class="contract-icon"><i class="fas fa-clock"></i></div>
-                    <h3>MoltVesting</h3>
-                    <p>Token vesting schedules. Cliff periods, linear unlock, revocation, beneficiary management.</p>
-                    <span class="contract-size">380 lines · 8 fns</span>
-                </div>
-                <div class="contract-card animate-on-scroll" data-category="infra">
-                    <div class="contract-icon"><i class="fas fa-shield-alt"></i></div>
-                    <h3>MoltCustody</h3>
-                    <p>Institutional-grade custody with deposit/withdrawal policies, whitelists, and audit trails.</p>
-                    <span class="contract-size">440 lines · 10 fns</span>
-                </div>
-                <div class="contract-card animate-on-scroll" data-category="infra">
-                    <div class="contract-icon"><i class="fas fa-faucet"></i></div>
-                    <h3>MoltFaucet</h3>
-                    <p>Devnet/testnet faucet with rate limiting, cooldown periods, and configurable drip amounts.</p>
-                    <span class="contract-size">200 lines · 6 fns</span>
-                </div>
-                <div class="contract-card animate-on-scroll" data-category="infra">
-                    <div class="contract-icon"><i class="fas fa-piggy-bank"></i></div>
-                    <h3>DAO Treasury</h3>
-                    <p>Governance-controlled treasury. Spending proposals, budget allocation, grant distribution.</p>
-                    <span class="contract-size">360 lines · 8 fns</span>
-                </div>
-
-                <!-- ═══ Opcode-Dispatch Protocol Contracts ═══ -->
-                <div class="contract-card animate-on-scroll" data-category="infra">
-                    <div class="contract-icon"><i class="fas fa-comments"></i></div>
-                    <h3>Social Protocol</h3>
-                    <p>On-chain social graph. Follow/unfollow, posts, likes, and reputation-weighted feeds.</p>
-                    <span class="contract-size">620 lines · 14 ops</span>
-                </div>
-                <div class="contract-card animate-on-scroll" data-category="infra">
-                    <div class="contract-icon"><i class="fas fa-newspaper"></i></div>
-                    <h3>Content Protocol</h3>
-                    <p>Decentralized content with IPFS, creator monetization, tipping, and moderation.</p>
-                    <span class="contract-size">550 lines · 12 ops</span>
-                </div>
-                <div class="contract-card animate-on-scroll" data-category="infra">
-                    <div class="contract-icon"><i class="fas fa-brain"></i></div>
-                    <h3>AI Marketplace</h3>
-                    <p>Agent-to-agent service marketplace. Task bidding, escrow payments, quality scoring.</p>
-                    <span class="contract-size">720 lines · 18 ops</span>
-                </div>
-                <div class="contract-card animate-on-scroll" data-category="defi">
-                    <div class="contract-icon"><i class="fas fa-chart-line"></i></div>
-                    <h3>Prediction Market</h3>
-                    <p>Binary outcome markets with AMM pricing, liquidity pools, resolution, and DAO arbitration.</p>
-                    <span class="contract-size">850 lines · 24 ops</span>
-                </div>
-                <div class="contract-card animate-on-scroll" data-category="defi">
-                    <div class="contract-icon"><i class="fas fa-umbrella"></i></div>
-                    <h3>Insurance Protocol</h3>
-                    <p>Parametric insurance. Policy creation, premium pools, oracle-triggered claims, payouts.</p>
-                    <span class="contract-size">580 lines · 16 ops</span>
-                </div>
-                <div class="contract-card animate-on-scroll" data-category="infra">
-                    <div class="contract-icon"><i class="fas fa-truck"></i></div>
-                    <h3>Supply Chain</h3>
-                    <p>Supply chain tracking with provenance, checkpoints, multi-party attestation, and recalls.</p>
-                    <span class="contract-size">490 lines · 14 ops</span>
-                </div>
-                <div class="contract-card animate-on-scroll" data-category="infra">
-                    <div class="contract-icon"><i class="fas fa-hourglass-half"></i></div>
-                    <h3>Time Lock</h3>
-                    <p>Governance time-lock controller. Configurable delays, proposal queuing, cancellation.</p>
-                    <span class="contract-size">310 lines · 10 ops</span>
-                </div>
-                <div class="contract-card animate-on-scroll" data-category="defi">
-                    <div class="contract-icon"><i class="fas fa-globe"></i></div>
-                    <h3>Cross-Chain Messaging</h3>
-                    <p>Cross-chain message relay. Packet routing, acknowledgements, channel management.</p>
-                    <span class="contract-size">420 lines · 12 ops</span>
-                </div>
             </div>
 
             <div class="section-cta">
                 <a href="https://github.com/moltchain/moltchain/tree/main/contracts" target="_blank" class="btn btn-primary btn-large">
-                    <i class="fab fa-github"></i> Browse All 37 Contracts
+                    <i class="fab fa-github"></i> Browse All 27 Contracts
                 </a>
             </div>
         </div>
@@ -1174,7 +1094,7 @@ console.log('Counter:', result); // 1</code></pre>
                             <div class="phase-item done"><i class="fas fa-check-circle"></i> BFT Consensus Engine</div>
                             <div class="phase-item done"><i class="fas fa-check-circle"></i> MoltyVM (WASM + EVM)</div>
                             <div class="phase-item done"><i class="fas fa-check-circle"></i> MoltyID Identity System</div>
-                            <div class="phase-item done"><i class="fas fa-check-circle"></i> 37 Smart Contracts (all built)</div>
+                            <div class="phase-item done"><i class="fas fa-check-circle"></i> 27 Smart Contracts (all built)</div>
                             <div class="phase-item done"><i class="fas fa-check-circle"></i> 500+ Tests / CI Pipeline</div>
                             <div class="phase-item done"><i class="fas fa-check-circle"></i> Developer Portal (15 pages)</div>
                             <div class="phase-item progress"><i class="fas fa-spinner fa-spin"></i> Testnet Launch</div>

@@ -21,7 +21,7 @@ const NETWORKS = {
 };
 
 const NETWORK_STORAGE_KEY = 'explorer_network';
-let currentNetwork = localStorage.getItem(NETWORK_STORAGE_KEY) || 'mainnet';
+let currentNetwork = localStorage.getItem(NETWORK_STORAGE_KEY) || 'testnet';
 currentNetwork = resolveNetwork(currentNetwork);
 
 function resolveNetwork(name) {

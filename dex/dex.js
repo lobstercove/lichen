@@ -9,8 +9,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     // Configuration — override via window globals or <script> config block
     // ═══════════════════════════════════════════════════════════════════════
-    const RPC_BASE  = (window.MOLTCHAIN_RPC || 'http://localhost:8000').replace(/\/$/, '');
-    const WS_URL    = (window.MOLTCHAIN_WS  || 'ws://localhost:8000/ws').replace(/\/$/, '');
+    const RPC_BASE  = (window.MOLTCHAIN_RPC || 'http://localhost:8899').replace(/\/$/, '');
+    const WS_URL    = (window.MOLTCHAIN_WS  || 'ws://localhost:8900/ws').replace(/\/$/, '');
     const API_BASE  = `${RPC_BASE}/api/v1`;
     const PRICE_SCALE = 1_000_000_000;
 
@@ -223,10 +223,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 { id: 'MOLT/mUSD', pairId: 0, base: 'MOLT', quote: 'mUSD', price: 0.4217, change: 5.24 },
                 { id: 'wSOL/mUSD', pairId: 1, base: 'wSOL', quote: 'mUSD', price: 178.42, change: 2.14 },
                 { id: 'wETH/mUSD', pairId: 2, base: 'wETH', quote: 'mUSD', price: 3521.80, change: -0.42 },
-                { id: 'REEF/mUSD', pairId: 3, base: 'REEF', quote: 'mUSD', price: 0.01842, change: -2.1 },
-                { id: 'wSOL/MOLT', pairId: 4, base: 'wSOL', quote: 'MOLT', price: 423.05, change: 1.37 },
-                { id: 'wETH/MOLT', pairId: 5, base: 'wETH', quote: 'MOLT', price: 8351.20, change: -0.89 },
-                { id: 'REEF/MOLT', pairId: 6, base: 'REEF', quote: 'MOLT', price: 0.04368, change: 0.83 },
+                { id: 'wSOL/MOLT', pairId: 3, base: 'wSOL', quote: 'MOLT', price: 423.05, change: 1.37 },
+                { id: 'wETH/MOLT', pairId: 4, base: 'wETH', quote: 'MOLT', price: 8351.20, change: -0.89 },
             ];
         }
         state.activePair = pairs[0]; state.activePairId = pairs[0].pairId; state.lastPrice = pairs[0].price;
@@ -308,7 +306,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch { /* demo fallback */ }
         if (!Object.keys(balances).length) {
             balances = { MOLT: { available: 125847.32, usd: 53087.21 }, mUSD: { available: 12500.00, usd: 12500.00 },
-                wSOL: { available: 28.45, usd: 5076.15 }, wETH: { available: 3.247, usd: 11435.33 }, REEF: { available: 45000.00, usd: 828.90 } };
+                wSOL: { available: 28.45, usd: 5076.15 }, wETH: { available: 3.247, usd: 11435.33 } };
             state._demoBalances = true;
         } else {
             state._demoBalances = false;
