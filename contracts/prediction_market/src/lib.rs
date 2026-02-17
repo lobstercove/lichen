@@ -32,6 +32,8 @@
 //   pm_active_{idx}                      → u64       Active market IDs (frontpage)
 //   pm_user_{addr_hex}_{idx}             → u64       Market IDs user participated in
 //   pm_userc_{addr_hex}                  → u64       User's market participation count
+//   pm_phc_{id}                           → u64       Price history snapshot count
+//   pm_ph_{id}_{idx}                      → [u8; 24]  Price snapshot (slot u64 + yes_price u64 + volume u64)
 
 #![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
@@ -302,6 +304,38 @@ fn market_pause_key(market_id: u64) -> Vec<u8> {
     let mut k = Vec::from(&b"pm_mpause_"[..]);
     k.extend_from_slice(&u64_to_decimal(market_id));
     k
+}
+
+/// Key for price history snapshot count.
+fn price_history_count_key(market_id: u64) -> Vec<u8> {
+    let mut k = Vec::from(&b"pm_phc_"[..]);
+    k.extend_from_slice(&u64_to_decimal(market_id));
+    k
+}
+
+/// Key for a single price history snapshot entry.
+fn price_history_entry_key(market_id: u64, idx: u64) -> Vec<u8> {
+    let mut k = Vec::from(&b"pm_ph_"[..]);
+    k.extend_from_slice(&u64_to_decimal(market_id));
+    k.push(b'_');
+    k.extend_from_slice(&u64_to_decimal(idx));
+    k
+}
+
+/// Record a price snapshot after a trade. Stores slot + yes_price + trade_volume (24 bytes).
+fn record_price_snapshot(market_id: u64, yes_price: u64, trade_volume: u64) {
+    let slot = get_slot();
+    let count_key = price_history_count_key(market_id);
+    let count = storage_get(&count_key)
+        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+        .unwrap_or(0);
+    let entry_key = price_history_entry_key(market_id, count);
+    let mut entry = [0u8; 24];
+    entry[0..8].copy_from_slice(&u64_to_bytes(slot));
+    entry[8..16].copy_from_slice(&u64_to_bytes(yes_price));
+    entry[16..24].copy_from_slice(&u64_to_bytes(trade_volume));
+    storage_set(&entry_key, &entry);
+    save_u64(&count_key, count + 1);
 }
 
 /// Key for storing the slot of the last trade (circuit breaker price move check).
@@ -1715,6 +1749,9 @@ pub fn buy_shares(
         save_outcome_pool(market_id, i, &pool);
     }
 
+    // Record price history snapshot
+    record_price_snapshot(market_id, new_price, amount_musd);
+
     // Update user position
     let (existing_shares, existing_cost) = load_position(market_id, trader, outcome);
     save_position(
@@ -1853,6 +1890,12 @@ pub fn sell_shares(
         }
 
         save_outcome_pool(market_id, i, &pool);
+    }
+
+    // Record price history snapshot
+    {
+        let sell_price = calculate_price(&new_reserves, outcome);
+        record_price_snapshot(market_id, sell_price, musd_returned + fee_musd);
     }
 
     // Update user position
@@ -3309,6 +3352,31 @@ pub extern "C" fn call() {
             // get_lp_balance
             if args.len() >= 41 {
                 get_lp_balance(bytes_to_u64(&args[1..9]), args[9..41].as_ptr());
+            }
+        }
+        34 => {
+            // get_price_history(market_id 8B) — returns count as u64
+            if args.len() >= 9 {
+                let mid = bytes_to_u64(&args[1..9]);
+                let count_key = price_history_count_key(mid);
+                let count = storage_get(&count_key)
+                    .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+                    .unwrap_or(0);
+                // Return count as first 8 bytes, then up to 50 most recent entries (24B each)
+                let max_entries: u64 = 50;
+                let start = count.saturating_sub(max_entries);
+                let entry_count = count - start;
+                let mut result = Vec::with_capacity(8 + entry_count as usize * 24);
+                result.extend_from_slice(&u64_to_bytes(count));
+                for i in start..count {
+                    let entry_key = price_history_entry_key(mid, i);
+                    if let Some(data) = storage_get(&entry_key) {
+                        if data.len() >= 24 {
+                            result.extend_from_slice(&data[..24]);
+                        }
+                    }
+                }
+                moltchain_sdk::set_return_data(&result);
             }
         }
         _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }

@@ -141,6 +141,14 @@ struct PlatformStatsJson {
 }
 
 #[derive(Serialize)]
+struct PriceSnapshotJson {
+    slot: u64,
+    price: f64,
+    volume: f64,
+    timestamp: u64,
+}
+
+#[derive(Serialize)]
 struct PositionJson {
     market_id: u64,
     outcome: u8,
@@ -159,6 +167,12 @@ struct MarketListQuery {
 #[derive(Deserialize)]
 struct UserQuery {
     address: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PriceHistoryQuery {
+    limit: Option<usize>,
+    offset: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -479,6 +493,67 @@ async fn get_positions(
     ApiResponse::ok(positions, slot).into_response()
 }
 
+/// GET /prediction-market/markets/:id/price-history — Price history snapshots
+async fn get_price_history(
+    State(state): State<Arc<RpcState>>,
+    Path(id): Path<u64>,
+    Query(q): Query<PriceHistoryQuery>,
+) -> Response {
+    let limit = q.limit.unwrap_or(200).min(500);
+    let slot = current_slot(&state);
+
+    let contract = match load_predict_contract(&state) {
+        Some(c) => c,
+        None => return api_err("Prediction market contract not found"),
+    };
+
+    // Read snapshot count
+    let count_key = format!("pm_phc_{}", id);
+    let count = contract
+        .get_storage(count_key.as_bytes())
+        .and_then(|d| if d.len() >= 8 { Some(u64_le(&d, 0)) } else { None })
+        .unwrap_or(0);
+
+    let offset = q.offset.unwrap_or(0) as u64;
+    let start = if offset > 0 { offset.min(count) } else { count.saturating_sub(limit as u64) };
+    let end = count.min(start + limit as u64);
+
+    let mut snapshots = Vec::new();
+    // Estimate timestamps: assume ~400ms per slot from genesis
+    let slot_duration_ms: u64 = 400;
+    let current_slot_val = slot;
+
+    for i in start..end {
+        let key = format!("pm_ph_{}_{}", id, i);
+        if let Some(data) = contract.get_storage(key.as_bytes()) {
+            if data.len() >= 24 {
+                let snap_slot = u64_le(&data, 0);
+                let price_raw = u64_le(&data, 8);
+                let volume_raw = u64_le(&data, 16);
+                // Price is in mUSD units (6 decimals) → normalize to 0.0–1.0
+                let price = price_raw as f64 / 1_000_000.0;
+                let volume = volume_raw as f64 / PRICE_SCALE as f64;
+                // Approximate timestamp
+                let slots_ago = current_slot_val.saturating_sub(snap_slot);
+                let ts = (std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64)
+                    .saturating_sub(slots_ago * slot_duration_ms)
+                    / 1000;
+                snapshots.push(PriceSnapshotJson {
+                    slot: snap_slot,
+                    price,
+                    volume,
+                    timestamp: ts,
+                });
+            }
+        }
+    }
+
+    ApiResponse::ok(snapshots, slot).into_response()
+}
+
 /// POST /prediction-market/trade — Submit a trade (buy/sell outcome shares)
 /// In production this would create a transaction. For now returns the trade preview.
 async fn post_trade(
@@ -615,6 +690,7 @@ pub(crate) fn build_prediction_router() -> Router<Arc<RpcState>> {
         .route("/stats", get(get_stats))
         .route("/markets", get(get_markets))
         .route("/markets/:id", get(get_market))
+        .route("/markets/:id/price-history", get(get_price_history))
         .route("/positions", get(get_positions))
         .route("/trade", post(post_trade))
         .route("/create", post(post_create))

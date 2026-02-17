@@ -733,7 +733,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ─── Render market cards dynamically ────────────────────────
     function renderPredictionMarkets() {
-        const grid = document.querySelector('.predict-markets-col');
+        const grid = document.querySelector('.predict-markets-section');
         if (!grid) return;
 
         // Keep only the grid container, regenerate cards
@@ -983,7 +983,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function openPredictChart(marketId) {
-        const m = predictState.markets.find(x => x.id === marketId);
+        const m = predictState.markets.find(x => x.id === marketId)
+            || MOCK_MARKETS.find(x => x.id === marketId);
         if (!m) return;
         predictChartState.marketId = marketId;
         predictChartState.range = '1d';
@@ -992,11 +993,14 @@ document.addEventListener('DOMContentLoaded', () => {
         const canvas = document.getElementById('predictChartCanvas');
         if (!modal || !canvas) return;
         if (title) title.textContent = m.question;
-        const data = generateMockPriceHistory(m, '1d');
-        drawPredictChart(data, canvas);
-        renderPredictChartStats(data, m);
+        // Show modal immediately with mock data, then try to load real data
+        const mockData = generateMockPriceHistory(m, '1d');
+        drawPredictChart(mockData, canvas);
+        renderPredictChartStats(mockData, m);
         document.querySelectorAll('.predict-chart-tab').forEach(t => t.classList.toggle('active', t.dataset.range === '1d'));
         modal.style.display = 'flex';
+        // Attempt to load real price history from RPC
+        loadRealPriceHistory(marketId, '1d', m);
     }
 
     function closePredictChart() {
@@ -1004,17 +1008,44 @@ document.addEventListener('DOMContentLoaded', () => {
         if (modal) modal.style.display = 'none';
     }
 
+    // Load real price history from RPC, falls back to mock
+    async function loadRealPriceHistory(marketId, range, market) {
+        try {
+            const { data: snapshots } = await api.get(`/prediction-market/markets/${marketId}/price-history?limit=200`);
+            if (snapshots && Array.isArray(snapshots) && snapshots.length > 0) {
+                const data = snapshots.map(s => ({ t: s.timestamp * 1000, p: Math.max(0.01, Math.min(0.99, s.price || 0.5)) }));
+                const canvas = document.getElementById('predictChartCanvas');
+                if (canvas && predictChartState.marketId === marketId) {
+                    drawPredictChart(data, canvas);
+                    renderPredictChartStats(data, market);
+                }
+                // Cache for tab switching
+                predictChartState.realData = data;
+                return;
+            }
+        } catch { /* RPC unavailable — keep mock */ }
+        predictChartState.realData = null;
+    }
+
     // Time range tab clicks
     document.querySelectorAll('.predict-chart-tab').forEach(tab => tab.addEventListener('click', () => {
         const range = tab.dataset.range;
         predictChartState.range = range;
         document.querySelectorAll('.predict-chart-tab').forEach(t => t.classList.toggle('active', t === tab));
-        const m = predictState.markets.find(x => x.id === predictChartState.marketId);
+        const m = predictState.markets.find(x => x.id === predictChartState.marketId)
+            || MOCK_MARKETS.find(x => x.id === predictChartState.marketId);
         if (!m) return;
-        const data = generateMockPriceHistory(m, range);
-        const canvas = document.getElementById('predictChartCanvas');
-        if (canvas) drawPredictChart(data, canvas);
-        renderPredictChartStats(data, m);
+        // Use real data if available, otherwise mock
+        if (predictChartState.realData && predictChartState.realData.length > 0) {
+            const canvas = document.getElementById('predictChartCanvas');
+            if (canvas) drawPredictChart(predictChartState.realData, canvas);
+            renderPredictChartStats(predictChartState.realData, m);
+        } else {
+            const data = generateMockPriceHistory(m, range);
+            const canvas = document.getElementById('predictChartCanvas');
+            if (canvas) drawPredictChart(data, canvas);
+            renderPredictChartStats(data, m);
+        }
     }));
 
     // Close handlers
