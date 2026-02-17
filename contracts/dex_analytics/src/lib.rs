@@ -22,7 +22,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{bytes_to_u64, get_slot, log_info, storage_get, storage_set, u64_to_bytes};
+use moltchain_sdk::{bytes_to_u64, get_caller, get_slot, log_info, storage_get, storage_set, u64_to_bytes};
 
 // ============================================================================
 // CONSTANTS
@@ -377,6 +377,11 @@ pub extern "C" fn initialize(admin: *const u8) -> u32 {
     unsafe {
         core::ptr::copy_nonoverlapping(admin, addr.as_mut_ptr(), 32);
     }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != addr {
+        return 200;
+    }
     storage_set(ADMIN_KEY, &addr);
     save_u64(TRADE_RECORD_COUNT_KEY, 0);
     storage_set(PAUSED_KEY, &[0u8]);
@@ -399,6 +404,12 @@ pub fn record_trade(pair_id: u64, price: u64, volume: u64, trader: *const u8) ->
     let mut t = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(trader, t.as_mut_ptr(), 32);
+    }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != t {
+        reentrancy_exit();
+        return 200;
     }
 
     // Update last price
@@ -579,6 +590,11 @@ pub fn emergency_pause(caller: *const u8) -> u32 {
     unsafe {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
     }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
     if !require_admin(&c) {
         return 1;
     }
@@ -590,6 +606,11 @@ pub fn emergency_unpause(caller: *const u8) -> u32 {
     let mut c = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
     }
     if !require_admin(&c) {
         return 1;
@@ -709,6 +730,7 @@ mod tests {
     fn setup() -> [u8; 32] {
         test_mock::reset();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(initialize(admin.as_ptr()), 0);
         admin
     }
@@ -717,6 +739,7 @@ mod tests {
     fn test_initialize() {
         test_mock::reset();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(initialize(admin.as_ptr()), 0);
     }
 
@@ -724,6 +747,7 @@ mod tests {
     fn test_initialize_twice() {
         test_mock::reset();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(initialize(admin.as_ptr()), 0);
         assert_eq!(initialize(admin.as_ptr()), 1);
     }
@@ -732,6 +756,7 @@ mod tests {
     fn test_record_trade() {
         let _admin = setup();
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         test_mock::set_slot(1000);
         assert_eq!(record_trade(1, 1_000_000_000, 5_000, trader.as_ptr()), 0);
         assert_eq!(get_record_count(), 1);
@@ -741,6 +766,7 @@ mod tests {
     fn test_record_trade_zero_values() {
         let _admin = setup();
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         assert_eq!(record_trade(1, 0, 5_000, trader.as_ptr()), 1);
         assert_eq!(record_trade(1, 1_000, 0, trader.as_ptr()), 1);
     }
@@ -749,6 +775,7 @@ mod tests {
     fn test_last_price_updated() {
         let _admin = setup();
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         test_mock::set_slot(1000);
         record_trade(1, 1_500_000_000, 5_000, trader.as_ptr());
         assert_eq!(get_last_price(1), 1_500_000_000);
@@ -758,6 +785,7 @@ mod tests {
     fn test_24h_stats_single_trade() {
         let _admin = setup();
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         test_mock::set_slot(1000);
         record_trade(1, 1_000_000_000, 5_000, trader.as_ptr());
 
@@ -773,6 +801,7 @@ mod tests {
     fn test_24h_stats_multiple_trades() {
         let _admin = setup();
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         test_mock::set_slot(1000);
         record_trade(1, 1_000_000_000, 3_000, trader.as_ptr());
         record_trade(1, 1_500_000_000, 2_000, trader.as_ptr());
@@ -790,6 +819,7 @@ mod tests {
     fn test_candle_creation() {
         let _admin = setup();
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         test_mock::set_slot(60); // Start of a 1-min candle
         record_trade(1, 1_000_000_000, 5_000, trader.as_ptr());
 
@@ -807,6 +837,7 @@ mod tests {
     fn test_candle_update_same_period() {
         let _admin = setup();
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         test_mock::set_slot(60);
         record_trade(1, 1_000_000_000, 3_000, trader.as_ptr());
         test_mock::set_slot(90); // Same 1-min candle
@@ -827,6 +858,7 @@ mod tests {
     fn test_candle_new_period() {
         let _admin = setup();
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         test_mock::set_slot(60);
         record_trade(1, 1_000_000_000, 3_000, trader.as_ptr());
         test_mock::set_slot(120); // New 1-min candle
@@ -840,6 +872,7 @@ mod tests {
     fn test_trader_stats() {
         let _admin = setup();
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         test_mock::set_slot(1000);
         record_trade(1, 1_000_000_000, 5_000, trader.as_ptr());
         record_trade(1, 1_100_000_000, 3_000, trader.as_ptr());
@@ -854,6 +887,7 @@ mod tests {
     fn test_get_ohlcv() {
         let _admin = setup();
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         test_mock::set_slot(60);
         record_trade(1, 1_000_000_000, 5_000, trader.as_ptr());
         test_mock::set_slot(120);
@@ -867,6 +901,7 @@ mod tests {
     fn test_get_24h_stats() {
         let _admin = setup();
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         test_mock::set_slot(1000);
         record_trade(1, 1_000_000_000, 5_000, trader.as_ptr());
         assert_eq!(get_24h_stats(1), 1);
@@ -877,6 +912,7 @@ mod tests {
     fn test_get_trader_stats() {
         let _admin = setup();
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         test_mock::set_slot(1000);
         record_trade(1, 1_000_000_000, 5_000, trader.as_ptr());
         assert_eq!(get_trader_stats(trader.as_ptr()), 1);
@@ -898,6 +934,7 @@ mod tests {
     fn test_emergency_pause_not_admin() {
         let _admin = setup();
         let rando = [99u8; 32];
+        test_mock::set_caller(rando);
         assert_eq!(emergency_pause(rando.as_ptr()), 1);
     }
 
@@ -930,6 +967,7 @@ mod tests {
     fn test_candle_3d_creation() {
         let _admin = setup();
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         // 3d = 259_200 slots; place trade at start of a 3d bucket
         test_mock::set_slot(259_200);
         record_trade(1, 2_000_000_000, 10_000, trader.as_ptr());
@@ -948,6 +986,7 @@ mod tests {
     fn test_candle_1w_creation() {
         let _admin = setup();
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         // 1w = 604_800 slots
         test_mock::set_slot(604_800);
         record_trade(1, 3_000_000_000, 7_500, trader.as_ptr());
@@ -965,6 +1004,7 @@ mod tests {
     fn test_candle_1y_creation() {
         let _admin = setup();
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         // 1y = 31_536_000 slots
         test_mock::set_slot(31_536_000);
         record_trade(1, 5_000_000_000, 50_000, trader.as_ptr());
@@ -982,6 +1022,7 @@ mod tests {
     fn test_candle_3d_update_same_period() {
         let _admin = setup();
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         test_mock::set_slot(259_200);
         record_trade(1, 1_000_000_000, 5_000, trader.as_ptr());
         test_mock::set_slot(259_200 + 100_000); // still in same 3d bucket
@@ -1002,6 +1043,7 @@ mod tests {
     fn test_candle_1w_new_period() {
         let _admin = setup();
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         test_mock::set_slot(604_800);
         record_trade(1, 1_000_000_000, 5_000, trader.as_ptr());
         test_mock::set_slot(604_800 * 2); // next week
@@ -1015,6 +1057,7 @@ mod tests {
     fn test_get_ohlcv_3d() {
         let _admin = setup();
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         test_mock::set_slot(259_200);
         record_trade(1, 1_000_000_000, 5_000, trader.as_ptr());
         test_mock::set_slot(259_200 * 2);
@@ -1028,6 +1071,7 @@ mod tests {
     fn test_all_intervals_get_candles_on_trade() {
         let _admin = setup();
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         // Use slot that's a multiple of all intervals (lcm-like)
         test_mock::set_slot(31_536_000); // multiple of all intervals
         record_trade(1, 1_000_000_000, 5_000, trader.as_ptr());

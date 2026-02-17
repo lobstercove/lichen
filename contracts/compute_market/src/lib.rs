@@ -36,7 +36,7 @@ use alloc::vec::Vec;
 
 use moltchain_sdk::{
     log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_slot,
-    Address, CrossCall, call_contract,
+    get_caller, Address, CrossCall, call_contract,
 };
 
 // SECURITY: Reentrancy guard
@@ -271,6 +271,12 @@ pub extern "C" fn register_provider(
     let mut addr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(provider_ptr, addr.as_mut_ptr(), 32) };
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != addr {
+        return 200;
+    }
+
     if compute_units_available == 0 {
         log_info("Compute units must be > 0");
         return 1;
@@ -330,6 +336,12 @@ pub extern "C" fn submit_job(
     unsafe { core::ptr::copy_nonoverlapping(requester_ptr, req_arr.as_mut_ptr(), 32) };
     let mut hash_arr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(code_hash_ptr, hash_arr.as_mut_ptr(), 32) };
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != req_arr {
+        return 200;
+    }
 
     if compute_units_needed == 0 {
         log_info("Compute units must be > 0");
@@ -399,6 +411,12 @@ pub extern "C" fn claim_job(
     let mut prov_arr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(provider_ptr, prov_arr.as_mut_ptr(), 32) };
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != prov_arr {
+        return 200;
+    }
+
     // Check provider is registered
     let pk = provider_key(&prov_arr);
     if storage_get(&pk).is_none() {
@@ -461,6 +479,12 @@ pub extern "C" fn complete_job(
     unsafe { core::ptr::copy_nonoverlapping(provider_ptr, prov_arr.as_mut_ptr(), 32) };
     let mut result_hash = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(result_hash_ptr, result_hash.as_mut_ptr(), 32) };
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != prov_arr {
+        return 200;
+    }
 
     let jk = job_key(job_id);
     let mut job_data = match storage_get(&jk) {
@@ -529,6 +553,12 @@ pub extern "C" fn dispute_job(
 
     let mut requester = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(requester_ptr, requester.as_mut_ptr(), 32) };
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != requester {
+        return 200;
+    }
 
     let jk = job_key(job_id);
     let mut job_data = match storage_get(&jk) {
@@ -599,6 +629,11 @@ pub extern "C" fn get_job(job_id: u64) -> u32 {
 pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
     let mut admin = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32) };
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != admin {
+        return 200;
+    }
     if storage_get(ADMIN_KEY).is_some() {
         log_info("Admin already set");
         return 1;
@@ -613,6 +648,11 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
 pub extern "C" fn set_claim_timeout(caller_ptr: *const u8, timeout: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32) };
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
     if !is_admin(&caller) {
         log_info("Not admin");
         return 1;
@@ -630,6 +670,11 @@ pub extern "C" fn set_claim_timeout(caller_ptr: *const u8, timeout: u64) -> u32 
 pub extern "C" fn set_complete_timeout(caller_ptr: *const u8, timeout: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32) };
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
     if !is_admin(&caller) {
         log_info("Not admin");
         return 1;
@@ -647,6 +692,11 @@ pub extern "C" fn set_complete_timeout(caller_ptr: *const u8, timeout: u64) -> u
 pub extern "C" fn set_challenge_period(caller_ptr: *const u8, period: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32) };
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
     if !is_admin(&caller) {
         log_info("Not admin");
         return 1;
@@ -666,6 +716,11 @@ pub extern "C" fn add_arbitrator(caller_ptr: *const u8, arbitrator_ptr: *const u
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32) };
     let mut addr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(arbitrator_ptr, addr.as_mut_ptr(), 32) };
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
     if !is_admin(&caller) {
         log_info("Not admin");
         return 1;
@@ -683,6 +738,11 @@ pub extern "C" fn remove_arbitrator(caller_ptr: *const u8, arbitrator_ptr: *cons
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32) };
     let mut addr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(arbitrator_ptr, addr.as_mut_ptr(), 32) };
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
     if !is_admin(&caller) {
         log_info("Not admin");
         return 1;
@@ -716,6 +776,12 @@ pub extern "C" fn cancel_job(
 
     let mut requester = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(requester_ptr, requester.as_mut_ptr(), 32) };
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != requester {
+        return 200;
+    }
 
     let jk = job_key(job_id);
     let mut job_data = match storage_get(&jk) {
@@ -874,6 +940,13 @@ pub extern "C" fn resolve_dispute(
     let mut arb_arr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(arbitrator_ptr, arb_arr.as_mut_ptr(), 32) };
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != arb_arr {
+        reentrancy_exit();
+        return 200;
+    }
+
     // Must be a registered arbitrator
     if !is_arbitrator(&arb_arr) {
         log_info("Not a registered arbitrator");
@@ -935,6 +1008,11 @@ pub extern "C" fn resolve_dispute(
 pub extern "C" fn deactivate_provider(provider_ptr: *const u8) -> u32 {
     let mut addr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(provider_ptr, addr.as_mut_ptr(), 32) };
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != addr {
+        return 200;
+    }
     let pk = provider_key(&addr);
     let mut prov_data = match storage_get(&pk) {
         Some(d) => d,
@@ -961,6 +1039,11 @@ pub extern "C" fn deactivate_provider(provider_ptr: *const u8) -> u32 {
 pub extern "C" fn reactivate_provider(provider_ptr: *const u8) -> u32 {
     let mut addr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(provider_ptr, addr.as_mut_ptr(), 32) };
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != addr {
+        return 200;
+    }
     let pk = provider_key(&addr);
     let mut prov_data = match storage_get(&pk) {
         Some(d) => d,
@@ -991,6 +1074,11 @@ pub extern "C" fn update_provider(
 ) -> u32 {
     let mut addr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(provider_ptr, addr.as_mut_ptr(), 32) };
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != addr {
+        return 200;
+    }
     let pk = provider_key(&addr);
     let mut prov_data = match storage_get(&pk) {
         Some(d) => d,
@@ -1043,6 +1131,12 @@ const MOLTYID_ADDR_KEY: &[u8] = b"moltyid_address";
 pub extern "C" fn set_identity_admin(admin_ptr: *const u8) -> u32 {
     let mut admin = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32) };
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != admin {
+        return 200;
+    }
 
     if storage_get(IDENTITY_ADMIN_KEY).is_some() {
         log_info("Identity admin already set");

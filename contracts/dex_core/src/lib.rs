@@ -41,7 +41,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{bytes_to_u64, get_slot, log_info, storage_get, storage_set, u64_to_bytes};
+use moltchain_sdk::{bytes_to_u64, get_caller, get_slot, log_info, storage_get, storage_set, u64_to_bytes};
 
 // ============================================================================
 // CONSTANTS
@@ -601,6 +601,11 @@ pub extern "C" fn initialize(admin: *const u8) -> u32 {
     unsafe {
         core::ptr::copy_nonoverlapping(admin, addr.as_mut_ptr(), 32);
     }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != addr {
+        return 200;
+    }
     storage_set(ADMIN_KEY, &addr);
     save_u64(PAIR_COUNT_KEY, 0);
     save_u64(ORDER_COUNT_KEY, 0);
@@ -646,6 +651,11 @@ pub fn set_preferred_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(quote_addr, q.as_mut_ptr(), 32);
     }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
     if !require_admin(&c) {
         return 1;
     }
@@ -677,6 +687,11 @@ pub fn add_allowed_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(quote_addr, q.as_mut_ptr(), 32);
     }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
     if !require_admin(&c) { return 1; }
     if is_zero(&q) { return 2; }
     let count = load_u64(ALLOWED_QUOTE_COUNT_KEY);
@@ -698,6 +713,11 @@ pub fn remove_allowed_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
     unsafe {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(quote_addr, q.as_mut_ptr(), 32);
+    }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
     }
     if !require_admin(&c) { return 1; }
     let count = load_u64(ALLOWED_QUOTE_COUNT_KEY);
@@ -742,6 +762,12 @@ pub fn create_pair(
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(base_token, bt.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(quote_token, qt.as_mut_ptr(), 32);
+    }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        reentrancy_exit();
+        return 200;
     }
     if !require_admin(&c) {
         reentrancy_exit();
@@ -808,6 +834,11 @@ pub fn update_pair_fees(
     unsafe {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
     }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
     if !require_admin(&c) {
         return 1;
     }
@@ -837,6 +868,11 @@ pub fn pause_pair(caller: *const u8, pair_id: u64) -> u32 {
     unsafe {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
     }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
     if !require_admin(&c) {
         return 1;
     }
@@ -855,6 +891,11 @@ pub fn unpause_pair(caller: *const u8, pair_id: u64) -> u32 {
     let mut c = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
     }
     if !require_admin(&c) {
         return 1;
@@ -902,6 +943,12 @@ pub fn place_order(
     let mut t = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(trader, t.as_mut_ptr(), 32);
+    }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != t {
+        reentrancy_exit();
+        return 200;
     }
 
     // Load pair
@@ -1339,6 +1386,12 @@ pub fn cancel_order(caller: *const u8, order_id: u64) -> u32 {
     unsafe {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
     }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        reentrancy_exit();
+        return 200;
+    }
 
     let ok = order_key(order_id);
     let mut data = match storage_get(&ok) {
@@ -1380,6 +1433,12 @@ pub fn cancel_all_orders(caller: *const u8, pair_id: u64) -> u32 {
     unsafe {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
     }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        reentrancy_exit();
+        return 200;
+    }
 
     let user_count = load_u64(&user_order_count_key(&c));
     for idx in 1..=user_count {
@@ -1412,6 +1471,12 @@ pub fn modify_order(caller: *const u8, order_id: u64, new_price: u64, new_quanti
     let mut c = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        reentrancy_exit();
+        return 200;
     }
 
     let ok = order_key(order_id);
@@ -1464,6 +1529,11 @@ pub fn emergency_pause(caller: *const u8) -> u32 {
     unsafe {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
     }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
     if !require_admin(&c) {
         return 1;
     }
@@ -1480,6 +1550,11 @@ pub fn emergency_unpause(caller: *const u8) -> u32 {
     let mut c = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
     }
     if !require_admin(&c) {
         return 1;
@@ -1504,6 +1579,11 @@ pub fn execute_unpause(caller: *const u8) -> u32 {
     let mut c = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
     }
     if !require_admin(&c) {
         return 1;
@@ -1855,6 +1935,7 @@ mod tests {
     fn setup() -> [u8; 32] {
         test_mock::reset();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(initialize(admin.as_ptr()), 0);
         admin
     }
@@ -1883,6 +1964,7 @@ mod tests {
     fn test_initialize() {
         test_mock::reset();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(initialize(admin.as_ptr()), 0);
         assert_eq!(load_addr(ADMIN_KEY), admin);
         assert_eq!(load_u64(PAIR_COUNT_KEY), 0);
@@ -1892,6 +1974,7 @@ mod tests {
     fn test_initialize_already_initialized() {
         test_mock::reset();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(initialize(admin.as_ptr()), 0);
         assert_eq!(initialize(admin.as_ptr()), 1);
     }
@@ -1923,6 +2006,7 @@ mod tests {
         let rando = [99u8; 32];
         let base = [10u8; 32];
         let quote = [20u8; 32];
+        test_mock::set_caller(rando);
         assert_eq!(
             create_pair(
                 rando.as_ptr(),
@@ -2016,6 +2100,7 @@ mod tests {
         let (_admin, pair_id) = setup_with_pair();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(trader);
         // price=10000 (10000 * 100 / 1e9 = not great, let's use bigger)
         // With tick_size=1000, lot_size=100, min_order=1000
         // notional = price * quantity / 1e9 >= 1000
@@ -2040,6 +2125,7 @@ mod tests {
         let (_admin, pair_id) = setup_with_pair();
         let trader = [3u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(trader);
         assert_eq!(
             place_order(
                 trader.as_ptr(),
@@ -2060,6 +2146,7 @@ mod tests {
         let (admin, pair_id) = setup_with_pair();
         storage_set(PAUSED_KEY, &[1u8]);
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         assert_eq!(
             place_order(
                 trader.as_ptr(),
@@ -2078,6 +2165,7 @@ mod tests {
     fn test_place_order_pair_not_found() {
         let _admin = setup();
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         assert_eq!(
             place_order(
                 trader.as_ptr(),
@@ -2097,6 +2185,7 @@ mod tests {
         let (admin, pair_id) = setup_with_pair();
         pause_pair(admin.as_ptr(), pair_id);
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         assert_eq!(
             place_order(
                 trader.as_ptr(),
@@ -2115,6 +2204,7 @@ mod tests {
     fn test_place_order_zero_quantity() {
         let (_admin, pair_id) = setup_with_pair();
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         assert_eq!(
             place_order(
                 trader.as_ptr(),
@@ -2133,6 +2223,7 @@ mod tests {
     fn test_place_order_bad_tick() {
         let (_admin, pair_id) = setup_with_pair();
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         // tick_size = 1000, price must be multiple of 1000
         assert_eq!(
             place_order(
@@ -2152,6 +2243,7 @@ mod tests {
     fn test_place_order_bad_lot() {
         let (_admin, pair_id) = setup_with_pair();
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         // lot_size = 100, quantity must be multiple of 100
         assert_eq!(
             place_order(
@@ -2171,6 +2263,7 @@ mod tests {
     fn test_place_order_below_min() {
         let (_admin, pair_id) = setup_with_pair();
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         // min_order = 1000 shells notional
         // notional = 1000 * 100 / 1e9 = 0 — below min
         assert_eq!(
@@ -2192,6 +2285,7 @@ mod tests {
         let (_admin, pair_id) = setup_with_pair();
         let trader = [2u8; 32];
         test_mock::set_slot(1000);
+        test_mock::set_caller(trader);
         // expiry = 500 < current_slot 1000
         assert_eq!(
             place_order(
@@ -2217,6 +2311,7 @@ mod tests {
         test_mock::set_slot(100);
 
         // Seller places ask at 1_000_000_000
+        test_mock::set_caller(seller);
         assert_eq!(
             place_order(
                 seller.as_ptr(),
@@ -2231,6 +2326,7 @@ mod tests {
         );
 
         // Buyer places bid at same price — should match
+        test_mock::set_caller(buyer);
         assert_eq!(
             place_order(
                 buyer.as_ptr(),
@@ -2260,6 +2356,7 @@ mod tests {
         test_mock::set_slot(100);
 
         // Seller places ask for 2000
+        test_mock::set_caller(seller);
         assert_eq!(
             place_order(
                 seller.as_ptr(),
@@ -2274,6 +2371,7 @@ mod tests {
         );
 
         // Buyer only wants 1000
+        test_mock::set_caller(buyer);
         assert_eq!(
             place_order(
                 buyer.as_ptr(),
@@ -2297,6 +2395,7 @@ mod tests {
         let (_admin, pair_id) = setup_with_pair();
         let trader = [5u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(trader);
 
         // Same trader places both sides
         assert_eq!(
@@ -2339,6 +2438,7 @@ mod tests {
         test_mock::set_slot(100);
 
         // Seller places ask at 1_000_000_000
+        test_mock::set_caller(seller);
         assert_eq!(
             place_order(
                 seller.as_ptr(),
@@ -2353,6 +2453,7 @@ mod tests {
         );
 
         // Buyer tries post-only at same price — should be rejected
+        test_mock::set_caller(buyer);
         assert_eq!(
             place_order(
                 buyer.as_ptr(),
@@ -2375,6 +2476,7 @@ mod tests {
         test_mock::set_slot(100);
 
         // Seller places ask at 2_000_000_000
+        test_mock::set_caller(seller);
         assert_eq!(
             place_order(
                 seller.as_ptr(),
@@ -2389,6 +2491,7 @@ mod tests {
         );
 
         // Buyer post-only at 1_000_000_000 (below ask) — should rest
+        test_mock::set_caller(buyer);
         assert_eq!(
             place_order(
                 buyer.as_ptr(),
@@ -2410,6 +2513,7 @@ mod tests {
         let (_admin, pair_id) = setup_with_pair();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(trader);
         place_order(
             trader.as_ptr(),
             pair_id,
@@ -2430,6 +2534,7 @@ mod tests {
         let trader = [2u8; 32];
         let other = [3u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(trader);
         place_order(
             trader.as_ptr(),
             pair_id,
@@ -2439,6 +2544,7 @@ mod tests {
             1000,
             0,
         );
+        test_mock::set_caller(other);
         assert_eq!(cancel_order(other.as_ptr(), 1), 2);
     }
 
@@ -2447,6 +2553,7 @@ mod tests {
         let (_admin, pair_id) = setup_with_pair();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(trader);
         place_order(
             trader.as_ptr(),
             pair_id,
@@ -2465,6 +2572,7 @@ mod tests {
         let (_admin, pair_id) = setup_with_pair();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(trader);
         place_order(
             trader.as_ptr(),
             pair_id,
@@ -2495,6 +2603,7 @@ mod tests {
         let (_admin, pair_id) = setup_with_pair();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(trader);
         place_order(
             trader.as_ptr(),
             pair_id,
@@ -2540,6 +2649,7 @@ mod tests {
     fn test_emergency_pause_not_admin() {
         let _admin = setup();
         let rando = [99u8; 32];
+        test_mock::set_caller(rando);
         assert_eq!(emergency_pause(rando.as_ptr()), 1);
     }
 
@@ -2557,6 +2667,7 @@ mod tests {
         let (_admin, pair_id) = setup_with_pair();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(trader);
         place_order(
             trader.as_ptr(),
             pair_id,
@@ -2569,6 +2680,7 @@ mod tests {
         assert_eq!(get_best_bid(pair_id), 1_000_000_000);
 
         let seller = [3u8; 32];
+        test_mock::set_caller(seller);
         place_order(
             seller.as_ptr(),
             pair_id,
@@ -2587,6 +2699,7 @@ mod tests {
         let buyer = [2u8; 32];
         let seller = [3u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(buyer);
         place_order(
             buyer.as_ptr(),
             pair_id,
@@ -2596,6 +2709,7 @@ mod tests {
             1000,
             0,
         );
+        test_mock::set_caller(seller);
         place_order(
             seller.as_ptr(),
             pair_id,
@@ -2625,6 +2739,7 @@ mod tests {
         let buyer = [4u8; 32];
         test_mock::set_slot(100);
 
+        test_mock::set_caller(seller);
         place_order(
             seller.as_ptr(),
             pair_id,
@@ -2634,6 +2749,7 @@ mod tests {
             1_000_000,
             0,
         );
+        test_mock::set_caller(buyer);
         place_order(
             buyer.as_ptr(),
             pair_id,
@@ -2697,6 +2813,7 @@ mod tests {
         test_mock::set_slot(100);
 
         // Two asks at same price — seller1 first (qty large enough for min notional)
+        test_mock::set_caller(seller1);
         assert_eq!(
             place_order(
                 seller1.as_ptr(),
@@ -2709,6 +2826,7 @@ mod tests {
             ),
             0
         );
+        test_mock::set_caller(seller2);
         assert_eq!(
             place_order(
                 seller2.as_ptr(),
@@ -2723,6 +2841,7 @@ mod tests {
         );
 
         // Buyer takes 10_000 — should fill seller1 first (time priority)
+        test_mock::set_caller(buyer);
         assert_eq!(
             place_order(
                 buyer.as_ptr(),
@@ -2749,6 +2868,7 @@ mod tests {
         let (_admin, pair_id) = setup_with_pair();
         let trader = [2u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(trader);
         place_order(
             trader.as_ptr(),
             pair_id,
@@ -2768,6 +2888,7 @@ mod tests {
         let seller = [3u8; 32];
         let buyer = [4u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(seller);
         place_order(
             seller.as_ptr(),
             pair_id,
@@ -2777,6 +2898,7 @@ mod tests {
             1000,
             0,
         );
+        test_mock::set_caller(buyer);
         place_order(
             buyer.as_ptr(),
             pair_id,
@@ -2822,6 +2944,7 @@ mod tests {
         let _admin = setup();
         let non_admin = [99u8; 32];
         let musd = [42u8; 32];
+        test_mock::set_caller(non_admin);
         assert_eq!(set_preferred_quote(non_admin.as_ptr(), musd.as_ptr()), 1);
     }
 

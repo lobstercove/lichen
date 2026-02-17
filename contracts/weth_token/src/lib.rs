@@ -24,7 +24,7 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{bytes_to_u64, get_slot, log_info, storage_get, storage_set, u64_to_bytes};
+use moltchain_sdk::{bytes_to_u64, get_caller, get_slot, log_info, storage_get, storage_set, u64_to_bytes};
 
 // ============================================================================
 // CONSTANTS
@@ -234,6 +234,13 @@ pub extern "C" fn mint(caller: *const u8, to: *const u8, amount: u64) -> u32 {
         core::ptr::copy_nonoverlapping(to, to_addr.as_mut_ptr(), 32);
     }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let caller = get_caller();
+    if caller.0 != caller_addr {
+        reentrancy_exit();
+        return 200;
+    }
+
     if !require_not_paused() {
         reentrancy_exit();
         return 1;
@@ -314,6 +321,13 @@ pub extern "C" fn burn(caller: *const u8, amount: u64) -> u32 {
         core::ptr::copy_nonoverlapping(caller, caller_addr.as_mut_ptr(), 32);
     }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let caller = get_caller();
+    if caller.0 != caller_addr {
+        reentrancy_exit();
+        return 200;
+    }
+
     if !require_not_paused() {
         reentrancy_exit();
         return 1;
@@ -368,6 +382,13 @@ pub extern "C" fn transfer(from: *const u8, to: *const u8, amount: u64) -> u32 {
         core::ptr::copy_nonoverlapping(to, to_addr.as_mut_ptr(), 32);
     }
 
+    // AUDIT-FIX: verify caller matches from address
+    let caller = get_caller();
+    if caller.0 != from_addr {
+        reentrancy_exit();
+        return 200;
+    }
+
     if !require_not_paused() {
         reentrancy_exit();
         return 1;
@@ -418,6 +439,13 @@ pub extern "C" fn approve(owner: *const u8, spender: *const u8, amount: u64) -> 
         core::ptr::copy_nonoverlapping(spender, spender_addr.as_mut_ptr(), 32);
     }
 
+    // AUDIT-FIX: verify caller matches owner address
+    let caller = get_caller();
+    if caller.0 != owner_addr {
+        reentrancy_exit();
+        return 200;
+    }
+
     if is_zero(&spender_addr) {
         reentrancy_exit();
         return 3;
@@ -451,6 +479,13 @@ pub extern "C" fn transfer_from(
         core::ptr::copy_nonoverlapping(caller, caller_addr.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(from, from_addr.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(to, to_addr.as_mut_ptr(), 32);
+    }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let caller = get_caller();
+    if caller.0 != caller_addr {
+        reentrancy_exit();
+        return 200;
     }
 
     if !require_not_paused() {

@@ -69,7 +69,7 @@ function connectBalanceWebSocket() {
     disconnectBalanceWebSocket();
     
     const wsUrl = getWsEndpoint();
-    console.log(`[WS] Connecting to ${wsUrl} for account ${wallet.address}`);
+    // console.log(`[WS] Connecting to ${wsUrl} for account ${wallet.address}`);
     
     try {
         balanceWs = new WebSocket(wsUrl);
@@ -80,7 +80,7 @@ function connectBalanceWebSocket() {
     }
     
     balanceWs.onopen = () => {
-        console.log('[WS] Connected, subscribing to account changes');
+        // console.log('[WS] Connected, subscribing to account changes');
         balanceWsSubscribedAddress = wallet.address;
         // Subscribe to account balance changes
         balanceWs.send(JSON.stringify({
@@ -120,7 +120,7 @@ function connectBalanceWebSocket() {
     };
     
     balanceWs.onclose = (event) => {
-        console.log(`[WS] Disconnected (code: ${event.code})`);
+        // console.log(`[WS] Disconnected (code: ${event.code})`);
         balanceWsSubId = null;
         bridgeLockSubId = null;
         bridgeMintSubId = null;
@@ -142,8 +142,8 @@ function handleBridgeLockEvent(data) {
     // Check if this lock is relevant to our wallet (recipient matches)
     if (data.recipient !== wallet.address) return;
     
-    console.log('[Bridge] Lock event for our wallet:', data);
-    
+    // console.log('[Bridge] Lock event for our wallet:', data);
+
     // Update deposit status UI if visible
     const statusEl = document.getElementById('depositStatus');
     if (statusEl) {
@@ -160,8 +160,8 @@ function handleBridgeMintEvent(data) {
     // Check if this mint is for our wallet
     if (data.recipient !== wallet.address) return;
     
-    console.log('[Bridge] Mint event for our wallet:', data);
-    
+    // console.log('[Bridge] Mint event for our wallet:', data);
+
     // Update deposit status UI if visible
     const statusEl = document.getElementById('depositStatus');
     if (statusEl) {
@@ -373,7 +373,7 @@ async function loadTokenRegistry() {
                         TOKEN_REGISTRY[symbol].address = addr;
                     }
                 }
-                console.log('Token registry loaded from manifest');
+                // console.log('Token registry loaded from manifest');
                 return;
             }
         }
@@ -391,7 +391,7 @@ async function loadTokenRegistry() {
                     TOKEN_REGISTRY[symbol].address = addr;
                 }
             }
-            console.log('Token registry loaded from localStorage');
+            // console.log('Token registry loaded from localStorage');
         }
     } catch (e) {
         console.warn('Could not load stored token addresses:', e);
@@ -436,7 +436,7 @@ let walletState = {
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
-    console.log('MoltWallet loaded');
+    // console.log('MoltWallet loaded');
     loadWalletState();
     loadTokenRegistry();
     checkWalletStatus();
@@ -1887,7 +1887,7 @@ function startDepositPolling(depositId) {
     // Use longer interval when WebSocket bridge subscriptions are active (WS provides real-time updates)
     // Fall back to aggressive 5s polling when WS is disconnected
     const pollInterval = bridgeWsActive ? 30000 : 5000;
-    console.log(`[Bridge] Starting deposit polling (interval: ${pollInterval}ms, ws: ${bridgeWsActive})`);
+    // console.log(`[Bridge] Starting deposit polling (interval: ${pollInterval}ms, ws: ${bridgeWsActive})`);
     depositPollInterval = setInterval(async () => {
         try {
             const res = await fetch(`${getCustodyUrl()}/deposits/${depositId}`);
@@ -2057,9 +2057,9 @@ function generateEVMAddress(base58Address) {
         }
         
         // Decode Base58 to get 32-byte public key
-        console.log('Decoding base58 address:', base58Address);
+        // console.log('Decoding base58 address:', base58Address);
         const pubkeyBytes = bs58.decode(base58Address);
-        console.log('Decoded pubkey bytes:', pubkeyBytes.length, 'bytes');
+        // console.log('Decoded pubkey bytes:', pubkeyBytes.length, 'bytes');
         
         if (pubkeyBytes.length !== 32) {
             console.error('Invalid pubkey length:', pubkeyBytes.length, 'expected 32');
@@ -2071,7 +2071,7 @@ function generateEVMAddress(base58Address) {
         
         // Take last 20 bytes (last 40 hex chars)
         const evmAddress = '0x' + hashHex.slice(-40);
-        console.log('Generated EVM address:', evmAddress);
+        // console.log('Generated EVM address:', evmAddress);
         return evmAddress;
     } catch (e) {
         console.error('Failed to generate EVM address:', e);
@@ -2148,7 +2148,7 @@ async function registerEvmAddress(wallet, password) {
         const txBase64 = btoa(String.fromCharCode(...txBytes));
 
         await rpc.sendTransaction(txBase64);
-        console.log('EVM address registered:', evmAddress, '→', wallet.address);
+        // console.log('EVM address registered:', evmAddress, '→', wallet.address);
 
         // 6) Cache after successful registration
         try { localStorage.setItem(cacheKey, '1'); } catch (_) {}
@@ -3343,4 +3343,4 @@ showSettings = function() {
     setTimeout(loadSettingsValues, 100); // Small delay to ensure modal is rendered
 };
 
-console.log('MoltWallet fully initialized');
+// console.log('MoltWallet fully initialized');

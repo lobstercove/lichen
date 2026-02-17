@@ -31,7 +31,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use moltchain_sdk::{
-    log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_slot,
+    log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_slot, get_caller,
     Address, CrossCall, call_contract,
 };
 
@@ -254,6 +254,12 @@ pub extern "C" fn initialize(owner_ptr: *const u8) -> u32 {
     let mut owner = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != owner {
+        return 200;
+    }
+
     if storage_get(b"bridge_owner").is_some() {
         log_info("Bridge already initialized");
         return 1;
@@ -288,6 +294,12 @@ pub extern "C" fn add_bridge_validator(
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
     let mut val_arr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(validator_ptr, val_arr.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
 
     if let Err(code) = require_owner(&caller) {
         return code;
@@ -329,6 +341,12 @@ pub extern "C" fn remove_bridge_validator(
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
     let mut val_arr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(validator_ptr, val_arr.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
 
     if let Err(code) = require_owner(&caller) {
         return code;
@@ -379,6 +397,12 @@ pub extern "C" fn set_required_confirmations(
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if let Err(code) = require_owner(&caller) {
         return code;
     }
@@ -405,6 +429,12 @@ pub extern "C" fn set_request_timeout(
 ) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
 
     if let Err(code) = require_owner(&caller) {
         return code;
@@ -455,6 +485,13 @@ pub extern "C" fn lock_tokens(
     unsafe { core::ptr::copy_nonoverlapping(dest_chain_ptr, chain_arr.as_mut_ptr(), 32); }
     let mut addr_arr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(dest_address_ptr, addr_arr.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != sender_arr {
+        reentrancy_exit();
+        return 200;
+    }
 
     if amount == 0 {
         log_info("Amount must be > 0");
@@ -538,6 +575,12 @@ pub extern "C" fn submit_mint(
     unsafe { core::ptr::copy_nonoverlapping(source_chain_ptr, chain_arr.as_mut_ptr(), 32); }
     let mut tx_hash_arr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(source_tx_ptr, tx_hash_arr.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller_arr {
+        return 200;
+    }
 
     if amount == 0 {
         log_info("Amount must be > 0");
@@ -624,6 +667,12 @@ pub extern "C" fn confirm_mint(
 
     let mut caller_arr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller_arr.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller_arr {
+        return 200;
+    }
 
     // Verify caller is validator
     if !is_validator(&caller_arr) {
@@ -715,6 +764,12 @@ pub extern "C" fn submit_unlock(
     unsafe { core::ptr::copy_nonoverlapping(recipient_ptr, recipient_arr.as_mut_ptr(), 32); }
     let mut proof_arr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(burn_proof_ptr, proof_arr.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller_arr {
+        return 200;
+    }
 
     if amount == 0 {
         log_info("Amount must be > 0");
@@ -815,6 +870,12 @@ pub extern "C" fn confirm_unlock(
 
     let mut caller_arr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller_arr.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller_arr {
+        return 200;
+    }
 
     // Verify caller is validator
     if !is_validator(&caller_arr) {
@@ -1053,6 +1114,12 @@ pub extern "C" fn set_moltyid_address(caller_ptr: *const u8, moltyid_addr_ptr: *
     let mut moltyid_addr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(moltyid_addr_ptr, moltyid_addr.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if let Err(code) = require_owner(&caller) {
         return code;
     }
@@ -1068,6 +1135,12 @@ pub extern "C" fn set_moltyid_address(caller_ptr: *const u8, moltyid_addr_ptr: *
 pub extern "C" fn set_identity_gate(caller_ptr: *const u8, min_reputation: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
 
     if let Err(code) = require_owner(&caller) {
         return code;
@@ -1118,6 +1191,13 @@ fn check_identity_gate(caller: &[u8]) -> bool {
 pub extern "C" fn mb_pause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     let owner = storage_get(b"bridge_owner").unwrap_or_default();
     if caller[..] != owner[..] {
         return 1;
@@ -1131,6 +1211,13 @@ pub extern "C" fn mb_pause(caller_ptr: *const u8) -> u32 {
 pub extern "C" fn mb_unpause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     let owner = storage_get(b"bridge_owner").unwrap_or_default();
     if caller[..] != owner[..] {
         return 1;

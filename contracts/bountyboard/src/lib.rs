@@ -18,7 +18,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use moltchain_sdk::{
-    log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_slot,
+    log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_slot, get_caller,
     Address, CrossCall, call_contract, call_token_transfer,
 };
 
@@ -65,6 +65,24 @@ fn submission_key(bounty_id: u64, idx: u8) -> Vec<u8> {
     key.push(b'_');
     key.extend_from_slice(&u64_to_decimal(idx as u64));
     key
+}
+
+// ============================================================================
+// REENTRANCY GUARD
+// ============================================================================
+
+const BB_REENTRANCY_KEY: &[u8] = b"bb_reentrancy";
+
+fn reentrancy_enter() -> bool {
+    if let Some(v) = storage_get(BB_REENTRANCY_KEY) {
+        if !v.is_empty() && v[0] == 1 { return false; }
+    }
+    storage_set(BB_REENTRANCY_KEY, &[1u8]);
+    true
+}
+
+fn reentrancy_exit() {
+    storage_set(BB_REENTRANCY_KEY, &[0u8]);
 }
 
 // ============================================================================
@@ -147,26 +165,37 @@ pub extern "C" fn create_bounty(
     deadline_slot: u64,
 ) -> u32 {
     log_info("Creating bounty...");
+    if !reentrancy_enter() { return 100; }
 
     let mut creator_arr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(creator_ptr, creator_arr.as_mut_ptr(), 32); }
     let mut title_arr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(title_hash_ptr, title_arr.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != creator_arr {
+        reentrancy_exit();
+        return 200;
+    }
+
     if reward_amount == 0 {
         log_info("Reward must be > 0");
+        reentrancy_exit();
         return 1;
     }
 
     // MoltyID reputation gate
     if !check_identity_gate(&creator_arr) {
         log_info("Insufficient MoltyID reputation for bounty creation");
+        reentrancy_exit();
         return 10;
     }
 
     let current_slot = get_slot();
     if deadline_slot <= current_slot {
         log_info("Deadline must be in the future");
+        reentrancy_exit();
         return 2;
     }
 
@@ -191,6 +220,7 @@ pub extern "C" fn create_bounty(
 
     moltchain_sdk::set_return_data(&u64_to_bytes(bounty_id));
     log_info("Bounty created");
+    reentrancy_exit();
     0
 }
 
@@ -213,33 +243,45 @@ pub extern "C" fn submit_work(
     proof_hash_ptr: *const u8,
 ) -> u32 {
     log_info("Submitting work for bounty...");
+    if !reentrancy_enter() { return 100; }
 
     let mut worker_arr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(worker_ptr, worker_arr.as_mut_ptr(), 32); }
     let mut proof_arr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(proof_hash_ptr, proof_arr.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != worker_arr {
+        reentrancy_exit();
+        return 200;
+    }
+
     let bk = bounty_key(bounty_id);
     let mut bounty_data = match storage_get(&bk) {
         Some(data) => data,
         None => {
             log_info("Bounty not found");
+            reentrancy_exit();
             return 1;
         }
     };
 
     if bounty_data.len() < BOUNTY_SIZE {
+        reentrancy_exit();
         return 2;
     }
 
     if bounty_data[80] != BOUNTY_OPEN {
         log_info("Bounty is not open");
+        reentrancy_exit();
         return 3;
     }
 
     // MoltyID identity gate (any reputation level)
     if !check_identity_gate(&worker_arr) {
         log_info("MoltyID identity required to submit work");
+        reentrancy_exit();
         return 10;
     }
 
@@ -248,12 +290,14 @@ pub extern "C" fn submit_work(
     let current_slot = get_slot();
     if current_slot > deadline {
         log_info("Bounty deadline passed");
+        reentrancy_exit();
         return 4;
     }
 
     let sub_count = bounty_data[81];
     if sub_count >= 255 {
         log_info("Maximum submissions reached");
+        reentrancy_exit();
         return 5;
     }
 
@@ -268,6 +312,7 @@ pub extern "C" fn submit_work(
 
     moltchain_sdk::set_return_data(&[sub_count]); // return submission index
     log_info("Work submitted");
+    reentrancy_exit();
     0
 }
 
@@ -290,37 +335,50 @@ pub extern "C" fn approve_work(
     submission_idx: u8,
 ) -> u32 {
     log_info("Approving bounty work...");
+    if !reentrancy_enter() { return 100; }
 
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
 
     let bk = bounty_key(bounty_id);
     let mut bounty_data = match storage_get(&bk) {
         Some(data) => data,
         None => {
             log_info("Bounty not found");
+            reentrancy_exit();
             return 1;
         }
     };
 
     if bounty_data.len() < BOUNTY_SIZE {
+        reentrancy_exit();
         return 2;
     }
 
     // Verify caller is creator
     if &bounty_data[0..32] != &caller[..] {
         log_info("Only creator can approve");
+        reentrancy_exit();
         return 3;
     }
 
     if bounty_data[80] != BOUNTY_OPEN {
         log_info("Bounty is not open");
+        reentrancy_exit();
         return 4;
     }
 
     let sub_count = bounty_data[81];
     if submission_idx >= sub_count {
         log_info("Invalid submission index");
+        reentrancy_exit();
         return 5;
     }
 
@@ -330,6 +388,7 @@ pub extern "C" fn approve_work(
         Some(data) => data,
         None => {
             log_info("Submission not found");
+            reentrancy_exit();
             return 6;
         }
     };
@@ -366,6 +425,7 @@ pub extern "C" fn approve_work(
                     bounty_data[90] = 0xFF;
                     storage_set(&bk, &bounty_data);
                     log_info("Token transfer returned false, bounty reverted to open");
+                    reentrancy_exit();
                     return 8;
                 }
                 Err(_) => {
@@ -374,6 +434,7 @@ pub extern "C" fn approve_work(
                     bounty_data[90] = 0xFF;
                     storage_set(&bk, &bounty_data);
                     log_info("Token transfer failed, bounty reverted to open");
+                    reentrancy_exit();
                     return 7;
                 }
             }
@@ -387,6 +448,7 @@ pub extern "C" fn approve_work(
     storage_set(BB_REWARD_VOLUME_KEY, &u64_to_bytes(rv.saturating_add(reward_amount)));
 
     log_info("Work approved, bounty completed");
+    reentrancy_exit();
     0
 }
 
@@ -407,30 +469,42 @@ pub extern "C" fn cancel_bounty(
     bounty_id: u64,
 ) -> u32 {
     log_info("Cancelling bounty...");
+    if !reentrancy_enter() { return 100; }
 
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
 
     let bk = bounty_key(bounty_id);
     let mut bounty_data = match storage_get(&bk) {
         Some(data) => data,
         None => {
             log_info("Bounty not found");
+            reentrancy_exit();
             return 1;
         }
     };
 
     if bounty_data.len() < BOUNTY_SIZE {
+        reentrancy_exit();
         return 2;
     }
 
     if &bounty_data[0..32] != &caller[..] {
         log_info("Only creator can cancel");
+        reentrancy_exit();
         return 3;
     }
 
     if bounty_data[80] != BOUNTY_OPEN {
         log_info("Bounty is not open");
+        reentrancy_exit();
         return 4;
     }
 
@@ -444,6 +518,7 @@ pub extern "C" fn cancel_bounty(
     storage_set(BB_CANCEL_COUNT_KEY, &u64_to_bytes(canc + 1));
 
     log_info("Bounty cancelled, refund issued");
+    reentrancy_exit();
     0
 }
 
@@ -489,16 +564,26 @@ const TOKEN_ADDRESS_KEY: &[u8] = b"bounty_token_addr";
 /// Only callable once (first caller becomes admin).
 #[no_mangle]
 pub extern "C" fn set_identity_admin(admin_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut admin = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != admin {
+        reentrancy_exit();
+        return 200;
+    }
+
     if storage_get(IDENTITY_ADMIN_KEY).is_some() {
         log_info("Identity admin already set");
+        reentrancy_exit();
         return 1;
     }
 
     storage_set(IDENTITY_ADMIN_KEY, &admin);
     log_info("Identity admin set");
+    reentrancy_exit();
     0
 }
 
@@ -506,21 +591,31 @@ pub extern "C" fn set_identity_admin(admin_ptr: *const u8) -> u32 {
 /// Only callable by the identity admin.
 #[no_mangle]
 pub extern "C" fn set_moltyid_address(caller_ptr: *const u8, moltyid_addr_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
     let mut moltyid_addr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(moltyid_addr_ptr, moltyid_addr.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+
     let admin = match storage_get(IDENTITY_ADMIN_KEY) {
         Some(data) => data,
-        None => return 1,
+        None => { reentrancy_exit(); return 1; },
     };
     if caller[..] != admin[..] {
+        reentrancy_exit();
         return 2;
     }
 
     storage_set(MOLTYID_ADDR_KEY, &moltyid_addr);
     log_info("MoltyID address configured");
+    reentrancy_exit();
     0
 }
 
@@ -528,19 +623,29 @@ pub extern "C" fn set_moltyid_address(caller_ptr: *const u8, moltyid_addr_ptr: *
 /// Only callable by the identity admin.
 #[no_mangle]
 pub extern "C" fn set_identity_gate(caller_ptr: *const u8, min_reputation: u64) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+
     let admin = match storage_get(IDENTITY_ADMIN_KEY) {
         Some(data) => data,
-        None => return 1,
+        None => { reentrancy_exit(); return 1; },
     };
     if caller[..] != admin[..] {
+        reentrancy_exit();
         return 2;
     }
 
     storage_set(MOLTYID_MIN_REP_KEY, &u64_to_bytes(min_reputation));
     log_info("Identity gate configured");
+    reentrancy_exit();
     0
 }
 
@@ -548,24 +653,35 @@ pub extern "C" fn set_identity_gate(caller_ptr: *const u8, min_reputation: u64) 
 /// Only callable by the identity admin.
 #[no_mangle]
 pub extern "C" fn set_token_address(caller_ptr: *const u8, token_addr_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
     let mut token_addr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(token_addr_ptr, token_addr.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+
     let admin = match storage_get(IDENTITY_ADMIN_KEY) {
         Some(data) => data,
-        None => return 1, // no admin set
+        None => { reentrancy_exit(); return 1; }, // no admin set
     };
     if caller[..] != admin[..] {
+        reentrancy_exit();
         return 2; // not admin
     }
     if token_addr.iter().all(|&b| b == 0) {
+        reentrancy_exit();
         return 3; // zero address
     }
 
     storage_set(TOKEN_ADDRESS_KEY, &token_addr);
     log_info("Reward token address configured");
+    reentrancy_exit();
     0
 }
 
@@ -632,36 +748,66 @@ pub extern "C" fn get_bounty_count() -> u64 {
 /// Tests expect `set_platform_fee`
 #[no_mangle]
 pub extern "C" fn set_platform_fee(caller_ptr: *const u8, fee_bps: u64) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+
     let admin = storage_get(IDENTITY_ADMIN_KEY).unwrap_or_default();
-    if caller[..] != admin[..] { return 1; }
+    if caller[..] != admin[..] { reentrancy_exit(); return 1; }
     storage_set(b"platform_fee_bps", &u64_to_bytes(fee_bps));
     log_info("Platform fee set");
+    reentrancy_exit();
     0
 }
 
 /// Tests expect `bb_pause`
 #[no_mangle]
 pub extern "C" fn bb_pause(caller_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+
     let admin = storage_get(IDENTITY_ADMIN_KEY).unwrap_or_default();
-    if caller[..] != admin[..] { return 1; }
+    if caller[..] != admin[..] { reentrancy_exit(); return 1; }
     storage_set(b"bb_paused", &[1u8]);
     log_info("BountyBoard paused");
+    reentrancy_exit();
     0
 }
 
 /// Tests expect `bb_unpause`
 #[no_mangle]
 pub extern "C" fn bb_unpause(caller_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+
     let admin = storage_get(IDENTITY_ADMIN_KEY).unwrap_or_default();
-    if caller[..] != admin[..] { return 1; }
+    if caller[..] != admin[..] { reentrancy_exit(); return 1; }
     storage_set(b"bb_paused", &[0u8]);
     log_info("BountyBoard unpaused");
+    reentrancy_exit();
     0
 }
 

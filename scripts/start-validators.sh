@@ -1,5 +1,5 @@
 #!/bin/bash
-cd /Users/johnrobin/.openclaw/workspace/moltchain
+cd "$(dirname "$0")/.."
 
 # Start Validator 1
 ./target/release/moltchain-validator \

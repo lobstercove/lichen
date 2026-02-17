@@ -19,7 +19,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use moltchain_sdk::{
     storage_get, storage_set, log_info, set_return_data,
-    bytes_to_u64, u64_to_bytes, get_timestamp,
+    bytes_to_u64, u64_to_bytes, get_timestamp, get_caller,
 };
 
 // T5.12: Reentrancy guard
@@ -141,6 +141,12 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
     let mut admin = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != admin {
+        return 200;
+    }
+
     if storage_get(ADMIN_KEY).is_some() {
         log_info("Already initialized");
         return 1;
@@ -178,6 +184,14 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u32 {
 
     let mut depositor = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(depositor_ptr, depositor.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != depositor {
+        reentrancy_exit();
+        return 200;
+    }
+
     let hex = hex_encode_addr(&depositor);
 
     accrue_interest();
@@ -223,6 +237,14 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, amount: u64) -> u32 {
 
     let mut depositor = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(depositor_ptr, depositor.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != depositor {
+        reentrancy_exit();
+        return 200;
+    }
+
     let hex = hex_encode_addr(&depositor);
 
     accrue_interest();
@@ -274,6 +296,14 @@ pub extern "C" fn borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
 
     let mut borrower = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(borrower_ptr, borrower.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != borrower {
+        reentrancy_exit();
+        return 200;
+    }
+
     let hex = hex_encode_addr(&borrower);
 
     accrue_interest();
@@ -329,6 +359,14 @@ pub extern "C" fn repay(borrower_ptr: *const u8, amount: u64) -> u32 {
 
     let mut borrower = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(borrower_ptr, borrower.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != borrower {
+        reentrancy_exit();
+        return 200;
+    }
+
     let hex = hex_encode_addr(&borrower);
 
     accrue_interest();
@@ -373,6 +411,14 @@ pub extern "C" fn liquidate(
 
     let mut _liquidator = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(liquidator_ptr, _liquidator.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != _liquidator {
+        reentrancy_exit();
+        return 200;
+    }
+
     let mut borrower = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(borrower_ptr, borrower.as_mut_ptr(), 32); }
     let hex = hex_encode_addr(&borrower);
@@ -563,6 +609,12 @@ pub extern "C" fn flash_borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
     let mut _borrower = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(borrower_ptr, _borrower.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != _borrower {
+        return 200;
+    }
+
     // Check no active flash loan
     if load_u64(FLASH_BORROWED_KEY) > 0 {
         log_info("Flash loan already active");
@@ -598,6 +650,12 @@ pub extern "C" fn flash_repay(borrower_ptr: *const u8, repay_amount: u64) -> u32
     let mut _borrower = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(borrower_ptr, _borrower.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != _borrower {
+        return 200;
+    }
+
     let borrowed = load_u64(FLASH_BORROWED_KEY);
     if borrowed == 0 {
         log_info("No active flash loan");
@@ -632,6 +690,13 @@ pub extern "C" fn flash_repay(borrower_ptr: *const u8, repay_amount: u64) -> u32
 pub extern "C" fn pause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_admin(&caller) {
         log_info("Not admin");
         return 1;
@@ -650,6 +715,13 @@ pub extern "C" fn pause(caller_ptr: *const u8) -> u32 {
 pub extern "C" fn unpause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_admin(&caller) {
         log_info("Not admin");
         return 1;
@@ -668,6 +740,13 @@ pub extern "C" fn unpause(caller_ptr: *const u8) -> u32 {
 pub extern "C" fn set_deposit_cap(caller_ptr: *const u8, cap: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_admin(&caller) {
         log_info("Not admin");
         return 1;
@@ -682,6 +761,13 @@ pub extern "C" fn set_deposit_cap(caller_ptr: *const u8, cap: u64) -> u32 {
 pub extern "C" fn set_reserve_factor(caller_ptr: *const u8, factor: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_admin(&caller) {
         log_info("Not admin");
         return 1;
@@ -700,6 +786,13 @@ pub extern "C" fn set_reserve_factor(caller_ptr: *const u8, factor: u64) -> u32 
 pub extern "C" fn withdraw_reserves(caller_ptr: *const u8, amount: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_admin(&caller) {
         log_info("Not admin");
         return 1;
@@ -799,6 +892,7 @@ mod tests {
     fn test_initialize() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         let result = initialize(admin.as_ptr());
         assert_eq!(result, 0);
         let stored = test_mock::get_storage(ADMIN_KEY);
@@ -809,6 +903,7 @@ mod tests {
     fn test_initialize_already_initialized() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(initialize(admin.as_ptr()), 0);
         assert_eq!(initialize(admin.as_ptr()), 1);
     }
@@ -817,8 +912,10 @@ mod tests {
     fn test_deposit() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         assert_eq!(deposit(user.as_ptr(), 1_000_000), 0);
         assert_eq!(load_u64(b"ll_total_deposits"), 1_000_000);
     }
@@ -827,6 +924,7 @@ mod tests {
     fn test_deposit_zero() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let user = [2u8; 32];
         assert_eq!(deposit(user.as_ptr(), 0), 1);
@@ -836,8 +934,10 @@ mod tests {
     fn test_withdraw() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         deposit(user.as_ptr(), 1_000_000);
         assert_eq!(withdraw(user.as_ptr(), 500_000), 0);
         assert_eq!(load_u64(b"ll_total_deposits"), 500_000);
@@ -847,8 +947,10 @@ mod tests {
     fn test_withdraw_exceeds_deposit() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         deposit(user.as_ptr(), 1_000_000);
         assert_eq!(withdraw(user.as_ptr(), 2_000_000), 2);
     }
@@ -857,8 +959,10 @@ mod tests {
     fn test_withdraw_would_make_unhealthy() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         deposit(user.as_ptr(), 1_000_000);
         borrow(user.as_ptr(), 750_000); // max borrow at 75%
         // Any withdrawal makes it unhealthy
@@ -869,8 +973,10 @@ mod tests {
     fn test_borrow() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         deposit(user.as_ptr(), 1_000_000);
         assert_eq!(borrow(user.as_ptr(), 500_000), 0);
         assert_eq!(load_u64(b"ll_total_borrows"), 500_000);
@@ -880,8 +986,10 @@ mod tests {
     fn test_borrow_exceeds_collateral_factor() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         deposit(user.as_ptr(), 1_000_000);
         assert_eq!(borrow(user.as_ptr(), 750_001), 2); // > 75%
     }
@@ -890,17 +998,21 @@ mod tests {
     fn test_borrow_exceeds_liquidity() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let user1 = [2u8; 32];
+        test_mock::set_caller(user1);
         deposit(user1.as_ptr(), 1_000_000);
         borrow(user1.as_ptr(), 750_000);
         // user2 deposits 200_000 and tries to borrow 200_000 (only 250_000 available)
         let user2 = [3u8; 32];
+        test_mock::set_caller(user2);
         deposit(user2.as_ptr(), 1_000_000);
         // Available = 2M - 750K = 1.25M; user2 max = 750K; try exceed availability
         // Drain pool: user2 borrows 750K, then user3 tries
         borrow(user2.as_ptr(), 750_000);
         let user3 = [4u8; 32];
+        test_mock::set_caller(user3);
         deposit(user3.as_ptr(), 2_000_000);
         // Available = 4M - 1.5M = 2.5M; user3 max = 1.5M; borrow 1.5M
         assert_eq!(borrow(user3.as_ptr(), 1_500_000), 0);
@@ -917,8 +1029,10 @@ mod tests {
     fn test_repay() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         deposit(user.as_ptr(), 1_000_000);
         borrow(user.as_ptr(), 500_000);
         assert_eq!(repay(user.as_ptr(), 200_000), 0);
@@ -929,8 +1043,10 @@ mod tests {
     fn test_repay_no_borrow() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         assert_eq!(repay(user.as_ptr(), 100), 2);
     }
 
@@ -938,8 +1054,10 @@ mod tests {
     fn test_repay_overpay() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         deposit(user.as_ptr(), 1_000_000);
         borrow(user.as_ptr(), 500_000);
         assert_eq!(repay(user.as_ptr(), 999_999), 0);
@@ -950,8 +1068,10 @@ mod tests {
     fn test_liquidate() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let borrower = [2u8; 32];
+        test_mock::set_caller(borrower);
         deposit(borrower.as_ptr(), 1_000_000);
         borrow(borrower.as_ptr(), 750_000);
         // Manually push borrow above liquidation threshold (85%)
@@ -960,6 +1080,7 @@ mod tests {
         store_u64(&bor_key, 860_000);
         store_u64(b"ll_total_borrows", 860_000);
         let liquidator = [3u8; 32];
+        test_mock::set_caller(liquidator);
         assert_eq!(liquidate(liquidator.as_ptr(), borrower.as_ptr(), 200_000), 0);
         let borrow_after = load_u64(&bor_key);
         assert!(borrow_after < 860_000);
@@ -969,11 +1090,14 @@ mod tests {
     fn test_liquidate_healthy_position() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let borrower = [2u8; 32];
+        test_mock::set_caller(borrower);
         deposit(borrower.as_ptr(), 1_000_000);
         borrow(borrower.as_ptr(), 500_000); // 50% < 85%
         let liquidator = [3u8; 32];
+        test_mock::set_caller(liquidator);
         assert_eq!(liquidate(liquidator.as_ptr(), borrower.as_ptr(), 100_000), 3);
     }
 
@@ -981,10 +1105,13 @@ mod tests {
     fn test_liquidate_no_borrow() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let borrower = [2u8; 32];
+        test_mock::set_caller(borrower);
         deposit(borrower.as_ptr(), 1_000_000);
         let liquidator = [3u8; 32];
+        test_mock::set_caller(liquidator);
         assert_eq!(liquidate(liquidator.as_ptr(), borrower.as_ptr(), 100_000), 2);
     }
 
@@ -992,8 +1119,10 @@ mod tests {
     fn test_get_account_info() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         deposit(user.as_ptr(), 1_000_000);
         borrow(user.as_ptr(), 500_000);
         assert_eq!(get_account_info(user.as_ptr()), 0);
@@ -1007,8 +1136,10 @@ mod tests {
     fn test_get_protocol_stats() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         deposit(user.as_ptr(), 1_000_000);
         borrow(user.as_ptr(), 500_000);
         assert_eq!(get_protocol_stats(), 0);
@@ -1027,11 +1158,14 @@ mod tests {
     fn test_flash_borrow_repay() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         deposit(user.as_ptr(), 1_000_000);
 
         let borrower = [3u8; 32];
+        test_mock::set_caller(borrower);
         // Flash borrow 100,000
         assert_eq!(flash_borrow(borrower.as_ptr(), 100_000), 0);
         let fee_data = test_mock::get_return_data();
@@ -1052,11 +1186,14 @@ mod tests {
     fn test_flash_borrow_no_liquidity() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         deposit(user.as_ptr(), 1_000);
 
         let borrower = [3u8; 32];
+        test_mock::set_caller(borrower);
         assert_eq!(flash_borrow(borrower.as_ptr(), 2_000), 3);
     }
 
@@ -1064,11 +1201,14 @@ mod tests {
     fn test_flash_double_borrow_rejected() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         deposit(user.as_ptr(), 1_000_000);
 
         let borrower = [3u8; 32];
+        test_mock::set_caller(borrower);
         assert_eq!(flash_borrow(borrower.as_ptr(), 100_000), 0);
         // Second borrow while first active
         assert_eq!(flash_borrow(borrower.as_ptr(), 50_000), 2);
@@ -1078,6 +1218,7 @@ mod tests {
     fn test_flash_repay_without_borrow() {
         setup();
         let borrower = [3u8; 32];
+        test_mock::set_caller(borrower);
         assert_eq!(flash_repay(borrower.as_ptr(), 100_000), 1);
     }
 
@@ -1085,6 +1226,7 @@ mod tests {
     fn test_pause_unpause() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let user = [2u8; 32];
 
@@ -1099,6 +1241,7 @@ mod tests {
         assert_eq!(flash_borrow(user.as_ptr(), 1_000), 20);
 
         // Double pause rejected
+        test_mock::set_caller(admin);
         assert_eq!(pause(admin.as_ptr()), 2);
 
         // Unpause
@@ -1106,9 +1249,11 @@ mod tests {
         assert!(!is_paused());
 
         // Operations work again
+        test_mock::set_caller(user);
         assert_eq!(deposit(user.as_ptr(), 1_000), 0);
 
         // Double unpause rejected
+        test_mock::set_caller(admin);
         assert_eq!(unpause(admin.as_ptr()), 2);
     }
 
@@ -1116,8 +1261,10 @@ mod tests {
     fn test_pause_non_admin_rejected() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let other = [9u8; 32];
+        test_mock::set_caller(other);
         assert_eq!(pause(other.as_ptr()), 1);
         assert_eq!(unpause(other.as_ptr()), 1);
     }
@@ -1126,12 +1273,14 @@ mod tests {
     fn test_deposit_cap() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         // Set cap
         assert_eq!(set_deposit_cap(admin.as_ptr(), 500_000), 0);
 
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         assert_eq!(deposit(user.as_ptr(), 400_000), 0);
         // Exceeds cap
         assert_eq!(deposit(user.as_ptr(), 200_000), 4);
@@ -1143,8 +1292,10 @@ mod tests {
     fn test_deposit_cap_non_admin() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let other = [9u8; 32];
+        test_mock::set_caller(other);
         assert_eq!(set_deposit_cap(other.as_ptr(), 500_000), 1);
     }
 
@@ -1152,6 +1303,7 @@ mod tests {
     fn test_set_reserve_factor() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         assert_eq!(set_reserve_factor(admin.as_ptr(), 20), 0);
@@ -1162,6 +1314,7 @@ mod tests {
 
         // Non-admin rejected
         let other = [9u8; 32];
+        test_mock::set_caller(other);
         assert_eq!(set_reserve_factor(other.as_ptr(), 5), 1);
     }
 
@@ -1169,6 +1322,7 @@ mod tests {
     fn test_withdraw_reserves() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         // Seed some reserves
@@ -1185,6 +1339,7 @@ mod tests {
 
         // Non-admin rejected
         let other = [9u8; 32];
+        test_mock::set_caller(other);
         assert_eq!(withdraw_reserves(other.as_ptr(), 1_000), 1);
     }
 
@@ -1192,8 +1347,10 @@ mod tests {
     fn test_get_interest_rate() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         deposit(user.as_ptr(), 1_000_000);
         borrow(user.as_ptr(), 500_000);
 
@@ -1212,12 +1369,15 @@ mod tests {
     fn test_flash_loan_minimum_fee() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         deposit(user.as_ptr(), 1_000_000);
 
         // Very small borrow — fee would be 0, but minimum is 1
         let borrower = [3u8; 32];
+        test_mock::set_caller(borrower);
         assert_eq!(flash_borrow(borrower.as_ptr(), 100), 0);
         let fee = bytes_to_u64(&test_mock::get_return_data());
         assert_eq!(fee, 1); // Minimum fee
@@ -1230,15 +1390,19 @@ mod tests {
     fn test_repay_still_works_when_paused() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         deposit(user.as_ptr(), 1_000_000);
         borrow(user.as_ptr(), 500_000);
 
         // Pause protocol
+        test_mock::set_caller(admin);
         pause(admin.as_ptr());
 
         // Repay should still work (no pause check — users must be able to unwind)
+        test_mock::set_caller(user);
         assert_eq!(repay(user.as_ptr(), 200_000), 0);
     }
 
@@ -1246,8 +1410,10 @@ mod tests {
     fn test_liquidation_works_when_paused() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let borrower = [2u8; 32];
+        test_mock::set_caller(borrower);
         deposit(borrower.as_ptr(), 1_000_000);
         borrow(borrower.as_ptr(), 750_000);
 
@@ -1258,10 +1424,12 @@ mod tests {
         store_u64(b"ll_total_borrows", 860_000);
 
         // Pause
+        test_mock::set_caller(admin);
         pause(admin.as_ptr());
 
         // Liquidation should still work when paused (safety valve)
         let liquidator = [3u8; 32];
+        test_mock::set_caller(liquidator);
         assert_eq!(liquidate(liquidator.as_ptr(), borrower.as_ptr(), 200_000), 0);
     }
 }

@@ -23,7 +23,7 @@ use alloc::vec::Vec;
 use moltchain_sdk::{
     storage_get, storage_set, log_info,
     bytes_to_u64, u64_to_bytes, get_slot,
-    Address, CrossCall, call_contract,
+    get_caller, Address, CrossCall, call_contract,
 };
 
 // ============================================================================
@@ -225,6 +225,13 @@ pub fn initialize(admin: *const u8) -> u32 {
     if !is_zero(&existing) { return 1; }
     let mut addr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(admin, addr.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != addr {
+        return 200;
+    }
+
     storage_set(ADMIN_KEY, &addr);
     save_u64(ROUTE_COUNT_KEY, 0);
     save_u64(SWAP_COUNT_KEY, 0);
@@ -247,6 +254,13 @@ pub fn set_addresses(
         core::ptr::copy_nonoverlapping(amm_addr, aa.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(legacy_addr, la.as_mut_ptr(), 32);
     }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
+
     if !require_admin(&c) { return 1; }
     storage_set(CORE_ADDRESS_KEY, &ca);
     storage_set(AMM_ADDRESS_KEY, &aa);
@@ -269,6 +283,14 @@ pub fn register_route(
         core::ptr::copy_nonoverlapping(token_in, ti.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(token_out, to.as_mut_ptr(), 32);
     }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        reentrancy_exit();
+        return 200;
+    }
+
     if !require_admin(&c) { reentrancy_exit(); return 1; }
 
     let count = load_u64(ROUTE_COUNT_KEY);
@@ -295,6 +317,13 @@ pub fn register_route(
 pub fn set_route_enabled(caller: *const u8, route_id: u64, enabled: bool) -> u32 {
     let mut c = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
+
     if !require_admin(&c) { return 1; }
     let rk = route_key(route_id);
     let mut data = match storage_get(&rk) {
@@ -326,6 +355,13 @@ pub fn swap(
         core::ptr::copy_nonoverlapping(trader, t.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(token_in, ti.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(token_out, to_addr.as_mut_ptr(), 32);
+    }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != t {
+        reentrancy_exit();
+        return 200;
     }
 
     // Find best route
@@ -406,6 +442,13 @@ pub fn multi_hop_swap(
 
     let mut t = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(trader, t.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != t {
+        reentrancy_exit();
+        return 200;
+    }
 
     // Read path — each entry is a pool_id (u64)
     let mut current_amount = amount_in;
@@ -526,6 +569,13 @@ fn execute_legacy_swap(amount_in: u64, pool_id: u64) -> u64 {
 pub fn emergency_pause(caller: *const u8) -> u32 {
     let mut c = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
+
     if !require_admin(&c) { return 1; }
     storage_set(PAUSED_KEY, &[1u8]);
     log_info("DEX Router: EMERGENCY PAUSE");
@@ -535,6 +585,13 @@ pub fn emergency_pause(caller: *const u8) -> u32 {
 pub fn emergency_unpause(caller: *const u8) -> u32 {
     let mut c = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
+
     if !require_admin(&c) { return 1; }
     storage_set(PAUSED_KEY, &[0u8]);
     0
@@ -706,6 +763,7 @@ mod tests {
     fn setup() -> [u8; 32] {
         test_mock::reset();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(initialize(admin.as_ptr()), 0);
         admin
     }
@@ -720,6 +778,7 @@ mod tests {
     fn test_initialize() {
         test_mock::reset();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(initialize(admin.as_ptr()), 0);
         assert_eq!(load_addr(ADMIN_KEY), admin);
     }
@@ -728,6 +787,7 @@ mod tests {
     fn test_initialize_twice() {
         test_mock::reset();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(initialize(admin.as_ptr()), 0);
         assert_eq!(initialize(admin.as_ptr()), 1);
     }
@@ -750,6 +810,7 @@ mod tests {
         let _admin = setup();
         let rando = [99u8; 32];
         let core = [50u8; 32];
+        test_mock::set_caller(rando);
         assert_eq!(set_addresses(rando.as_ptr(), core.as_ptr(), core.as_ptr(), core.as_ptr()), 1);
     }
 
@@ -797,6 +858,7 @@ mod tests {
         let rando = [99u8; 32];
         let ta = token_a();
         let tb = token_b();
+        test_mock::set_caller(rando);
         assert_eq!(register_route(rando.as_ptr(), ta.as_ptr(), tb.as_ptr(), ROUTE_DIRECT_AMM, 1, 0, 0), 1);
     }
 
@@ -831,6 +893,7 @@ mod tests {
         let trader = [2u8; 32];
         test_mock::set_slot(100);
         register_route(admin.as_ptr(), ta.as_ptr(), tb.as_ptr(), ROUTE_DIRECT_CLOB, 1, 0, 0);
+        test_mock::set_caller(trader);
         assert_eq!(swap(trader.as_ptr(), ta.as_ptr(), tb.as_ptr(), 1_000_000, 0, 0), 0);
 
         let ret = test_mock::get_return_data();
@@ -847,6 +910,7 @@ mod tests {
         let trader = [2u8; 32];
         test_mock::set_slot(100);
         register_route(admin.as_ptr(), ta.as_ptr(), tb.as_ptr(), ROUTE_DIRECT_AMM, 1, 0, 0);
+        test_mock::set_caller(trader);
         assert_eq!(swap(trader.as_ptr(), ta.as_ptr(), tb.as_ptr(), 1_000_000, 0, 0), 0);
 
         let ret = test_mock::get_return_data();
@@ -863,6 +927,7 @@ mod tests {
         let trader = [2u8; 32];
         test_mock::set_slot(100);
         register_route(admin.as_ptr(), ta.as_ptr(), tb.as_ptr(), ROUTE_SPLIT, 1, 2, 60);
+        test_mock::set_caller(trader);
         assert_eq!(swap(trader.as_ptr(), ta.as_ptr(), tb.as_ptr(), 1_000_000, 0, 0), 0);
 
         let ret = test_mock::get_return_data();
@@ -880,6 +945,7 @@ mod tests {
         let trader = [2u8; 32];
         test_mock::set_slot(100);
         register_route(admin.as_ptr(), ta.as_ptr(), tb.as_ptr(), ROUTE_MULTI_HOP, 1, 2, 0);
+        test_mock::set_caller(trader);
         assert_eq!(swap(trader.as_ptr(), ta.as_ptr(), tb.as_ptr(), 1_000_000, 0, 0), 0);
 
         let ret = test_mock::get_return_data();
@@ -895,6 +961,7 @@ mod tests {
         let trader = [2u8; 32];
         let ta = token_a();
         let tb = token_b();
+        test_mock::set_caller(trader);
         test_mock::set_slot(100);
         assert_eq!(swap(trader.as_ptr(), ta.as_ptr(), tb.as_ptr(), 1_000_000, 0, 0), 2);
     }
@@ -930,6 +997,7 @@ mod tests {
         test_mock::set_slot(100);
         register_route(admin.as_ptr(), ta.as_ptr(), tb.as_ptr(), ROUTE_DIRECT_AMM, 1, 0, 0);
         // min_out = input amount (impossible with fees)
+        test_mock::set_caller(trader);
         assert_eq!(swap(trader.as_ptr(), ta.as_ptr(), tb.as_ptr(), 1_000_000, 1_000_000, 0), 4);
     }
 
@@ -952,6 +1020,7 @@ mod tests {
         test_mock::set_slot(100);
         register_route(admin.as_ptr(), ta.as_ptr(), tb.as_ptr(), ROUTE_DIRECT_AMM, 1, 0, 0);
         set_route_enabled(admin.as_ptr(), 1, false);
+        test_mock::set_caller(trader);
         assert_eq!(swap(trader.as_ptr(), ta.as_ptr(), tb.as_ptr(), 1_000_000, 0, 0), 2);
     }
 
@@ -965,6 +1034,7 @@ mod tests {
         let trader = [2u8; 32];
         test_mock::set_slot(100);
         register_route(admin.as_ptr(), ta.as_ptr(), tb.as_ptr(), ROUTE_DIRECT_AMM, 1, 0, 0);
+        test_mock::set_caller(trader);
         swap(trader.as_ptr(), ta.as_ptr(), tb.as_ptr(), 1_000_000, 0, 0);
         swap(trader.as_ptr(), ta.as_ptr(), tb.as_ptr(), 2_000_000, 0, 0);
         assert_eq!(get_swap_count(), 2);
@@ -1014,6 +1084,7 @@ mod tests {
     fn test_emergency_pause_not_admin() {
         let _admin = setup();
         let rando = [99u8; 32];
+        test_mock::set_caller(rando);
         assert_eq!(emergency_pause(rando.as_ptr()), 1);
     }
 
@@ -1034,6 +1105,7 @@ mod tests {
         test_mock::set_slot(100);
 
         register_route(admin.as_ptr(), ta.as_ptr(), tb.as_ptr(), ROUTE_DIRECT_CLOB, 1, 0, 0);
+        test_mock::set_caller(trader);
         assert_eq!(swap(trader.as_ptr(), ta.as_ptr(), tb.as_ptr(), 1_000_000, 0, 0), 0);
         // Fallback simulation: CLOB 5 bps → 999_500
         let ret = test_mock::get_return_data();
@@ -1048,6 +1120,7 @@ mod tests {
         let trader = [2u8; 32];
         test_mock::set_slot(100);
         register_route(admin.as_ptr(), ta.as_ptr(), tb.as_ptr(), ROUTE_LEGACY_SWAP, 1, 0, 0);
+        test_mock::set_caller(trader);
         assert_eq!(swap(trader.as_ptr(), ta.as_ptr(), tb.as_ptr(), 1_000_000, 0, 0), 0);
         let ret = test_mock::get_return_data();
         let out = bytes_to_u64(&ret);
@@ -1071,6 +1144,7 @@ mod tests {
             p.extend_from_slice(&u64_to_bytes(2)); // pool for hop 2
             p
         };
+        test_mock::set_caller(trader);
         let result = multi_hop_swap(trader.as_ptr(), path.as_ptr(), 3, 1_000_000, 0, 0);
         assert_eq!(result, 0);
         let ret = test_mock::get_return_data();

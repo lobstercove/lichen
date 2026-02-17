@@ -24,7 +24,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use moltchain_sdk::{
-    log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_slot,
+    log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_slot, get_caller,
 };
 
 // ============================================================================
@@ -44,6 +44,24 @@ const ADMIN_KEY: &[u8] = b"reef_admin";
 
 const REEF_TOTAL_BYTES_KEY: &[u8] = b"reef_total_bytes";
 const REEF_CHALLENGE_COUNT_KEY: &[u8] = b"reef_challenge_count";
+
+// ============================================================================
+// REENTRANCY GUARD
+// ============================================================================
+
+const RS_REENTRANCY_KEY: &[u8] = b"rs_reentrancy";
+
+fn reentrancy_enter() -> bool {
+    if let Some(v) = storage_get(RS_REENTRANCY_KEY) {
+        if !v.is_empty() && v[0] == 1 { return false; }
+    }
+    storage_set(RS_REENTRANCY_KEY, &[1u8]);
+    true
+}
+
+fn reentrancy_exit() {
+    storage_set(RS_REENTRANCY_KEY, &[0u8]);
+}
 
 // ============================================================================
 // STORAGE KEY HELPERS
@@ -224,6 +242,7 @@ pub extern "C" fn store_data(
     replication_factor: u8,
     duration_slots: u64,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     log_info("Storing data request...");
 
     let mut owner_arr = [0u8; 32];
@@ -231,24 +250,35 @@ pub extern "C" fn store_data(
     let mut data_hash = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(data_hash_ptr, data_hash.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != owner_arr {
+        reentrancy_exit();
+        return 200;
+    }
+
     if size == 0 {
         log_info("Data size must be > 0");
+        reentrancy_exit();
         return 1;
     }
 
     if replication_factor == 0 || replication_factor > MAX_REPLICATION {
         log_info("Invalid replication factor");
+        reentrancy_exit();
         return 2;
     }
 
     if duration_slots < MIN_STORAGE_DURATION {
         log_info("Duration too short");
+        reentrancy_exit();
         return 3;
     }
 
     let dk = data_key(&data_hash);
     if storage_get(&dk).is_some() {
         log_info("Data hash already registered");
+        reentrancy_exit();
         return 4;
     }
 
@@ -277,6 +307,7 @@ pub extern "C" fn store_data(
     storage_set(REEF_TOTAL_BYTES_KEY, &u64_to_bytes(tb.saturating_add(size)));
 
     log_info("Data storage request registered");
+    reentrancy_exit();
     0
 }
 
@@ -296,6 +327,7 @@ pub extern "C" fn confirm_storage(
     provider_ptr: *const u8,
     data_hash_ptr: *const u8,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     log_info("Confirming storage...");
 
     let mut data_hash = [0u8; 32];
@@ -303,18 +335,27 @@ pub extern "C" fn confirm_storage(
     let mut provider_arr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(provider_ptr, provider_arr.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != provider_arr {
+        reentrancy_exit();
+        return 200;
+    }
+
     // Check data entry exists
     let dk = data_key(&data_hash);
     let mut entry = match storage_get(&dk) {
         Some(data) => data,
         None => {
             log_info("Data entry not found");
+            reentrancy_exit();
             return 1;
         }
     };
 
     if entry.len() < DATA_HEADER_SIZE {
         log_info("Corrupt data entry");
+        reentrancy_exit();
         return 2;
     }
 
@@ -323,6 +364,7 @@ pub extern "C" fn confirm_storage(
     let expiry = decode_data_entry_expiry(&entry);
     if current_slot > expiry {
         log_info("Storage request expired");
+        reentrancy_exit();
         return 3;
     }
 
@@ -332,12 +374,14 @@ pub extern "C" fn confirm_storage(
         Some(data) => data,
         None => {
             log_info("Provider not registered");
+            reentrancy_exit();
             return 4;
         }
     };
 
     if prov_data.len() < PROVIDER_SIZE || prov_data[24] != 1 {
         log_info("Provider not active");
+        reentrancy_exit();
         return 5;
     }
 
@@ -347,6 +391,7 @@ pub extern "C" fn confirm_storage(
         let existing = decode_data_entry_provider(&entry, i);
         if existing == provider_arr {
             log_info("Provider already confirmed for this data");
+            reentrancy_exit();
             return 6;
         }
     }
@@ -355,6 +400,7 @@ pub extern "C" fn confirm_storage(
     let replication = decode_data_entry_replication(&entry);
     if prov_count >= replication {
         log_info("Replication factor already satisfied");
+        reentrancy_exit();
         return 7;
     }
 
@@ -374,6 +420,7 @@ pub extern "C" fn confirm_storage(
 
     if new_used > capacity {
         log_info("Provider capacity exceeded");
+        reentrancy_exit();
         return 8;
     }
 
@@ -390,6 +437,7 @@ pub extern "C" fn confirm_storage(
     storage_set(&rk, &u64_to_bytes(prev_reward.saturating_add(reward)));
 
     log_info("Storage confirmed by provider");
+    reentrancy_exit();
     0
 }
 
@@ -437,19 +485,29 @@ pub extern "C" fn register_provider(
     provider_ptr: *const u8,
     capacity_bytes: u64,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     log_info("Registering storage provider...");
 
     let mut provider_arr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(provider_ptr, provider_arr.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != provider_arr {
+        reentrancy_exit();
+        return 200;
+    }
+
     if capacity_bytes == 0 {
         log_info("Capacity must be > 0");
+        reentrancy_exit();
         return 1;
     }
 
     let pk = provider_key(&provider_arr);
     if storage_get(&pk).is_some() {
         log_info("Provider already registered");
+        reentrancy_exit();
         return 2;
     }
 
@@ -458,6 +516,7 @@ pub extern "C" fn register_provider(
     storage_set(&pk, &prov_data);
 
     log_info("Storage provider registered");
+    reentrancy_exit();
     0
 }
 
@@ -473,10 +532,18 @@ pub extern "C" fn register_provider(
 /// Returns 0 on success (reward amount set as return data), nonzero on error.
 #[no_mangle]
 pub extern "C" fn claim_storage_rewards(provider_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() { return 100; }
     log_info("Claiming storage rewards...");
 
     let mut provider_arr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(provider_ptr, provider_arr.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != provider_arr {
+        reentrancy_exit();
+        return 200;
+    }
 
     let rk = reward_key(&provider_arr);
     let reward = storage_get(&rk)
@@ -485,6 +552,7 @@ pub extern "C" fn claim_storage_rewards(provider_ptr: *const u8) -> u32 {
 
     if reward == 0 {
         log_info("No rewards to claim");
+        reentrancy_exit();
         return 1;
     }
 
@@ -495,6 +563,7 @@ pub extern "C" fn claim_storage_rewards(provider_ptr: *const u8) -> u32 {
     moltchain_sdk::set_return_data(&u64_to_bytes(reward));
 
     log_info("Storage rewards claimed");
+    reentrancy_exit();
     0
 }
 
@@ -505,47 +574,80 @@ pub extern "C" fn claim_storage_rewards(provider_ptr: *const u8) -> u32 {
 /// Initialize admin. Called once.
 #[no_mangle]
 pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut admin = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != admin {
+        reentrancy_exit();
+        return 200;
+    }
+
     if storage_get(ADMIN_KEY).is_some() {
+        reentrancy_exit();
         return 1;
     }
     storage_set(ADMIN_KEY, &admin);
     storage_set(b"challenge_window", &u64_to_bytes(DEFAULT_CHALLENGE_WINDOW));
     storage_set(b"slash_percent", &u64_to_bytes(DEFAULT_SLASH_PERCENT));
     log_info("Reef Storage v2 initialized");
+    reentrancy_exit();
     0
 }
 
 /// Set challenge response window (admin only).
 #[no_mangle]
 pub extern "C" fn set_challenge_window(caller_ptr: *const u8, window_slots: u64) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+
     match storage_get(ADMIN_KEY) {
         Some(admin) if caller[..] == admin[..] => {},
-        _ => return 2,
+        _ => { reentrancy_exit(); return 2; },
     }
     if window_slots < 10 {
+        reentrancy_exit();
         return 3;
     }
     storage_set(b"challenge_window", &u64_to_bytes(window_slots));
+    reentrancy_exit();
     0
 }
 
 /// Set slash percentage (admin only).
 #[no_mangle]
 pub extern "C" fn set_slash_percent(caller_ptr: *const u8, percent: u64) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+
     match storage_get(ADMIN_KEY) {
         Some(admin) if caller[..] == admin[..] => {},
-        _ => return 2,
+        _ => { reentrancy_exit(); return 2; },
     }
     if percent > 100 {
+        reentrancy_exit();
         return 3;
     }
     storage_set(b"slash_percent", &u64_to_bytes(percent));
+    reentrancy_exit();
     0
 }
 
@@ -557,8 +659,16 @@ pub extern "C" fn set_slash_percent(caller_ptr: *const u8, percent: u64) -> u32 
 /// Stake amount must be >= MIN_STAKE_PER_GB * (capacity_bytes / 1GB).
 #[no_mangle]
 pub extern "C" fn stake_collateral(provider_ptr: *const u8, amount: u64) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut provider_arr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(provider_ptr, provider_arr.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != provider_arr {
+        reentrancy_exit();
+        return 200;
+    }
 
     // Verify provider is registered
     let pk = provider_key(&provider_arr);
@@ -566,6 +676,7 @@ pub extern "C" fn stake_collateral(provider_ptr: *const u8, amount: u64) -> u32 
         Some(data) if data.len() >= PROVIDER_SIZE && data[24] == 1 => data,
         _ => {
             log_info("Provider not registered or not active");
+            reentrancy_exit();
             return 1;
         }
     };
@@ -575,6 +686,7 @@ pub extern "C" fn stake_collateral(provider_ptr: *const u8, amount: u64) -> u32 
     let min_stake = gb.saturating_mul(MIN_STAKE_PER_GB);
     if amount < min_stake {
         log_info("Insufficient stake for capacity");
+        reentrancy_exit();
         return 2;
     }
 
@@ -585,24 +697,35 @@ pub extern "C" fn stake_collateral(provider_ptr: *const u8, amount: u64) -> u32 
     storage_set(&sk, &u64_to_bytes(prev_stake.saturating_add(amount)));
 
     log_info("Collateral staked");
+    reentrancy_exit();
     0
 }
 
 /// Provider sets custom price per byte per slot (in shells).
 #[no_mangle]
 pub extern "C" fn set_storage_price(provider_ptr: *const u8, price_per_byte_per_slot: u64) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut provider_arr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(provider_ptr, provider_arr.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != provider_arr {
+        reentrancy_exit();
+        return 200;
+    }
 
     // Verify registered
     let pk = provider_key(&provider_arr);
     if storage_get(&pk).is_none() {
+        reentrancy_exit();
         return 1;
     }
 
     let prk = price_key(&provider_arr);
     storage_set(&prk, &u64_to_bytes(price_per_byte_per_slot));
     log_info("Storage price set");
+    reentrancy_exit();
     0
 }
 

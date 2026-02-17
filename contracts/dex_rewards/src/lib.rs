@@ -243,6 +243,13 @@ pub fn claim_trading_rewards(trader: *const u8) -> u32 {
     let mut t = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(trader, t.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != t {
+        reentrancy_exit();
+        return 200;
+    }
+
     let pending = load_u64(&trader_pending_key(&t));
     if pending == 0 { reentrancy_exit(); return 1; }
 
@@ -278,6 +285,13 @@ pub fn claim_lp_rewards(provider: *const u8, position_id: u64) -> u32 {
     if !require_not_paused() { reentrancy_exit(); return 2; }
     let mut p = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(provider, p.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != p {
+        reentrancy_exit();
+        return 200;
+    }
 
     let lp_k = lp_pending_key(position_id);
     let pending = load_u64(&lp_k);
@@ -317,6 +331,13 @@ pub fn register_referral(trader: *const u8, referrer: *const u8) -> u32 {
     }
     if t == r { reentrancy_exit(); return 2; }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != t {
+        reentrancy_exit();
+        return 200;
+    }
+
     let rk = referral_key(&t);
     if storage_get(&rk).is_some() { reentrancy_exit(); return 1; }
 
@@ -336,6 +357,11 @@ pub fn register_referral(trader: *const u8, referrer: *const u8) -> u32 {
 pub fn set_reward_rate(caller: *const u8, pair_id: u64, rate_per_slot: u64) -> u32 {
     let mut c = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
     if !require_admin(&c) { return 1; }
     save_u64(&pair_reward_rate_key(pair_id), rate_per_slot);
     0
@@ -386,6 +412,11 @@ pub fn get_total_distributed() -> u64 { load_u64(TOTAL_DISTRIBUTED_KEY) }
 pub fn set_referral_rate(caller: *const u8, rate_bps: u64) -> u32 {
     let mut c = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
     if !require_admin(&c) { return 1; }
     if rate_bps > 3000 { return 2; } // cap at 30%
     save_u64(REFERRAL_RATE_KEY, rate_bps);
@@ -406,6 +437,11 @@ pub fn set_moltcoin_address(caller: *const u8, addr: *const u8) -> u32 {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(addr, a.as_mut_ptr(), 32);
     }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
     if !require_admin(&c) { return 1; }
     if is_zero(&a) { return 2; }
     storage_set(MOLTCOIN_ADDRESS_KEY, &a);
@@ -420,6 +456,11 @@ pub fn set_rewards_pool(caller: *const u8, addr: *const u8) -> u32 {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(addr, a.as_mut_ptr(), 32);
     }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
     if !require_admin(&c) { return 1; }
     if is_zero(&a) { return 2; }
     storage_set(REWARDS_POOL_KEY, &a);
@@ -429,6 +470,11 @@ pub fn set_rewards_pool(caller: *const u8, addr: *const u8) -> u32 {
 pub fn emergency_pause(caller: *const u8) -> u32 {
     let mut c = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
     if !require_admin(&c) { return 1; }
     storage_set(PAUSED_KEY, &[1u8]);
     log_info("DEX Rewards: EMERGENCY PAUSE");
@@ -437,6 +483,11 @@ pub fn emergency_pause(caller: *const u8) -> u32 {
 pub fn emergency_unpause(caller: *const u8) -> u32 {
     let mut c = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
     if !require_admin(&c) { return 1; }
     storage_set(PAUSED_KEY, &[0u8]);
     0
@@ -450,6 +501,11 @@ pub fn set_authorized_caller(caller: *const u8, contract_addr: *const u8, enable
     unsafe {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(contract_addr, a.as_mut_ptr(), 32);
+    }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
     }
     if !require_admin(&c) { return 1; }
     if is_zero(&a) { return 2; }
@@ -618,6 +674,8 @@ mod tests {
         test_mock::reset();
         let admin = [1u8; 32];
         assert_eq!(initialize(admin.as_ptr()), 0);
+        // Set caller to admin for admin operations
+        test_mock::set_caller(admin);
         // Authorize a caller address for record_trade / accrue_lp_rewards
         let dex_caller = [0xFFu8; 32];
         assert_eq!(set_authorized_caller(admin.as_ptr(), dex_caller.as_ptr(), 1), 0);
@@ -686,6 +744,7 @@ mod tests {
         let _admin = setup();
         let trader = [2u8; 32];
         record_trade(trader.as_ptr(), 5000, 5_000_000);
+        test_mock::set_caller(trader);
         assert_eq!(claim_trading_rewards(trader.as_ptr()), 0);
         assert_eq!(load_u64(&trader_pending_key(&trader)), 0);
         assert!(load_u64(&trader_claimed_key(&trader)) > 0);
@@ -696,6 +755,7 @@ mod tests {
     fn test_claim_nothing() {
         let _admin = setup();
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         assert_eq!(claim_trading_rewards(trader.as_ptr()), 1);
     }
 
@@ -705,6 +765,7 @@ mod tests {
         let trader = [2u8; 32];
         let referrer = [3u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(trader);
         assert_eq!(register_referral(trader.as_ptr(), referrer.as_ptr()), 0);
         assert_eq!(load_u64(&referrer_count_key(&referrer)), 1);
     }
@@ -713,6 +774,7 @@ mod tests {
     fn test_register_referral_self() {
         let _admin = setup();
         let trader = [2u8; 32];
+        test_mock::set_caller(trader);
         assert_eq!(register_referral(trader.as_ptr(), trader.as_ptr()), 2);
     }
 
@@ -723,6 +785,7 @@ mod tests {
         let ref1 = [3u8; 32];
         let ref2 = [4u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(trader);
         assert_eq!(register_referral(trader.as_ptr(), ref1.as_ptr()), 0);
         assert_eq!(register_referral(trader.as_ptr(), ref2.as_ptr()), 1);
     }
@@ -733,7 +796,9 @@ mod tests {
         let trader = [2u8; 32];
         let referrer = [3u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(trader);
         register_referral(trader.as_ptr(), referrer.as_ptr());
+        test_mock::set_caller([0xFFu8; 32]);
         record_trade(trader.as_ptr(), 10_000, 10_000_000);
         let ref_earnings = load_u64(&referrer_earnings_key(&referrer));
         assert_eq!(ref_earnings, 1000); // 10% of 10000
@@ -742,7 +807,9 @@ mod tests {
     #[test]
     fn test_lp_rewards() {
         let admin = setup();
+        test_mock::set_caller(admin);
         set_reward_rate(admin.as_ptr(), 1, 1_000_000);
+        test_mock::set_caller([0xFFu8; 32]);
         assert_eq!(accrue_lp_rewards(1, 100_000, 1), 0);
         let pending = load_u64(&lp_pending_key(1));
         assert!(pending > 0);
@@ -752,8 +819,11 @@ mod tests {
     fn test_claim_lp_rewards() {
         let admin = setup();
         let provider = [2u8; 32];
+        test_mock::set_caller(admin);
         set_reward_rate(admin.as_ptr(), 1, 1_000_000);
+        test_mock::set_caller([0xFFu8; 32]);
         accrue_lp_rewards(1, 100_000, 1);
+        test_mock::set_caller(provider);
         assert_eq!(claim_lp_rewards(provider.as_ptr(), 1), 0);
         assert_eq!(load_u64(&lp_pending_key(1)), 0);
     }
@@ -781,6 +851,7 @@ mod tests {
     #[test]
     fn test_set_reward_rate() {
         let admin = setup();
+        test_mock::set_caller(admin);
         assert_eq!(set_reward_rate(admin.as_ptr(), 1, 500_000), 0);
         assert_eq!(load_u64(&pair_reward_rate_key(1)), 500_000);
     }
@@ -789,16 +860,20 @@ mod tests {
     fn test_set_reward_rate_not_admin() {
         let _admin = setup();
         let rando = [99u8; 32];
+        test_mock::set_caller(rando);
         assert_eq!(set_reward_rate(rando.as_ptr(), 1, 500_000), 1);
     }
 
     #[test]
     fn test_emergency_pause() {
         let admin = setup();
+        test_mock::set_caller(admin);
         assert_eq!(emergency_pause(admin.as_ptr()), 0);
         assert!(is_paused());
         let trader = [2u8; 32];
+        test_mock::set_caller([0xFFu8; 32]);
         record_trade(trader.as_ptr(), 5000, 5_000_000);
+        test_mock::set_caller(trader);
         assert_eq!(claim_trading_rewards(trader.as_ptr()), 2); // paused
     }
 
@@ -806,6 +881,7 @@ mod tests {
     fn test_set_referral_rate() {
         let admin = setup();
         assert_eq!(get_referral_rate(), REFERRAL_RATE_BPS); // default 1000
+        test_mock::set_caller(admin);
         assert_eq!(set_referral_rate(admin.as_ptr(), 2000), 0);
         assert_eq!(get_referral_rate(), 2000);
     }
@@ -813,6 +889,7 @@ mod tests {
     #[test]
     fn test_set_referral_rate_cap() {
         let admin = setup();
+        test_mock::set_caller(admin);
         assert_eq!(set_referral_rate(admin.as_ptr(), 3001), 2); // over 30%
         assert_eq!(set_referral_rate(admin.as_ptr(), 3000), 0); // exactly 30%
     }
@@ -821,6 +898,7 @@ mod tests {
     fn test_set_referral_rate_not_admin() {
         let _admin = setup();
         let rando = [99u8; 32];
+        test_mock::set_caller(rando);
         assert_eq!(set_referral_rate(rando.as_ptr(), 500), 1);
     }
 
@@ -830,9 +908,12 @@ mod tests {
         let trader = [2u8; 32];
         let referrer = [3u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(trader);
         register_referral(trader.as_ptr(), referrer.as_ptr());
         // Set rate to 20%
+        test_mock::set_caller(admin);
         set_referral_rate(admin.as_ptr(), 2000);
+        test_mock::set_caller([0xFFu8; 32]);
         record_trade(trader.as_ptr(), 10_000, 10_000_000);
         let ref_earnings = load_u64(&referrer_earnings_key(&referrer));
         assert_eq!(ref_earnings, 2000); // 20% of 10000
@@ -844,6 +925,7 @@ mod tests {
     fn test_set_moltcoin_address() {
         let admin = setup();
         let molt = [10u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(set_moltcoin_address(admin.as_ptr(), molt.as_ptr()), 0);
         assert_eq!(load_addr(MOLTCOIN_ADDRESS_KEY), molt);
     }
@@ -852,6 +934,7 @@ mod tests {
     fn test_set_moltcoin_address_zero() {
         let admin = setup();
         let zero = [0u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(set_moltcoin_address(admin.as_ptr(), zero.as_ptr()), 2);
     }
 
@@ -860,6 +943,7 @@ mod tests {
         let _admin = setup();
         let rando = [99u8; 32];
         let molt = [10u8; 32];
+        test_mock::set_caller(rando);
         assert_eq!(set_moltcoin_address(rando.as_ptr(), molt.as_ptr()), 1);
     }
 
@@ -867,6 +951,7 @@ mod tests {
     fn test_set_rewards_pool() {
         let admin = setup();
         let pool = [11u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(set_rewards_pool(admin.as_ptr(), pool.as_ptr()), 0);
         assert_eq!(load_addr(REWARDS_POOL_KEY), pool);
     }
@@ -875,6 +960,7 @@ mod tests {
     fn test_set_rewards_pool_zero() {
         let admin = setup();
         let zero = [0u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(set_rewards_pool(admin.as_ptr(), zero.as_ptr()), 2);
     }
 
@@ -883,6 +969,7 @@ mod tests {
         let _admin = setup();
         let rando = [99u8; 32];
         let pool = [11u8; 32];
+        test_mock::set_caller(rando);
         assert_eq!(set_rewards_pool(rando.as_ptr(), pool.as_ptr()), 1);
     }
 
@@ -892,12 +979,15 @@ mod tests {
         let trader = [2u8; 32];
         let molt = [10u8; 32];
         let pool = [11u8; 32];
+        test_mock::set_caller(admin);
         set_moltcoin_address(admin.as_ptr(), molt.as_ptr());
         set_rewards_pool(admin.as_ptr(), pool.as_ptr());
 
+        test_mock::set_caller([0xFFu8; 32]);
         record_trade(trader.as_ptr(), 5000, 5_000_000);
         // In test mode, call_token_transfer returns Ok(false) — not an Err,
         // so the claim proceeds and bookkeeping is updated.
+        test_mock::set_caller(trader);
         assert_eq!(claim_trading_rewards(trader.as_ptr()), 0);
         assert_eq!(load_u64(&trader_pending_key(&trader)), 0);
         assert_eq!(load_u64(&trader_claimed_key(&trader)), 5000);
@@ -909,11 +999,14 @@ mod tests {
         let provider = [2u8; 32];
         let molt = [10u8; 32];
         let pool = [11u8; 32];
+        test_mock::set_caller(admin);
         set_moltcoin_address(admin.as_ptr(), molt.as_ptr());
         set_rewards_pool(admin.as_ptr(), pool.as_ptr());
         set_reward_rate(admin.as_ptr(), 1, 1_000_000);
+        test_mock::set_caller([0xFFu8; 32]);
         accrue_lp_rewards(1, 100_000, 1);
 
+        test_mock::set_caller(provider);
         assert_eq!(claim_lp_rewards(provider.as_ptr(), 1), 0);
         assert_eq!(load_u64(&lp_pending_key(1)), 0);
     }
@@ -924,6 +1017,7 @@ mod tests {
         let _admin = setup();
         let trader = [2u8; 32];
         record_trade(trader.as_ptr(), 5000, 5_000_000);
+        test_mock::set_caller(trader);
         assert_eq!(claim_trading_rewards(trader.as_ptr()), 0);
         assert_eq!(load_u64(&trader_claimed_key(&trader)), 5000);
     }

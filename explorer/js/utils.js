@@ -176,4 +176,4 @@ function serializeMessageBincode(message) {
     return result;
 }
 
-console.log('✅ Shared utils.js loaded');
+// console.log('✅ Shared utils.js loaded');
