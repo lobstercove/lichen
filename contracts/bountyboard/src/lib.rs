@@ -30,6 +30,10 @@ const BOUNTY_OPEN: u8 = 0;
 const BOUNTY_COMPLETED: u8 = 1;
 const BOUNTY_CANCELLED: u8 = 2;
 
+const BB_COMPLETED_COUNT_KEY: &[u8] = b"bb_completed_count";
+const BB_REWARD_VOLUME_KEY: &[u8] = b"bb_reward_volume";
+const BB_CANCEL_COUNT_KEY: &[u8] = b"bb_cancel_count";
+
 // ============================================================================
 // STORAGE KEY HELPERS
 // ============================================================================
@@ -376,6 +380,12 @@ pub extern "C" fn approve_work(
         }
     }
 
+    // Track completion stats
+    let cc = storage_get(BB_COMPLETED_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    storage_set(BB_COMPLETED_COUNT_KEY, &u64_to_bytes(cc + 1));
+    let rv = storage_get(BB_REWARD_VOLUME_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    storage_set(BB_REWARD_VOLUME_KEY, &u64_to_bytes(rv.saturating_add(reward_amount)));
+
     log_info("Work approved, bounty completed");
     0
 }
@@ -429,6 +439,9 @@ pub extern "C" fn cancel_bounty(
 
     let reward = bytes_to_u64(&bounty_data[64..72]);
     moltchain_sdk::set_return_data(&u64_to_bytes(reward));
+
+    let canc = storage_get(BB_CANCEL_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    storage_set(BB_CANCEL_COUNT_KEY, &u64_to_bytes(canc + 1));
 
     log_info("Bounty cancelled, refund issued");
     0
@@ -649,6 +662,26 @@ pub extern "C" fn bb_unpause(caller_ptr: *const u8) -> u32 {
     if caller[..] != admin[..] { return 1; }
     storage_set(b"bb_paused", &[0u8]);
     log_info("BountyBoard unpaused");
+    0
+}
+
+/// Get bounty platform stats [bounty_count(8), completed_count(8), reward_volume(8), cancel_count(8)]
+#[no_mangle]
+pub extern "C" fn get_platform_stats() -> u32 {
+    let mut buf = Vec::with_capacity(32);
+    buf.extend_from_slice(&u64_to_bytes(
+        storage_get(b"bounty_count").map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    ));
+    buf.extend_from_slice(&u64_to_bytes(
+        storage_get(BB_COMPLETED_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    ));
+    buf.extend_from_slice(&u64_to_bytes(
+        storage_get(BB_REWARD_VOLUME_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    ));
+    buf.extend_from_slice(&u64_to_bytes(
+        storage_get(BB_CANCEL_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    ));
+    moltchain_sdk::set_return_data(&buf);
     0
 }
 

@@ -56,6 +56,10 @@ const POSITION_COUNT_KEY: &[u8] = b"mrg_pos_count";
 const INSURANCE_FUND_KEY: &[u8] = b"mrg_insurance";
 const LAST_FUNDING_KEY: &[u8] = b"mrg_last_fund";
 const MOLTCOIN_ADDRESS_KEY: &[u8] = b"mrg_molt_addr";
+const TOTAL_VOLUME_KEY: &[u8] = b"mrg_total_volume";
+const LIQUIDATION_COUNT_KEY: &[u8] = b"mrg_liq_count";
+const TOTAL_PNL_PROFIT_KEY: &[u8] = b"mrg_pnl_profit";
+const TOTAL_PNL_LOSS_KEY: &[u8] = b"mrg_pnl_loss";
 
 // ============================================================================
 // LEVERAGE TIER TABLE
@@ -356,6 +360,10 @@ pub fn open_position(
     save_u64(&user_position_count_key(&t), user_count + 1);
     save_u64(&user_position_key(&t, user_count + 1), pos_id);
 
+    // Track global margin volume (notional = size * entry_price / 1e6)
+    let notional = (size as u128 * mark_price as u128 / 1_000_000) as u64;
+    save_u64(TOTAL_VOLUME_KEY, load_u64(TOTAL_VOLUME_KEY).saturating_add(notional));
+
     log_info("Margin position opened");
     reentrancy_exit();
     0
@@ -389,9 +397,12 @@ pub fn close_position(caller: *const u8, position_id: u64) -> u32 {
     // Calculate PnL and determine unlock amount
     let unlock_amount = if mark_price > 0 {
         let (is_profit, pnl) = calculate_pnl(side, size, entry_price, mark_price);
+        // Track cumulative PnL
         if is_profit {
+            save_u64(TOTAL_PNL_PROFIT_KEY, load_u64(TOTAL_PNL_PROFIT_KEY).saturating_add(pnl));
             margin.saturating_add(pnl)
         } else {
+            save_u64(TOTAL_PNL_LOSS_KEY, load_u64(TOTAL_PNL_LOSS_KEY).saturating_add(pnl));
             margin.saturating_sub(pnl)
         }
     } else {
@@ -556,6 +567,9 @@ pub fn liquidate(_liquidator: *const u8, position_id: u64) -> u32 {
 
     update_pos_status(&mut data, POS_LIQUIDATED);
     storage_set(&pk, &data);
+
+    // Track liquidation count
+    save_u64(LIQUIDATION_COUNT_KEY, load_u64(LIQUIDATION_COUNT_KEY) + 1);
 
     moltchain_sdk::set_return_data(&u64_to_bytes(liquidator_reward));
     log_info("Position liquidated");
@@ -844,6 +858,46 @@ pub extern "C" fn call() {
                 let r = set_moltcoin_address(args[1..33].as_ptr(), args[33..65].as_ptr());
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
+        }
+        16 => {
+            // get_total_volume — cumulative notional volume of all margin positions
+            moltchain_sdk::set_return_data(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
+        }
+        17 => {
+            // get_user_positions — list all position IDs for a user
+            if args.len() >= 33 {
+                let addr: [u8; 32] = args[1..33].try_into().unwrap_or([0u8; 32]);
+                let count = load_u64(&user_position_count_key(&addr));
+                let mut result = Vec::with_capacity(8 + count as usize * 8);
+                result.extend_from_slice(&u64_to_bytes(count));
+                for i in 1..=count {
+                    let pid = load_u64(&user_position_key(&addr, i));
+                    result.extend_from_slice(&u64_to_bytes(pid));
+                }
+                moltchain_sdk::set_return_data(&result);
+            }
+        }
+        18 => {
+            // get_total_pnl — returns [total_profit(8), total_loss(8)]
+            let mut buf = Vec::with_capacity(16);
+            buf.extend_from_slice(&u64_to_bytes(load_u64(TOTAL_PNL_PROFIT_KEY)));
+            buf.extend_from_slice(&u64_to_bytes(load_u64(TOTAL_PNL_LOSS_KEY)));
+            moltchain_sdk::set_return_data(&buf);
+        }
+        19 => {
+            // get_liquidation_count
+            moltchain_sdk::set_return_data(&u64_to_bytes(load_u64(LIQUIDATION_COUNT_KEY)));
+        }
+        20 => {
+            // get_margin_stats — aggregated [pos_count, total_volume, liquidations, pnl_profit, pnl_loss, insurance_fund]
+            let mut buf = Vec::with_capacity(48);
+            buf.extend_from_slice(&u64_to_bytes(load_u64(POSITION_COUNT_KEY)));
+            buf.extend_from_slice(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
+            buf.extend_from_slice(&u64_to_bytes(load_u64(LIQUIDATION_COUNT_KEY)));
+            buf.extend_from_slice(&u64_to_bytes(load_u64(TOTAL_PNL_PROFIT_KEY)));
+            buf.extend_from_slice(&u64_to_bytes(load_u64(TOTAL_PNL_LOSS_KEY)));
+            buf.extend_from_slice(&u64_to_bytes(load_u64(INSURANCE_FUND_KEY)));
+            moltchain_sdk::set_return_data(&buf);
         }
         _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
     }

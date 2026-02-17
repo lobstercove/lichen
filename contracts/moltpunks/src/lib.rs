@@ -8,6 +8,9 @@ extern crate alloc;
 
 use moltchain_sdk::{NFT, Address, log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_caller};
 
+const MP_TRANSFER_COUNT_KEY: &[u8] = b"mp_transfer_count";
+const MP_BURN_COUNT_KEY: &[u8] = b"mp_burn_count";
+
 /// Read the minter address from persistent storage (written by NFT::initialize).
 fn get_minter() -> Address {
     match storage_get(b"minter") {
@@ -122,6 +125,8 @@ pub extern "C" fn transfer(from_ptr: *const u8, to_ptr: *const u8, token_id: u64
         // Transfer
         match make_nft().transfer(from, to, token_id) {
             Ok(_) => {
+                let tc = storage_get(MP_TRANSFER_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+                storage_set(MP_TRANSFER_COUNT_KEY, &u64_to_bytes(tc + 1));
                 log_info("NFT transferred successfully");
                 1
             }
@@ -224,6 +229,8 @@ pub extern "C" fn burn(owner_ptr: *const u8, token_id: u64) -> u32 {
         let mut nft = make_nft();
         match nft.burn(owner, token_id) {
             Ok(_) => {
+                let bc = storage_get(MP_BURN_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+                storage_set(MP_BURN_COUNT_KEY, &u64_to_bytes(bc + 1));
                 log_info("NFT burned");
                 1
             }
@@ -352,6 +359,24 @@ pub extern "C" fn mp_unpause(caller_ptr: *const u8) -> u32 {
     storage_set(b"mp_paused", &[0u8]);
     log_info("MoltPunks unpaused");
     1
+}
+
+/// Get collection stats [total_minted(8), transfer_count(8), burn_count(8)]
+#[no_mangle]
+pub extern "C" fn get_collection_stats() -> u32 {
+    let mut buf = [0u8; 24];
+    let minted = u64_to_bytes(total_minted());
+    let transfers = u64_to_bytes(
+        storage_get(MP_TRANSFER_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    );
+    let burns = u64_to_bytes(
+        storage_get(MP_BURN_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    );
+    buf[0..8].copy_from_slice(&minted);
+    buf[8..16].copy_from_slice(&transfers);
+    buf[16..24].copy_from_slice(&burns);
+    moltchain_sdk::set_return_data(&buf);
+    0
 }
 
 #[cfg(test)]

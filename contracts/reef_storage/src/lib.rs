@@ -42,6 +42,9 @@ const DEFAULT_SLASH_PERCENT: u64 = 10;     // 10% of stake slashed on failure
 const MIN_STAKE_PER_GB: u64 = 10_000_000;  // 10M shells (0.01 MOLT) per GB of capacity
 const ADMIN_KEY: &[u8] = b"reef_admin";
 
+const REEF_TOTAL_BYTES_KEY: &[u8] = b"reef_total_bytes";
+const REEF_CHALLENGE_COUNT_KEY: &[u8] = b"reef_challenge_count";
+
 // ============================================================================
 // STORAGE KEY HELPERS
 // ============================================================================
@@ -268,6 +271,10 @@ pub extern "C" fn store_data(
         .map(|d| bytes_to_u64(&d))
         .unwrap_or(0);
     storage_set(b"data_count", &u64_to_bytes(count + 1));
+
+    // Track total bytes stored
+    let tb = storage_get(REEF_TOTAL_BYTES_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    storage_set(REEF_TOTAL_BYTES_KEY, &u64_to_bytes(tb.saturating_add(size)));
 
     log_info("Data storage request registered");
     0
@@ -700,6 +707,11 @@ pub extern "C" fn issue_challenge(
     chal.push(0);                                         // answered = false
 
     storage_set(&ck, &chal);
+
+    // Track challenge count
+    let chc = storage_get(REEF_CHALLENGE_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    storage_set(REEF_CHALLENGE_COUNT_KEY, &u64_to_bytes(chc + 1));
+
     log_info("Storage challenge issued");
     0
 }
@@ -821,6 +833,23 @@ pub extern "C" fn slash_provider(
 
     moltchain_sdk::set_return_data(&u64_to_bytes(slash_amount));
     log_info("Provider slashed for failed challenge");
+    0
+}
+
+/// Get reef storage stats [data_count(8), total_bytes(8), challenge_count(8)]
+#[no_mangle]
+pub extern "C" fn get_platform_stats() -> u32 {
+    let mut buf = Vec::with_capacity(24);
+    buf.extend_from_slice(&u64_to_bytes(
+        storage_get(b"data_count").map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    ));
+    buf.extend_from_slice(&u64_to_bytes(
+        storage_get(REEF_TOTAL_BYTES_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    ));
+    buf.extend_from_slice(&u64_to_bytes(
+        storage_get(REEF_CHALLENGE_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    ));
+    moltchain_sdk::set_return_data(&buf);
     0
 }
 

@@ -19,6 +19,9 @@ use moltchain_sdk::{
     call_token_transfer, call_nft_transfer, call_nft_owner
 };
 
+const MM_SALE_COUNT_KEY: &[u8] = b"mm_sale_count";
+const MM_SALE_VOLUME_KEY: &[u8] = b"mm_sale_volume";
+
 // Reentrancy guard
 const MM_REENTRANCY_KEY: &[u8] = b"mm_reentrancy";
 
@@ -248,6 +251,12 @@ pub extern "C" fn buy_nft(
         updated_data[144] = 0; // active = false
         storage_set(&listing_key, &updated_data);
         
+        // Track sale stats
+        let sc = storage_get(MM_SALE_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+        storage_set(MM_SALE_COUNT_KEY, &u64_to_bytes(sc + 1));
+        let sv = storage_get(MM_SALE_VOLUME_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+        storage_set(MM_SALE_VOLUME_KEY, &u64_to_bytes(sv.saturating_add(price)));
+
         log_info("Purchase complete with escrow pattern!");
         reentrancy_exit();
         1
@@ -528,6 +537,12 @@ pub extern "C" fn accept_offer(
                 let mut updated = data;
                 updated[72] = 0;
                 storage_set(&key, &updated);
+                // Track sale stats
+                let sc = storage_get(MM_SALE_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+                storage_set(MM_SALE_COUNT_KEY, &u64_to_bytes(sc + 1));
+                let sv = storage_get(MM_SALE_VOLUME_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+                storage_set(MM_SALE_VOLUME_KEY, &u64_to_bytes(sv.saturating_add(price)));
+
                 log_info("Offer accepted, trade executed");
                 reentrancy_exit();
                 1
@@ -544,15 +559,21 @@ pub extern "C" fn accept_offer(
 // v2: MARKETPLACE STATS
 // ============================================================================
 
-/// Get marketplace stats: [listing_count(8), fee_bps(8)]
+/// Get marketplace stats: [listing_count(8), fee_bps(8), sale_count(8), sale_volume(8)]
 #[no_mangle]
 pub extern "C" fn get_marketplace_stats() -> u32 {
     let count = storage_get(b"mm_listing_count")
         .map(|d| bytes_to_u64(&d)).unwrap_or(0);
     let fee = get_marketplace_fee();
-    let mut result = Vec::with_capacity(16);
+    let mut result = Vec::with_capacity(32);
     result.extend_from_slice(&u64_to_bytes(count));
     result.extend_from_slice(&u64_to_bytes(fee));
+    result.extend_from_slice(&u64_to_bytes(
+        storage_get(MM_SALE_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    ));
+    result.extend_from_slice(&u64_to_bytes(
+        storage_get(MM_SALE_VOLUME_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    ));
     moltchain_sdk::set_return_data(&result);
     0
 }

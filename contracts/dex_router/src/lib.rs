@@ -48,6 +48,7 @@ const PAUSED_KEY: &[u8] = b"rtr_paused";
 const REENTRANCY_KEY: &[u8] = b"rtr_reentrancy";
 const ROUTE_COUNT_KEY: &[u8] = b"rtr_route_count";
 const SWAP_COUNT_KEY: &[u8] = b"rtr_swap_count";
+const TOTAL_VOLUME_KEY: &[u8] = b"rtr_total_volume";
 const CORE_ADDRESS_KEY: &[u8] = b"rtr_core_addr";
 const AMM_ADDRESS_KEY: &[u8] = b"rtr_amm_addr";
 const LEGACY_SWAP_KEY: &[u8] = b"rtr_legacy_addr";
@@ -380,6 +381,9 @@ pub fn swap(
     storage_set(&swap_record_key(swap_id), &record);
     save_u64(SWAP_COUNT_KEY, swap_id);
 
+    // Track total routed volume
+    save_u64(TOTAL_VOLUME_KEY, load_u64(TOTAL_VOLUME_KEY).saturating_add(amount_in));
+
     moltchain_sdk::set_return_data(&u64_to_bytes(amount_out));
     log_info("Router swap executed");
     reentrancy_exit();
@@ -425,6 +429,9 @@ pub fn multi_hop_swap(
     let record = encode_swap_record(&t, amount_in, current_amount, ROUTE_MULTI_HOP, current_slot, 0);
     storage_set(&swap_record_key(swap_id), &record);
     save_u64(SWAP_COUNT_KEY, swap_id);
+
+    // Track total routed volume
+    save_u64(TOTAL_VOLUME_KEY, load_u64(TOTAL_VOLUME_KEY).saturating_add(amount_in));
 
     moltchain_sdk::set_return_data(&u64_to_bytes(current_amount));
     reentrancy_exit();
@@ -669,6 +676,18 @@ pub extern "C" fn call() {
         // 11: get_swap_count
         11 => {
             moltchain_sdk::set_return_data(&u64_to_bytes(get_swap_count()));
+        }
+        12 => {
+            // get_total_volume_routed — cumulative input volume routed
+            moltchain_sdk::set_return_data(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
+        }
+        13 => {
+            // get_router_stats — [route_count, swap_count, total_volume]
+            let mut buf = Vec::with_capacity(24);
+            buf.extend_from_slice(&u64_to_bytes(get_route_count()));
+            buf.extend_from_slice(&u64_to_bytes(get_swap_count()));
+            buf.extend_from_slice(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
+            moltchain_sdk::set_return_data(&buf);
         }
         _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
     }

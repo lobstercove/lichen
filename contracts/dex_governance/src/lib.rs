@@ -60,6 +60,8 @@ const REENTRANCY_KEY: &[u8] = b"gov_reentrancy";
 const PROPOSAL_COUNT_KEY: &[u8] = b"gov_prop_count";
 const CORE_ADDRESS_KEY: &[u8] = b"gov_core_addr";
 const MOLTYID_ADDRESS_KEY: &[u8] = b"gov_moltyid_addr";
+const TOTAL_VOTES_KEY: &[u8] = b"gov_total_votes";
+const VOTER_COUNT_KEY: &[u8] = b"gov_voter_count";
 
 // ============================================================================
 // HELPERS
@@ -570,6 +572,16 @@ pub fn vote(voter: *const u8, proposal_id: u64, approve: bool) -> u32 {
     }
     storage_set(&pk, &data);
 
+    // Track global vote stats
+    save_u64(TOTAL_VOTES_KEY, load_u64(TOTAL_VOTES_KEY) + 1);
+    // Track unique voters: check if voter has voted before (use voter global key)
+    let mut voter_global_key = Vec::from(&b"gov_vg_"[..]);
+    voter_global_key.extend_from_slice(&hex_encode(&v));
+    if storage_get(&voter_global_key).is_none() {
+        storage_set(&voter_global_key, &[1]);
+        save_u64(VOTER_COUNT_KEY, load_u64(VOTER_COUNT_KEY) + 1);
+    }
+
     log_info("Vote recorded");
     reentrancy_exit();
     0
@@ -909,6 +921,18 @@ pub extern "C" fn call() {
         17 => {
             // get_allowed_quote_count
             moltchain_sdk::set_return_data(&u64_to_bytes(get_allowed_quote_count()));
+        }
+        18 => {
+            // get_governance_stats — [proposal_count, total_votes, voter_count]
+            let mut buf = Vec::with_capacity(24);
+            buf.extend_from_slice(&u64_to_bytes(load_u64(PROPOSAL_COUNT_KEY)));
+            buf.extend_from_slice(&u64_to_bytes(load_u64(TOTAL_VOTES_KEY)));
+            buf.extend_from_slice(&u64_to_bytes(load_u64(VOTER_COUNT_KEY)));
+            moltchain_sdk::set_return_data(&buf);
+        }
+        19 => {
+            // get_voter_count — unique voters
+            moltchain_sdk::set_return_data(&u64_to_bytes(load_u64(VOTER_COUNT_KEY)));
         }
         _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
     }

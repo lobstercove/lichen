@@ -52,6 +52,9 @@ const REENTRANCY_KEY: &[u8] = b"_reentrancy";
 const MS_PAUSE_KEY: &[u8] = b"ms_paused";
 /// Admin key for pause/unpause
 const MS_ADMIN_KEY: &[u8] = b"ms_admin";
+const MS_SWAP_COUNT_KEY: &[u8] = b"ms_swap_count";
+const MS_VOLUME_A_KEY: &[u8] = b"ms_volume_a";
+const MS_VOLUME_B_KEY: &[u8] = b"ms_volume_b";
 
 fn is_ms_paused() -> bool {
     storage_get(MS_PAUSE_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false)
@@ -346,6 +349,7 @@ pub extern "C" fn swap_a_for_b(amount_a_in: u64, min_amount_b_out: u64) -> u64 {
             } else {
                 amount_b_out
             };
+            track_swap(amount_a_in, final_out, true);
             reentrancy_exit();
             final_out
         }
@@ -354,6 +358,19 @@ pub extern "C" fn swap_a_for_b(amount_a_in: u64, min_amount_b_out: u64) -> u64 {
             reentrancy_exit();
             0
         }
+    }
+}
+
+/// Track swap count and volume (internal)
+fn track_swap(amount_a: u64, amount_b: u64, is_a_to_b: bool) {
+    let count = storage_get(MS_SWAP_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    storage_set(MS_SWAP_COUNT_KEY, &u64_to_bytes(count + 1));
+    if is_a_to_b {
+        let vol = storage_get(MS_VOLUME_A_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+        storage_set(MS_VOLUME_A_KEY, &u64_to_bytes(vol.saturating_add(amount_a)));
+    } else {
+        let vol = storage_get(MS_VOLUME_B_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+        storage_set(MS_VOLUME_B_KEY, &u64_to_bytes(vol.saturating_add(amount_b)));
     }
 }
 
@@ -401,6 +418,7 @@ pub extern "C" fn swap_b_for_a(amount_b_in: u64, min_amount_a_out: u64) -> u64 {
             } else {
                 amount_a_out
             };
+            track_swap(final_out, amount_b_in, false);
             reentrancy_exit();
             final_out
         }
@@ -946,6 +964,42 @@ pub extern "C" fn get_pool_count() -> u64 {
 pub extern "C" fn set_platform_fee(caller_ptr: *const u8, fee_bps: u64) -> u32 {
     // Use caller as treasury for simplicity when called via the alias
     set_protocol_fee(caller_ptr, caller_ptr, fee_bps)
+}
+
+/// Get total number of swaps
+#[no_mangle]
+pub extern "C" fn get_swap_count() -> u64 {
+    storage_get(MS_SWAP_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+}
+
+/// Get total volume for token A and B [volume_a(8), volume_b(8)]
+#[no_mangle]
+pub extern "C" fn get_total_volume() -> u32 {
+    let vol_a = storage_get(MS_VOLUME_A_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    let vol_b = storage_get(MS_VOLUME_B_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    let mut buf = Vec::with_capacity(16);
+    buf.extend_from_slice(&u64_to_bytes(vol_a));
+    buf.extend_from_slice(&u64_to_bytes(vol_b));
+    moltchain_sdk::set_return_data(&buf);
+    0
+}
+
+/// Get swap stats [swap_count(8), volume_a(8), volume_b(8), pool_count(8), total_liquidity(8)]
+#[no_mangle]
+pub extern "C" fn get_swap_stats() -> u32 {
+    let swap_count = storage_get(MS_SWAP_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    let vol_a = storage_get(MS_VOLUME_A_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    let vol_b = storage_get(MS_VOLUME_B_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    let pool_count = get_pool_count();
+    let total_liq = get_total_liquidity();
+    let mut buf = Vec::with_capacity(40);
+    buf.extend_from_slice(&u64_to_bytes(swap_count));
+    buf.extend_from_slice(&u64_to_bytes(vol_a));
+    buf.extend_from_slice(&u64_to_bytes(vol_b));
+    buf.extend_from_slice(&u64_to_bytes(pool_count));
+    buf.extend_from_slice(&u64_to_bytes(total_liq));
+    moltchain_sdk::set_return_data(&buf);
+    0
 }
 
 #[cfg(test)]

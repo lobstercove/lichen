@@ -940,6 +940,41 @@ async function updateDexMonitor() {
                         collateral: stats.total_collateral || 0, traders: stats.unique_traders || 0 };
                     deployed = true;
                 }
+            } else if (sub.id === 'dex_router') {
+                const stats = await rpc('getDexRouterStats');
+                if (stats) {
+                    metricsData = { routes_24h: stats.route_count || 0, savings: stats.total_volume || 0,
+                        split_routes: stats.swap_count || 0, avg_slippage: '--' };
+                    deployed = true;
+                }
+            } else if (sub.id === 'dex_governance') {
+                const stats = await rpc('getDexGovernanceStats');
+                if (stats) {
+                    metricsData = { proposals: stats.proposal_count || 0, active_votes: stats.total_votes || 0,
+                        total_voters: stats.voter_count || 0, treasury: 0 };
+                    deployed = true;
+                }
+            } else if (sub.id === 'dex_rewards') {
+                const stats = await rpc('getDexRewardsStats');
+                if (stats) {
+                    metricsData = { stakers: stats.trader_count || 0, total_staked: stats.total_volume || 0,
+                        distributed: stats.total_distributed || 0, apy: '--' };
+                    deployed = true;
+                }
+            } else if (sub.id === 'dex_analytics') {
+                const stats = await rpc('getDexAnalyticsStats');
+                if (stats) {
+                    metricsData = { candles: stats.record_count || 0, indexed_trades: stats.total_volume || 0,
+                        pairs_tracked: stats.trader_count || 0, uptime: '100%' };
+                    deployed = true;
+                }
+            } else if (sub.id === 'moltswap') {
+                const stats = await rpc('getMoltswapStats');
+                if (stats) {
+                    metricsData = { swaps_24h: stats.swap_count || 0, volume: (stats.volume_a || 0) + (stats.volume_b || 0),
+                        unique_users: 0, pairs: stats.pool_count || 0 };
+                    deployed = true;
+                }
             }
         } catch { /* stats endpoint not yet available */ }
 

@@ -67,6 +67,8 @@ const INTERVALS: [u64; 9] = [
 const ADMIN_KEY: &[u8] = b"ana_admin";
 const PAUSED_KEY: &[u8] = b"ana_paused";
 const TRADE_RECORD_COUNT_KEY: &[u8] = b"ana_rec_count";
+const TRADER_COUNT_KEY: &[u8] = b"ana_trader_count";
+const TOTAL_VOLUME_KEY: &[u8] = b"ana_total_volume";
 
 // ============================================================================
 // HELPERS
@@ -497,8 +499,14 @@ fn update_trader_stats(trader: &[u8; 32], volume: u64, slot: u64) {
             decode_ts_trades(&d),
             decode_ts_pnl(&d),
         ),
-        _ => (0, 0, PNL_BIAS),
+        _ => {
+            // First trade for this trader — increment unique trader count
+            save_u64(TRADER_COUNT_KEY, load_u64(TRADER_COUNT_KEY) + 1);
+            (0, 0, PNL_BIAS)
+        },
     };
+    // Track global cumulative volume
+    save_u64(TOTAL_VOLUME_KEY, load_u64(TOTAL_VOLUME_KEY).saturating_add(volume));
     let stats = encode_trader_stats(vol + volume, trades + 1, pnl, slot);
     storage_set(&tk, &stats);
 }
@@ -671,6 +679,18 @@ pub extern "C" fn call() {
                 let r = emergency_unpause(args[1..33].as_ptr());
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
+        }
+        9 => {
+            // get_trader_count — unique traders seen by analytics
+            moltchain_sdk::set_return_data(&u64_to_bytes(load_u64(TRADER_COUNT_KEY)));
+        }
+        10 => {
+            // get_global_stats — [record_count, trader_count, total_volume]
+            let mut buf = Vec::with_capacity(24);
+            buf.extend_from_slice(&u64_to_bytes(load_u64(TRADE_RECORD_COUNT_KEY)));
+            buf.extend_from_slice(&u64_to_bytes(load_u64(TRADER_COUNT_KEY)));
+            buf.extend_from_slice(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
+            moltchain_sdk::set_return_data(&buf);
         }
         _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
     }
