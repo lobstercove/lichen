@@ -6492,7 +6492,7 @@ async fn run_validator() {
     info!("✅ RPC server starting on http://0.0.0.0:{}", rpc_port);
 
     // Start WebSocket server and get event broadcaster
-    let (ws_event_tx, _ws_handle) =
+    let (ws_event_tx, _dex_broadcaster, _ws_handle) =
         match moltchain_rpc::start_ws_server(state_for_ws, ws_port).await {
             Ok(result) => {
                 info!("✅ WebSocket server starting on ws://0.0.0.0:{}", ws_port);
@@ -6506,8 +6506,9 @@ async fn run_validator() {
                 // Create a dummy broadcast channel so the rest of the code can send events
                 // without checking — receivers simply don't exist.
                 let (dummy_tx, _) = tokio::sync::broadcast::channel::<moltchain_rpc::ws::Event>(1);
+                let dummy_broadcaster = std::sync::Arc::new(moltchain_rpc::dex_ws::DexEventBroadcaster::new(1));
                 let dummy_handle = tokio::spawn(async {});
-                (dummy_tx, dummy_handle)
+                (dummy_tx, dummy_broadcaster, dummy_handle)
             }
         };
 

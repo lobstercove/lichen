@@ -11,6 +11,7 @@ use axum::{
     Router,
 };
 use moltchain_core::{Block, MarketActivity, Pubkey, StateStore, Transaction};
+use crate::dex_ws::{DexChannel, DexEventBroadcaster};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -176,6 +177,7 @@ enum SubscriptionType {
     TokenBalance { owner: Pubkey, mint: Option<Pubkey> },
     Epochs,                      // epoch boundary notifications
     Governance,                  // on-chain governance events
+    Dex(DexChannel),             // DEX real-time channels (orderbook, trades, ticker, candles, orders, positions)
 }
 
 impl SubscriptionManager {
@@ -221,19 +223,23 @@ pub struct WsState {
     #[allow(dead_code)]
     state: StateStore,
     event_tx: broadcast::Sender<Event>,
+    /// DEX real-time event broadcaster
+    dex_broadcaster: Arc<DexEventBroadcaster>,
     /// DDoS protection: active connection counter
     active_connections: Arc<AtomicUsize>,
 }
 
 impl WsState {
-    pub fn new(state: StateStore) -> (Self, broadcast::Sender<Event>) {
+    pub fn new(state: StateStore) -> (Self, broadcast::Sender<Event>, Arc<DexEventBroadcaster>) {
         let (event_tx, _) = broadcast::channel(1000);
+        let dex_broadcaster = Arc::new(DexEventBroadcaster::new(2048));
         let ws_state = Self {
             state,
             event_tx: event_tx.clone(),
+            dex_broadcaster: dex_broadcaster.clone(),
             active_connections: Arc::new(AtomicUsize::new(0)),
         };
-        (ws_state, event_tx)
+        (ws_state, event_tx, dex_broadcaster)
     }
 }
 
@@ -241,8 +247,8 @@ impl WsState {
 pub async fn start_ws_server(
     state: StateStore,
     port: u16,
-) -> Result<(broadcast::Sender<Event>, tokio::task::JoinHandle<()>), Box<dyn std::error::Error>> {
-    let (ws_state, event_tx) = WsState::new(state);
+) -> Result<(broadcast::Sender<Event>, Arc<DexEventBroadcaster>, tokio::task::JoinHandle<()>), Box<dyn std::error::Error>> {
+    let (ws_state, event_tx, dex_broadcaster) = WsState::new(state);
 
     let app = Router::new()
         .route("/", get(ws_handler))
@@ -259,7 +265,7 @@ pub async fn start_ws_server(
         }
     });
 
-    Ok((event_tx, handle))
+    Ok((event_tx, dex_broadcaster, handle))
 }
 
 /// WebSocket handler with connection limit enforcement
@@ -289,6 +295,9 @@ async fn handle_socket(socket: WebSocket, state: WsState) {
     // Subscribe to broadcast events
     let mut event_rx = state.event_tx.subscribe();
     let subscription_manager = SubscriptionManager::new();
+
+    // Subscribe to DEX-specific events
+    let mut dex_event_rx = state.dex_broadcaster.subscribe();
 
     // Task to forward notifications to the client
     let send_task = tokio::spawn(async move {
@@ -386,6 +395,41 @@ async fn handle_socket(socket: WebSocket, state: WsState) {
         }
     });
 
+    // Task to forward DEX-specific events to subscribed clients
+    let tx_dex = tx.clone();
+    let dex_subscription_manager = subscription_manager.clone();
+    let dex_event_task = tokio::spawn(async move {
+        loop {
+            let dex_event = match dex_event_rx.recv().await {
+                Ok(event) => event,
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    warn!("DEX WebSocket subscriber lagged, skipped {} events", n);
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            };
+
+            let subs = dex_subscription_manager.subscriptions.read().await;
+            for (sub_id, sub_type) in subs.iter() {
+                if let SubscriptionType::Dex(ref channel) = sub_type {
+                    if channel.matches(&dex_event) {
+                        let notification = Notification {
+                            jsonrpc: "2.0".to_string(),
+                            method: "notification".to_string(),
+                            params: NotificationParams {
+                                subscription: *sub_id,
+                                result: serde_json::to_value(&dex_event).unwrap_or_default(),
+                            },
+                        };
+                        if let Ok(json) = serde_json::to_string(&notification) {
+                            let _ = tx_dex.send(json).await;
+                        }
+                    }
+                }
+            }
+        }
+    });
+
     // Handle incoming messages
     while let Some(Ok(msg)) = receiver.next().await {
         if let Message::Text(text) = msg {
@@ -405,6 +449,7 @@ async fn handle_socket(socket: WebSocket, state: WsState) {
     // Clean up
     send_task.abort();
     event_task.abort();
+    dex_event_task.abort();
     // DDoS protection: decrement active connection counter
     conn_guard.fetch_sub(1, Ordering::Relaxed);
 }
@@ -932,6 +977,42 @@ async fn handle_subscription_request(
                 Err(WsError { code: -32602, message: "Missing params".to_string() })
             }
         }
+
+        // ─── DEX real-time channels ───
+        "subscribeDex" => {
+            if let Some(params) = req.params {
+                let channel_str = params.get("channel")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| params.as_str());
+                if let Some(ch) = channel_str {
+                    if let Some(dex_channel) = DexChannel::parse(ch) {
+                        subscription_manager.subscribe(SubscriptionType::Dex(dex_channel))
+                            .await
+                            .map(|sub_id| serde_json::json!(sub_id))
+                    } else {
+                        Err(WsError { code: -32602, message: format!("Invalid DEX channel: {}", ch) })
+                    }
+                } else {
+                    Err(WsError { code: -32602, message: "Missing 'channel' param for subscribeDex".to_string() })
+                }
+            } else {
+                Err(WsError { code: -32602, message: "Missing params for subscribeDex".to_string() })
+            }
+        }
+        "unsubscribeDex" => {
+            if let Some(params) = req.params {
+                if let Some(sub_id) = params.as_u64() {
+                    Ok(serde_json::json!(subscription_manager.unsubscribe(sub_id).await))
+                } else if let Some(sub_id) = params.get("subscription").and_then(|v| v.as_u64()) {
+                    Ok(serde_json::json!(subscription_manager.unsubscribe(sub_id).await))
+                } else {
+                    Err(WsError { code: -32602, message: "Invalid params".to_string() })
+                }
+            } else {
+                Err(WsError { code: -32602, message: "Missing params".to_string() })
+            }
+        }
+
         _ => Err(WsError {
             code: -32601,
             message: format!("Method not found: {}", req.method),
