@@ -72,6 +72,9 @@ fn u64_to_decimal(mut n: u64) -> Vec<u8> {
 // v2 constants
 const ADMIN_KEY: &[u8] = b"cp_admin";
 const PAUSE_KEY: &[u8] = b"cp_paused";
+const CP_TOTAL_STREAMED_KEY: &[u8] = b"cp_total_streamed";
+const CP_TOTAL_WITHDRAWN_KEY: &[u8] = b"cp_total_withdrawn";
+const CP_CANCEL_COUNT_KEY: &[u8] = b"cp_cancel_count";
 
 fn cliff_key(stream_id: u64) -> Vec<u8> {
     let mut key = Vec::with_capacity(6 + 20);
@@ -257,6 +260,10 @@ pub extern "C" fn create_stream(
     let sk = stream_key(stream_id);
     storage_set(&sk, &data);
 
+    // Track total streamed volume
+    let total = storage_get(CP_TOTAL_STREAMED_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    storage_set(CP_TOTAL_STREAMED_KEY, &u64_to_bytes(total.saturating_add(total_amount)));
+
     moltchain_sdk::set_return_data(&u64_to_bytes(stream_id));
     log_info("Payment stream created");
     0
@@ -340,6 +347,11 @@ pub extern "C" fn withdraw_from_stream(
 
     moltchain_sdk::set_return_data(&u64_to_bytes(amount));
     log_info("Withdrawal successful");
+
+    // Track total withdrawn
+    let total_w = storage_get(CP_TOTAL_WITHDRAWN_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    storage_set(CP_TOTAL_WITHDRAWN_KEY, &u64_to_bytes(total_w.saturating_add(amount)));
+
     reentrancy_exit();
     0
 }
@@ -422,6 +434,11 @@ pub extern "C" fn cancel_stream(
 
     moltchain_sdk::set_return_data(&u64_to_bytes(refund));
     log_info("Stream cancelled");
+
+    // Track cancel count
+    let cc = storage_get(CP_CANCEL_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    storage_set(CP_CANCEL_COUNT_KEY, &u64_to_bytes(cc + 1));
+
     reentrancy_exit();
     0
 }
@@ -791,6 +808,32 @@ fn check_identity_gate(caller: &[u8]) -> bool {
 // ============================================================================
 // TESTS
 // ============================================================================
+
+/// Get stream count
+#[no_mangle]
+pub extern "C" fn get_stream_count() -> u64 {
+    storage_get(b"stream_count").map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+}
+
+/// Get platform stats [stream_count(8), total_streamed(8), total_withdrawn(8), cancel_count(8)]
+#[no_mangle]
+pub extern "C" fn get_platform_stats() -> u32 {
+    let mut buf = Vec::with_capacity(32);
+    buf.extend_from_slice(&u64_to_bytes(
+        storage_get(b"stream_count").map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    ));
+    buf.extend_from_slice(&u64_to_bytes(
+        storage_get(CP_TOTAL_STREAMED_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    ));
+    buf.extend_from_slice(&u64_to_bytes(
+        storage_get(CP_TOTAL_WITHDRAWN_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    ));
+    buf.extend_from_slice(&u64_to_bytes(
+        storage_get(CP_CANCEL_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    ));
+    moltchain_sdk::set_return_data(&buf);
+    0
+}
 
 #[cfg(test)]
 mod tests {

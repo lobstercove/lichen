@@ -98,6 +98,7 @@ const MAX_ALLOWED_QUOTES: u64 = 8;
 /// two-step process to prevent a compromised admin from immediately resuming trading.
 pub const UNPAUSE_TIMELOCK_SLOTS: u64 = 900;
 const UNPAUSE_SCHEDULED_KEY: &[u8] = b"dex_unpause_scheduled_slot";
+const TOTAL_VOLUME_KEY: &[u8] = b"dex_total_volume";
 
 // ============================================================================
 // HELPERS
@@ -1275,6 +1276,10 @@ fn fill_at_price_level(
         storage_set(&trade_key(trade_id), &trade_data);
         save_u64(TRADE_COUNT_KEY, trade_id);
 
+        // Track global cumulative volume
+        let total_vol = load_u64(TOTAL_VOLUME_KEY);
+        save_u64(TOTAL_VOLUME_KEY, total_vol.saturating_add(notional));
+
         // Update pair daily volume
         let pk = pair_key(pair_id);
         if let Some(mut pd) = storage_get(&pk) {
@@ -1802,6 +1807,35 @@ pub extern "C" fn call() {
             if args.len() >= 33 {
                 let result = execute_unpause(args[1..33].as_ptr());
                 moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+            }
+        }
+        25 => {
+            // get_total_volume — returns cumulative total notional volume traded
+            moltchain_sdk::set_return_data(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
+        }
+        26 => {
+            // get_user_orders — returns all open order IDs for a user address
+            if args.len() >= 33 {
+                let addr: [u8; 32] = args[1..33].try_into().unwrap_or([0u8; 32]);
+                let count = load_u64(&user_order_count_key(&addr));
+                let mut result = Vec::with_capacity(8 + count as usize * 8);
+                result.extend_from_slice(&u64_to_bytes(count));
+                for i in 1..=count {
+                    let k = user_order_key(&addr, i);
+                    let oid = storage_get(&k)
+                        .map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 })
+                        .unwrap_or(0);
+                    result.extend_from_slice(&u64_to_bytes(oid));
+                }
+                moltchain_sdk::set_return_data(&result);
+            }
+        }
+        27 => {
+            // get_open_order_count — returns user's order count
+            if args.len() >= 33 {
+                let addr: [u8; 32] = args[1..33].try_into().unwrap_or([0u8; 32]);
+                let count = load_u64(&user_order_count_key(&addr));
+                moltchain_sdk::set_return_data(&u64_to_bytes(count));
             }
         }
         _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }

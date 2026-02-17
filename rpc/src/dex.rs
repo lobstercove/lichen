@@ -1816,4 +1816,95 @@ pub(crate) fn build_dex_router() -> Router<Arc<RpcState>> {
         // Governance
         .route("/governance/proposals", get(get_proposals))
         .route("/governance/proposals/:id", get(get_proposal))
+        // Platform Stats
+        .route("/stats/core", get(get_core_stats))
+        .route("/stats/amm", get(get_amm_stats))
+        .route("/stats/margin", get(get_margin_stats_rest))
+        .route("/stats/router", get(get_router_stats))
+        .route("/stats/rewards", get(get_rewards_stats))
+        .route("/stats/analytics", get(get_analytics_stats))
+        .route("/stats/governance", get(get_governance_stats))
+        .route("/stats/moltswap", get(get_moltswap_stats))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// PLATFORM STATS REST HANDLERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+async fn get_core_stats(State(state): State<Arc<RpcState>>) -> Response {
+    let slot = current_slot(&state);
+    ApiResponse::ok(serde_json::json!({
+        "pair_count": read_u64(&state, DEX_CORE_PROGRAM, "dex_pair_count"),
+        "order_count": read_u64(&state, DEX_CORE_PROGRAM, "dex_order_count"),
+        "trade_count": read_u64(&state, DEX_CORE_PROGRAM, "dex_trade_count"),
+        "total_volume": read_u64(&state, DEX_CORE_PROGRAM, "dex_total_volume"),
+        "fee_treasury": read_u64(&state, DEX_CORE_PROGRAM, "dex_fee_treasury"),
+    }), slot).into_response()
+}
+
+async fn get_amm_stats(State(state): State<Arc<RpcState>>) -> Response {
+    let slot = current_slot(&state);
+    ApiResponse::ok(serde_json::json!({
+        "pool_count": read_u64(&state, DEX_AMM_PROGRAM, "amm_pool_count"),
+        "position_count": read_u64(&state, DEX_AMM_PROGRAM, "amm_pos_count"),
+        "swap_count": read_u64(&state, DEX_AMM_PROGRAM, "amm_swap_count"),
+        "total_volume": read_u64(&state, DEX_AMM_PROGRAM, "amm_total_volume"),
+        "total_fees": read_u64(&state, DEX_AMM_PROGRAM, "amm_total_fees"),
+    }), slot).into_response()
+}
+
+async fn get_margin_stats_rest(State(state): State<Arc<RpcState>>) -> Response {
+    let slot = current_slot(&state);
+    ApiResponse::ok(serde_json::json!({
+        "position_count": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_pos_count"),
+        "total_volume": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_total_volume"),
+        "liquidation_count": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_liq_count"),
+        "insurance_fund": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_insurance"),
+    }), slot).into_response()
+}
+
+async fn get_router_stats(State(state): State<Arc<RpcState>>) -> Response {
+    let slot = current_slot(&state);
+    ApiResponse::ok(serde_json::json!({
+        "route_count": read_u64(&state, DEX_ROUTER_PROGRAM, "rtr_route_count"),
+        "swap_count": read_u64(&state, DEX_ROUTER_PROGRAM, "rtr_swap_count"),
+        "total_volume": read_u64(&state, DEX_ROUTER_PROGRAM, "rtr_total_volume"),
+    }), slot).into_response()
+}
+
+async fn get_rewards_stats(State(state): State<Arc<RpcState>>) -> Response {
+    let slot = current_slot(&state);
+    ApiResponse::ok(serde_json::json!({
+        "trade_count": read_u64(&state, DEX_REWARDS_PROGRAM, "rew_trade_count"),
+        "trader_count": read_u64(&state, DEX_REWARDS_PROGRAM, "rew_trader_count"),
+        "total_volume": read_u64(&state, DEX_REWARDS_PROGRAM, "rew_total_volume"),
+        "total_distributed": read_u64(&state, DEX_REWARDS_PROGRAM, "rew_total_dist"),
+    }), slot).into_response()
+}
+
+async fn get_analytics_stats(State(state): State<Arc<RpcState>>) -> Response {
+    let slot = current_slot(&state);
+    ApiResponse::ok(serde_json::json!({
+        "record_count": read_u64(&state, DEX_ANALYTICS_PROGRAM, "ana_rec_count"),
+        "trader_count": read_u64(&state, DEX_ANALYTICS_PROGRAM, "ana_trader_count"),
+        "total_volume": read_u64(&state, DEX_ANALYTICS_PROGRAM, "ana_total_volume"),
+    }), slot).into_response()
+}
+
+async fn get_governance_stats(State(state): State<Arc<RpcState>>) -> Response {
+    let slot = current_slot(&state);
+    ApiResponse::ok(serde_json::json!({
+        "proposal_count": read_u64(&state, DEX_GOVERNANCE_PROGRAM, "gov_prop_count"),
+        "total_votes": read_u64(&state, DEX_GOVERNANCE_PROGRAM, "gov_total_votes"),
+        "voter_count": read_u64(&state, DEX_GOVERNANCE_PROGRAM, "gov_voter_count"),
+    }), slot).into_response()
+}
+
+async fn get_moltswap_stats(State(state): State<Arc<RpcState>>) -> Response {
+    let slot = current_slot(&state);
+    ApiResponse::ok(serde_json::json!({
+        "swap_count": read_u64(&state, "MOLTSWAP", "ms_swap_count"),
+        "volume_a": read_u64(&state, "MOLTSWAP", "ms_volume_a"),
+        "volume_b": read_u64(&state, "MOLTSWAP", "ms_volume_b"),
+    }), slot).into_response()
 }

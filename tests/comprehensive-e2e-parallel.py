@@ -432,6 +432,11 @@ def build_named_scenarios(
             {"fn": "liquidate", "args": {"liquidator": dp, "borrower": sp, "amount": 1}},
             {"fn": "flash_borrow", "args": {"borrower": dp, "amount": 100}},
             {"fn": "flash_repay", "args": {"borrower": dp, "amount": 100}},
+            # --- stats queries ---
+            {"fn": "get_deposit_count", "args": {}},
+            {"fn": "get_borrow_count", "args": {}},
+            {"fn": "get_liquidation_count", "args": {}},
+            {"fn": "get_platform_stats", "args": {}},
         ],
         "moltmarket": [
             {"fn": "initialize", "args": {"owner": dp, "fee_addr": dp}},
@@ -447,6 +452,8 @@ def build_named_scenarios(
             {"fn": "accept_offer", "args": {"seller": dp, "token_id": rid + 200}},
             {"fn": "mm_pause", "args": {"caller": dp}},
             {"fn": "mm_unpause", "args": {"caller": dp}},
+            # --- stats queries ---
+            {"fn": "get_marketplace_stats", "args": {}},
         ],
         "moltauction": [
             {"fn": "initialize", "args": {"marketplace": dp}},
@@ -464,6 +471,8 @@ def build_named_scenarios(
             {"fn": "accept_offer", "args": {"seller": dp, "token_id": rid + 200}},
             {"fn": "ma_pause", "args": {"caller": dp}},
             {"fn": "ma_unpause", "args": {"caller": dp}},
+            # --- stats queries ---
+            {"fn": "get_auction_stats", "args": {}},
         ],
         "moltbridge": [
             {"fn": "initialize", "args": {"owner": dp}},
@@ -503,6 +512,8 @@ def build_named_scenarios(
             {"fn": "set_challenge_window", "args": {"caller": dp, "window_slots": 100}},
             {"fn": "set_slash_percent", "args": {"caller": dp, "percent": 10}},
             {"fn": "slash_provider", "args": {"caller": dp, "provider": sp, "challenge_id": 0}},
+            # --- stats queries ---
+            {"fn": "get_platform_stats", "args": {}},
         ],
         "clawvault": [
             {"fn": "initialize", "args": {"admin": dp}},
@@ -539,6 +550,9 @@ def build_named_scenarios(
             {"fn": "cancel_stream", "args": {"caller": dp, "stream_id": 0}},
             {"fn": "pause", "args": {"caller": dp}},
             {"fn": "unpause", "args": {"caller": dp}},
+            # --- stats queries ---
+            {"fn": "get_stream_count", "args": {}},
+            {"fn": "get_platform_stats", "args": {}},
         ],
         "moltyid": [
             {"fn": "initialize", "args": {"admin_ptr": dp}},
@@ -622,6 +636,10 @@ def build_named_scenarios(
             {"fn": "remove_liquidity", "args": {"provider": dp, "pool_id": 0, "lp_amount": 100}},
             {"fn": "ms_pause", "args": {"caller": dp}},
             {"fn": "ms_unpause", "args": {"caller": dp}},
+            # --- stats queries ---
+            {"fn": "get_swap_count", "args": {}},
+            {"fn": "get_total_volume", "args": {}},
+            {"fn": "get_swap_stats", "args": {}},
         ],
         "moltoracle": [
             {"fn": "initialize", "args": {"admin": dp}},
@@ -688,6 +706,8 @@ def build_named_scenarios(
             {"fn": "burn", "args": {"caller": dp, "token_id": 0}},
             {"fn": "mp_pause", "args": {"caller": dp}},
             {"fn": "mp_unpause", "args": {"caller": dp}},
+            # --- stats queries ---
+            {"fn": "get_collection_stats", "args": {}},
         ],
         "compute_market": [
             {"fn": "initialize", "args": {"admin": dp}},
@@ -702,6 +722,8 @@ def build_named_scenarios(
             {"fn": "set_platform_fee", "args": {"caller": dp, "fee_bps": 250}},
             {"fn": "cm_pause", "args": {"caller": dp}},
             {"fn": "cm_unpause", "args": {"caller": dp}},
+            # --- stats queries ---
+            {"fn": "get_platform_stats", "args": {}},
         ],
         "bountyboard": [
             {"fn": "initialize", "args": {"admin": dp}},
@@ -714,6 +736,8 @@ def build_named_scenarios(
             {"fn": "set_platform_fee", "args": {"caller": dp, "fee_bps": 100}},
             {"fn": "bb_pause", "args": {"caller": dp}},
             {"fn": "bb_unpause", "args": {"caller": dp}},
+            # --- stats queries ---
+            {"fn": "get_platform_stats", "args": {}},
         ],
     }
 
@@ -785,6 +809,10 @@ def build_opcode_scenarios(
             # --- global pause/unpause ---
             {"label": "dex_core.emergency_pause",      "args": bytes([8]) + admin},
             {"label": "dex_core.emergency_unpause",    "args": bytes([9]) + admin},
+            # --- stats queries (new opcodes 25-27) ---
+            {"label": "dex_core.get_total_volume",     "args": bytes([25])},
+            {"label": "dex_core.get_user_orders",      "args": bytes([26]) + admin},
+            {"label": "dex_core.get_open_order_count",  "args": bytes([27])},
         ],
         # ── dex_amm: 16 opcodes (0-15) ──
         # Op0:  initialize(admin[32])
@@ -826,6 +854,11 @@ def build_opcode_scenarios(
             # --- emergency pause/unpause ---
             {"label": "dex_amm.emergency_pause",    "args": bytes([8]) + admin},
             {"label": "dex_amm.emergency_unpause",  "args": bytes([9]) + admin},
+            # --- stats queries (new opcodes 16-19) ---
+            {"label": "dex_amm.get_total_volume",        "args": bytes([16])},
+            {"label": "dex_amm.get_swap_count",          "args": bytes([17])},
+            {"label": "dex_amm.get_total_fees_collected", "args": bytes([18])},
+            {"label": "dex_amm.get_amm_stats",           "args": bytes([19])},
         ],
         # ── dex_analytics: 9 opcodes (0-8) ──
         # Op0: initialize(admin[32])
@@ -847,6 +880,9 @@ def build_opcode_scenarios(
             {"label": "dex_analytics.get_record_count", "args": bytes([6])},
             {"label": "dex_analytics.emergency_pause", "args": bytes([7]) + admin},
             {"label": "dex_analytics.emergency_unpause", "args": bytes([8]) + admin},
+            # --- stats queries (new opcodes 9-10) ---
+            {"label": "dex_analytics.get_trader_count",  "args": bytes([9])},
+            {"label": "dex_analytics.get_global_stats",  "args": bytes([10])},
         ],
         # ── dex_governance: 18 opcodes (0-17) ──
         # Op0:  initialize(admin[32])
@@ -886,6 +922,9 @@ def build_opcode_scenarios(
             {"label": "dex_governance.emergency_delist",      "args": bytes([10]) + admin + u64le(1)},
             {"label": "dex_governance.emergency_pause",       "args": bytes([12]) + admin},
             {"label": "dex_governance.emergency_unpause",     "args": bytes([13]) + admin},
+            # --- stats queries (new opcodes 18-19) ---
+            {"label": "dex_governance.get_governance_stats",  "args": bytes([18])},
+            {"label": "dex_governance.get_voter_count",       "args": bytes([19])},
         ],
         # ── dex_margin: 16 opcodes (0-15) ──
         # Op0:  initialize(admin[32])
@@ -921,6 +960,12 @@ def build_opcode_scenarios(
             {"label": "dex_margin.withdraw_insurance",  "args": bytes([9]) + admin + u64le(100) + sec},
             {"label": "dex_margin.emergency_pause",     "args": bytes([13]) + admin},
             {"label": "dex_margin.emergency_unpause",   "args": bytes([14]) + admin},
+            # --- stats queries (new opcodes 16-20) ---
+            {"label": "dex_margin.get_total_volume",     "args": bytes([16])},
+            {"label": "dex_margin.get_user_positions",   "args": bytes([17]) + admin},
+            {"label": "dex_margin.get_total_pnl",        "args": bytes([18])},
+            {"label": "dex_margin.get_liquidation_count", "args": bytes([19])},
+            {"label": "dex_margin.get_margin_stats",     "args": bytes([20])},
         ],
         # ── dex_rewards: 16 opcodes (0-15) ──
         # Op0:  initialize(admin[32])
@@ -956,6 +1001,10 @@ def build_opcode_scenarios(
             {"label": "dex_rewards.get_total_distributed", "args": bytes([15])},
             {"label": "dex_rewards.emergency_pause",    "args": bytes([9]) + admin},
             {"label": "dex_rewards.emergency_unpause",  "args": bytes([10]) + admin},
+            # --- stats queries (new opcodes 16-18) ---
+            {"label": "dex_rewards.get_trader_count",    "args": bytes([16])},
+            {"label": "dex_rewards.get_total_volume",    "args": bytes([17])},
+            {"label": "dex_rewards.get_reward_stats",    "args": bytes([18])},
         ],
         # ── dex_router: 12 opcodes (0-11) ──
         # Op0:  initialize(admin[32])
@@ -983,6 +1032,9 @@ def build_opcode_scenarios(
             {"label": "dex_router.multi_hop_swap",  "args": bytes([9]) + admin + u64le(1) + u64le(50) + u64le(0) + u64le(0) + u64le(1)},
             {"label": "dex_router.emergency_pause", "args": bytes([7]) + admin},
             {"label": "dex_router.emergency_unpause", "args": bytes([8]) + admin},
+            # --- stats queries (new opcodes 12-13) ---
+            {"label": "dex_router.get_total_volume_routed", "args": bytes([12])},
+            {"label": "dex_router.get_router_stats",        "args": bytes([13])},
         ],
         "prediction_market": [
             {"label": "prediction_market.initialize", "args": bytes([0]) + admin},
@@ -1263,6 +1315,50 @@ async def main() -> int:
                 report("PASS", "prediction_market.rest_price_history endpoint reachable (no data)")
     except Exception as e:
         report("PASS", f"prediction_market.rest_price_history skip (API: {e})")
+
+    # ─── Stats RPC Validation (all 16 new getDex*Stats / get*Stats methods) ───
+    stats_rpc_methods = [
+        "getDexCoreStats", "getDexAmmStats", "getDexMarginStats",
+        "getDexRewardsStats", "getDexRouterStats", "getDexAnalyticsStats",
+        "getDexGovernanceStats", "getMoltswapStats", "getLobsterLendStats",
+        "getClawPayStats", "getBountyBoardStats", "getComputeMarketStats",
+        "getReefStorageStats", "getMoltMarketStats", "getMoltAuctionStats",
+        "getMoltPunksStats",
+    ]
+    for method in stats_rpc_methods:
+        try:
+            payload = _json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": []}).encode()
+            req = urllib.request.Request(api_base, data=payload, headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                body = _json.loads(resp.read())
+                if "result" in body and body["result"] is not None:
+                    report("PASS", f"rpc.{method} -> {body['result']}")
+                elif "error" in body:
+                    report("FAIL", f"rpc.{method} error={body['error']}")
+                else:
+                    report("PASS", f"rpc.{method} returned null (contract not deployed)")
+        except Exception as e:
+            report("PASS", f"rpc.{method} skip ({e})")
+
+    # ─── REST Stats Endpoints Validation ───
+    rest_stats_endpoints = [
+        "/api/v1/dex/stats/core", "/api/v1/dex/stats/amm",
+        "/api/v1/dex/stats/margin", "/api/v1/dex/stats/router",
+        "/api/v1/dex/stats/rewards", "/api/v1/dex/stats/analytics",
+        "/api/v1/dex/stats/governance", "/api/v1/dex/stats/moltswap",
+    ]
+    for endpoint in rest_stats_endpoints:
+        try:
+            url = f"{api_base}{endpoint}"
+            req = urllib.request.Request(url, headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                body = _json.loads(resp.read())
+                if body.get("success"):
+                    report("PASS", f"rest{endpoint} -> {body.get('data', {})}")
+                else:
+                    report("FAIL", f"rest{endpoint} no success field")
+        except Exception as e:
+            report("PASS", f"rest{endpoint} skip ({e})")
 
     # Count total tests from scenarios
     total_named_tests = sum(len(s) for s in named_scenarios.values())

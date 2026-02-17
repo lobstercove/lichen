@@ -79,6 +79,10 @@ const PAUSE_KEY: &[u8] = b"ll_paused";
 /// Flash loan state keys
 const FLASH_BORROWED_KEY: &[u8] = b"ll_flash_borrowed";
 const FLASH_FEE_KEY: &[u8] = b"ll_flash_fee";
+const DEPOSIT_COUNT_KEY: &[u8] = b"ll_dep_count";
+const BORROW_COUNT_KEY: &[u8] = b"ll_bor_count";
+const LIQUIDATION_COUNT_KEY: &[u8] = b"ll_liq_count";
+const REPAY_COUNT_KEY: &[u8] = b"ll_repay_count";
 
 /// Maximum interest rate per slot to prevent manipulation
 const MAX_RATE_PER_SLOT: u64 = 25_400; // 100x base rate
@@ -195,6 +199,9 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u32 {
     // Update total deposits
     store_u64(b"ll_total_deposits", total + amount);
 
+    // Track deposit count
+    store_u64(DEPOSIT_COUNT_KEY, load_u64(DEPOSIT_COUNT_KEY) + 1);
+
     reentrancy_exit();
     log_info("Deposit successful");
     0
@@ -298,6 +305,9 @@ pub extern "C" fn borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
     store_u64(&borrow_key, new_borrow);
     store_u64(b"ll_total_borrows", total_borrows + amount);
 
+    // Track borrow count
+    store_u64(BORROW_COUNT_KEY, load_u64(BORROW_COUNT_KEY) + 1);
+
     // Track borrow timestamp for interest calculation
     let ts_key = make_key(b"bts:", &hex);
     store_u64(&ts_key, get_timestamp());
@@ -337,6 +347,9 @@ pub extern "C" fn repay(borrower_ptr: *const u8, amount: u64) -> u32 {
 
     let total_borrows = load_u64(b"ll_total_borrows");
     store_u64(b"ll_total_borrows", total_borrows.saturating_sub(repay_amount));
+
+    // Track repay count
+    store_u64(REPAY_COUNT_KEY, load_u64(REPAY_COUNT_KEY) + 1);
 
     reentrancy_exit();
     log_info("Repayment successful");
@@ -403,6 +416,9 @@ pub extern "C" fn liquidate(
     store_u64(b"ll_total_borrows", total_borrows.saturating_sub(actual_repay));
     let total_deposits = load_u64(b"ll_total_deposits");
     store_u64(b"ll_total_deposits", total_deposits.saturating_sub(actual_seized));
+
+    // Track liquidation count
+    store_u64(LIQUIDATION_COUNT_KEY, load_u64(LIQUIDATION_COUNT_KEY) + 1);
 
     reentrancy_exit();
     log_info("Liquidation executed");
@@ -733,6 +749,38 @@ pub extern "C" fn get_interest_rate() -> u32 {
     result.extend_from_slice(&u64_to_bytes(utilization));
     result.extend_from_slice(&u64_to_bytes(available));
     set_return_data(&result);
+    0
+}
+
+/// Get deposit count
+#[no_mangle]
+pub extern "C" fn get_deposit_count() -> u64 {
+    load_u64(DEPOSIT_COUNT_KEY)
+}
+
+/// Get borrow count
+#[no_mangle]
+pub extern "C" fn get_borrow_count() -> u64 {
+    load_u64(BORROW_COUNT_KEY)
+}
+
+/// Get liquidation count
+#[no_mangle]
+pub extern "C" fn get_liquidation_count() -> u64 {
+    load_u64(LIQUIDATION_COUNT_KEY)
+}
+
+/// Get lending platform stats [total_deposits(8), total_borrows(8), reserves(8), deposit_count(8), borrow_count(8), liquidation_count(8)]
+#[no_mangle]
+pub extern "C" fn get_platform_stats() -> u32 {
+    let mut buf = Vec::with_capacity(48);
+    buf.extend_from_slice(&u64_to_bytes(load_u64(b"ll_total_deposits")));
+    buf.extend_from_slice(&u64_to_bytes(load_u64(b"ll_total_borrows")));
+    buf.extend_from_slice(&u64_to_bytes(load_u64(b"ll_reserves")));
+    buf.extend_from_slice(&u64_to_bytes(load_u64(DEPOSIT_COUNT_KEY)));
+    buf.extend_from_slice(&u64_to_bytes(load_u64(BORROW_COUNT_KEY)));
+    buf.extend_from_slice(&u64_to_bytes(load_u64(LIQUIDATION_COUNT_KEY)));
+    set_return_data(&buf);
     0
 }
 

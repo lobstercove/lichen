@@ -80,6 +80,10 @@ const CLAIM_TIMEOUT_KEY: &[u8] = b"claim_timeout";
 const COMPLETE_TIMEOUT_KEY: &[u8] = b"complete_timeout";
 const CHALLENGE_PERIOD_KEY: &[u8] = b"challenge_period";
 
+const CM_COMPLETED_COUNT_KEY: &[u8] = b"cm_completed_count";
+const CM_PAYMENT_VOLUME_KEY: &[u8] = b"cm_payment_volume";
+const CM_DISPUTE_COUNT_KEY: &[u8] = b"cm_dispute_count";
+
 // ============================================================================
 // STORAGE KEY HELPERS
 // ============================================================================
@@ -553,6 +557,10 @@ pub extern "C" fn dispute_job(
     job_data[80] = JOB_DISPUTED;
     storage_set(&jk, &job_data);
 
+    // Track dispute stats
+    let cmd = storage_get(CM_DISPUTE_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    storage_set(CM_DISPUTE_COUNT_KEY, &u64_to_bytes(cmd + 1));
+
     log_info("Job disputed");
     0
 }
@@ -826,6 +834,12 @@ pub extern "C" fn release_payment(job_id: u64) -> u32 {
         .map(|d| bytes_to_u64(&d))
         .unwrap_or(0);
     storage_set(&ek, &u64_to_bytes(0));
+
+    // Track completion stats
+    let cmc = storage_get(CM_COMPLETED_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    storage_set(CM_COMPLETED_COUNT_KEY, &u64_to_bytes(cmc + 1));
+    let cmv = storage_get(CM_PAYMENT_VOLUME_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    storage_set(CM_PAYMENT_VOLUME_KEY, &u64_to_bytes(cmv.saturating_add(_escrowed)));
 
     log_info("Payment released to provider");
     reentrancy_exit();
@@ -1213,6 +1227,26 @@ pub extern "C" fn cm_unpause(caller_ptr: *const u8) -> u32 {
     if !is_admin(&caller) { return 1; }
     storage_set(b"cm_paused", &[0u8]);
     log_info("Compute market unpaused");
+    0
+}
+
+/// Get compute market stats [job_count(8), completed_count(8), payment_volume(8), dispute_count(8)]
+#[no_mangle]
+pub extern "C" fn get_platform_stats() -> u32 {
+    let mut buf = Vec::with_capacity(32);
+    buf.extend_from_slice(&u64_to_bytes(
+        storage_get(b"job_count").map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    ));
+    buf.extend_from_slice(&u64_to_bytes(
+        storage_get(CM_COMPLETED_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    ));
+    buf.extend_from_slice(&u64_to_bytes(
+        storage_get(CM_PAYMENT_VOLUME_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    ));
+    buf.extend_from_slice(&u64_to_bytes(
+        storage_get(CM_DISPUTE_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    ));
+    moltchain_sdk::set_return_data(&buf);
     0
 }
 

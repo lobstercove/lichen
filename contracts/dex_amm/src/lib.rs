@@ -48,6 +48,9 @@ const REENTRANCY_KEY: &[u8] = b"amm_reentrancy";
 const POOL_COUNT_KEY: &[u8] = b"amm_pool_count";
 const POSITION_COUNT_KEY: &[u8] = b"amm_pos_count";
 const PROTOCOL_FEE_KEY: &[u8] = b"amm_protocol_fee";
+const SWAP_COUNT_KEY: &[u8] = b"amm_swap_count";
+const TOTAL_VOLUME_KEY: &[u8] = b"amm_total_volume";
+const TOTAL_FEES_KEY: &[u8] = b"amm_total_fees";
 
 // ============================================================================
 // HELPERS
@@ -666,6 +669,11 @@ pub fn swap_exact_in(
     let fee = (amount_in as u128 * fee_bps as u128 / 10_000) as u64;
     accrue_fees_to_positions(pool_id, fee, is_token_a_in);
 
+    // Track global swap count, volume, and fees
+    save_u64(SWAP_COUNT_KEY, load_u64(SWAP_COUNT_KEY) + 1);
+    save_u64(TOTAL_VOLUME_KEY, load_u64(TOTAL_VOLUME_KEY).saturating_add(amount_in));
+    save_u64(TOTAL_FEES_KEY, load_u64(TOTAL_FEES_KEY).saturating_add(fee));
+
     // Return amount out
     moltchain_sdk::set_return_data(&u64_to_bytes(amount_out));
     log_info("Swap executed");
@@ -995,6 +1003,28 @@ pub extern "C" fn call() {
                 );
                 moltchain_sdk::set_return_data(&u64_to_bytes(r));
             }
+        }
+        16 => {
+            // get_total_volume — returns cumulative swap volume
+            moltchain_sdk::set_return_data(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
+        }
+        17 => {
+            // get_swap_count — returns total number of swaps
+            moltchain_sdk::set_return_data(&u64_to_bytes(load_u64(SWAP_COUNT_KEY)));
+        }
+        18 => {
+            // get_total_fees_collected — returns cumulative fees
+            moltchain_sdk::set_return_data(&u64_to_bytes(load_u64(TOTAL_FEES_KEY)));
+        }
+        19 => {
+            // get_amm_stats — returns aggregated stats [pool_count, position_count, swap_count, total_volume, total_fees]
+            let mut buf = Vec::with_capacity(40);
+            buf.extend_from_slice(&u64_to_bytes(load_u64(POOL_COUNT_KEY)));
+            buf.extend_from_slice(&u64_to_bytes(load_u64(POSITION_COUNT_KEY)));
+            buf.extend_from_slice(&u64_to_bytes(load_u64(SWAP_COUNT_KEY)));
+            buf.extend_from_slice(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
+            buf.extend_from_slice(&u64_to_bytes(load_u64(TOTAL_FEES_KEY)));
+            moltchain_sdk::set_return_data(&buf);
         }
         _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
     }

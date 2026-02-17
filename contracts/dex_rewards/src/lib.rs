@@ -55,6 +55,9 @@ const REFERRAL_RATE_KEY: &[u8] = b"rew_ref_rate";
 const MOLTCOIN_ADDRESS_KEY: &[u8] = b"rew_molt_addr";
 const REWARDS_POOL_KEY: &[u8] = b"rew_pool_addr";
 const AUTHORIZED_CALLER_PREFIX: &[u8] = b"rew_auth_";
+const TOTAL_VOLUME_KEY: &[u8] = b"rew_total_volume";
+const TRADE_COUNT_KEY: &[u8] = b"rew_trade_count";
+const TRADER_COUNT_KEY: &[u8] = b"rew_trader_count";
 
 // ============================================================================
 // HELPERS
@@ -193,7 +196,15 @@ pub fn record_trade(trader: *const u8, fee_paid: u64, volume: u64) -> u32 {
 
     // Update cumulative volume
     let current_vol = load_u64(&trader_volume_key(&t));
+    if current_vol == 0 {
+        // First trade for this trader — increment unique trader count
+        save_u64(TRADER_COUNT_KEY, load_u64(TRADER_COUNT_KEY) + 1);
+    }
     save_u64(&trader_volume_key(&t), current_vol + volume);
+
+    // Track global volume and trade count
+    save_u64(TOTAL_VOLUME_KEY, load_u64(TOTAL_VOLUME_KEY).saturating_add(volume));
+    save_u64(TRADE_COUNT_KEY, load_u64(TRADE_COUNT_KEY) + 1);
 
     // Calculate reward based on tier
     let tier = get_tier(current_vol + volume);
@@ -570,6 +581,24 @@ pub extern "C" fn call() {
         // 15: get_total_distributed
         15 => {
             moltchain_sdk::set_return_data(&u64_to_bytes(get_total_distributed()));
+        }
+        16 => {
+            // get_trader_count — unique traders who have earned rewards
+            moltchain_sdk::set_return_data(&u64_to_bytes(load_u64(TRADER_COUNT_KEY)));
+        }
+        17 => {
+            // get_total_volume — cumulative volume recorded for rewards
+            moltchain_sdk::set_return_data(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
+        }
+        18 => {
+            // get_reward_stats — [trade_count, trader_count, total_volume, total_distributed, epoch]
+            let mut buf = Vec::with_capacity(40);
+            buf.extend_from_slice(&u64_to_bytes(load_u64(TRADE_COUNT_KEY)));
+            buf.extend_from_slice(&u64_to_bytes(load_u64(TRADER_COUNT_KEY)));
+            buf.extend_from_slice(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
+            buf.extend_from_slice(&u64_to_bytes(get_total_distributed()));
+            buf.extend_from_slice(&u64_to_bytes(load_u64(REWARD_EPOCH_KEY)));
+            moltchain_sdk::set_return_data(&buf);
         }
         _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
     }

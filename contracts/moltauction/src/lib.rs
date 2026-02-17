@@ -56,6 +56,10 @@ const SNIPE_EXTENSION: u64 = 300; // 5 more minutes
 /// Maximum total extensions to prevent infinite auctions
 const MAX_EXTENSIONS: u64 = 12; // max 1 hour of extensions (12 × 5min)
 
+const MA_GLOBAL_AUCTION_COUNT_KEY: &[u8] = b"ma_auction_count";
+const MA_GLOBAL_VOLUME_KEY: &[u8] = b"ma_total_volume";
+const MA_GLOBAL_SALES_KEY: &[u8] = b"ma_total_sales";
+
 fn is_ma_paused() -> bool {
     storage_get(MA_PAUSE_KEY).map(|d| d.first().copied() == Some(1)).unwrap_or(false)
 }
@@ -437,6 +441,12 @@ pub extern "C" fn finalize_auction(
     updated_auction[168] = 0;
     storage_set(key.as_bytes(), &updated_auction);
     
+    // Track auction stats
+    let mac = storage_get(MA_GLOBAL_AUCTION_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    storage_set(MA_GLOBAL_AUCTION_COUNT_KEY, &u64_to_bytes(mac + 1));
+    let mav = storage_get(MA_GLOBAL_VOLUME_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    storage_set(MA_GLOBAL_VOLUME_KEY, &u64_to_bytes(mav.saturating_add(highest_bid)));
+
     log_info("Auction finalized successfully!");
     reentrancy_exit();
     1
@@ -589,6 +599,12 @@ pub extern "C" fn accept_offer(
     updated_offer[120] = 0;
     storage_set(key.as_bytes(), &updated_offer);
     
+    // Track sales stats
+    let mas = storage_get(MA_GLOBAL_SALES_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    storage_set(MA_GLOBAL_SALES_KEY, &u64_to_bytes(mas + 1));
+    let mav = storage_get(MA_GLOBAL_VOLUME_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    storage_set(MA_GLOBAL_VOLUME_KEY, &u64_to_bytes(mav.saturating_add(offer_amount)));
+
     log_info("Offer accepted!");
     1
 }
@@ -873,6 +889,23 @@ pub extern "C" fn get_auction_info(
     info.extend_from_slice(&u64_to_bytes(reserve));
     info.extend_from_slice(&u64_to_bytes(extensions));
     moltchain_sdk::set_return_data(&info);
+    0
+}
+
+/// Get auction stats [auction_count(8), total_volume(8), total_sales(8)]
+#[no_mangle]
+pub extern "C" fn get_auction_stats() -> u32 {
+    let mut buf = Vec::with_capacity(24);
+    buf.extend_from_slice(&u64_to_bytes(
+        storage_get(MA_GLOBAL_AUCTION_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    ));
+    buf.extend_from_slice(&u64_to_bytes(
+        storage_get(MA_GLOBAL_VOLUME_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    ));
+    buf.extend_from_slice(&u64_to_bytes(
+        storage_get(MA_GLOBAL_SALES_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0)
+    ));
+    moltchain_sdk::set_return_data(&buf);
     0
 }
 
