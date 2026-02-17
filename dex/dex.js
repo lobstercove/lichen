@@ -384,7 +384,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     const navLinks = document.querySelectorAll('.nav-menu a[data-view]');
     const views = document.querySelectorAll('.dex-main');
-    function switchView(v) { state.currentView = v; views.forEach(el => el.classList.toggle('hidden', el.id !== `view-${v}`)); navLinks.forEach(l => l.classList.toggle('active', l.dataset.view === v)); if (v === 'trade') drawChart(); if (v === 'predict') { loadPredictionStats(); loadPredictionMarkets(); loadPredictionPositions(); } }
+    function switchView(v) { state.currentView = v; views.forEach(el => el.classList.toggle('hidden', el.id !== `view-${v}`)); navLinks.forEach(l => l.classList.toggle('active', l.dataset.view === v)); if (v === 'trade') { drawChart(); loadTradeHistory(); loadPositionsTab(); } if (v === 'predict') { loadPredictionStats(); loadPredictionMarkets(); loadPredictionPositions(); } if (v === 'pool') { loadPoolStats(); loadPools(); loadLPPositions(); } if (v === 'margin') { loadMarginStats(); loadMarginPositions(); } if (v === 'rewards') { loadRewardsStats(); } if (v === 'governance') { loadGovernanceStats(); loadProposals(); } }
     navLinks.forEach(l => l.addEventListener('click', e => { e.preventDefault(); switchView(l.dataset.view); }));
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -644,7 +644,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const leverageSlider = document.getElementById('leverageSlider'), leverageDisplay = document.querySelector('.leverage-display');
     if (leverageSlider) leverageSlider.addEventListener('input', () => { state.leverageValue = parseFloat(leverageSlider.value); if (leverageDisplay) leverageDisplay.textContent = `${state.leverageValue}x`; updateMarginInfo(); });
     document.querySelectorAll('.margin-type').forEach(btn => btn.addEventListener('click', () => { document.querySelectorAll('.margin-type').forEach(b => b.classList.remove('active')); btn.classList.add('active'); state.marginType = btn.dataset.type; if (leverageSlider) leverageSlider.max = state.marginType === 'isolated' ? '5' : '3'; if (state.leverageValue > parseFloat(leverageSlider?.max)) { state.leverageValue = parseFloat(leverageSlider.max); leverageSlider.value = state.leverageValue; if (leverageDisplay) leverageDisplay.textContent = `${state.leverageValue}x`; } updateMarginInfo(); }));
-    document.querySelectorAll('.side-btn').forEach(btn => btn.addEventListener('click', () => { document.querySelectorAll('.side-btn').forEach(b => b.classList.remove('active')); btn.classList.add('active'); state.marginSide = btn.classList.contains('long-btn') ? 'long' : 'short'; }));
+    document.querySelectorAll('.side-btn').forEach(btn => btn.addEventListener('click', () => { document.querySelectorAll('.side-btn').forEach(b => b.classList.remove('active')); btn.classList.add('active'); state.marginSide = btn.classList.contains('long-btn') ? 'long' : 'short'; const ob = document.getElementById('marginOpenBtn'); if (ob) { ob.textContent = `Open ${state.marginSide === 'long' ? 'Long' : 'Short'}`; ob.className = `btn btn-full ${state.marginSide === 'long' ? 'btn-buy' : 'btn-sell'}`; } }));
 
     function updateMarginInfo() {
         const e = document.getElementById('marginEntry'), l = document.getElementById('marginLiqPrice'), r = document.getElementById('marginRatio');
@@ -652,6 +652,402 @@ document.addEventListener('DOMContentLoaded', () => {
         if (l) l.textContent = formatPrice(state.marginSide === 'long' ? state.lastPrice * (1 - 1 / state.leverageValue * 0.9) : state.lastPrice * (1 + 1 / state.leverageValue * 0.9));
         if (r) r.textContent = `${(100 / state.leverageValue).toFixed(1)}%`;
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Pool View — Load data from API with mock fallback
+    // ═══════════════════════════════════════════════════════════════════════
+    async function loadPoolStats() {
+        try {
+            const { data } = await api.get('/stats/amm');
+            if (data) {
+                const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+                el('poolTvl', formatVolume(data.total_volume || 0));
+                el('poolVolume24h', formatVolume(data.swap_count ? data.swap_count * 100 : 0));
+                el('poolFees24h', formatVolume(data.total_fees || 0));
+                el('poolCount', data.pool_count ?? '—');
+            }
+        } catch { /* keep static fallback */ }
+    }
+
+    async function loadPools() {
+        try {
+            const { data } = await api.get('/pools');
+            if (Array.isArray(data) && data.length > 0) {
+                const tbody = document.getElementById('poolTableBody');
+                if (tbody) {
+                    tbody.innerHTML = data.map(p => {
+                        const pair = `${p.token_a_symbol || 'Token A'}/${p.token_b_symbol || 'Token B'}`;
+                        const fee = p.fee_tier ? (p.fee_tier / 100).toFixed(2) + '%' : '0.30%';
+                        const tvl = formatVolume(p.tvl || 0);
+                        const vol = formatVolume(p.volume_24h || 0);
+                        const apr = p.apr ? p.apr.toFixed(1) + '%' : '—';
+                        return `<tr class="pool-row" data-pool-id="${p.pool_id || p.id || 0}">
+                            <td class="pool-pair"><span class="token-pair-icons"><span class="mini-icon">${(p.token_a_symbol || 'A')[0]}</span><span class="mini-icon">${(p.token_b_symbol || 'B')[0]}</span></span> ${pair}</td>
+                            <td><span class="fee-badge">${fee}</span></td>
+                            <td class="mono-value">${tvl}</td>
+                            <td class="mono-value">${vol}</td>
+                            <td class="apr-value">${apr}</td>
+                            <td><button class="btn btn-small btn-secondary pool-add-btn" data-pool-id="${p.pool_id || p.id || 0}">Add</button></td>
+                        </tr>`;
+                    }).join('');
+                }
+                return;
+            }
+        } catch { /* keep static fallback */ }
+    }
+
+    async function loadLPPositions() {
+        if (!state.connected) return;
+        try {
+            const { data } = await api.get(`/pools/positions?address=${wallet.address}`);
+            if (Array.isArray(data) && data.length > 0) {
+                const container = document.getElementById('pool-positions');
+                if (container) {
+                    container.innerHTML = data.map(pos => `
+                        <div class="lp-position-card" data-position-id="${pos.position_id || 0}">
+                            <div class="lp-pos-header">
+                                <div class="lp-pos-pair">
+                                    <span class="lp-pair-name">${pos.pair || 'Pool'}</span>
+                                    <span class="fee-badge">${pos.fee_tier ? (pos.fee_tier / 100).toFixed(2) + '%' : '0.30%'}</span>
+                                </div>
+                                <span class="range-badge ${pos.in_range ? 'in-range' : 'out-range'}"><i class="fas fa-circle"></i> ${pos.in_range ? 'In Range' : 'Out of Range'}</span>
+                            </div>
+                            <div class="lp-pos-details">
+                                <div class="lp-detail"><span>Range</span><span class="mono-value">${formatPrice(pos.lower_price || 0)} — ${formatPrice(pos.upper_price || 0)}</span></div>
+                                <div class="lp-detail"><span>Liquidity</span><span class="mono-value">${formatVolume(pos.liquidity_usd || 0)}</span></div>
+                                <div class="lp-detail"><span>Uncollected Fees</span><span class="mono-value accent-text">${formatVolume(pos.uncollected_fees || 0)}</span></div>
+                            </div>
+                            <div class="lp-pos-actions">
+                                <button class="btn btn-small btn-primary lp-collect-btn" data-position-id="${pos.position_id || 0}">Collect Fees</button>
+                                <button class="btn btn-small btn-secondary lp-remove-btn" data-position-id="${pos.position_id || 0}">Remove</button>
+                                <button class="btn btn-small btn-secondary lp-add-btn" data-position-id="${pos.position_id || 0}">Add More</button>
+                            </div>
+                        </div>
+                    `).join('');
+                }
+                return;
+            }
+        } catch { /* keep static fallback */ }
+    }
+
+    // Add Liquidity submit handler
+    const addLiqBtn = document.getElementById('addLiqBtn');
+    if (addLiqBtn) addLiqBtn.addEventListener('click', async () => {
+        if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
+        const amtA = parseFloat(document.getElementById('liqAmountA')?.value) || 0;
+        const amtB = parseFloat(document.getElementById('liqAmountB')?.value) || 0;
+        if (!amtA && !amtB) { showNotification('Enter deposit amounts', 'warning'); return; }
+        const minPrice = parseFloat(document.getElementById('liqMinPrice')?.value) || 0;
+        const maxPrice = parseFloat(document.getElementById('liqMaxPrice')?.value) || 0;
+        const fullRange = document.getElementById('fullRangeToggle')?.checked;
+        addLiqBtn.disabled = true; addLiqBtn.textContent = 'Adding...';
+        try {
+            const poolSelect = document.getElementById('liqPoolSelect');
+            const poolIdx = poolSelect ? poolSelect.selectedIndex : 0;
+            await wallet.sendTransaction([{
+                programId: '0000000000000000000000000000000000000000000000000000000000000002', // dex_amm
+                data: JSON.stringify({ op: 'add_liquidity', pool_id: poolIdx, amount_a: Math.round(amtA * 1e9), amount_b: Math.round(amtB * 1e9), lower_tick: fullRange ? -887272 : Math.round(minPrice * 1e6), upper_tick: fullRange ? 887272 : Math.round(maxPrice * 1e6) })
+            }]);
+            showNotification(`Liquidity added: ${formatAmount(amtA)} + ${formatAmount(amtB)}`, 'success');
+        } catch (e) { showNotification(`Add liquidity: ${e.message}`, 'error'); }
+        finally { addLiqBtn.disabled = false; addLiqBtn.textContent = 'Add Liquidity'; }
+    });
+
+    // Fee tier selector
+    document.querySelectorAll('.fee-tier-btn').forEach(btn => btn.addEventListener('click', () => {
+        document.querySelectorAll('.fee-tier-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+    }));
+
+    // Pool filter pills
+    document.querySelectorAll('.pool-table-panel .filter-pill').forEach(btn => btn.addEventListener('click', () => {
+        document.querySelectorAll('.pool-table-panel .filter-pill').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+    }));
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Margin — Open/Close Positions + Load from API
+    // ═══════════════════════════════════════════════════════════════════════
+    async function loadMarginStats() {
+        try {
+            const { data } = await api.get('/stats/margin');
+            if (data) {
+                const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+                el('marginInsurance', formatVolume(data.insurance_fund || 0));
+            }
+        } catch { /* keep static fallback */ }
+        // Load margin info
+        try {
+            const { data } = await api.get('/margin/info');
+            if (data) {
+                const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+                if (data.max_leverage) { const ls = document.getElementById('leverageSlider'); if (ls) ls.max = String(data.max_leverage); }
+            }
+        } catch { /* keep defaults */ }
+    }
+
+    async function loadMarginPositions() {
+        if (!state.connected) return;
+        try {
+            const { data } = await api.get(`/margin/positions?trader=${wallet.address}`);
+            if (Array.isArray(data) && data.length > 0) {
+                const container = document.getElementById('marginPositionsList');
+                if (container) {
+                    container.className = 'margin-positions-list';
+                    container.innerHTML = data.map(pos => {
+                        const side = pos.side === 'long' || pos.is_long ? 'Long' : 'Short';
+                        const sideClass = side === 'Long' ? 'side-buy' : 'side-sell';
+                        const pnl = pos.unrealized_pnl || 0;
+                        return `<div class="margin-pos-row">
+                            <div class="margin-pos-info">
+                                <span class="${sideClass}">${side} ${pos.pair || 'MOLT/mUSD'}</span>
+                                <span class="mono-value">${pos.leverage || state.leverageValue}x</span>
+                            </div>
+                            <div class="margin-pos-details">
+                                <span>Size: ${formatAmount(pos.size || 0)}</span>
+                                <span>Entry: ${formatPrice(pos.entry_price || 0)}</span>
+                                <span class="${pnl >= 0 ? 'positive' : 'negative'}">P&L: ${pnl >= 0 ? '+' : ''}${formatPrice(pnl)}</span>
+                            </div>
+                            <button class="btn btn-small btn-secondary margin-close-btn" data-position-id="${pos.position_id || pos.id || 0}">Close</button>
+                        </div>`;
+                    }).join('');
+                    // Bind close buttons
+                    container.querySelectorAll('.margin-close-btn').forEach(btn => btn.addEventListener('click', async () => {
+                        btn.disabled = true;
+                        try {
+                            await api.post('/margin/close', { positionId: parseInt(btn.dataset.positionId), trader: wallet.address });
+                            showNotification('Position closed', 'success');
+                            await loadMarginPositions();
+                        } catch (e) { showNotification(`Close failed: ${e.message}`, 'error'); }
+                        btn.disabled = false;
+                    }));
+                }
+                // Update equity stats
+                let totalMargin = 0, totalPnl = 0;
+                data.forEach(p => { totalMargin += (p.margin || 0); totalPnl += (p.unrealized_pnl || 0); });
+                const eq = (balances.mUSD?.available || 0) + totalPnl;
+                const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+                el('marginEquity', formatVolume(eq));
+                el('marginUsed', formatVolume(totalMargin));
+                el('marginAvailable', formatVolume(eq - totalMargin));
+                return;
+            }
+        } catch { /* keep empty state */ }
+    }
+
+    // Trade History tab (bottom panel of Trade view)
+    async function loadTradeHistory() {
+        if (!state.connected) return;
+        const container = document.getElementById('content-history');
+        if (!container) return;
+        try {
+            const { data } = await api.get(`/pairs/${state.activePairId}/trades?limit=50&trader=${wallet.address}`);
+            if (Array.isArray(data) && data.length > 0) {
+                container.innerHTML = `<table class="orders-table"><thead><tr><th>Pair</th><th>Side</th><th>Price</th><th>Amount</th><th>Total</th><th>Time</th></tr></thead><tbody>${
+                    data.map(tr => `<tr><td>${state.activePair?.id || ''}</td><td class="side-${tr.side || 'buy'}">${(tr.side || 'buy').toUpperCase()}</td><td class="mono-value">${formatPrice(tr.price || 0)}</td><td class="mono-value">${formatAmount(tr.quantity || tr.amount || 0)}</td><td class="mono-value">${formatPrice((tr.price || 0) * (tr.quantity || tr.amount || 0))}</td><td class="mono-value" style="color:var(--text-muted)">${tr.timestamp ? new Date(tr.timestamp).toLocaleString() : ''}</td></tr>`).join('')
+                }</tbody></table>`;
+                return;
+            }
+        } catch { /* no history from API */ }
+    }
+
+    // Margin positions tab (bottom panel of Trade view)
+    async function loadPositionsTab() {
+        if (!state.connected) return;
+        const container = document.getElementById('content-positions');
+        if (!container) return;
+        try {
+            const { data } = await api.get(`/margin/positions?trader=${wallet.address}`);
+            if (Array.isArray(data) && data.length > 0) {
+                container.innerHTML = `<table class="orders-table"><thead><tr><th>Pair</th><th>Side</th><th>Size</th><th>Entry</th><th>Mark</th><th>P&L</th><th>Lev</th><th></th></tr></thead><tbody>${
+                    data.map(p => {
+                        const side = p.side === 'long' || p.is_long ? 'Long' : 'Short';
+                        const pnl = p.unrealized_pnl || 0;
+                        return `<tr><td>${p.pair || state.activePair?.id || ''}</td><td class="side-${side.toLowerCase()}">${side}</td><td class="mono-value">${formatAmount(p.size || 0)}</td><td class="mono-value">${formatPrice(p.entry_price || 0)}</td><td class="mono-value">${formatPrice(p.mark_price || state.lastPrice)}</td><td class="mono-value ${pnl >= 0 ? 'positive' : 'negative'}">${pnl >= 0 ? '+' : ''}${formatPrice(pnl)}</td><td>${p.leverage || '2'}x</td><td><button class="btn btn-small btn-secondary">Close</button></td></tr>`;
+                    }).join('')
+                }</tbody></table>`;
+                return;
+            }
+        } catch { /* no positions from API */ }
+    }
+
+    // Margin Open Position submit
+    const marginOpenBtn = document.getElementById('marginOpenBtn');
+    if (marginOpenBtn) marginOpenBtn.addEventListener('click', async () => {
+        if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
+        const size = parseFloat(document.getElementById('marginSize')?.value) || 0;
+        const margin = parseFloat(document.getElementById('marginAmount')?.value) || 0;
+        if (!size || !margin) { showNotification('Enter size and margin', 'warning'); return; }
+        const pairSelect = document.getElementById('marginPairSelect');
+        const pairId = pairSelect ? parseInt(pairSelect.value) : 0;
+        marginOpenBtn.disabled = true; marginOpenBtn.textContent = 'Opening...';
+        try {
+            await api.post('/margin/open', { pairId, side: state.marginSide, size: Math.round(size * 1e9), leverage: state.leverageValue, margin: Math.round(margin * 1e9), trader: wallet.address });
+            showNotification(`${state.marginSide.toUpperCase()} position opened: ${formatAmount(size)} @ ${state.leverageValue}x`, 'success');
+            await loadMarginPositions();
+            if (document.getElementById('marginSize')) document.getElementById('marginSize').value = '';
+            if (document.getElementById('marginAmount')) document.getElementById('marginAmount').value = '';
+        } catch (e) { showNotification(`Open position: ${e.message}`, 'error'); }
+        finally { marginOpenBtn.disabled = false; marginOpenBtn.textContent = `Open ${state.marginSide === 'long' ? 'Long' : 'Short'}`; }
+    });
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Rewards View — Load from API
+    // ═══════════════════════════════════════════════════════════════════════
+    async function loadRewardsStats() {
+        // Global stats
+        try {
+            const { data } = await api.get('/stats/rewards');
+            if (data) {
+                const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+                el('rewardsTotalDist', formatAmount(data.total_distributed ? data.total_distributed / 1e9 : 0) + ' MOLT');
+            }
+        } catch { /* keep static */ }
+        // User rewards
+        if (!state.connected) return;
+        try {
+            const { data } = await api.get(`/rewards/${wallet.address}`);
+            if (data) {
+                const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+                const pending = data.pending ? data.pending / 1e9 : 0;
+                el('rewardsPending', formatAmount(pending) + ' MOLT');
+                el('rewardsPendingUsd', `≈ $${formatAmount(pending * state.lastPrice)}`);
+                const tierNames = ['Bronze', 'Silver', 'Gold', 'Diamond'];
+                const tierNum = data.tier ?? 1;
+                const tierName = tierNames[tierNum] || 'Bronze';
+                el('rewardsTier', `<span class="tier-badge ${tierName.toLowerCase()}">${tierName}</span>`);
+                const tierEl = document.getElementById('rewardsTier');
+                if (tierEl) tierEl.innerHTML = `<span class="tier-badge ${tierName.toLowerCase()}">${tierName}</span>`;
+                const multipliers = [1.0, 1.5, 2.0, 3.0];
+                el('rewardsMultiplier', `${multipliers[tierNum] || 1.0}x`);
+                el('rewardsMultiplierSub', `${tierName} tier bonus`);
+            }
+        } catch { /* keep static fallback */ }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Governance View — Load from API + Submit Proposal
+    // ═══════════════════════════════════════════════════════════════════════
+    async function loadGovernanceStats() {
+        try {
+            const { data } = await api.get('/stats/governance');
+            if (data) {
+                const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+                el('govTotalProposals', data.proposal_count ?? '—');
+                el('govActiveProposals', data.active_proposals ?? '—');
+            }
+        } catch { /* keep static fallback */ }
+    }
+
+    async function loadProposals() {
+        try {
+            const { data } = await api.get('/governance/proposals');
+            if (Array.isArray(data) && data.length > 0) {
+                const container = document.getElementById('proposalsList');
+                if (container) {
+                    container.innerHTML = data.map(p => {
+                        const status = p.status || 'active';
+                        const yesVotes = p.yes_votes || 0;
+                        const noVotes = p.no_votes || 0;
+                        const totalVotes = yesVotes + noVotes;
+                        const yesPct = totalVotes > 0 ? Math.round(yesVotes / totalVotes * 100) : 50;
+                        const statusClass = status === 'active' ? 'active-proposal' : status === 'passed' ? 'passed-proposal' : 'executed-proposal';
+                        return `<div class="proposal-card ${statusClass}" data-proposal-id="${p.proposal_id || p.id || 0}">
+                            <div class="proposal-top-row">
+                                <div class="proposal-status-badge ${status}">${status.charAt(0).toUpperCase() + status.slice(1)}</div>
+                                <span class="proposal-type-tag">${p.proposal_type || 'New Pair'}</span>
+                                <span class="proposal-id">#${p.proposal_id || p.id || 0}</span>
+                            </div>
+                            <h4>${p.title || p.description || 'Proposal'}</h4>
+                            <p class="proposal-desc text-secondary">${p.description || ''}</p>
+                            <div class="proposal-votes">
+                                <div class="vote-bar"><div class="vote-yes" style="width: ${yesPct}%"></div></div>
+                                <div class="vote-counts">
+                                    <span class="vote-yes-text"><i class="fas fa-check"></i> ${yesPct}% Yes (${yesVotes} votes)</span>
+                                    <span class="vote-no-text"><i class="fas fa-times"></i> ${100 - yesPct}% No (${noVotes} votes)</span>
+                                </div>
+                            </div>
+                            <div class="proposal-footer">
+                                <span class="proposal-time"><i class="fas fa-clock"></i> ${p.time_remaining || ''}</span>
+                                ${status === 'active' ? `<div class="proposal-actions">
+                                    <button class="btn btn-small btn-primary vote-btn vote-for">Vote Yes</button>
+                                    <button class="btn btn-small btn-secondary vote-btn vote-against">Vote No</button>
+                                </div>` : ''}
+                            </div>
+                        </div>`;
+                    }).join('');
+                    // Rebind vote buttons
+                    bindVoteButtons();
+                }
+                return;
+            }
+        } catch { /* keep static fallback */ }
+        // Bind vote buttons on static content
+        bindVoteButtons();
+    }
+
+    function bindVoteButtons() {
+        document.querySelectorAll('.vote-btn').forEach(btn => btn.addEventListener('click', async () => {
+            if (!state.connected) { showNotification('Connect wallet to vote', 'warning'); return; }
+            const card = btn.closest('.proposal-card');
+            const pid = card?.dataset?.proposalId;
+            const title = card?.querySelector('h4')?.textContent || '';
+            btn.disabled = true; btn.style.opacity = '0.5';
+            try { if (pid) await api.post(`/governance/proposals/${pid}/vote`, { voter: wallet.address, support: btn.classList.contains('vote-for'), amount: 1000 }); } catch { /* graceful */ }
+            showNotification(`Vote submitted on "${title}"`, 'success');
+        }));
+    }
+
+    // Proposal type toggle
+    const proposalTypeBtns = document.querySelectorAll('.proposal-type-btn');
+    const pairFields = document.getElementById('pairFields');
+    const feeFields = document.getElementById('feeFields');
+    proposalTypeBtns.forEach(btn => btn.addEventListener('click', () => {
+        proposalTypeBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const ptype = btn.dataset.ptype;
+        if (pairFields) pairFields.classList.toggle('hidden', ptype !== 'pair');
+        if (feeFields) feeFields.classList.toggle('hidden', ptype !== 'fee');
+    }));
+
+    // Governance filter pills
+    document.querySelectorAll('.proposals-section .filter-pill').forEach(btn => btn.addEventListener('click', () => {
+        document.querySelectorAll('.proposals-section .filter-pill').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const filter = btn.dataset.filter;
+        document.querySelectorAll('.proposal-card').forEach(card => {
+            if (filter === 'all') card.style.display = '';
+            else card.style.display = card.classList.contains('active-proposal') ? '' : 'none';
+        });
+    }));
+
+    // Submit Proposal handler
+    const submitProposalBtn = document.getElementById('submitProposalBtn');
+    if (submitProposalBtn) submitProposalBtn.addEventListener('click', async () => {
+        if (!state.connected) { showNotification('Connect wallet to propose', 'warning'); return; }
+        const activeType = document.querySelector('.proposal-type-btn.active');
+        const ptype = activeType?.dataset?.ptype || 'pair';
+        submitProposalBtn.disabled = true; submitProposalBtn.textContent = 'Submitting...';
+        try {
+            if (ptype === 'pair') {
+                const base = document.getElementById('propBaseToken')?.value?.trim();
+                const quote = document.getElementById('propQuoteToken')?.value?.trim();
+                if (!base || !quote) { showNotification('Enter base and quote tokens', 'warning'); return; }
+                await api.post('/governance/proposals', { type: 'new_pair', base_token: base, quote_token: quote, proposer: wallet.address });
+                showNotification(`Proposal submitted: List ${base}/${quote}`, 'success');
+            } else if (ptype === 'fee') {
+                const pair = document.getElementById('propFeePair')?.value || 'MOLT/mUSD';
+                const makerFee = parseInt(document.getElementById('propMakerFee')?.value) || -1;
+                const takerFee = parseInt(document.getElementById('propTakerFee')?.value) || 5;
+                await api.post('/governance/proposals', { type: 'fee_change', pair, maker_fee: makerFee, taker_fee: takerFee, proposer: wallet.address });
+                showNotification(`Fee change proposal submitted for ${pair}`, 'success');
+            } else {
+                await api.post('/governance/proposals', { type: ptype, proposer: wallet.address });
+                showNotification('Proposal submitted', 'success');
+            }
+        } catch (e) { showNotification(`Proposal failed: ${e.message}`, 'error'); }
+        finally { submitProposalBtn.disabled = false; submitProposalBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Proposal'; }
+    });
 
     // ═══════════════════════════════════════════════════════════════════════
     // PredictionReef — Predict View (Live API + Mock Fallback)
@@ -1192,16 +1588,8 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // ═══════════════════════════════════════════════════════════════════════
-    // Governance + Rewards — wired to API
+    // Governance + Rewards — claim handlers
     // ═══════════════════════════════════════════════════════════════════════
-    document.querySelectorAll('.vote-btn').forEach(btn => btn.addEventListener('click', async () => {
-        if (!state.connected) { showNotification('Connect wallet to vote', 'warning'); return; }
-        const card = btn.closest('.proposal-card'), title = card?.querySelector('h4')?.textContent || '';
-        btn.disabled = true; btn.style.opacity = '0.5';
-        try { const pid = card?.dataset?.proposalId; if (pid) await api.post(`/governance/proposals/${pid}/vote`, { voter: wallet.address, support: btn.classList.contains('vote-for'), amount: 1000 }); } catch { /* graceful */ }
-        showNotification(`Vote submitted on "${title}"`, 'success');
-    }));
-
     document.querySelectorAll('.claim-btn, .btn-claim').forEach(btn => btn.addEventListener('click', async () => {
         if (!state.connected) { showNotification('Connect wallet to claim', 'warning'); return; }
         try { const { data } = await api.get(`/rewards/${wallet.address}`); showNotification(data?.pending > 0 ? `Rewards claimed! ${formatAmount(data.pending / 1e9)} MOLT` : 'No rewards to claim', data?.pending > 0 ? 'success' : 'info'); }
@@ -1240,6 +1628,18 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         if (state.currentView === 'predict') {
             try { await loadPredictionStats(); } catch { /* API unavailable */ }
+        }
+        if (state.currentView === 'pool') {
+            try { await loadPoolStats(); } catch { /* API unavailable */ }
+        }
+        if (state.currentView === 'margin') {
+            try { await loadMarginStats(); await loadMarginPositions(); } catch { /* API unavailable */ }
+        }
+        if (state.currentView === 'rewards') {
+            try { await loadRewardsStats(); } catch { /* API unavailable */ }
+        }
+        if (state.currentView === 'governance') {
+            try { await loadGovernanceStats(); } catch { /* API unavailable */ }
         }
     }, 5000);
 

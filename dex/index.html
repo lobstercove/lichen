@@ -922,22 +922,22 @@
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-lock"></i></div>
                     <div class="pool-stat-label">Total Value Locked</div>
-                    <div class="pool-stat-value">$12.4M</div>
+                    <div class="pool-stat-value" id="poolTvl">$12.4M</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-exchange-alt"></i></div>
                     <div class="pool-stat-label">24h Volume</div>
-                    <div class="pool-stat-value">$2.4M</div>
+                    <div class="pool-stat-value" id="poolVolume24h">$2.4M</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-coins"></i></div>
                     <div class="pool-stat-label">24h Fees</div>
-                    <div class="pool-stat-value">$7,200</div>
+                    <div class="pool-stat-value" id="poolFees24h">$7,200</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-cubes"></i></div>
                     <div class="pool-stat-label">Active Pools</div>
-                    <div class="pool-stat-value">24</div>
+                    <div class="pool-stat-value" id="poolCount">24</div>
                 </div>
             </div>
 
@@ -1145,19 +1145,19 @@
             <div class="margin-stats-row">
                 <div class="pool-stat-card">
                     <div class="pool-stat-label">Account Equity</div>
-                    <div class="pool-stat-value">$16,083.27</div>
+                    <div class="pool-stat-value" id="marginEquity">$16,083.27</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="pool-stat-label">Used Margin</div>
-                    <div class="pool-stat-value">$0.00</div>
+                    <div class="pool-stat-value" id="marginUsed">$0.00</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="pool-stat-label">Available Margin</div>
-                    <div class="pool-stat-value">$16,083.27</div>
+                    <div class="pool-stat-value" id="marginAvailable">$16,083.27</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="pool-stat-label">Insurance Fund</div>
-                    <div class="pool-stat-value">$847K</div>
+                    <div class="pool-stat-value" id="marginInsurance">$847K</div>
                 </div>
             </div>
 
@@ -1170,12 +1170,12 @@
                     </div>
                     <div class="form-group">
                         <label>Pair</label>
-                        <select class="form-select">
-                            <option>MOLT/mUSD</option>
-                            <option>wSOL/mUSD</option>
-                            <option>wETH/mUSD</option>
-                            <option>wSOL/MOLT</option>
-                            <option>REEF/MOLT</option>
+                        <select class="form-select" id="marginPairSelect">
+                            <option value="0">MOLT/mUSD</option>
+                            <option value="1">wSOL/mUSD</option>
+                            <option value="2">wETH/mUSD</option>
+                            <option value="4">wSOL/MOLT</option>
+                            <option value="6">REEF/MOLT</option>
                         </select>
                     </div>
                     <div class="form-group">
@@ -1197,23 +1197,23 @@
                     </div>
                     <div class="form-group">
                         <label>Size (MOLT)</label>
-                        <input type="number" placeholder="0.00" class="form-input">
+                        <input type="number" placeholder="0.00" class="form-input" id="marginSize">
                     </div>
                     <div class="form-group">
                         <label>Margin (mUSD)</label>
-                        <input type="number" placeholder="0.00" class="form-input">
+                        <input type="number" placeholder="0.00" class="form-input" id="marginAmount">
                     </div>
                     <div class="margin-info-rows">
-                        <div class="info-row"><span>Entry Price</span><span>$0.0847</span></div>
-                        <div class="info-row"><span>Liq. Price</span><span class="text-warning">$0.0712</span></div>
-                        <div class="info-row"><span>Margin Ratio</span><span>20.00%</span></div>
+                        <div class="info-row"><span>Entry Price</span><span id="marginEntry">$0.0847</span></div>
+                        <div class="info-row"><span>Liq. Price</span><span class="text-warning" id="marginLiqPrice">$0.0712</span></div>
+                        <div class="info-row"><span>Margin Ratio</span><span id="marginRatio">20.00%</span></div>
                     </div>
-                    <button class="btn btn-full btn-buy">Open Long</button>
+                    <button class="btn btn-full btn-buy" id="marginOpenBtn">Open Long</button>
                 </div>
 
                 <div class="margin-positions-card">
                     <h4>Open Positions</h4>
-                    <div class="no-positions">
+                    <div id="marginPositionsList" class="no-positions">
                         <i class="fas fa-chart-line"></i>
                         <p>No open margin positions</p>
                     </div>
@@ -1244,27 +1244,27 @@
                 <div class="pool-stat-card highlight-card">
                     <div class="stat-icon-wrap accent-icon"><i class="fas fa-coins"></i></div>
                     <div class="pool-stat-label">Pending Rewards</div>
-                    <div class="pool-stat-value accent-text">12,450 MOLT</div>
-                    <div class="stat-sub">≈ $5,274.75</div>
+                    <div class="pool-stat-value accent-text" id="rewardsPending">12,450 MOLT</div>
+                    <div class="stat-sub" id="rewardsPendingUsd">≈ $5,274.75</div>
                     <button class="btn btn-small btn-primary claim-btn" id="claimAllBtn">Claim All</button>
                 </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-medal"></i></div>
                     <div class="pool-stat-label">Your Tier</div>
-                    <div class="pool-stat-value"><span class="tier-badge silver">Silver</span></div>
+                    <div class="pool-stat-value" id="rewardsTier"><span class="tier-badge silver">Silver</span></div>
                     <div class="tier-progress"><div class="tier-bar" style="width: 45%"></div></div>
                     <div class="stat-sub">45K / 100K MOLT to Gold</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-bolt"></i></div>
                     <div class="pool-stat-label">Your Multiplier</div>
-                    <div class="pool-stat-value">1.5x</div>
-                    <div class="stat-sub">Silver tier bonus</div>
+                    <div class="pool-stat-value" id="rewardsMultiplier">1.5x</div>
+                    <div class="stat-sub" id="rewardsMultiplierSub">Silver tier bonus</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-chart-bar"></i></div>
                     <div class="pool-stat-label">Total Distributed</div>
-                    <div class="pool-stat-value">4.2M MOLT</div>
+                    <div class="pool-stat-value" id="rewardsTotalDist">4.2M MOLT</div>
                     <div class="stat-sub">Since genesis</div>
                 </div>
             </div>
@@ -1482,12 +1482,12 @@
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap accent-icon"><i class="fas fa-bolt"></i></div>
                     <div class="pool-stat-label">Active Proposals</div>
-                    <div class="pool-stat-value">3</div>
+                    <div class="pool-stat-value" id="govActiveProposals">3</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-archive"></i></div>
                     <div class="pool-stat-label">Total Proposals</div>
-                    <div class="pool-stat-value">47</div>
+                    <div class="pool-stat-value" id="govTotalProposals">47</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-check-double"></i></div>
@@ -1515,8 +1515,8 @@
                                 <button class="filter-pill" data-filter="all">All</button>
                             </div>
                         </div>
-                        <div class="proposals-list-inner">
-                            <div class="proposal-card active-proposal">
+                        <div class="proposals-list-inner" id="proposalsList">
+                            <div class="proposal-card active-proposal" data-proposal-id="45">
                                 <div class="proposal-top-row">
                                     <div class="proposal-status-badge active">Active</div>
                                     <span class="proposal-type-tag">New Pair</span>
@@ -1534,13 +1534,13 @@
                                 <div class="proposal-footer">
                                     <span class="proposal-time"><i class="fas fa-clock"></i> 18h remaining</span>
                                     <div class="proposal-actions">
-                                        <button class="btn btn-small btn-primary">Vote Yes</button>
-                                        <button class="btn btn-small btn-secondary">Vote No</button>
+                                        <button class="btn btn-small btn-primary vote-btn vote-for">Vote Yes</button>
+                                        <button class="btn btn-small btn-secondary vote-btn vote-against">Vote No</button>
                                     </div>
                                 </div>
                             </div>
 
-                            <div class="proposal-card active-proposal">
+                            <div class="proposal-card active-proposal" data-proposal-id="46">
                                 <div class="proposal-top-row">
                                     <div class="proposal-status-badge active">Active</div>
                                     <span class="proposal-type-tag">Fee Change</span>
@@ -1558,13 +1558,13 @@
                                 <div class="proposal-footer">
                                     <span class="proposal-time"><i class="fas fa-clock"></i> 36h remaining</span>
                                     <div class="proposal-actions">
-                                        <button class="btn btn-small btn-primary">Vote Yes</button>
-                                        <button class="btn btn-small btn-secondary">Vote No</button>
+                                        <button class="btn btn-small btn-primary vote-btn vote-for">Vote Yes</button>
+                                        <button class="btn btn-small btn-secondary vote-btn vote-against">Vote No</button>
                                     </div>
                                 </div>
                             </div>
 
-                            <div class="proposal-card passed-proposal">
+                            <div class="proposal-card passed-proposal" data-proposal-id="44">
                                 <div class="proposal-top-row">
                                     <div class="proposal-status-badge passed">Passed</div>
                                     <span class="proposal-type-tag">New Pair</span>
@@ -1587,7 +1587,7 @@
                                 </div>
                             </div>
 
-                            <div class="proposal-card executed-proposal">
+                            <div class="proposal-card executed-proposal" data-proposal-id="43">
                                 <div class="proposal-top-row">
                                     <div class="proposal-status-badge executed">Executed</div>
                                     <span class="proposal-type-tag">New Pair</span>
@@ -1681,7 +1681,7 @@
                             <div class="req-row"><span>Execution Timelock</span><span class="mono-value">1 hour</span></div>
                         </div>
 
-                        <button class="btn btn-full btn-buy" id="submitProposal"><i class="fas fa-paper-plane"></i> Submit Proposal</button>
+                        <button class="btn btn-full btn-buy" id="submitProposalBtn"><i class="fas fa-paper-plane"></i> Submit Proposal</button>
                     </div>
                 </div>
             </div>
