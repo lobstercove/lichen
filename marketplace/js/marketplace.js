@@ -305,7 +305,6 @@ function buyNFT(id) {
         return;
     }
     
-    console.log('Buying NFT:', id);
     // Navigate to item page for full purchase flow
     window.location.href = `item.html?id=${id}`;
 }

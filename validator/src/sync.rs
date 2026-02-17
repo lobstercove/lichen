@@ -357,8 +357,8 @@ mod tests {
     async fn test_should_not_sync_when_caught_up() {
         let sm = SyncManager::new();
         sm.note_seen(10).await;
-        // Current slot 8, only 2 behind → no sync (threshold is 2)
-        let batch = sm.should_sync(8).await;
+        // Current slot 9, only 1 behind → no sync (threshold is >1)
+        let batch = sm.should_sync(9).await;
         assert!(batch.is_none());
     }
 
