@@ -1,4 +1,4 @@
-use axum::{extract::State, routing::get, routing::post, Json, Router};
+use axum::{extract::State, routing::get, routing::post, routing::put, Json, Router};
 use base64::Engine;
 use ed25519_dalek::{Signer, VerifyingKey};
 use frost_ed25519 as frost;
@@ -398,6 +398,10 @@ async fn main() {
         .route("/deposits", post(create_deposit))
         .route("/deposits/:deposit_id", get(get_deposit))
         .route("/withdrawals", post(create_withdrawal))
+        // AUDIT-FIX C4: Endpoint for clients to submit their MoltChain burn tx signature.
+        // Without this, withdrawal jobs stay in "pending_burn" forever because
+        // burn_tx_signature starts as None and nothing ever populates it.
+        .route("/withdrawals/:job_id/burn", put(submit_burn_signature))
         .route("/reserves", get(get_reserves))
         .with_state(state);
 
@@ -1054,11 +1058,18 @@ async fn process_solana_token_deposit(
     deposit: &DepositRequest,
 ) -> Result<(), String> {
     let balance = solana_get_token_balance(&state.http, url, &deposit.address).await?;
+
+    let last_key = format!("spl:{}:{}", deposit.asset, deposit.address);
+
+    // AUDIT-FIX H1: When balance drops to zero (after sweep), reset the stored high
+    // watermark to zero. Without this, the stored balance stays at the previous peak
+    // and any subsequent deposit for a smaller amount would be missed forever
+    // (because last_balance >= new_balance would remain true).
     if balance == 0 {
+        let _ = set_last_balance_with_key(&state.db, &last_key, 0);
         return Ok(());
     }
 
-    let last_key = format!("spl:{}:{}", deposit.asset, deposit.address);
     let last_balance = get_last_balance_with_key(&state.db, &last_key)?;
     if last_balance >= balance {
         return Ok(());
@@ -1724,16 +1735,9 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
                     job.sweep_tx_hash.as_deref(),
                 )?;
 
-                if let Some(credit_job) = build_credit_job(state, job)? {
-                    store_credit_job(&state.db, &credit_job)?;
-                    record_audit_event(
-                        &state.db,
-                        "credit_queued",
-                        &credit_job.job_id,
-                        Some(&credit_job.deposit_id),
-                        None,
-                    )?;
-                }
+                // AUDIT-FIX C2: Credit job (wrapped token mint) is now created AFTER
+                // sweep confirmation, not here. Minting before sweep is confirmed risks
+                // issuing wrapped tokens when the sweep tx reverts — a fund mismatch.
             }
             Ok(None) => {
                 mark_sweep_failed(job, "broadcast returned empty".to_string());
@@ -1787,6 +1791,20 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
                             }
                         }
                     }
+                }
+
+                // AUDIT-FIX C2: Create credit job (mint wrapped tokens) only AFTER
+                // the sweep is confirmed on-chain. This ensures the treasury actually
+                // received the funds before issuing wrapped tokens to the user.
+                if let Some(credit_job) = build_credit_job(state, job)? {
+                    store_credit_job(&state.db, &credit_job)?;
+                    record_audit_event(
+                        &state.db,
+                        "credit_queued",
+                        &credit_job.job_id,
+                        Some(&credit_job.deposit_id),
+                        None,
+                    )?;
                 }
             }
         }
@@ -2278,13 +2296,23 @@ async fn broadcast_solana_sweep(
         return Ok(None);
     };
 
+    // AUDIT-FIX C1: Deduct the Solana transaction fee from the sweep amount.
+    // The deposit address is the fee payer, so it needs: transfer_amount + fee.
+    // Without this, the tx would fail because the account lacks fee funds.
+    let solana_tx_fee: u64 = 5_000; // 5000 lamports per signature (base fee)
+    if amount <= solana_tx_fee {
+        // Dust amount — not worth sweeping (would go entirely to fees)
+        return Ok(None);
+    }
+    let transfer_amount = amount - solana_tx_fee;
+
     let recent_blockhash = solana_get_latest_blockhash(&state.http, url).await?;
     let (signing_key, from_pubkey) =
         derive_solana_signer(&deposit.derivation_path, &state.config.master_seed)?;
     let to_pubkey = decode_solana_pubkey(&job.to_treasury)?;
 
     let message =
-        build_solana_transfer_message(&from_pubkey, &to_pubkey, amount, &recent_blockhash);
+        build_solana_transfer_message(&from_pubkey, &to_pubkey, transfer_amount, &recent_blockhash);
     let signature = signing_key.sign(&message).to_bytes();
     let tx = build_solana_transaction(&[signature], &message);
     let signature = solana_send_transaction(&state.http, url, &tx).await?;
@@ -2573,16 +2601,42 @@ async fn fund_evm_gas_for_sweep(
         .ok_or_else(|| "no tx hash from gas funding".to_string())
 }
 
+/// AUDIT-FIX H2: Max retry cap. Beyond this, jobs move to "permanently_failed"
+/// and require manual intervention (admin re-queue after root cause analysis).
+/// Without a cap, failing jobs retry at 16-minute intervals forever, burning gas
+/// on consistently failing transactions.
+const MAX_JOB_ATTEMPTS: u32 = 10;
+
 fn mark_sweep_failed(job: &mut SweepJob, err: String) {
     job.attempts = job.attempts.saturating_add(1);
     job.last_error = Some(err);
-    job.next_attempt_at = Some(next_retry_timestamp(job.attempts));
+    if job.attempts >= MAX_JOB_ATTEMPTS {
+        job.status = "permanently_failed".to_string();
+        job.next_attempt_at = None;
+        tracing::error!(
+            "AUDIT-FIX H2: sweep job {} exceeded {} attempts — moved to permanently_failed. \
+             Manual intervention required.",
+            job.job_id, MAX_JOB_ATTEMPTS
+        );
+    } else {
+        job.next_attempt_at = Some(next_retry_timestamp(job.attempts));
+    }
 }
 
 fn mark_credit_failed(job: &mut CreditJob, err: String) {
     job.attempts = job.attempts.saturating_add(1);
     job.last_error = Some(err);
-    job.next_attempt_at = Some(next_retry_timestamp(job.attempts));
+    if job.attempts >= MAX_JOB_ATTEMPTS {
+        job.status = "permanently_failed".to_string();
+        job.next_attempt_at = None;
+        tracing::error!(
+            "AUDIT-FIX H2: credit job {} exceeded {} attempts — moved to permanently_failed. \
+             Manual intervention required.",
+            job.job_id, MAX_JOB_ATTEMPTS
+        );
+    } else {
+        job.next_attempt_at = Some(next_retry_timestamp(job.attempts));
+    }
 }
 
 fn next_retry_timestamp(attempts: u32) -> i64 {
@@ -3635,6 +3689,82 @@ fn store_withdrawal_job(db: &DB, job: &WithdrawalJob) -> Result<(), String> {
         .map_err(|e| format!("db put: {}", e))
 }
 
+fn fetch_withdrawal_job(db: &DB, job_id: &str) -> Result<Option<WithdrawalJob>, String> {
+    let cf = db
+        .cf_handle(CF_WITHDRAWAL_JOBS)
+        .ok_or_else(|| "missing withdrawal_jobs cf".to_string())?;
+    match db.get_cf(cf, job_id.as_bytes()) {
+        Ok(Some(bytes)) => {
+            let record = serde_json::from_slice(&bytes).map_err(|e| format!("decode: {}", e))?;
+            Ok(Some(record))
+        }
+        Ok(None) => Ok(None),
+        Err(e) => Err(format!("db get: {}", e)),
+    }
+}
+
+/// AUDIT-FIX C4: Endpoint for clients to submit the MoltChain burn tx signature.
+///
+/// PUT /withdrawals/:job_id/burn
+///
+/// After a user burns their wrapped tokens on MoltChain, they submit the burn tx
+/// signature here. The withdrawal worker then verifies it and progresses the job.
+/// Without this endpoint, withdrawal jobs would hang at "pending_burn" forever.
+#[derive(Deserialize)]
+struct BurnSignaturePayload {
+    burn_tx_signature: String,
+}
+
+async fn submit_burn_signature(
+    State(state): State<CustodyState>,
+    axum::extract::Path(job_id): axum::extract::Path<String>,
+    Json(payload): Json<BurnSignaturePayload>,
+) -> Result<Json<Value>, Json<ErrorResponse>> {
+    if payload.burn_tx_signature.is_empty() {
+        return Err(Json(ErrorResponse::invalid("burn_tx_signature required")));
+    }
+
+    let mut job = fetch_withdrawal_job(&state.db, &job_id)
+        .map_err(|e| Json(ErrorResponse::db(&e)))?
+        .ok_or_else(|| Json(ErrorResponse::invalid("withdrawal not found")))?;
+
+    if job.status != "pending_burn" {
+        return Err(Json(ErrorResponse::invalid(&format!(
+            "withdrawal {} is not in pending_burn state (current: {})",
+            job_id, job.status
+        ))));
+    }
+
+    if job.burn_tx_signature.is_some() {
+        return Err(Json(ErrorResponse::invalid("burn_tx_signature already set")));
+    }
+
+    job.burn_tx_signature = Some(payload.burn_tx_signature.clone());
+    store_withdrawal_job(&state.db, &job)
+        .map_err(|e| Json(ErrorResponse::db(&e)))?;
+
+    record_audit_event(
+        &state.db,
+        "withdrawal_burn_submitted",
+        &job.job_id,
+        None,
+        Some(&payload.burn_tx_signature),
+    )
+    .ok();
+
+    info!(
+        "burn signature submitted for withdrawal {}: {}",
+        job_id, payload.burn_tx_signature
+    );
+
+    Ok(Json(json!({
+        "job_id": job_id,
+        "status": "pending_burn",
+        "burn_tx_signature": payload.burn_tx_signature,
+        "message": "Burn signature recorded. Verification will proceed automatically.",
+    })))
+}
+
 fn list_withdrawal_jobs_by_status(db: &DB, status: &str) -> Result<Vec<WithdrawalJob>, String> {
     let cf = db
         .cf_handle(CF_WITHDRAWAL_JOBS)
@@ -4571,6 +4701,7 @@ async fn execute_ethereum_rebalance_swap(
         job.amount as u128,
         100, // fee tier 0.01%
         state.config.rebalance_max_slippage_bps,
+        treasury_addr, // AUDIT-FIX C3: recipient must be treasury, not zero address
     )?;
     let swap_tx = build_evm_signed_transaction_with_data(
         &signing_key,
@@ -4621,6 +4752,7 @@ fn build_uniswap_exact_input_single(
     amount_in: u128,
     fee: u32,
     max_slippage_bps: u64,
+    recipient: &str,
 ) -> Result<Vec<u8>, String> {
     let mut data = Vec::with_capacity(228);
     // exactInputSingle(ExactInputSingleParams) selector: 0x414bf389
@@ -4643,8 +4775,13 @@ fn build_uniswap_exact_input_single(
     fee_padded.extend_from_slice(&fee.to_be_bytes());
     data.extend_from_slice(&fee_padded);
 
-    // recipient (address) — use zero address, will be overridden
-    data.extend_from_slice(&[0u8; 32]);
+    // AUDIT-FIX C3: Recipient MUST be the treasury address. Previously this was
+    // zero-address with comment "will be overridden" — but nothing overrides it.
+    // Sending swap output to address(0) burns the tokens permanently.
+    let recipient_bytes = parse_evm_address(recipient)?;
+    let mut padded_recipient = vec![0u8; 12];
+    padded_recipient.extend_from_slice(&recipient_bytes);
+    data.extend_from_slice(&padded_recipient);
 
     // deadline (uint256) — far future
     let mut deadline = vec![0u8; 24];
