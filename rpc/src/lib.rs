@@ -959,6 +959,10 @@ async fn handle_rpc(State(state): State<Arc<RpcState>>, Json(req): Json<RpcReque
         "getPredictionMarkets" => handle_get_prediction_markets(&state, req.params).await,
         "getPredictionMarket" => handle_get_prediction_market(&state, req.params).await,
         "getPredictionPositions" => handle_get_prediction_positions(&state, req.params).await,
+        "getPredictionTraderStats" => handle_get_prediction_trader_stats(&state, req.params).await,
+        "getPredictionLeaderboard" => handle_get_prediction_leaderboard(&state, req.params).await,
+        "getPredictionTrending" => handle_get_prediction_trending(&state).await,
+        "getPredictionMarketAnalytics" => handle_get_prediction_market_analytics(&state, req.params).await,
 
         _ => Err(RpcError {
             code: -32601,
@@ -7828,6 +7832,7 @@ async fn handle_get_prediction_stats(
         "total_volume": pm_read_u64(&contract, b"pm_total_volume") as f64 / PM_PRICE_SCALE,
         "total_collateral": pm_read_u64(&contract, b"pm_total_collateral") as f64 / PM_PRICE_SCALE,
         "fees_collected": pm_read_u64(&contract, b"pm_fees_collected") as f64 / PM_PRICE_SCALE,
+        "total_traders": pm_read_u64(&contract, b"pm_total_traders"),
         "paused": paused,
     }))
 }
@@ -8042,6 +8047,180 @@ async fn handle_get_prediction_positions(
     }
 
     Ok(serde_json::json!(positions))
+}
+
+/// getPredictionTraderStats [address] — Per-trader analytics
+async fn handle_get_prediction_trader_stats(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let address = match &params {
+        Some(serde_json::Value::Array(arr)) if !arr.is_empty() => {
+            arr[0].as_str().ok_or(RpcError { code: -32602, message: "address must be string".into() })?.to_string()
+        }
+        _ => return Err(RpcError { code: -32602, message: "Expected params: [address]".into() }),
+    };
+
+    let contract = load_prediction_contract(state)?;
+    let key = format!("pm_ts_{}", address);
+    match contract.get_storage(key.as_bytes()) {
+        Some(d) if d.len() >= 24 => {
+            Ok(serde_json::json!({
+                "address": address,
+                "total_volume": pm_u64(&d, 0) as f64 / PM_PRICE_SCALE,
+                "trade_count": pm_u64(&d, 8),
+                "last_trade_slot": pm_u64(&d, 16),
+            }))
+        }
+        _ => {
+            Ok(serde_json::json!({
+                "address": address,
+                "total_volume": 0.0,
+                "trade_count": 0,
+                "last_trade_slot": 0,
+            }))
+        }
+    }
+}
+
+/// getPredictionLeaderboard — Top traders by volume
+async fn handle_get_prediction_leaderboard(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let limit = match &params {
+        Some(serde_json::Value::Object(obj)) => {
+            obj.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize
+        }
+        _ => 20,
+    };
+    let limit = limit.min(50);
+
+    let contract = load_prediction_contract(state)?;
+    let total_traders = pm_read_u64(&contract, b"pm_total_traders");
+    let scan_max = (total_traders as usize).min(500);
+
+    let mut entries: Vec<(String, u64, u64)> = Vec::with_capacity(scan_max);
+    for i in 0..scan_max as u64 {
+        let lk = format!("pm_tl_{}", i);
+        if let Some(addr_data) = contract.get_storage(lk.as_bytes()) {
+            if addr_data.len() >= 32 {
+                let addr_hex = hex::encode(&addr_data[..32]);
+                let tk = format!("pm_ts_{}", addr_hex);
+                if let Some(sd) = contract.get_storage(tk.as_bytes()) {
+                    if sd.len() >= 24 {
+                        let vol = pm_u64(&sd, 0);
+                        let trades = pm_u64(&sd, 8);
+                        entries.push((addr_hex, vol, trades));
+                    }
+                }
+            }
+        }
+    }
+
+    entries.sort_by(|a, b| b.1.cmp(&a.1));
+    entries.truncate(limit);
+
+    let leaders: Vec<serde_json::Value> = entries
+        .into_iter()
+        .enumerate()
+        .map(|(i, (addr, vol, trades))| {
+            serde_json::json!({
+                "rank": i + 1,
+                "address": addr,
+                "total_volume": vol as f64 / PM_PRICE_SCALE,
+                "trade_count": trades,
+            })
+        })
+        .collect();
+
+    Ok(serde_json::json!({
+        "traders": leaders,
+        "total_traders": total_traders,
+    }))
+}
+
+/// getPredictionTrending — Active markets ranked by 24h volume
+async fn handle_get_prediction_trending(
+    state: &RpcState,
+) -> Result<serde_json::Value, RpcError> {
+    let contract = load_prediction_contract(state)?;
+    let total = pm_read_u64(&contract, b"pm_market_count");
+
+    let cat_map = |c: u8| -> &'static str {
+        match c { 0 => "politics", 1 => "sports", 2 => "crypto", 3 => "science",
+            4 => "entertainment", 5 => "economics", 6 => "tech", _ => "custom" }
+    };
+
+    let mut markets = Vec::new();
+    for id in 1..=total {
+        let key = format!("pm_m_{}", id);
+        let data = match contract.get_storage(key.as_bytes()) {
+            Some(d) if d.len() >= 192 => d,
+            _ => continue,
+        };
+        if data[64] != 1 { continue; } // only active
+
+        let q_key = format!("pm_q_{}", id);
+        let question = contract.get_storage(q_key.as_bytes())
+            .and_then(|d| String::from_utf8(d).ok())
+            .unwrap_or_default();
+
+        let vol24_key = format!("pm_mv24_{}", id);
+        let vol24 = pm_read_u64(&contract, vol24_key.as_bytes());
+
+        let tc_key = format!("pm_mtc_{}", id);
+        let traders = pm_read_u64(&contract, tc_key.as_bytes());
+
+        markets.push((id, question, cat_map(data[67]).to_string(), vol24, traders,
+            pm_u64(&data, 76) as f64 / PM_PRICE_SCALE));
+    }
+
+    markets.sort_by(|a, b| b.3.cmp(&a.3));
+    markets.truncate(10);
+
+    let items: Vec<serde_json::Value> = markets.into_iter().map(|(id, q, cat, vol24, tc, tv)| {
+        serde_json::json!({
+            "id": id,
+            "question": q,
+            "category": cat,
+            "volume_24h": vol24 as f64 / PM_PRICE_SCALE,
+            "unique_traders": tc,
+            "total_volume": tv,
+        })
+    }).collect();
+
+    Ok(serde_json::json!(items))
+}
+
+/// getPredictionMarketAnalytics [market_id] — Per-market analytics
+async fn handle_get_prediction_market_analytics(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let market_id = match &params {
+        Some(serde_json::Value::Array(arr)) if !arr.is_empty() => {
+            arr[0].as_u64().ok_or(RpcError { code: -32602, message: "market_id must be u64".into() })?
+        }
+        Some(serde_json::Value::Object(obj)) => {
+            obj.get("market_id").or(obj.get("id"))
+                .and_then(|v| v.as_u64())
+                .ok_or(RpcError { code: -32602, message: "market_id required".into() })?
+        }
+        _ => return Err(RpcError { code: -32602, message: "Expected params: [market_id]".into() }),
+    };
+
+    let contract = load_prediction_contract(state)?;
+    let tc_key = format!("pm_mtc_{}", market_id);
+    let traders = pm_read_u64(&contract, tc_key.as_bytes());
+    let vol24_key = format!("pm_mv24_{}", market_id);
+    let vol24 = pm_read_u64(&contract, vol24_key.as_bytes());
+
+    Ok(serde_json::json!({
+        "market_id": market_id,
+        "unique_traders": traders,
+        "volume_24h": vol24 as f64 / PM_PRICE_SCALE,
+    }))
 }
 
 #[cfg(test)]

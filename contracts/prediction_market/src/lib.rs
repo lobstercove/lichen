@@ -299,6 +299,103 @@ fn question_hash_key(hash: &[u8]) -> Vec<u8> {
     k
 }
 
+/// Key for per-trader stats: total_volume(8) + trade_count(8) + last_trade_slot(8) = 24 bytes.
+fn trader_stats_key(addr: &[u8]) -> Vec<u8> {
+    let mut k = Vec::from(&b"pm_ts_"[..]);
+    k.extend_from_slice(&hex_encode(addr));
+    k
+}
+
+/// Key for total unique traders count.
+const TOTAL_TRADERS_KEY: &[u8] = b"pm_total_traders";
+
+/// Key for trader list (indexed for enumeration).
+fn trader_list_key(idx: u64) -> Vec<u8> {
+    let mut k = Vec::from(&b"pm_tl_"[..]);
+    k.extend_from_slice(&u64_to_decimal(idx));
+    k
+}
+
+/// Key for per-market unique trader count.
+fn market_trader_count_key(market_id: u64) -> Vec<u8> {
+    let mut k = Vec::from(&b"pm_mtc_"[..]);
+    k.extend_from_slice(&u64_to_decimal(market_id));
+    k
+}
+
+/// Key for per-market trader tracking (boolean marker).
+fn market_trader_marker_key(market_id: u64, addr: &[u8]) -> Vec<u8> {
+    let mut k = Vec::from(&b"pm_mtm_"[..]);
+    k.extend_from_slice(&u64_to_decimal(market_id));
+    k.push(b'_');
+    k.extend_from_slice(&hex_encode(addr));
+    k
+}
+
+/// Key for per-market 24h volume (rolling window via slot-based reset).
+fn market_24h_volume_key(market_id: u64) -> Vec<u8> {
+    let mut k = Vec::from(&b"pm_mv24_"[..]);
+    k.extend_from_slice(&u64_to_decimal(market_id));
+    k
+}
+
+/// Key for per-market 24h volume reset slot.
+fn market_24h_reset_slot_key(market_id: u64) -> Vec<u8> {
+    let mut k = Vec::from(&b"pm_mv24s_"[..]);
+    k.extend_from_slice(&u64_to_decimal(market_id));
+    k
+}
+
+/// Update per-trader stats after a trade. Tracks volume, trade count, and last slot.
+fn update_trader_stats(trader: &[u8], volume: u64) {
+    let key = trader_stats_key(trader);
+    let (old_vol, old_count) = match storage_get(&key) {
+        Some(d) if d.len() >= 24 => (bytes_to_u64(&d[0..8]), bytes_to_u64(&d[8..16])),
+        _ => (0, 0),
+    };
+    let slot = get_slot();
+    let mut buf = [0u8; 24];
+    buf[0..8].copy_from_slice(&u64_to_bytes(old_vol + volume));
+    buf[8..16].copy_from_slice(&u64_to_bytes(old_count + 1));
+    buf[16..24].copy_from_slice(&u64_to_bytes(slot));
+
+    // If first trade ever: increment global trader count, add to trader list
+    if old_count == 0 {
+        let total = load_u64(TOTAL_TRADERS_KEY);
+        let list_key = trader_list_key(total);
+        storage_set(&list_key, trader);
+        save_u64(TOTAL_TRADERS_KEY, total + 1);
+    }
+
+    storage_set(&key, &buf);
+}
+
+/// Track unique traders per market and update 24h rolling volume.
+fn update_market_trader_stats(market_id: u64, trader: &[u8], volume: u64) {
+    // Unique trader tracking
+    let marker = market_trader_marker_key(market_id, trader);
+    if storage_get(&marker).is_none() {
+        storage_set(&marker, &[1]);
+        let count_key = market_trader_count_key(market_id);
+        let count = load_u64(&count_key);
+        save_u64(&count_key, count + 1);
+    }
+    // 24h rolling volume (172,800 slots at 0.5s/slot = 24 hours)
+    let vol_key = market_24h_volume_key(market_id);
+    let reset_key = market_24h_reset_slot_key(market_id);
+    let current_slot = get_slot();
+    let reset_slot = load_u64(&reset_key);
+    let elapsed = current_slot.saturating_sub(reset_slot);
+    if elapsed >= 172_800 {
+        // Reset window
+        save_u64(&vol_key, volume);
+        save_u64(&reset_key, current_slot);
+    } else {
+        let existing = load_u64(&vol_key);
+        save_u64(&vol_key, existing + volume);
+    }
+}
+
 /// Key for per-market trading pause (circuit breaker).
 fn market_pause_key(market_id: u64) -> Vec<u8> {
     let mut k = Vec::from(&b"pm_mpause_"[..]);
@@ -1752,6 +1849,10 @@ pub fn buy_shares(
     // Record price history snapshot
     record_price_snapshot(market_id, new_price, amount_musd);
 
+    // Update per-trader and per-market analytics
+    update_trader_stats(trader, amount_musd);
+    update_market_trader_stats(market_id, trader, amount_musd);
+
     // Update user position
     let (existing_shares, existing_cost) = load_position(market_id, trader, outcome);
     save_position(
@@ -1897,6 +1998,10 @@ pub fn sell_shares(
         let sell_price = calculate_price(&new_reserves, outcome);
         record_price_snapshot(market_id, sell_price, musd_returned + fee_musd);
     }
+
+    // Update per-trader and per-market analytics
+    update_trader_stats(trader, musd_returned + fee_musd);
+    update_market_trader_stats(market_id, trader, musd_returned + fee_musd);
 
     // Update user position
     let cost_basis_reduction = if user_shares > 0 {
@@ -3376,6 +3481,77 @@ pub extern "C" fn call() {
                         }
                     }
                 }
+                moltchain_sdk::set_return_data(&result);
+            }
+        }
+        35 => {
+            // get_trader_stats(addr 32B) → 24 bytes: volume(8) + trade_count(8) + last_slot(8)
+            if args.len() >= 33 {
+                let tk = trader_stats_key(&args[1..33]);
+                match storage_get(&tk) {
+                    Some(d) if d.len() >= 24 => {
+                        moltchain_sdk::set_return_data(&d[..24]);
+                    }
+                    _ => {
+                        moltchain_sdk::set_return_data(&[0u8; 24]);
+                    }
+                }
+            }
+        }
+        36 => {
+            // get_leaderboard(limit 8B) → returns up to N traders sorted by volume
+            // Format: count(8B) + [addr(32B) + volume(8B) + trades(8B)] * count
+            let limit = if args.len() >= 9 { bytes_to_u64(&args[1..9]).min(50) } else { 20 };
+            let total_traders = load_u64(TOTAL_TRADERS_KEY);
+            // Collect all traders and their volumes
+            let scan_max = total_traders.min(500); // cap scan to prevent gas-bomb
+            let mut entries: Vec<([u8; 32], u64, u64)> = Vec::with_capacity(scan_max as usize);
+            for i in 0..scan_max {
+                let lk = trader_list_key(i);
+                if let Some(addr_data) = storage_get(&lk) {
+                    if addr_data.len() >= 32 {
+                        let mut addr = [0u8; 32];
+                        addr.copy_from_slice(&addr_data[..32]);
+                        let tk = trader_stats_key(&addr);
+                        if let Some(sd) = storage_get(&tk) {
+                            if sd.len() >= 24 {
+                                let vol = bytes_to_u64(&sd[0..8]);
+                                let trades = bytes_to_u64(&sd[8..16]);
+                                entries.push((addr, vol, trades));
+                            }
+                        }
+                    }
+                }
+            }
+            // Simple selection sort for top N (efficient for small N)
+            let take = (limit as usize).min(entries.len());
+            for i in 0..take {
+                let mut max_idx = i;
+                for j in (i + 1)..entries.len() {
+                    if entries[j].1 > entries[max_idx].1 {
+                        max_idx = j;
+                    }
+                }
+                entries.swap(i, max_idx);
+            }
+            let mut result = Vec::with_capacity(8 + take * 48);
+            result.extend_from_slice(&u64_to_bytes(take as u64));
+            for i in 0..take {
+                result.extend_from_slice(&entries[i].0);
+                result.extend_from_slice(&u64_to_bytes(entries[i].1));
+                result.extend_from_slice(&u64_to_bytes(entries[i].2));
+            }
+            moltchain_sdk::set_return_data(&result);
+        }
+        37 => {
+            // get_market_analytics(market_id 8B) → market trader count(8) + 24h volume(8)
+            if args.len() >= 9 {
+                let mid = bytes_to_u64(&args[1..9]);
+                let tc = load_u64(&market_trader_count_key(mid));
+                let vol24 = load_u64(&market_24h_volume_key(mid));
+                let mut result = [0u8; 16];
+                result[0..8].copy_from_slice(&u64_to_bytes(tc));
+                result[8..16].copy_from_slice(&u64_to_bytes(vol24));
                 moltchain_sdk::set_return_data(&result);
             }
         }

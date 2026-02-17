@@ -43,7 +43,8 @@ async function rpc(method, params = [], url = null) {
             body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params })
         });
         const data = await resp.json();
-        return data.result ?? data.error ?? null;
+        if (data.error) return null;  // Don't return error objects as results
+        return data.result ?? null;
     } catch (e) {
         return null;
     }
@@ -881,7 +882,7 @@ const DEX_SUBSYSTEMS = [
       metrics: ['candles', 'indexed_trades', 'pairs_tracked', 'uptime'] },
     { id: 'moltswap', symbol: 'MOLTSWAP', name: 'MoltSwap', desc: 'Simple token swap interface', icon: 'fas fa-arrows-rotate', color: '#ff6b35',
       metrics: ['swaps_24h', 'volume', 'unique_users', 'pairs'] },
-    { id: 'prediction_market', symbol: null, name: 'PredictionReef', desc: 'Binary/multi-outcome markets + mUSD', icon: 'fas fa-chart-pie', color: '#e879f9',
+    { id: 'prediction_market', symbol: 'TLOBSTER', name: 'PredictionReef', desc: 'Binary/multi-outcome markets + mUSD', icon: 'fas fa-chart-pie', color: '#e879f9',
       metrics: ['markets', 'volume', 'collateral', 'traders'] },
 ];
 
@@ -933,7 +934,7 @@ async function updateDexMonitor() {
                     deployed = true;
                 }
             } else if (sub.id === 'prediction_market') {
-                const stats = await rpc('getPredictionStats');
+                const stats = await rpc('getPredictionMarketStats');
                 if (stats) {
                     metricsData = { markets: stats.open_markets || 0, volume: stats.total_volume || 0,
                         collateral: stats.total_collateral || 0, traders: stats.unique_traders || 0 };
@@ -1009,7 +1010,7 @@ async function updateDexMonitor() {
     if (marginStats) {
         if (el('dexMarginPos')) el('dexMarginPos').textContent = formatNum(marginStats.open_positions || 0);
     }
-    const predictStats = await rpc('getPredictionStats').catch(() => null);
+    const predictStats = await rpc('getPredictionMarketStats').catch(() => null);
     if (predictStats) {
         if (el('dexPredictMkts')) el('dexPredictMkts').textContent = formatNum(predictStats.open_markets || 0);
     }
@@ -1067,13 +1068,23 @@ async function updateContractMonitor() {
         const statusClass = deployed ? 'success' : 'warning';
         const statusText = deployed ? 'LIVE' : 'PENDING';
 
-        // Try to fetch contract-specific stats
+        // Try to fetch contract-specific stats via dedicated RPC methods
         let statsHtml = '';
         if (deployed) {
             try {
-                const cs = await rpc('getContractState', [program]);
+                let cs = null;
+                if (c.symbol === 'TLOBSTER') {
+                    cs = await rpc('getPredictionMarketStats');
+                    if (cs) cs = { markets: cs.open_markets || 0, volume: cs.total_volume || 0, collateral: cs.total_collateral || 0, fees: cs.fees_collected || 0 };
+                } else if (c.symbol === 'MOLT') {
+                    const bal = await rpc('getBalance', [program]);
+                    if (bal != null) cs = { balance: typeof bal === 'number' ? formatMolt(bal) : '—' };
+                } else if (c.symbol === 'YID') {
+                    const stats = await rpc('getMoltyIdStats');
+                    if (stats) cs = { identities: stats.total_identities || 0, names: stats.total_names || 0, skills: stats.total_skills || 0 };
+                }
                 if (cs) {
-                    const entries = Object.entries(cs).filter(([k]) => !k.startsWith('_')).slice(0, 4);
+                    const entries = Object.entries(cs).slice(0, 4);
                     if (entries.length > 0) {
                         statsHtml = '<div class="cm-metrics">' + entries.map(([k, v]) => {
                             const val = typeof v === 'number' ? formatNum(v) : String(v).slice(0, 12);
@@ -1081,7 +1092,7 @@ async function updateContractMonitor() {
                         }).join('') + '</div>';
                     }
                 }
-            } catch { /* no state endpoint */ }
+            } catch { /* no stats endpoint */ }
         }
 
         cards.push(`

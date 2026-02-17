@@ -1306,7 +1306,7 @@
 }
 .predict-stats-row {
     display: grid;
-    grid-template-columns: repeat(4, 1fr);
+    grid-template-columns: repeat(5, 1fr);
     gap: 12px;
     padding: 12px 20px;
 }
@@ -1363,6 +1363,7 @@
 /* Market Cards */
 .market-card { transition: border-color 0.2s, box-shadow 0.2s; cursor: default; }
 .market-card:hover { border-color: rgba(255,107,53,0.25); box-shadow: 0 2px 12px rgba(0,0,0,0.15); }
+.market-card.selected { outline: 2px solid var(--orange-primary); outline-offset: -2px; }
 .market-card.resolved { opacity: 0.8; }
 .market-card.resolved:hover { opacity: 1; }
 .market-card-header { padding: 16px 16px 10px; }

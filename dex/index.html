@@ -370,29 +370,35 @@
 
             <!-- Stats Row -->
             <div class="predict-stats-row">
-                <div class="pool-stat-card highlight-card">
+                <div class="pool-stat-card">
                     <div class="stat-icon-wrap accent-icon"><i class="fas fa-chart-line"></i></div>
                     <div class="pool-stat-label">Total Volume</div>
-                    <div class="pool-stat-value accent-text">$2.8M</div>
+                    <div class="pool-stat-value accent-text" id="pmTotalVolume">$2.8M</div>
                     <div class="stat-sub">All-time</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-fire"></i></div>
                     <div class="pool-stat-label">Active Markets</div>
-                    <div class="pool-stat-value">12</div>
+                    <div class="pool-stat-value" id="pmOpenMarkets">12</div>
                     <div class="stat-sub">3 trending</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-lock"></i></div>
                     <div class="pool-stat-label">Collateral Locked</div>
-                    <div class="pool-stat-value">$1.4M</div>
+                    <div class="pool-stat-value" id="pmTotalCollateral">$1.4M</div>
                     <div class="stat-sub">mUSD</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-coins"></i></div>
                     <div class="pool-stat-label">Fees Collected</div>
-                    <div class="pool-stat-value">$14,200</div>
+                    <div class="pool-stat-value" id="pmFees">$14,200</div>
                     <div class="stat-sub">2% trading fee</div>
+                </div>
+                <div class="pool-stat-card">
+                    <div class="stat-icon-wrap"><i class="fas fa-users"></i></div>
+                    <div class="pool-stat-label">Total Traders</div>
+                    <div class="pool-stat-value" id="pmTotalTraders">0</div>
+                    <div class="stat-sub">Unique addresses</div>
                 </div>
             </div>
 
@@ -762,6 +768,9 @@
                                     <option value="sports">Sports</option>
                                     <option value="tech">Tech</option>
                                     <option value="science">Science</option>
+                                    <option value="entertainment">Entertainment</option>
+                                    <option value="economics">Economics</option>
+                                    <option value="custom">Custom</option>
                                 </select>
                             </div>
 
@@ -791,7 +800,7 @@
                                 <div class="req-row"><span>MoltyID Reputation</span><span class="mono-value">&ge; 500</span></div>
                                 <div class="req-row"><span>Min Initial Liquidity</span><span class="mono-value">100 mUSD</span></div>
                                 <div class="req-row"><span>Resolution Oracle</span><span class="mono-value">MoltOracle</span></div>
-                                <div class="req-row"><span>Dispute Period</span><span class="mono-value">24 hours</span></div>
+                                <div class="req-row"><span>Dispute Period</span><span class="mono-value">48 hours</span></div>
                             </div>
 
                             <button class="btn btn-full btn-primary" id="predictCreateBtn"><i class="fas fa-rocket"></i> Create Market</button>

@@ -679,7 +679,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // ─── Load prediction stats from API ─────────────────────────
     async function loadPredictionStats() {
         try {
-            const data = await api.get('/prediction-market/stats');
+            const { data } = await api.get('/prediction-market/stats');
             if (data) {
                 predictState.stats = data;
                 const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
@@ -687,6 +687,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 el('pmOpenMarkets', data.open_markets ?? '—');
                 el('pmTotalCollateral', formatVolume(data.total_collateral || 0));
                 el('pmFees', formatVolume(data.fees_collected || 0));
+                el('pmTotalTraders', data.total_traders ?? '0');
             }
         } catch { /* API unavailable — keep placeholder text */ }
     }
@@ -694,7 +695,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // ─── Load markets from API ──────────────────────────────────
     async function loadPredictionMarkets() {
         try {
-            const data = await api.get('/prediction-market/markets?limit=50');
+            const { data } = await api.get('/prediction-market/markets?limit=50');
             if (data?.markets?.length > 0) {
                 // Transform API data into UI format
                 predictState.markets = data.markets.map(m => ({
@@ -704,12 +705,24 @@ document.addEventListener('DOMContentLoaded', () => {
                     yes: m.outcomes?.[0]?.price ?? 0.5,
                     volume: m.total_volume * 1e9,   // convert to display units
                     liquidity: m.total_collateral * 1e9,
-                    traders: 0,                     // not stored per-market yet
+                    traders: m.unique_traders || 0,
                     status: m.status,
                     multi: (m.outcome_count || 2) > 2,
                     outcomes: m.outcomes || [],
                 }));
                 predictState.live = true;
+                // Fetch per-market analytics for unique trader counts
+                try {
+                    const promises = predictState.markets.map(m =>
+                        api.get(`/prediction-market/markets/${m.id}/analytics`).then(r => r.data).catch(() => null)
+                    );
+                    const analytics = await Promise.all(promises);
+                    analytics.forEach((a, i) => {
+                        if (a) {
+                            predictState.markets[i].traders = a.unique_traders || 0;
+                        }
+                    });
+                } catch { /* no analytics — traders stays at 0 */ }
                 renderPredictionMarkets();
                 return;
             }
@@ -717,6 +730,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Fallback to mock data
         predictState.markets = [...MOCK_MARKETS];
         predictState.live = false;
+        renderPredictionMarkets();
     }
 
     // ─── Load user positions from API ───────────────────────────
@@ -764,7 +778,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             const card = document.createElement('div');
-            card.className = 'market-card' + (isResolved ? ' resolved' : '');
+            card.className = 'market-card panel-card' + (isResolved ? ' resolved' : '');
             card.dataset.cat = m.cat;
             card.dataset.marketId = m.id;
             card.innerHTML = `
@@ -777,6 +791,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <div class="market-footer">
                     <div class="market-stat"><span class="stat-label">Volume</span><span class="stat-value">${formatVolume(m.volume)}</span></div>
                     <div class="market-stat"><span class="stat-label">Liquidity</span><span class="stat-value">${formatVolume(m.liquidity)}</span></div>
+                    <div class="market-stat"><span class="stat-label">Traders</span><span class="stat-value">${m.traders || 0}</span></div>
                     <button class="btn-predict-chart" data-market="${m.id}" title="Price Chart"><i class="fas fa-chart-line"></i></button>
                     ${!isResolved ? `
                         <div class="market-actions">
@@ -791,6 +806,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Re-bind event handlers for new cards
         bindPredictionCardEvents();
+
+        // Apply default selection highlight
+        const selCard = document.querySelector(`.market-card[data-market-id="${predictState.selectedMarket}"]`);
+        if (selCard) selCard.classList.add('selected');
     }
 
     // ─── Render user positions in bottom panel ──────────────────
@@ -823,9 +842,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const yp = document.getElementById('predictYesPrice'), np = document.getElementById('predictNoPrice');
                 if (yp) yp.textContent = `$${(m.yes || 0.5).toFixed(2)}`;
                 if (np) np.textContent = `$${(1 - (m.yes || 0.5)).toFixed(2)}`;
-                document.querySelectorAll('.market-card').forEach(c => c.style.outline = 'none');
-                card.style.outline = '2px solid var(--orange-primary)';
-                card.style.outlineOffset = '-2px';
+                document.querySelectorAll('.market-card').forEach(c => c.classList.remove('selected'));
+                card.classList.add('selected');
                 updatePredictCalc();
             });
         });
@@ -988,19 +1006,23 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!m) return;
         predictChartState.marketId = marketId;
         predictChartState.range = '1d';
+        predictChartState.realData = null;
         const modal = document.getElementById('predictChartModal');
         const title = document.getElementById('predictChartTitle');
         const canvas = document.getElementById('predictChartCanvas');
         if (!modal || !canvas) return;
         if (title) title.textContent = m.question;
-        // Show modal immediately with mock data, then try to load real data
-        const mockData = generateMockPriceHistory(m, '1d');
-        drawPredictChart(mockData, canvas);
-        renderPredictChartStats(mockData, m);
         document.querySelectorAll('.predict-chart-tab').forEach(t => t.classList.toggle('active', t.dataset.range === '1d'));
+        // Show modal FIRST so canvas has layout dimensions
         modal.style.display = 'flex';
-        // Attempt to load real price history from RPC
-        loadRealPriceHistory(marketId, '1d', m);
+        // Draw mock data on canvas (now has real clientWidth/clientHeight)
+        requestAnimationFrame(() => {
+            const mockData = generateMockPriceHistory(m, '1d');
+            drawPredictChart(mockData, canvas);
+            renderPredictChartStats(mockData, m);
+            // Attempt to load real price history from RPC
+            loadRealPriceHistory(marketId, '1d', m);
+        });
     }
 
     function closePredictChart() {

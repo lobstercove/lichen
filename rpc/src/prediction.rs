@@ -137,6 +137,7 @@ struct PlatformStatsJson {
     total_volume: f64,
     total_collateral: f64,
     fees_collected: f64,
+    total_traders: u64,
     paused: bool,
 }
 
@@ -335,6 +336,7 @@ async fn get_stats(State(state): State<Arc<RpcState>>) -> Response {
     let total_volume = read_u64_key(&state, b"pm_total_volume");
     let total_collateral = read_u64_key(&state, b"pm_total_collateral");
     let fees_collected = read_u64_key(&state, b"pm_fees_collected");
+    let total_traders = read_u64_key(&state, b"pm_total_traders");
     let paused = read_bytes(&state, b"pm_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false);
 
     ApiResponse::ok(
@@ -344,6 +346,7 @@ async fn get_stats(State(state): State<Arc<RpcState>>) -> Response {
             total_volume: total_volume as f64 / PRICE_SCALE as f64,
             total_collateral: total_collateral as f64 / PRICE_SCALE as f64,
             fees_collected: fees_collected as f64 / PRICE_SCALE as f64,
+            total_traders,
             paused,
         },
         slot,
@@ -680,6 +683,240 @@ async fn post_create(
     .into_response()
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-trader stats & leaderboard
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+struct TraderStatsJson {
+    address: String,
+    total_volume: f64,
+    trade_count: u64,
+    last_trade_slot: u64,
+}
+
+/// GET /prediction-market/traders/:addr/stats — Per-trader analytics
+async fn get_trader_stats(
+    State(state): State<Arc<RpcState>>,
+    Path(addr): Path<String>,
+) -> Response {
+    let slot = current_slot(&state);
+    let key = format!("pm_ts_{}", addr);
+    let data = read_bytes(&state, key.as_bytes());
+    match data {
+        Some(d) if d.len() >= 24 => {
+            let volume = u64_le(&d, 0);
+            let trades = u64_le(&d, 8);
+            let last_slot = u64_le(&d, 16);
+            ApiResponse::ok(
+                TraderStatsJson {
+                    address: addr,
+                    total_volume: volume as f64 / PRICE_SCALE as f64,
+                    trade_count: trades,
+                    last_trade_slot: last_slot,
+                },
+                slot,
+            )
+            .into_response()
+        }
+        _ => ApiResponse::ok(
+            TraderStatsJson {
+                address: addr,
+                total_volume: 0.0,
+                trade_count: 0,
+                last_trade_slot: 0,
+            },
+            slot,
+        )
+        .into_response(),
+    }
+}
+
+#[derive(Serialize)]
+struct LeaderboardEntry {
+    rank: usize,
+    address: String,
+    total_volume: f64,
+    trade_count: u64,
+}
+
+#[derive(Deserialize)]
+struct LeaderboardQuery {
+    limit: Option<usize>,
+}
+
+/// GET /prediction-market/leaderboard — Top traders by volume
+async fn get_leaderboard(
+    State(state): State<Arc<RpcState>>,
+    Query(params): Query<LeaderboardQuery>,
+) -> Response {
+    let slot = current_slot(&state);
+    let limit = params.limit.unwrap_or(20).min(50);
+    let total_traders = read_u64_key(&state, b"pm_total_traders");
+
+    let contract = match load_predict_contract(&state) {
+        Some(c) => c,
+        None => return api_err("Prediction market contract not found"),
+    };
+
+    let scan_max = total_traders.min(500) as usize;
+    let mut entries: Vec<(String, u64, u64)> = Vec::with_capacity(scan_max);
+
+    for i in 0..scan_max as u64 {
+        let lk = format!("pm_tl_{}", i);
+        if let Some(addr_data) = contract.get_storage(lk.as_bytes()) {
+            if addr_data.len() >= 32 {
+                let addr_hex = hex::encode(&addr_data[..32]);
+                let tk = format!("pm_ts_{}", addr_hex);
+                if let Some(sd) = contract.get_storage(tk.as_bytes()) {
+                    if sd.len() >= 24 {
+                        let vol = u64_le(&sd, 0);
+                        let trades = u64_le(&sd, 8);
+                        entries.push((addr_hex, vol, trades));
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort descending by volume
+    entries.sort_by(|a, b| b.1.cmp(&a.1));
+    entries.truncate(limit);
+
+    let leaderboard: Vec<LeaderboardEntry> = entries
+        .into_iter()
+        .enumerate()
+        .map(|(i, (addr, vol, trades))| LeaderboardEntry {
+            rank: i + 1,
+            address: addr,
+            total_volume: vol as f64 / PRICE_SCALE as f64,
+            trade_count: trades,
+        })
+        .collect();
+
+    #[derive(Serialize)]
+    struct LeaderboardResponse {
+        traders: Vec<LeaderboardEntry>,
+        total_traders: u64,
+    }
+
+    ApiResponse::ok(
+        LeaderboardResponse {
+            traders: leaderboard,
+            total_traders,
+        },
+        slot,
+    )
+    .into_response()
+}
+
+#[derive(Serialize)]
+struct TrendingMarketJson {
+    id: u64,
+    question: String,
+    category: &'static str,
+    volume_24h: f64,
+    unique_traders: u64,
+    total_volume: f64,
+    status: &'static str,
+}
+
+/// GET /prediction-market/trending — Markets ranked by 24h volume
+async fn get_trending(State(state): State<Arc<RpcState>>) -> Response {
+    let slot = current_slot(&state);
+    let contract = match load_predict_contract(&state) {
+        Some(c) => c,
+        None => return api_err("Prediction market contract not found"),
+    };
+
+    let total_markets = contract
+        .get_storage(b"pm_market_count")
+        .and_then(|d| if d.len() >= 8 { Some(u64_le(&d, 0)) } else { None })
+        .unwrap_or(0);
+
+    let mut markets: Vec<TrendingMarketJson> = Vec::new();
+
+    for id in 1..=total_markets {
+        let mkt_key = format!("pm_m_{}", id);
+        let mkt_data = match contract.get_storage(mkt_key.as_bytes()) {
+            Some(d) if d.len() >= 192 => d,
+            _ => continue,
+        };
+
+        let status = mkt_data[64];
+        // Only include active markets
+        if status != 1 {
+            continue;
+        }
+
+        let category = mkt_data[67];
+        let total_volume = u64_le(&mkt_data, 76);
+
+        let q_key = format!("pm_q_{}", id);
+        let question = contract
+            .get_storage(q_key.as_bytes())
+            .and_then(|d| String::from_utf8(d).ok())
+            .unwrap_or_default();
+
+        let vol24_key = format!("pm_mv24_{}", id);
+        let vol24 = contract
+            .get_storage(vol24_key.as_bytes())
+            .and_then(|d| if d.len() >= 8 { Some(u64_le(&d, 0)) } else { None })
+            .unwrap_or(0);
+
+        let tc_key = format!("pm_mtc_{}", id);
+        let traders = contract
+            .get_storage(tc_key.as_bytes())
+            .and_then(|d| if d.len() >= 8 { Some(u64_le(&d, 0)) } else { None })
+            .unwrap_or(0);
+
+        markets.push(TrendingMarketJson {
+            id,
+            question,
+            category: category_name(category),
+            volume_24h: vol24 as f64 / PRICE_SCALE as f64,
+            unique_traders: traders,
+            total_volume: total_volume as f64 / PRICE_SCALE as f64,
+            status: status_name(status),
+        });
+    }
+
+    // Sort by 24h volume descending
+    markets.sort_by(|a, b| b.volume_24h.partial_cmp(&a.volume_24h).unwrap_or(std::cmp::Ordering::Equal));
+    markets.truncate(10);
+
+    ApiResponse::ok(markets, slot).into_response()
+}
+
+#[derive(Serialize)]
+struct MarketAnalyticsJson {
+    market_id: u64,
+    unique_traders: u64,
+    volume_24h: f64,
+}
+
+/// GET /prediction-market/markets/:id/analytics — Per-market analytics
+async fn get_market_analytics(
+    State(state): State<Arc<RpcState>>,
+    Path(id): Path<u64>,
+) -> Response {
+    let slot = current_slot(&state);
+    let tc_key = format!("pm_mtc_{}", id);
+    let traders = read_u64_key(&state, tc_key.as_bytes());
+    let vol24_key = format!("pm_mv24_{}", id);
+    let vol24 = read_u64_key(&state, vol24_key.as_bytes());
+
+    ApiResponse::ok(
+        MarketAnalyticsJson {
+            market_id: id,
+            unique_traders: traders,
+            volume_24h: vol24 as f64 / PRICE_SCALE as f64,
+        },
+        slot,
+    )
+    .into_response()
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // PUBLIC: Build the Prediction Market API router
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -691,7 +928,11 @@ pub(crate) fn build_prediction_router() -> Router<Arc<RpcState>> {
         .route("/markets", get(get_markets))
         .route("/markets/:id", get(get_market))
         .route("/markets/:id/price-history", get(get_price_history))
+        .route("/markets/:id/analytics", get(get_market_analytics))
         .route("/positions", get(get_positions))
+        .route("/traders/:addr/stats", get(get_trader_stats))
+        .route("/leaderboard", get(get_leaderboard))
+        .route("/trending", get(get_trending))
         .route("/trade", post(post_trade))
         .route("/create", post(post_create))
 }
