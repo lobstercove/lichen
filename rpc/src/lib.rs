@@ -4462,6 +4462,17 @@ async fn handle_get_contract_info(
         (false, 0, String::new(), account.owner.to_base58(), None)
     };
 
+    // Extract version + previous_code_hash when available
+    let (contract_version, prev_code_hash) = if account.executable {
+        if let Ok(ca) = serde_json::from_slice::<moltchain_core::ContractAccount>(&account.data) {
+            (ca.version, ca.previous_code_hash.map(|h| h.to_hex()))
+        } else {
+            (1u32, None)
+        }
+    } else {
+        (1u32, None)
+    };
+
     let mut result = serde_json::json!({
         "contract_id": contract_id.to_base58(),
         "owner": owner_b58,
@@ -4471,7 +4482,11 @@ async fn handle_get_contract_info(
         "abi_functions": abi_functions,
         "code_hash": code_hash,
         "deployed_at": 0,
+        "version": contract_version,
     });
+    if let Some(pch) = prev_code_hash {
+        result.as_object_mut().unwrap().insert("previous_code_hash".to_string(), serde_json::json!(pch));
+    }
     if let Some(tm) = token_metadata {
         result
             .as_object_mut()
