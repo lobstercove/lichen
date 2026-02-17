@@ -2053,3 +2053,167 @@
     .lp-pos-details { grid-template-columns: 1fr; }
     .tier-table-row { font-size: 0.75rem; }
 }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Prediction Chart Modal — Polymarket-style price history
+   ═══════════════════════════════════════════════════════════════════════ */
+.btn-predict-chart {
+    background: transparent;
+    border: 1px solid rgba(255,255,255,0.12);
+    color: var(--text-muted, #8892b0);
+    border-radius: 6px;
+    padding: 3px 7px;
+    cursor: pointer;
+    font-size: 0.72rem;
+    transition: all 0.2s;
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    margin-left: 4px;
+    vertical-align: middle;
+}
+.btn-predict-chart:hover {
+    background: rgba(78, 168, 222, 0.15);
+    border-color: var(--orange-primary, #ff6b35);
+    color: var(--orange-primary, #ff6b35);
+}
+.predict-chart-modal {
+    position: fixed;
+    inset: 0;
+    z-index: 20000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+.predict-chart-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(4px);
+}
+.predict-chart-content {
+    position: relative;
+    background: var(--bg-card, #131722);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 16px;
+    width: 90%;
+    max-width: 860px;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.6);
+    overflow: hidden;
+    animation: chartModalIn 0.25s ease;
+}
+@keyframes chartModalIn {
+    from { transform: scale(0.92) translateY(20px); opacity: 0; }
+    to   { transform: scale(1) translateY(0); opacity: 1; }
+}
+.predict-chart-header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 18px 24px 14px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+.predict-chart-header h3 {
+    flex: 1;
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: #fff;
+    margin: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.predict-chart-tabs {
+    display: flex;
+    gap: 4px;
+    flex-shrink: 0;
+}
+.predict-chart-tab {
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid transparent;
+    color: var(--text-muted, #8892b0);
+    border-radius: 6px;
+    padding: 4px 12px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.predict-chart-tab:hover {
+    background: rgba(255, 255, 255, 0.1);
+    color: #fff;
+}
+.predict-chart-tab.active {
+    background: var(--orange-primary, #ff6b35);
+    color: #fff;
+    border-color: var(--orange-primary, #ff6b35);
+}
+.predict-chart-close {
+    background: rgba(255, 255, 255, 0.06);
+    border: none;
+    color: var(--text-muted, #8892b0);
+    border-radius: 8px;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    font-size: 0.85rem;
+    transition: all 0.15s;
+    flex-shrink: 0;
+}
+.predict-chart-close:hover {
+    background: rgba(239, 68, 68, 0.2);
+    color: #ef4444;
+}
+.predict-chart-body {
+    padding: 16px 24px 8px;
+}
+.predict-chart-body canvas {
+    width: 100%;
+    height: auto;
+    display: block;
+}
+.predict-chart-footer {
+    padding: 12px 24px 18px;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+.predict-chart-stats {
+    display: flex;
+    gap: 24px;
+    flex-wrap: wrap;
+    font-size: 0.78rem;
+}
+.predict-chart-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.predict-chart-stat .stat-label {
+    color: var(--text-muted, #8892b0);
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+.predict-chart-stat .stat-value {
+    color: #fff;
+    font-weight: 600;
+    font-size: 0.88rem;
+}
+.predict-chart-stat .stat-value.up   { color: #06d6a0; }
+.predict-chart-stat .stat-value.down { color: #ef4444; }
+
+/* Dynamic card chart button — inside market-footer */
+.market-footer .btn-predict-chart {
+    margin-left: auto;
+}
+
+@media (max-width: 640px) {
+    .predict-chart-content { width: 96%; border-radius: 12px; }
+    .predict-chart-header { flex-wrap: wrap; padding: 14px 16px 10px; }
+    .predict-chart-tabs { order: 3; width: 100%; justify-content: center; margin-top: 8px; }
+    .predict-chart-body { padding: 8px 12px 4px; }
+    .predict-chart-footer { padding: 10px 12px 14px; }
+    .predict-chart-stats { gap: 12px; }
+}

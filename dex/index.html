@@ -405,6 +405,9 @@
                     <button class="predict-cat-btn" data-cat="sports"><i class="fas fa-football-ball"></i> Sports</button>
                     <button class="predict-cat-btn" data-cat="tech"><i class="fas fa-microchip"></i> Tech</button>
                     <button class="predict-cat-btn" data-cat="science"><i class="fas fa-flask"></i> Science</button>
+                    <button class="predict-cat-btn" data-cat="entertainment"><i class="fas fa-film"></i> Entertainment</button>
+                    <button class="predict-cat-btn" data-cat="economics"><i class="fas fa-chart-bar"></i> Economics</button>
+                    <button class="predict-cat-btn" data-cat="custom"><i class="fas fa-puzzle-piece"></i> Custom</button>
                 </div>
                 <div class="predict-sort">
                     <select class="network-select" id="predictSort">
@@ -469,6 +472,7 @@
                                 <span><i class="fas fa-exchange-alt"></i> $842K vol</span>
                                 <span><i class="fas fa-lock"></i> $320K liq</span>
                                 <span><i class="fas fa-users"></i> 284 traders</span>
+                                <button class="btn-predict-chart" data-market="1" title="Price Chart"><i class="fas fa-chart-line"></i></button>
                             </div>
                         </div>
                     </div>
@@ -522,6 +526,7 @@
                                 <span><i class="fas fa-exchange-alt"></i> $523K vol</span>
                                 <span><i class="fas fa-lock"></i> $210K liq</span>
                                 <span><i class="fas fa-users"></i> 178 traders</span>
+                                <button class="btn-predict-chart" data-market="2" title="Price Chart"><i class="fas fa-chart-line"></i></button>
                             </div>
                         </div>
                     </div>
@@ -571,6 +576,7 @@
                                 <span><i class="fas fa-exchange-alt"></i> $1.2M vol</span>
                                 <span><i class="fas fa-lock"></i> $480K liq</span>
                                 <span><i class="fas fa-users"></i> 412 traders</span>
+                                <button class="btn-predict-chart" data-market="3" title="Price Chart"><i class="fas fa-chart-line"></i></button>
                             </div>
                         </div>
                     </div>
@@ -608,6 +614,7 @@
                                 <span><i class="fas fa-exchange-alt"></i> $198K vol</span>
                                 <span><i class="fas fa-lock"></i> $85K liq</span>
                                 <span><i class="fas fa-users"></i> 96 traders</span>
+                                <button class="btn-predict-chart" data-market="4" title="Price Chart"><i class="fas fa-chart-line"></i></button>
                             </div>
                         </div>
                     </div>
@@ -643,6 +650,7 @@
                                 <span><i class="fas fa-exchange-alt"></i> $156K vol</span>
                                 <span><i class="fas fa-users"></i> 142 traders</span>
                                 <span><i class="fas fa-check"></i> Settled</span>
+                                <button class="btn-predict-chart" data-market="5" title="Price Chart"><i class="fas fa-chart-line"></i></button>
                             </div>
                         </div>
                     </div>
@@ -680,6 +688,7 @@
                                 <span><i class="fas fa-exchange-alt"></i> $367K vol</span>
                                 <span><i class="fas fa-lock"></i> $145K liq</span>
                                 <span><i class="fas fa-users"></i> 203 traders</span>
+                                <button class="btn-predict-chart" data-market="6" title="Price Chart"><i class="fas fa-chart-line"></i></button>
                             </div>
                         </div>
                     </div>
@@ -1761,6 +1770,30 @@
             </div>
         </div>
     </footer>
+
+    <!-- Prediction Chart Modal -->
+    <div class="predict-chart-modal" id="predictChartModal" style="display:none;">
+        <div class="predict-chart-overlay"></div>
+        <div class="predict-chart-content">
+            <div class="predict-chart-header">
+                <h3 id="predictChartTitle">Market Price History</h3>
+                <div class="predict-chart-tabs">
+                    <button class="predict-chart-tab active" data-range="1h">1H</button>
+                    <button class="predict-chart-tab" data-range="6h">6H</button>
+                    <button class="predict-chart-tab" data-range="1d">1D</button>
+                    <button class="predict-chart-tab" data-range="1w">1W</button>
+                    <button class="predict-chart-tab" data-range="all">ALL</button>
+                </div>
+                <button class="predict-chart-close" id="predictChartClose"><i class="fas fa-times"></i></button>
+            </div>
+            <div class="predict-chart-body">
+                <canvas id="predictChartCanvas" width="800" height="360"></canvas>
+            </div>
+            <div class="predict-chart-footer">
+                <div class="predict-chart-stats" id="predictChartStats"></div>
+            </div>
+        </div>
+    </div>
 
     <script src="charting_library/charting_library.standalone.js"></script>
     <script src="dex.js"></script>

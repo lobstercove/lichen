@@ -306,9 +306,13 @@ async function refresh() {
             drawTPSChart();
 
             // Supply
-            document.getElementById('supplyTotal').textContent = formatMolt(metrics.total_supply || 0) + ' MOLT';
+            const totalSupply = metrics.total_supply || 0;
+            const totalBurned = metrics.total_burned || 0;
+            const effectiveSupply = totalSupply - totalBurned;
+            document.getElementById('supplyTotal').textContent = formatMolt(totalSupply) + ' MOLT';
+            document.getElementById('supplyEffective').textContent = formatMolt(effectiveSupply) + ' MOLT';
             document.getElementById('supplyStaked').textContent = formatMolt(metrics.total_staked || 0) + ' MOLT';
-            document.getElementById('supplyBurned').textContent = formatMolt(metrics.total_burned || 0) + ' MOLT';
+            document.getElementById('supplyBurned').textContent = formatMolt(totalBurned) + ' MOLT';
 
             // Genesis signer
             const genesisShells = metrics.genesis_balance || 0;
@@ -378,6 +382,17 @@ async function refresh() {
 
         // ─ Contract Registry ─
         await updateContracts();
+
+        // ─ DEX Operations Monitor (every 10s) ─
+        if (!dexDataLoaded || Date.now() % 10000 < REFRESH_MS) {
+            await updateDexMonitor();
+            dexDataLoaded = true;
+        }
+
+        // ─ Smart Contracts Monitor (once) ─
+        if (!contractMonitorLoaded) {
+            await updateContractMonitor();
+        }
 
         // ─ Footer ─
         document.getElementById('lastUpdate').textContent = now();
@@ -845,6 +860,265 @@ function detectThreats(metrics, probes) {
                 `${dominant?.name} produced ${((maxBlocks / totalBlocks) * 100).toFixed(0)}% of blocks`);
         }
     }
+}
+
+// ── DEX Operations Monitor ──────────────────────────────────
+
+const DEX_SUBSYSTEMS = [
+    { id: 'dex_core', symbol: 'DEX', name: 'DEX Core (CLOB)', desc: 'Central Limit Order Book engine', icon: 'fas fa-exchange-alt', color: '#4ea8de',
+      metrics: ['pairs', 'orders', 'fills_24h', 'volume_24h'] },
+    { id: 'dex_amm', symbol: 'DEXAMM', name: 'AMM Pools', desc: 'Concentrated liquidity AMM', icon: 'fas fa-water', color: '#06d6a0',
+      metrics: ['pools', 'tvl', 'volume_24h', 'fees_24h'] },
+    { id: 'dex_router', symbol: 'DEXROUTER', name: 'Smart Router', desc: 'Optimal routing across CLOB + AMM', icon: 'fas fa-route', color: '#ffd166',
+      metrics: ['routes_24h', 'savings', 'split_routes', 'avg_slippage'] },
+    { id: 'dex_margin', symbol: 'DEXMARGIN', name: 'Margin Trading', desc: 'Leveraged positions (up to 10x)', icon: 'fas fa-chart-line', color: '#ef4444',
+      metrics: ['positions', 'total_collateral', 'liquidations', 'max_leverage'] },
+    { id: 'dex_governance', symbol: 'DEXGOV', name: 'DEX Governance', desc: 'Proposals, voting, fee updates', icon: 'fas fa-landmark', color: '#a78bfa',
+      metrics: ['proposals', 'active_votes', 'total_voters', 'treasury'] },
+    { id: 'dex_rewards', symbol: 'DEXREWARDS', name: 'Rewards & Staking', desc: 'LP incentives, trading rewards', icon: 'fas fa-gift', color: '#f59e0b',
+      metrics: ['stakers', 'total_staked', 'distributed', 'apy'] },
+    { id: 'dex_analytics', symbol: 'ANALYTICS', name: 'Analytics Engine', desc: 'OHLCV, trade history, metrics', icon: 'fas fa-chart-area', color: '#60a5fa',
+      metrics: ['candles', 'indexed_trades', 'pairs_tracked', 'uptime'] },
+    { id: 'moltswap', symbol: 'MOLTSWAP', name: 'MoltSwap', desc: 'Simple token swap interface', icon: 'fas fa-arrows-rotate', color: '#ff6b35',
+      metrics: ['swaps_24h', 'volume', 'unique_users', 'pairs'] },
+    { id: 'prediction_market', symbol: null, name: 'PredictionReef', desc: 'Binary/multi-outcome markets + mUSD', icon: 'fas fa-chart-pie', color: '#e879f9',
+      metrics: ['markets', 'volume', 'collateral', 'traders'] },
+];
+
+let dexDataLoaded = false;
+
+async function updateDexMonitor() {
+    const grid = document.getElementById('dexSubsystemGrid');
+    const badge = document.getElementById('dexStatusBadge');
+    if (!grid) return;
+
+    let onlineCount = 0;
+    const cards = [];
+
+    for (const sub of DEX_SUBSYSTEMS) {
+        let deployed = false;
+        let program = null;
+        let metricsData = {};
+
+        // Check if contract is deployed
+        if (sub.symbol) {
+            const info = await rpc('getSymbolRegistry', [sub.symbol]);
+            if (info && info.program) {
+                deployed = true;
+                program = info.program;
+            }
+        }
+
+        // Try to load subsystem-specific metrics
+        try {
+            if (sub.id === 'dex_core') {
+                const stats = await rpc('getDexStats');
+                if (stats) {
+                    metricsData = { pairs: stats.total_pairs || 0, orders: stats.open_orders || 0,
+                        fills_24h: stats.fills_24h || 0, volume_24h: stats.volume_24h || 0 };
+                    deployed = true;
+                }
+            } else if (sub.id === 'dex_amm') {
+                const stats = await rpc('getAmmStats');
+                if (stats) {
+                    metricsData = { pools: stats.total_pools || 0, tvl: stats.tvl || 0,
+                        volume_24h: stats.volume_24h || 0, fees_24h: stats.fees_24h || 0 };
+                    deployed = true;
+                }
+            } else if (sub.id === 'dex_margin') {
+                const stats = await rpc('getMarginStats');
+                if (stats) {
+                    metricsData = { positions: stats.open_positions || 0, total_collateral: stats.total_collateral || 0,
+                        liquidations: stats.liquidations_24h || 0, max_leverage: '10x' };
+                    deployed = true;
+                }
+            } else if (sub.id === 'prediction_market') {
+                const stats = await rpc('getPredictionStats');
+                if (stats) {
+                    metricsData = { markets: stats.open_markets || 0, volume: stats.total_volume || 0,
+                        collateral: stats.total_collateral || 0, traders: stats.unique_traders || 0 };
+                    deployed = true;
+                }
+            }
+        } catch { /* stats endpoint not yet available */ }
+
+        if (deployed) onlineCount++;
+
+        const statusClass = deployed ? 'success' : 'warning';
+        const statusText = deployed ? 'DEPLOYED' : 'PENDING';
+
+        const metricLabels = {
+            pairs: 'Pairs', orders: 'Orders', fills_24h: 'Fills 24h', volume_24h: 'Vol 24h',
+            pools: 'Pools', tvl: 'TVL', fees_24h: 'Fees 24h', routes_24h: 'Routes 24h',
+            savings: 'Saved', split_routes: 'Splits', avg_slippage: 'Slippage',
+            positions: 'Positions', total_collateral: 'Collateral', liquidations: 'Liqs 24h', max_leverage: 'Max Lev',
+            proposals: 'Proposals', active_votes: 'Active', total_voters: 'Voters', treasury: 'Treasury',
+            stakers: 'Stakers', total_staked: 'Staked', distributed: 'Distributed', apy: 'APY',
+            candles: 'Candles', indexed_trades: 'Indexed', pairs_tracked: 'Tracked', uptime: 'Uptime',
+            swaps_24h: 'Swaps 24h', volume: 'Volume', unique_users: 'Users',
+            markets: 'Markets', collateral: 'Collateral', traders: 'Traders'
+        };
+
+        const metricsHtml = sub.metrics.map(m => {
+            const val = metricsData[m];
+            let display = '--';
+            if (val !== undefined && val !== null) {
+                if (typeof val === 'string') display = val;
+                else if (m.includes('volume') || m.includes('tvl') || m.includes('collateral') || m.includes('treasury') || m.includes('staked') || m.includes('distributed') || m.includes('fees') || m.includes('savings')) {
+                    display = formatMolt(val);
+                } else { display = formatNum(val); }
+            }
+            return `<div class="sub-metric"><span class="sub-metric-label">${metricLabels[m] || m}</span><span class="sub-metric-value">${display}</span></div>`;
+        }).join('');
+
+        cards.push(`
+            <div class="dex-subsystem-card">
+                <div class="sub-header">
+                    <div class="sub-icon" style="background:${sub.color}18;color:${sub.color};"><i class="${sub.icon}"></i></div>
+                    <div>
+                        <div class="sub-name">${sub.name}</div>
+                        <div class="sub-desc">${sub.desc}</div>
+                    </div>
+                    <span class="sub-badge ${statusClass}" style="background:var(--${statusClass === 'success' ? 'green' : 'yellow'}-bg, ${sub.color}18);color:${statusClass === 'success' ? '#4ade80' : '#f59e0b'};">${statusText}</span>
+                </div>
+                <div class="sub-metrics">${metricsHtml}</div>
+                ${program ? `<div style="font-size:0.65rem;color:var(--text-muted);font-family:var(--font-mono);margin-top:0.25rem;overflow:hidden;text-overflow:ellipsis;">${truncAddr(program)}</div>` : ''}
+            </div>
+        `);
+    }
+
+    grid.innerHTML = cards.join('');
+    if (badge) {
+        badge.textContent = `${onlineCount}/${DEX_SUBSYSTEMS.length} Active`;
+        badge.className = 'panel-badge ' + (onlineCount === DEX_SUBSYSTEMS.length ? 'success' : onlineCount > 0 ? 'info' : 'warning');
+    }
+
+    // Update summary stats
+    const dexStats = await rpc('getDexStats').catch(() => null);
+    const el = id => document.getElementById(id);
+    if (dexStats) {
+        if (el('dexTotalPairs')) el('dexTotalPairs').textContent = formatNum(dexStats.total_pairs || 0);
+        if (el('dexVolume24h')) el('dexVolume24h').textContent = formatMolt(dexStats.volume_24h || 0);
+        if (el('dexOpenOrders')) el('dexOpenOrders').textContent = formatNum(dexStats.open_orders || 0);
+    }
+    const ammStats = await rpc('getAmmStats').catch(() => null);
+    if (ammStats) {
+        if (el('dexTVL')) el('dexTVL').textContent = formatMolt(ammStats.tvl || 0);
+    }
+    const marginStats = await rpc('getMarginStats').catch(() => null);
+    if (marginStats) {
+        if (el('dexMarginPos')) el('dexMarginPos').textContent = formatNum(marginStats.open_positions || 0);
+    }
+    const predictStats = await rpc('getPredictionStats').catch(() => null);
+    if (predictStats) {
+        if (el('dexPredictMkts')) el('dexPredictMkts').textContent = formatNum(predictStats.open_markets || 0);
+    }
+}
+
+// ── Smart Contracts Monitor ─────────────────────────────────
+
+const ALL_CONTRACTS = [
+    { symbol: 'MOLT', name: 'MoltCoin', cat: 'token', icon: 'fas fa-coins', color: '#ff6b35' },
+    { symbol: 'MUSD', name: 'mUSD Stablecoin', cat: 'token', icon: 'fas fa-dollar-sign', color: '#4ade80' },
+    { symbol: 'WETH', name: 'Wrapped ETH', cat: 'token', icon: 'fab fa-ethereum', color: '#627eea' },
+    { symbol: 'WSOL', name: 'Wrapped SOL', cat: 'token', icon: 'fas fa-sun', color: '#9945ff' },
+    { symbol: 'DEX', name: 'DEX Core', cat: 'dex', icon: 'fas fa-exchange-alt', color: '#4ea8de' },
+    { symbol: 'DEXAMM', name: 'DEX AMM', cat: 'dex', icon: 'fas fa-water', color: '#06d6a0' },
+    { symbol: 'DEXROUTER', name: 'DEX Router', cat: 'dex', icon: 'fas fa-route', color: '#ffd166' },
+    { symbol: 'DEXMARGIN', name: 'DEX Margin', cat: 'dex', icon: 'fas fa-chart-line', color: '#ef4444' },
+    { symbol: 'DEXGOV', name: 'DEX Governance', cat: 'dex', icon: 'fas fa-landmark', color: '#a78bfa' },
+    { symbol: 'DEXREWARDS', name: 'DEX Rewards', cat: 'dex', icon: 'fas fa-gift', color: '#f59e0b' },
+    { symbol: 'ANALYTICS', name: 'DEX Analytics', cat: 'dex', icon: 'fas fa-chart-area', color: '#60a5fa' },
+    { symbol: 'MOLTSWAP', name: 'MoltSwap', cat: 'dex', icon: 'fas fa-arrows-rotate', color: '#ff6b35' },
+    { symbol: 'BRIDGE', name: 'MoltBridge', cat: 'infra', icon: 'fas fa-bridge', color: '#38bdf8' },
+    { symbol: 'DAO', name: 'MoltDAO', cat: 'infra', icon: 'fas fa-users-cog', color: '#a78bfa' },
+    { symbol: 'CLAWVAULT', name: 'ClawVault', cat: 'defi', icon: 'fas fa-vault', color: '#f472b6' },
+    { symbol: 'CLAWPAY', name: 'ClawPay', cat: 'defi', icon: 'fas fa-credit-card', color: '#34d399' },
+    { symbol: 'CLAWPUMP', name: 'ClawPump', cat: 'defi', icon: 'fas fa-rocket', color: '#fb923c' },
+    { symbol: 'ORACLE', name: 'MoltOracle', cat: 'infra', icon: 'fas fa-eye', color: '#c084fc' },
+    { symbol: 'LEND', name: 'LobsterLend', cat: 'defi', icon: 'fas fa-hand-holding-usd', color: '#2dd4bf' },
+    { symbol: 'MARKET', name: 'MoltMarket', cat: 'nft', icon: 'fas fa-store', color: '#f97316' },
+    { symbol: 'AUCTION', name: 'MoltAuction', cat: 'nft', icon: 'fas fa-gavel', color: '#e879f9' },
+    { symbol: 'BOUNTY', name: 'BountyBoard', cat: 'infra', icon: 'fas fa-bullhorn', color: '#fbbf24' },
+    { symbol: 'COMPUTE', name: 'Compute Market', cat: 'infra', icon: 'fas fa-microchip', color: '#94a3b8' },
+    { symbol: 'REEF', name: 'Reef Storage', cat: 'infra', icon: 'fas fa-database', color: '#22d3ee' },
+    { symbol: 'PUNKS', name: 'MoltPunks', cat: 'nft', icon: 'fas fa-image', color: '#f43f5e' },
+    { symbol: 'YID', name: 'MoltyID', cat: 'identity', icon: 'fas fa-fingerprint', color: '#818cf8' },
+    { symbol: 'TLOBSTER', name: 'Prediction Market', cat: 'defi', icon: 'fas fa-chart-pie', color: '#e879f9' },
+];
+
+let contractMonitorLoaded = false;
+
+async function updateContractMonitor() {
+    const grid = document.getElementById('contractMonitorGrid');
+    const badge = document.getElementById('contractMonitorBadge');
+    if (!grid) return;
+
+    let deployedCount = 0;
+    const cards = [];
+
+    for (const c of ALL_CONTRACTS) {
+        const info = await rpc('getSymbolRegistry', [c.symbol]);
+        const deployed = !!(info && info.program);
+        if (deployed) deployedCount++;
+
+        const program = info?.program || '';
+        const template = info?.template || '—';
+        const statusClass = deployed ? 'success' : 'warning';
+        const statusText = deployed ? 'LIVE' : 'PENDING';
+
+        // Try to fetch contract-specific stats
+        let statsHtml = '';
+        if (deployed) {
+            try {
+                const cs = await rpc('getContractState', [program]);
+                if (cs) {
+                    const entries = Object.entries(cs).filter(([k]) => !k.startsWith('_')).slice(0, 4);
+                    if (entries.length > 0) {
+                        statsHtml = '<div class="cm-metrics">' + entries.map(([k, v]) => {
+                            const val = typeof v === 'number' ? formatNum(v) : String(v).slice(0, 12);
+                            return `<div class="cm-metric"><span class="cm-metric-label">${k.replace(/_/g, ' ')}</span><span class="cm-metric-value">${val}</span></div>`;
+                        }).join('') + '</div>';
+                    }
+                }
+            } catch { /* no state endpoint */ }
+        }
+
+        cards.push(`
+            <div class="contract-monitor-card" data-cat="${c.cat}">
+                <div class="cm-header">
+                    <div class="cm-icon" style="background:${c.color}18;color:${c.color};"><i class="${c.icon}"></i></div>
+                    <div>
+                        <div class="cm-name">${c.name}</div>
+                        <div class="cm-symbol">${c.symbol} · ${template}</div>
+                    </div>
+                    <span class="cm-badge" style="background:${deployed ? 'rgba(74,222,128,0.12)' : 'rgba(245,158,11,0.12)'};color:${deployed ? '#4ade80' : '#f59e0b'};">${statusText}</span>
+                </div>
+                ${program ? `<div class="cm-addr" title="${program}">${program}</div>` : ''}
+                ${statsHtml}
+            </div>
+        `);
+    }
+
+    grid.innerHTML = cards.join('');
+    contractMonitorLoaded = true;
+
+    if (badge) {
+        badge.textContent = `${deployedCount}/${ALL_CONTRACTS.length} Deployed`;
+        badge.className = 'panel-badge ' + (deployedCount >= ALL_CONTRACTS.length ? 'success' : deployedCount >= ALL_CONTRACTS.length / 2 ? 'info' : 'warning');
+    }
+
+    // Wire category filter buttons
+    document.querySelectorAll('.contract-cat-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.contract-cat-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            const cat = btn.dataset.cat;
+            document.querySelectorAll('.contract-monitor-card').forEach(card => {
+                card.style.display = (cat === 'all' || card.dataset.cat === cat) ? '' : 'none';
+            });
+        });
+    });
 }
 
 // ── Clock ───────────────────────────────────────────────────

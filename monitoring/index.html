@@ -149,8 +149,12 @@
                 <div class="panel-body">
                     <div class="supply-grid">
                         <div class="supply-item">
-                            <span class="supply-label">Total Supply</span>
+                            <span class="supply-label">Total Supply (Minted)</span>
                             <span class="supply-value" id="supplyTotal">--</span>
+                        </div>
+                        <div class="supply-item">
+                            <span class="supply-label">Effective Supply <small style="opacity:0.5;">(Minted − Burned)</small></span>
+                            <span class="supply-value success" id="supplyEffective">--</span>
                         </div>
                         <div class="supply-item">
                             <span class="supply-label">Circulating</span>
@@ -435,6 +439,76 @@
                 </div>
             </div>
         </div>
+
+        <!-- Row 6: DEX Operations Monitor -->
+        <div class="panel full-width">
+            <div class="panel-header">
+                <div class="panel-title">
+                    <i class="fas fa-chart-bar"></i> DEX Operations Monitor
+                </div>
+                <span class="panel-badge" id="dexStatusBadge">--</span>
+            </div>
+            <div class="panel-body">
+                <!-- DEX Stats Bar -->
+                <div class="dex-stats-bar" id="dexStatsBar">
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Pairs</span>
+                        <span class="dex-stat-value" id="dexTotalPairs">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">24h Volume</span>
+                        <span class="dex-stat-value" id="dexVolume24h">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">TVL</span>
+                        <span class="dex-stat-value" id="dexTVL">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Open Orders</span>
+                        <span class="dex-stat-value" id="dexOpenOrders">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Margin Positions</span>
+                        <span class="dex-stat-value" id="dexMarginPos">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Prediction Markets</span>
+                        <span class="dex-stat-value" id="dexPredictMkts">--</span>
+                    </div>
+                </div>
+                <!-- DEX Subsystem Grid -->
+                <div class="dex-subsystem-grid" id="dexSubsystemGrid">
+                    <!-- Filled by JS -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Row 7: Smart Contracts Monitor -->
+        <div class="panel full-width">
+            <div class="panel-header">
+                <div class="panel-title">
+                    <i class="fas fa-file-contract"></i> Smart Contracts Monitor
+                </div>
+                <span class="panel-badge" id="contractMonitorBadge">--</span>
+            </div>
+            <div class="panel-body">
+                <!-- Category filters -->
+                <div class="contract-cat-bar">
+                    <button class="contract-cat-btn active" data-cat="all">All</button>
+                    <button class="contract-cat-btn" data-cat="defi">DeFi</button>
+                    <button class="contract-cat-btn" data-cat="dex">DEX</button>
+                    <button class="contract-cat-btn" data-cat="token">Tokens</button>
+                    <button class="contract-cat-btn" data-cat="nft">NFT/Market</button>
+                    <button class="contract-cat-btn" data-cat="infra">Infrastructure</button>
+                    <button class="contract-cat-btn" data-cat="identity">Identity</button>
+                </div>
+                <!-- Contracts Grid -->
+                <div class="contract-monitor-grid" id="contractMonitorGrid">
+                    <!-- Filled by JS -->
+                </div>
+            </div>
+        </div>
+
     </main>
 
     <!-- Incident Response Center -->
