@@ -644,7 +644,7 @@ async fn post_trade(
 }
 
 /// POST /prediction-market/create — Create a new market
-/// In production this would submit a transaction. For now returns a preview.
+/// Persists the market into contract storage so it can be traded against.
 async fn post_create(
     State(state): State<Arc<RpcState>>,
     Json(req): Json<CreateMarketRequest>,
@@ -666,10 +666,80 @@ async fn post_create(
         _ => 7,
     };
 
-    let market_count = read_u64_key(&state, b"pm_market_count");
+    // ── Load contract + compute next ID ──────────────────────────────────
+    let entry = match state.state.get_symbol_registry(PREDICT_PROGRAM) {
+        Ok(Some(e)) => e,
+        _ => return api_err("Prediction market contract not found"),
+    };
+    let program_pubkey = entry.program;
+    let mut account = match state.state.get_account(&program_pubkey) {
+        Ok(Some(a)) => a,
+        _ => return api_err("Prediction market account not found"),
+    };
+    let mut contract: ContractAccount = match serde_json::from_slice(&account.data) {
+        Ok(c) => c,
+        Err(_) => return api_err("Failed to deserialize prediction contract"),
+    };
+
+    let market_count = contract
+        .get_storage(b"pm_market_count")
+        .and_then(|d| if d.len() >= 8 { Some(u64::from_le_bytes(d[..8].try_into().ok()?)) } else { None })
+        .unwrap_or(0);
+    let new_id = market_count + 1;
+
+    // ── Build 192-byte market record ─────────────────────────────────────
+    let mut record = vec![0u8; 192];
+    record[0..8].copy_from_slice(&new_id.to_le_bytes());         // market_id
+    // [8..40] creator — leave zeroed (REST preview creator)
+    record[40..48].copy_from_slice(&slot.to_le_bytes());          // created_slot
+    record[48..56].copy_from_slice(&(slot + 100_000).to_le_bytes()); // close_slot
+    record[56..64].copy_from_slice(&0u64.to_le_bytes());          // resolve_slot
+    record[64] = 1;                                               // status = active
+    record[65] = 2;                                               // outcome_count = 2
+    record[66] = 0xFF;                                            // winning_outcome = none
+    record[67] = cat_id;                                          // category
+    let init_liq = req.initial_liquidity as u64;
+    record[68..76].copy_from_slice(&init_liq.to_le_bytes());      // total_collateral
+    // [76..84] total_volume = 0, [164..172] fees_collected = 0 (already zeroed)
+
+    // ── Persist to storage ───────────────────────────────────────────────
+    let mkt_key = format!("pm_m_{}", new_id);
+    contract.storage.insert(mkt_key.into_bytes(), record);
+    contract.storage.insert(b"pm_market_count".to_vec(), new_id.to_le_bytes().to_vec());
+
+    // Question text
+    let q_key = format!("pm_q_{}", new_id);
+    contract.storage.insert(q_key.into_bytes(), req.question.as_bytes().to_vec());
+
+    // Outcome pools (Yes/No) — seed with initial liquidity split 50/50
+    let half = init_liq / 2;
+    let mut pool_data = vec![0u8; 16];
+    pool_data[0..8].copy_from_slice(&half.to_le_bytes());
+    pool_data[8..16].copy_from_slice(&half.to_le_bytes());
+
+    let o0 = format!("pm_o_{}_0", new_id);
+    let o1 = format!("pm_o_{}_1", new_id);
+    contract.storage.insert(o0.into_bytes(), pool_data.clone());
+    contract.storage.insert(o1.into_bytes(), pool_data);
+
+    let on0 = format!("pm_on_{}_0", new_id);
+    let on1 = format!("pm_on_{}_1", new_id);
+    contract.storage.insert(on0.into_bytes(), b"Yes".to_vec());
+    contract.storage.insert(on1.into_bytes(), b"No".to_vec());
+
+    // Write back
+    match serde_json::to_vec(&contract) {
+        Ok(data) => {
+            account.data = data;
+            if let Err(e) = state.state.put_account(&program_pubkey, &account) {
+                return api_err(&format!("Failed to persist market: {}", e));
+            }
+        }
+        Err(e) => return api_err(&format!("Failed to serialize contract: {}", e)),
+    }
 
     #[derive(Serialize)]
-    struct CreatePreview {
+    struct CreateResult {
         next_market_id: u64,
         question: String,
         category: &'static str,
@@ -680,19 +750,19 @@ async fn post_create(
 
     // Emit prediction market WS event
     state.prediction_broadcaster.emit_market_created(
-        market_count + 1,
+        new_id,
         &req.question,
         slot,
     );
 
     ApiResponse::ok(
-        CreatePreview {
-            next_market_id: market_count + 1,
+        CreateResult {
+            next_market_id: new_id,
             question: req.question,
             category: category_name(cat_id),
             initial_liquidity: req.initial_liquidity as f64 / PRICE_SCALE as f64,
             creator: req.creator,
-            status: "preview",
+            status: "created",
         },
         slot,
     )

@@ -6470,29 +6470,8 @@ async fn run_validator() {
             }) as Arc<dyn moltchain_rpc::P2PNetworkTrait>
         });
 
-    // Start RPC server
-    let finality_for_rpc = Some(finality_tracker.clone());
-    tokio::spawn(async move {
-        if let Err(e) = start_rpc_server(
-            state_for_rpc,
-            rpc_port,
-            tx_sender_for_rpc,
-            stake_pool_for_rpc,
-            p2p_for_rpc,
-            chain_id_for_rpc,
-            network_id_for_rpc,
-            admin_token,
-            finality_for_rpc,
-        )
-        .await
-        {
-            error!("RPC server error: {}", e);
-        }
-    });
-    info!("✅ RPC server starting on http://0.0.0.0:{}", rpc_port);
-
-    // Start WebSocket server and get event broadcaster
-    let (ws_event_tx, _dex_broadcaster, _prediction_broadcaster, _ws_handle) =
+    // Start WebSocket server FIRST so we can share its broadcasters with RPC
+    let (ws_event_tx, ws_dex_broadcaster, ws_prediction_broadcaster, _ws_handle) =
         match moltchain_rpc::start_ws_server(state_for_ws, ws_port).await {
             Ok(result) => {
                 info!("✅ WebSocket server starting on ws://0.0.0.0:{}", ws_port);
@@ -6512,6 +6491,31 @@ async fn run_validator() {
                 (dummy_tx, dummy_broadcaster, dummy_pred, dummy_handle)
             }
         };
+
+    // Start RPC server — share the WS broadcasters so REST emits reach WS subscribers
+    let finality_for_rpc = Some(finality_tracker.clone());
+    let dex_bc_for_rpc = ws_dex_broadcaster.clone();
+    let pred_bc_for_rpc = ws_prediction_broadcaster.clone();
+    tokio::spawn(async move {
+        if let Err(e) = start_rpc_server(
+            state_for_rpc,
+            rpc_port,
+            tx_sender_for_rpc,
+            stake_pool_for_rpc,
+            p2p_for_rpc,
+            chain_id_for_rpc,
+            network_id_for_rpc,
+            admin_token,
+            finality_for_rpc,
+            Some(dex_bc_for_rpc),
+            Some(pred_bc_for_rpc),
+        )
+        .await
+        {
+            error!("RPC server error: {}", e);
+        }
+    });
+    info!("✅ RPC server starting on http://0.0.0.0:{}", rpc_port);
 
     info!("⚡ Starting consensus-based block production");
     info!("Validator: {}", validator_pubkey);

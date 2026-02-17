@@ -720,6 +720,8 @@ pub async fn start_rpc_server(
     network_id: String,
     admin_token: Option<String>,
     finality: Option<FinalityTracker>,
+    dex_broadcaster: Option<Arc<dex_ws::DexEventBroadcaster>>,
+    prediction_broadcaster: Option<Arc<ws::PredictionEventBroadcaster>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let app = build_rpc_router(
         state,
@@ -730,6 +732,8 @@ pub async fn start_rpc_server(
         network_id,
         admin_token,
         finality,
+        dex_broadcaster,
+        prediction_broadcaster,
     );
 
     let addr = format!("0.0.0.0:{}", port);
@@ -754,6 +758,8 @@ pub fn build_rpc_router(
     network_id: String,
     admin_token: Option<String>,
     finality: Option<FinalityTracker>,
+    dex_broadcaster: Option<Arc<dex_ws::DexEventBroadcaster>>,
+    prediction_broadcaster: Option<Arc<ws::PredictionEventBroadcaster>>,
 ) -> Router {
     let evm_chain_id = evm_chain_id_from_chain_id(&chain_id);
     let solana_tx_cache = Arc::new(Mutex::new(LruCache::new(
@@ -784,8 +790,8 @@ pub fn build_rpc_router(
                 .unwrap_or(5_000)
         )),
         finality,
-        dex_broadcaster: Arc::new(dex_ws::DexEventBroadcaster::new(4096)),
-        prediction_broadcaster: Arc::new(ws::PredictionEventBroadcaster::new(1024)),
+        dex_broadcaster: dex_broadcaster.unwrap_or_else(|| Arc::new(dex_ws::DexEventBroadcaster::new(4096))),
+        prediction_broadcaster: prediction_broadcaster.unwrap_or_else(|| Arc::new(ws::PredictionEventBroadcaster::new(1024))),
     };
 
     // T2.7: Restrictive CORS — allow localhost and configured origins only
