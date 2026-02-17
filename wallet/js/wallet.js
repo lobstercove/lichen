@@ -134,6 +134,8 @@ function connectBalanceWebSocket() {
                     refreshBalance();
                     loadAssets();
                     loadActivity();
+                    // Refresh staking tab if visible — catches ReefStake deposit/unstake
+                    refreshStakingIfVisible();
                     return;
                 }
 
@@ -1292,8 +1294,16 @@ async function loadActivity(reset = true) {
                     'Stake': 'Staked',
                     'Unstake': 'Unstaked',
                     'ClaimUnstake': 'Claimed Unstake',
+                    'ReefStakeDeposit': 'Staked (ReefStake)',
+                    'ReefStakeUnstake': 'Unstaked (ReefStake)',
+                    'ReefStakeClaim': 'Claimed (ReefStake)',
+                    'ReefStakeTransfer': 'Transfer (stMOLT)',
                     'RegisterEvmAddress': 'EVM Registration',
                     'Contract': 'Contract Call',
+                    'DeployContract': 'Deploy Contract',
+                    'SetContractABI': 'Set Contract ABI',
+                    'FaucetAirdrop': 'Faucet Airdrop',
+                    'RegisterSymbol': 'Register Symbol',
                     'CreateCollection': 'Created Collection',
                     'MintNFT': 'Minted NFT',
                     'TransferNFT': isSent ? 'Sent NFT' : 'Received NFT',
@@ -1305,8 +1315,14 @@ async function loadActivity(reset = true) {
                 icon = isSent ? 'fa-arrow-up' : 'fa-arrow-down';
                 color = isSent ? '#ff6b35' : '#4ade80';
                 // Special icons/colors for non-transfer types
-                if (tx.type === 'Stake' || tx.type === 'Unstake' || tx.type === 'ClaimUnstake') {
+                if (tx.type === 'Stake' || tx.type === 'Unstake' || tx.type === 'ClaimUnstake'
+                    || tx.type === 'ReefStakeDeposit' || tx.type === 'ReefStakeUnstake'
+                    || tx.type === 'ReefStakeClaim' || tx.type === 'ReefStakeTransfer') {
                     icon = 'fa-coins'; color = '#a78bfa';
+                    // For staking deposits, show the staked amount as negative (outflow)
+                    if (tx.type === 'ReefStakeDeposit' || tx.type === 'Stake') {
+                        sign = '-';
+                    }
                 } else if (tx.type === 'RegisterEvmAddress') {
                     icon = 'fa-link'; color = '#94a3b8';
                 } else if (tx.type === 'Contract') {
@@ -1327,7 +1343,8 @@ async function loadActivity(reset = true) {
             const sig = tx.signature || tx.hash || '';
             const shortSig = sig ? sig.slice(0, 8) + '...' + sig.slice(-4) : '';
             const explorerLink = sig ? `../explorer/transaction.html?sig=${sig}` : '#';
-            const isFeeOnly = amount === '0' && (tx.type === 'RegisterEvmAddress' || tx.type === 'Contract');
+            const isFeeOnly = amount === '0' && (tx.type === 'RegisterEvmAddress' || tx.type === 'Contract'
+                || tx.type === 'DeployContract' || tx.type === 'SetContractABI' || tx.type === 'RegisterSymbol');
             const feeShells = tx.fee_shells || tx.fee || 0;
             const feeAmt = fmtToken(feeShells / 1_000_000_000);
             const amountStr = isFeeOnly ? `${feeAmt} MOLT` : `${sign}${amount} MOLT`;
@@ -1396,24 +1413,48 @@ async function loadStaking() {
                             <i class="fas fa-water" style="color: #3b82f6;"></i>
                             ReefStake - Liquid Staking
                         </h3>
-                        <p style="margin: 0; font-size: 0.9rem; color: var(--text-muted);">Stake MOLT, receive stMOLT. Earn rewards while keeping liquidity.</p>
+                        <p style="margin: 0; font-size: 0.9rem; color: var(--text-muted);">Stake MOLT, receive stMOLT. Earn rewards while keeping liquidity. Choose a lock tier for boosted APY.</p>
                     </div>
 
-                    <div class="reefstake-stats" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
+                    <div class="reefstake-stats" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
                         <div class="stat-card" style="background: var(--card-bg); padding: 1.25rem; border-radius: 12px; border: 1px solid var(--border);">
                             <div style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">Your stMOLT</div>
                             <div id="userStMolt" style="font-size: 1.5rem; font-weight: 600; color: var(--text);">0</div>
                         </div>
-
                         <div class="stat-card" style="background: var(--card-bg); padding: 1.25rem; border-radius: 12px; border: 1px solid var(--border);">
-                            <div style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">Current Value (1:1)</div>
+                            <div style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">Current Value</div>
                             <div id="userStakeValue" style="font-size: 1.5rem; font-weight: 600; color: #10b981;">0 MOLT</div>
                         </div>
-
                         <div class="stat-card" style="background: var(--card-bg); padding: 1.25rem; border-radius: 12px; border: 1px solid var(--border);">
-                            <div style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">Total Staked</div>
+                            <div style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">Rewards Earned</div>
+                            <div id="userRewardsEarned" style="font-size: 1.5rem; font-weight: 600; color: #f59e0b;">0 MOLT</div>
+                        </div>
+                        <div class="stat-card" style="background: var(--card-bg); padding: 1.25rem; border-radius: 12px; border: 1px solid var(--border);">
+                            <div style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">Your Tier</div>
+                            <div id="userLockTier" style="font-size: 1.2rem; font-weight: 600; color: #a78bfa;">—</div>
+                        </div>
+                        <div class="stat-card" style="background: var(--card-bg); padding: 1.25rem; border-radius: 12px; border: 1px solid var(--border);">
+                            <div style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">Reward Multiplier</div>
+                            <div id="userMultiplier" style="font-size: 1.5rem; font-weight: 600; color: var(--text);">1.0x</div>
+                        </div>
+                        <div class="stat-card" style="background: var(--card-bg); padding: 1.25rem; border-radius: 12px; border: 1px solid var(--border);">
+                            <div style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">Total Staked (Pool)</div>
                             <div id="totalPoolStaked" style="font-size: 1.5rem; font-weight: 600; color: var(--text);">0 MOLT</div>
                         </div>
+                    </div>
+
+                    <div id="reefstakeTiers" style="margin-bottom: 1.5rem;">
+                        <h4 style="margin-bottom: 0.75rem; color: var(--text);">
+                            <i class="fas fa-layer-group" style="color: #a78bfa;"></i> Staking Tiers & APY
+                        </h4>
+                        <div id="tiersGrid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem;"></div>
+                    </div>
+
+                    <div style="background: var(--card-bg); padding: 1rem; border-radius: 10px; border: 1px solid var(--border); margin-bottom: 1.5rem; font-size: 0.85rem; color: var(--text-muted);">
+                        <i class="fas fa-info-circle" style="color: #3b82f6;"></i>
+                        <strong>How it works:</strong> Stake MOLT to receive stMOLT (liquid receipt). Rewards auto-compound — your stMOLT value grows over time.
+                        <strong>Flexible tier</strong> has a 7-day cooldown to unstake. <strong>Locked tiers</strong> earn boosted rewards but funds are locked for the chosen duration.
+                        After a lock expires, you can unstake with the standard 7-day cooldown.
                     </div>
 
                     <div class="reefstake-actions" style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
@@ -1423,6 +1464,10 @@ async function loadStaking() {
                         <button onclick="showReefUnstakeModal()" class="btn btn-secondary" style="width: 100%; padding: 1rem;">
                             <i class="fas fa-arrow-up"></i> Unstake stMOLT
                         </button>
+                    </div>
+
+                    <div id="lockStatus" style="margin-top: 1rem; display: none; padding: 0.75rem 1rem; background: rgba(249,115,22,0.1); border: 1px solid rgba(249,115,22,0.3); border-radius: 8px; font-size: 0.85rem; color: #f97316;">
+                        <i class="fas fa-lock"></i> <span id="lockStatusText"></span>
                     </div>
 
                     <div id="pendingUnstakes" style="margin-top: 1.5rem; display: none;">
@@ -1565,6 +1610,17 @@ async function loadStaking() {
     }
 }
 
+// Refresh staking UI if the staking tab is currently visible
+function refreshStakingIfVisible() {
+    const wallet = getActiveWallet();
+    if (!wallet) return;
+    const stakingTab = document.querySelector('.dashboard-tab[data-tab="staking"]');
+    const stakingSection = document.getElementById('stakingValidatorInfo');
+    if (stakingTab && stakingTab.classList.contains('active') && stakingSection && stakingSection.style.display !== 'none') {
+        loadReefStakePosition(wallet.address);
+    }
+}
+
 // Load ReefStake position for community  stakers
 async function loadReefStakePosition(address) {
     try {
@@ -1572,23 +1628,82 @@ async function loadReefStakePosition(address) {
         const position = await rpc.call('getStakingPosition', [address]);
         const queue = await rpc.call('getUnstakingQueue', [address]);
         
-        // Update UI
+        // Update basic stats
         document.getElementById('userStMolt').textContent = fmtToken(position.st_molt_amount / 1_000_000_000);
         document.getElementById('userStakeValue').textContent = `${fmtToken(position.current_value_molt / 1_000_000_000)} MOLT`;
         document.getElementById('totalPoolStaked').textContent = `${fmtToken(poolInfo.total_molt_staked / 1_000_000_000)} MOLT`;
-        
+
+        // Rewards
+        const rewardsEl = document.getElementById('userRewardsEarned');
+        if (rewardsEl) rewardsEl.textContent = `${fmtToken(position.rewards_earned / 1_000_000_000)} MOLT`;
+
+        // Tier info
+        const tierEl = document.getElementById('userLockTier');
+        if (tierEl) tierEl.textContent = position.lock_tier_name || 'Flexible';
+        const multEl = document.getElementById('userMultiplier');
+        if (multEl) multEl.textContent = `${position.reward_multiplier || 1.0}x`;
+
+        // Lock status
+        const lockStatus = document.getElementById('lockStatus');
+        const lockText = document.getElementById('lockStatusText');
+        if (lockStatus && lockText && position.lock_until > 0) {
+            // Estimate time remaining
+            const currentSlotEstimate = Math.floor(Date.now() / 400);
+            if (position.lock_until > currentSlotEstimate) {
+                const remainingSlots = position.lock_until - currentSlotEstimate;
+                const remainingDays = Math.ceil(remainingSlots / 216000);
+                lockStatus.style.display = 'block';
+                lockText.textContent = `Position locked (${position.lock_tier_name}). ~${remainingDays} days remaining until unlock at slot ${position.lock_until.toLocaleString()}.`;
+            } else {
+                lockStatus.style.display = 'none';
+            }
+        } else if (lockStatus) {
+            lockStatus.style.display = 'none';
+        }
+
+        // Render tier cards
+        const tiersGrid = document.getElementById('tiersGrid');
+        if (tiersGrid && poolInfo.tiers) {
+            const tierColors = ['#94a3b8', '#60a5fa', '#a78bfa', '#f59e0b'];
+            tiersGrid.innerHTML = poolInfo.tiers.map((t, i) => {
+                const isActive = position.lock_tier === t.id && position.st_molt_amount > 0;
+                const apyStr = (t.apy_percent || 0).toFixed(1);
+                return `
+                    <div style="background: var(--card-bg); padding: 1rem; border-radius: 10px; border: 2px solid ${isActive ? tierColors[i] : 'var(--border)'}; ${isActive ? 'box-shadow: 0 0 12px ' + tierColors[i] + '33;' : ''}">
+                        <div style="font-weight: 600; font-size: 0.95rem; color: ${tierColors[i]}; margin-bottom: 0.35rem;">${t.name}</div>
+                        <div style="font-size: 1.4rem; font-weight: 700; color: var(--text);">${apyStr}% <span style="font-size:0.7rem;color:var(--text-muted);">APY</span></div>
+                        <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">
+                            ${t.lock_days > 0 ? t.lock_days + '-day lock' : '7-day cooldown'}
+                            &middot; ${t.multiplier}x rewards
+                        </div>
+                        ${isActive ? '<div style="font-size:0.7rem;color:' + tierColors[i] + ';margin-top:0.4rem;font-weight:600;"><i class="fas fa-check-circle"></i> Active</div>' : ''}
+                    </div>
+                `;
+            }).join('');
+        }
+
         // Show pending unstakes if any
         if (queue.pending_requests && queue.pending_requests.length > 0) {
             document.getElementById('pendingUnstakes').style.display = 'block';
             const unstakesList = document.getElementById('unstakesList');
-            unstakesList.innerHTML = queue.pending_requests.map(req => `
-                <div style="padding: 1rem; background: var(--card-bg); border-radius: 8px; border: 1px solid var(--border); margin-bottom: 0.5rem;">
-                    <div style="display: flex; justify-content: space-between;">
-                        <span>${fmtToken(req.molt_to_receive / 1_000_000_000)} MOLT</span>
-                        <span style="color: var(--text-muted);">Claimable at slot ${req.claimable_at}</span>
+            unstakesList.innerHTML = queue.pending_requests.map(req => {
+                const currentSlot = Math.floor(Date.now() / 400);
+                const isClaimable = req.claimable_at <= currentSlot;
+                const remainSlots = Math.max(0, req.claimable_at - currentSlot);
+                const remainDays = (remainSlots / 216000).toFixed(1);
+                return `
+                    <div style="padding: 1rem; background: var(--card-bg); border-radius: 8px; border: 1px solid var(--border); margin-bottom: 0.5rem;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <span style="font-weight: 600;">${fmtToken(req.molt_to_receive / 1_000_000_000)} MOLT</span>
+                            <span style="color: ${isClaimable ? '#10b981' : 'var(--text-muted)'}; font-size: 0.85rem;">
+                                ${isClaimable ? '<i class="fas fa-check-circle"></i> Claimable now' : `<i class="fas fa-clock"></i> ~${remainDays} days`}
+                            </span>
+                        </div>
                     </div>
-                </div>
-            `).join('');
+                `;
+            }).join('');
+        } else {
+            document.getElementById('pendingUnstakes').style.display = 'none';
         }
     } catch (error) {
         console.error('Failed to load ReefStake position:', error);
@@ -1602,11 +1717,24 @@ async function showReefStakeModal() {
     
     const values = await showPasswordModal({
         title: 'Stake to ReefStake',
-        message: 'Enter the amount of MOLT to stake and your wallet password to sign the transaction.',
+        message: `Enter the amount of MOLT to stake, choose a lock tier, and sign with your password.
+            <div style="margin-top:0.75rem;font-size:0.8rem;color:var(--text-muted);">
+                <strong>Flexible:</strong> 7-day cooldown, 1x rewards<br>
+                <strong>30-Day Lock:</strong> 1.5x rewards<br>
+                <strong>90-Day Lock:</strong> 2x rewards<br>
+                <strong>365-Day Lock:</strong> 3x rewards
+            </div>`,
         icon: 'fas fa-layer-group',
         confirmText: 'Stake MOLT',
         fields: [
             { id: 'stakeAmount', label: 'Amount (MOLT)', type: 'number', placeholder: '0.00' },
+            { id: 'lockTier', label: 'Lock Tier', type: 'select',
+              options: [
+                  { value: '0', label: 'Flexible — 7-day cooldown, 1x rewards' },
+                  { value: '1', label: '30-Day Lock — 1.5x rewards' },
+                  { value: '2', label: '90-Day Lock — 2x rewards' },
+                  { value: '3', label: '365-Day Lock — 3x rewards' },
+              ]},
             { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Enter password to sign' }
         ]
     });
@@ -1618,14 +1746,16 @@ async function showReefStakeModal() {
     
     try {
         const shells = Math.floor(amount * 1_000_000_000);
+        const tierByte = parseInt(values.lockTier || '0');
         const latestBlock = await rpc.getLatestBlock();
         const fromPubkey = MoltCrypto.hexToBytes(wallet.publicKey);
         
-        // Instruction type 13 = ReefStake deposit
-        const instructionData = new Uint8Array(9);
+        // Instruction type 13 = ReefStake deposit, then amount(8), then tier(1)
+        const instructionData = new Uint8Array(10);
         instructionData[0] = 13;
         const view = new DataView(instructionData.buffer);
         view.setBigUint64(1, BigInt(shells), true);
+        instructionData[9] = tierByte;
         
         const message = {
             instructions: [{
@@ -1648,6 +1778,9 @@ async function showReefStakeModal() {
         const txSig = await rpc.sendTransaction(txBase64);
         showToast(`Staked ${amount} MOLT! Sig: ${String(txSig).slice(0, 16)}...`);
         await refreshBalance();
+        // Refresh staking position after a brief delay for block inclusion
+        setTimeout(() => loadReefStakePosition(wallet.address), 1500);
+        setTimeout(() => loadReefStakePosition(wallet.address), 4000);
     } catch (error) {
         showToast('Stake failed: ' + error.message);
     }
@@ -1660,7 +1793,11 @@ async function showReefUnstakeModal() {
     
     const values = await showPasswordModal({
         title: 'Unstake from ReefStake',
-        message: 'Enter the amount of stMOLT to unstake. There is a cooldown period before you can claim.',
+        message: `Enter the amount of stMOLT to unstake. After requesting, there is a <strong>7-day cooldown</strong> before you can claim your MOLT.
+            <div style="margin-top:0.5rem;font-size:0.8rem;color:var(--text-muted);">
+                <i class="fas fa-exclamation-triangle" style="color:#f59e0b;"></i>
+                If your position has a lock tier, you must wait for the lock to expire before unstaking.
+            </div>`,
         icon: 'fas fa-unlock-alt',
         confirmText: 'Unstake',
         fields: [
@@ -1704,8 +1841,11 @@ async function showReefUnstakeModal() {
         
         showToast('Unstaking from ReefStake...');
         const txSig = await rpc.sendTransaction(txBase64);
-        showToast(`Unstake initiated! Sig: ${String(txSig).slice(0, 16)}...`);
+        showToast(`Unstake initiated! 7-day cooldown. Sig: ${String(txSig).slice(0, 16)}...`);
         await refreshBalance();
+        // Refresh staking position after a brief delay for block inclusion
+        setTimeout(() => loadReefStakePosition(wallet.address), 1500);
+        setTimeout(() => loadReefStakePosition(wallet.address), 4000);
     } catch (error) {
         showToast('Unstake failed: ' + error.message);
     }

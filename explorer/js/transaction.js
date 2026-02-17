@@ -272,7 +272,27 @@ async function displayAirdrop(txHash) {
 async function displayTransaction(tx) {
     const hash = tx.signature;
     const status = tx.status || 'Success';
-    const type = tx.type === 'DebtRepay' ? 'GrantRepay' : (tx.type || 'Unknown');
+    const typeRaw = tx.type === 'DebtRepay' ? 'GrantRepay' : (tx.type || 'Unknown');
+    // Display-friendly type names
+    const typeDisplayMap = {
+        'ReefStakeDeposit': 'ReefStake Deposit',
+        'ReefStakeUnstake': 'ReefStake Unstake',
+        'ReefStakeClaim':   'ReefStake Claim',
+        'ReefStakeTransfer': 'ReefStake Transfer',
+        'DeployContract':   'Deploy Contract',
+        'SetContractABI':   'Set Contract ABI',
+        'FaucetAirdrop':    'Faucet Airdrop',
+        'RegisterSymbol':   'Register Symbol',
+        'RegisterEvmAddress': 'EVM Registration',
+        'CreateCollection': 'Create Collection',
+        'MintNFT':          'Mint NFT',
+        'TransferNFT':      'Transfer NFT',
+        'ClaimUnstake':     'Claim Unstake',
+        'GrantRepay':       'Grant Repay',
+        'GenesisTransfer':  'Genesis Transfer',
+        'GenesisMint':      'Genesis Mint',
+    };
+    const type = typeDisplayMap[typeRaw] || typeRaw;
     const slot = tx.slot;
     const timestamp = tx.block_time || Math.floor(Date.now() / 1000);
     const fee = tx.fee_shells !== undefined ? tx.fee_shells : (tx.fee || BASE_FEE);

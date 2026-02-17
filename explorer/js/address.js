@@ -1622,6 +1622,8 @@ async function fetchAccountFromRPC(address) {
         spendable: parseFloat(balanceData.spendable_molt),
         staked: parseFloat(balanceData.staked_molt),
         locked: parseFloat(balanceData.locked_molt),
+        reefStaked: parseFloat(balanceData.reef_staked_molt || '0'),
+        reefValue: parseFloat(balanceData.reef_value_molt || '0'),
         owner: accountData?.owner || (typeof SYSTEM_PROGRAM_ID !== 'undefined' ? SYSTEM_PROGRAM_ID : '11111111111111111111111111111111'),
         executable: accountData?.executable || false,
         data_len: accountData?.data_len || 0,
@@ -1637,6 +1639,7 @@ function createEmptyAccountData(address) {
         address, base58: address,
         evm: moltchainToEvmAddress(address) || 'Unavailable',
         shells: 0, molt: 0, spendable: 0, staked: 0, locked: 0,
+        reefStaked: 0, reefValue: 0,
         data: [], owner: typeof SYSTEM_PROGRAM_ID !== 'undefined' ? SYSTEM_PROGRAM_ID : '11111111111111111111111111111111',
         executable: false, rentEpoch: 0, txCount: 0, tokens: [], type: 'User', active: false
     };
@@ -1670,6 +1673,30 @@ function displayAddressData(data) {
     document.getElementById('spendableMolt').textContent = `${formatNumber(data.spendable)} MOLT`;
     document.getElementById('stakedMolt').textContent = `${formatNumber(data.staked)} MOLT`;
     document.getElementById('lockedMolt').textContent = `${formatNumber(data.locked)} MOLT`;
+
+    // ReefStake liquid staking display
+    let reefStakedEl = document.getElementById('reefStakedMolt');
+    if (!reefStakedEl) {
+        // Inject ReefStake row after staked row
+        const stakedEl = document.getElementById('stakedMolt');
+        if (stakedEl) {
+            const parentRow = stakedEl.closest('.detail-row') || stakedEl.parentElement;
+            if (parentRow && parentRow.parentElement) {
+                const reefRow = document.createElement('div');
+                reefRow.className = parentRow.className;
+                reefRow.innerHTML = `
+                    <div class="detail-label">ReefStake (Liquid)</div>
+                    <div class="detail-value" id="reefStakedMolt">0 MOLT</div>
+                `;
+                parentRow.parentElement.insertBefore(reefRow, parentRow.nextSibling);
+                reefStakedEl = document.getElementById('reefStakedMolt');
+            }
+        }
+    }
+    if (reefStakedEl) {
+        const reefVal = data.reefValue || data.reefStaked || 0;
+        reefStakedEl.textContent = reefVal > 0 ? `${formatNumber(reefVal)} MOLT` : '0 MOLT';
+    }
 
     const ownerEl = document.getElementById('ownerProgram');
     const isSystemOwner = isSystemProgramOwner(data.owner);
@@ -1716,7 +1743,10 @@ function displayAddressData(data) {
     }
     if (summaryBalance) summaryBalance.textContent = `${formatNumber(data.molt)} MOLT`;
     if (summarySpendable) summarySpendable.textContent = `Spendable: ${formatNumber(data.spendable)} MOLT`;
-    if (summaryStaked) summaryStaked.textContent = `Staked: ${formatNumber(data.staked)} MOLT`;
+    if (summaryStaked) {
+        const totalStaked = (data.staked || 0) + (data.reefValue || data.reefStaked || 0);
+        summaryStaked.textContent = `Staked: ${formatNumber(totalStaked)} MOLT`;
+    }
     if (summaryLocked) summaryLocked.textContent = `Locked: ${formatNumber(data.locked)} MOLT`;
     enforceAddressViewOnlyMode();
 }
@@ -1862,6 +1892,22 @@ function displayTransactions(transactions) {
         const slot = Number(slotRaw);
         const txHash = tx.hash || tx.signature || tx.txid || tx.id || '-';
         const txType = tx.type || tx.kind || 'Unknown';
+        // Display-friendly type names
+        const txTypeDisplayMap = {
+            'ReefStakeDeposit': 'ReefStake',
+            'ReefStakeUnstake': 'ReefStake Unstake',
+            'ReefStakeClaim': 'ReefStake Claim',
+            'ReefStakeTransfer': 'stMOLT Transfer',
+            'DeployContract': 'Deploy',
+            'SetContractABI': 'Set ABI',
+            'FaucetAirdrop': 'Airdrop',
+            'RegisterSymbol': 'Reg. Symbol',
+            'RegisterEvmAddress': 'EVM Reg.',
+            'CreateCollection': 'Collection',
+            'ClaimUnstake': 'Claim Unstake',
+            'GrantRepay': 'Grant Repay',
+        };
+        const txTypeDisplay = txTypeDisplayMap[txType] || txType;
         const rawAmount = tx.amount ?? tx.value ?? (tx.amount_shells !== undefined ? Number(tx.amount_shells) / 1_000_000_000 : 0);
         const txAmount = Number(rawAmount || 0);
         const success = tx.success !== undefined
@@ -1883,7 +1929,7 @@ function displayTransactions(transactions) {
                 <span class="badge ${directionClass}">${direction}</span>
                 ${counterpartyCell}
             </td>
-            <td><span class="badge">${txType}</span></td>
+            <td><span class="badge">${txTypeDisplay}</span></td>
             <td class="${directionClass}">${isOutgoing ? '-' : '+'}${formatNumber(txAmount)} MOLT</td>
             <td>${success
                 ? '<span class="badge success"><i class="fas fa-check"></i></span>'

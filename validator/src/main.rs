@@ -3603,7 +3603,6 @@ async fn run_validator() {
         let mint_message = Message::new(vec![mint_instruction], Hash::default());
         let mut mint_tx = Transaction::new(mint_message);
         mint_tx.signatures.push([0u8; 64]);
-        state.put_transaction(&mint_tx).ok();
         genesis_txs.push(mint_tx);
 
         // Record distribution transfers in genesis block
@@ -3628,7 +3627,6 @@ async fn run_validator() {
                 let mut tx = Transaction::new(message.clone());
                 let signature = signer.sign(&message.serialize());
                 tx.signatures.push(signature);
-                state.put_transaction(&tx).ok();
                 genesis_txs.push(tx);
             }
         }
@@ -3652,7 +3650,6 @@ async fn run_validator() {
                 .expect("Missing genesis signer for treasury funding");
             let signature = signer.sign(&message.serialize());
             treasury_tx.signatures.push(signature);
-            state.put_transaction(&treasury_tx).ok();
             genesis_txs.push(treasury_tx);
         }
 
@@ -4719,10 +4716,9 @@ async fn run_validator() {
                                 }
                             }
 
-                            // 7. Store genesis transactions
-                            for tx in &block.transactions {
-                                state_for_blocks.put_transaction(tx).ok();
-                            }
+                            // 7. Genesis transactions already stored + indexed
+                            //    by put_block() above (CF_TRANSACTIONS + CF_TX_TO_SLOT
+                            //    + CF_TX_BY_SLOT in one atomic WriteBatch).
 
                             // 8. Auto-deploy contracts
                             genesis_auto_deploy(&state_for_blocks, &gpk, "📡 [sync]");

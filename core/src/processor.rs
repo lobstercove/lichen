@@ -1882,6 +1882,11 @@ impl TxProcessor {
             return Err("Cannot deposit 0 MOLT".to_string());
         }
 
+        // Parse lock tier (byte 9, optional — default to Flexible)
+        let tier_byte = ix.data.get(9).copied().unwrap_or(0);
+        let tier = crate::reefstake::LockTier::from_u8(tier_byte)
+            .ok_or_else(|| format!("Invalid lock tier: {}", tier_byte))?;
+
         // Deduct from depositor's spendable balance
         let mut account = self
             .b_get_account(&depositor)?
@@ -1892,7 +1897,7 @@ impl TxProcessor {
         // Stake into ReefStake pool and mint stMOLT
         let current_slot = self.b_get_last_slot().unwrap_or(0);
         let mut pool = self.b_get_reefstake_pool()?;
-        let _st_molt = pool.stake(depositor, amount, current_slot)?;
+        let _st_molt = pool.stake_with_tier(depositor, amount, current_slot, tier)?;
         self.b_put_reefstake_pool(&pool)?;
 
         Ok(())
