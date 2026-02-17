@@ -495,8 +495,8 @@ async function refreshBalance() {
     const raw = Number(result?.shells || result?.spendable || 0);
     const molt = raw / 1_000_000_000;
     const d = decimals();
-    $('totalBalance').textContent = `${molt.toLocaleString(undefined, { maximumFractionDigits: d })} MOLT`;
-    $('balanceUsd').textContent = `$${(molt * 0.05).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD`;
+    $('totalBalance').textContent = `${molt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 9 })} MOLT`;
+    $('balanceUsd').textContent = `$${(molt * 0.10).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })} USD`;
   } catch {
     $('totalBalance').textContent = '0.00 MOLT';
     $('balanceUsd').textContent = '$0.00 USD';
@@ -571,7 +571,7 @@ async function loadIdentityTab() {
     const data = await loadIdentityDetails(wallet.address, state.network?.selected);
 
     if (!data) {
-      // No identity — show onboarding steps
+      // No identity — show onboarding with Register step
       container.innerHTML = `
         <div class="id-banner" style="text-align:center;padding:1.5rem;">
           <div style="font-size:2rem;margin-bottom:0.75rem;"><i class="fas fa-fingerprint" style="color:var(--primary);"></i></div>
@@ -601,10 +601,15 @@ async function loadIdentityTab() {
               <div style="font-size:0.82rem;color:var(--text-muted);">Earn rep through transactions, governance, vouches. Unlock trust tiers.</div>
             </div>
           </div>
+          <div style="text-align:center;padding:0.5rem 0;">
+            <button class="btn btn-small btn-secondary" id="idRefreshBtn" style="font-size:0.78rem;"><i class="fas fa-sync-alt"></i> Refresh</button>
+            <div style="font-size:0.72rem;color:var(--text-muted);margin-top:0.35rem;">Already registered? Hit refresh — it may take a block to confirm.</div>
+          </div>
         </div>
       `;
 
       $('idRegisterStep')?.addEventListener('click', () => showIdentityRegisterModal());
+      $('idRefreshBtn')?.addEventListener('click', () => loadIdentityTab());
       return;
     }
 
@@ -1021,8 +1026,8 @@ async function loadAssets() {
           <div class="asset-symbol">MoltChain Native Token</div>
         </div>
         <div class="asset-balance">
-          <div class="asset-amount">${molt.toLocaleString(undefined, { maximumFractionDigits: d })}</div>
-          <div class="asset-value">$${(molt * 0.05).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+          <div class="asset-amount">${molt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 9 })}</div>
+          <div class="asset-value">$${(molt * 0.10).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })}</div>
         </div>
       </div>
     `;
@@ -1101,11 +1106,13 @@ async function loadActivity(reset = true) {
       const ts = tx.timestamp ? new Date(tx.timestamp * 1000).toLocaleString() : '';
       const explorerLink = sig !== 'unknown' ? `${explorerBase}${sig}` : '#';
 
-      // Fee display: "Fee only" for EVM registration and 0-amount contract calls
+      // Fee display: show actual fee amount for 0-amount contract calls / EVM registration
       const isZeroAmount = Number(amountVal) === 0;
-      const amountStr = (tx.type === 'RegisterEvmAddress' || (tx.type === 'Contract' && isZeroAmount))
-        ? 'Fee only'
-        : `${sign}${amt} MOLT`;
+      const isFeeOnly = tx.type === 'RegisterEvmAddress' || (tx.type === 'Contract' && isZeroAmount);
+      const feeShells = tx.fee_shells || tx.fee || 0;
+      const feeAmt = (Number(feeShells) / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 4 });
+      const amountStr = isFeeOnly ? `${feeAmt} MOLT` : `${sign}${amt} MOLT`;
+      const feeTag = isFeeOnly ? '<span style="display:inline-block;margin-left:0.3rem;padding:0.05rem 0.35rem;border-radius:4px;font-size:0.6rem;background:rgba(245,158,11,0.15);color:#f59e0b;font-weight:600;vertical-align:middle;">FEE</span>' : '';
 
       return `
         <a href="${explorerLink}" target="_blank" class="activity-item" style="text-decoration:none;color:inherit;display:flex;">
@@ -1117,7 +1124,7 @@ async function loadActivity(reset = true) {
             <div class="activity-date" style="font-size:0.75rem;opacity:0.5;">${shortSig}</div>
           </div>
           <div style="text-align:right;flex-shrink:0;">
-            <div class="activity-amount" style="font-weight:600;color:${color};">${amountStr}</div>
+            <div class="activity-amount" style="font-weight:600;color:${color};">${amountStr}${feeTag}</div>
             <div style="font-size:0.7rem;opacity:0.5;">${ts}</div>
           </div>
         </a>`;

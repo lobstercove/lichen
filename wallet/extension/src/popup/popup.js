@@ -573,11 +573,13 @@ async function loadActivity() {
       const address = isSent ? (tx.to || '') : (tx.from || '');
       const displayAddr = address && address.length > 20 ? address.slice(0, 8) + '...' + address.slice(-4) : (address || '');
 
-      // Fee display: "Fee only" for EVM registration and 0-amount contract calls
+      // Fee display: show actual fee amount for 0-amount contract calls / EVM registration
       const isZeroAmount = Number(amountVal) === 0;
-      const amountStr = (tx.type === 'RegisterEvmAddress' || (tx.type === 'Contract' && isZeroAmount))
-        ? 'Fee only'
-        : `${sign}${amt} MOLT`;
+      const isFeeOnly = tx.type === 'RegisterEvmAddress' || (tx.type === 'Contract' && isZeroAmount);
+      const feeShells = tx.fee_shells || tx.fee || 0;
+      const feeAmt = (feeShells / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 4 });
+      const amountStr = isFeeOnly ? `${feeAmt} MOLT` : `${sign}${amt} MOLT`;
+      const feeTag = isFeeOnly ? '<span style="display:inline-block;margin-left:0.3rem;padding:0.05rem 0.35rem;border-radius:4px;font-size:0.6rem;background:rgba(245,158,11,0.15);color:#f59e0b;font-weight:600;vertical-align:middle;">FEE</span>' : '';
 
       return `
         <div class="popup-activity-item" style="cursor:pointer;" title="${sig}">
@@ -590,7 +592,7 @@ async function loadActivity() {
               <div style="font-size:0.7rem;opacity:0.5;">${shortSig}</div>
             </div>
             <div style="text-align:right;">
-              <div style="font-weight:600;font-size:0.85rem;color:${color};">${amountStr}</div>
+              <div style="font-weight:600;font-size:0.85rem;color:${color};">${amountStr}${feeTag}</div>
               <div style="font-size:0.65rem;opacity:0.5;">${ts}</div>
             </div>
           </div>
@@ -681,9 +683,9 @@ async function refreshBalance() {
     const result = await rpc.getBalance(wallet.address);
     const raw = Number(result?.shells || result?.spendable || 0);
     const balanceMolt = raw / 1_000_000_000;
-    document.getElementById('walletBalance').textContent = `${balanceMolt.toLocaleString(undefined, { maximumFractionDigits: displayDecimals() })} MOLT`;
+    document.getElementById('walletBalance').textContent = `${balanceMolt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 9 })} MOLT`;
     const usdEl = document.getElementById('balanceUsd');
-    if (usdEl) usdEl.textContent = `$${(balanceMolt * 0.05).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USD`;
+    if (usdEl) usdEl.textContent = `$${(balanceMolt * 0.10).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })} USD`;
     setStatus(`Connected: ${state.network?.selected || 'local-testnet'}`);
   } catch (error) {
     document.getElementById('walletBalance').textContent = '0.00 MOLT';

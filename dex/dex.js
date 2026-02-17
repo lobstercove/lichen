@@ -745,7 +745,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const isMulti = m.multi;
             const yesPct = Math.round((m.yes || 0.5) * 100);
             const noPct = 100 - yesPct;
-            const catIcons = { crypto: '₿', politics: '🏛', sports: '⚽', science: '🔬', tech: '🤖', entertainment: '🎬', economics: '📈' };
+            const catIcons = { crypto: '₿', politics: '🏛', sports: '⚽', science: '🔬', tech: '🤖', entertainment: '🎬', economics: '📈', custom: '🧩' };
 
             let outcomesHtml = '';
             if (isMulti && m.outcomes?.length) {
@@ -777,6 +777,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <div class="market-footer">
                     <div class="market-stat"><span class="stat-label">Volume</span><span class="stat-value">${formatVolume(m.volume)}</span></div>
                     <div class="market-stat"><span class="stat-label">Liquidity</span><span class="stat-value">${formatVolume(m.liquidity)}</span></div>
+                    <button class="btn-predict-chart" data-market="${m.id}" title="Price Chart"><i class="fas fa-chart-line"></i></button>
                     ${!isResolved ? `
                         <div class="market-actions">
                             <button class="btn-predict-buy" data-market="${m.id}" data-outcome="yes">Buy Yes</button>
@@ -849,7 +850,177 @@ document.addEventListener('DOMContentLoaded', () => {
             updatePredictCalc();
             showNotification(`Selected: ${m.question.slice(0, 50)}... → ${outcome.toUpperCase()}`, 'info');
         }));
+
+        // Chart buttons on cards
+        document.querySelectorAll('.btn-predict-chart').forEach(btn => btn.addEventListener('click', e => {
+            e.stopPropagation();
+            const mid = parseInt(btn.dataset.market);
+            openPredictChart(mid);
+        }));
     }
+
+    // ═══ Prediction Chart Modal — Polymarket-style price history ═══════════
+
+    let predictChartState = { marketId: null, range: '1d' };
+
+    function generateMockPriceHistory(market, range) {
+        const points = { '1h': 60, '6h': 72, '1d': 96, '1w': 168, 'all': 200 }[range] || 96;
+        const data = [];
+        const now = Date.now();
+        const interval = { '1h': 60000, '6h': 5 * 60000, '1d': 15 * 60000, '1w': 60 * 60000, 'all': 4 * 60 * 60000 }[range] || 15 * 60000;
+        let price = market.yes || 0.5;
+        // Walk backwards from a starting seed
+        const seed = price + (Math.random() - 0.5) * 0.15;
+        let p = Math.max(0.05, Math.min(0.95, seed));
+        for (let i = points; i >= 0; i--) {
+            const t = now - i * interval;
+            const drift = ((market.yes || 0.5) - p) * 0.015;
+            const noise = (Math.random() - 0.5) * 0.025;
+            p = Math.max(0.01, Math.min(0.99, p + drift + noise));
+            data.push({ t, p });
+        }
+        data[data.length - 1].p = market.yes || 0.5;
+        return data;
+    }
+
+    function drawPredictChart(data, canvas) {
+        const ctx = canvas.getContext('2d');
+        const dpr = window.devicePixelRatio || 1;
+        const W = canvas.clientWidth;
+        const H = canvas.clientHeight;
+        canvas.width = W * dpr;
+        canvas.height = H * dpr;
+        ctx.scale(dpr, dpr);
+        ctx.clearRect(0, 0, W, H);
+        if (!data.length) return;
+
+        const pad = { top: 20, right: 58, bottom: 32, left: 12 };
+        const cW = W - pad.left - pad.right;
+        const cH = H - pad.top - pad.bottom;
+        const prices = data.map(d => d.p);
+        const minP = Math.max(0, Math.min(...prices) - 0.05);
+        const maxP = Math.min(1, Math.max(...prices) + 0.05);
+        const rangeP = maxP - minP || 0.1;
+        const xPos = i => pad.left + (i / (data.length - 1)) * cW;
+        const yPos = p => pad.top + (1 - (p - minP) / rangeP) * cH;
+
+        // Grid + Y labels
+        ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+        ctx.lineWidth = 1;
+        for (let i = 0; i <= 4; i++) {
+            const gy = pad.top + (cH / 4) * i;
+            ctx.beginPath(); ctx.moveTo(pad.left, gy); ctx.lineTo(W - pad.right, gy); ctx.stroke();
+            const label = ((maxP - (i / 4) * rangeP) * 100).toFixed(0) + '%';
+            ctx.fillStyle = 'rgba(255,255,255,0.35)';
+            ctx.font = '11px monospace';
+            ctx.textAlign = 'left';
+            ctx.fillText(label, W - pad.right + 8, gy + 4);
+        }
+
+        // X time labels
+        ctx.fillStyle = 'rgba(255,255,255,0.3)';
+        ctx.font = '10px sans-serif';
+        ctx.textAlign = 'center';
+        for (let i = 0; i < 5; i++) {
+            const idx = Math.round((data.length - 1) * i / 4);
+            const d = new Date(data[idx].t);
+            ctx.fillText(d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }), xPos(idx), H - 8);
+        }
+
+        // Gradient fill
+        const lastP = data[data.length - 1].p;
+        const isUp = lastP >= data[0].p;
+        const grad = ctx.createLinearGradient(0, pad.top, 0, pad.top + cH);
+        grad.addColorStop(0, isUp ? 'rgba(6,214,160,0.28)' : 'rgba(239,68,68,0.28)');
+        grad.addColorStop(1, isUp ? 'rgba(6,214,160,0.0)' : 'rgba(239,68,68,0.0)');
+        ctx.beginPath();
+        ctx.moveTo(xPos(0), yPos(data[0].p));
+        for (let i = 1; i < data.length; i++) ctx.lineTo(xPos(i), yPos(data[i].p));
+        ctx.lineTo(xPos(data.length - 1), pad.top + cH);
+        ctx.lineTo(xPos(0), pad.top + cH);
+        ctx.closePath();
+        ctx.fillStyle = grad;
+        ctx.fill();
+
+        // Price line
+        ctx.beginPath();
+        ctx.moveTo(xPos(0), yPos(data[0].p));
+        for (let i = 1; i < data.length; i++) ctx.lineTo(xPos(i), yPos(data[i].p));
+        ctx.strokeStyle = isUp ? '#06d6a0' : '#ef4444';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Current price dot
+        const lx = xPos(data.length - 1), ly = yPos(lastP);
+        ctx.beginPath(); ctx.arc(lx, ly, 5, 0, Math.PI * 2);
+        ctx.fillStyle = isUp ? '#06d6a0' : '#ef4444';
+        ctx.fill();
+        ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+
+        // Current price label
+        ctx.fillStyle = isUp ? '#06d6a0' : '#ef4444';
+        ctx.font = 'bold 12px monospace';
+        ctx.textAlign = 'right';
+        ctx.fillText((lastP * 100).toFixed(1) + '%', lx - 10, ly - 10);
+    }
+
+    function renderPredictChartStats(data, market) {
+        const stats = document.getElementById('predictChartStats');
+        if (!stats) return;
+        const first = data[0].p, last = data[data.length - 1].p;
+        const change = last - first;
+        const changePct = first > 0 ? (change / first * 100).toFixed(1) : '0.0';
+        const high = Math.max(...data.map(d => d.p));
+        const low = Math.min(...data.map(d => d.p));
+        stats.innerHTML = `
+            <div class="predict-chart-stat"><span class="stat-label">Current</span><span class="stat-value">${(last * 100).toFixed(1)}%</span></div>
+            <div class="predict-chart-stat"><span class="stat-label">Change</span><span class="stat-value ${change >= 0 ? 'up' : 'down'}">${change >= 0 ? '+' : ''}${(change * 100).toFixed(1)}pp (${change >= 0 ? '+' : ''}${changePct}%)</span></div>
+            <div class="predict-chart-stat"><span class="stat-label">High</span><span class="stat-value">${(high * 100).toFixed(1)}%</span></div>
+            <div class="predict-chart-stat"><span class="stat-label">Low</span><span class="stat-value">${(low * 100).toFixed(1)}%</span></div>
+            <div class="predict-chart-stat"><span class="stat-label">Volume</span><span class="stat-value">${formatVolume(market.volume)}</span></div>
+            <div class="predict-chart-stat"><span class="stat-label">Traders</span><span class="stat-value">${market.traders || '—'}</span></div>
+        `;
+    }
+
+    function openPredictChart(marketId) {
+        const m = predictState.markets.find(x => x.id === marketId);
+        if (!m) return;
+        predictChartState.marketId = marketId;
+        predictChartState.range = '1d';
+        const modal = document.getElementById('predictChartModal');
+        const title = document.getElementById('predictChartTitle');
+        const canvas = document.getElementById('predictChartCanvas');
+        if (!modal || !canvas) return;
+        if (title) title.textContent = m.question;
+        const data = generateMockPriceHistory(m, '1d');
+        drawPredictChart(data, canvas);
+        renderPredictChartStats(data, m);
+        document.querySelectorAll('.predict-chart-tab').forEach(t => t.classList.toggle('active', t.dataset.range === '1d'));
+        modal.style.display = 'flex';
+    }
+
+    function closePredictChart() {
+        const modal = document.getElementById('predictChartModal');
+        if (modal) modal.style.display = 'none';
+    }
+
+    // Time range tab clicks
+    document.querySelectorAll('.predict-chart-tab').forEach(tab => tab.addEventListener('click', () => {
+        const range = tab.dataset.range;
+        predictChartState.range = range;
+        document.querySelectorAll('.predict-chart-tab').forEach(t => t.classList.toggle('active', t === tab));
+        const m = predictState.markets.find(x => x.id === predictChartState.marketId);
+        if (!m) return;
+        const data = generateMockPriceHistory(m, range);
+        const canvas = document.getElementById('predictChartCanvas');
+        if (canvas) drawPredictChart(data, canvas);
+        renderPredictChartStats(data, m);
+    }));
+
+    // Close handlers
+    document.getElementById('predictChartClose')?.addEventListener('click', closePredictChart);
+    document.querySelector('.predict-chart-overlay')?.addEventListener('click', closePredictChart);
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') closePredictChart(); });
 
     // Category filter
     document.querySelectorAll('.predict-cat-btn').forEach(btn => btn.addEventListener('click', () => {

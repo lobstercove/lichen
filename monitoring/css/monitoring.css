@@ -1269,10 +1269,113 @@ body {
     color: var(--accent);
 }
 
+/* ─── DEX Operations Monitor ──────────────────────────────── */
+.dex-stats-bar {
+    display: flex; gap: 0.5rem; flex-wrap: wrap;
+    margin-bottom: 1rem;
+}
+.dex-stat-item {
+    flex: 1; min-width: 120px;
+    text-align: center; padding: 0.75rem;
+    background: var(--bg-tertiary); border-radius: 8px;
+    border: 1px solid var(--border-color);
+}
+.dex-stat-label { display: block; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 0.25rem; }
+.dex-stat-value { display: block; font-size: 1.05rem; font-weight: 700; font-family: var(--font-mono); }
+
+.dex-subsystem-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 0.75rem;
+}
+.dex-subsystem-card {
+    background: var(--bg-tertiary); border: 1px solid var(--border-color);
+    border-radius: 10px; padding: 1rem; transition: border-color 0.2s;
+}
+.dex-subsystem-card:hover { border-color: var(--orange-primary, #ff6b35); }
+.dex-subsystem-card .sub-header {
+    display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.75rem;
+}
+.dex-subsystem-card .sub-icon {
+    width: 36px; height: 36px; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.9rem; flex-shrink: 0;
+}
+.dex-subsystem-card .sub-name { font-weight: 600; font-size: 0.9rem; }
+.dex-subsystem-card .sub-desc { font-size: 0.72rem; color: var(--text-muted); }
+.dex-subsystem-card .sub-badge {
+    margin-left: auto; padding: 0.15rem 0.5rem; border-radius: 6px;
+    font-size: 0.68rem; font-weight: 600;
+}
+.dex-subsystem-card .sub-metrics {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+    gap: 0.5rem;
+}
+.dex-subsystem-card .sub-metric {
+    text-align: center; padding: 0.4rem;
+    background: rgba(0,0,0,0.15); border-radius: 6px;
+}
+.dex-subsystem-card .sub-metric-label { display: block; font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase; }
+.dex-subsystem-card .sub-metric-value { display: block; font-size: 0.88rem; font-weight: 600; font-family: var(--font-mono); }
+
+/* ─── Smart Contracts Monitor ─────────────────────────────── */
+.contract-cat-bar {
+    display: flex; gap: 0.35rem; flex-wrap: wrap;
+    margin-bottom: 1rem;
+}
+.contract-cat-btn {
+    padding: 0.35rem 0.8rem; border-radius: 6px;
+    font-size: 0.75rem; font-weight: 500;
+    background: var(--bg-tertiary); color: var(--text-muted);
+    border: 1px solid transparent; cursor: pointer;
+    transition: all 0.2s;
+}
+.contract-cat-btn:hover { color: #fff; background: var(--bg-secondary); }
+.contract-cat-btn.active { background: var(--orange-primary, #ff6b35); color: #fff; border-color: var(--orange-primary, #ff6b35); }
+
+.contract-monitor-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 0.6rem;
+}
+.contract-monitor-card {
+    background: var(--bg-tertiary); border: 1px solid var(--border-color);
+    border-radius: 10px; padding: 0.85rem; display: flex; flex-direction: column; gap: 0.5rem;
+    transition: border-color 0.2s;
+}
+.contract-monitor-card:hover { border-color: var(--orange-primary, #ff6b35); }
+.contract-monitor-card .cm-header {
+    display: flex; align-items: center; gap: 0.5rem;
+}
+.contract-monitor-card .cm-icon {
+    width: 32px; height: 32px; border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.8rem; flex-shrink: 0;
+}
+.contract-monitor-card .cm-name { font-weight: 600; font-size: 0.85rem; }
+.contract-monitor-card .cm-symbol { font-size: 0.7rem; color: var(--text-muted); font-family: var(--font-mono); }
+.contract-monitor-card .cm-badge {
+    margin-left: auto; padding: 0.12rem 0.45rem; border-radius: 5px;
+    font-size: 0.65rem; font-weight: 600;
+}
+.contract-monitor-card .cm-addr {
+    font-size: 0.68rem; color: var(--text-muted); font-family: var(--font-mono);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.contract-monitor-card .cm-metrics {
+    display: flex; gap: 0.5rem; flex-wrap: wrap;
+}
+.contract-monitor-card .cm-metric {
+    flex: 1; min-width: 70px; text-align: center;
+    padding: 0.3rem; background: rgba(0,0,0,0.15); border-radius: 5px;
+}
+.contract-monitor-card .cm-metric-label { display: block; font-size: 0.6rem; color: var(--text-muted); }
+.contract-monitor-card .cm-metric-value { display: block; font-size: 0.8rem; font-weight: 600; font-family: var(--font-mono); }
+
 /* ─── Responsive ───────────────────────────────────────────── */
 @media (max-width: 1200px) {
     .security-grid { grid-template-columns: repeat(2, 1fr); }
     .perf-grid { grid-template-columns: repeat(2, 1fr); }
+    .dex-subsystem-grid { grid-template-columns: repeat(2, 1fr); }
+    .contract-monitor-grid { grid-template-columns: repeat(2, 1fr); }
 }
 
 @media (max-width: 900px) {
@@ -1282,4 +1385,7 @@ body {
     .security-grid { grid-template-columns: 1fr; }
     .nav-container { padding: 0 1rem; }
     .dashboard { padding: 1rem; }
+    .dex-subsystem-grid { grid-template-columns: 1fr; }
+    .contract-monitor-grid { grid-template-columns: 1fr; }
+    .dex-stats-bar { gap: 0.35rem; }
 }

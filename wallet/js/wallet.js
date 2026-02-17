@@ -6,7 +6,7 @@ function fmtToken(value) {
     return Number(value).toLocaleString(undefined, { maximumFractionDigits: 9 });
 }
 function fmtUsd(value, sym = '$') {
-    return sym + Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return sym + Number(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 });
 }
 
 // Network configuration
@@ -1292,7 +1292,11 @@ async function loadActivity(reset = true) {
             const sig = tx.signature || tx.hash || '';
             const shortSig = sig ? sig.slice(0, 8) + '...' + sig.slice(-4) : '';
             const explorerLink = sig ? `../explorer/transaction.html?sig=${sig}` : '#';
-            const amountStr = amount !== '0' ? `${sign}${amount} MOLT` : ((tx.type === 'RegisterEvmAddress' || tx.type === 'Contract') ? 'Fee only' : `${sign}${amount} MOLT`);
+            const isFeeOnly = amount === '0' && (tx.type === 'RegisterEvmAddress' || tx.type === 'Contract');
+            const feeShells = tx.fee_shells || tx.fee || 0;
+            const feeAmt = fmtToken(feeShells / 1_000_000_000);
+            const amountStr = isFeeOnly ? `${feeAmt} MOLT` : `${sign}${amount} MOLT`;
+            const feeTag = isFeeOnly ? '<span style="display:inline-block;margin-left:0.35rem;padding:0.05rem 0.4rem;border-radius:4px;font-size:0.65rem;background:rgba(245,158,11,0.15);color:#f59e0b;font-weight:600;vertical-align:middle;">FEE</span>' : '';
             
             return `
                 <a href="${explorerLink}" target="_blank" class="activity-item" style="text-decoration:none; color:inherit; display:flex;">
@@ -1305,7 +1309,7 @@ async function loadActivity(reset = true) {
                     </div>
                     <div style="text-align: right; flex-shrink: 0;">
                         <div class="activity-amount" style="color: ${color};">
-                            ${amountStr}
+                            ${amountStr}${feeTag}
                         </div>
                         <div style="font-size: 0.7rem; opacity: 0.5;">${date}</div>
                     </div>
