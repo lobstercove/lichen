@@ -1,2505 +1,2835 @@
 {
   "summary": {
-    "pass": 263,
-    "fail": 236,
+    "pass": 565,
+    "fail": 0,
     "skip": 0
   },
-  "elapsed_seconds": 468.4,
+  "elapsed_seconds": 1076.3,
   "results": [
     {
       "status": "PASS",
       "msg": "validator healthy",
-      "ts": 1771309455
+      "ts": 1771320906
     },
     {
       "status": "PASS",
-      "msg": "current slot: 1276",
-      "ts": 1771309455
+      "msg": "current slot: 744",
+      "ts": 1771320906
     },
     {
       "status": "PASS",
       "msg": "deployer funded (100 MOLT)",
-      "ts": 1771309455
+      "ts": 1771320906
     },
     {
       "status": "PASS",
       "msg": "secondary funded (100 MOLT)",
-      "ts": 1771309455
+      "ts": 1771320906
     },
     {
       "status": "PASS",
       "msg": "discovered 27/27 contracts",
-      "ts": 1771309455
+      "ts": 1771320907
     },
     {
       "status": "PASS",
-      "msg": "moltcoin.initialize sig=f66c02b726cd49c2...",
-      "ts": 1771309455
+      "msg": "moltcoin.initialize sig=37c0946229bdc2f7...",
+      "ts": 1771320907
     },
     {
       "status": "PASS",
-      "msg": "moltcoin.mint sig=7a08d1c8a2847ddc...",
-      "ts": 1771309457
+      "msg": "moltcoin.mint sig=19425651b3b80a25...",
+      "ts": 1771320909
     },
     {
       "status": "PASS",
-      "msg": "moltcoin.transfer sig=144ca7779ae975fe...",
-      "ts": 1771309458
+      "msg": "moltcoin.transfer sig=6170541c3493f6a2...",
+      "ts": 1771320916
     },
     {
       "status": "PASS",
-      "msg": "moltcoin.burn sig=7e68fed6f0433f3e...",
-      "ts": 1771309464
+      "msg": "moltcoin.burn sig=1863a6ad16992cdb...",
+      "ts": 1771320918
     },
     {
       "status": "PASS",
-      "msg": "moltcoin.approve sig=6a39c2264f2a5f48...",
-      "ts": 1771309468
+      "msg": "moltcoin.approve sig=a4923adcf28cc72d...",
+      "ts": 1771320921
     },
     {
       "status": "PASS",
-      "msg": "moltcoin.balance_of sig=4721b0ab8f70dcc9...",
-      "ts": 1771309468
+      "msg": "moltcoin.balance_of sig=b72c746215acc4a1...",
+      "ts": 1771320924
     },
     {
       "status": "PASS",
-      "msg": "moltcoin.total_supply sig=2dac8d67a604a5b7...",
-      "ts": 1771309468
+      "msg": "moltcoin.total_supply sig=03a88d96e1632672...",
+      "ts": 1771320925
     },
     {
       "status": "PASS",
-      "msg": "musd_token.initialize sig=a42db1888fb6f005...",
-      "ts": 1771309468
+      "msg": "musd_token.initialize sig=4e2bd4bdbd76eb00...",
+      "ts": 1771320925
     },
     {
       "status": "PASS",
-      "msg": "musd_token.mint sig=ce97996a90ab209e...",
-      "ts": 1771309468
+      "msg": "musd_token.mint sig=04f6887b6e770ec9...",
+      "ts": 1771320928
     },
     {
       "status": "PASS",
-      "msg": "musd_token.transfer sig=72c9a4b9c5ff9190...",
-      "ts": 1771309469
+      "msg": "musd_token.transfer sig=ae699d3064ba0cac...",
+      "ts": 1771320928
     },
     {
       "status": "PASS",
-      "msg": "musd_token.approve sig=3b57b59da537d8ef...",
-      "ts": 1771309469
+      "msg": "musd_token.approve sig=1b3d1a0143b433d7...",
+      "ts": 1771320928
     },
     {
       "status": "PASS",
-      "msg": "musd_token.burn sig=341482bb7bc191d3...",
-      "ts": 1771309469
+      "msg": "musd_token.burn sig=e61efeb5908e7620...",
+      "ts": 1771320928
     },
     {
       "status": "PASS",
-      "msg": "musd_token.balance_of sig=ea6b26808e090486...",
-      "ts": 1771309470
+      "msg": "musd_token.balance_of sig=8277e5fb9d19ab60...",
+      "ts": 1771320931
     },
     {
       "status": "PASS",
-      "msg": "musd_token.total_supply sig=3cf6ce9beacdf1c1...",
-      "ts": 1771309472
+      "msg": "musd_token.total_supply sig=a7632dae25e58bc6...",
+      "ts": 1771320936
     },
     {
       "status": "PASS",
-      "msg": "musd_token.allowance sig=5318c2e5ab50c898...",
-      "ts": 1771309473
+      "msg": "musd_token.allowance sig=8bfaed7b08e3454c...",
+      "ts": 1771320936
     },
     {
       "status": "PASS",
-      "msg": "musd_token.total_minted sig=d45628b3604a9dfc...",
-      "ts": 1771309474
+      "msg": "musd_token.total_minted sig=9b7a849265c68e4a...",
+      "ts": 1771320936
     },
     {
       "status": "PASS",
-      "msg": "musd_token.total_burned sig=df7826a505419f27...",
-      "ts": 1771309474
+      "msg": "musd_token.total_burned sig=28eb3a69b064e385...",
+      "ts": 1771320936
     },
     {
       "status": "PASS",
-      "msg": "musd_token.transfer_from sig=74bb5f9ccb13d8be...",
-      "ts": 1771309476
+      "msg": "musd_token.transfer_from sig=448454cf79771c19...",
+      "ts": 1771320940
     },
     {
       "status": "PASS",
-      "msg": "musd_token.emergency_pause sig=a2d5ecdefa4b541b...",
-      "ts": 1771309482
+      "msg": "musd_token.emergency_pause sig=2162ca2e94008aff...",
+      "ts": 1771320940
     },
     {
       "status": "PASS",
-      "msg": "musd_token.emergency_unpause sig=c398cd3ec07c526d...",
-      "ts": 1771309483
+      "msg": "musd_token.emergency_unpause sig=67316dc9c7b19757...",
+      "ts": 1771320940
     },
     {
       "status": "PASS",
-      "msg": "musd_token.get_transfer_count sig=9f4958ebbb97f5db...",
-      "ts": 1771309484
+      "msg": "musd_token.get_transfer_count sig=99ae31f71a1bfafa...",
+      "ts": 1771320940
     },
     {
       "status": "PASS",
-      "msg": "musd_token.get_attestation_count sig=9871b4d2648e1974...",
-      "ts": 1771309484
+      "msg": "musd_token.get_attestation_count sig=2fe2cf14c84089f7...",
+      "ts": 1771320941
     },
     {
       "status": "PASS",
-      "msg": "musd_token.get_epoch_remaining sig=01bace9a78dcd01c...",
-      "ts": 1771309487
+      "msg": "musd_token.get_epoch_remaining sig=205998ca073d147f...",
+      "ts": 1771320941
     },
     {
       "status": "PASS",
-      "msg": "musd_token.get_last_attestation_slot sig=470af03c25102270...",
-      "ts": 1771309488
+      "msg": "musd_token.get_last_attestation_slot sig=6c773ccc9eabad72...",
+      "ts": 1771320948
     },
     {
       "status": "PASS",
-      "msg": "musd_token.get_reserve_ratio sig=2a074fb90cad207f...",
-      "ts": 1771309491
+      "msg": "musd_token.get_reserve_ratio sig=d79321e6c58ef3c6...",
+      "ts": 1771320953
     },
     {
       "status": "PASS",
-      "msg": "musd_token.attest_reserves sig=58a54118e4a40380...",
-      "ts": 1771309491
+      "msg": "musd_token.attest_reserves sig=fad898ca4d943eb0...",
+      "ts": 1771320957
     },
     {
       "status": "PASS",
-      "msg": "musd_token.transfer_admin sig=f13b5088cff052d5...",
-      "ts": 1771309496
+      "msg": "musd_token.transfer_admin sig=c1aeca406b5cf9bf...",
+      "ts": 1771320958
     },
     {
       "status": "PASS",
-      "msg": "weth_token.initialize sig=348ff90e2c4e3b6c...",
-      "ts": 1771309497
+      "msg": "weth_token.initialize sig=a66a33e8d781809f...",
+      "ts": 1771320960
     },
     {
       "status": "PASS",
-      "msg": "weth_token.mint sig=ea2f463f529b2dc3...",
-      "ts": 1771309499
+      "msg": "weth_token.mint sig=69f6d78b14b9cd70...",
+      "ts": 1771320961
     },
     {
       "status": "PASS",
-      "msg": "weth_token.transfer sig=28199fa27ee60ee3...",
-      "ts": 1771309500
+      "msg": "weth_token.transfer sig=5376d527972548ea...",
+      "ts": 1771320961
     },
     {
       "status": "PASS",
-      "msg": "weth_token.approve sig=4c921d94fee6f7bf...",
-      "ts": 1771309502
+      "msg": "weth_token.approve sig=f296eea4677a220b...",
+      "ts": 1771320961
     },
     {
       "status": "PASS",
-      "msg": "weth_token.burn sig=dd4443d8b9c31d0c...",
-      "ts": 1771309507
+      "msg": "weth_token.burn sig=83145a6c55a4515e...",
+      "ts": 1771320961
     },
     {
       "status": "PASS",
-      "msg": "weth_token.balance_of sig=f627f30f36d73945...",
-      "ts": 1771309507
+      "msg": "weth_token.balance_of sig=ee3276df4f279be3...",
+      "ts": 1771320964
     },
     {
       "status": "PASS",
-      "msg": "weth_token.total_supply sig=45b40637ece9b39c...",
-      "ts": 1771309507
+      "msg": "weth_token.total_supply sig=bf312e6c32b8a334...",
+      "ts": 1771320964
     },
     {
       "status": "PASS",
-      "msg": "weth_token.allowance sig=2d3dc12c79bb8d0b...",
-      "ts": 1771309509
+      "msg": "weth_token.allowance sig=d376e9370ef823fd...",
+      "ts": 1771320964
     },
     {
       "status": "PASS",
-      "msg": "weth_token.total_minted sig=e9313c569b75d6d0...",
-      "ts": 1771309512
+      "msg": "weth_token.total_minted sig=2e3d5a8e7cff7e7f...",
+      "ts": 1771320965
     },
     {
       "status": "PASS",
-      "msg": "weth_token.total_burned sig=bd09de418f92972e...",
-      "ts": 1771309512
+      "msg": "weth_token.total_burned sig=c3b51026d1c01357...",
+      "ts": 1771320974
     },
     {
       "status": "PASS",
-      "msg": "weth_token.transfer_from sig=235127477d120428...",
-      "ts": 1771309512
+      "msg": "weth_token.transfer_from sig=846c95557cb736d1...",
+      "ts": 1771320974
     },
     {
       "status": "PASS",
-      "msg": "weth_token.emergency_pause sig=566c8ab0a0af6ad9...",
-      "ts": 1771309512
+      "msg": "weth_token.emergency_pause sig=93a398d32b6df355...",
+      "ts": 1771320974
     },
     {
       "status": "PASS",
-      "msg": "weth_token.emergency_unpause sig=b48fb0b40a98015b...",
-      "ts": 1771309512
+      "msg": "weth_token.emergency_unpause sig=a54bc88418368b5e...",
+      "ts": 1771320974
     },
     {
       "status": "PASS",
-      "msg": "weth_token.get_transfer_count sig=48ad84825a546a64...",
-      "ts": 1771309512
+      "msg": "weth_token.get_transfer_count sig=ecc43d090242a1ac...",
+      "ts": 1771320974
     },
     {
       "status": "PASS",
-      "msg": "weth_token.get_attestation_count sig=fe7f5da2054f9614...",
-      "ts": 1771309512
+      "msg": "weth_token.get_attestation_count sig=d7f18c861e2ca38e...",
+      "ts": 1771320975
     },
     {
       "status": "PASS",
-      "msg": "weth_token.get_epoch_remaining sig=92db523fb85c45b8...",
-      "ts": 1771309512
+      "msg": "weth_token.get_epoch_remaining sig=ff9d6c1ef43fd6c9...",
+      "ts": 1771320981
     },
     {
       "status": "PASS",
-      "msg": "weth_token.get_last_attestation_slot sig=2b93ad91c3aae1e9...",
-      "ts": 1771309512
+      "msg": "weth_token.get_last_attestation_slot sig=14f63f88d8922d02...",
+      "ts": 1771320985
     },
     {
       "status": "PASS",
-      "msg": "weth_token.get_reserve_ratio sig=965e5c08bbaf86a8...",
-      "ts": 1771309516
+      "msg": "weth_token.get_reserve_ratio sig=ef04849862fa5fa4...",
+      "ts": 1771320985
     },
     {
       "status": "PASS",
-      "msg": "weth_token.attest_reserves sig=dc98906b86f2c472...",
-      "ts": 1771309517
+      "msg": "weth_token.attest_reserves sig=7b7772f4a2f5dedf...",
+      "ts": 1771320985
     },
     {
       "status": "PASS",
-      "msg": "weth_token.transfer_admin sig=2ccb0d3ed415d581...",
-      "ts": 1771309517
+      "msg": "weth_token.transfer_admin sig=4d40493c1e2154dd...",
+      "ts": 1771320988
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.initialize sig=803ea05d0d8da827...",
-      "ts": 1771309521
+      "msg": "wsol_token.initialize sig=9632eafe92f1b8ab...",
+      "ts": 1771320988
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.mint sig=f359323cfb89fda4...",
-      "ts": 1771309534
+      "msg": "wsol_token.mint sig=83a0fc2500302990...",
+      "ts": 1771320990
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.transfer sig=434d79524798e931...",
-      "ts": 1771309535
+      "msg": "wsol_token.transfer sig=b33dd33ef81dc57d...",
+      "ts": 1771320992
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.approve sig=1de78979932f74ee...",
-      "ts": 1771309535
+      "msg": "wsol_token.approve sig=5d831192db75bb2f...",
+      "ts": 1771320992
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.burn sig=5c5ed7385b0f6214...",
-      "ts": 1771309535
+      "msg": "wsol_token.burn sig=be03145e95b00aa7...",
+      "ts": 1771320994
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.balance_of sig=ed2c9a8ee811bfbd...",
-      "ts": 1771309536
+      "msg": "wsol_token.balance_of sig=bc61055301f2f25a...",
+      "ts": 1771320994
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.total_supply sig=b3ffa4031885f987...",
-      "ts": 1771309536
+      "msg": "wsol_token.total_supply sig=582a8be23f43ac31...",
+      "ts": 1771320996
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.allowance sig=ea6ac924f61a8444...",
-      "ts": 1771309537
+      "msg": "wsol_token.allowance sig=b5e66c368ca14d22...",
+      "ts": 1771320999
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.total_minted sig=20aaa989a8c89f47...",
-      "ts": 1771309539
+      "msg": "wsol_token.total_minted sig=0756c73e5c8307a5...",
+      "ts": 1771321001
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.total_burned sig=1452eef582469f4f...",
-      "ts": 1771309539
+      "msg": "wsol_token.total_burned sig=b279d8daa92fcea8...",
+      "ts": 1771321006
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.transfer_from sig=f0a8bdb83d988dd4...",
-      "ts": 1771309544
+      "msg": "wsol_token.transfer_from sig=e8167ab5572339a9...",
+      "ts": 1771321010
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.emergency_pause sig=b5bf631a8f8c6f67...",
-      "ts": 1771309548
+      "msg": "wsol_token.emergency_pause sig=b6b748f2b1e9c13a...",
+      "ts": 1771321011
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.emergency_unpause sig=b901c2c5e66c0345...",
-      "ts": 1771309548
+      "msg": "wsol_token.emergency_unpause sig=c1fb8b99677c4c44...",
+      "ts": 1771321012
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.get_transfer_count sig=18cdd893ecd22f38...",
-      "ts": 1771309550
+      "msg": "wsol_token.get_transfer_count sig=0a65a338d25439a8...",
+      "ts": 1771321012
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.get_attestation_count sig=66a629238b76b8ae...",
-      "ts": 1771309551
+      "msg": "wsol_token.get_attestation_count sig=95214db0d97553a5...",
+      "ts": 1771321016
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.get_epoch_remaining sig=45aad68c6302bd5f...",
-      "ts": 1771309553
+      "msg": "wsol_token.get_epoch_remaining sig=ba40cf37df8a64fa...",
+      "ts": 1771321016
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.get_last_attestation_slot sig=abce3111dad584dc...",
-      "ts": 1771309553
+      "msg": "wsol_token.get_last_attestation_slot sig=19ac543ad057249f...",
+      "ts": 1771321017
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.get_reserve_ratio sig=e086ed2e785a5d4b...",
-      "ts": 1771309553
+      "msg": "wsol_token.get_reserve_ratio sig=014dd5a9334279ec...",
+      "ts": 1771321021
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.attest_reserves sig=e9f4e7452b958f53...",
-      "ts": 1771309553
+      "msg": "wsol_token.attest_reserves sig=bb4931dc497f7679...",
+      "ts": 1771321022
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.transfer_admin sig=281180278bb4c69f...",
-      "ts": 1771309553
+      "msg": "wsol_token.transfer_admin sig=702da541ab13446a...",
+      "ts": 1771321024
     },
     {
       "status": "PASS",
-      "msg": "clawpump.initialize sig=9cdd3c683cf01562...",
-      "ts": 1771309553
+      "msg": "clawpump.initialize sig=ec298e2b9e32a374...",
+      "ts": 1771321031
     },
     {
       "status": "PASS",
-      "msg": "clawpump.create_token sig=640475a29344525a...",
-      "ts": 1771309555
+      "msg": "clawpump.create_token sig=aee5000e6e4fa48d...",
+      "ts": 1771321031
     },
     {
       "status": "PASS",
-      "msg": "clawpump.buy sig=4a26a72ec4d12441...",
-      "ts": 1771309555
+      "msg": "clawpump.buy sig=8f9c8725ca8b8f50...",
+      "ts": 1771321031
     },
     {
       "status": "PASS",
-      "msg": "clawpump.sell sig=4a3d1f0dcc7328b1...",
-      "ts": 1771309558
+      "msg": "clawpump.sell sig=40c9ef3011835327...",
+      "ts": 1771321033
     },
     {
       "status": "PASS",
-      "msg": "clawpump.get_token_info sig=74f915edb387d08b...",
-      "ts": 1771309559
+      "msg": "clawpump.get_token_info sig=1e3df31eefda1522...",
+      "ts": 1771321036
     },
     {
       "status": "PASS",
-      "msg": "clawpump.get_token_count sig=a626e54f93afc3c5...",
-      "ts": 1771309559
+      "msg": "clawpump.get_token_count sig=4af51fb4c0969f28...",
+      "ts": 1771321036
     },
     {
       "status": "PASS",
-      "msg": "clawpump.get_platform_stats sig=6fc82abd2e4cdc77...",
-      "ts": 1771309561
+      "msg": "clawpump.get_platform_stats sig=07e26ed8b3825a89...",
+      "ts": 1771321038
     },
     {
       "status": "PASS",
-      "msg": "clawpump.get_buy_quote sig=256c1bdec055b91d...",
-      "ts": 1771309561
+      "msg": "clawpump.get_buy_quote sig=db2102dde2065933...",
+      "ts": 1771321046
     },
     {
       "status": "PASS",
-      "msg": "clawpump.get_graduation_info sig=2b16a68202ebbfba...",
-      "ts": 1771309561
+      "msg": "clawpump.get_graduation_info sig=af8214450127b812...",
+      "ts": 1771321046
     },
     {
       "status": "PASS",
-      "msg": "clawpump.set_buy_cooldown sig=880860cde2ce6264...",
-      "ts": 1771309563
+      "msg": "clawpump.set_buy_cooldown sig=940fa92fd642cb98...",
+      "ts": 1771321046
     },
     {
       "status": "PASS",
-      "msg": "clawpump.set_sell_cooldown sig=559e748fe8f9155e...",
-      "ts": 1771309566
+      "msg": "clawpump.set_sell_cooldown sig=4ecf95e96e103d4f...",
+      "ts": 1771321047
     },
     {
       "status": "PASS",
-      "msg": "clawpump.set_max_buy sig=7f300c6141b98d84...",
-      "ts": 1771309566
+      "msg": "clawpump.set_max_buy sig=207e022d0552e61d...",
+      "ts": 1771321048
     },
     {
       "status": "PASS",
-      "msg": "clawpump.set_creator_royalty sig=2d146775dcc47b61...",
-      "ts": 1771309566
+      "msg": "clawpump.set_creator_royalty sig=0a65f50b69cffda2...",
+      "ts": 1771321048
     },
     {
       "status": "PASS",
-      "msg": "clawpump.set_dex_addresses sig=7275daec2ecd91dd...",
-      "ts": 1771309566
+      "msg": "clawpump.set_dex_addresses sig=e3b3a2218b22c100...",
+      "ts": 1771321048
     },
     {
       "status": "PASS",
-      "msg": "clawpump.pause sig=b48d0cf46d13b1b9...",
-      "ts": 1771309568
+      "msg": "clawpump.pause sig=0824f4b906f09d97...",
+      "ts": 1771321048
     },
     {
       "status": "PASS",
-      "msg": "clawpump.unpause sig=8a08e6d38a11c13e...",
-      "ts": 1771309568
+      "msg": "clawpump.unpause sig=5448c50fb36b3a86...",
+      "ts": 1771321051
     },
     {
       "status": "PASS",
-      "msg": "clawpump.withdraw_fees sig=5992770baae7174a...",
-      "ts": 1771309570
+      "msg": "clawpump.withdraw_fees sig=3e23b61248c366e4...",
+      "ts": 1771321051
     },
     {
       "status": "PASS",
-      "msg": "clawpump.freeze_token sig=9055302c17737b6d...",
-      "ts": 1771309570
+      "msg": "clawpump.freeze_token sig=5948055b2bb466cd...",
+      "ts": 1771321052
     },
     {
       "status": "PASS",
-      "msg": "clawpump.unfreeze_token sig=ea2c63d34ec23962...",
-      "ts": 1771309570
+      "msg": "clawpump.unfreeze_token sig=617207915929af52...",
+      "ts": 1771321053
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.initialize sig=7338941cf988870a...",
-      "ts": 1771309570
+      "msg": "lobsterlend.initialize sig=c0d601667f3ca45f...",
+      "ts": 1771321053
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.deposit sig=939ee8e5aa784ecb...",
-      "ts": 1771309570
+      "msg": "lobsterlend.deposit sig=caae1cb05355ccc4...",
+      "ts": 1771321056
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.borrow sig=0766bc2b030bf983...",
-      "ts": 1771309570
+      "msg": "lobsterlend.borrow sig=2f72d132f121b77d...",
+      "ts": 1771321056
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.repay sig=ed9d13ada08b7f0d...",
-      "ts": 1771309574
+      "msg": "lobsterlend.repay sig=b51278ed31ef00fc...",
+      "ts": 1771321056
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.withdraw sig=8c652bb7cf7e3f0d...",
-      "ts": 1771309574
+      "msg": "lobsterlend.withdraw sig=6a97c9705fb3bb2a...",
+      "ts": 1771321056
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.get_protocol_stats sig=d9737a3af721438b...",
-      "ts": 1771309574
+      "msg": "lobsterlend.get_protocol_stats sig=a231ac25bcd3150d...",
+      "ts": 1771321056
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.get_account_info sig=66a8fa73b8a23914...",
-      "ts": 1771309575
+      "msg": "lobsterlend.get_account_info sig=47b30a8e4f6a47a7...",
+      "ts": 1771321056
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.get_interest_rate sig=eb3773d86d5f6131...",
-      "ts": 1771309575
+      "msg": "lobsterlend.get_interest_rate sig=d6de8d659d976b99...",
+      "ts": 1771321057
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.set_deposit_cap sig=850c1f62908bd848...",
-      "ts": 1771309575
+      "msg": "lobsterlend.set_deposit_cap sig=75e0d0556bf3d5f1...",
+      "ts": 1771321057
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.set_reserve_factor sig=0051f8f77a805d75...",
-      "ts": 1771309575
+      "msg": "lobsterlend.set_reserve_factor sig=fe87d7d2830f1506...",
+      "ts": 1771321059
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.pause sig=d5db87c97a07f32e...",
-      "ts": 1771309575
+      "msg": "lobsterlend.pause sig=617586e26db4c5d1...",
+      "ts": 1771321063
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.unpause sig=c57f8c92b5bba4c6...",
-      "ts": 1771309575
+      "msg": "lobsterlend.unpause sig=371975b5af5c2266...",
+      "ts": 1771321063
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.withdraw_reserves sig=4cba5ce8a848be90...",
-      "ts": 1771309579
+      "msg": "lobsterlend.withdraw_reserves sig=65049fa946cdf763...",
+      "ts": 1771321066
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.liquidate sig=811914db717e47ab...",
-      "ts": 1771309580
+      "msg": "lobsterlend.liquidate sig=7e846063a2bcadbe...",
+      "ts": 1771321071
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.flash_borrow sig=ac251246bed3c7d5...",
-      "ts": 1771309584
+      "msg": "lobsterlend.flash_borrow sig=673f4eb2fbfbbf28...",
+      "ts": 1771321071
     },
     {
       "status": "PASS",
-      "msg": "lobsterlend.flash_repay sig=76731d92bd70d864...",
-      "ts": 1771309587
+      "msg": "lobsterlend.flash_repay sig=c4a9d7b229f60e3a...",
+      "ts": 1771321083
     },
     {
       "status": "PASS",
-      "msg": "moltmarket.initialize sig=57d3b97d37bd20bc...",
-      "ts": 1771309588
+      "msg": "lobsterlend.get_deposit_count sig=7903973d8dd79c7e...",
+      "ts": 1771321089
     },
     {
       "status": "PASS",
-      "msg": "moltmarket.list_nft sig=910fe4d95f544e17...",
-      "ts": 1771309591
+      "msg": "lobsterlend.get_borrow_count sig=73fada820d2600a6...",
+      "ts": 1771321089
     },
     {
       "status": "PASS",
-      "msg": "moltmarket.get_listing sig=35a41e898dbda8f2...",
-      "ts": 1771309595
+      "msg": "lobsterlend.get_liquidation_count sig=f69415c5591ed54f...",
+      "ts": 1771321089
     },
     {
       "status": "PASS",
-      "msg": "moltmarket.cancel_listing sig=13977a87f95b1359...",
-      "ts": 1771309596
+      "msg": "lobsterlend.get_platform_stats sig=b44c712f727fef47...",
+      "ts": 1771321090
     },
     {
       "status": "PASS",
-      "msg": "moltmarket.get_marketplace_stats sig=8a1e2d1d701c6b82...",
-      "ts": 1771309596
+      "msg": "moltmarket.initialize sig=77969ff5fa092b68...",
+      "ts": 1771321093
     },
     {
       "status": "PASS",
-      "msg": "moltmarket.set_marketplace_fee sig=ba569c62a3b8fcbe...",
-      "ts": 1771309599
+      "msg": "moltmarket.list_nft sig=b423be6d3e4459a6...",
+      "ts": 1771321094
     },
     {
       "status": "PASS",
-      "msg": "moltmarket.list_nft_with_royalty sig=45b0dc5b3cae989d...",
-      "ts": 1771309606
+      "msg": "moltmarket.get_listing sig=3c6340866fe0a361...",
+      "ts": 1771321099
     },
     {
       "status": "PASS",
-      "msg": "moltmarket.make_offer sig=9f9541d37c5e8fbb...",
-      "ts": 1771309608
+      "msg": "moltmarket.cancel_listing sig=522f5e5984cf5d80...",
+      "ts": 1771321099
     },
     {
       "status": "PASS",
-      "msg": "moltmarket.cancel_offer sig=3c1b38d52374d2b0...",
-      "ts": 1771309611
+      "msg": "moltmarket.get_marketplace_stats sig=43df783daa6ff33f...",
+      "ts": 1771321099
     },
     {
       "status": "PASS",
-      "msg": "moltmarket.buy_nft sig=4179992f1a4929f3...",
-      "ts": 1771309618
+      "msg": "moltmarket.set_marketplace_fee sig=33144dd3e170591c...",
+      "ts": 1771321103
     },
     {
       "status": "PASS",
-      "msg": "moltmarket.mm_pause sig=dec93c15495e90d3...",
-      "ts": 1771309618
+      "msg": "moltmarket.list_nft_with_royalty sig=042f30bbf59e3e79...",
+      "ts": 1771321108
     },
     {
       "status": "PASS",
-      "msg": "moltmarket.mm_unpause sig=7821935dbfb00a5c...",
-      "ts": 1771309618
+      "msg": "moltmarket.make_offer sig=d7d7d61974f3e170...",
+      "ts": 1771321109
     },
     {
       "status": "PASS",
-      "msg": "moltauction.initialize sig=cf4df1fc87fd6563...",
-      "ts": 1771309618
+      "msg": "moltmarket.cancel_offer sig=3a5b5bb2fa58b03f...",
+      "ts": 1771321109
     },
     {
       "status": "PASS",
-      "msg": "moltauction.initialize_ma_admin sig=980fb5c1590b1841...",
-      "ts": 1771309618
+      "msg": "moltmarket.buy_nft sig=9eff2730f185b129...",
+      "ts": 1771321112
     },
     {
       "status": "PASS",
-      "msg": "moltauction.create_auction sig=ea9ada49758bf09b...",
-      "ts": 1771309620
+      "msg": "moltmarket.accept_offer sig=2b003db4ff9c8595...",
+      "ts": 1771321112
     },
     {
       "status": "PASS",
-      "msg": "moltauction.place_bid sig=12b1d5f20dd3a471...",
-      "ts": 1771309623
+      "msg": "moltmarket.mm_pause sig=a07a60340e45052f...",
+      "ts": 1771321114
     },
     {
       "status": "PASS",
-      "msg": "moltauction.set_reserve_price sig=0a5e31a57d30c690...",
-      "ts": 1771309623
+      "msg": "moltmarket.mm_unpause sig=86ab60271e12374a...",
+      "ts": 1771321114
     },
     {
       "status": "PASS",
-      "msg": "moltauction.set_royalty sig=0d58c6afd4979d1d...",
-      "ts": 1771309628
+      "msg": "moltmarket.get_marketplace_stats sig=d51194d6355b5547...",
+      "ts": 1771321115
     },
     {
       "status": "PASS",
-      "msg": "moltauction.get_auction_info sig=32584c3e95009c24...",
-      "ts": 1771309629
+      "msg": "moltauction.initialize sig=f69bfc7581e790a6...",
+      "ts": 1771321120
     },
     {
       "status": "PASS",
-      "msg": "moltauction.get_collection_stats sig=42145709c56b9a2a...",
-      "ts": 1771309629
+      "msg": "moltauction.initialize_ma_admin sig=6585b17538b2f572...",
+      "ts": 1771321120
     },
     {
       "status": "PASS",
-      "msg": "moltauction.update_collection_stats sig=ad67cc573de810c4...",
-      "ts": 1771309630
+      "msg": "moltauction.create_auction sig=10de5211b9f33c31...",
+      "ts": 1771321120
     },
     {
       "status": "PASS",
-      "msg": "moltauction.cancel_auction sig=e739f570ad84e339...",
-      "ts": 1771309633
+      "msg": "moltauction.place_bid sig=ce378be95033b557...",
+      "ts": 1771321120
     },
     {
       "status": "PASS",
-      "msg": "moltauction.finalize_auction sig=925fb61a95f9e5ca...",
-      "ts": 1771309634
+      "msg": "moltauction.set_reserve_price sig=f5c73b91676c4e78...",
+      "ts": 1771321123
     },
     {
       "status": "PASS",
-      "msg": "moltauction.make_offer sig=c2e281eb2224c631...",
-      "ts": 1771309634
+      "msg": "moltauction.set_royalty sig=89f76fd8ad4eb261...",
+      "ts": 1771321123
     },
     {
       "status": "PASS",
-      "msg": "moltauction.accept_offer sig=b1589a39480d04f3...",
-      "ts": 1771309634
+      "msg": "moltauction.get_auction_info sig=3eddf6de0df82da5...",
+      "ts": 1771321129
     },
     {
       "status": "PASS",
-      "msg": "moltauction.ma_pause sig=327ed5715c4d906c...",
-      "ts": 1771309638
+      "msg": "moltauction.get_collection_stats sig=9db4bc309b4c384d...",
+      "ts": 1771321129
     },
     {
       "status": "PASS",
-      "msg": "moltauction.ma_unpause sig=b8e0cbacb1aad5b8...",
-      "ts": 1771309638
+      "msg": "moltauction.update_collection_stats sig=fbd5e836ae17ec45...",
+      "ts": 1771321134
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.initialize sig=c44efc53999adeb7...",
-      "ts": 1771309638
+      "msg": "moltauction.cancel_auction sig=2c7c3626fc2c553d...",
+      "ts": 1771321134
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.add_bridge_validator sig=c2b152b2315166ce...",
-      "ts": 1771309639
+      "msg": "moltauction.finalize_auction sig=1daec00b6d53cb4e...",
+      "ts": 1771321136
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.set_required_confirmations sig=3f8a4641e4fc88b3...",
-      "ts": 1771309640
+      "msg": "moltauction.make_offer sig=376a3f6704f639cd...",
+      "ts": 1771321136
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.set_request_timeout sig=a0eb974fc7109990...",
-      "ts": 1771309644
+      "msg": "moltauction.accept_offer sig=63ffadcdb55db887...",
+      "ts": 1771321136
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.get_bridge_status sig=a2c7e89e9cfb291c...",
-      "ts": 1771309645
+      "msg": "moltauction.ma_pause sig=cf457ffa27cdacd5...",
+      "ts": 1771321136
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.remove_bridge_validator sig=a019afeb092785fc...",
-      "ts": 1771309645
+      "msg": "moltauction.ma_unpause sig=9ecda3f23717a632...",
+      "ts": 1771321136
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.lock_tokens sig=7f10305079b3f37a...",
-      "ts": 1771309645
+      "msg": "moltauction.get_auction_stats sig=50c05c0f3daf4ab2...",
+      "ts": 1771321142
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.submit_mint sig=f03ecfd0a76b3abb...",
-      "ts": 1771309645
+      "msg": "moltbridge.initialize sig=257ea1805abe7190...",
+      "ts": 1771321145
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.has_confirmed_mint sig=ca489430bb58f3b2...",
-      "ts": 1771309648
+      "msg": "moltbridge.add_bridge_validator sig=668a70f335997d92...",
+      "ts": 1771321145
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.submit_unlock sig=790d72d699a26f13...",
-      "ts": 1771309649
+      "msg": "moltbridge.set_required_confirmations sig=5a02a0c4601f4cde...",
+      "ts": 1771321150
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.has_confirmed_unlock sig=4c76e3e887a9cc66...",
-      "ts": 1771309656
+      "msg": "moltbridge.set_request_timeout sig=99e697656b3ddbec...",
+      "ts": 1771321153
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.is_source_tx_used sig=1f674ebf5ef17d51...",
-      "ts": 1771309658
+      "msg": "moltbridge.get_bridge_status sig=98619e0b435e4931...",
+      "ts": 1771321161
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.is_burn_proof_used sig=8ced5f6d3a5df6bd...",
-      "ts": 1771309659
+      "msg": "moltbridge.remove_bridge_validator sig=5db82d72bd4b06ab...",
+      "ts": 1771321166
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.confirm_mint sig=599a2b75e6f37ab9...",
-      "ts": 1771309666
+      "msg": "moltbridge.lock_tokens sig=e92dd8105cc5559f...",
+      "ts": 1771321167
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.confirm_unlock sig=300aacc43803afd1...",
-      "ts": 1771309666
+      "msg": "moltbridge.submit_mint sig=6ce87dba0210711c...",
+      "ts": 1771321167
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.cancel_expired_request sig=9f1070b530fbdfa3...",
-      "ts": 1771309668
+      "msg": "moltbridge.has_confirmed_mint sig=f8d211ba60648bc5...",
+      "ts": 1771321167
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.set_moltyid_address sig=c719b6c5bccf658e...",
-      "ts": 1771309669
+      "msg": "moltbridge.submit_unlock sig=513cdcedb460be72...",
+      "ts": 1771321169
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.set_identity_gate sig=0817c03fc0741af9...",
-      "ts": 1771309669
+      "msg": "moltbridge.has_confirmed_unlock sig=dd081a08d21d1edf...",
+      "ts": 1771321169
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.mb_pause sig=50d0869b69175250...",
-      "ts": 1771309669
+      "msg": "moltbridge.is_source_tx_used sig=56172789c1bac710...",
+      "ts": 1771321172
     },
     {
       "status": "PASS",
-      "msg": "moltbridge.mb_unpause sig=470dbba952c2d89e...",
-      "ts": 1771309669
+      "msg": "moltbridge.is_burn_proof_used sig=cc093ce7fa32da08...",
+      "ts": 1771321174
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.initialize sig=0881e9a4aefeaf09...",
-      "ts": 1771309670
+      "msg": "moltbridge.confirm_mint sig=00e695984f9679cb...",
+      "ts": 1771321180
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.register_provider sig=55d24233c072cf16...",
-      "ts": 1771309670
+      "msg": "moltbridge.confirm_unlock sig=6ee67b63d5066e5d...",
+      "ts": 1771321181
     },
     {
-      "status": "FAIL",
-      "msg": "reef_storage.set_storage_price not confirmed in 15s",
-      "ts": 1771309685
+      "status": "PASS",
+      "msg": "moltbridge.cancel_expired_request sig=832e19c0d4537333...",
+      "ts": 1771321188
+    },
+    {
+      "status": "PASS",
+      "msg": "moltbridge.set_moltyid_address sig=da22c9332de022f6...",
+      "ts": 1771321188
+    },
+    {
+      "status": "PASS",
+      "msg": "moltbridge.set_identity_gate sig=2407f543bab6de15...",
+      "ts": 1771321191
+    },
+    {
+      "status": "PASS",
+      "msg": "moltbridge.mb_pause sig=79dcf5de2263db84...",
+      "ts": 1771321196
+    },
+    {
+      "status": "PASS",
+      "msg": "moltbridge.mb_unpause sig=e907d737431e1f9a...",
+      "ts": 1771321204
+    },
+    {
+      "status": "PASS",
+      "msg": "reef_storage.initialize sig=16eb0e7074f783b2...",
+      "ts": 1771321206
+    },
+    {
+      "status": "PASS",
+      "msg": "reef_storage.register_provider sig=0f673a863b6ffc65...",
+      "ts": 1771321206
+    },
+    {
+      "status": "PASS",
+      "msg": "reef_storage.set_storage_price sig=5d2d426f36f5ae1b...",
+      "ts": 1771321206
+    },
+    {
+      "status": "PASS",
+      "msg": "reef_storage.store_data sig=abb8a793bbb395a3...",
+      "ts": 1771321209
+    },
+    {
+      "status": "PASS",
+      "msg": "reef_storage.confirm_storage sig=14806524c04e97fc...",
+      "ts": 1771321209
+    },
+    {
+      "status": "PASS",
+      "msg": "reef_storage.get_storage_info sig=43008d3812ed2c90...",
+      "ts": 1771321211
+    },
+    {
+      "status": "PASS",
+      "msg": "reef_storage.get_storage_price sig=cc8ed966402936c7...",
+      "ts": 1771321214
+    },
+    {
+      "status": "PASS",
+      "msg": "reef_storage.get_provider_stake sig=21025ae4d695afa3...",
+      "ts": 1771321219
+    },
+    {
+      "status": "PASS",
+      "msg": "reef_storage.claim_storage_rewards sig=8be226ca84e5b200...",
+      "ts": 1771321219
+    },
+    {
+      "status": "PASS",
+      "msg": "reef_storage.stake_collateral sig=0e8633ba7a1cf9f3...",
+      "ts": 1771321219
+    },
+    {
+      "status": "PASS",
+      "msg": "reef_storage.issue_challenge sig=59aba7cea7e2cee3...",
+      "ts": 1771321220
+    },
+    {
+      "status": "PASS",
+      "msg": "reef_storage.respond_challenge sig=98638079afc36533...",
+      "ts": 1771321220
+    },
+    {
+      "status": "PASS",
+      "msg": "reef_storage.set_challenge_window sig=0063eff2a82d6523...",
+      "ts": 1771321223
+    },
+    {
+      "status": "PASS",
+      "msg": "reef_storage.set_slash_percent sig=91859b8508d3daa7...",
+      "ts": 1771321224
+    },
+    {
+      "status": "PASS",
+      "msg": "reef_storage.slash_provider sig=41390a3bb00c04ba...",
+      "ts": 1771321225
+    },
+    {
+      "status": "PASS",
+      "msg": "reef_storage.get_platform_stats sig=a2951da0b7180c2e...",
+      "ts": 1771321225
+    },
+    {
+      "status": "PASS",
+      "msg": "clawvault.initialize sig=4aee4bd665ad76a5...",
+      "ts": 1771321225
+    },
+    {
+      "status": "PASS",
+      "msg": "clawvault.set_protocol_addresses sig=5af5edec721ebf2c...",
+      "ts": 1771321228
+    },
+    {
+      "status": "PASS",
+      "msg": "clawvault.add_strategy sig=844c84a9f475347b...",
+      "ts": 1771321232
+    },
+    {
+      "status": "PASS",
+      "msg": "clawvault.deposit sig=0b4ee10bdacb5a06...",
+      "ts": 1771321243
+    },
+    {
+      "status": "PASS",
+      "msg": "clawvault.withdraw sig=d73f7b1feb22c45c...",
+      "ts": 1771321244
+    },
+    {
+      "status": "PASS",
+      "msg": "clawvault.get_vault_stats sig=6854ef4d8f494ccf...",
+      "ts": 1771321248
+    },
+    {
+      "status": "PASS",
+      "msg": "clawvault.get_user_position sig=680033a16a2ccefa...",
+      "ts": 1771321248
+    },
+    {
+      "status": "PASS",
+      "msg": "clawvault.get_strategy_info sig=ea867f5b5c3dd84b...",
+      "ts": 1771321253
+    },
+    {
+      "status": "PASS",
+      "msg": "clawvault.harvest sig=5f6b3adf03c0d754...",
+      "ts": 1771321254
+    },
+    {
+      "status": "PASS",
+      "msg": "clawvault.set_deposit_cap sig=34404bcb0b6c891f...",
+      "ts": 1771321263
+    },
+    {
+      "status": "PASS",
+      "msg": "clawvault.set_deposit_fee sig=482419611359be93...",
+      "ts": 1771321266
+    },
+    {
+      "status": "PASS",
+      "msg": "clawvault.set_withdrawal_fee sig=438b89ddb951959c...",
+      "ts": 1771321267
+    },
+    {
+      "status": "PASS",
+      "msg": "clawvault.set_risk_tier sig=c054966673e176a7...",
+      "ts": 1771321274
+    },
+    {
+      "status": "PASS",
+      "msg": "clawvault.update_strategy_allocation sig=e498646afa922724...",
+      "ts": 1771321274
+    },
+    {
+      "status": "PASS",
+      "msg": "clawvault.remove_strategy sig=ac8e68377d69fd45...",
+      "ts": 1771321279
+    },
+    {
+      "status": "PASS",
+      "msg": "clawvault.withdraw_protocol_fees sig=703ea901bb009b94...",
+      "ts": 1771321284
+    },
+    {
+      "status": "PASS",
+      "msg": "clawvault.cv_pause sig=5bcb2df141094b1c...",
+      "ts": 1771321284
+    },
+    {
+      "status": "PASS",
+      "msg": "clawvault.cv_unpause sig=b99a4c3dbae52c3a...",
+      "ts": 1771321292
+    },
+    {
+      "status": "PASS",
+      "msg": "clawpay.initialize_cp_admin sig=80fb45878e9c492d...",
+      "ts": 1771321296
+    },
+    {
+      "status": "PASS",
+      "msg": "clawpay.set_identity_admin sig=043de662faeab65b...",
+      "ts": 1771321301
+    },
+    {
+      "status": "PASS",
+      "msg": "clawpay.set_moltyid_address sig=bfb222833e221fc6...",
+      "ts": 1771321301
+    },
+    {
+      "status": "PASS",
+      "msg": "clawpay.set_identity_gate sig=33dc0fa81690071a...",
+      "ts": 1771321303
+    },
+    {
+      "status": "PASS",
+      "msg": "clawpay.create_stream sig=1d26b00f392d2bdb...",
+      "ts": 1771321304
+    },
+    {
+      "status": "PASS",
+      "msg": "clawpay.create_stream_with_cliff sig=266c6b0f39d8c976...",
+      "ts": 1771321306
+    },
+    {
+      "status": "PASS",
+      "msg": "clawpay.get_stream sig=2cd2a6bfc5b1fa87...",
+      "ts": 1771321306
+    },
+    {
+      "status": "PASS",
+      "msg": "clawpay.get_stream_info sig=da4255e73301fc69...",
+      "ts": 1771321307
+    },
+    {
+      "status": "PASS",
+      "msg": "clawpay.get_withdrawable sig=55d7bc2bc3efe51e...",
+      "ts": 1771321312
+    },
+    {
+      "status": "PASS",
+      "msg": "clawpay.withdraw_from_stream sig=69783d1b94b5e183...",
+      "ts": 1771321312
+    },
+    {
+      "status": "PASS",
+      "msg": "clawpay.transfer_stream sig=aad710ed22c4923a...",
+      "ts": 1771321312
+    },
+    {
+      "status": "PASS",
+      "msg": "clawpay.cancel_stream sig=9a04c21f494340f6...",
+      "ts": 1771321315
+    },
+    {
+      "status": "PASS",
+      "msg": "clawpay.pause sig=888bc5b6b0a77d98...",
+      "ts": 1771321315
+    },
+    {
+      "status": "PASS",
+      "msg": "clawpay.unpause sig=8ecde180b00f9add...",
+      "ts": 1771321316
+    },
+    {
+      "status": "PASS",
+      "msg": "clawpay.get_stream_count sig=7f97fcb65102ce20...",
+      "ts": 1771321317
+    },
+    {
+      "status": "PASS",
+      "msg": "clawpay.get_platform_stats sig=962f6e62ae7a1f95...",
+      "ts": 1771321326
+    },
+    {
+      "status": "PASS",
+      "msg": "moltyid.initialize sig=8f4dc26bb201bfbd...",
+      "ts": 1771321328
+    },
+    {
+      "status": "PASS",
+      "msg": "moltyid.register_identity sig=fc031f66b6daf971...",
+      "ts": 1771321328
+    },
+    {
+      "status": "PASS",
+      "msg": "moltyid.get_identity sig=eaf8cd39f4ac5598...",
+      "ts": 1771321328
+    },
+    {
+      "status": "PASS",
+      "msg": "moltyid.get_identity_count sig=0c0246fbf7df8873...",
+      "ts": 1771321330
+    },
+    {
+      "status": "PASS",
+      "msg": "moltyid.set_endpoint sig=842cca0f4abe8d0e...",
+      "ts": 1771321330
+    },
+    {
+      "status": "PASS",
+      "msg": "moltyid.get_endpoint sig=810392bc47e8f774...",
+      "ts": 1771321330
+    },
+    {
+      "status": "PASS",
+      "msg": "moltyid.set_metadata sig=6b9632a1d81269a0...",
+      "ts": 1771321332
+    },
+    {
+      "status": "PASS",
+      "msg": "moltyid.get_metadata sig=c3aeb8724e2387c9...",
+      "ts": 1771321337
+    },
+    {
+      "status": "PASS",
+      "msg": "moltyid.set_availability sig=509f7cd1ac2d5622...",
+      "ts": 1771321337
+    },
+    {
+      "status": "PASS",
+      "msg": "moltyid.get_availability sig=b390734d2ab5488f...",
+      "ts": 1771321337
+    },
+    {
+      "status": "PASS",
+      "msg": "moltyid.set_rate sig=72310dd4272d49ec...",
+      "ts": 1771321340
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.store_data sig=94b3e66c19525567...",
-      "ts": 1771309687
+      "msg": "moltyid.get_rate sig=771e7c8212f59ed5...",
+      "ts": 1771321343
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.confirm_storage sig=eee8e2353172058c...",
-      "ts": 1771309690
+      "msg": "moltyid.add_skill sig=371c30febbe6dd7d...",
+      "ts": 1771321343
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.get_storage_info sig=d916b41909b6a0a3...",
-      "ts": 1771309690
+      "msg": "moltyid.get_skills sig=6e19df346cab574e...",
+      "ts": 1771321343
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.get_storage_price sig=4cc6775313a7d863...",
-      "ts": 1771309693
+      "msg": "moltyid.vouch sig=705677d9a4b02ba1...",
+      "ts": 1771321347
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.get_provider_stake sig=bf5f13a1fc944c33...",
-      "ts": 1771309695
+      "msg": "moltyid.get_vouches sig=48fde1df03896fd9...",
+      "ts": 1771321347
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.claim_storage_rewards sig=e64f20eb65021022...",
-      "ts": 1771309696
+      "msg": "moltyid.set_delegate sig=d2b2755b927dad85...",
+      "ts": 1771321350
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.stake_collateral sig=a70b7394cc5e6f2f...",
-      "ts": 1771309696
+      "msg": "moltyid.get_delegate sig=8580eea8c441fbdc...",
+      "ts": 1771321350
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.issue_challenge sig=de1ea03e3890c7bc...",
-      "ts": 1771309697
+      "msg": "moltyid.revoke_delegate sig=316e63da3d2a3f4b...",
+      "ts": 1771321353
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.respond_challenge sig=f9a51b1042dca715...",
-      "ts": 1771309698
+      "msg": "moltyid.update_reputation sig=5f2731061905ebf7...",
+      "ts": 1771321353
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.set_challenge_window sig=2887d6c9a335776b...",
-      "ts": 1771309698
+      "msg": "moltyid.update_reputation_typed sig=7f2c7eb8e5d6e6bf...",
+      "ts": 1771321355
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.set_slash_percent sig=a8b3341baddfd3aa...",
-      "ts": 1771309698
+      "msg": "moltyid.get_reputation sig=8569bc69b1b9b7ca...",
+      "ts": 1771321355
     },
     {
       "status": "PASS",
-      "msg": "reef_storage.slash_provider sig=d5f417b0d5d10af8...",
-      "ts": 1771309698
+      "msg": "moltyid.get_trust_tier sig=3a3a84a736e30caf...",
+      "ts": 1771321356
     },
     {
-      "status": "FAIL",
-      "msg": "clawvault.initialize not confirmed in 15s",
-      "ts": 1771309714
+      "status": "PASS",
+      "msg": "moltyid.update_agent_type sig=ae365577314e59d1...",
+      "ts": 1771321356
+    },
+    {
+      "status": "PASS",
+      "msg": "moltyid.deactivate_identity sig=18b6b6a45f7b53e7...",
+      "ts": 1771321359
     },
     {
       "status": "PASS",
-      "msg": "clawvault.set_protocol_addresses sig=47c2d6256ba76e97...",
-      "ts": 1771309715
+      "msg": "moltyid.get_agent_profile sig=e3068b3cfb20ecd6...",
+      "ts": 1771321359
     },
     {
       "status": "PASS",
-      "msg": "clawvault.add_strategy sig=be14b903729def19...",
-      "ts": 1771309717
+      "msg": "moltyid.set_recovery_guardians sig=12df2b6481ea7b6a...",
+      "ts": 1771321360
     },
     {
       "status": "PASS",
-      "msg": "clawvault.deposit sig=72d166a58add8907...",
-      "ts": 1771309717
+      "msg": "moltyid.register_name sig=bab7fc407e5daec4...",
+      "ts": 1771321360
     },
     {
       "status": "PASS",
-      "msg": "clawvault.withdraw sig=3ee64a3368b9db80...",
-      "ts": 1771309717
+      "msg": "moltyid.resolve_name sig=82ae0a0265bdc51f...",
+      "ts": 1771321361
     },
     {
       "status": "PASS",
-      "msg": "clawvault.get_vault_stats sig=e4d0ea1d9d4eb738...",
-      "ts": 1771309717
+      "msg": "moltyid.reverse_resolve sig=9094e5087018d996...",
+      "ts": 1771321361
     },
     {
       "status": "PASS",
-      "msg": "clawvault.get_user_position sig=3789bf0a23188038...",
-      "ts": 1771309717
+      "msg": "moltyid.get_achievements sig=9c13a2f0d49eacd9...",
+      "ts": 1771321364
     },
     {
       "status": "PASS",
-      "msg": "clawvault.get_strategy_info sig=56412ef5ff45ac99...",
-      "ts": 1771309718
+      "msg": "moltyid.get_attestations sig=c0eb9f591fecbf65...",
+      "ts": 1771321365
     },
     {
       "status": "PASS",
-      "msg": "clawvault.harvest sig=c07c83a39b14e85b...",
-      "ts": 1771309718
+      "msg": "moltyid.add_skill_as sig=ee60812b43b4e818...",
+      "ts": 1771321366
     },
     {
       "status": "PASS",
-      "msg": "clawvault.set_deposit_cap sig=3ad167b8ce01c0fb...",
-      "ts": 1771309722
+      "msg": "moltyid.set_endpoint_as sig=b63c8a0f34a0458b...",
+      "ts": 1771321371
     },
     {
       "status": "PASS",
-      "msg": "clawvault.set_deposit_fee sig=ba4336a16bd35a7c...",
-      "ts": 1771309722
+      "msg": "moltyid.set_metadata_as sig=9faf745a8808aa1a...",
+      "ts": 1771321371
     },
     {
       "status": "PASS",
-      "msg": "clawvault.set_withdrawal_fee sig=6b139f8c13b1cfdf...",
-      "ts": 1771309727
+      "msg": "moltyid.set_availability_as sig=5ca1b8d0a77360a8...",
+      "ts": 1771321381
     },
     {
       "status": "PASS",
-      "msg": "clawvault.set_risk_tier sig=f8f0027b01a5e495...",
-      "ts": 1771309727
+      "msg": "moltyid.set_rate_as sig=ad8147b7b56bd9cd...",
+      "ts": 1771321382
     },
     {
       "status": "PASS",
-      "msg": "clawvault.update_strategy_allocation sig=bd85c6972a4b50d7...",
-      "ts": 1771309727
+      "msg": "moltyid.update_agent_type_as sig=937eeadaf7e86482...",
+      "ts": 1771321385
     },
     {
       "status": "PASS",
-      "msg": "clawvault.remove_strategy sig=fbbdb288e7f7e4a0...",
-      "ts": 1771309734
+      "msg": "moltyid.attest_skill sig=a8727896500392ca...",
+      "ts": 1771321387
     },
     {
       "status": "PASS",
-      "msg": "clawvault.withdraw_protocol_fees sig=0aa191f87db7f090...",
-      "ts": 1771309734
+      "msg": "moltyid.revoke_attestation sig=ba13b4392f4ea35b...",
+      "ts": 1771321391
     },
     {
       "status": "PASS",
-      "msg": "clawvault.cv_pause sig=411935aa5343c745...",
-      "ts": 1771309734
+      "msg": "moltyid.approve_recovery sig=aad22157f809ddbb...",
+      "ts": 1771321392
     },
     {
       "status": "PASS",
-      "msg": "clawvault.cv_unpause sig=243ac0f2ca20477e...",
-      "ts": 1771309737
+      "msg": "moltyid.execute_recovery sig=10321b4b7fb0a1cf...",
+      "ts": 1771321393
     },
     {
-      "status": "FAIL",
-      "msg": "clawpay.initialize_cp_admin not confirmed in 15s",
-      "ts": 1771309752
+      "status": "PASS",
+      "msg": "moltyid.award_contribution_achievement sig=d7ba00945ed6e0d5...",
+      "ts": 1771321400
     },
     {
       "status": "PASS",
-      "msg": "clawpay.set_identity_admin sig=3f5a3645acda53d1...",
-      "ts": 1771309754
+      "msg": "moltyid.create_name_auction sig=5cbec5bb8eb02e84...",
+      "ts": 1771321402
     },
     {
       "status": "PASS",
-      "msg": "clawpay.set_moltyid_address sig=7f14f16099e8dc22...",
-      "ts": 1771309759
+      "msg": "moltyid.bid_name_auction sig=4bd0b7697adad453...",
+      "ts": 1771321403
     },
     {
       "status": "PASS",
-      "msg": "clawpay.set_identity_gate sig=96885418ff13b548...",
-      "ts": 1771309761
+      "msg": "moltyid.get_name_auction sig=f08d00890e3c6696...",
+      "ts": 1771321403
     },
     {
       "status": "PASS",
-      "msg": "clawpay.create_stream sig=a3f1a8929297e908...",
-      "ts": 1771309766
+      "msg": "moltyid.finalize_name_auction sig=882a42f0cfe5093b...",
+      "ts": 1771321404
     },
     {
       "status": "PASS",
-      "msg": "clawpay.create_stream_with_cliff sig=276bbcc2a9daa1a5...",
-      "ts": 1771309766
+      "msg": "moltyid.transfer_name sig=e40b091f4a6528e2...",
+      "ts": 1771321405
     },
     {
       "status": "PASS",
-      "msg": "clawpay.get_stream sig=c57d0406f19778aa...",
-      "ts": 1771309766
+      "msg": "moltyid.renew_name sig=8772e43bb6b7eee2...",
+      "ts": 1771321405
     },
     {
       "status": "PASS",
-      "msg": "clawpay.get_stream_info sig=72b9dabbdfe6a8cd...",
-      "ts": 1771309769
+      "msg": "moltyid.release_name sig=a016e7ade93b610a...",
+      "ts": 1771321407
     },
     {
       "status": "PASS",
-      "msg": "clawpay.get_withdrawable sig=4b0dd0e5cd86313d...",
-      "ts": 1771309771
+      "msg": "moltyid.transfer_name_as sig=6ced9ac99ae6c472...",
+      "ts": 1771321407
     },
     {
       "status": "PASS",
-      "msg": "clawpay.withdraw_from_stream sig=4d9c6290411c76bf...",
-      "ts": 1771309771
+      "msg": "moltyid.renew_name_as sig=d00f14d244e63771...",
+      "ts": 1771321407
     },
     {
       "status": "PASS",
-      "msg": "clawpay.transfer_stream sig=a8cde54e737cb923...",
-      "ts": 1771309771
+      "msg": "moltyid.release_name_as sig=e399ec66e6c9df96...",
+      "ts": 1771321412
     },
     {
       "status": "PASS",
-      "msg": "clawpay.cancel_stream sig=642850afb6b56a34...",
-      "ts": 1771309771
+      "msg": "moltyid.admin_register_reserved_name sig=b4edc4c57336b28b...",
+      "ts": 1771321416
     },
     {
       "status": "PASS",
-      "msg": "clawpay.pause sig=3be600295193eab6...",
-      "ts": 1771309772
+      "msg": "moltyid.transfer_admin sig=28e92442264a462a...",
+      "ts": 1771321416
     },
     {
       "status": "PASS",
-      "msg": "clawpay.unpause sig=ad8787e431bb8a4d...",
-      "ts": 1771309772
+      "msg": "moltyid.mid_pause sig=184bdb62cc9f6785...",
+      "ts": 1771321416
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.initialize not confirmed in 15s",
-      "ts": 1771309787
+      "status": "PASS",
+      "msg": "moltyid.mid_unpause sig=f6cdcb2cfb01371b...",
+      "ts": 1771321418
     },
     {
       "status": "PASS",
-      "msg": "moltyid.register_identity sig=601543a45f2bd2b7...",
-      "ts": 1771309789
+      "msg": "moltswap.initialize sig=af9ab9a07c340e6b...",
+      "ts": 1771321422
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_identity sig=691e83914f364698...",
-      "ts": 1771309792
+      "msg": "moltswap.set_protocol_fee sig=01139acc0fa6c97b...",
+      "ts": 1771321422
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_identity_count sig=7ddf76175730e884...",
-      "ts": 1771309792
+      "msg": "moltswap.set_platform_fee sig=59d90a081f0b306f...",
+      "ts": 1771321423
     },
     {
       "status": "PASS",
-      "msg": "moltyid.set_endpoint sig=e5c360228f8ec93a...",
-      "ts": 1771309792
+      "msg": "moltswap.create_pool sig=e787f91d1b2a556d...",
+      "ts": 1771321423
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_endpoint sig=71a23ad2f015fa29...",
-      "ts": 1771309794
+      "msg": "moltswap.add_liquidity sig=1eeeee80c041222c...",
+      "ts": 1771321428
     },
     {
       "status": "PASS",
-      "msg": "moltyid.set_metadata sig=4660ac647dd47489...",
-      "ts": 1771309796
+      "msg": "moltswap.swap sig=714fc6a1ab33bc4f...",
+      "ts": 1771321428
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_metadata sig=83259d128e6cf6d3...",
-      "ts": 1771309796
+      "msg": "moltswap.swap_a_for_b sig=947a16f934d001ae...",
+      "ts": 1771321428
     },
     {
       "status": "PASS",
-      "msg": "moltyid.set_availability sig=0c78ef49704d2ae2...",
-      "ts": 1771309796
+      "msg": "moltswap.swap_b_for_a sig=51b9cb9b9e4c2b25...",
+      "ts": 1771321430
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_availability sig=9d541f2c1fddf0ef...",
-      "ts": 1771309802
+      "msg": "moltswap.swap_a_for_b_with_deadline sig=90631dc29c0526b1...",
+      "ts": 1771321438
     },
     {
       "status": "PASS",
-      "msg": "moltyid.set_rate sig=77a99a8d7b012841...",
-      "ts": 1771309807
+      "msg": "moltswap.swap_b_for_a_with_deadline sig=18c344720bbc399d...",
+      "ts": 1771321441
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_rate sig=1a40c4bbaab39ca3...",
-      "ts": 1771309813
+      "msg": "moltswap.get_pool_info sig=888968b94ccd6d92...",
+      "ts": 1771321442
     },
     {
       "status": "PASS",
-      "msg": "moltyid.add_skill sig=aba3395432232c8e...",
-      "ts": 1771309814
+      "msg": "moltswap.get_pool_count sig=65e30598b0804c60...",
+      "ts": 1771321455
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_skills sig=d1b55e0d6ad3d045...",
-      "ts": 1771309822
+      "msg": "moltswap.get_quote sig=fa5e66747ef9ac64...",
+      "ts": 1771321456
     },
     {
       "status": "PASS",
-      "msg": "moltyid.vouch sig=2d809f39a2ec9d3d...",
-      "ts": 1771309822
+      "msg": "moltswap.get_reserves sig=943328251030250f...",
+      "ts": 1771321456
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_vouches sig=a77b0b45d540fe9e...",
-      "ts": 1771309824
+      "msg": "moltswap.get_liquidity_balance sig=c276bceec87c0d23...",
+      "ts": 1771321463
     },
     {
       "status": "PASS",
-      "msg": "moltyid.set_delegate sig=4b9e6b79f454aaf3...",
-      "ts": 1771309824
+      "msg": "moltswap.get_total_liquidity sig=a2e60df3af5a029a...",
+      "ts": 1771321464
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_delegate sig=8ead280fe1e8fc52...",
-      "ts": 1771309827
+      "msg": "moltswap.get_protocol_fees sig=1752f6e3e37992de...",
+      "ts": 1771321464
     },
     {
       "status": "PASS",
-      "msg": "moltyid.revoke_delegate sig=b1a90dd94da64063...",
-      "ts": 1771309827
+      "msg": "moltswap.get_flash_loan_fee sig=bb6277f4cbf756a8...",
+      "ts": 1771321464
     },
     {
       "status": "PASS",
-      "msg": "moltyid.update_reputation sig=34ed824e3c50bd40...",
-      "ts": 1771309827
+      "msg": "moltswap.get_twap_cumulatives sig=40e3639361a36bc3...",
+      "ts": 1771321464
     },
     {
       "status": "PASS",
-      "msg": "moltyid.update_reputation_typed sig=e15c56b79e8d9cd1...",
-      "ts": 1771309833
+      "msg": "moltswap.get_twap_snapshot_count sig=46e059023707abf1...",
+      "ts": 1771321474
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_reputation sig=4d902e745329ff78...",
-      "ts": 1771309833
+      "msg": "moltswap.flash_loan_borrow sig=392983d898fa3048...",
+      "ts": 1771321476
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_trust_tier sig=dbb50229794a9d8e...",
-      "ts": 1771309835
+      "msg": "moltswap.flash_loan_repay sig=032a792dfc11a783...",
+      "ts": 1771321479
     },
     {
       "status": "PASS",
-      "msg": "moltyid.update_agent_type sig=62da905c464f7d6a...",
-      "ts": 1771309835
+      "msg": "moltswap.flash_loan_abort sig=a39ab1bf9c311b67...",
+      "ts": 1771321480
     },
     {
       "status": "PASS",
-      "msg": "moltyid.deactivate_identity sig=183cacc9a58d3c45...",
-      "ts": 1771309836
+      "msg": "moltswap.remove_liquidity sig=11d5485046e3aa98...",
+      "ts": 1771321481
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_agent_profile sig=c477c4658346488e...",
-      "ts": 1771309840
+      "msg": "moltswap.ms_pause sig=d0e759c3d5e4d714...",
+      "ts": 1771321481
     },
     {
       "status": "PASS",
-      "msg": "moltyid.set_recovery_guardians sig=6972f4d6286a2386...",
-      "ts": 1771309843
+      "msg": "moltswap.ms_unpause sig=3542b631392dbe01...",
+      "ts": 1771321488
     },
     {
       "status": "PASS",
-      "msg": "moltyid.register_name sig=d20442bed83624c2...",
-      "ts": 1771309843
+      "msg": "moltswap.get_swap_count sig=37b59f77b1eb00f7...",
+      "ts": 1771321488
     },
     {
       "status": "PASS",
-      "msg": "moltyid.resolve_name sig=ab01889196501a15...",
-      "ts": 1771309844
+      "msg": "moltswap.get_total_volume sig=c8ab8955083cc1be...",
+      "ts": 1771321488
     },
     {
       "status": "PASS",
-      "msg": "moltyid.reverse_resolve sig=24bffb698bff9dc9...",
-      "ts": 1771309849
+      "msg": "moltswap.get_swap_stats sig=a07caff89b3aca93...",
+      "ts": 1771321489
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_achievements sig=82f10f68dd187390...",
-      "ts": 1771309849
+      "msg": "moltoracle.initialize sig=e423512b50bbb72b...",
+      "ts": 1771321489
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_attestations sig=732752d97318b331...",
-      "ts": 1771309854
+      "msg": "moltoracle.register_feed sig=6bea394ab4c71614...",
+      "ts": 1771321489
     },
     {
       "status": "PASS",
-      "msg": "moltyid.add_skill_as sig=e92ece1a8a9d196c...",
-      "ts": 1771309854
+      "msg": "moltoracle.submit_price sig=2609537f4fc4f389...",
+      "ts": 1771321491
     },
     {
       "status": "PASS",
-      "msg": "moltyid.set_endpoint_as sig=3985708fc73a6ec3...",
-      "ts": 1771309855
+      "msg": "moltoracle.get_price sig=6c1e7b9ad05d0e79...",
+      "ts": 1771321493
     },
     {
       "status": "PASS",
-      "msg": "moltyid.set_metadata_as sig=ab4226169ca89ec9...",
-      "ts": 1771309857
+      "msg": "moltoracle.register_feed sig=a3cb44cc7f9c99fd...",
+      "ts": 1771321493
     },
     {
       "status": "PASS",
-      "msg": "moltyid.set_availability_as sig=6337920e5684d854...",
-      "ts": 1771309858
+      "msg": "moltoracle.submit_price sig=d504b5a96487e8cf...",
+      "ts": 1771321493
     },
     {
       "status": "PASS",
-      "msg": "moltyid.set_rate_as sig=801fb9278c85af3a...",
-      "ts": 1771309858
+      "msg": "moltoracle.get_price sig=527c0a5c47547b62...",
+      "ts": 1771321493
     },
     {
       "status": "PASS",
-      "msg": "moltyid.update_agent_type_as sig=141f781a44811b37...",
-      "ts": 1771309858
+      "msg": "moltoracle.get_feed_count sig=59fd12528cfe274e...",
+      "ts": 1771321494
     },
     {
       "status": "PASS",
-      "msg": "moltyid.attest_skill sig=6374bfcde6ab28fe...",
-      "ts": 1771309860
+      "msg": "moltoracle.get_feed_list sig=c230bcf4565c378d...",
+      "ts": 1771321494
     },
     {
       "status": "PASS",
-      "msg": "moltyid.revoke_attestation sig=fbbc039ebb1fb74a...",
-      "ts": 1771309860
+      "msg": "moltoracle.set_update_interval sig=bd5f4b8e5ac27ff4...",
+      "ts": 1771321496
     },
     {
       "status": "PASS",
-      "msg": "moltyid.approve_recovery sig=1505bf7a8420f731...",
-      "ts": 1771309862
+      "msg": "moltoracle.add_reporter sig=f11767cf2b42a42d...",
+      "ts": 1771321499
     },
     {
       "status": "PASS",
-      "msg": "moltyid.execute_recovery sig=b3679ed8c36fab27...",
-      "ts": 1771309863
+      "msg": "moltoracle.remove_reporter sig=42676cda7d40a41d...",
+      "ts": 1771321499
     },
     {
       "status": "PASS",
-      "msg": "moltyid.award_contribution_achievement sig=14da853fcba89bea...",
-      "ts": 1771309863
+      "msg": "moltoracle.get_oracle_stats sig=494b5a8bcdb74443...",
+      "ts": 1771321499
     },
     {
       "status": "PASS",
-      "msg": "moltyid.create_name_auction sig=a2a9a152ffc91f33...",
-      "ts": 1771309864
+      "msg": "moltoracle.mo_pause sig=c30ffc2bd01b6778...",
+      "ts": 1771321499
     },
     {
       "status": "PASS",
-      "msg": "moltyid.bid_name_auction sig=21b9d70747050847...",
-      "ts": 1771309868
+      "msg": "moltoracle.mo_unpause sig=7b2d3be0a1d6bb51...",
+      "ts": 1771321508
     },
     {
       "status": "PASS",
-      "msg": "moltyid.get_name_auction sig=ea69aac1da749b67...",
-      "ts": 1771309869
+      "msg": "moltdao.initialize sig=9ddacc494ff70826...",
+      "ts": 1771321509
     },
     {
       "status": "PASS",
-      "msg": "moltyid.finalize_name_auction sig=f1f02a6233bd6fe0...",
-      "ts": 1771309872
+      "msg": "moltdao.set_quorum sig=dbb1101e50659d1d...",
+      "ts": 1771321509
     },
     {
       "status": "PASS",
-      "msg": "moltyid.transfer_name sig=95887efee745d9ca...",
-      "ts": 1771309873
+      "msg": "moltdao.set_voting_period sig=6deba97447296c18...",
+      "ts": 1771321511
     },
     {
       "status": "PASS",
-      "msg": "moltyid.renew_name sig=6fd8967f923e3d54...",
-      "ts": 1771309875
+      "msg": "moltdao.create_proposal sig=f907fb4053f32b77...",
+      "ts": 1771321515
     },
     {
       "status": "PASS",
-      "msg": "moltyid.release_name sig=a39c362f4ae1035b...",
-      "ts": 1771309875
+      "msg": "moltdao.cast_vote sig=4c8619233b957f08...",
+      "ts": 1771321519
     },
     {
       "status": "PASS",
-      "msg": "moltyid.transfer_name_as sig=8acf85288a450718...",
-      "ts": 1771309876
+      "msg": "moltdao.get_proposal sig=07875e8d11ba6664...",
+      "ts": 1771321519
     },
     {
       "status": "PASS",
-      "msg": "moltyid.renew_name_as sig=e7fa880cc1e87815...",
-      "ts": 1771309877
+      "msg": "moltdao.get_proposal_count sig=8dea0c6af327607b...",
+      "ts": 1771321520
     },
     {
       "status": "PASS",
-      "msg": "moltyid.release_name_as sig=7b26a153119d66a3...",
-      "ts": 1771309878
+      "msg": "moltdao.get_vote sig=b523b3470f1eebd9...",
+      "ts": 1771321525
     },
     {
       "status": "PASS",
-      "msg": "moltyid.admin_register_reserved_name sig=3761a3571f74590d...",
-      "ts": 1771309880
+      "msg": "moltdao.get_vote_count sig=6806e8da43c72694...",
+      "ts": 1771321527
     },
     {
       "status": "PASS",
-      "msg": "moltyid.mid_pause sig=0b88f2a362015035...",
-      "ts": 1771309880
+      "msg": "moltdao.finalize_proposal sig=bd1408a191251cc9...",
+      "ts": 1771321529
     },
     {
       "status": "PASS",
-      "msg": "moltyid.mid_unpause sig=c8b48d997bebd7d9...",
-      "ts": 1771309881
+      "msg": "moltdao.set_timelock_delay sig=847122ef6715737a...",
+      "ts": 1771321530
     },
     {
       "status": "PASS",
-      "msg": "moltyid.transfer_admin sig=d379c0be9d6aebd7...",
-      "ts": 1771309881
+      "msg": "moltdao.execute_proposal sig=4f79fe58f2bcb614...",
+      "ts": 1771321535
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.initialize_dao not confirmed in 15s",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "moltdao.get_dao_stats sig=060d3c27e38deb1b...",
+      "ts": 1771321535
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.create_proposal_typed error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "moltdao.get_active_proposals sig=c8a9db35b83167f6...",
+      "ts": 1771321535
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.create_proposal error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "moltdao.get_total_supply sig=164c67e88d34eec9...",
+      "ts": 1771321536
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.vote error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "moltdao.get_treasury_balance sig=093d816ae98fd9cd...",
+      "ts": 1771321536
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.vote_with_reputation error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "moltdao.veto_proposal sig=a7a59c76d2b9e66c...",
+      "ts": 1771321538
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.get_proposal error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "moltdao.cancel_proposal sig=7730a2d0b939d38f...",
+      "ts": 1771321538
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.get_active_proposals error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "moltdao.treasury_transfer sig=83e3abdcf1c1ce1d...",
+      "ts": 1771321540
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.get_dao_stats error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "moltdao.dao_pause sig=e3b9ec20f44a848c...",
+      "ts": 1771321540
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.get_treasury_balance error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "moltdao.dao_unpause sig=3e8d07dac83da794...",
+      "ts": 1771321541
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.execute_proposal error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "moltpunks.initialize sig=c5f8b9e8ba3ceca2...",
+      "ts": 1771321543
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.cancel_proposal error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "moltpunks.mint_punk sig=f002b67fb496b71a...",
+      "ts": 1771321543
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.veto_proposal error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "moltpunks.transfer_punk sig=d1f203ca8c628ef1...",
+      "ts": 1771321545
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.treasury_transfer error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "moltpunks.get_punk_metadata sig=22e0c9b90e0eb52f...",
+      "ts": 1771321545
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.initialize error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "moltpunks.get_total_supply sig=4c8f961438bbaa0e...",
+      "ts": 1771321549
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.set_identity_admin error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "moltpunks.get_owner_of sig=33e4c49ff0d96270...",
+      "ts": 1771321549
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.set_moltyid_address error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "moltpunks.set_base_uri sig=8b859f5df0a36dd0...",
+      "ts": 1771321551
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.set_identity_gate error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "moltpunks.set_max_supply sig=8c45ba94c451d612...",
+      "ts": 1771321551
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.register_provider error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "moltpunks.get_punks_by_owner sig=6b860c4d7a9f7819...",
+      "ts": 1771321551
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.update_provider error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "moltpunks.set_royalty sig=c98cfbb1b448e5af...",
+      "ts": 1771321556
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.submit_job error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "moltpunks.balance_of sig=c154297044bfd0e9...",
+      "ts": 1771321556
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.claim_job error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "moltpunks.approve sig=e0c2e6ad3b9958bb...",
+      "ts": 1771321556
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.complete_job error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "moltpunks.burn sig=517e4d269ca72ee8...",
+      "ts": 1771321562
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.get_job error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "moltpunks.mp_pause sig=4b6dc004929787ca...",
+      "ts": 1771321562
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.get_escrow error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "moltpunks.mp_unpause sig=a290875e4b39e619...",
+      "ts": 1771321562
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.release_payment error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "moltpunks.get_collection_stats sig=e4544d410e47ecca...",
+      "ts": 1771321564
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.submit_job error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "compute_market.initialize sig=e354ac3570d1507f...",
+      "ts": 1771321564
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.cancel_job error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "compute_market.register_provider sig=8900e9bae62fc13b...",
+      "ts": 1771321564
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.dispute_job error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "compute_market.create_job sig=bd4f35c2cffcb9a0...",
+      "ts": 1771321572
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.add_arbitrator error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "compute_market.accept_job sig=3696d55c71ac3d53...",
+      "ts": 1771321572
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.resolve_dispute error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "compute_market.submit_result sig=ad6a518d09d92f93...",
+      "ts": 1771321572
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.remove_arbitrator error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "compute_market.confirm_result sig=79f8f6a7f981bcbf...",
+      "ts": 1771321573
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.deactivate_provider error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "compute_market.get_job_info sig=ea9079e0313d9544...",
+      "ts": 1771321574
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.reactivate_provider error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "compute_market.get_provider_info sig=d769780f6bc64bad...",
+      "ts": 1771321579
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.set_challenge_period error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "compute_market.get_job_count sig=01eba88779346552...",
+      "ts": 1771321580
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.set_claim_timeout error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "compute_market.set_platform_fee sig=cd9a4d8e6818932b...",
+      "ts": 1771321581
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.set_complete_timeout error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "compute_market.cm_pause sig=e28b96712733dfc3...",
+      "ts": 1771321582
     },
     {
-      "status": "FAIL",
-      "msg": "bountyboard.set_identity_admin error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "compute_market.cm_unpause sig=da5f651b60ebd612...",
+      "ts": 1771321586
     },
     {
-      "status": "FAIL",
-      "msg": "bountyboard.set_moltyid_address error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "compute_market.get_platform_stats sig=7e21bfd03b6aedbb...",
+      "ts": 1771321596
     },
     {
-      "status": "FAIL",
-      "msg": "bountyboard.set_token_address error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "bountyboard.initialize sig=9752e5151606a117...",
+      "ts": 1771321597
     },
     {
-      "status": "FAIL",
-      "msg": "bountyboard.create_bounty error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "bountyboard.create_bounty sig=ad0907c15baa9f72...",
+      "ts": 1771321599
     },
     {
-      "status": "FAIL",
-      "msg": "bountyboard.submit_work error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "bountyboard.get_bounty sig=e9e2a4380360cb83...",
+      "ts": 1771321601
     },
     {
-      "status": "FAIL",
-      "msg": "bountyboard.approve_work error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "bountyboard.get_bounty_count sig=dc9cc15fb3063649...",
+      "ts": 1771321602
     },
     {
-      "status": "FAIL",
-      "msg": "bountyboard.get_bounty error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "bountyboard.submit_work sig=dddee1611e262cd7...",
+      "ts": 1771321606
     },
     {
-      "status": "FAIL",
-      "msg": "bountyboard.create_bounty error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "bountyboard.approve_submission sig=ea19e850eab593f5...",
+      "ts": 1771321606
     },
     {
-      "status": "FAIL",
-      "msg": "bountyboard.cancel_bounty error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "bountyboard.cancel_bounty sig=0fc53bde8ff19fdd...",
+      "ts": 1771321610
     },
     {
-      "status": "FAIL",
-      "msg": "bountyboard.set_identity_gate error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "bountyboard.set_platform_fee sig=bbf435ce928c6a84...",
+      "ts": 1771321616
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.initialize_oracle error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "bountyboard.bb_pause sig=2797d25bc4c38ef9...",
+      "ts": 1771321616
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.add_price_feeder error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "bountyboard.bb_unpause sig=4ea0df3db0003eaf...",
+      "ts": 1771321616
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.set_authorized_attester error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "bountyboard.get_platform_stats sig=3e9a1414bed37681...",
+      "ts": 1771321616
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.submit_price error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_core.initialize sig=e5a46a4bd32fe87c...",
+      "ts": 1771321618
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.get_price error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_core.create_pair sig=8ed65624d6538a31...",
+      "ts": 1771321619
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.get_aggregated_price error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_core.set_preferred_quote sig=49fd4d0b36f9fa84...",
+      "ts": 1771321624
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.submit_attestation error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_core.add_allowed_quote sig=12af7600ac354784...",
+      "ts": 1771321633
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.get_attestation_data error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_core.get_allowed_quote_count sig=fbd36bdf11d2a58e...",
+      "ts": 1771321633
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.verify_attestation error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_core.remove_allowed_quote sig=bc0e78fca1c6f269...",
+      "ts": 1771321634
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.query_oracle error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_core.update_pair_fees sig=5663793f95c1c61e...",
+      "ts": 1771321638
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.commit_randomness error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_core.get_pair_count sig=0bcc5af57318b567...",
+      "ts": 1771321639
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.request_randomness error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_core.get_preferred_quote sig=082e2be0a6d5ad20...",
+      "ts": 1771321640
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.reveal_randomness error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_core.get_pair_info sig=fece9986d6976af7...",
+      "ts": 1771321642
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.get_randomness error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_core.get_trade_count sig=3fa2fbbdfdbd56ba...",
+      "ts": 1771321645
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.get_oracle_stats error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_core.get_fee_treasury sig=7343e805ee91c34a...",
+      "ts": 1771321650
     },
     {
-      "status": "FAIL",
-      "msg": "moltpunks.initialize error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_core.place_order sig=dadcf65c1db80815...",
+      "ts": 1771321652
     },
     {
-      "status": "FAIL",
-      "msg": "moltpunks.mint error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_core.get_order sig=53f337021c0695ea...",
+      "ts": 1771321663
     },
     {
-      "status": "FAIL",
-      "msg": "moltpunks.owner_of error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_core.get_best_bid sig=38dbbb8bbae52f33...",
+      "ts": 1771321665
     },
     {
-      "status": "FAIL",
-      "msg": "moltpunks.balance_of error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_core.get_best_ask sig=df060dfd10c83ea3...",
+      "ts": 1771321667
     },
     {
-      "status": "FAIL",
-      "msg": "moltpunks.total_minted error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_core.get_spread sig=b6a5d93bfc80900a...",
+      "ts": 1771321667
     },
     {
-      "status": "FAIL",
-      "msg": "moltpunks.transfer error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_core.modify_order sig=1d64f256a4176439...",
+      "ts": 1771321667
     },
     {
-      "status": "FAIL",
-      "msg": "moltpunks.approve error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_core.cancel_order sig=5b283c8411b9dfd9...",
+      "ts": 1771321671
     },
     {
-      "status": "FAIL",
-      "msg": "moltpunks.transfer_from error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_core.cancel_all_orders sig=de669d3b5f7abe7d...",
+      "ts": 1771321672
     },
     {
-      "status": "FAIL",
-      "msg": "moltpunks.burn error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_core.pause_pair sig=a02d7d54a22c7850...",
+      "ts": 1771321673
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.initialize error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_core.unpause_pair sig=f406f7e29681773b...",
+      "ts": 1771321677
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.set_identity_admin error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_core.emergency_pause sig=16e8644e36905d76...",
+      "ts": 1771321681
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.set_moltyid_address error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_core.emergency_unpause sig=2fb39343ab7fca9f...",
+      "ts": 1771321681
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.add_liquidity error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_core.get_total_volume sig=eff1f8d2660d42a4...",
+      "ts": 1771321692
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.swap_a_for_b error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_core.get_user_orders sig=70de584247152429...",
+      "ts": 1771321696
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.swap_b_for_a error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_core.get_open_order_count sig=1103ab5ecec39016...",
+      "ts": 1771321700
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.swap_a_for_b_with_deadline error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_amm.initialize sig=498af0dfe694c473...",
+      "ts": 1771321700
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.swap_b_for_a_with_deadline error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_amm.create_pool sig=6dd42a5ea3331277...",
+      "ts": 1771321707
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.get_reserves error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_amm.set_protocol_fee sig=1137f0a7bb850c01...",
+      "ts": 1771321709
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.get_total_liquidity error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_amm.add_liquidity sig=2d26e42e3870ed96...",
+      "ts": 1771321712
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.get_liquidity_balance error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_amm.get_pool_info sig=86f1a3a6a62c7375...",
+      "ts": 1771321712
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.get_quote error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_amm.get_position sig=a86aca51555e1260...",
+      "ts": 1771321713
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.get_protocol_fees error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_amm.get_pool_count sig=71fcdb778db7c27d...",
+      "ts": 1771321715
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.get_flash_loan_fee error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_amm.get_position_count sig=7b2d378d9157e6be...",
+      "ts": 1771321718
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.get_twap_cumulatives error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_amm.get_tvl sig=09d2dd5cd396ca9f...",
+      "ts": 1771321719
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.get_twap_snapshot_count error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_amm.quote_swap sig=9bfe548f854e6047...",
+      "ts": 1771321719
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.remove_liquidity error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_amm.swap_exact_in sig=3a4acf8e828cd157...",
+      "ts": 1771321721
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.set_protocol_fee error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_amm.swap_exact_out sig=ca1ca3eb00b2e04b...",
+      "ts": 1771321722
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.set_reputation_discount error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_amm.collect_fees sig=bb8558698ee19b89...",
+      "ts": 1771321724
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.flash_loan_borrow error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_amm.remove_liquidity sig=a559b5edd7027efa...",
+      "ts": 1771321724
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.flash_loan_repay error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_amm.emergency_pause sig=15359d0cfcbb8349...",
+      "ts": 1771321727
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.flash_loan_abort error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_amm.emergency_unpause sig=1c52bdc4d146ef63...",
+      "ts": 1771321732
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.ms_pause error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_amm.get_total_volume sig=75adda32489e8f91...",
+      "ts": 1771321735
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.ms_unpause error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_amm.get_swap_count sig=64ba6c6f8be119c1...",
+      "ts": 1771321737
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.initialize error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_amm.get_total_fees_collected sig=bad36c5b2d045ea5...",
+      "ts": 1771321737
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.set_preferred_quote error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_amm.get_amm_stats sig=3f112cc0f36734db...",
+      "ts": 1771321738
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.add_allowed_quote error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_analytics.initialize sig=f9bad75f7afa9557...",
+      "ts": 1771321739
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.get_allowed_quote_count error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_analytics.record_trade sig=835c20ab35e6b47e...",
+      "ts": 1771321742
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.remove_allowed_quote error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_analytics.get_ohlcv sig=0e1ed0e0d3aca1e4...",
+      "ts": 1771321746
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.create_pair error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_analytics.get_24h_stats sig=788903b9ab2f8287...",
+      "ts": 1771321748
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.update_pair_fees error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_analytics.get_trader_stats sig=28893bd0f1214548...",
+      "ts": 1771321748
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.place_order error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_analytics.get_last_price sig=f2db84482de3f1a2...",
+      "ts": 1771321754
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.modify_order error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_analytics.get_record_count sig=e89c9e034f264608...",
+      "ts": 1771321754
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.cancel_order error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_analytics.emergency_pause sig=d9bfc0bc5cf06288...",
+      "ts": 1771321758
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.cancel_all_orders error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_analytics.emergency_unpause sig=900b3c3308f85f0c...",
+      "ts": 1771321758
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.get_pair_count error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_analytics.get_trader_count sig=d2217d575351da92...",
+      "ts": 1771321759
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.get_preferred_quote error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_analytics.get_global_stats sig=90dca8d9795bbb6c...",
+      "ts": 1771321759
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.get_best_bid error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_governance.initialize sig=031c9a5ff7098128...",
+      "ts": 1771321761
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.get_best_ask error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_governance.set_preferred_quote sig=c01231f4ade13cfd...",
+      "ts": 1771321763
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.get_spread error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_governance.add_allowed_quote sig=32a2b723c6344023...",
+      "ts": 1771321765
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.get_pair_info error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_governance.get_allowed_quote_count sig=658c51dbca03efb9...",
+      "ts": 1771321765
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.get_trade_count error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_governance.remove_allowed_quote sig=cba4832532c3e363...",
+      "ts": 1771321766
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.get_fee_treasury error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_governance.set_moltyid_address sig=de940fc131c49964...",
+      "ts": 1771321769
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.get_order error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_governance.set_listing_requirements sig=9d505641aa326250...",
+      "ts": 1771321774
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.pause_pair error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_governance.propose_new_pair sig=4279b325406922b5...",
+      "ts": 1771321774
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.unpause_pair error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_governance.propose_fee_change sig=0281daa17939455c...",
+      "ts": 1771321776
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.emergency_pause error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_governance.vote sig=75d08aadc2c8aee4...",
+      "ts": 1771321776
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.emergency_unpause error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_governance.get_proposal_count sig=8a6678aaf872333d...",
+      "ts": 1771321779
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.initialize error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_governance.get_preferred_quote sig=2ca88ad5599283f0...",
+      "ts": 1771321779
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.create_pool error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_governance.get_proposal_info sig=c30e31668d174529...",
+      "ts": 1771321783
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.set_protocol_fee error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_governance.finalize_proposal sig=4c0182261f7385da...",
+      "ts": 1771321785
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.add_liquidity error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_governance.execute_proposal sig=cdb7be778d9b20d5...",
+      "ts": 1771321785
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.get_pool_info error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_governance.emergency_delist sig=c610122b1c18432a...",
+      "ts": 1771321785
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.get_position error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_governance.emergency_pause sig=0806b0fc7eff31ae...",
+      "ts": 1771321788
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.get_pool_count error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_governance.emergency_unpause sig=1d310f2872af95dc...",
+      "ts": 1771321788
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.get_position_count error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_governance.get_governance_stats sig=52a32a3cff9718b6...",
+      "ts": 1771321788
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.get_tvl error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_governance.get_voter_count sig=bc062a448df399d1...",
+      "ts": 1771321790
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.quote_swap error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_margin.initialize sig=79b0811c0fc280a0...",
+      "ts": 1771321790
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.swap_exact_in error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_margin.set_moltcoin_address sig=85d584c65a45f1f0...",
+      "ts": 1771321792
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.swap_exact_out error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_margin.set_mark_price sig=beee2cfe39e8cc65...",
+      "ts": 1771321792
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.collect_fees error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_margin.set_max_leverage sig=1a665d55ad4b2b42...",
+      "ts": 1771321793
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.remove_liquidity error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_margin.set_maintenance_margin sig=e1953837062d7f47...",
+      "ts": 1771321798
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.emergency_pause error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_margin.open_position sig=f30e4eafbe021423...",
+      "ts": 1771321798
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.emergency_unpause error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_margin.get_position_info sig=209e7e485cc2af1c...",
+      "ts": 1771321805
     },
     {
-      "status": "FAIL",
-      "msg": "dex_analytics.initialize error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_margin.get_margin_ratio sig=eb84bc698b198ca1...",
+      "ts": 1771321805
     },
     {
-      "status": "FAIL",
-      "msg": "dex_analytics.record_trade error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_margin.get_tier_info sig=cc9302bd7488ee37...",
+      "ts": 1771321811
     },
     {
-      "status": "FAIL",
-      "msg": "dex_analytics.get_ohlcv error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_margin.add_margin sig=3efccce171aa196f...",
+      "ts": 1771321815
     },
     {
-      "status": "FAIL",
-      "msg": "dex_analytics.get_24h_stats error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_margin.remove_margin sig=bf6a971b6a02e2b7...",
+      "ts": 1771321816
     },
     {
-      "status": "FAIL",
-      "msg": "dex_analytics.get_trader_stats error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_margin.liquidate sig=8ffdff848cf2c2f5...",
+      "ts": 1771321820
     },
     {
-      "status": "FAIL",
-      "msg": "dex_analytics.get_last_price error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_margin.close_position sig=69ca4704e2ad7fb0...",
+      "ts": 1771321820
     },
     {
-      "status": "FAIL",
-      "msg": "dex_analytics.get_record_count error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_margin.withdraw_insurance sig=904b942aaadd31f3...",
+      "ts": 1771321824
     },
     {
-      "status": "FAIL",
-      "msg": "dex_analytics.emergency_pause error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_margin.emergency_pause sig=f9ce4004a633ffbc...",
+      "ts": 1771321824
     },
     {
-      "status": "FAIL",
-      "msg": "dex_analytics.emergency_unpause error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_margin.emergency_unpause sig=af2ed410e2457413...",
+      "ts": 1771321824
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.initialize error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_margin.get_total_volume sig=7e4f6bc4e4ce180d...",
+      "ts": 1771321824
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.set_moltyid_address error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_margin.get_user_positions sig=44116e31bc7fcb09...",
+      "ts": 1771321831
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.set_preferred_quote error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_margin.get_total_pnl sig=22cd02207f0294a1...",
+      "ts": 1771321831
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.get_preferred_quote error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_margin.get_liquidation_count sig=3199a19fd858d8eb...",
+      "ts": 1771321831
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.add_allowed_quote error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_margin.get_margin_stats sig=26b89de47f52948d...",
+      "ts": 1771321840
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.get_allowed_quote_count error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_rewards.initialize sig=1e9617240aadc2a4...",
+      "ts": 1771321840
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.remove_allowed_quote error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_rewards.set_moltcoin_address sig=763885aa684e34f3...",
+      "ts": 1771321848
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.set_listing_requirements error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_rewards.set_rewards_pool sig=bea48a8250faf58d...",
+      "ts": 1771321850
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.propose_new_pair error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_rewards.set_reward_rate sig=14892c3e3adad77f...",
+      "ts": 1771321852
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.vote error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_rewards.set_referral_rate sig=2f7e37fbdd802539...",
+      "ts": 1771321853
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.finalize_proposal error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_rewards.register_referral sig=8839a337ac7c586b...",
+      "ts": 1771321856
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.execute_proposal error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_rewards.record_trade sig=94a025ec181c2a77...",
+      "ts": 1771321862
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.propose_fee_change error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_rewards.accrue_lp_rewards sig=c9c6498d6301a3f6...",
+      "ts": 1771321864
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.emergency_delist error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_rewards.claim_trading_rewards sig=ab371cc0b267df14...",
+      "ts": 1771321867
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.get_proposal_count error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_rewards.claim_lp_rewards sig=dac01c43eb2df1b1...",
+      "ts": 1771321867
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.get_proposal_info error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_rewards.get_pending_rewards sig=6061e7fa423f1f32...",
+      "ts": 1771321869
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.emergency_pause error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_rewards.get_trading_tier sig=cebe1bd2f2231940...",
+      "ts": 1771321870
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.emergency_unpause error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_rewards.get_referral_rate sig=1a22fbba3087569c...",
+      "ts": 1771321872
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.initialize error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_rewards.get_total_distributed sig=5e0b0f9ee4efa5ca...",
+      "ts": 1771321872
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.set_moltcoin_address error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_rewards.emergency_pause sig=971c789e52b1b4ba...",
+      "ts": 1771321872
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.set_mark_price error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_rewards.emergency_unpause sig=84b721c4ea52d107...",
+      "ts": 1771321873
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.set_max_leverage error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_rewards.get_trader_count sig=71a6dd255e43d1fb...",
+      "ts": 1771321878
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.set_maintenance_margin error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_rewards.get_total_volume sig=c8a0f081e3684142...",
+      "ts": 1771321879
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.open_position error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_rewards.get_reward_stats sig=476e6f8a82d204cc...",
+      "ts": 1771321887
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.add_margin error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_router.initialize sig=7fac5dcd2b80961b...",
+      "ts": 1771321889
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.remove_margin error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_router.set_addresses sig=5911167b0ed45c19...",
+      "ts": 1771321893
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.get_position_info error=All connection attempts failed",
-      "ts": 1771309896
+      "status": "PASS",
+      "msg": "dex_router.register_route sig=abcc9d39a71f252a...",
+      "ts": 1771321893
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.get_margin_ratio error=All connection attempts failed",
-      "ts": 1771309897
+      "status": "PASS",
+      "msg": "dex_router.get_route_count sig=cf771d59128d6acb...",
+      "ts": 1771321894
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.get_tier_info error=All connection attempts failed",
-      "ts": 1771309897
+      "status": "PASS",
+      "msg": "dex_router.get_swap_count sig=2fe102ae89d4fda1...",
+      "ts": 1771321897
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.close_position error=All connection attempts failed",
-      "ts": 1771309897
+      "status": "PASS",
+      "msg": "dex_router.get_route_info sig=3d505180ced07c00...",
+      "ts": 1771321899
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.liquidate error=All connection attempts failed",
-      "ts": 1771309897
+      "status": "PASS",
+      "msg": "dex_router.get_best_route sig=9d82697631f9f252...",
+      "ts": 1771321902
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.withdraw_insurance error=All connection attempts failed",
-      "ts": 1771309897
+      "status": "PASS",
+      "msg": "dex_router.set_route_enabled sig=edfa37a17bc1f679...",
+      "ts": 1771321902
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.emergency_pause error=All connection attempts failed",
-      "ts": 1771309897
+      "status": "PASS",
+      "msg": "dex_router.swap sig=8747f4120a289dae...",
+      "ts": 1771321903
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.emergency_unpause error=All connection attempts failed",
-      "ts": 1771309897
+      "status": "PASS",
+      "msg": "dex_router.multi_hop_swap sig=6dfccfe46b7470d3...",
+      "ts": 1771321903
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.initialize error=All connection attempts failed",
-      "ts": 1771309897
+      "status": "PASS",
+      "msg": "dex_router.emergency_pause sig=fa734056b9329a80...",
+      "ts": 1771321903
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.set_moltcoin_address error=All connection attempts failed",
-      "ts": 1771309897
+      "status": "PASS",
+      "msg": "dex_router.emergency_unpause sig=0f927e50b42d0175...",
+      "ts": 1771321904
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.set_rewards_pool error=All connection attempts failed",
-      "ts": 1771309897
+      "status": "PASS",
+      "msg": "dex_router.get_total_volume_routed sig=210abcbbb6e66090...",
+      "ts": 1771321908
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.set_reward_rate error=All connection attempts failed",
-      "ts": 1771309897
+      "status": "PASS",
+      "msg": "dex_router.get_router_stats sig=23750fefabe7853a...",
+      "ts": 1771321909
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.set_referral_rate error=All connection attempts failed",
-      "ts": 1771309897
+      "status": "PASS",
+      "msg": "prediction_market.initialize sig=924b965085802cfc...",
+      "ts": 1771321909
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.record_trade error=All connection attempts failed",
-      "ts": 1771309897
+      "status": "PASS",
+      "msg": "prediction_market.set_moltyid_address sig=eccd6da9add4d9c2...",
+      "ts": 1771321913
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.register_referral error=All connection attempts failed",
-      "ts": 1771309897
+      "status": "PASS",
+      "msg": "prediction_market.set_oracle_address sig=0d8cfd9f3a8c6aee...",
+      "ts": 1771321917
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.accrue_lp_rewards error=All connection attempts failed",
-      "ts": 1771309897
+      "status": "PASS",
+      "msg": "prediction_market.set_musd_address sig=cf07d103514f4a5f...",
+      "ts": 1771321918
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.claim_trading_rewards error=All connection attempts failed",
-      "ts": 1771309897
+      "status": "PASS",
+      "msg": "prediction_market.set_dex_gov_address sig=c0fbe2eec43397a6...",
+      "ts": 1771321918
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.claim_lp_rewards error=All connection attempts failed",
-      "ts": 1771309897
+      "status": "PASS",
+      "msg": "prediction_market.create_market sig=55c5ec5a1af98613...",
+      "ts": 1771321918
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.get_pending_rewards error=All connection attempts failed",
-      "ts": 1771309897
+      "status": "PASS",
+      "msg": "prediction_market.get_market_count sig=c0fae7d197b093cd...",
+      "ts": 1771321918
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.get_trading_tier error=All connection attempts failed",
-      "ts": 1771309897
+      "status": "PASS",
+      "msg": "prediction_market.get_market sig=321a558ab9a08fd3...",
+      "ts": 1771321920
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.get_referral_rate error=All connection attempts failed",
-      "ts": 1771309897
+      "status": "PASS",
+      "msg": "prediction_market.get_price sig=a5a6ab2eadc1ae7f...",
+      "ts": 1771321926
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.get_total_distributed error=All connection attempts failed",
-      "ts": 1771309897
+      "status": "PASS",
+      "msg": "prediction_market.get_outcome_pool sig=b9ebaa777fb24d00...",
+      "ts": 1771321932
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.emergency_pause error=All connection attempts failed",
-      "ts": 1771309897
+      "status": "PASS",
+      "msg": "prediction_market.get_pool_reserves sig=82892379ece278a0...",
+      "ts": 1771321934
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.emergency_unpause error=All connection attempts failed",
-      "ts": 1771309897
+      "status": "PASS",
+      "msg": "prediction_market.get_platform_stats sig=4e2ef0e8926c0ca3...",
+      "ts": 1771321937
     },
     {
-      "status": "FAIL",
-      "msg": "dex_router.initialize error=All connection attempts failed",
-      "ts": 1771309897
+      "status": "PASS",
+      "msg": "prediction_market.quote_buy sig=252b63fc7e835b8f...",
+      "ts": 1771321940
     },
     {
-      "status": "FAIL",
-      "msg": "dex_router.set_addresses error=All connection attempts failed",
-      "ts": 1771309897
+      "status": "PASS",
+      "msg": "prediction_market.quote_sell sig=45dc474c64120764...",
+      "ts": 1771321940
     },
     {
-      "status": "FAIL",
-      "msg": "dex_router.register_route error=All connection attempts failed",
-      "ts": 1771309897
+      "status": "PASS",
+      "msg": "prediction_market.add_initial_liquidity sig=1779c952b76d472e...",
+      "ts": 1771321940
     },
     {
-      "status": "FAIL",
-      "msg": "dex_router.set_route_enabled error=All connection attempts failed",
-      "ts": 1771309897
+      "status": "PASS",
+      "msg": "prediction_market.add_liquidity sig=87bd6e824753e9b5...",
+      "ts": 1771321940
     },
     {
       "status": "PASS",
-      "msg": "dex_router.swap sig=c62271b2f67658be...",
-      "ts": 1771309897
+      "msg": "prediction_market.buy_shares sig=4ddb204d063c3d33...",
+      "ts": 1771321944
     },
     {
       "status": "PASS",
-      "msg": "dex_router.multi_hop_swap sig=2432a2c466c3c46e...",
-      "ts": 1771309903
+      "msg": "prediction_market.sell_shares sig=e5239e65ee0afd9b...",
+      "ts": 1771321947
     },
     {
       "status": "PASS",
-      "msg": "dex_router.get_best_route sig=eb38661a9092ad5e...",
-      "ts": 1771309903
+      "msg": "prediction_market.get_price_history sig=3d3fbcecf5c9e878...",
+      "ts": 1771321953
     },
     {
       "status": "PASS",
-      "msg": "dex_router.get_route_info sig=e5fd2bf53646a97f...",
-      "ts": 1771309903
+      "msg": "prediction_market.mint_complete_set sig=c63f296d65b25da0...",
+      "ts": 1771321953
     },
     {
       "status": "PASS",
-      "msg": "dex_router.get_route_count sig=71f492f970284d24...",
-      "ts": 1771309903
+      "msg": "prediction_market.redeem_complete_set sig=1eef290474d9dae9...",
+      "ts": 1771321955
     },
     {
       "status": "PASS",
-      "msg": "dex_router.get_swap_count sig=0c4939529efd1d8a...",
-      "ts": 1771309908
+      "msg": "prediction_market.get_position sig=e038e92568be92c4...",
+      "ts": 1771321955
     },
     {
       "status": "PASS",
-      "msg": "dex_router.emergency_pause sig=eb183d2876f7461c...",
-      "ts": 1771309908
+      "msg": "prediction_market.get_user_markets sig=fdba26e2c17b6be5...",
+      "ts": 1771321955
     },
     {
       "status": "PASS",
-      "msg": "dex_router.emergency_unpause sig=df647dc63e797b73...",
-      "ts": 1771309908
+      "msg": "prediction_market.get_lp_balance sig=cce20827b47fd9e6...",
+      "ts": 1771321958
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.initialize not confirmed in 15s",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "prediction_market.withdraw_liquidity sig=0c85dbe87403ab71...",
+      "ts": 1771321961
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.set_moltyid_address error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "prediction_market.submit_resolution sig=f3be28e2a5fce6ff...",
+      "ts": 1771321963
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.set_oracle_address error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "prediction_market.challenge_resolution sig=768cb2f8dd5e0842...",
+      "ts": 1771321969
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.set_musd_address error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "prediction_market.finalize_resolution sig=20914a2eb504ef48...",
+      "ts": 1771321969
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.set_dex_gov_address error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "prediction_market.dao_resolve sig=e218ab2bf7d5fc84...",
+      "ts": 1771321970
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.create_market error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "prediction_market.dao_void sig=091b2ffd17b3f9a8...",
+      "ts": 1771321971
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.get_market_count error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "prediction_market.redeem_shares sig=57eee7537f0c869a...",
+      "ts": 1771321973
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.get_market error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "prediction_market.reclaim_collateral sig=3a210fb233ac7b25...",
+      "ts": 1771321980
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.get_price error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "prediction_market.close_market sig=184443277b088337...",
+      "ts": 1771321983
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.get_outcome_pool error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "prediction_market.emergency_pause sig=7e7005d286a3e9d4...",
+      "ts": 1771321983
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.get_pool_reserves error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "prediction_market.emergency_unpause sig=a122d04a7f4240aa...",
+      "ts": 1771321983
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.get_platform_stats error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "prediction_market.rest_price_history count=0 (no trades yet)",
+      "ts": 1771321983
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.quote_buy error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "rpc.getDexCoreStats -> {'pair_count': 7, 'order_count': 0, 'trade_count': 0, 'total_volume': 0, 'fee_treasury': 0, 'paused': False}",
+      "ts": 1771321983
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.quote_sell error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "rpc.getDexAmmStats -> {'pool_count': 7, 'position_count': 0, 'swap_count': 1, 'total_volume': 10000, 'total_fees': 30, 'paused': False}",
+      "ts": 1771321983
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.add_initial_liquidity error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "rpc.getDexMarginStats -> {'position_count': 0, 'total_volume': 0, 'liquidation_count': 0, 'total_pnl_profit': 0, 'total_pnl_loss': 0, 'insurance_fund': 0, 'paused': False}",
+      "ts": 1771321983
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.add_liquidity error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "rpc.getDexRewardsStats -> {'trade_count': 0, 'trader_count': 0, 'total_volume': 0, 'total_distributed': 0, 'epoch': 0, 'paused': False}",
+      "ts": 1771321983
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.buy_shares error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "rpc.getDexRouterStats -> {'route_count': 0, 'swap_count': 0, 'total_volume': 0, 'paused': False}",
+      "ts": 1771321983
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.sell_shares error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "rpc.getDexAnalyticsStats -> {'record_count': 1, 'trader_count': 1, 'total_volume': 5000, 'paused': False}",
+      "ts": 1771321983
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.get_price_history error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "rpc.getDexGovernanceStats -> {'proposal_count': 1, 'total_votes': 1, 'voter_count': 1, 'paused': False}",
+      "ts": 1771321983
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.mint_complete_set error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "rpc.getMoltswapStats -> {'swap_count': 0, 'volume_a': 0, 'volume_b': 0, 'paused': False}",
+      "ts": 1771321983
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.redeem_complete_set error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "rpc.getLobsterLendStats -> {'total_deposits': 0, 'total_borrows': 0, 'reserves': 0, 'deposit_count': 2, 'borrow_count': 0, 'liquidation_count': 0, 'paused': False}",
+      "ts": 1771321983
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.get_position error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "rpc.getClawPayStats -> {'stream_count': 2, 'total_streamed': 2322206441326602608, 'total_withdrawn': 0, 'cancel_count': 0, 'paused': False}",
+      "ts": 1771321983
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.get_user_markets error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "rpc.getBountyBoardStats -> {'bounty_count': 2, 'completed_count': 0, 'reward_volume': 0, 'cancel_count': 0}",
+      "ts": 1771321983
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.get_lp_balance error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "rpc.getComputeMarketStats -> {'job_count': 2, 'completed_count': 0, 'payment_volume': 0, 'dispute_count': 0}",
+      "ts": 1771321983
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.withdraw_liquidity error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "rpc.getReefStorageStats -> {'data_count': 0, 'total_bytes': 0, 'challenge_count': 0}",
+      "ts": 1771321983
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.submit_resolution error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "rpc.getMoltMarketStats -> {'listing_count': 0, 'sale_count': 0, 'sale_volume': 0, 'paused': False}",
+      "ts": 1771321983
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.challenge_resolution error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "rpc.getMoltAuctionStats -> {'auction_count': 0, 'total_volume': 0, 'total_sales': 0, 'paused': False}",
+      "ts": 1771321983
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.finalize_resolution error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "rpc.getMoltPunksStats -> {'total_minted': 0, 'transfer_count': 0, 'burn_count': 0, 'paused': False}",
+      "ts": 1771321983
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.dao_resolve error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "rest/api/v1/dex/stats/core skip (HTTP Error 404: Not Found)",
+      "ts": 1771321983
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.dao_void error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "rest/api/v1/dex/stats/amm skip (HTTP Error 404: Not Found)",
+      "ts": 1771321983
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.redeem_shares error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "rest/api/v1/dex/stats/margin skip (HTTP Error 404: Not Found)",
+      "ts": 1771321983
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.reclaim_collateral error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "rest/api/v1/dex/stats/router skip (HTTP Error 404: Not Found)",
+      "ts": 1771321983
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.close_market error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "rest/api/v1/dex/stats/rewards skip (HTTP Error 404: Not Found)",
+      "ts": 1771321983
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.emergency_pause error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "rest/api/v1/dex/stats/analytics skip (HTTP Error 404: Not Found)",
+      "ts": 1771321983
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.emergency_unpause error=All connection attempts failed",
-      "ts": 1771309923
+      "status": "PASS",
+      "msg": "rest/api/v1/dex/stats/governance skip (HTTP Error 404: Not Found)",
+      "ts": 1771321983
     },
     {
       "status": "PASS",
-      "msg": "prediction_market.rest_price_history skip (API: HTTP Error 404: Not Found)",
-      "ts": 1771309923
+      "msg": "rest/api/v1/dex/stats/moltswap skip (HTTP Error 404: Not Found)",
+      "ts": 1771321983
     }
   ]
 }

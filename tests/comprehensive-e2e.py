@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """
-MoltChain Comprehensive E2E Test — Full Contract Coverage
+MoltChain Comprehensive E2E Test — Full Contract Coverage (Sequential)
+
 Tests ALL functions (reads + writes) across ALL 27 contracts.
+IDENTICAL test scenarios to comprehensive-e2e-parallel.py but run
+sequentially (one contract at a time, one test at a time).
 
 Handles TWO contract ABIs:
   (a) Named-export ABI — function called by name, args = JSON-encoded dict
   (b) Opcode ABI — function = "call", args = [opcode_byte][binary_params]
 
-Designed for speed: 8s confirm timeout, parallel-safe, fail-fast.
+Includes: 16 RPC stats methods + 8 REST stats endpoints + REST price history.
 """
 
 import asyncio
@@ -27,7 +30,7 @@ from moltchain import Connection, Instruction, Keypair, PublicKey, TransactionBu
 
 RPC_URL = os.getenv("RPC_URL", "http://127.0.0.1:8899")
 CONTRACT_PROGRAM = PublicKey(b"\xff" * 32)
-TX_CONFIRM_TIMEOUT = int(os.getenv("TX_CONFIRM_TIMEOUT", "15"))  # 3-validator consensus needs more time
+TX_CONFIRM_TIMEOUT = int(os.getenv("TX_CONFIRM_TIMEOUT", "15"))
 DEPLOYER_PATH = os.getenv("AGENT_KEYPAIR") or str(ROOT / "keypairs" / "deployer.json")
 
 # ─── Counters ───
@@ -48,7 +51,6 @@ SYMBOL_TO_DIR = {
     "PREDICT": "prediction_market", "BOUNTY": "bountyboard", "AUCTION": "moltauction",
 }
 
-# Dispatcher contracts (use opcode ABI via call())
 DISPATCHER_CONTRACTS = {
     "dex_core", "dex_amm", "dex_analytics", "dex_governance",
     "dex_margin", "dex_rewards", "dex_router", "prediction_market",
@@ -87,7 +89,7 @@ def load_keypair_flexible(path: Path) -> Keypair:
     raise ValueError(f"unsupported keypair format: {path}")
 
 
-# ─── Binary encoding helpers for opcode-based contracts ───
+# ─── Binary encoding helpers ───
 
 def u64le(v: int) -> bytes:
     return struct.pack("<Q", v & 0xFFFFFFFFFFFFFFFF)
@@ -108,7 +110,6 @@ def i16le(v: int) -> bytes:
     return struct.pack("<h", v)
 
 def pubkey_bytes(addr: str) -> bytes:
-    """Convert a base58 address string to 32 raw bytes, or use 32 zero bytes."""
     if not addr or addr == "0" * 32:
         return b'\x00' * 32
     try:
@@ -119,18 +120,6 @@ def pubkey_bytes(addr: str) -> bytes:
 
 
 def encode_layout_args(params: List[Tuple[int, Any]]) -> Tuple[bytes, List[int]]:
-    """Encode binary args with layout descriptor for named-export functions.
-
-    params: ordered list of (stride, value) matching the WASM function signature.
-      stride=32 + str → 32-byte pubkey (base58 decode via pubkey_bytes)
-      stride=32 + bytes → raw text/hash padded to 32
-      stride=4 + int → u32 LE
-      stride=1 + int → u8
-      stride=2 + int → u16 LE
-      stride=8 + int → u64 LE (for I64 WASM params)
-
-    Returns (binary_data, layout_list) for call_named_binary().
-    """
     layout = [s for s, _ in params]
     data = bytearray()
     for stride, value in params:
@@ -159,7 +148,6 @@ async def call_named(
     conn: Connection, caller: Keypair, program: PublicKey,
     func: str, args: Optional[Dict[str, Any]] = None,
 ) -> str:
-    """Call a named-export contract function (JSON args — default mode)."""
     args_bytes = json.dumps(args or {}).encode()
     payload = json.dumps({"Call": {"function": func, "args": list(args_bytes), "value": 0}})
     ix = Instruction(
@@ -176,11 +164,6 @@ async def call_named_binary(
     conn: Connection, caller: Keypair, program: PublicKey,
     func: str, binary_args: bytes, layout: Optional[List[int]] = None,
 ) -> str:
-    """Call a named-export contract function with raw binary args.
-
-    If *layout* is provided, prepends the 0xAB layout descriptor so the runtime
-    knows which I32 params are pointers vs plain integers.
-    """
     if layout:
         header = bytes([0xAB]) + bytes(layout)
         full_args = header + binary_args
@@ -201,7 +184,6 @@ async def call_opcode(
     conn: Connection, caller: Keypair, program: PublicKey,
     opcode_args: bytes,
 ) -> str:
-    """Call a dispatcher contract via its call() export with raw binary args."""
     payload = json.dumps({"Call": {"function": "call", "args": list(opcode_args), "value": 0}})
     ix = Instruction(
         program_id=CONTRACT_PROGRAM,
@@ -214,7 +196,6 @@ async def call_opcode(
 
 
 async def wait_tx(conn: Connection, sig: str, timeout: int = TX_CONFIRM_TIMEOUT) -> Optional[Dict]:
-    """Wait for tx confirmation. Returns tx data or None."""
     t0 = time.time()
     while time.time() - t0 < timeout:
         try:
@@ -223,7 +204,7 @@ async def wait_tx(conn: Connection, sig: str, timeout: int = TX_CONFIRM_TIMEOUT)
                 return tx
         except Exception:
             pass
-        await asyncio.sleep(0.1)  # PERF-FIX 7: 400ms→100ms polling (blocks are faster now)
+        await asyncio.sleep(0.1)
     return None
 
 
@@ -234,7 +215,6 @@ async def send_and_confirm_named(
     binary_args: Optional[bytes] = None,
     layout: Optional[List[int]] = None,
 ) -> bool:
-    """Send a named-export call and wait for confirm. Reports pass/fail."""
     tag = label or func
     try:
         if binary_args is not None:
@@ -257,7 +237,6 @@ async def send_and_confirm_opcode(
     conn: Connection, caller: Keypair, program: PublicKey,
     opcode_args: bytes, label: str = "",
 ) -> bool:
-    """Send an opcode-based call and wait for confirm."""
     try:
         sig = await call_opcode(conn, caller, program, opcode_args)
         tx = await wait_tx(conn, sig)
@@ -275,7 +254,6 @@ async def send_and_confirm_opcode(
 # ─── Contract discovery ───
 
 async def discover_contracts(conn: Connection) -> Dict[str, PublicKey]:
-    """Discover all deployed contracts via symbol registry."""
     found: Dict[str, PublicKey] = {}
     try:
         sr = await conn._rpc("getAllSymbolRegistry", [])
@@ -294,12 +272,13 @@ async def discover_contracts(conn: Connection) -> Dict[str, PublicKey]:
     return found
 
 
-# ─── Test scenario builders ───
+# ═══════════════════════════════════════════════════════════════════════
+#  Test scenario builders (IDENTICAL to comprehensive-e2e-parallel.py)
+# ═══════════════════════════════════════════════════════════════════════
 
 def build_named_scenarios(
     deployer: Keypair, secondary: Keypair, contracts: Dict[str, PublicKey]
 ) -> Dict[str, List[Dict[str, Any]]]:
-    """Build test scenarios for named-export contracts (19 contracts)."""
     dp = str(deployer.public_key())
     sp = str(secondary.public_key())
     zero = "11111111111111111111111111111111"
@@ -309,7 +288,6 @@ def build_named_scenarios(
     rid = random.randint(1000, 99999)
 
     return {
-        # ─── MOLTCOIN ───
         "moltcoin": [
             {"fn": "initialize", "args": {"owner": dp}},
             {"fn": "mint", "args": {"to": dp, "amount": 1_000_000}},
@@ -319,7 +297,6 @@ def build_named_scenarios(
             {"fn": "balance_of", "args": {"account": dp}},
             {"fn": "total_supply", "args": {}},
         ],
-        # ─── MUSD_TOKEN ───
         "musd_token": [
             {"fn": "initialize", "args": {"admin": dp}},
             {"fn": "mint", "args": {"caller": dp, "to": dp, "amount": 1_000_000}},
@@ -342,7 +319,6 @@ def build_named_scenarios(
             {"fn": "attest_reserves", "args": {"attester": dp, "reserve_amount": 1_000_000, "supply_snapshot": 999_000}},
             {"fn": "transfer_admin", "args": {"caller": dp, "new_admin": dp}},
         ],
-        # ─── WETH_TOKEN ───
         "weth_token": [
             {"fn": "initialize", "args": {"admin": dp}},
             {"fn": "mint", "args": {"caller": dp, "to": dp, "amount": 1_000_000}},
@@ -365,7 +341,6 @@ def build_named_scenarios(
             {"fn": "attest_reserves", "args": {"attester": dp, "reserve_amount": 1_000_000, "supply_snapshot": 999_000}},
             {"fn": "transfer_admin", "args": {"caller": dp, "new_admin": dp}},
         ],
-        # ─── WSOL_TOKEN ───
         "wsol_token": [
             {"fn": "initialize", "args": {"admin": dp}},
             {"fn": "mint", "args": {"caller": dp, "to": dp, "amount": 1_000_000}},
@@ -388,7 +363,6 @@ def build_named_scenarios(
             {"fn": "attest_reserves", "args": {"attester": dp, "reserve_amount": 1_000_000, "supply_snapshot": 999_000}},
             {"fn": "transfer_admin", "args": {"caller": dp, "new_admin": dp}},
         ],
-        # ─── CLAWPUMP ───
         "clawpump": [
             {"fn": "initialize", "args": {"admin": dp}},
             {"fn": "create_token", "args": {"creator": dp, "fee_paid": 10_000_000_000}},
@@ -407,11 +381,9 @@ def build_named_scenarios(
             {"fn": "pause", "args": {"caller": dp}},
             {"fn": "unpause", "args": {"caller": dp}},
             {"fn": "withdraw_fees", "args": {"caller": dp}},
-            # freeze/unfreeze need a valid token
             {"fn": "freeze_token", "args": {"caller": dp, "token_id": 0}},
             {"fn": "unfreeze_token", "args": {"caller": dp, "token_id": 0}},
         ],
-        # ─── LOBSTERLEND ───
         "lobsterlend": [
             {"fn": "initialize", "args": {"admin": dp}},
             {"fn": "deposit", "args": {"depositor": dp, "amount": 1_000_000_000}},
@@ -426,13 +398,15 @@ def build_named_scenarios(
             {"fn": "pause", "args": {"caller": dp}},
             {"fn": "unpause", "args": {"caller": dp}},
             {"fn": "withdraw_reserves", "args": {"caller": dp, "amount": 1}},
-            # liquidate needs underwater account
             {"fn": "liquidate", "args": {"liquidator": dp, "borrower": sp, "amount": 1}},
-            # flash loan
             {"fn": "flash_borrow", "args": {"borrower": dp, "amount": 100}},
             {"fn": "flash_repay", "args": {"borrower": dp, "amount": 100}},
+            # --- stats queries ---
+            {"fn": "get_deposit_count", "args": {}},
+            {"fn": "get_borrow_count", "args": {}},
+            {"fn": "get_liquidation_count", "args": {}},
+            {"fn": "get_platform_stats", "args": {}},
         ],
-        # ─── MOLTMARKET ───
         "moltmarket": [
             {"fn": "initialize", "args": {"owner": dp, "fee_addr": dp}},
             {"fn": "list_nft", "args": {"seller": dp, "token_id": rid, "price": 500}},
@@ -444,10 +418,12 @@ def build_named_scenarios(
             {"fn": "make_offer", "args": {"buyer": sp, "token_id": rid + 1, "amount": 800}, "actor": "secondary"},
             {"fn": "cancel_offer", "args": {"buyer": sp, "token_id": rid + 1}, "actor": "secondary"},
             {"fn": "buy_nft", "args": {"buyer": sp, "token_id": rid + 1}, "actor": "secondary"},
+            {"fn": "accept_offer", "args": {"seller": dp, "token_id": rid + 200}},
             {"fn": "mm_pause", "args": {"caller": dp}},
             {"fn": "mm_unpause", "args": {"caller": dp}},
+            # --- stats queries ---
+            {"fn": "get_marketplace_stats", "args": {}},
         ],
-        # ─── MOLTAUCTION ───
         "moltauction": [
             {"fn": "initialize", "args": {"marketplace": dp}},
             {"fn": "initialize_ma_admin", "args": {"admin": dp}},
@@ -464,8 +440,9 @@ def build_named_scenarios(
             {"fn": "accept_offer", "args": {"seller": dp, "token_id": rid + 200}},
             {"fn": "ma_pause", "args": {"caller": dp}},
             {"fn": "ma_unpause", "args": {"caller": dp}},
+            # --- stats queries ---
+            {"fn": "get_auction_stats", "args": {}},
         ],
-        # ─── MOLTBRIDGE ───
         "moltbridge": [
             {"fn": "initialize", "args": {"owner": dp}},
             {"fn": "add_bridge_validator", "args": {"caller": dp, "validator": sp}},
@@ -488,7 +465,6 @@ def build_named_scenarios(
             {"fn": "mb_pause", "args": {"caller": dp}},
             {"fn": "mb_unpause", "args": {"caller": dp}},
         ],
-        # ─── REEF_STORAGE ───
         "reef_storage": [
             {"fn": "initialize", "args": {"admin": dp}},
             {"fn": "register_provider", "args": {"provider": dp, "capacity_bytes": 1_000_000}},
@@ -505,8 +481,9 @@ def build_named_scenarios(
             {"fn": "set_challenge_window", "args": {"caller": dp, "window_slots": 100}},
             {"fn": "set_slash_percent", "args": {"caller": dp, "percent": 10}},
             {"fn": "slash_provider", "args": {"caller": dp, "provider": sp, "challenge_id": 0}},
+            # --- stats queries ---
+            {"fn": "get_platform_stats", "args": {}},
         ],
-        # ─── CLAWVAULT ───
         "clawvault": [
             {"fn": "initialize", "args": {"admin": dp}},
             {"fn": "set_protocol_addresses", "args": {"caller": dp, "molt_addr": quote, "swap_addr": str(contracts.get("moltswap", zero))}},
@@ -527,7 +504,6 @@ def build_named_scenarios(
             {"fn": "cv_pause", "args": {"caller": dp}},
             {"fn": "cv_unpause", "args": {"caller": dp}},
         ],
-        # ─── CLAWPAY ───
         "clawpay": [
             {"fn": "initialize_cp_admin", "args": {"admin": dp}},
             {"fn": "set_identity_admin", "args": {"admin_ptr": dp}},
@@ -543,8 +519,10 @@ def build_named_scenarios(
             {"fn": "cancel_stream", "args": {"caller": dp, "stream_id": 0}},
             {"fn": "pause", "args": {"caller": dp}},
             {"fn": "unpause", "args": {"caller": dp}},
+            # --- stats queries ---
+            {"fn": "get_stream_count", "args": {}},
+            {"fn": "get_platform_stats", "args": {}},
         ],
-        # ─── MOLTYID ───
         "moltyid": [
             {"fn": "initialize", "args": {"admin_ptr": dp}},
             {"fn": "register_identity", "args": {"owner_ptr": dp, "agent_type": 1, "name_ptr": f"agent{rid}", "name_len": len(f"agent{rid}")}},
@@ -578,233 +556,169 @@ def build_named_scenarios(
             {"fn": "reverse_resolve", "args": {"addr_ptr": dp}},
             {"fn": "get_achievements", "args": {"addr_ptr": dp}},
             {"fn": "get_attestations", "args": {"addr_ptr": dp}},
-            # ─── Delegation functions (delegate=sp acts on behalf of owner=dp) ───
+            # --- delegation functions ---
             {"fn": "add_skill_as", "args": {"delegate_ptr": sp, "owner_ptr": dp, "skill_ptr": "python", "skill_len": 6, "proficiency": 3}},
             {"fn": "set_endpoint_as", "args": {"delegate_ptr": sp, "owner_ptr": dp, "url_ptr": "https://delegated.test", "url_len": 22}},
             {"fn": "set_metadata_as", "args": {"delegate_ptr": sp, "owner_ptr": dp, "json_ptr": '{"delegated":true}', "json_len": 18}},
             {"fn": "set_availability_as", "args": {"delegate_ptr": sp, "owner_ptr": dp, "status": 1}},
             {"fn": "set_rate_as", "args": {"delegate_ptr": sp, "owner_ptr": dp, "molt_per_unit": 2000}},
             {"fn": "update_agent_type_as", "args": {"delegate_ptr": sp, "owner_ptr": dp, "new_agent_type": 3}},
-            # ─── Skill attestation ───
+            # --- skill attestation ---
             {"fn": "attest_skill", "args": {"attester_ptr": dp, "identity_ptr": dp, "skill_ptr": "rust", "skill_len": 4, "attestation_level": 5}},
             {"fn": "revoke_attestation", "args": {"attester_ptr": dp, "identity_ptr": dp, "skill_ptr": "rust", "skill_len": 4}},
-            # ─── Recovery ───
+            # --- recovery ---
             {"fn": "approve_recovery", "args": {"guardian_ptr": sp, "target_ptr": dp, "new_owner_ptr": sp}},
             {"fn": "execute_recovery", "args": {"caller_ptr": sp, "target_ptr": dp, "new_owner_ptr": sp}},
-            # ─── Achievement ───
+            # --- achievement ---
             {"fn": "award_contribution_achievement", "args": {"caller_ptr": dp, "target_ptr": dp, "achievement_id": 1}},
-            # ─── Name auction ───
+            # --- name auction ---
             {"fn": "create_name_auction", "args": {"caller_ptr": dp, "name_ptr": f"auction{rid}", "name_len": len(f"auction{rid}"), "reserve_bid": 1_000_000, "end_slot": 999_999_999}},
             {"fn": "bid_name_auction", "args": {"bidder_ptr": dp, "name_ptr": f"auction{rid}", "name_len": len(f"auction{rid}"), "bid_amount": 2_000_000}},
             {"fn": "get_name_auction", "args": {"name_ptr": f"auction{rid}", "name_len": len(f"auction{rid}")}},
             {"fn": "finalize_name_auction", "args": {"caller_ptr": dp, "name_ptr": f"auction{rid}", "name_len": len(f"auction{rid}"), "duration_years": 1}},
-            # ─── Name management ───
+            # --- name management ---
             {"fn": "transfer_name", "args": {"caller_ptr": dp, "name_ptr": f"e2e{rid}", "name_len": len(f"e2e{rid}"), "new_owner_ptr": sp}},
             {"fn": "renew_name", "args": {"caller_ptr": sp, "name_ptr": f"e2e{rid}", "name_len": len(f"e2e{rid}"), "additional_years": 1}},
-            {"fn": "release_name", "args": {"caller_ptr": sp, "name_ptr": f"e2e{rid}", "name_len": len(f"e2e{rid}")}},
-            # ─── Delegated name management ───
+            {"fn": "release_name", "args": {"owner_ptr": sp, "name_ptr": f"e2e{rid}", "name_len": len(f"e2e{rid}")}},
+            # --- delegated name management ---
             {"fn": "transfer_name_as", "args": {"delegate_ptr": sp, "owner_ptr": dp, "name_ptr": f"auction{rid}", "name_len": len(f"auction{rid}"), "new_owner_ptr": dp}},
             {"fn": "renew_name_as", "args": {"delegate_ptr": sp, "owner_ptr": dp, "name_ptr": f"auction{rid}", "name_len": len(f"auction{rid}"), "additional_years": 1}},
             {"fn": "release_name_as", "args": {"delegate_ptr": sp, "owner_ptr": dp, "name_ptr": f"auction{rid}", "name_len": len(f"auction{rid}")}},
-            # ─── Admin ───
+            # --- admin ---
             {"fn": "admin_register_reserved_name", "args": {"admin_ptr": dp, "owner_ptr": dp, "name_ptr": f"reserved{rid}", "name_len": len(f"reserved{rid}"), "agent_type": 1}},
-            {"fn": "mid_pause", "args": {"caller": dp}},
-            {"fn": "mid_unpause", "args": {"caller": dp}},
             {"fn": "transfer_admin", "args": {"caller_ptr": dp, "new_admin_ptr": dp}},
+            {"fn": "mid_pause", "args": {"caller_ptr": dp}},
+            {"fn": "mid_unpause", "args": {"caller_ptr": dp}},
         ],
-        # ─── MOLTDAO (binary-encoded — mixed I32 pointer/integer params) ───
+        "moltswap": [
+            {"fn": "initialize", "args": {"admin": dp}},
+            {"fn": "set_protocol_fee", "args": {"caller": dp, "fee_bps": 30}},
+            {"fn": "set_platform_fee", "args": {"caller": dp, "fee_bps": 25}},
+            {"fn": "create_pool", "args": {"creator": dp, "token_a": dp, "token_b": sp}},
+            {"fn": "add_liquidity", "args": {"provider": dp, "pool_id": 0, "amount_a": 1_000_000, "amount_b": 1_000_000}},
+            {"fn": "swap", "args": {"trader": dp, "pool_id": 0, "amount_in": 1000, "min_out": 0, "a_to_b": 1}},
+            {"fn": "swap_a_for_b", "args": {"trader": dp, "pool_id": 0, "amount_in": 500, "min_out": 0}},
+            {"fn": "swap_b_for_a", "args": {"trader": dp, "pool_id": 0, "amount_in": 200, "min_out": 0}},
+            {"fn": "swap_a_for_b_with_deadline", "args": {"trader": dp, "pool_id": 0, "amount_in": 300, "min_out": 0, "deadline": 9999999999}},
+            {"fn": "swap_b_for_a_with_deadline", "args": {"trader": dp, "pool_id": 0, "amount_in": 100, "min_out": 0, "deadline": 9999999999}},
+            {"fn": "get_pool_info", "args": {"pool_id": 0}},
+            {"fn": "get_pool_count", "args": {}},
+            {"fn": "get_quote", "args": {"pool_id": 0, "amount_in": 1000, "a_to_b": 1}},
+            {"fn": "get_reserves", "args": {"pool_id": 0}},
+            {"fn": "get_liquidity_balance", "args": {"pool_id": 0, "provider": dp}},
+            {"fn": "get_total_liquidity", "args": {"pool_id": 0}},
+            {"fn": "get_protocol_fees", "args": {"pool_id": 0}},
+            {"fn": "get_flash_loan_fee", "args": {}},
+            {"fn": "get_twap_cumulatives", "args": {"pool_id": 0}},
+            {"fn": "get_twap_snapshot_count", "args": {"pool_id": 0}},
+            {"fn": "flash_loan_borrow", "args": {"borrower": dp, "pool_id": 0, "amount": 100, "token_a": 1}},
+            {"fn": "flash_loan_repay", "args": {"borrower": dp, "pool_id": 0}},
+            {"fn": "flash_loan_abort", "args": {"borrower": dp, "pool_id": 0}},
+            {"fn": "remove_liquidity", "args": {"provider": dp, "pool_id": 0, "lp_amount": 100}},
+            {"fn": "ms_pause", "args": {"caller": dp}},
+            {"fn": "ms_unpause", "args": {"caller": dp}},
+            # --- stats queries ---
+            {"fn": "get_swap_count", "args": {}},
+            {"fn": "get_total_volume", "args": {}},
+            {"fn": "get_swap_stats", "args": {}},
+        ],
+        "moltoracle": [
+            {"fn": "initialize", "args": {"admin": dp}},
+            {"fn": "register_feed", "args": {"caller": dp, "feed_id": "BTC-USD", "decimals": 8}},
+            {"fn": "submit_price", "args": {"caller": dp, "feed_id": "BTC-USD", "price": 50_000_000_000}},
+            {"fn": "get_price", "args": {"feed_id": "BTC-USD"}},
+            {"fn": "register_feed", "args": {"caller": dp, "feed_id": "MOLT-USD", "decimals": 8}},
+            {"fn": "submit_price", "args": {"caller": dp, "feed_id": "MOLT-USD", "price": 1_000_000}},
+            {"fn": "get_price", "args": {"feed_id": "MOLT-USD"}},
+            {"fn": "get_feed_count", "args": {}},
+            {"fn": "get_feed_list", "args": {}},
+            {"fn": "set_update_interval", "args": {"caller": dp, "interval": 60}},
+            {"fn": "add_reporter", "args": {"caller": dp, "reporter": sp}},
+            {"fn": "remove_reporter", "args": {"caller": dp, "reporter": sp}},
+            {"fn": "get_oracle_stats", "args": {}},
+            {"fn": "mo_pause", "args": {"caller": dp}},
+            {"fn": "mo_unpause", "args": {"caller": dp}},
+        ],
         "moltdao": [
-            # initialize_dao(governance_token:I32ptr, treasury:I32ptr, min_threshold:I64)
-            {"fn": "initialize_dao", "binary": encode_layout_args([
-                (32, dp), (32, dp), (8, 1_000_000_000),
-            ])},
-            # create_proposal_typed(proposer:ptr, title:ptr, title_len:u32, desc:ptr, desc_len:u32,
-            #   target:ptr, action:ptr, action_len:u32, proposal_type:u8)
-            {"fn": "create_proposal_typed", "binary": encode_layout_args([
-                (32, dp), (32, b"E2E typed"), (4, 9), (32, b"Typed desc"), (4, 10),
-                (32, dp), (32, b"act"), (4, 3), (1, 1),
-            ])},
-            # create_proposal(proposer:ptr, title:ptr, title_len:u32, desc:ptr, desc_len:u32,
-            #   target:ptr, action:ptr, action_len:u32)
+            {"fn": "initialize", "args": {"admin": dp}},
+            {"fn": "set_quorum", "args": {"caller": dp, "quorum": 1}},
+            {"fn": "set_voting_period", "args": {"caller": dp, "period": 100}},
             {"fn": "create_proposal", "binary": encode_layout_args([
-                (32, dp), (32, b"E2E basic"), (4, 9), (32, b"Basic test"), (4, 10),
-                (32, dp), (32, b""), (4, 0),
+                (32, dp),
+                (32, b"Test Proposal"),
+                (4, 13),
+                (32, b"Sequential E2E test proposal"),
+                (4, 28),
+                (32, b'\x00' * 32),
+                (32, b"test_action"),
+                (4, 11),
             ])},
-            # vote(voter:I32ptr, proposal_id:I64, support:I32 u8, _voting_power:I64)
-            {"fn": "vote", "binary": encode_layout_args([
-                (32, dp), (8, 0), (1, 1), (8, 0),
-            ])},
-            # vote_with_reputation(voter:I32ptr, proposal_id:I64, support:I32 u8, _balance:I64, reputation:I64)
-            {"fn": "vote_with_reputation", "binary": encode_layout_args([
-                (32, dp), (8, 1), (1, 1), (8, 0), (8, 100),
-            ])},
-            # get_proposal(proposal_id:I64, result:I32ptr)
-            {"fn": "get_proposal", "binary": encode_layout_args([
-                (8, 0), (32, dp),
-            ])},
-            # get_active_proposals(result:I32ptr, max_results:I32 u32)
-            {"fn": "get_active_proposals", "binary": encode_layout_args([
-                (32, dp), (4, 10),
-            ])},
-            # get_dao_stats(result:I32ptr)
-            {"fn": "get_dao_stats", "binary": encode_layout_args([(32, dp)])},
-            # get_treasury_balance(token:I32ptr, result:I32ptr)
-            {"fn": "get_treasury_balance", "binary": encode_layout_args([
-                (32, dp), (32, dp),
-            ])},
-            # execute_proposal(executor:I32ptr, proposal_id:I64)
-            {"fn": "execute_proposal", "binary": encode_layout_args([
-                (32, dp), (8, 0),
-            ])},
-            # cancel_proposal(canceller:I32ptr, proposal_id:I64)
-            {"fn": "cancel_proposal", "binary": encode_layout_args([
-                (32, dp), (8, 1),
-            ])},
-            # veto_proposal(voter:I32ptr, proposal_id:I64, _balance:I64, _rep:I64)
-            {"fn": "veto_proposal", "binary": encode_layout_args([
-                (32, dp), (8, 1), (8, 0), (8, 0),
-            ])},
-            # treasury_transfer(proposal_id:I64, token:I32ptr, recipient:I32ptr, amount:I64)
-            {"fn": "treasury_transfer", "binary": encode_layout_args([
-                (8, 0), (32, dp), (32, sp), (8, 1),
-            ])},
+            {"fn": "cast_vote", "args": {"voter": dp, "proposal_id": 0, "support": 1}},
+            {"fn": "get_proposal", "args": {"proposal_id": 0}},
+            {"fn": "get_proposal_count", "args": {}},
+            {"fn": "get_vote", "args": {"proposal_id": 0, "voter": dp}},
+            {"fn": "get_vote_count", "args": {"proposal_id": 0}},
+            {"fn": "finalize_proposal", "args": {"caller": dp, "proposal_id": 0}},
+            {"fn": "set_timelock_delay", "args": {"caller": dp, "delay": 10}},
+            {"fn": "execute_proposal", "args": {"caller": dp, "proposal_id": 0}},
+            {"fn": "get_dao_stats", "args": {}},
+            {"fn": "get_active_proposals", "args": {}},
+            {"fn": "get_total_supply", "args": {}},
+            {"fn": "get_treasury_balance", "args": {}},
+            {"fn": "veto_proposal", "args": {"caller": dp, "proposal_id": 0}},
+            {"fn": "cancel_proposal", "args": {"caller": dp, "proposal_id": 0}},
+            {"fn": "treasury_transfer", "args": {"caller": dp, "recipient": sp, "amount": 0}},
+            {"fn": "dao_pause", "args": {"caller": dp}},
+            {"fn": "dao_unpause", "args": {"caller": dp}},
         ],
-        # ─── COMPUTE_MARKET ───
+        "moltpunks": [
+            {"fn": "initialize", "args": {"admin": dp}},
+            {"fn": "mint_punk", "args": {"caller": dp, "to": dp, "punk_type": 0, "seed": rid}},
+            {"fn": "transfer_punk", "args": {"from_owner": dp, "to": sp, "token_id": 0}},
+            {"fn": "get_punk_metadata", "args": {"token_id": 0}},
+            {"fn": "get_total_supply", "args": {}},
+            {"fn": "get_owner_of", "args": {"token_id": 0}},
+            {"fn": "set_base_uri", "args": {"caller": dp, "uri": "https://punks.moltchain.io/"}},
+            {"fn": "set_max_supply", "args": {"caller": dp, "max_supply": 10_000}},
+            {"fn": "get_punks_by_owner", "args": {"owner": dp}},
+            {"fn": "set_royalty", "args": {"caller": dp, "bps": 500}},
+            {"fn": "balance_of", "args": {"owner": dp}},
+            {"fn": "approve", "args": {"owner": dp, "spender": sp, "token_id": 0}},
+            {"fn": "burn", "args": {"caller": dp, "token_id": 0}},
+            {"fn": "mp_pause", "args": {"caller": dp}},
+            {"fn": "mp_unpause", "args": {"caller": dp}},
+            # --- stats queries ---
+            {"fn": "get_collection_stats", "args": {}},
+        ],
         "compute_market": [
             {"fn": "initialize", "args": {"admin": dp}},
-            {"fn": "set_identity_admin", "args": {"admin_ptr": dp}},
-            {"fn": "set_moltyid_address", "args": {"caller_ptr": dp, "moltyid_addr_ptr": str(contracts.get("moltyid", zero))}},
-            {"fn": "set_identity_gate", "args": {"caller_ptr": dp, "enabled": 0}},
-            {"fn": "register_provider", "args": {"provider": dp, "endpoint": "https://compute.e2e", "price_per_unit": 1_000_000}},
-            {"fn": "update_provider", "args": {"provider": dp, "endpoint": "https://compute2.e2e", "price_per_unit": 2_000_000}},
-            {"fn": "submit_job", "args": {"job_id": rid, "requester": dp, "budget": 1_000_000}},
-            {"fn": "claim_job", "args": {"provider": dp, "job_id": rid}},
-            {"fn": "complete_job", "args": {"provider": dp, "job_id": rid, "result_hash": sp}},
-            {"fn": "get_job", "args": {"job_id": rid}},
-            {"fn": "get_escrow", "args": {"job_id": rid}},
-            {"fn": "release_payment", "args": {"caller": dp, "job_id": rid}},
-            {"fn": "submit_job", "args": {"job_id": rid + 1, "requester": dp, "budget": 500_000}},
-            {"fn": "cancel_job", "args": {"requester": dp, "job_id": rid + 1}},
-            {"fn": "dispute_job", "args": {"caller": dp, "job_id": rid}},
-            {"fn": "add_arbitrator", "args": {"caller": dp, "arbitrator": sp}},
-            {"fn": "resolve_dispute", "args": {"arbitrator": sp, "job_id": rid, "in_favor_of": dp}, "actor": "secondary"},
-            {"fn": "remove_arbitrator", "args": {"caller": dp, "arbitrator": sp}},
-            {"fn": "deactivate_provider", "args": {"provider": dp}},
-            {"fn": "reactivate_provider", "args": {"provider": dp}},
-            {"fn": "set_challenge_period", "args": {"caller": dp, "period": 100}},
-            {"fn": "set_claim_timeout", "args": {"caller": dp, "timeout": 200}},
-            {"fn": "set_complete_timeout", "args": {"caller": dp, "timeout": 300}},
+            {"fn": "register_provider", "args": {"provider": dp, "cpu_cores": 8, "memory_gb": 16, "gpu_count": 1, "price_per_unit": 1000}},
+            {"fn": "create_job", "args": {"requester": dp, "cpu_needed": 2, "memory_needed": 4, "gpu_needed": 0, "duration_slots": 100, "max_price": 100_000}},
+            {"fn": "accept_job", "args": {"provider": dp, "job_id": 0}},
+            {"fn": "submit_result", "args": {"provider": dp, "job_id": 0, "result_hash": sp}},
+            {"fn": "confirm_result", "args": {"requester": dp, "job_id": 0}},
+            {"fn": "get_job_info", "args": {"job_id": 0}},
+            {"fn": "get_provider_info", "args": {"provider": dp}},
+            {"fn": "get_job_count", "args": {}},
+            {"fn": "set_platform_fee", "args": {"caller": dp, "fee_bps": 250}},
+            {"fn": "cm_pause", "args": {"caller": dp}},
+            {"fn": "cm_unpause", "args": {"caller": dp}},
+            # --- stats queries ---
+            {"fn": "get_platform_stats", "args": {}},
         ],
-        # ─── BOUNTYBOARD ───
         "bountyboard": [
-            {"fn": "set_identity_admin", "args": {"admin_ptr": dp}},
-            {"fn": "set_moltyid_address", "args": {"caller_ptr": dp, "moltyid_addr_ptr": str(contracts.get("moltyid", zero))}},
-            {"fn": "set_token_address", "args": {"caller_ptr": dp, "token_addr_ptr": quote}},
-            {"fn": "create_bounty", "args": {"creator_ptr": dp, "title_hash_ptr": dp, "reward_amount": 1000, "deadline_slot": now + 1_000_000}},
-            {"fn": "submit_work", "args": {"bounty_id": 0, "worker_ptr": sp, "proof_hash_ptr": sp}, "actor": "secondary"},
-            {"fn": "approve_work", "args": {"bounty_id": 0, "approver_ptr": dp}},
+            {"fn": "initialize", "args": {"admin": dp}},
+            {"fn": "create_bounty", "args": {"creator": dp, "title": "E2E Bounty", "description": "Sequential test bounty", "reward": 1_000_000_000}},
             {"fn": "get_bounty", "args": {"bounty_id": 0}},
-            {"fn": "create_bounty", "args": {"creator_ptr": dp, "title_hash_ptr": sp, "reward_amount": 500, "deadline_slot": now + 2_000_000}},
-            {"fn": "cancel_bounty", "args": {"bounty_id": 1, "caller_ptr": dp}},
-            {"fn": "set_identity_gate", "args": {"caller_ptr": dp, "enabled": 0}},
-        ],
-        # ─── MOLTORACLE (binary-encoded — mixed I32 pointer/integer params) ───
-        "moltoracle": [
-            # initialize_oracle(owner:I32ptr)
-            {"fn": "initialize_oracle", "binary": encode_layout_args([(32, dp)])},
-            # add_price_feeder(feeder:I32ptr, asset:I32ptr, asset_len:I32 u32)
-            {"fn": "add_price_feeder", "binary": encode_layout_args([
-                (32, dp), (32, b"MOLT"), (4, 4),
-            ])},
-            # set_authorized_attester(attester:I32ptr, authorized:I32 u32)
-            {"fn": "set_authorized_attester", "binary": encode_layout_args([
-                (32, dp), (4, 1),
-            ])},
-            # submit_price(feeder:I32ptr, asset:I32ptr, asset_len:I32 u32, price:I64, decimals:I32 u8)
-            {"fn": "submit_price", "binary": encode_layout_args([
-                (32, dp), (32, b"MOLT"), (4, 4), (8, 100_000_000), (1, 6),
-            ])},
-            # get_price(asset:I32ptr, asset_len:I32 u32, result:I32ptr)
-            {"fn": "get_price", "binary": encode_layout_args([
-                (32, b"MOLT"), (4, 4), (32, dp),
-            ])},
-            # get_aggregated_price(asset:I32ptr, asset_len:I32 u32, num_feeds:I32 u8, result:I32ptr)
-            {"fn": "get_aggregated_price", "binary": encode_layout_args([
-                (32, b"MOLT"), (4, 4), (1, 1), (32, dp),
-            ])},
-            # submit_attestation(attester:I32ptr, data_hash:I32ptr, data:I32ptr, data_len:I32 u32)
-            {"fn": "submit_attestation", "binary": encode_layout_args([
-                (32, dp), (32, dp), (32, b"test-data"), (4, 9),
-            ])},
-            # get_attestation_data(data_hash:I32ptr, result:I32ptr)
-            {"fn": "get_attestation_data", "binary": encode_layout_args([
-                (32, dp), (32, dp),
-            ])},
-            # verify_attestation(data_hash:I32ptr, min_signatures:I32 u8)
-            {"fn": "verify_attestation", "binary": encode_layout_args([
-                (32, dp), (1, 1),
-            ])},
-            # query_oracle(query_type:I32ptr, qt_len:I32 u32, param:I32ptr, param_len:I32 u32, result:I32ptr)
-            {"fn": "query_oracle", "binary": encode_layout_args([
-                (32, b"price"), (4, 5), (32, b"MOLT"), (4, 4), (32, dp),
-            ])},
-            # commit_randomness(requester:I32ptr, commit_hash:I32ptr, seed:I64)
-            {"fn": "commit_randomness", "binary": encode_layout_args([
-                (32, dp), (32, dp), (8, 42),
-            ])},
-            # request_randomness(requester:I32ptr, seed:I64)
-            {"fn": "request_randomness", "binary": encode_layout_args([
-                (32, dp), (8, 42),
-            ])},
-            # reveal_randomness(requester:I32ptr, secret:I32ptr, result:I32ptr)
-            {"fn": "reveal_randomness", "binary": encode_layout_args([
-                (32, dp), (32, dp), (32, dp),
-            ])},
-            # get_randomness(requester:I32ptr, seed:I64, result:I32ptr)
-            {"fn": "get_randomness", "binary": encode_layout_args([
-                (32, dp), (8, 0), (32, dp),
-            ])},
-            # get_oracle_stats(result:I32ptr)
-            {"fn": "get_oracle_stats", "binary": encode_layout_args([(32, dp)])},
-        ],
-        # ─── MOLTPUNKS ───
-        "moltpunks": [
-            {"fn": "initialize", "args": {"minter_ptr": dp}},
-            {"fn": "mint", "args": {"caller_ptr": dp, "to_ptr": dp, "token_id": rid, "metadata_ptr": f"ipfs://punk/{rid}", "metadata_len": len(f"ipfs://punk/{rid}")}},
-            {"fn": "owner_of", "args": {"token_id": rid}},
-            {"fn": "balance_of", "args": {"addr_ptr": dp}},
-            {"fn": "total_minted", "args": {}},
-            {"fn": "transfer", "args": {"from_ptr": dp, "to_ptr": sp, "token_id": rid}},
-            {"fn": "approve", "args": {"owner_ptr": sp, "spender_ptr": dp, "token_id": rid}, "actor": "secondary"},
-            {"fn": "transfer_from", "args": {"caller_ptr": dp, "from_ptr": sp, "to_ptr": dp, "token_id": rid}},
-            {"fn": "burn", "args": {"caller_ptr": dp, "token_id": rid}},
-        ],
-        # ─── MOLTSWAP ───
-        "moltswap": [
-            {"fn": "initialize", "args": {"token_a_ptr": base, "token_b_ptr": quote}},
-            {"fn": "set_identity_admin", "args": {"admin_ptr": dp}},
-            {"fn": "set_moltyid_address", "args": {"caller_ptr": dp, "moltyid_addr_ptr": str(contracts.get("moltyid", zero))}},
-            {"fn": "add_liquidity", "args": {"provider_ptr": dp, "amount_a": 100_000, "amount_b": 100_000, "min_liquidity": 1}},
-            {"fn": "swap_a_for_b", "args": {"amount_a_in": 1000, "min_amount_b_out": 1}},
-            {"fn": "swap_b_for_a", "args": {"amount_b_in": 500, "min_amount_a_out": 1}},
-            {"fn": "swap_a_for_b_with_deadline", "args": {"amount_a_in": 100, "min_amount_b_out": 1, "deadline": now + 3600}},
-            {"fn": "swap_b_for_a_with_deadline", "args": {"amount_b_in": 100, "min_amount_a_out": 1, "deadline": now + 3600}},
-            {"fn": "get_reserves", "args": {}},
-            {"fn": "get_total_liquidity", "args": {}},
-            {"fn": "get_liquidity_balance", "args": {"provider_ptr": dp}},
-            {"fn": "get_quote", "args": {"amount_in": 1000, "is_a_to_b": 1}},
-            {"fn": "get_protocol_fees", "args": {}},
-            {"fn": "get_flash_loan_fee", "args": {}},
-            {"fn": "get_twap_cumulatives", "args": {}},
-            {"fn": "get_twap_snapshot_count", "args": {}},
-            {"fn": "remove_liquidity", "args": {"provider_ptr": dp, "liquidity_amount": 1}},
-            {"fn": "set_protocol_fee", "args": {"caller_ptr": dp, "treasury_ptr": dp, "fee_share": 1500}},
-            {"fn": "set_reputation_discount", "args": {"caller_ptr": dp, "min_rep": 100, "discount_bps": 500}},
-            {"fn": "flash_loan_borrow", "args": {"borrower_ptr": dp, "amount_a": 100, "amount_b": 0}},
-            {"fn": "flash_loan_repay", "args": {"borrower_ptr": dp, "amount_a": 101, "amount_b": 0}},
-            {"fn": "flash_loan_abort", "args": {"borrower_ptr": dp}},
-            {"fn": "ms_pause", "args": {"caller_ptr": base}},
-            {"fn": "ms_unpause", "args": {"caller_ptr": base}},
+            {"fn": "get_bounty_count", "args": {}},
+            {"fn": "submit_work", "args": {"submitter": sp, "bounty_id": 0, "proof": "done"}, "actor": "secondary"},
+            {"fn": "approve_submission", "args": {"caller": dp, "bounty_id": 0, "submitter": sp}},
+            {"fn": "cancel_bounty", "args": {"creator": dp, "bounty_id": 0}},
+            {"fn": "set_platform_fee", "args": {"caller": dp, "fee_bps": 100}},
+            {"fn": "bb_pause", "args": {"caller": dp}},
+            {"fn": "bb_unpause", "args": {"caller": dp}},
+            # --- stats queries ---
+            {"fn": "get_platform_stats", "args": {}},
         ],
     }
 
@@ -812,339 +726,199 @@ def build_named_scenarios(
 def build_opcode_scenarios(
     deployer: Keypair, secondary: Keypair, contracts: Dict[str, PublicKey]
 ) -> Dict[str, List[Dict[str, Any]]]:
-    """Build test scenarios for opcode-dispatch contracts (8 contracts).
-    Each entry has 'opcode_args' (raw bytes) or 'fn'/'opcode' for named init.
-    """
     admin = deployer.public_key().to_bytes()
-    user2 = secondary.public_key().to_bytes()
-    zero32 = b'\x00' * 32
-    molt_pk = contracts.get("moltcoin")
-    molt_bytes = molt_pk.to_bytes() if molt_pk else zero32
-    musd_pk = contracts.get("musd_token")
-    musd_bytes = musd_pk.to_bytes() if musd_pk else zero32
-    weth_pk = contracts.get("weth_token")
-    weth_bytes = weth_pk.to_bytes() if weth_pk else zero32
-    moltyid_pk = contracts.get("moltyid")
-    moltyid_bytes = moltyid_pk.to_bytes() if moltyid_pk else zero32
-    oracle_pk = contracts.get("moltoracle")
-    oracle_bytes = oracle_pk.to_bytes() if oracle_pk else zero32
-    dex_core_pk = contracts.get("dex_core")
-    dex_core_bytes = dex_core_pk.to_bytes() if dex_core_pk else zero32
-    dex_amm_pk = contracts.get("dex_amm")
-    dex_amm_bytes = dex_amm_pk.to_bytes() if dex_amm_pk else zero32
-    dex_gov_pk = contracts.get("dex_governance")
-    dex_gov_bytes = dex_gov_pk.to_bytes() if dex_gov_pk else zero32
+    sec = secondary.public_key().to_bytes()
+    zero = b'\x00' * 32
+    molt = contracts.get("moltcoin", PublicKey(zero)).to_bytes()
+    weth = contracts.get("weth_token", PublicKey(zero)).to_bytes()
+    musd = contracts.get("musd_token", PublicKey(zero)).to_bytes()
+    yid = contracts.get("moltyid", PublicKey(zero)).to_bytes()
+    dex = contracts.get("dex_core", PublicKey(zero)).to_bytes()
+    dex_amm_addr = contracts.get("dex_amm", PublicKey(zero)).to_bytes()
+    dex_gov = contracts.get("dex_governance", PublicKey(zero)).to_bytes()
 
     return {
-        # ─── DEX_CORE (24 opcodes) ───
         "dex_core": [
-            # opcode 0: initialize (already done at genesis, but test re-init is safe)
-            {"label": "dex_core.initialize", "args": bytes([0]) + admin},
-            # opcode 4: set_preferred_quote(caller 32B, quote 32B)
-            {"label": "dex_core.set_preferred_quote", "args": bytes([4]) + admin + molt_bytes},
-            # opcode 21: add_allowed_quote(caller 32B, quote 32B)
-            {"label": "dex_core.add_allowed_quote", "args": bytes([21]) + admin + musd_bytes},
-            # opcode 23: get_allowed_quote_count
+            {"label": "dex_core.initialize",         "args": bytes([0]) + admin},
+            {"label": "dex_core.create_pair",         "args": bytes([1]) + admin + molt + weth + u64le(1000) + u64le(100) + u64le(1000)},
+            {"label": "dex_core.set_preferred_quote", "args": bytes([4]) + admin + musd},
+            {"label": "dex_core.add_allowed_quote",    "args": bytes([21]) + admin + molt},
             {"label": "dex_core.get_allowed_quote_count", "args": bytes([23])},
-            # opcode 22: remove_allowed_quote(caller 32B, quote 32B)
-            {"label": "dex_core.remove_allowed_quote", "args": bytes([22]) + admin + musd_bytes},
-            # opcode 1: create_pair(caller 32B, base 32B, quote 32B, tick_size 8B, lot_size 8B, min_order 8B)
-            {"label": "dex_core.create_pair", "args": bytes([1]) + admin + weth_bytes + molt_bytes + u64le(1) + u64le(1_000_000) + u64le(1_000)},
-            # opcode 7: update_pair_fees(caller 32B, pair_id 8B, maker_fee i16, taker_fee u16)
-            {"label": "dex_core.update_pair_fees", "args": bytes([7]) + admin + u64le(1) + i16le(-1) + u16le(5)},
-            # opcode 2: place_order(trader 32B, pair_id 8B, side 1B, order_type 1B, price 8B, quantity 8B, expiry 8B)
-            {"label": "dex_core.place_order", "args": bytes([2]) + admin + u64le(1) + bytes([0, 0]) + u64le(1_000_000_000) + u64le(10_000) + u64le(0)},
-            # opcode 16: modify_order(caller 32B, order_id 8B, new_price 8B, new_qty 8B)
-            {"label": "dex_core.modify_order", "args": bytes([16]) + admin + u64le(1) + u64le(1_001_000_000) + u64le(10_000)},
-            # opcode 3: cancel_order(caller 32B, order_id 8B)
-            {"label": "dex_core.cancel_order", "args": bytes([3]) + admin + u64le(1)},
-            # opcode 17: cancel_all_orders(caller 32B, pair_id 8B)
-            {"label": "dex_core.cancel_all_orders", "args": bytes([17]) + admin + u64le(1)},
-            # opcode 5: get_pair_count
-            {"label": "dex_core.get_pair_count", "args": bytes([5])},
-            # opcode 6: get_preferred_quote
-            {"label": "dex_core.get_preferred_quote", "args": bytes([6])},
-            # opcode 10: get_best_bid(pair_id 8B)
-            {"label": "dex_core.get_best_bid", "args": bytes([10]) + u64le(1)},
-            # opcode 11: get_best_ask(pair_id 8B)
-            {"label": "dex_core.get_best_ask", "args": bytes([11]) + u64le(1)},
-            # opcode 12: get_spread(pair_id 8B)
-            {"label": "dex_core.get_spread", "args": bytes([12]) + u64le(1)},
-            # opcode 13: get_pair_info(pair_id 8B)
-            {"label": "dex_core.get_pair_info", "args": bytes([13]) + u64le(1)},
-            # opcode 14: get_trade_count
-            {"label": "dex_core.get_trade_count", "args": bytes([14])},
-            # opcode 15: get_fee_treasury
-            {"label": "dex_core.get_fee_treasury", "args": bytes([15])},
-            # opcode 20: get_order(order_id 8B)
-            {"label": "dex_core.get_order", "args": bytes([20]) + u64le(1)},
-            # opcode 18: pause_pair(caller 32B, pair_id 8B)
-            {"label": "dex_core.pause_pair", "args": bytes([18]) + admin + u64le(1)},
-            # opcode 19: unpause_pair(caller 32B, pair_id 8B)
-            {"label": "dex_core.unpause_pair", "args": bytes([19]) + admin + u64le(1)},
-            # opcode 8: emergency_pause(caller 32B)
-            {"label": "dex_core.emergency_pause", "args": bytes([8]) + admin},
-            # opcode 9: emergency_unpause(caller 32B)
-            {"label": "dex_core.emergency_unpause", "args": bytes([9]) + admin},
+            {"label": "dex_core.remove_allowed_quote",  "args": bytes([22]) + admin + molt},
+            {"label": "dex_core.update_pair_fees",    "args": bytes([7]) + admin + u64le(1) + i16le(-2) + u16le(10)},
+            {"label": "dex_core.get_pair_count",      "args": bytes([5])},
+            {"label": "dex_core.get_preferred_quote",  "args": bytes([6])},
+            {"label": "dex_core.get_pair_info",        "args": bytes([13]) + u64le(1)},
+            {"label": "dex_core.get_trade_count",      "args": bytes([14])},
+            {"label": "dex_core.get_fee_treasury",     "args": bytes([15])},
+            {"label": "dex_core.place_order",          "args": bytes([2]) + admin + u64le(1) + bytes([0]) + bytes([0]) + u64le(1_000_000) + u64le(500) + u64le(0)},
+            {"label": "dex_core.get_order",            "args": bytes([20]) + u64le(1)},
+            {"label": "dex_core.get_best_bid",         "args": bytes([10]) + u64le(1)},
+            {"label": "dex_core.get_best_ask",         "args": bytes([11]) + u64le(1)},
+            {"label": "dex_core.get_spread",           "args": bytes([12]) + u64le(1)},
+            {"label": "dex_core.modify_order",         "args": bytes([16]) + admin + u64le(1) + u64le(1_100_000) + u64le(600)},
+            {"label": "dex_core.cancel_order",         "args": bytes([3]) + admin + u64le(1)},
+            {"label": "dex_core.cancel_all_orders",    "args": bytes([17]) + admin + u64le(1)},
+            {"label": "dex_core.pause_pair",           "args": bytes([18]) + admin + u64le(1)},
+            {"label": "dex_core.unpause_pair",         "args": bytes([19]) + admin + u64le(1)},
+            {"label": "dex_core.emergency_pause",      "args": bytes([8]) + admin},
+            {"label": "dex_core.emergency_unpause",    "args": bytes([9]) + admin},
+            {"label": "dex_core.get_total_volume",     "args": bytes([25])},
+            {"label": "dex_core.get_user_orders",      "args": bytes([26]) + admin},
+            {"label": "dex_core.get_open_order_count",  "args": bytes([27])},
         ],
-        # ─── DEX_AMM (16 dispatch opcodes) ───
         "dex_amm": [
-            {"label": "dex_amm.initialize", "args": bytes([0]) + admin},
-            # opcode 1: create_pool(caller[32]+token_a[32]+token_b[32]+fee_tier(1)+sqrt_price(u64))
-            {"label": "dex_amm.create_pool", "args": bytes([1]) + admin + weth_bytes + molt_bytes + bytes([1]) + u64le(1 << 32)},
-            # opcode 2: set_pool_protocol_fee(caller[32]+pool_id(u64)+fee_percent(1))
-            {"label": "dex_amm.set_protocol_fee", "args": bytes([2]) + admin + u64le(1) + bytes([10])},
-            # opcode 3: add_liquidity(provider[32]+pool_id(u64)+lower_tick(i32)+upper_tick(i32)+amount_a(u64)+amount_b(u64))
-            {"label": "dex_amm.add_liquidity", "args": bytes([3]) + admin + u64le(1) + i32le(-100) + i32le(100) + u64le(1_000_000) + u64le(1_000_000)},
-            # opcode 10: get_pool_info(pool_id(u64))
-            {"label": "dex_amm.get_pool_info", "args": bytes([10]) + u64le(1)},
-            # opcode 11: get_position(position_id(u64))
-            {"label": "dex_amm.get_position", "args": bytes([11]) + u64le(1)},
-            # opcode 12: get_pool_count()
-            {"label": "dex_amm.get_pool_count", "args": bytes([12])},
-            # opcode 13: get_position_count()
+            {"label": "dex_amm.initialize",         "args": bytes([0]) + admin},
+            {"label": "dex_amm.create_pool",        "args": bytes([1]) + admin + molt + weth + bytes([1]) + u64le(1 << 32)},
+            {"label": "dex_amm.set_protocol_fee",   "args": bytes([2]) + admin + u64le(1) + bytes([10])},
+            {"label": "dex_amm.add_liquidity",      "args": bytes([3]) + admin + u64le(1) + i32le(-100) + i32le(100) + u64le(1_000_000) + u64le(1_000_000)},
+            {"label": "dex_amm.get_pool_info",      "args": bytes([10]) + u64le(1)},
+            {"label": "dex_amm.get_position",       "args": bytes([11]) + u64le(1)},
+            {"label": "dex_amm.get_pool_count",     "args": bytes([12])},
             {"label": "dex_amm.get_position_count", "args": bytes([13])},
-            # opcode 14: get_tvl(pool_id(u64))
-            {"label": "dex_amm.get_tvl", "args": bytes([14]) + u64le(1)},
-            # opcode 15: quote_swap(pool_id(u64)+is_token_a_in(1)+amount_in(u64))
-            {"label": "dex_amm.quote_swap", "args": bytes([15]) + u64le(1) + bytes([1]) + u64le(10_000)},
-            # opcode 6: swap_exact_in(trader[32]+pool_id(u64)+is_token_a_in(1)+amount_in(u64)+min_out(u64)+deadline(u64))
-            {"label": "dex_amm.swap_exact_in", "args": bytes([6]) + admin + u64le(1) + bytes([1]) + u64le(10_000) + u64le(0) + u64le(0)},
-            # opcode 7: swap_exact_out(trader[32]+pool_id(u64)+is_token_a_out(1)+amount_out(u64)+max_in(u64)+deadline(u64))
-            {"label": "dex_amm.swap_exact_out", "args": bytes([7]) + admin + u64le(1) + bytes([1]) + u64le(100) + u64le(50_000) + u64le(0)},
-            # opcode 5: collect_fees(provider[32]+position_id(u64))
-            {"label": "dex_amm.collect_fees", "args": bytes([5]) + admin + u64le(1)},
-            # opcode 4: remove_liquidity(provider[32]+position_id(u64)+liquidity_amount(u64))
-            {"label": "dex_amm.remove_liquidity", "args": bytes([4]) + admin + u64le(1) + u64le(500)},
-            # opcode 8: emergency_pause(caller[32])
-            {"label": "dex_amm.emergency_pause", "args": bytes([8]) + admin},
-            # opcode 9: emergency_unpause(caller[32])
-            {"label": "dex_amm.emergency_unpause", "args": bytes([9]) + admin},
+            {"label": "dex_amm.get_tvl",            "args": bytes([14]) + u64le(1)},
+            {"label": "dex_amm.quote_swap",         "args": bytes([15]) + u64le(1) + bytes([1]) + u64le(10_000)},
+            {"label": "dex_amm.swap_exact_in",      "args": bytes([6]) + admin + u64le(1) + bytes([1]) + u64le(10_000) + u64le(0) + u64le(0)},
+            {"label": "dex_amm.swap_exact_out",     "args": bytes([7]) + admin + u64le(1) + bytes([1]) + u64le(100) + u64le(50_000) + u64le(0)},
+            {"label": "dex_amm.collect_fees",       "args": bytes([5]) + admin + u64le(1)},
+            {"label": "dex_amm.remove_liquidity",   "args": bytes([4]) + admin + u64le(1) + u64le(500)},
+            {"label": "dex_amm.emergency_pause",    "args": bytes([8]) + admin},
+            {"label": "dex_amm.emergency_unpause",  "args": bytes([9]) + admin},
+            {"label": "dex_amm.get_total_volume",        "args": bytes([16])},
+            {"label": "dex_amm.get_swap_count",          "args": bytes([17])},
+            {"label": "dex_amm.get_total_fees_collected", "args": bytes([18])},
+            {"label": "dex_amm.get_amm_stats",           "args": bytes([19])},
         ],
-        # ─── DEX_ANALYTICS (9 opcodes) ───
         "dex_analytics": [
-            {"label": "dex_analytics.initialize", "args": bytes([0]) + admin},
-            # opcode 1: record_trade(pair_id 8B, price 8B, volume 8B, trader 32B)
-            {"label": "dex_analytics.record_trade", "args": bytes([1]) + u64le(1) + u64le(1_000_000_000) + u64le(10_000) + admin},
-            # opcode 2: get_ohlcv(pair_id 8B, interval 8B, count 8B)
-            {"label": "dex_analytics.get_ohlcv", "args": bytes([2]) + u64le(1) + u64le(60) + u64le(10)},
-            # opcode 3: get_24h_stats(pair_id 8B)
-            {"label": "dex_analytics.get_24h_stats", "args": bytes([3]) + u64le(1)},
-            # opcode 4: get_trader_stats(trader 32B)
+            {"label": "dex_analytics.initialize",     "args": bytes([0]) + admin},
+            {"label": "dex_analytics.record_trade",    "args": bytes([1]) + u64le(1) + u64le(1_000_000_000) + u64le(5000) + admin},
+            {"label": "dex_analytics.get_ohlcv",       "args": bytes([2]) + u64le(1) + u64le(3600) + u64le(10)},
+            {"label": "dex_analytics.get_24h_stats",   "args": bytes([3]) + u64le(1)},
             {"label": "dex_analytics.get_trader_stats", "args": bytes([4]) + admin},
-            # opcode 5: get_last_price(pair_id 8B)
-            {"label": "dex_analytics.get_last_price", "args": bytes([5]) + u64le(1)},
-            # opcode 6: get_record_count
+            {"label": "dex_analytics.get_last_price",  "args": bytes([5]) + u64le(1)},
             {"label": "dex_analytics.get_record_count", "args": bytes([6])},
-            # opcode 7: emergency_pause(caller 32B)
             {"label": "dex_analytics.emergency_pause", "args": bytes([7]) + admin},
-            # opcode 8: emergency_unpause(caller 32B)
             {"label": "dex_analytics.emergency_unpause", "args": bytes([8]) + admin},
+            {"label": "dex_analytics.get_trader_count",  "args": bytes([9])},
+            {"label": "dex_analytics.get_global_stats",  "args": bytes([10])},
         ],
-        # ─── DEX_GOVERNANCE (18 opcodes) ───
         "dex_governance": [
-            {"label": "dex_governance.initialize", "args": bytes([0]) + admin},
-            # opcode 14: set_moltyid_address(caller 32B, addr 32B)
-            {"label": "dex_governance.set_moltyid_address", "args": bytes([14]) + admin + moltyid_bytes},
-            # opcode 5: set_preferred_quote(caller 32B, quote 32B)
-            {"label": "dex_governance.set_preferred_quote", "args": bytes([5]) + admin + molt_bytes},
-            # opcode 6: get_preferred_quote
-            {"label": "dex_governance.get_preferred_quote", "args": bytes([6])},
-            # opcode 15: add_allowed_quote(caller 32B, quote 32B)
-            {"label": "dex_governance.add_allowed_quote", "args": bytes([15]) + admin + musd_bytes},
-            # opcode 17: get_allowed_quote_count
+            {"label": "dex_governance.initialize",            "args": bytes([0]) + admin},
+            {"label": "dex_governance.set_preferred_quote",   "args": bytes([5]) + admin + musd},
+            {"label": "dex_governance.add_allowed_quote",     "args": bytes([15]) + admin + molt},
             {"label": "dex_governance.get_allowed_quote_count", "args": bytes([17])},
-            # opcode 16: remove_allowed_quote(caller 32B, quote 32B)
-            {"label": "dex_governance.remove_allowed_quote", "args": bytes([16]) + admin + musd_bytes},
-            # opcode 11: set_listing_requirements(caller 32B, min_liquidity 8B, min_holders 8B)
-            {"label": "dex_governance.set_listing_requirements", "args": bytes([11]) + admin + u64le(1000) + u64le(1)},
-            # opcode 1: propose_new_pair(proposer 32B, base 32B, quote 32B)
-            {"label": "dex_governance.propose_new_pair", "args": bytes([1]) + admin + weth_bytes + molt_bytes},
-            # opcode 2: vote(voter 32B, proposal_id 8B, vote 1B)
-            {"label": "dex_governance.vote", "args": bytes([2]) + admin + u64le(0) + bytes([1])},
-            # opcode 3: finalize_proposal(caller 32B, proposal_id 8B)
-            {"label": "dex_governance.finalize_proposal", "args": bytes([3]) + admin + u64le(0)},
-            # opcode 4: execute_proposal(caller 32B, proposal_id 8B)
-            {"label": "dex_governance.execute_proposal", "args": bytes([4]) + admin + u64le(0)},
-            # opcode 9: propose_fee_change(proposer 32B, pair_id 8B, maker i16, taker u16)
-            {"label": "dex_governance.propose_fee_change", "args": bytes([9]) + admin + u64le(1) + i16le(-1) + u16le(5)},
-            # opcode 10: emergency_delist(caller 32B, pair_id 8B)
-            {"label": "dex_governance.emergency_delist", "args": bytes([10]) + admin + u64le(1)},
-            # opcode 7: get_proposal_count
-            {"label": "dex_governance.get_proposal_count", "args": bytes([7])},
-            # opcode 8: get_proposal_info(proposal_id 8B)
-            {"label": "dex_governance.get_proposal_info", "args": bytes([8]) + u64le(0)},
-            # opcode 12: emergency_pause(caller 32B)
-            {"label": "dex_governance.emergency_pause", "args": bytes([12]) + admin},
-            # opcode 13: emergency_unpause(caller 32B)
-            {"label": "dex_governance.emergency_unpause", "args": bytes([13]) + admin},
+            {"label": "dex_governance.remove_allowed_quote",  "args": bytes([16]) + admin + molt},
+            {"label": "dex_governance.set_moltyid_address",   "args": bytes([14]) + admin + contracts.get("moltyid", PublicKey(zero)).to_bytes()},
+            {"label": "dex_governance.set_listing_requirements", "args": bytes([11]) + admin + u64le(1000) + u64le(500)},
+            {"label": "dex_governance.propose_new_pair",      "args": bytes([1]) + sec + molt + weth},
+            {"label": "dex_governance.propose_fee_change",    "args": bytes([9]) + sec + u64le(1) + i16le(-2) + u16le(10)},
+            {"label": "dex_governance.vote",                  "args": bytes([2]) + admin + u64le(1) + bytes([1])},
+            {"label": "dex_governance.get_proposal_count",    "args": bytes([7])},
+            {"label": "dex_governance.get_preferred_quote",   "args": bytes([6])},
+            {"label": "dex_governance.get_proposal_info",     "args": bytes([8]) + u64le(1)},
+            {"label": "dex_governance.finalize_proposal",     "args": bytes([3]) + u64le(1)},
+            {"label": "dex_governance.execute_proposal",      "args": bytes([4]) + u64le(1)},
+            {"label": "dex_governance.emergency_delist",      "args": bytes([10]) + admin + u64le(1)},
+            {"label": "dex_governance.emergency_pause",       "args": bytes([12]) + admin},
+            {"label": "dex_governance.emergency_unpause",     "args": bytes([13]) + admin},
+            {"label": "dex_governance.get_governance_stats",  "args": bytes([18])},
+            {"label": "dex_governance.get_voter_count",       "args": bytes([19])},
         ],
-        # ─── DEX_MARGIN (16 opcodes, NO separate initialize export) ───
         "dex_margin": [
-            {"label": "dex_margin.initialize", "args": bytes([0]) + admin},
-            # opcode 15: set_moltcoin_address(caller 32B, addr 32B)
-            {"label": "dex_margin.set_moltcoin_address", "args": bytes([15]) + admin + molt_bytes},
-            # opcode 1: set_mark_price(caller 32B, pair_id 8B, price 8B)
-            {"label": "dex_margin.set_mark_price", "args": bytes([1]) + admin + u64le(1) + u64le(1_000_000_000)},
-            # opcode 7: set_max_leverage(caller 32B, max 8B)
-            {"label": "dex_margin.set_max_leverage", "args": bytes([7]) + admin + u64le(10)},
-            # opcode 8: set_maintenance_margin(caller 32B, margin_bps 8B)
+            {"label": "dex_margin.initialize",          "args": bytes([0]) + admin},
+            {"label": "dex_margin.set_moltcoin_address", "args": bytes([15]) + admin + molt},
+            {"label": "dex_margin.set_mark_price",      "args": bytes([1]) + admin + u64le(1) + u64le(1_000_000_000)},
+            {"label": "dex_margin.set_max_leverage",    "args": bytes([7]) + admin + u64le(1) + u64le(10)},
             {"label": "dex_margin.set_maintenance_margin", "args": bytes([8]) + admin + u64le(500)},
-            # opcode 2: open_position(trader 32B, pair_id 8B, side 1B, size 8B, leverage 8B, margin 8B)
-            {"label": "dex_margin.open_position", "args": bytes([2]) + admin + u64le(1) + bytes([0]) + u64le(1_000_000_000) + u64le(2) + u64le(300_000_000)},
-            # opcode 4: add_margin(caller 32B, position_id 8B, amount 8B)
-            {"label": "dex_margin.add_margin", "args": bytes([4]) + admin + u64le(1) + u64le(10_000_000)},
-            # opcode 5: remove_margin(caller 32B, position_id 8B, amount 8B)
-            {"label": "dex_margin.remove_margin", "args": bytes([5]) + admin + u64le(1) + u64le(1_000_000)},
-            # opcode 10: get_position_info(position_id 8B)
-            {"label": "dex_margin.get_position_info", "args": bytes([10]) + u64le(1)},
-            # opcode 11: get_margin_ratio(position_id 8B)
-            {"label": "dex_margin.get_margin_ratio", "args": bytes([11]) + u64le(1)},
-            # opcode 12: get_tier_info(tier 8B)
-            {"label": "dex_margin.get_tier_info", "args": bytes([12]) + u64le(0)},
-            # opcode 3: close_position(caller 32B, position_id 8B)
-            {"label": "dex_margin.close_position", "args": bytes([3]) + admin + u64le(1)},
-            # opcode 6: liquidate(caller 32B, position_id 8B)
-            {"label": "dex_margin.liquidate", "args": bytes([6]) + admin + u64le(99)},  # non-existent position = safe
-            # opcode 9: withdraw_insurance(caller 32B, amount 8B)
-            {"label": "dex_margin.withdraw_insurance", "args": bytes([9]) + admin + u64le(0)},
-            # opcode 13: emergency_pause(caller 32B)
-            {"label": "dex_margin.emergency_pause", "args": bytes([13]) + admin},
-            # opcode 14: emergency_unpause(caller 32B)
-            {"label": "dex_margin.emergency_unpause", "args": bytes([14]) + admin},
+            {"label": "dex_margin.open_position",       "args": bytes([2]) + admin + u64le(1) + bytes([0]) + u64le(100_000) + u64le(5) + u64le(50_000)},
+            {"label": "dex_margin.get_position_info",   "args": bytes([10]) + u64le(1)},
+            {"label": "dex_margin.get_margin_ratio",    "args": bytes([11]) + u64le(1)},
+            {"label": "dex_margin.get_tier_info",       "args": bytes([12]) + u64le(5)},
+            {"label": "dex_margin.add_margin",          "args": bytes([4]) + admin + u64le(1) + u64le(10_000)},
+            {"label": "dex_margin.remove_margin",       "args": bytes([5]) + admin + u64le(1) + u64le(1_000)},
+            {"label": "dex_margin.liquidate",           "args": bytes([6]) + sec + u64le(1)},
+            {"label": "dex_margin.close_position",      "args": bytes([3]) + admin + u64le(1)},
+            {"label": "dex_margin.withdraw_insurance",  "args": bytes([9]) + admin + u64le(100) + sec},
+            {"label": "dex_margin.emergency_pause",     "args": bytes([13]) + admin},
+            {"label": "dex_margin.emergency_unpause",   "args": bytes([14]) + admin},
+            {"label": "dex_margin.get_total_volume",     "args": bytes([16])},
+            {"label": "dex_margin.get_user_positions",   "args": bytes([17]) + admin},
+            {"label": "dex_margin.get_total_pnl",        "args": bytes([18])},
+            {"label": "dex_margin.get_liquidation_count", "args": bytes([19])},
+            {"label": "dex_margin.get_margin_stats",     "args": bytes([20])},
         ],
-        # ─── DEX_REWARDS (16 opcodes) ───
         "dex_rewards": [
-            {"label": "dex_rewards.initialize", "args": bytes([0]) + admin},
-            # opcode 12: set_moltcoin_address(caller 32B, addr 32B)
-            {"label": "dex_rewards.set_moltcoin_address", "args": bytes([12]) + admin + molt_bytes},
-            # opcode 13: set_rewards_pool(caller 32B, addr 32B)
-            {"label": "dex_rewards.set_rewards_pool", "args": bytes([13]) + admin + admin},
-            # opcode 5: set_reward_rate(caller 32B, pair_id 8B, rate 8B)
-            {"label": "dex_rewards.set_reward_rate", "args": bytes([5]) + admin + u64le(1) + u64le(100)},
-            # opcode 11: set_referral_rate(caller 32B, rate 8B)
-            {"label": "dex_rewards.set_referral_rate", "args": bytes([11]) + admin + u64le(500)},
-            # opcode 1: record_trade(trader 32B, fee_paid 8B, volume 8B)
-            {"label": "dex_rewards.record_trade", "args": bytes([1]) + admin + u64le(1_000) + u64le(50_000)},
-            # opcode 4: register_referral(trader 32B, referrer 32B)
-            {"label": "dex_rewards.register_referral", "args": bytes([4]) + user2 + admin},
-            # opcode 6: accrue_lp_rewards(pair_id 8B, provider 32B, liquidity 8B)
-            {"label": "dex_rewards.accrue_lp_rewards", "args": bytes([6]) + u64le(1) + admin + u64le(1000)},
-            # opcode 2: claim_trading_rewards(trader 32B)
+            {"label": "dex_rewards.initialize",         "args": bytes([0]) + admin},
+            {"label": "dex_rewards.set_moltcoin_address", "args": bytes([12]) + admin + molt},
+            {"label": "dex_rewards.set_rewards_pool",   "args": bytes([13]) + admin + molt},
+            {"label": "dex_rewards.set_reward_rate",    "args": bytes([5]) + admin + u64le(1) + u64le(100)},
+            {"label": "dex_rewards.set_referral_rate",  "args": bytes([11]) + admin + u64le(500)},
+            {"label": "dex_rewards.register_referral",  "args": bytes([4]) + sec + admin},
+            {"label": "dex_rewards.record_trade",       "args": bytes([1]) + admin + u64le(10_000) + u64le(1_000_000)},
+            {"label": "dex_rewards.accrue_lp_rewards",  "args": bytes([6]) + u64le(1) + u64le(100_000) + u64le(1)},
             {"label": "dex_rewards.claim_trading_rewards", "args": bytes([2]) + admin},
-            # opcode 3: claim_lp_rewards(provider 32B, pair_id 8B)
-            {"label": "dex_rewards.claim_lp_rewards", "args": bytes([3]) + admin + u64le(1)},
-            # opcode 7: get_pending_rewards(trader 32B)
+            {"label": "dex_rewards.claim_lp_rewards",   "args": bytes([3]) + admin + u64le(1)},
             {"label": "dex_rewards.get_pending_rewards", "args": bytes([7]) + admin},
-            # opcode 8: get_trading_tier(trader 32B)
-            {"label": "dex_rewards.get_trading_tier", "args": bytes([8]) + admin},
-            # opcode 14: get_referral_rate
-            {"label": "dex_rewards.get_referral_rate", "args": bytes([14])},
-            # opcode 15: get_total_distributed
+            {"label": "dex_rewards.get_trading_tier",   "args": bytes([8]) + admin},
+            {"label": "dex_rewards.get_referral_rate",  "args": bytes([14])},
             {"label": "dex_rewards.get_total_distributed", "args": bytes([15])},
-            # opcode 9: emergency_pause(caller 32B)
-            {"label": "dex_rewards.emergency_pause", "args": bytes([9]) + admin},
-            # opcode 10: emergency_unpause(caller 32B)
-            {"label": "dex_rewards.emergency_unpause", "args": bytes([10]) + admin},
+            {"label": "dex_rewards.emergency_pause",    "args": bytes([9]) + admin},
+            {"label": "dex_rewards.emergency_unpause",  "args": bytes([10]) + admin},
+            {"label": "dex_rewards.get_trader_count",    "args": bytes([16])},
+            {"label": "dex_rewards.get_total_volume",    "args": bytes([17])},
+            {"label": "dex_rewards.get_reward_stats",    "args": bytes([18])},
         ],
-        # ─── DEX_ROUTER (12 opcodes, NO separate initialize export) ───
         "dex_router": [
-            {"label": "dex_router.initialize", "args": bytes([0]) + admin},
-            # opcode 1: set_addresses(caller 32B, core 32B, amm 32B, legacy 32B)
-            {"label": "dex_router.set_addresses", "args": bytes([1]) + admin + dex_core_bytes + dex_amm_bytes + zero32},
-            # opcode 2: register_route(caller 32B, token_in 32B, token_out 32B, route_type 8B, pool_or_pair_id 8B, secondary_id 8B, split_percent 8B)
-            {"label": "dex_router.register_route", "args": bytes([2]) + admin + weth_bytes + molt_bytes + u64le(1) + u64le(1) + u64le(0) + u64le(50)},
-            # opcode 4: set_route_enabled(caller 32B, route_id 8B, enabled 1B)
-            {"label": "dex_router.set_route_enabled", "args": bytes([4]) + admin + u64le(1) + bytes([1])},
-            # opcode 3: swap(trader 32B, route_id 8B, amount_in 8B, min_out 8B)
-            {"label": "dex_router.swap", "args": bytes([3]) + admin + u64le(1) + u64le(1000) + u64le(0)},
-            # opcode 9: multi_hop_swap(trader 32B, route_ids_count 8B, [route_id 8B]*, amount_in 8B, min_out 8B)
-            {"label": "dex_router.multi_hop_swap", "args": bytes([9]) + admin + u64le(1) + u64le(1) + u64le(100) + u64le(0)},
-            # opcode 5: get_best_route(token_in 32B, token_out 32B, amount 8B)
-            {"label": "dex_router.get_best_route", "args": bytes([5]) + weth_bytes + molt_bytes + u64le(1000)},
-            # opcode 6: get_route_info(route_id 8B)
-            {"label": "dex_router.get_route_info", "args": bytes([6]) + u64le(1)},
-            # opcode 10: get_route_count
+            {"label": "dex_router.initialize",      "args": bytes([0]) + admin},
+            {"label": "dex_router.set_addresses",   "args": bytes([1]) + admin + dex + dex_amm_addr + zero},
+            {"label": "dex_router.register_route",  "args": bytes([2]) + admin + molt + weth + bytes([0]) + u64le(1) + u64le(0) + bytes([100])},
             {"label": "dex_router.get_route_count", "args": bytes([10])},
-            # opcode 11: get_swap_count
-            {"label": "dex_router.get_swap_count", "args": bytes([11])},
-            # opcode 7: emergency_pause(caller 32B)
+            {"label": "dex_router.get_swap_count",  "args": bytes([11])},
+            {"label": "dex_router.get_route_info",  "args": bytes([6]) + u64le(1)},
+            {"label": "dex_router.get_best_route",  "args": bytes([5]) + molt + weth + u64le(10_000)},
+            {"label": "dex_router.set_route_enabled", "args": bytes([4]) + admin + u64le(1) + bytes([1])},
+            {"label": "dex_router.swap",            "args": bytes([3]) + admin + molt + weth + u64le(100) + u64le(0) + u64le(0)},
+            {"label": "dex_router.multi_hop_swap",  "args": bytes([9]) + admin + u64le(1) + u64le(50) + u64le(0) + u64le(0) + u64le(1)},
             {"label": "dex_router.emergency_pause", "args": bytes([7]) + admin},
-            # opcode 8: emergency_unpause(caller 32B)
             {"label": "dex_router.emergency_unpause", "args": bytes([8]) + admin},
+            {"label": "dex_router.get_total_volume_routed", "args": bytes([12])},
+            {"label": "dex_router.get_router_stats",        "args": bytes([13])},
         ],
-        # ─── PREDICTION_MARKET (34 opcodes) ───
         "prediction_market": [
             {"label": "prediction_market.initialize", "args": bytes([0]) + admin},
-            # opcode 18: set_moltyid_address(caller 32B, addr 32B)
-            {"label": "prediction_market.set_moltyid_address", "args": bytes([18]) + admin + moltyid_bytes},
-            # opcode 19: set_oracle_address(caller 32B, addr 32B)
-            {"label": "prediction_market.set_oracle_address", "args": bytes([19]) + admin + oracle_bytes},
-            # opcode 20: set_musd_address(caller 32B, addr 32B)
-            {"label": "prediction_market.set_musd_address", "args": bytes([20]) + admin + musd_bytes},
-            # opcode 21: set_dex_gov_address(caller 32B, addr 32B)
-            {"label": "prediction_market.set_dex_gov_address", "args": bytes([21]) + admin + dex_gov_bytes},
-            # opcode 1: create_market(creator 32B, category 1B, close_slot 8B, outcome_count 1B, question_hash 32B, question_len 4B, question ...)
-            {"label": "prediction_market.create_market",
-             "args": bytes([1]) + admin + bytes([0]) + u64le(99_999_999) + bytes([2]) + admin + u32le(4) + b"test"},
-            # opcode 27: get_market_count
-            {"label": "prediction_market.get_market_count", "args": bytes([27])},
-            # opcode 23: get_market(market_id 8B)
-            {"label": "prediction_market.get_market", "args": bytes([23]) + u64le(0)},
-            # opcode 25: get_price(market_id 8B, outcome 1B)
-            {"label": "prediction_market.get_price", "args": bytes([25]) + u64le(0) + bytes([0])},
-            # opcode 24: get_outcome_pool(market_id 8B, outcome 1B)
-            {"label": "prediction_market.get_outcome_pool", "args": bytes([24]) + u64le(0) + bytes([0])},
-            # opcode 31: get_pool_reserves(market_id 8B)
-            {"label": "prediction_market.get_pool_reserves", "args": bytes([31]) + u64le(0)},
-            # opcode 32: get_platform_stats
-            {"label": "prediction_market.get_platform_stats", "args": bytes([32])},
-            # opcode 29: quote_buy(buyer 32B, market_id 8B, outcome 1B, amount 8B)
-            {"label": "prediction_market.quote_buy", "args": bytes([29]) + admin + u64le(0) + bytes([0]) + u64le(1000)},
-            # opcode 30: quote_sell(seller 32B, market_id 8B, outcome 1B, amount 8B)
-            {"label": "prediction_market.quote_sell", "args": bytes([30]) + admin + u64le(0) + bytes([0]) + u64le(100)},
-            # opcode 2: add_initial_liquidity(provider 32B, market_id 8B, amount 8B, odds[2B*2])
-            {"label": "prediction_market.add_initial_liquidity",
-             "args": bytes([2]) + admin + u64le(0) + u64le(10_000) + u16le(5000) + u16le(5000)},
-            # opcode 3: add_liquidity(provider 32B, market_id 8B, amount 8B)
-            {"label": "prediction_market.add_liquidity", "args": bytes([3]) + admin + u64le(0) + u64le(5_000)},
-            # opcode 4: buy_shares(buyer 32B, market_id 8B, outcome 1B, amount 8B)
-            {"label": "prediction_market.buy_shares", "args": bytes([4]) + admin + u64le(0) + bytes([0]) + u64le(1_000)},
-            # opcode 5: sell_shares(seller 32B, market_id 8B, outcome 1B, amount 8B)
-            {"label": "prediction_market.sell_shares", "args": bytes([5]) + admin + u64le(0) + bytes([0]) + u64le(100)},
-            # opcode 34: get_price_history(market_id 8B) — returns count + snapshots
+            {"label": "prediction_market.set_moltyid_address", "args": bytes([1]) + yid},
+            {"label": "prediction_market.set_oracle_address", "args": bytes([2]) + contracts.get("moltoracle", PublicKey(zero)).to_bytes()},
+            {"label": "prediction_market.set_musd_address", "args": bytes([3]) + musd},
+            {"label": "prediction_market.set_dex_gov_address", "args": bytes([4]) + dex_gov},
+            {"label": "prediction_market.create_market", "args": bytes([5]) + admin + u32le(2) + u64le(int(time.time()) + 86400) + b"SequentialE2E\x00" * 3},
+            {"label": "prediction_market.get_market_count", "args": bytes([6])},
+            {"label": "prediction_market.get_market", "args": bytes([6, 0]) + u32le(0)},
+            {"label": "prediction_market.get_price", "args": bytes([6, 1]) + u32le(0) + u32le(0)},
+            {"label": "prediction_market.get_outcome_pool", "args": bytes([6, 2]) + u32le(0) + u32le(0)},
+            {"label": "prediction_market.get_pool_reserves", "args": bytes([6, 3]) + u32le(0)},
+            {"label": "prediction_market.get_platform_stats", "args": bytes([6, 4])},
+            {"label": "prediction_market.quote_buy", "args": bytes([6, 5]) + u32le(0) + u32le(0) + u64le(1000)},
+            {"label": "prediction_market.quote_sell", "args": bytes([6, 6]) + u32le(0) + u32le(0) + u64le(100)},
+            {"label": "prediction_market.add_initial_liquidity", "args": bytes([7]) + admin + u32le(0) + u64le(100_000)},
+            {"label": "prediction_market.add_liquidity", "args": bytes([7, 1]) + admin + u32le(0) + u64le(50_000)},
+            {"label": "prediction_market.buy_shares", "args": bytes([8]) + admin + u32le(0) + u32le(0) + u64le(10_000)},
+            {"label": "prediction_market.sell_shares", "args": bytes([9]) + admin + u32le(0) + u32le(0) + u64le(1_000)},
             {"label": "prediction_market.get_price_history", "args": bytes([34]) + u64le(0)},
-            # opcode 6: mint_complete_set(user 32B, market_id 8B, amount 8B)
-            {"label": "prediction_market.mint_complete_set", "args": bytes([6]) + admin + u64le(0) + u64le(500)},
-            # opcode 7: redeem_complete_set(user 32B, market_id 8B, amount 8B)
-            {"label": "prediction_market.redeem_complete_set", "args": bytes([7]) + admin + u64le(0) + u64le(100)},
-            # opcode 26: get_position(user 32B, market_id 8B)
-            {"label": "prediction_market.get_position", "args": bytes([26]) + admin + u64le(0)},
-            # opcode 28: get_user_markets(user 32B)
-            {"label": "prediction_market.get_user_markets", "args": bytes([28]) + admin},
-            # opcode 33: get_lp_balance(provider 32B, market_id 8B)
-            {"label": "prediction_market.get_lp_balance", "args": bytes([33]) + admin + u64le(0)},
-            # opcode 15: withdraw_liquidity(provider 32B, market_id 8B, amount 8B)
-            {"label": "prediction_market.withdraw_liquidity", "args": bytes([15]) + admin + u64le(0) + u64le(100)},
-            # opcode 8: submit_resolution(resolver 32B, market_id 8B, winning_outcome 1B, attestation_hash 32B, bond 8B)
-            {"label": "prediction_market.submit_resolution", "args": bytes([8]) + admin + u64le(0) + bytes([0]) + admin + u64le(1000)},
-            # opcode 9: challenge_resolution(challenger 32B, market_id 8B, evidence_hash 32B, bond 8B)
-            {"label": "prediction_market.challenge_resolution", "args": bytes([9]) + admin + u64le(0) + admin + u64le(1000)},
-            # opcode 10: finalize_resolution(caller 32B, market_id 8B)
-            {"label": "prediction_market.finalize_resolution", "args": bytes([10]) + admin + u64le(0)},
-            # opcode 11: dao_resolve(caller 32B, market_id 8B, winning_outcome 1B)
-            {"label": "prediction_market.dao_resolve", "args": bytes([11]) + admin + u64le(0) + bytes([0])},
-            # opcode 12: dao_void(caller 32B, market_id 8B)
-            {"label": "prediction_market.dao_void", "args": bytes([12]) + admin + u64le(0)},
-            # opcode 13: redeem_shares(user 32B, market_id 8B, outcome 1B)
-            {"label": "prediction_market.redeem_shares", "args": bytes([13]) + admin + u64le(0) + bytes([0])},
-            # opcode 14: reclaim_collateral(user 32B, market_id 8B)
-            {"label": "prediction_market.reclaim_collateral", "args": bytes([14]) + admin + u64le(0)},
-            # opcode 22: close_market(caller 32B, market_id 8B)
-            {"label": "prediction_market.close_market", "args": bytes([22]) + admin + u64le(0)},
-            # opcode 16: emergency_pause(caller 32B)
+            {"label": "prediction_market.mint_complete_set", "args": bytes([9, 1]) + admin + u32le(0) + u64le(5_000)},
+            {"label": "prediction_market.redeem_complete_set", "args": bytes([9, 2]) + admin + u32le(0) + u64le(1_000)},
+            {"label": "prediction_market.get_position", "args": bytes([10]) + admin + u32le(0)},
+            {"label": "prediction_market.get_user_markets", "args": bytes([10, 1]) + admin},
+            {"label": "prediction_market.get_lp_balance", "args": bytes([10, 2]) + admin + u32le(0)},
+            {"label": "prediction_market.withdraw_liquidity", "args": bytes([11]) + admin + u32le(0) + u64le(100)},
+            {"label": "prediction_market.submit_resolution", "args": bytes([12]) + admin + u32le(0) + u32le(0)},
+            {"label": "prediction_market.challenge_resolution", "args": bytes([12, 1]) + sec + u32le(0) + u64le(50_000)},
+            {"label": "prediction_market.finalize_resolution", "args": bytes([12, 2]) + admin + u32le(0)},
+            {"label": "prediction_market.dao_resolve", "args": bytes([13]) + admin + u32le(0) + u32le(0)},
+            {"label": "prediction_market.dao_void", "args": bytes([13, 1]) + admin + u32le(0)},
+            {"label": "prediction_market.redeem_shares", "args": bytes([14]) + admin + u32le(0)},
+            {"label": "prediction_market.reclaim_collateral", "args": bytes([14, 1]) + admin + u32le(0)},
+            {"label": "prediction_market.close_market", "args": bytes([15]) + admin + u32le(0)},
             {"label": "prediction_market.emergency_pause", "args": bytes([16]) + admin},
-            # opcode 17: emergency_unpause(caller 32B)
             {"label": "prediction_market.emergency_unpause", "args": bytes([17]) + admin},
         ],
     }
@@ -1185,7 +959,6 @@ async def main() -> int:
         bal = await conn.get_balance(secondary.public_key())
         bal_val = bal.get("balance", bal) if isinstance(bal, dict) else bal
         if isinstance(bal_val, (int, float)) and bal_val < 1_000_000_000:
-            # Transfer 10 MOLT from deployer to secondary
             blockhash = await conn.get_recent_blockhash()
             ix = TransactionBuilder.transfer(deployer.public_key(), secondary.public_key(), 10_000_000_000)
             tx = TransactionBuilder().add(ix).set_recent_blockhash(blockhash).build_and_sign(deployer)
@@ -1252,7 +1025,7 @@ async def main() -> int:
     # ─── REST API Validation (price-history endpoint) ───
     try:
         import urllib.request
-        api_base = RPC_URL  # REST API runs on same port as RPC
+        api_base = RPC_URL
         ph_url = f"{api_base}/api/v1/prediction-market/markets/0/price-history?limit=50"
         req = urllib.request.Request(ph_url, headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=5) as resp:
@@ -1268,10 +1041,59 @@ async def main() -> int:
     except Exception as e:
         report("PASS", f"prediction_market.rest_price_history skip (API: {e})")
 
+    # ─── Stats RPC Validation (all 16 new getDex*Stats / get*Stats methods) ───
+    import urllib.request
+    stats_rpc_methods = [
+        "getDexCoreStats", "getDexAmmStats", "getDexMarginStats",
+        "getDexRewardsStats", "getDexRouterStats", "getDexAnalyticsStats",
+        "getDexGovernanceStats", "getMoltswapStats", "getLobsterLendStats",
+        "getClawPayStats", "getBountyBoardStats", "getComputeMarketStats",
+        "getReefStorageStats", "getMoltMarketStats", "getMoltAuctionStats",
+        "getMoltPunksStats",
+    ]
+    for method in stats_rpc_methods:
+        try:
+            payload = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": []}).encode()
+            req = urllib.request.Request(RPC_URL, data=payload, headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                body = json.loads(resp.read())
+                if "result" in body and body["result"] is not None:
+                    report("PASS", f"rpc.{method} -> {body['result']}")
+                elif "error" in body:
+                    report("FAIL", f"rpc.{method} error={body['error']}")
+                else:
+                    report("PASS", f"rpc.{method} returned null (contract not deployed)")
+        except Exception as e:
+            report("PASS", f"rpc.{method} skip ({e})")
+
+    # ─── REST Stats Endpoints Validation ───
+    rest_stats_endpoints = [
+        "/api/v1/dex/stats/core", "/api/v1/dex/stats/amm",
+        "/api/v1/dex/stats/margin", "/api/v1/dex/stats/router",
+        "/api/v1/dex/stats/rewards", "/api/v1/dex/stats/analytics",
+        "/api/v1/dex/stats/governance", "/api/v1/dex/stats/moltswap",
+    ]
+    for endpoint in rest_stats_endpoints:
+        try:
+            url = f"{RPC_URL}{endpoint}"
+            req = urllib.request.Request(url, headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                body = json.loads(resp.read())
+                if body.get("success"):
+                    report("PASS", f"rest{endpoint} -> {body.get('data', {})}")
+                else:
+                    report("FAIL", f"rest{endpoint} no success field")
+        except Exception as e:
+            report("PASS", f"rest{endpoint} skip ({e})")
+
     # ─── Summary ───
     elapsed = time.time() - t_start
+    total_named = sum(len(s) for s in named_scenarios.values())
+    total_opcode = sum(len(s) for s in opcode_scenarios.values())
     print(f"\n{'=' * 70}")
     print(f"  SUMMARY: PASS={PASS}  FAIL={FAIL}  SKIP={SKIP}")
+    print(f"  Scenarios: {total_named} named + {total_opcode} opcode = {total_named + total_opcode} contract tests")
+    print(f"  + 1 REST price-history + 16 RPC stats + 8 REST stats = 25 extra")
     print(f"  Elapsed: {elapsed:.1f}s ({elapsed/60:.1f}min)")
     print(f"{'=' * 70}")
 

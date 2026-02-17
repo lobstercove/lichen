@@ -605,6 +605,12 @@ def build_named_scenarios(
             {"fn": "transfer_name", "args": {"caller_ptr": dp, "name_ptr": f"e2e{rid}", "name_len": len(f"e2e{rid}"), "new_owner_ptr": sp}},
             {"fn": "renew_name", "args": {"caller_ptr": sp, "name_ptr": f"e2e{rid}", "name_len": len(f"e2e{rid}"), "additional_years": 1}},
             {"fn": "release_name", "args": {"owner_ptr": sp, "name_ptr": f"e2e{rid}", "name_len": len(f"e2e{rid}")}},
+            # --- delegated name management ---
+            {"fn": "transfer_name_as", "args": {"delegate_ptr": sp, "owner_ptr": dp, "name_ptr": f"auction{rid}", "name_len": len(f"auction{rid}"), "new_owner_ptr": dp}},
+            {"fn": "renew_name_as", "args": {"delegate_ptr": sp, "owner_ptr": dp, "name_ptr": f"auction{rid}", "name_len": len(f"auction{rid}"), "additional_years": 1}},
+            {"fn": "release_name_as", "args": {"delegate_ptr": sp, "owner_ptr": dp, "name_ptr": f"auction{rid}", "name_len": len(f"auction{rid}")}},
+            # --- admin ---
+            {"fn": "admin_register_reserved_name", "args": {"admin_ptr": dp, "owner_ptr": dp, "name_ptr": f"reserved{rid}", "name_len": len(f"reserved{rid}"), "agent_type": 1}},
             {"fn": "transfer_admin", "args": {"caller_ptr": dp, "new_admin_ptr": dp}},
             {"fn": "mid_pause", "args": {"caller_ptr": dp}},
             {"fn": "mid_unpause", "args": {"caller_ptr": dp}},
