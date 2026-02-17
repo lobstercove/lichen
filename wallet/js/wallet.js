@@ -89,6 +89,19 @@ function connectBalanceWebSocket() {
             method: 'subscribeAccount',
             params: wallet.address
         }));
+        // P0-FIX: Subscribe to bridge events for real-time deposit status
+        balanceWs.send(JSON.stringify({
+            jsonrpc: '2.0',
+            id: 2,
+            method: 'subscribeBridgeLocks',
+            params: null
+        }));
+        balanceWs.send(JSON.stringify({
+            jsonrpc: '2.0',
+            id: 3,
+            method: 'subscribeBridgeMints',
+            params: null
+        }));
     };
     
     balanceWs.onmessage = (event) => {
@@ -98,6 +111,16 @@ function connectBalanceWebSocket() {
             // Subscription confirmations
             if (msg.id === 1 && msg.result !== undefined) {
                 balanceWsSubId = msg.result;
+                return;
+            }
+            if (msg.id === 2 && msg.result !== undefined) {
+                bridgeLockSubId = msg.result;
+                bridgeWsActive = true;
+                return;
+            }
+            if (msg.id === 3 && msg.result !== undefined) {
+                bridgeMintSubId = msg.result;
+                bridgeWsActive = true;
                 return;
             }
             
@@ -111,6 +134,18 @@ function connectBalanceWebSocket() {
                     refreshBalance();
                     loadAssets();
                     loadActivity();
+                    return;
+                }
+
+                // Bridge lock event — deposit detected on source chain
+                if (subId === bridgeLockSubId && result) {
+                    handleBridgeLockEvent(result);
+                    return;
+                }
+
+                // Bridge mint event — wrapped tokens minted on MoltChain
+                if (subId === bridgeMintSubId && result) {
+                    handleBridgeMintEvent(result);
                     return;
                 }
             }

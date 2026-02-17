@@ -2080,6 +2080,12 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
                 job.last_error = None;
                 job.next_attempt_at = None;
                 store_sweep_job(&state.db, job)?;
+
+                // P0-FIX: Update the deposit record to "swept" so polling clients
+                // see the status progression (issued → confirmed → swept → credited)
+                let _ = update_deposit_status(&state.db, &job.deposit_id, "swept");
+                let _ = update_status_index(&state.db, "deposits", "sweep_queued", "swept", &job.deposit_id);
+
                 record_audit_event(
                     &state.db,
                     "sweep_confirmed",
@@ -2200,6 +2206,12 @@ async fn process_credit_jobs(state: &CustodyState) -> Result<(), String> {
                 job.last_error = None;
                 job.next_attempt_at = None;
                 store_credit_job(&state.db, job)?;
+
+                // P0-FIX: Update the deposit record to "credited" so polling clients
+                // see the terminal state and can stop polling.
+                let _ = update_deposit_status(&state.db, &job.deposit_id, "credited");
+                let _ = update_status_index(&state.db, "deposits", "swept", "credited", &job.deposit_id);
+
                 record_audit_event(
                     &state.db,
                     "credit_confirmed",

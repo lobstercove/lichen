@@ -25,6 +25,16 @@ function shortAddress(address) {
   return `${address.slice(0, 10)}...${address.slice(-8)}`;
 }
 
+// P0-FIX: HTML-escape to prevent XSS in innerHTML templates
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
 function setText(id, value) {
   const node = document.getElementById(id);
   if (node) {
@@ -142,13 +152,16 @@ function renderDepositCard(data) {
   if (!card) return;
   const rawStatus = String(data.status || 'issued').toLowerCase();
   const displayStatus = BRIDGE_STATUS_MAP[rawStatus] || rawStatus || 'waiting';
+  const safeAddress = escapeHtml(data.address || '—');
+  const safeDepositId = escapeHtml(data.deposit_id || '—');
+  const safeStatus = escapeHtml(displayStatus);
   card.style.display = 'block';
   card.innerHTML = `
     <div><strong>Deposit Address</strong></div>
-    <div class="mono" style="margin: 0.35rem 0 0.45rem;" id="bridgeDepositAddress">${data.address || '—'}</div>
+    <div class="mono" style="margin: 0.35rem 0 0.45rem;" id="bridgeDepositAddress">${safeAddress}</div>
     <button class="btn btn-secondary btn-small" id="copyBridgeAddress" style="margin-bottom: 0.55rem;">Copy Address</button>
-    <div><strong>Deposit ID:</strong> <span class="mono">${data.deposit_id || '—'}</span></div>
-    <div><strong>Status:</strong> <span id="bridgeDepositStatus">${displayStatus}</span></div>
+    <div><strong>Deposit ID:</strong> <span class="mono">${safeDepositId}</span></div>
+    <div><strong>Status:</strong> <span id="bridgeDepositStatus">${safeStatus}</span></div>
   `;
 
   document.getElementById('copyBridgeAddress')?.addEventListener('click', () => {
