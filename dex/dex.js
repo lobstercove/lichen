@@ -1150,28 +1150,77 @@ document.addEventListener('DOMContentLoaded', () => {
         const existingCards = grid.querySelectorAll('.market-card');
         existingCards.forEach(c => c.remove());
 
+        const catIconsHtml = {
+            crypto: '<i class="fab fa-bitcoin"></i> Crypto',
+            politics: '<i class="fas fa-landmark"></i> Politics',
+            sports: '<i class="fas fa-football-ball"></i> Sports',
+            tech: '<i class="fas fa-microchip"></i> Tech',
+            science: '<i class="fas fa-flask"></i> Science',
+            entertainment: '<i class="fas fa-film"></i> Entertainment',
+            economics: '<i class="fas fa-chart-bar"></i> Economics',
+            custom: '<i class="fas fa-puzzle-piece"></i> Custom'
+        };
+        const multiDotClasses = ['multi-1', 'multi-2', 'multi-3', 'multi-4'];
+        const multiBarClasses = ['multi-bar-1', 'multi-bar-2', 'multi-bar-3', 'multi-bar-4'];
+
         predictState.markets.forEach(m => {
             const isResolved = m.status === 'resolved';
             const isMulti = m.multi;
             const yesPct = Math.round((m.yes || 0.5) * 100);
             const noPct = 100 - yesPct;
-            const catIcons = { crypto: '₿', politics: '🏛', sports: '⚽', science: '🔬', tech: '🤖', entertainment: '🎬', economics: '📈', custom: '🧩' };
+            const yesPrice = (m.yes || 0.5).toFixed(2);
+            const noPrice = (1 - (m.yes || 0.5)).toFixed(2);
 
             let outcomesHtml = '';
             if (isMulti && m.outcomes?.length) {
                 outcomesHtml = m.outcomes.map((o, i) => {
                     const pct = Math.round((o.price || 0) * 100);
-                    const colors = ['#4ea8de', '#06d6a0', '#ffd166', '#ef4444'];
-                    return `<div class="outcome-row"><span class="outcome-dot" style="background:${colors[i % colors.length]}"></span><span>${o.name}</span><div class="outcome-bar"><div class="outcome-bar-fill" style="width:${pct}%;background:${colors[i % colors.length]}"></div></div><span class="outcome-pct">${pct}%</span></div>`;
+                    return `<div class="outcome-row multi-outcome">
+                        <div class="outcome-label"><span class="outcome-dot ${multiDotClasses[i % 4]}"></span><span>${o.name}</span></div>
+                        <div class="outcome-bar-wrap"><div class="outcome-bar ${multiBarClasses[i % 4]}" style="width:${pct}%"></div></div>
+                        <div class="outcome-price"><span class="outcome-price-val">$${(o.price || 0).toFixed(2)}</span></div>
+                        <button class="btn btn-small btn-predict-buy" data-outcome="${i}" data-market="${m.id}">Buy</button>
+                    </div>`;
                 }).join('');
             } else if (isResolved) {
-                outcomesHtml = `<div class="outcome-row"><span class="outcome-dot yes"></span><span>Resolved</span><div class="outcome-bar"><div class="outcome-bar-fill yes" style="width:100%"></div></div><span class="outcome-pct">✓</span></div>`;
-            } else {
+                const winOutcome = m.resolved_outcome === 'no' ? 'NO' : 'YES';
                 outcomesHtml = `
-                    <div class="outcome-row"><span class="outcome-dot yes"></span><span>Yes</span><div class="outcome-bar"><div class="outcome-bar-fill yes" style="width:${yesPct}%"></div></div><span class="outcome-pct">${yesPct}%</span></div>
-                    <div class="outcome-row"><span class="outcome-dot no"></span><span>No</span><div class="outcome-bar"><div class="outcome-bar-fill no" style="width:${noPct}%"></div></div><span class="outcome-pct">${noPct}%</span></div>
-                `;
+                    <div class="outcome-row yes-outcome${winOutcome === 'YES' ? ' winner' : ''}">
+                        <div class="outcome-label"><span class="outcome-dot yes"></span><span>YES</span></div>
+                        <div class="outcome-bar-wrap"><div class="outcome-bar yes-bar" style="width:${yesPct}%"></div></div>
+                        <div class="outcome-price"><span class="outcome-price-val yes-price">$${yesPrice}</span></div>
+                    </div>
+                    <div class="outcome-row no-outcome${winOutcome === 'NO' ? ' winner' : ''}">
+                        <div class="outcome-label"><span class="outcome-dot no"></span><span>NO</span></div>
+                        <div class="outcome-bar-wrap"><div class="outcome-bar no-bar" style="width:${noPct}%"></div></div>
+                        <div class="outcome-price"><span class="outcome-price-val no-price">$${noPrice}</span></div>
+                    </div>`;
+            } else {
+                const yesChg = m.yes_change ? (m.yes_change > 0 ? `<span class="outcome-change positive">+${m.yes_change.toFixed(1)}%</span>` : `<span class="outcome-change negative">${m.yes_change.toFixed(1)}%</span>`) : '';
+                const noChg = m.no_change ? (m.no_change > 0 ? `<span class="outcome-change positive">+${m.no_change.toFixed(1)}%</span>` : `<span class="outcome-change negative">${m.no_change.toFixed(1)}%</span>`) : '';
+                outcomesHtml = `
+                    <div class="outcome-row yes-outcome">
+                        <div class="outcome-label"><span class="outcome-dot yes"></span><span>YES</span></div>
+                        <div class="outcome-bar-wrap"><div class="outcome-bar yes-bar" style="width:${yesPct}%"></div></div>
+                        <div class="outcome-price"><span class="outcome-price-val yes-price">$${yesPrice}</span>${yesChg}</div>
+                        <button class="btn btn-small btn-predict-buy" data-outcome="yes" data-market="${m.id}">Buy</button>
+                    </div>
+                    <div class="outcome-row no-outcome">
+                        <div class="outcome-label"><span class="outcome-dot no"></span><span>NO</span></div>
+                        <div class="outcome-bar-wrap"><div class="outcome-bar no-bar" style="width:${noPct}%"></div></div>
+                        <div class="outcome-price"><span class="outcome-price-val no-price">$${noPrice}</span>${noChg}</div>
+                        <button class="btn btn-small btn-predict-sell" data-outcome="no" data-market="${m.id}">Buy</button>
+                    </div>`;
             }
+
+            const statusClass = isResolved ? 'resolved' : m.status === 'disputed' ? 'disputed' : 'active';
+            const statusLabel = isResolved ? 'Resolved' : m.status === 'disputed' ? 'Disputed' : 'Active';
+            const catTag = catIconsHtml[m.cat] || '<i class="fas fa-chart-pie"></i> ' + (m.cat || 'Other');
+            const idTag = m.pm_id || `#PM-${String(m.id).padStart(3, '0')}`;
+            const closesLabel = m.closes ? `<span><i class="fas fa-clock"></i> ${m.closes}</span>` : '';
+            const creatorLabel = m.creator ? `<span><i class="fas fa-user"></i> Creator: ${m.creator}</span>` : '';
+            const volLabel = formatVolume(m.volume);
+            const liqLabel = formatVolume(m.liquidity);
 
             const card = document.createElement('div');
             card.className = 'market-card panel-card' + (isResolved ? ' resolved' : '');
@@ -1179,22 +1228,24 @@ document.addEventListener('DOMContentLoaded', () => {
             card.dataset.marketId = m.id;
             card.innerHTML = `
                 <div class="market-card-header">
-                    <span class="market-cat-badge">${catIcons[m.cat] || '📊'} ${m.cat}</span>
-                    <span class="market-status ${m.status}">${m.status}</span>
+                    <div class="market-status-row">
+                        <span class="market-status-badge ${statusClass}">${statusLabel}</span>
+                        <span class="market-cat-tag">${catTag}</span>
+                        <span class="market-id-tag">${idTag}</span>
+                    </div>
+                    <h4 class="market-question">${m.question}</h4>
+                    <div class="market-meta">
+                        ${closesLabel}${creatorLabel}
+                    </div>
                 </div>
-                <h4 class="market-question">${m.question}</h4>
                 <div class="market-outcomes">${outcomesHtml}</div>
                 <div class="market-footer">
-                    <div class="market-stat"><span class="stat-label">Volume</span><span class="stat-value">${formatVolume(m.volume)}</span></div>
-                    <div class="market-stat"><span class="stat-label">Liquidity</span><span class="stat-value">${formatVolume(m.liquidity)}</span></div>
-                    <div class="market-stat"><span class="stat-label">Traders</span><span class="stat-value">${m.traders || 0}</span></div>
-                    <button class="btn-predict-chart" data-market="${m.id}" title="Price Chart"><i class="fas fa-chart-line"></i></button>
-                    ${!isResolved ? `
-                        <div class="market-actions">
-                            <button class="btn-predict-buy" data-market="${m.id}" data-outcome="yes">Buy Yes</button>
-                            <button class="btn-predict-sell" data-market="${m.id}" data-outcome="no">Buy No</button>
-                        </div>
-                    ` : ''}
+                    <div class="market-stats-mini">
+                        <span><i class="fas fa-exchange-alt"></i> ${volLabel} vol</span>
+                        <span><i class="fas fa-lock"></i> ${liqLabel} liq</span>
+                        <span><i class="fas fa-users"></i> ${m.traders || 0} traders</span>
+                        <button class="btn-predict-chart" data-market="${m.id}" title="Price Chart"><i class="fas fa-chart-line"></i></button>
+                    </div>
                 </div>
             `;
             grid.appendChild(card);
