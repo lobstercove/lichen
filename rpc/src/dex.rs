@@ -18,7 +18,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::RpcState;
-use moltchain_core::contract::ContractAccount;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -385,27 +384,15 @@ pub struct CreateProposalBody {
 // Storage Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Read raw bytes from contract storage.
-/// Resolves program name → Pubkey via symbol registry, loads the account,
-/// deserializes as ContractAccount, then reads the given storage key.
+/// Read raw bytes from contract storage via CF_CONTRACT_STORAGE (O(1) point-read).
+/// Avoids deserializing the entire ContractAccount + WASM bytecode.
 fn read_bytes(state: &crate::RpcState, program: &str, key: &str) -> Option<Vec<u8>> {
-    let entry = state.state.get_symbol_registry(program).ok()??;
-    let account = state.state.get_account(&entry.program).ok()??;
-    let contract: ContractAccount = serde_json::from_slice(&account.data).ok()?;
-    contract.get_storage(key.as_bytes())
+    state.state.get_program_storage(program, key.as_bytes())
 }
 
-/// Read a u64 from contract storage
+/// Read a u64 from contract storage via CF_CONTRACT_STORAGE (O(1) point-read).
 fn read_u64(state: &crate::RpcState, program: &str, key: &str) -> u64 {
-    if let Some(data) = read_bytes(state, program, key) {
-        if data.len() >= 8 {
-            u64::from_le_bytes(data[..8].try_into().unwrap_or([0; 8]))
-        } else {
-            0
-        }
-    } else {
-        0
-    }
+    state.state.get_program_storage_u64(program, key.as_bytes())
 }
 
 /// Read a 32-byte address and return as hex

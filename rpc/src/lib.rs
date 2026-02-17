@@ -58,7 +58,7 @@ use moltchain_core::{
 
 /// System account owner (Pubkey([0x01; 32]))
 const SYSTEM_ACCOUNT_OWNER: Pubkey = Pubkey([0x01; 32]);
-use moltchain_core::consensus::{HEARTBEAT_BLOCK_REWARD, TRANSACTION_BLOCK_REWARD};
+use moltchain_core::consensus::{ValidatorInfo, HEARTBEAT_BLOCK_REWARD, TRANSACTION_BLOCK_REWARD};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
@@ -132,6 +132,11 @@ struct RpcState {
     dex_broadcaster: Arc<dex_ws::DexEventBroadcaster>,
     /// Prediction market real-time event broadcaster
     prediction_broadcaster: Arc<ws::PredictionEventBroadcaster>,
+    /// Cached validators list — refreshed at most once per slot (~400ms).
+    /// Avoids 6+ full CF_VALIDATORS scans per RPC cycle.
+    validator_cache: Arc<RwLock<(Instant, Vec<ValidatorInfo>)>>,
+    /// Cached metrics JSON — refreshed at most once per slot (~400ms).
+    metrics_cache: Arc<RwLock<(Instant, Option<serde_json::Value>)>>,
 }
 
 /// H16 fix: Guard state-mutating RPC endpoints in multi-validator mode.
@@ -152,6 +157,33 @@ fn require_single_validator(state: &RpcState, endpoint: &str) -> Result<(), RpcE
         });
     }
     Ok(())
+}
+
+/// Cached validator list — avoids redundant CF_VALIDATORS full-scans within a
+/// single slot (~400ms).  Six RPC handlers previously scanned the same CF
+/// independently; this collapses them into at most one scan per slot.
+const VALIDATOR_CACHE_TTL_MS: u128 = 400;
+
+async fn cached_validators(state: &RpcState) -> Result<Vec<ValidatorInfo>, RpcError> {
+    // Fast path: read lock
+    {
+        let guard = state.validator_cache.read().await;
+        if guard.0.elapsed().as_millis() < VALIDATOR_CACHE_TTL_MS && !guard.1.is_empty() {
+            return Ok(guard.1.clone());
+        }
+    }
+    // Slow path: write lock + refresh
+    let mut guard = state.validator_cache.write().await;
+    // Double check — another task may have refreshed while we waited for the write lock
+    if guard.0.elapsed().as_millis() < VALIDATOR_CACHE_TTL_MS && !guard.1.is_empty() {
+        return Ok(guard.1.clone());
+    }
+    let validators = state.state.get_all_validators().map_err(|e| RpcError {
+        code: -32000,
+        message: format!("Database error: {}", e),
+    })?;
+    *guard = (Instant::now(), validators.clone());
+    Ok(validators)
 }
 
 /// Verify admin authorization from params
@@ -307,13 +339,9 @@ async fn rate_limit_middleware(
 // UTILITY FUNCTIONS & HELPERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Helper: Count executable accounts (contracts) using the programs index
+/// Helper: Count executable accounts (contracts) using O(1) MetricsStore counter
 fn count_executable_accounts(state: &StateStore) -> u64 {
-    // Uses the CF_PROGRAMS index which tracks all deployed programs
-    state
-        .get_programs(usize::MAX)
-        .map(|programs| programs.len() as u64)
-        .unwrap_or(0)
+    state.get_program_count()
 }
 
 fn parse_transfer_amount(ix: &Instruction) -> Option<u64> {
@@ -792,6 +820,8 @@ pub fn build_rpc_router(
         finality,
         dex_broadcaster: dex_broadcaster.unwrap_or_else(|| Arc::new(dex_ws::DexEventBroadcaster::new(4096))),
         prediction_broadcaster: prediction_broadcaster.unwrap_or_else(|| Arc::new(ws::PredictionEventBroadcaster::new(1024))),
+        validator_cache: Arc::new(RwLock::new((Instant::now() - std::time::Duration::from_secs(60), Vec::new()))),
+        metrics_cache: Arc::new(RwLock::new((Instant::now() - std::time::Duration::from_secs(60), None))),
     };
 
     // T2.7: Restrictive CORS — allow localhost and configured origins only
@@ -3331,10 +3361,7 @@ async fn handle_get_total_burned(state: &RpcState) -> Result<serde_json::Value, 
 
 /// Get all validators
 async fn handle_get_validators(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let validators = state.state.get_all_validators().map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Database error: {}", e),
-    })?;
+    let validators = cached_validators(state).await?;
 
     // Pre-compute total reputation once (was O(n²) inside the map loop)
     let total_reputation: u64 = validators.iter().map(|val| val.reputation).sum();
@@ -3393,13 +3420,35 @@ async fn handle_get_validators(state: &RpcState) -> Result<serde_json::Value, Rp
     }))
 }
 
-/// Handle getMetrics
+/// Handle getMetrics — with per-slot response caching to avoid
+/// redundant full-scan computation on hot polling paths.
+const METRICS_CACHE_TTL_MS: u128 = 400;
+
 async fn handle_get_metrics(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    // Fast path: return cached response if still fresh
+    {
+        let guard = state.metrics_cache.read().await;
+        if guard.0.elapsed().as_millis() < METRICS_CACHE_TTL_MS {
+            if let Some(ref cached) = guard.1 {
+                return Ok(cached.clone());
+            }
+        }
+    }
+
+    // Slow path: compute then cache
+    let result = compute_metrics(state).await?;
+
+    {
+        let mut guard = state.metrics_cache.write().await;
+        *guard = (Instant::now(), Some(result.clone()));
+    }
+    Ok(result)
+}
+
+/// Inner metrics computation (expensive — calls multiple DB reads)
+async fn compute_metrics(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     let metrics = state.state.get_metrics();
-    let validators = state.state.get_all_validators().map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Database error: {}", e),
-    })?;
+    let validators = cached_validators(state).await?;
     let total_staked: u64 = if let Some(ref pool_arc) = state.stake_pool {
         if let Ok(pool) = pool_arc.try_read() {
             pool.total_stake()
@@ -3643,11 +3692,8 @@ async fn handle_get_cluster_info(state: &RpcState) -> Result<serde_json::Value, 
         Vec::new()
     };
 
-    // Get all known validators from DB (cleaned of stale entries on boot)
-    let validators = state.state.get_all_validators().map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Database error: {}", e),
-    })?;
+    // Get all known validators from cache (refreshed per-slot)
+    let validators = cached_validators(state).await?;
 
     // Build per-validator node info
     let nodes: Vec<serde_json::Value> = validators
@@ -3701,10 +3747,7 @@ async fn handle_get_cluster_info(state: &RpcState) -> Result<serde_json::Value, 
 /// Get network information
 async fn handle_get_network_info(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     let current_slot = state.state.get_last_slot().unwrap_or(0);
-    let validators = state.state.get_all_validators().map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Database error: {}", e),
-    })?;
+    let validators = cached_validators(state).await?;
 
     let peer_count = if let Some(ref p2p) = state.p2p {
         p2p.peer_count()
@@ -3841,10 +3884,7 @@ async fn handle_get_validator_performance(
 /// Get comprehensive chain status
 async fn handle_get_chain_status(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     let current_slot = state.state.get_last_slot().unwrap_or(0);
-    let validators = state.state.get_all_validators().map_err(|e| RpcError {
-        code: -32000,
-        message: format!("Database error: {}", e),
-    })?;
+    let validators = cached_validators(state).await?;
 
     let total_stake: u64 = if let Some(ref pool_arc) = state.stake_pool {
         if let Ok(pool) = pool_arc.try_read() {

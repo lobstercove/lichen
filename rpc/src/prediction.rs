@@ -17,7 +17,6 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use crate::RpcState;
-use moltchain_core::contract::ContractAccount;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Constants
@@ -75,24 +74,15 @@ fn api_404(msg: &str) -> Response {
 // Storage Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Load the entire prediction_market ContractAccount
-fn load_predict_contract(state: &RpcState) -> Option<ContractAccount> {
-    let entry = state.state.get_symbol_registry(PREDICT_PROGRAM).ok()??;
-    let account = state.state.get_account(&entry.program).ok()??;
-    serde_json::from_slice::<ContractAccount>(&account.data).ok()
-}
-
-/// Read raw bytes from prediction_market storage
+/// Read raw bytes from prediction_market storage via CF_CONTRACT_STORAGE (O(1) point-read).
+/// Avoids deserializing the entire ContractAccount + WASM bytecode.
 fn read_bytes(state: &RpcState, key: &[u8]) -> Option<Vec<u8>> {
-    let contract = load_predict_contract(state)?;
-    contract.get_storage(key)
+    state.state.get_program_storage(PREDICT_PROGRAM, key)
 }
 
-/// Read u64 from prediction_market storage
+/// Read u64 from prediction_market storage via CF_CONTRACT_STORAGE (O(1) point-read).
 fn read_u64_key(state: &RpcState, key: &[u8]) -> u64 {
-    read_bytes(state, key)
-        .and_then(|d| if d.len() >= 8 { Some(u64::from_le_bytes(d[..8].try_into().ok()?)) } else { None })
-        .unwrap_or(0)
+    state.state.get_program_storage_u64(PREDICT_PROGRAM, key)
 }
 
 fn current_slot(state: &RpcState) -> u64 {
@@ -234,9 +224,9 @@ fn u64_le(data: &[u8], offset: usize) -> u64 {
 }
 
 /// Decode a 192-byte market record
-fn decode_market(contract: &ContractAccount, id: u64) -> Option<MarketJson> {
+fn decode_market(state: &RpcState, id: u64) -> Option<MarketJson> {
     let key = format!("pm_m_{}", id);
-    let data = contract.get_storage(key.as_bytes())?;
+    let data = state.state.get_program_storage(PREDICT_PROGRAM, key.as_bytes())?;
     if data.len() < 192 {
         return None;
     }
@@ -258,8 +248,7 @@ fn decode_market(contract: &ContractAccount, id: u64) -> Option<MarketJson> {
 
     // Read question text
     let q_key = format!("pm_q_{}", id);
-    let question = contract
-        .get_storage(q_key.as_bytes())
+    let question = state.state.get_program_storage(PREDICT_PROGRAM, q_key.as_bytes())
         .and_then(|d| String::from_utf8(d).ok())
         .unwrap_or_default();
 
@@ -269,13 +258,11 @@ fn decode_market(contract: &ContractAccount, id: u64) -> Option<MarketJson> {
         let o_key = format!("pm_o_{}_{}", id, oi);
         let on_key = format!("pm_on_{}_{}", id, oi);
 
-        let name = contract
-            .get_storage(on_key.as_bytes())
+        let name = state.state.get_program_storage(PREDICT_PROGRAM, on_key.as_bytes())
             .and_then(|d| String::from_utf8(d).ok())
             .unwrap_or_else(|| if oi == 0 { "Yes".to_string() } else { "No".to_string() });
 
-        let (pool_yes, pool_no) = contract
-            .get_storage(o_key.as_bytes())
+        let (pool_yes, pool_no) = state.state.get_program_storage(PREDICT_PROGRAM, o_key.as_bytes())
             .map(|d| {
                 if d.len() >= 16 {
                     let y = u64_le(&d, 0);
@@ -360,22 +347,14 @@ async fn get_markets(
     Query(params): Query<MarketListQuery>,
 ) -> Response {
     let slot = current_slot(&state);
-    let contract = match load_predict_contract(&state) {
-        Some(c) => c,
-        None => return api_err("Prediction market contract not found"),
-    };
-
-    let total_markets = contract
-        .get_storage(b"pm_market_count")
-        .and_then(|d| if d.len() >= 8 { Some(u64_le(&d, 0)) } else { None })
-        .unwrap_or(0);
+    let total_markets = read_u64_key(&state, b"pm_market_count");
 
     let limit = params.limit.unwrap_or(50).min(200);
     let offset = params.offset.unwrap_or(0);
 
     let mut markets = Vec::new();
     for id in 1..=total_markets {
-        if let Some(mkt) = decode_market(&contract, id) {
+        if let Some(mkt) = decode_market(&state, id) {
             // category filter
             if let Some(ref cat) = params.category {
                 if mkt.category != cat.as_str() {
@@ -421,12 +400,8 @@ async fn get_market(
     Path(id): Path<u64>,
 ) -> Response {
     let slot = current_slot(&state);
-    let contract = match load_predict_contract(&state) {
-        Some(c) => c,
-        None => return api_err("Prediction market contract not found"),
-    };
 
-    match decode_market(&contract, id) {
+    match decode_market(&state, id) {
         Some(mkt) => ApiResponse::ok(mkt, slot).into_response(),
         None => api_404(&format!("Market {} not found", id)),
     }
@@ -443,31 +418,23 @@ async fn get_positions(
         None => return api_err("address parameter required"),
     };
 
-    let contract = match load_predict_contract(&state) {
-        Some(c) => c,
-        None => return api_err("Prediction market contract not found"),
-    };
-
     // Get user's participation count
     let count_key = format!("pm_userc_{}", addr);
-    let count = contract
-        .get_storage(count_key.as_bytes())
-        .and_then(|d| if d.len() >= 8 { Some(u64_le(&d, 0)) } else { None })
-        .unwrap_or(0);
+    let count = read_u64_key(&state, count_key.as_bytes());
 
     let mut positions = Vec::new();
 
     // Iterate user's markets
     for idx in 0..count {
         let um_key = format!("pm_user_{}_{}", addr, idx);
-        let market_id = match contract.get_storage(um_key.as_bytes()) {
+        let market_id = match read_bytes(&state, um_key.as_bytes()) {
             Some(d) if d.len() >= 8 => u64_le(&d, 0),
             _ => continue,
         };
 
         // Get market record to know outcome_count
         let mkt_key = format!("pm_m_{}", market_id);
-        let mkt_data = match contract.get_storage(mkt_key.as_bytes()) {
+        let mkt_data = match read_bytes(&state, mkt_key.as_bytes()) {
             Some(d) if d.len() >= 192 => d,
             _ => continue,
         };
@@ -476,7 +443,7 @@ async fn get_positions(
         // Check each outcome for positions
         for oi in 0..outcome_count {
             let pos_key = format!("pm_p_{}_{}_{}", market_id, addr, oi);
-            if let Some(pd) = contract.get_storage(pos_key.as_bytes()) {
+            if let Some(pd) = read_bytes(&state, pos_key.as_bytes()) {
                 if pd.len() >= 16 {
                     let shares = u64_le(&pd, 0);
                     let cost_basis = u64_le(&pd, 8);
@@ -505,17 +472,9 @@ async fn get_price_history(
     let limit = q.limit.unwrap_or(200).min(500);
     let slot = current_slot(&state);
 
-    let contract = match load_predict_contract(&state) {
-        Some(c) => c,
-        None => return api_err("Prediction market contract not found"),
-    };
-
     // Read snapshot count
     let count_key = format!("pm_phc_{}", id);
-    let count = contract
-        .get_storage(count_key.as_bytes())
-        .and_then(|d| if d.len() >= 8 { Some(u64_le(&d, 0)) } else { None })
-        .unwrap_or(0);
+    let count = read_u64_key(&state, count_key.as_bytes());
 
     let offset = q.offset.unwrap_or(0) as u64;
     let start = if offset > 0 { offset.min(count) } else { count.saturating_sub(limit as u64) };
@@ -528,7 +487,7 @@ async fn get_price_history(
 
     for i in start..end {
         let key = format!("pm_ph_{}_{}", id, i);
-        if let Some(data) = contract.get_storage(key.as_bytes()) {
+        if let Some(data) = read_bytes(&state, key.as_bytes()) {
             if data.len() >= 24 {
                 let snap_slot = u64_le(&data, 0);
                 let price_raw = u64_le(&data, 8);
@@ -564,14 +523,10 @@ async fn post_trade(
     Json(req): Json<TradeRequest>,
 ) -> Response {
     let slot = current_slot(&state);
-    let contract = match load_predict_contract(&state) {
-        Some(c) => c,
-        None => return api_err("Prediction market contract not found"),
-    };
 
     // Validate market exists and is active
     let mkt_key = format!("pm_m_{}", req.market_id);
-    let mkt_data = match contract.get_storage(mkt_key.as_bytes()) {
+    let mkt_data = match read_bytes(&state, mkt_key.as_bytes()) {
         Some(d) if d.len() >= 192 => d,
         _ => return api_404(&format!("Market {} not found", req.market_id)),
     };
@@ -588,8 +543,7 @@ async fn post_trade(
 
     // Read current pool for the outcome
     let o_key = format!("pm_o_{}_{}", req.market_id, req.outcome);
-    let (pool_yes, pool_no) = contract
-        .get_storage(o_key.as_bytes())
+    let (pool_yes, pool_no) = read_bytes(&state, o_key.as_bytes())
         .map(|d| {
             if d.len() >= 16 {
                 (u64_le(&d, 0), u64_le(&d, 8))
@@ -666,25 +620,14 @@ async fn post_create(
         _ => 7,
     };
 
-    // ── Load contract + compute next ID ──────────────────────────────────
+    // ── Resolve program Pubkey + compute next ID via CF_CONTRACT_STORAGE ─
     let entry = match state.state.get_symbol_registry(PREDICT_PROGRAM) {
         Ok(Some(e)) => e,
         _ => return api_err("Prediction market contract not found"),
     };
     let program_pubkey = entry.program;
-    let mut account = match state.state.get_account(&program_pubkey) {
-        Ok(Some(a)) => a,
-        _ => return api_err("Prediction market account not found"),
-    };
-    let mut contract: ContractAccount = match serde_json::from_slice(&account.data) {
-        Ok(c) => c,
-        Err(_) => return api_err("Failed to deserialize prediction contract"),
-    };
 
-    let market_count = contract
-        .get_storage(b"pm_market_count")
-        .and_then(|d| if d.len() >= 8 { Some(u64::from_le_bytes(d[..8].try_into().ok()?)) } else { None })
-        .unwrap_or(0);
+    let market_count = read_u64_key(&state, b"pm_market_count");
     let new_id = market_count + 1;
 
     // ── Build 192-byte market record ─────────────────────────────────────
@@ -702,14 +645,18 @@ async fn post_create(
     record[68..76].copy_from_slice(&init_liq.to_le_bytes());      // total_collateral
     // [76..84] total_volume = 0, [164..172] fees_collected = 0 (already zeroed)
 
-    // ── Persist to storage ───────────────────────────────────────────────
+    // ── Persist directly to CF_CONTRACT_STORAGE (avoids full ContractAccount deser) ─
     let mkt_key = format!("pm_m_{}", new_id);
-    contract.storage.insert(mkt_key.into_bytes(), record);
-    contract.storage.insert(b"pm_market_count".to_vec(), new_id.to_le_bytes().to_vec());
+    if let Err(e) = state.state.put_contract_storage(&program_pubkey, mkt_key.as_bytes(), &record) {
+        return api_err(&format!("Failed to persist market: {}", e));
+    }
+    if let Err(e) = state.state.put_contract_storage(&program_pubkey, b"pm_market_count", &new_id.to_le_bytes()) {
+        return api_err(&format!("Failed to persist market count: {}", e));
+    }
 
     // Question text
     let q_key = format!("pm_q_{}", new_id);
-    contract.storage.insert(q_key.into_bytes(), req.question.as_bytes().to_vec());
+    let _ = state.state.put_contract_storage(&program_pubkey, q_key.as_bytes(), req.question.as_bytes());
 
     // Outcome pools (Yes/No) — seed with initial liquidity split 50/50
     let half = init_liq / 2;
@@ -719,24 +666,13 @@ async fn post_create(
 
     let o0 = format!("pm_o_{}_0", new_id);
     let o1 = format!("pm_o_{}_1", new_id);
-    contract.storage.insert(o0.into_bytes(), pool_data.clone());
-    contract.storage.insert(o1.into_bytes(), pool_data);
+    let _ = state.state.put_contract_storage(&program_pubkey, o0.as_bytes(), &pool_data);
+    let _ = state.state.put_contract_storage(&program_pubkey, o1.as_bytes(), &pool_data);
 
     let on0 = format!("pm_on_{}_0", new_id);
     let on1 = format!("pm_on_{}_1", new_id);
-    contract.storage.insert(on0.into_bytes(), b"Yes".to_vec());
-    contract.storage.insert(on1.into_bytes(), b"No".to_vec());
-
-    // Write back
-    match serde_json::to_vec(&contract) {
-        Ok(data) => {
-            account.data = data;
-            if let Err(e) = state.state.put_account(&program_pubkey, &account) {
-                return api_err(&format!("Failed to persist market: {}", e));
-            }
-        }
-        Err(e) => return api_err(&format!("Failed to serialize contract: {}", e)),
-    }
+    let _ = state.state.put_contract_storage(&program_pubkey, on0.as_bytes(), b"Yes");
+    let _ = state.state.put_contract_storage(&program_pubkey, on1.as_bytes(), b"No");
 
     #[derive(Serialize)]
     struct CreateResult {
@@ -840,21 +776,16 @@ async fn get_leaderboard(
     let limit = params.limit.unwrap_or(20).min(50);
     let total_traders = read_u64_key(&state, b"pm_total_traders");
 
-    let contract = match load_predict_contract(&state) {
-        Some(c) => c,
-        None => return api_err("Prediction market contract not found"),
-    };
-
     let scan_max = total_traders.min(500) as usize;
     let mut entries: Vec<(String, u64, u64)> = Vec::with_capacity(scan_max);
 
     for i in 0..scan_max as u64 {
         let lk = format!("pm_tl_{}", i);
-        if let Some(addr_data) = contract.get_storage(lk.as_bytes()) {
+        if let Some(addr_data) = read_bytes(&state, lk.as_bytes()) {
             if addr_data.len() >= 32 {
                 let addr_hex = hex::encode(&addr_data[..32]);
                 let tk = format!("pm_ts_{}", addr_hex);
-                if let Some(sd) = contract.get_storage(tk.as_bytes()) {
+                if let Some(sd) = read_bytes(&state, tk.as_bytes()) {
                     if sd.len() >= 24 {
                         let vol = u64_le(&sd, 0);
                         let trades = u64_le(&sd, 8);
@@ -910,21 +841,14 @@ struct TrendingMarketJson {
 /// GET /prediction-market/trending — Markets ranked by 24h volume
 async fn get_trending(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
-    let contract = match load_predict_contract(&state) {
-        Some(c) => c,
-        None => return api_err("Prediction market contract not found"),
-    };
 
-    let total_markets = contract
-        .get_storage(b"pm_market_count")
-        .and_then(|d| if d.len() >= 8 { Some(u64_le(&d, 0)) } else { None })
-        .unwrap_or(0);
+    let total_markets = read_u64_key(&state, b"pm_market_count");
 
     let mut markets: Vec<TrendingMarketJson> = Vec::new();
 
     for id in 1..=total_markets {
         let mkt_key = format!("pm_m_{}", id);
-        let mkt_data = match contract.get_storage(mkt_key.as_bytes()) {
+        let mkt_data = match read_bytes(&state, mkt_key.as_bytes()) {
             Some(d) if d.len() >= 192 => d,
             _ => continue,
         };
@@ -939,22 +863,15 @@ async fn get_trending(State(state): State<Arc<RpcState>>) -> Response {
         let total_volume = u64_le(&mkt_data, 76);
 
         let q_key = format!("pm_q_{}", id);
-        let question = contract
-            .get_storage(q_key.as_bytes())
+        let question = read_bytes(&state, q_key.as_bytes())
             .and_then(|d| String::from_utf8(d).ok())
             .unwrap_or_default();
 
         let vol24_key = format!("pm_mv24_{}", id);
-        let vol24 = contract
-            .get_storage(vol24_key.as_bytes())
-            .and_then(|d| if d.len() >= 8 { Some(u64_le(&d, 0)) } else { None })
-            .unwrap_or(0);
+        let vol24 = read_u64_key(&state, vol24_key.as_bytes());
 
         let tc_key = format!("pm_mtc_{}", id);
-        let traders = contract
-            .get_storage(tc_key.as_bytes())
-            .and_then(|d| if d.len() >= 8 { Some(u64_le(&d, 0)) } else { None })
-            .unwrap_or(0);
+        let traders = read_u64_key(&state, tc_key.as_bytes());
 
         markets.push(TrendingMarketJson {
             id,
