@@ -17,7 +17,7 @@ use alloc::vec::Vec;
 
 use moltchain_sdk::{
     storage_get, storage_set, log_info,
-    bytes_to_u64, u64_to_bytes, get_slot,
+    bytes_to_u64, u64_to_bytes, get_slot, get_caller,
 };
 
 // ============================================================================
@@ -425,6 +425,11 @@ pub extern "C" fn initialize(admin: *const u8) -> u32 {
     if !is_zero(&existing) { return 1; }
     let mut addr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(admin, addr.as_mut_ptr(), 32); }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != addr {
+        return 200;
+    }
     storage_set(ADMIN_KEY, &addr);
     save_u64(POOL_COUNT_KEY, 0);
     save_u64(POSITION_COUNT_KEY, 0);
@@ -447,6 +452,12 @@ pub fn create_pool(
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(token_a, ta.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(token_b, tb.as_mut_ptr(), 32);
+    }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        reentrancy_exit();
+        return 200;
     }
     if !require_admin(&c) { reentrancy_exit(); return 1; }
     if !require_not_paused() { reentrancy_exit(); return 2; }
@@ -471,6 +482,11 @@ pub fn create_pool(
 pub fn set_pool_protocol_fee(caller: *const u8, pool_id: u64, fee_percent: u8) -> u32 {
     let mut c = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
     if !require_admin(&c) { return 1; }
     if fee_percent > 100 { return 2; }
     let pk = pool_key(pool_id);
@@ -495,6 +511,12 @@ pub fn add_liquidity(
 
     let mut p = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(provider, p.as_mut_ptr(), 32); }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != p {
+        reentrancy_exit();
+        return 200;
+    }
 
     let pk = pool_key(pool_id);
     let mut pool_data = match storage_get(&pk) {
@@ -561,6 +583,12 @@ pub fn remove_liquidity(provider: *const u8, position_id: u64, liquidity_amount:
     if !reentrancy_enter() { return 4; }
     let mut p = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(provider, p.as_mut_ptr(), 32); }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != p {
+        reentrancy_exit();
+        return 200;
+    }
 
     let pk = position_key(position_id);
     let mut pos_data = match storage_get(&pk) {
@@ -604,6 +632,11 @@ pub fn remove_liquidity(provider: *const u8, position_id: u64, liquidity_amount:
 pub fn collect_fees(provider: *const u8, position_id: u64) -> u32 {
     let mut p = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(provider, p.as_mut_ptr(), 32); }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != p {
+        return 200;
+    }
 
     let pk = position_key(position_id);
     let mut pos_data = match storage_get(&pk) {
@@ -634,12 +667,21 @@ pub fn collect_fees(provider: *const u8, position_id: u64) -> u32 {
 /// Returns: 0=success, 1=paused, 2=pool not found, 3=deadline expired,
 ///          4=insufficient output, 5=reentrancy, 6=zero amount
 pub fn swap_exact_in(
-    _trader: *const u8, pool_id: u64, is_token_a_in: bool,
+    trader: *const u8, pool_id: u64, is_token_a_in: bool,
     amount_in: u64, min_out: u64, deadline: u64,
 ) -> u32 {
     if !reentrancy_enter() { return 5; }
     if !require_not_paused() { reentrancy_exit(); return 1; }
     if amount_in == 0 { reentrancy_exit(); return 6; }
+
+    let mut tr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(trader, tr.as_mut_ptr(), 32); }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != tr {
+        reentrancy_exit();
+        return 200;
+    }
 
     let current_slot = get_slot();
     if deadline != 0 && current_slot > deadline { reentrancy_exit(); return 3; }
@@ -689,6 +731,15 @@ pub fn swap_exact_out(
     if !reentrancy_enter() { return 5; }
     if !require_not_paused() { reentrancy_exit(); return 1; }
     if amount_out == 0 { reentrancy_exit(); return 6; }
+
+    let mut tr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(trader, tr.as_mut_ptr(), 32); }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != tr {
+        reentrancy_exit();
+        return 200;
+    }
 
     let current_slot = get_slot();
     if deadline != 0 && current_slot > deadline { reentrancy_exit(); return 3; }
@@ -770,6 +821,11 @@ fn accrue_fees_to_positions(pool_id: u64, fee: u64, is_token_a: bool) {
 pub fn emergency_pause(caller: *const u8) -> u32 {
     let mut c = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
     if !require_admin(&c) { return 1; }
     storage_set(PAUSED_KEY, &[1u8]);
     log_info("DEX AMM: EMERGENCY PAUSE ACTIVATED");
@@ -779,6 +835,11 @@ pub fn emergency_pause(caller: *const u8) -> u32 {
 pub fn emergency_unpause(caller: *const u8) -> u32 {
     let mut c = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
     if !require_admin(&c) { return 1; }
     storage_set(PAUSED_KEY, &[0u8]);
     0
@@ -1043,6 +1104,7 @@ mod tests {
     fn setup() -> [u8; 32] {
         test_mock::reset();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(initialize(admin.as_ptr()), 0);
         admin
     }
@@ -1062,6 +1124,7 @@ mod tests {
     fn test_initialize() {
         test_mock::reset();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(initialize(admin.as_ptr()), 0);
         assert_eq!(load_addr(ADMIN_KEY), admin);
     }
@@ -1070,6 +1133,7 @@ mod tests {
     fn test_initialize_already_initialized() {
         test_mock::reset();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(initialize(admin.as_ptr()), 0);
         assert_eq!(initialize(admin.as_ptr()), 1);
     }
@@ -1091,6 +1155,7 @@ mod tests {
         let rando = [99u8; 32];
         let ta = [10u8; 32];
         let tb = [20u8; 32];
+        test_mock::set_caller(rando);
         assert_eq!(create_pool(rando.as_ptr(), ta.as_ptr(), tb.as_ptr(), FEE_TIER_30BPS, 1u64 << 32), 1);
     }
 
@@ -1124,6 +1189,7 @@ mod tests {
         let (_admin, pool_id) = setup_with_pool();
         let provider = [2u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(provider);
         // lower=-60, upper=60 (valid for 30bps tier with spacing 60)
         assert_eq!(add_liquidity(provider.as_ptr(), pool_id, -60, 60, 100_000, 100_000), 0);
         assert_eq!(load_u64(POSITION_COUNT_KEY), 1);
@@ -1133,6 +1199,7 @@ mod tests {
     fn test_add_liquidity_invalid_range() {
         let (_admin, pool_id) = setup_with_pool();
         let provider = [2u8; 32];
+        test_mock::set_caller(provider);
         // lower > upper
         assert_eq!(add_liquidity(provider.as_ptr(), pool_id, 60, -60, 100_000, 100_000), 3);
     }
@@ -1141,6 +1208,7 @@ mod tests {
     fn test_add_liquidity_bad_tick_spacing() {
         let (_admin, pool_id) = setup_with_pool();
         let provider = [2u8; 32];
+        test_mock::set_caller(provider);
         // 30bps tier has spacing=60, so ticks must be multiple of 60
         assert_eq!(add_liquidity(provider.as_ptr(), pool_id, -30, 30, 100_000, 100_000), 3);
     }
@@ -1150,6 +1218,7 @@ mod tests {
         let (admin, pool_id) = setup_with_pool();
         emergency_pause(admin.as_ptr());
         let provider = [2u8; 32];
+        test_mock::set_caller(provider);
         assert_eq!(add_liquidity(provider.as_ptr(), pool_id, -60, 60, 100_000, 100_000), 1);
     }
 
@@ -1158,6 +1227,7 @@ mod tests {
         let (_admin, pool_id) = setup_with_pool();
         let provider = [2u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(provider);
         add_liquidity(provider.as_ptr(), pool_id, -60, 60, 100_000, 100_000);
 
         let pos_data = storage_get(&position_key(1)).unwrap();
@@ -1175,7 +1245,9 @@ mod tests {
         let provider = [2u8; 32];
         let other = [3u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(provider);
         add_liquidity(provider.as_ptr(), pool_id, -60, 60, 100_000, 100_000);
+        test_mock::set_caller(other);
         assert_eq!(remove_liquidity(other.as_ptr(), 1, 1000), 2);
     }
 
@@ -1184,6 +1256,7 @@ mod tests {
         let (_admin, pool_id) = setup_with_pool();
         let provider = [2u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(provider);
         add_liquidity(provider.as_ptr(), pool_id, -60, 60, 100_000, 100_000);
         let pos_data = storage_get(&position_key(1)).unwrap();
         let liq = decode_pos_liquidity(&pos_data);
@@ -1198,7 +1271,9 @@ mod tests {
         let provider = [2u8; 32];
         let trader = [3u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(provider);
         add_liquidity(provider.as_ptr(), pool_id, -60, 60, 1_000_000, 1_000_000);
+        test_mock::set_caller(trader);
         assert_eq!(swap_exact_in(trader.as_ptr(), pool_id, true, 10_000, 0, 0), 0);
     }
 
@@ -1208,7 +1283,9 @@ mod tests {
         let provider = [2u8; 32];
         let trader = [3u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(provider);
         add_liquidity(provider.as_ptr(), pool_id, -60, 60, 1_000_000, 1_000_000);
+        test_mock::set_caller(trader);
         // Deadline in the past
         assert_eq!(swap_exact_in(trader.as_ptr(), pool_id, true, 10_000, 0, 50), 3);
     }
@@ -1219,8 +1296,11 @@ mod tests {
         let provider = [2u8; 32];
         let trader = [3u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(provider);
         add_liquidity(provider.as_ptr(), pool_id, -60, 60, 1_000_000, 1_000_000);
+        test_mock::set_caller(admin);
         emergency_pause(admin.as_ptr());
+        test_mock::set_caller(trader);
         assert_eq!(swap_exact_in(trader.as_ptr(), pool_id, true, 10_000, 0, 0), 1);
     }
 
@@ -1229,6 +1309,7 @@ mod tests {
         let (_admin, pool_id) = setup_with_pool();
         let trader = [3u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(trader);
         assert_eq!(swap_exact_in(trader.as_ptr(), pool_id, true, 0, 0, 0), 6);
     }
 
@@ -1238,7 +1319,9 @@ mod tests {
         let provider = [2u8; 32];
         let trader = [3u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(provider);
         add_liquidity(provider.as_ptr(), pool_id, -60, 60, 1_000_000, 1_000_000);
+        test_mock::set_caller(trader);
         // Request impossibly high min_out
         assert_eq!(swap_exact_in(trader.as_ptr(), pool_id, true, 10_000, u64::MAX, 0), 4);
     }
@@ -1249,7 +1332,9 @@ mod tests {
         let provider = [2u8; 32];
         let trader = [3u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(provider);
         add_liquidity(provider.as_ptr(), pool_id, -60, 60, 1_000_000, 1_000_000);
+        test_mock::set_caller(trader);
         swap_exact_in(trader.as_ptr(), pool_id, true, 100_000, 0, 0);
 
         let pos_data = storage_get(&position_key(1)).unwrap();
@@ -1265,9 +1350,12 @@ mod tests {
         let provider = [2u8; 32];
         let trader = [3u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(provider);
         add_liquidity(provider.as_ptr(), pool_id, -60, 60, 1_000_000, 1_000_000);
+        test_mock::set_caller(trader);
         swap_exact_in(trader.as_ptr(), pool_id, true, 100_000, 0, 0);
 
+        test_mock::set_caller(provider);
         assert_eq!(collect_fees(provider.as_ptr(), 1), 0);
         // Fees should be zeroed after collection
         let pos_data = storage_get(&position_key(1)).unwrap();
@@ -1281,7 +1369,9 @@ mod tests {
         let provider = [2u8; 32];
         let other = [3u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(provider);
         add_liquidity(provider.as_ptr(), pool_id, -60, 60, 1_000_000, 1_000_000);
+        test_mock::set_caller(other);
         assert_eq!(collect_fees(other.as_ptr(), 1), 2);
     }
 
@@ -1338,6 +1428,7 @@ mod tests {
     fn test_emergency_pause_not_admin() {
         let _admin = setup();
         let rando = [99u8; 32];
+        test_mock::set_caller(rando);
         assert_eq!(emergency_pause(rando.as_ptr()), 1);
     }
 
@@ -1365,6 +1456,7 @@ mod tests {
         let (_admin, pool_id) = setup_with_pool();
         let provider = [2u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(provider);
         add_liquidity(provider.as_ptr(), pool_id, -60, 60, 1_000_000, 1_000_000);
         assert!(get_tvl(pool_id) > 0);
     }
@@ -1374,6 +1466,7 @@ mod tests {
         let (_admin, pool_id) = setup_with_pool();
         let provider = [2u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(provider);
         add_liquidity(provider.as_ptr(), pool_id, -60, 60, 1_000_000, 1_000_000);
         let out = quote_swap(pool_id, true, 10_000);
         assert!(out > 0, "Quote should return non-zero output");
@@ -1396,9 +1489,12 @@ mod tests {
         let trader = [4u8; 32];
         test_mock::set_slot(100);
 
+        test_mock::set_caller(p1);
         add_liquidity(p1.as_ptr(), pool_id, -60, 60, 500_000, 500_000);
+        test_mock::set_caller(p2);
         add_liquidity(p2.as_ptr(), pool_id, -60, 60, 500_000, 500_000);
 
+        test_mock::set_caller(trader);
         swap_exact_in(trader.as_ptr(), pool_id, true, 100_000, 0, 0);
 
         let pos1 = storage_get(&position_key(1)).unwrap();

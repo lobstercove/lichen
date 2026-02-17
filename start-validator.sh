@@ -1,3 +1,3 @@
 #!/bin/bash
-cd /Users/johnrobin/.openclaw/workspace/moltchain
+cd "$(dirname "$0")"
 exec ./target/release/moltchain-validator "$@"

@@ -9,7 +9,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use moltchain_sdk::{
     storage_get, storage_set, log_info, set_return_data,
-    bytes_to_u64, u64_to_bytes, get_timestamp,
+    bytes_to_u64, u64_to_bytes, get_timestamp, get_caller,
     Address, CrossCall, call_contract,
 };
 
@@ -135,6 +135,12 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
     let mut admin = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != admin {
+        return 200;
+    }
+
     if storage_get(ADMIN_KEY).is_some() {
         log_info("Already initialized");
         return 1;
@@ -166,6 +172,13 @@ pub extern "C" fn add_strategy(
 ) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     let admin = match storage_get(ADMIN_KEY) {
         Some(a) => a,
         None => return 1,
@@ -254,6 +267,14 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u64 {
 
     let mut depositor = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(depositor_ptr, depositor.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != depositor {
+        reentrancy_exit();
+        return 200;
+    }
+
     let hex = hex_encode_addr(&depositor);
 
     let total_shares = load_u64(b"cv_total_shares");
@@ -318,6 +339,14 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, shares_to_burn: u64) -> u64
 
     let mut depositor = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(depositor_ptr, depositor.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != depositor {
+        reentrancy_exit();
+        return 200;
+    }
+
     let hex = hex_encode_addr(&depositor);
 
     let share_key = make_key(b"cv_shares:", &hex);
@@ -409,6 +438,13 @@ pub extern "C" fn set_protocol_addresses(
 ) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_cv_admin(&caller) {
         return 1;
     }
@@ -609,6 +645,13 @@ pub extern "C" fn get_strategy_info(index: u64) -> u32 {
 pub extern "C" fn cv_pause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_cv_admin(&caller) { return 1; }
     if is_cv_paused() { return 2; }
     storage_set(CV_PAUSE_KEY, &[1]);
@@ -622,6 +665,13 @@ pub extern "C" fn cv_pause(caller_ptr: *const u8) -> u32 {
 pub extern "C" fn cv_unpause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_cv_admin(&caller) { return 1; }
     if !is_cv_paused() { return 2; }
     storage_set(CV_PAUSE_KEY, &[0]);
@@ -635,6 +685,13 @@ pub extern "C" fn cv_unpause(caller_ptr: *const u8) -> u32 {
 pub extern "C" fn set_deposit_fee(caller_ptr: *const u8, fee_bps: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_cv_admin(&caller) { return 1; }
     if fee_bps > MAX_DEPOSIT_FEE_BPS { return 2; }
     store_u64(b"cv_dep_fee", fee_bps);
@@ -647,6 +704,13 @@ pub extern "C" fn set_deposit_fee(caller_ptr: *const u8, fee_bps: u64) -> u32 {
 pub extern "C" fn set_withdrawal_fee(caller_ptr: *const u8, fee_bps: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_cv_admin(&caller) { return 1; }
     if fee_bps > MAX_WITHDRAWAL_FEE_BPS { return 2; }
     store_u64(b"cv_wd_fee", fee_bps);
@@ -659,6 +723,13 @@ pub extern "C" fn set_withdrawal_fee(caller_ptr: *const u8, fee_bps: u64) -> u32
 pub extern "C" fn set_deposit_cap(caller_ptr: *const u8, cap: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_cv_admin(&caller) { return 1; }
     store_u64(b"cv_dep_cap", cap);
     0
@@ -674,6 +745,13 @@ pub extern "C" fn set_deposit_cap(caller_ptr: *const u8, cap: u64) -> u32 {
 pub extern "C" fn set_risk_tier(caller_ptr: *const u8, tier: u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_cv_admin(&caller) { return 1; }
     if tier < RISK_CONSERVATIVE || tier > RISK_AGGRESSIVE { return 2; }
     store_u64(b"cv_risk_tier", tier as u64);
@@ -686,6 +764,13 @@ pub extern "C" fn set_risk_tier(caller_ptr: *const u8, tier: u8) -> u32 {
 pub extern "C" fn remove_strategy(caller_ptr: *const u8, index: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_cv_admin(&caller) { return 1; }
     let count = load_u64(b"cv_strategy_count");
     if index >= count { return 2; }
@@ -704,6 +789,13 @@ pub extern "C" fn remove_strategy(caller_ptr: *const u8, index: u64) -> u32 {
 pub extern "C" fn withdraw_protocol_fees(caller_ptr: *const u8) -> u64 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_cv_admin(&caller) { return 0; }
     let fees = load_u64(b"cv_protocol_fees");
     if fees == 0 { return 0; }
@@ -718,6 +810,13 @@ pub extern "C" fn withdraw_protocol_fees(caller_ptr: *const u8) -> u64 {
 pub extern "C" fn update_strategy_allocation(caller_ptr: *const u8, index: u64, new_alloc: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_cv_admin(&caller) { return 1; }
     let count = load_u64(b"cv_strategy_count");
     if index >= count { return 2; }
@@ -751,6 +850,7 @@ mod tests {
     fn test_initialize() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         let result = initialize(admin.as_ptr());
         assert_eq!(result, 0);
         let stored = test_mock::get_storage(ADMIN_KEY);
@@ -763,6 +863,7 @@ mod tests {
     fn test_initialize_already_initialized() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(initialize(admin.as_ptr()), 0);
         assert_eq!(initialize(admin.as_ptr()), 1);
     }
@@ -771,6 +872,7 @@ mod tests {
     fn test_add_strategy() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let result = add_strategy(admin.as_ptr(), STRATEGY_LENDING, 50);
         assert_eq!(result, 0);
@@ -781,8 +883,10 @@ mod tests {
     fn test_add_strategy_unauthorized() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let other = [2u8; 32];
+        test_mock::set_caller(other);
         assert_eq!(add_strategy(other.as_ptr(), STRATEGY_LENDING, 50), 2);
     }
 
@@ -790,6 +894,7 @@ mod tests {
     fn test_add_strategy_invalid_type() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         assert_eq!(add_strategy(admin.as_ptr(), 0, 50), 3);
     }
@@ -798,6 +903,7 @@ mod tests {
     fn test_add_strategy_allocation_exceeds_100() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         assert_eq!(add_strategy(admin.as_ptr(), STRATEGY_LENDING, 60), 0);
         assert_eq!(add_strategy(admin.as_ptr(), STRATEGY_LP, 50), 5); // 60+50>100
@@ -807,8 +913,10 @@ mod tests {
     fn test_deposit() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         let amount = 100_000u64;
         let shares = deposit(user.as_ptr(), amount);
         // V2: deposit fee = 100_000 * 10 / 10_000 = 100; net = 99_900
@@ -827,8 +935,10 @@ mod tests {
     fn test_deposit_too_small_first() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         assert_eq!(deposit(user.as_ptr(), MIN_LOCKED_SHARES), 0);
     }
 
@@ -836,11 +946,14 @@ mod tests {
     fn test_deposit_second() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let user1 = [2u8; 32];
+        test_mock::set_caller(user1);
         deposit(user1.as_ptr(), 100_000);
         // After first deposit: total_shares = 1000 + 98_900 = 99_900, total_assets = 99_900
         let user2 = [3u8; 32];
+        test_mock::set_caller(user2);
         let shares2 = deposit(user2.as_ptr(), 50_000);
         // fee = 50_000 * 10 / 10_000 = 50, net = 49_950
         // shares = 49_950 * 99_900 / 99_900 = 49_950
@@ -851,8 +964,10 @@ mod tests {
     fn test_withdraw() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         let shares = deposit(user.as_ptr(), 100_000);
         let amount = withdraw(user.as_ptr(), shares);
         assert!(amount > 0);
@@ -869,8 +984,10 @@ mod tests {
     fn test_withdraw_insufficient_shares() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         deposit(user.as_ptr(), 100_000);
         // User has 98_900 shares, try withdrawing 100_000
         assert_eq!(withdraw(user.as_ptr(), 100_000), 0);
@@ -880,11 +997,13 @@ mod tests {
     fn test_harvest() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         add_strategy(admin.as_ptr(), STRATEGY_STAKING, 50);
         let user = [2u8; 32];
         // Set deposit fee to 0 for clean math
         set_deposit_fee(admin.as_ptr(), 0);
+        test_mock::set_caller(user);
         deposit(user.as_ptr(), 1_000_000_000_000);
         // Advance timestamp by 400 seconds (1000 slots)
         test_mock::set_timestamp(401_000);
@@ -898,6 +1017,7 @@ mod tests {
     fn test_harvest_no_assets() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         test_mock::set_timestamp(2000);
         assert_eq!(harvest(), 0);
@@ -907,6 +1027,7 @@ mod tests {
     fn test_get_vault_stats() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         assert_eq!(get_vault_stats(), 0);
         let ret = test_mock::get_return_data();
@@ -917,8 +1038,10 @@ mod tests {
     fn test_get_user_position() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         deposit(user.as_ptr(), 100_000);
         assert_eq!(get_user_position(user.as_ptr()), 0);
         let ret = test_mock::get_return_data();
@@ -931,6 +1054,7 @@ mod tests {
     fn test_get_strategy_info() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         add_strategy(admin.as_ptr(), STRATEGY_STAKING, 50);
         assert_eq!(get_strategy_info(0), 0);
@@ -944,6 +1068,7 @@ mod tests {
     fn test_get_strategy_info_out_of_bounds() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         assert_eq!(get_strategy_info(0), 1);
     }
@@ -957,28 +1082,38 @@ mod tests {
         setup();
         let admin = [1u8; 32];
         let non_admin = [2u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
+        test_mock::set_caller(non_admin);
         assert_eq!(cv_pause(non_admin.as_ptr()), 1); // not admin
+        test_mock::set_caller(admin);
         assert_eq!(cv_pause(admin.as_ptr()), 0);
         assert_eq!(cv_pause(admin.as_ptr()), 2); // already paused
 
         // Deposit blocked when paused
         let user = [3u8; 32];
+        test_mock::set_caller(user);
         assert_eq!(deposit(user.as_ptr(), 100_000), 0);
 
         // Withdraw still works (safety valve) — need prior deposit
         // Unpause first to deposit, then re-pause
+        test_mock::set_caller(admin);
         assert_eq!(cv_unpause(admin.as_ptr()), 0);
+        test_mock::set_caller(user);
         let shares = deposit(user.as_ptr(), 100_000);
         assert!(shares > 0);
+        test_mock::set_caller(admin);
         assert_eq!(cv_pause(admin.as_ptr()), 0);
 
         // Withdraw works even when paused
+        test_mock::set_caller(user);
         let amount = withdraw(user.as_ptr(), shares);
         assert!(amount > 0);
 
+        test_mock::set_caller(non_admin);
         assert_eq!(cv_unpause(non_admin.as_ptr()), 1); // not admin
+        test_mock::set_caller(admin);
         assert_eq!(cv_unpause(admin.as_ptr()), 0);
         assert_eq!(cv_unpause(admin.as_ptr()), 2); // not paused
     }
@@ -987,11 +1122,13 @@ mod tests {
     fn test_deposit_fee_configuration() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         // Set deposit fee to 0
         assert_eq!(set_deposit_fee(admin.as_ptr(), 0), 0);
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         let shares = deposit(user.as_ptr(), 100_000);
         // No fee: shares = 100_000 - 1_000 = 99_000
         assert_eq!(shares, 99_000);
@@ -1001,6 +1138,7 @@ mod tests {
     fn test_deposit_fee_too_high() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         assert_eq!(set_deposit_fee(admin.as_ptr(), 501), 2); // > 500 BPS
     }
@@ -1009,6 +1147,7 @@ mod tests {
     fn test_withdrawal_fee_configuration() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         // Set withdrawal fee to 0
@@ -1016,6 +1155,7 @@ mod tests {
         let user = [2u8; 32];
         // Also set deposit fee to 0 for simpler math
         set_deposit_fee(admin.as_ptr(), 0);
+        test_mock::set_caller(user);
         let shares = deposit(user.as_ptr(), 100_000);
         assert_eq!(shares, 99_000); // 100k - 1k locked
 
@@ -1030,6 +1170,7 @@ mod tests {
     fn test_withdrawal_fee_too_high() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         assert_eq!(set_withdrawal_fee(admin.as_ptr(), 501), 2);
     }
@@ -1038,12 +1179,14 @@ mod tests {
     fn test_deposit_cap() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         // Set cap at 200_000
         assert_eq!(set_deposit_cap(admin.as_ptr(), 200_000), 0);
 
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         let shares1 = deposit(user.as_ptr(), 150_000);
         assert!(shares1 > 0);
 
@@ -1057,9 +1200,12 @@ mod tests {
         setup();
         let admin = [1u8; 32];
         let non_admin = [2u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
+        test_mock::set_caller(non_admin);
         assert_eq!(set_risk_tier(non_admin.as_ptr(), RISK_CONSERVATIVE), 1);
+        test_mock::set_caller(admin);
         assert_eq!(set_risk_tier(admin.as_ptr(), 0), 2); // invalid
         assert_eq!(set_risk_tier(admin.as_ptr(), 4), 2); // invalid
         assert_eq!(set_risk_tier(admin.as_ptr(), RISK_CONSERVATIVE), 0);
@@ -1071,15 +1217,18 @@ mod tests {
     fn test_remove_strategy() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         add_strategy(admin.as_ptr(), STRATEGY_LENDING, 50);
         add_strategy(admin.as_ptr(), STRATEGY_LP, 30);
 
         // Non-admin fails
         let other = [2u8; 32];
+        test_mock::set_caller(other);
         assert_eq!(remove_strategy(other.as_ptr(), 0), 1);
 
         // Out of bounds fails
+        test_mock::set_caller(admin);
         assert_eq!(remove_strategy(admin.as_ptr(), 5), 2);
 
         // Remove strategy 0
@@ -1094,11 +1243,14 @@ mod tests {
     fn test_withdraw_protocol_fees() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         deposit(user.as_ptr(), 1_000_000); // fee = 1_000_000 * 10 / 10_000 = 100
 
+        test_mock::set_caller(admin);
         let fees = withdraw_protocol_fees(admin.as_ptr());
         assert_eq!(fees, 1000); // 1_000_000 * 10 / 10_000 = 1000
 
@@ -1107,6 +1259,7 @@ mod tests {
 
         // Non-admin returns 0
         let other = [3u8; 32];
+        test_mock::set_caller(other);
         assert_eq!(withdraw_protocol_fees(other.as_ptr()), 0);
     }
 
@@ -1114,6 +1267,7 @@ mod tests {
     fn test_update_strategy_allocation() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         add_strategy(admin.as_ptr(), STRATEGY_LENDING, 50);
         add_strategy(admin.as_ptr(), STRATEGY_LP, 30);
@@ -1128,6 +1282,7 @@ mod tests {
 
         // Non-admin fails
         let other = [2u8; 32];
+        test_mock::set_caller(other);
         assert_eq!(update_strategy_allocation(other.as_ptr(), 0, 10), 1);
     }
 
@@ -1139,6 +1294,7 @@ mod tests {
     fn test_set_protocol_addresses_success() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let lobsterlend = [0xAA; 32];
@@ -1158,9 +1314,11 @@ mod tests {
     fn test_set_protocol_addresses_not_admin() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let other = [99u8; 32];
+        test_mock::set_caller(other);
         let addr = [0xAA; 32];
         assert_eq!(
             set_protocol_addresses(other.as_ptr(), addr.as_ptr(), addr.as_ptr()),
@@ -1172,6 +1330,7 @@ mod tests {
     fn test_set_protocol_addresses_partial() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         // Only set lobsterlend (moltswap = zero → skipped)
@@ -1201,6 +1360,7 @@ mod tests {
     fn test_query_protocol_yield_no_address() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         // No protocol addresses set → query returns None → fallback
@@ -1212,6 +1372,7 @@ mod tests {
     fn test_query_protocol_yield_test_mode() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         // Set protocol address — call_contract returns Ok(Vec::new()) in test mode
@@ -1229,6 +1390,7 @@ mod tests {
         // Even with addresses configured, test mode returns empty → falls back to simulated
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         set_deposit_fee(admin.as_ptr(), 0);
 
@@ -1243,6 +1405,7 @@ mod tests {
         add_strategy(admin.as_ptr(), STRATEGY_STAKING, 30);
 
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         deposit(user.as_ptr(), 1_000_000_000_000);
 
         // Advance time
@@ -1261,6 +1424,7 @@ mod tests {
         // Same as original behavior — pure simulated yield
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         set_deposit_fee(admin.as_ptr(), 0);
 
@@ -1268,6 +1432,7 @@ mod tests {
         add_strategy(admin.as_ptr(), STRATEGY_LP, 50);
 
         let user = [2u8; 32];
+        test_mock::set_caller(user);
         deposit(user.as_ptr(), 1_000_000_000_000);
 
         test_mock::set_timestamp(401_000);

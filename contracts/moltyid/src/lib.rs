@@ -15,8 +15,26 @@ use alloc::vec::Vec;
 
 use moltchain_sdk::{
     log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_timestamp,
-    Address, CrossCall, call_contract,
+    Address, CrossCall, call_contract, get_caller,
 };
+
+// ============================================================================
+// REENTRANCY GUARD
+// ============================================================================
+
+const MOLTYID_REENTRANCY_KEY: &[u8] = b"mid_reentrancy";
+
+fn reentrancy_enter() -> bool {
+    if let Some(v) = storage_get(MOLTYID_REENTRANCY_KEY) {
+        if !v.is_empty() && v[0] == 1 { return false; }
+    }
+    storage_set(MOLTYID_REENTRANCY_KEY, &[1u8]);
+    true
+}
+
+fn reentrancy_exit() {
+    storage_set(MOLTYID_REENTRANCY_KEY, &[0u8]);
+}
 
 // ============================================================================
 // IDENTITY CONFIGURATION
@@ -574,14 +592,23 @@ fn name_registration_cost(name_len: usize) -> u64 {
 ///   - admin_ptr: pointer to 32-byte admin address
 #[no_mangle]
 pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() { return 100; }
     log_info("🪪 Initializing MoltyID program...");
 
     let mut admin = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != admin {
+        reentrancy_exit();
+        return 200;
+    }
+
     // Check not already initialized
     if storage_get(b"mid_admin").is_some() {
         log_info("MoltyID already initialized");
+        reentrancy_exit();
         return 1;
     }
 
@@ -590,6 +617,7 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
     storage_set(b"mid_initialized", &[1]);
 
     log_info("MoltyID initialized");
+    reentrancy_exit();
     0
 }
 
@@ -613,19 +641,30 @@ pub extern "C" fn register_identity(
     name_ptr: *const u8,
     name_len: u32,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     log_info("🪪 Registering new MoltyID identity...");
 
     if is_mid_paused() {
         log_info("MoltyID is paused");
+        reentrancy_exit();
         return 20;
     }
 
     let mut owner = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != owner {
+        reentrancy_exit();
+        return 200;
+    }
+
     let name_len = name_len as usize;
 
     if name_len == 0 || name_len > MAX_NAME_LEN {
         log_info("Invalid name length");
+        reentrancy_exit();
         return 1;
     }
 
@@ -635,6 +674,7 @@ pub extern "C" fn register_identity(
     // Validate agent type
     if !is_valid_agent_type(agent_type) {
         log_info("Invalid agent type");
+        reentrancy_exit();
         return 2;
     }
 
@@ -642,6 +682,7 @@ pub extern "C" fn register_identity(
     let id_key = identity_key(&owner);
     if storage_get(&id_key).is_some() {
         log_info("Identity already registered for this address");
+        reentrancy_exit();
         return 3;
     }
 
@@ -652,6 +693,7 @@ pub extern "C" fn register_identity(
         let last_ts = bytes_to_u64(&last);
         if now < last_ts + REGISTER_COOLDOWN_MS {
             log_info("Registration cooldown active");
+            reentrancy_exit();
             return 21;
         }
     }
@@ -699,6 +741,7 @@ pub extern "C" fn register_identity(
     storage_set(b"mid_identity_count", &u64_to_bytes(count + 1));
 
     log_info("Identity registered successfully");
+    reentrancy_exit();
     0
 }
 
@@ -761,21 +804,31 @@ pub extern "C" fn update_reputation_typed(
     contribution_type: u8,
     count: u64,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
     let mut target = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(target_ptr, target.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
 
     // Only admin can update reputation
     let admin = match storage_get(b"mid_admin") {
         Some(data) => data,
         None => {
             log_info("MoltyID not initialized");
+            reentrancy_exit();
             return 1;
         }
     };
     if caller[..] != admin[..] {
         log_info("Unauthorized: only admin can update reputation");
+        reentrancy_exit();
         return 2;
     }
 
@@ -784,6 +837,7 @@ pub extern "C" fn update_reputation_typed(
         Some(data) => data,
         None => {
             log_info("Target identity not found");
+            reentrancy_exit();
             return 3;
         }
     };
@@ -802,6 +856,7 @@ pub extern "C" fn update_reputation_typed(
         6 => (false, 100u64), // slashing_event
         _ => {
             log_info("Invalid contribution type");
+            reentrancy_exit();
             return 4;
         }
     };
@@ -847,6 +902,7 @@ pub extern "C" fn update_reputation_typed(
     log_info(&alloc::format!("Reputation updated: {} → {} (type: {}, Δ: {}{})",
         current_rep, new_rep, contribution_type,
         if is_positive { "+" } else { "-" }, delta));
+    reentrancy_exit();
     0
 }
 
@@ -865,21 +921,31 @@ pub extern "C" fn update_reputation(
     delta: u64,
     is_increase: u8,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
     let mut target = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(target_ptr, target.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
 
     // Only admin can directly update reputation
     let admin = match storage_get(b"mid_admin") {
         Some(data) => data,
         None => {
             log_info("MoltyID not initialized");
+            reentrancy_exit();
             return 1;
         }
     };
     if caller[..] != admin[..] {
         log_info("Unauthorized: only admin can update reputation");
+        reentrancy_exit();
         return 2;
     }
 
@@ -889,6 +955,7 @@ pub extern "C" fn update_reputation(
         Some(data) => data,
         None => {
             log_info("Target identity not found");
+            reentrancy_exit();
             return 3;
         }
     };
@@ -925,6 +992,7 @@ pub extern "C" fn update_reputation(
     storage_set(&rep_key, &rep_bytes);
 
     log_info("Reputation updated");
+    reentrancy_exit();
     0
 }
 
@@ -947,17 +1015,28 @@ pub extern "C" fn add_skill(
     skill_name_len: u32,
     proficiency: u8,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+
     let skill_name_len = skill_name_len as usize;
 
     if skill_name_len == 0 || skill_name_len > MAX_SKILL_LEN {
         log_info("Invalid skill name length");
+        reentrancy_exit();
         return 1;
     }
 
     if proficiency > 100 {
         log_info("Proficiency must be 0-100");
+        reentrancy_exit();
         return 2;
     }
 
@@ -970,6 +1049,7 @@ pub extern "C" fn add_skill(
         Some(data) => data,
         None => {
             log_info("Identity not found — register first");
+            reentrancy_exit();
             return 3;
         }
     };
@@ -977,6 +1057,7 @@ pub extern "C" fn add_skill(
     // Verify caller owns this identity
     if record.len() < IDENTITY_SIZE || record[0..32] != caller[..] {
         log_info("Unauthorized: not identity owner");
+        reentrancy_exit();
         return 4;
     }
 
@@ -984,6 +1065,7 @@ pub extern "C" fn add_skill(
     let skill_count = record[123];
     if skill_count as usize >= MAX_SKILLS {
         log_info("Maximum skills reached");
+        reentrancy_exit();
         return 5;
     }
 
@@ -1007,6 +1089,7 @@ pub extern "C" fn add_skill(
     storage_set(&id_key, &record);
 
     log_info("Skill added");
+    reentrancy_exit();
     0
 }
 
@@ -1020,25 +1103,37 @@ pub extern "C" fn add_skill_as(
     skill_name_len: u32,
     proficiency: u8,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut delegate = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
     let mut owner = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != delegate {
+        reentrancy_exit();
+        return 200;
+    }
+
     let skill_name_len = skill_name_len as usize;
 
     if skill_name_len == 0 || skill_name_len > MAX_SKILL_LEN {
         log_info("Invalid skill name length");
+        reentrancy_exit();
         return 1;
     }
 
     if proficiency > 100 {
         log_info("Proficiency must be 0-100");
+        reentrancy_exit();
         return 2;
     }
 
     let now = get_timestamp();
     if !has_active_permission(&owner, &delegate, DELEGATE_PERM_SKILLS, now) {
         log_info("Unauthorized: delegate lacks skill permission");
+        reentrancy_exit();
         return 3;
     }
 
@@ -1051,6 +1146,7 @@ pub extern "C" fn add_skill_as(
         Some(data) => data,
         None => {
             log_info("Identity not found — register first");
+            reentrancy_exit();
             return 4;
         }
     };
@@ -1059,6 +1155,7 @@ pub extern "C" fn add_skill_as(
     let skill_count = record[123];
     if skill_count as usize >= MAX_SKILLS {
         log_info("Maximum skills reached");
+        reentrancy_exit();
         return 5;
     }
 
@@ -1080,6 +1177,7 @@ pub extern "C" fn add_skill_as(
     storage_set(&id_key, &record);
 
     log_info("Delegated skill added");
+    reentrancy_exit();
     0
 }
 
@@ -1133,18 +1231,28 @@ pub extern "C" fn get_skills(pubkey_ptr: *const u8) -> u32 {
 ///   - vouchee_ptr: 32-byte vouchee address
 #[no_mangle]
 pub extern "C" fn vouch(voucher_ptr: *const u8, vouchee_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut voucher = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(voucher_ptr, voucher.as_mut_ptr(), 32); }
     let mut vouchee = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(vouchee_ptr, vouchee.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != voucher {
+        reentrancy_exit();
+        return 200;
+    }
+
     if is_mid_paused() {
+        reentrancy_exit();
         return 20;
     }
 
     // Can't vouch for yourself
     if voucher[..] == vouchee[..] {
         log_info("Cannot vouch for yourself");
+        reentrancy_exit();
         return 1;
     }
 
@@ -1156,6 +1264,7 @@ pub extern "C" fn vouch(voucher_ptr: *const u8, vouchee_ptr: *const u8) -> u32 {
         Some(data) => data,
         None => {
             log_info("Voucher identity not found");
+            reentrancy_exit();
             return 2;
         }
     };
@@ -1164,6 +1273,7 @@ pub extern "C" fn vouch(voucher_ptr: *const u8, vouchee_ptr: *const u8) -> u32 {
         Some(data) => data,
         None => {
             log_info("Vouchee identity not found");
+            reentrancy_exit();
             return 3;
         }
     };
@@ -1175,6 +1285,7 @@ pub extern "C" fn vouch(voucher_ptr: *const u8, vouchee_ptr: *const u8) -> u32 {
     // Check voucher has enough reputation
     if voucher_rep < VOUCH_COST {
         log_info("Insufficient reputation to vouch");
+        reentrancy_exit();
         return 4;
     }
 
@@ -1187,6 +1298,7 @@ pub extern "C" fn vouch(voucher_ptr: *const u8, vouchee_ptr: *const u8) -> u32 {
 
     if vouchee_vouch_count as usize >= MAX_VOUCHES {
         log_info("Vouchee has reached maximum vouches");
+        reentrancy_exit();
         return 5;
     }
 
@@ -1196,6 +1308,7 @@ pub extern "C" fn vouch(voucher_ptr: *const u8, vouchee_ptr: *const u8) -> u32 {
         if let Some(data) = storage_get(&vk) {
             if data.len() >= 32 && &data[0..32] == voucher {
                 log_info("Already vouched for this agent");
+                reentrancy_exit();
                 return 6;
             }
         }
@@ -1207,6 +1320,7 @@ pub extern "C" fn vouch(voucher_ptr: *const u8, vouchee_ptr: *const u8) -> u32 {
         let last_ts = bytes_to_u64(&last);
         if now < last_ts + VOUCH_COOLDOWN_MS {
             log_info("Vouch cooldown active");
+            reentrancy_exit();
             return 21;
         }
     }
@@ -1251,6 +1365,7 @@ pub extern "C" fn vouch(voucher_ptr: *const u8, vouchee_ptr: *const u8) -> u32 {
     storage_set(&reputation_key(&vouchee), &vouchee_rep_bytes);
 
     log_info("Vouch recorded successfully");
+    reentrancy_exit();
     0
 }
 
@@ -1269,7 +1384,9 @@ pub extern "C" fn set_recovery_guardians(
     guardian4_ptr: *const u8,
     guardian5_ptr: *const u8,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     if is_mid_paused() {
+        reentrancy_exit();
         return 20;
     }
 
@@ -1286,9 +1403,17 @@ pub extern "C" fn set_recovery_guardians(
     let mut guardian5 = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(guardian5_ptr, guardian5.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+
     let caller_id_key = identity_key(&caller);
     if storage_get(&caller_id_key).is_none() {
         log_info("Identity not found");
+        reentrancy_exit();
         return 1;
     }
 
@@ -1297,11 +1422,13 @@ pub extern "C" fn set_recovery_guardians(
     for i in 0..RECOVERY_GUARDIAN_COUNT {
         if guardians[i] == caller {
             log_info("Caller cannot be a guardian");
+            reentrancy_exit();
             return 2;
         }
         for j in (i + 1)..RECOVERY_GUARDIAN_COUNT {
             if guardians[i] == guardians[j] {
                 log_info("Guardians must be unique");
+                reentrancy_exit();
                 return 3;
             }
         }
@@ -1310,6 +1437,7 @@ pub extern "C" fn set_recovery_guardians(
     for guardian in guardians.iter() {
         if !has_vouched_for(&caller, guardian) {
             log_info("Guardian must have vouched for caller");
+            reentrancy_exit();
             return 4;
         }
     }
@@ -1329,6 +1457,7 @@ pub extern "C" fn set_recovery_guardians(
     storage_set(&ck, &[0u8; 32]);
 
     log_info("Recovery guardians configured");
+    reentrancy_exit();
     0
 }
 
@@ -1339,7 +1468,9 @@ pub extern "C" fn approve_recovery(
     target_ptr: *const u8,
     new_owner_ptr: *const u8,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     if is_mid_paused() {
+        reentrancy_exit();
         return 20;
     }
 
@@ -1350,19 +1481,29 @@ pub extern "C" fn approve_recovery(
     let mut new_owner = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(new_owner_ptr, new_owner.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != guardian {
+        reentrancy_exit();
+        return 200;
+    }
+
     if target[..] == new_owner[..] {
         log_info("Target and new owner cannot be the same");
+        reentrancy_exit();
         return 1;
     }
 
     if !is_configured_guardian(&target, &guardian) {
         log_info("Caller is not a configured guardian");
+        reentrancy_exit();
         return 2;
     }
 
     let target_id_key = identity_key(&target);
     if storage_get(&target_id_key).is_none() {
         log_info("Target identity not found");
+        reentrancy_exit();
         return 3;
     }
 
@@ -1371,6 +1512,7 @@ pub extern "C" fn approve_recovery(
     if let Some(existing) = storage_get(&ck) {
         if existing.len() >= 32 && !is_zero_address(&existing) && &existing[0..32] != new_owner {
             log_info("Recovery candidate already set to a different owner");
+            reentrancy_exit();
             return 4;
         }
     }
@@ -1379,11 +1521,13 @@ pub extern "C" fn approve_recovery(
     let ak = recovery_approval_key(&target, nonce, &guardian);
     if storage_get(&ak).is_some() {
         log_info("Guardian already approved this recovery");
+        reentrancy_exit();
         return 5;
     }
     storage_set(&ak, &[1]);
 
     log_info("Recovery approval recorded");
+    reentrancy_exit();
     0
 }
 
@@ -1394,7 +1538,9 @@ pub extern "C" fn execute_recovery(
     target_ptr: *const u8,
     new_owner_ptr: *const u8,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     if is_mid_paused() {
+        reentrancy_exit();
         return 20;
     }
 
@@ -1405,13 +1551,22 @@ pub extern "C" fn execute_recovery(
     let mut new_owner = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(new_owner_ptr, new_owner.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+
     if target[..] == new_owner[..] {
         log_info("Target and new owner cannot be the same");
+        reentrancy_exit();
         return 1;
     }
 
     if !is_configured_guardian(&target, &caller) {
         log_info("Caller is not a configured guardian");
+        reentrancy_exit();
         return 2;
     }
 
@@ -1421,17 +1576,20 @@ pub extern "C" fn execute_recovery(
         Some(data) if data.len() >= 32 => data,
         _ => {
             log_info("No active recovery candidate");
+            reentrancy_exit();
             return 3;
         }
     };
     if is_zero_address(&candidate) || &candidate[0..32] != new_owner {
         log_info("Candidate mismatch");
+        reentrancy_exit();
         return 4;
     }
 
     let approvals = recovery_approval_count(&target, nonce);
     if approvals < RECOVERY_THRESHOLD {
         log_info("Insufficient guardian approvals");
+        reentrancy_exit();
         return 5;
     }
 
@@ -1440,6 +1598,7 @@ pub extern "C" fn execute_recovery(
         Some(data) => data,
         None => {
             log_info("Target identity not found");
+            reentrancy_exit();
             return 6;
         }
     };
@@ -1447,6 +1606,7 @@ pub extern "C" fn execute_recovery(
     let new_id_key = identity_key(&new_owner);
     if storage_get(&new_id_key).is_some() {
         log_info("New owner already has an identity");
+        reentrancy_exit();
         return 7;
     }
 
@@ -1520,6 +1680,7 @@ pub extern "C" fn execute_recovery(
     moltchain_sdk::storage::remove(&old_ck);
 
     log_info("Social recovery executed");
+    reentrancy_exit();
     0
 }
 
@@ -1570,16 +1731,25 @@ pub extern "C" fn deactivate_identity(
     caller_ptr: *const u8,
     target_ptr: *const u8,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
     let mut target = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(target_ptr, target.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
 
     let id_key = identity_key(&target);
     let mut record = match storage_get(&id_key) {
         Some(data) => data,
         None => {
             log_info("Identity not found");
+            reentrancy_exit();
             return 1;
         }
     };
@@ -1593,6 +1763,7 @@ pub extern "C" fn deactivate_identity(
 
     if !is_owner && !is_admin {
         log_info("Unauthorized: must be owner or admin");
+        reentrancy_exit();
         return 2;
     }
 
@@ -1606,6 +1777,7 @@ pub extern "C" fn deactivate_identity(
     storage_set(&id_key, &record);
 
     log_info("Identity deactivated");
+    reentrancy_exit();
     0
 }
 
@@ -1642,11 +1814,20 @@ pub extern "C" fn update_agent_type(
     caller_ptr: *const u8,
     new_agent_type: u8,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+
     if !is_valid_agent_type(new_agent_type) {
         log_info("Invalid agent type");
+        reentrancy_exit();
         return 1;
     }
 
@@ -1655,6 +1836,7 @@ pub extern "C" fn update_agent_type(
         Some(data) => data,
         None => {
             log_info("Identity not found");
+            reentrancy_exit();
             return 2;
         }
     };
@@ -1662,6 +1844,7 @@ pub extern "C" fn update_agent_type(
     // Verify ownership
     if record.len() < IDENTITY_SIZE || record[0..32] != caller[..] {
         log_info("Unauthorized");
+        reentrancy_exit();
         return 3;
     }
 
@@ -1672,6 +1855,7 @@ pub extern "C" fn update_agent_type(
     storage_set(&id_key, &record);
 
     log_info("Agent type updated");
+    reentrancy_exit();
     0
 }
 
@@ -1789,17 +1973,26 @@ pub extern "C" fn award_contribution_achievement(
     target_ptr: *const u8,
     achievement_id: u8,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
     let mut target = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(target_ptr, target.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+
     let admin = match storage_get(b"mid_admin") {
         Some(data) => data,
-        None => return 1,
+        None => { reentrancy_exit(); return 1; },
     };
     if caller[..] != admin[..] {
         log_info("Unauthorized");
+        reentrancy_exit();
         return 2;
     }
 
@@ -1813,6 +2006,7 @@ pub extern "C" fn award_contribution_achievement(
         _ => "Unknown Achievement",
     };
     award_achievement(&target, &hex, achievement_id, name);
+    reentrancy_exit();
     0
 }
 
@@ -1925,27 +2119,39 @@ pub extern "C" fn attest_skill(
     skill_name_len: u32,
     attestation_level: u8,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     log_info("Attesting skill...");
 
     let mut attester = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(attester_ptr, attester.as_mut_ptr(), 32); }
     let mut identity = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(identity_ptr, identity.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != attester {
+        reentrancy_exit();
+        return 200;
+    }
+
     let skill_name_len = skill_name_len as usize;
 
     if skill_name_len == 0 || skill_name_len > MAX_SKILL_LEN {
         log_info("Invalid skill name length");
+        reentrancy_exit();
         return 1;
     }
 
     if attestation_level == 0 || attestation_level > 5 {
         log_info("Attestation level must be 1-5");
+        reentrancy_exit();
         return 2;
     }
 
     // Can't attest your own skills
     if attester[..] == identity[..] {
         log_info("Cannot attest your own skills");
+        reentrancy_exit();
         return 3;
     }
 
@@ -1956,12 +2162,14 @@ pub extern "C" fn attest_skill(
     let id_key = identity_key(&identity);
     if storage_get(&id_key).is_none() {
         log_info("Target identity not found");
+        reentrancy_exit();
         return 4;
     }
 
     let attester_id_key = identity_key(&attester);
     if storage_get(&attester_id_key).is_none() {
         log_info("Attester identity not found");
+        reentrancy_exit();
         return 5;
     }
 
@@ -1970,6 +2178,7 @@ pub extern "C" fn attest_skill(
 
     if storage_get(&ak).is_some() {
         log_info("Already attested this skill for this identity");
+        reentrancy_exit();
         return 6;
     }
 
@@ -1987,6 +2196,7 @@ pub extern "C" fn attest_skill(
     storage_set(&ck, &u64_to_bytes(count + 1));
 
     log_info("Skill attestation recorded");
+    reentrancy_exit();
     0
 }
 
@@ -3860,6 +4070,7 @@ mod tests {
     fn test_initialize() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         let result = initialize(admin.as_ptr());
         assert_eq!(result, 0); // success
 
@@ -3871,6 +4082,7 @@ mod tests {
     fn test_double_initialize_fails() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let result = initialize(admin.as_ptr());
@@ -3883,10 +4095,12 @@ mod tests {
         test_mock::set_timestamp(5000);
 
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let owner = [2u8; 32];
         let name = b"TradingBot";
+        test_mock::set_caller(owner);
         let result = register_identity(
             owner.as_ptr(),
             AGENT_TYPE_TRADING,
@@ -3918,10 +4132,12 @@ mod tests {
     fn test_register_duplicate_fails() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let owner = [2u8; 32];
         let name = b"Agent";
+        test_mock::set_caller(owner);
         register_identity(owner.as_ptr(), AGENT_TYPE_GENERAL, name.as_ptr(), name.len() as u32);
 
         let result = register_identity(owner.as_ptr(), AGENT_TYPE_GENERAL, name.as_ptr(), name.len() as u32);
@@ -3934,10 +4150,12 @@ mod tests {
         test_mock::set_timestamp(5000);
 
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let owner = [2u8; 32];
         let name = b"SkillBot";
+        test_mock::set_caller(owner);
         register_identity(owner.as_ptr(), AGENT_TYPE_DEVELOPMENT, name.as_ptr(), name.len() as u32);
 
         let skill_name = b"Rust";
@@ -3972,10 +4190,12 @@ mod tests {
     fn test_add_skill_unregistered_fails() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let nobody = [9u8; 32];
         let skill_name = b"Hacking";
+        test_mock::set_caller(nobody);
         let result = add_skill(nobody.as_ptr(), skill_name.as_ptr(), skill_name.len() as u32, 50);
         assert_eq!(result, 3); // identity not found
     }
@@ -3986,6 +4206,7 @@ mod tests {
         test_mock::set_timestamp(5000);
 
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let agent_a = [2u8; 32];
@@ -3993,9 +4214,12 @@ mod tests {
         let name_a = b"AgentA";
         let name_b = b"AgentB";
 
+        test_mock::set_caller(agent_a);
         register_identity(agent_a.as_ptr(), AGENT_TYPE_GENERAL, name_a.as_ptr(), name_a.len() as u32);
+        test_mock::set_caller(agent_b);
         register_identity(agent_b.as_ptr(), AGENT_TYPE_GENERAL, name_b.as_ptr(), name_b.len() as u32);
 
+        test_mock::set_caller(agent_a);
         let result = vouch(agent_a.as_ptr(), agent_b.as_ptr());
         assert_eq!(result, 0); // success
 
@@ -4016,10 +4240,12 @@ mod tests {
     fn test_vouch_self_fails() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let agent = [2u8; 32];
         let name = b"SelfVoucher";
+        test_mock::set_caller(agent);
         register_identity(agent.as_ptr(), AGENT_TYPE_GENERAL, name.as_ptr(), name.len() as u32);
 
         let result = vouch(agent.as_ptr(), agent.as_ptr());
@@ -4032,6 +4258,7 @@ mod tests {
         test_mock::set_timestamp(5000);
 
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let agent_a = [2u8; 32];
@@ -4039,9 +4266,12 @@ mod tests {
         let name_a = b"A";
         let name_b = b"B";
 
+        test_mock::set_caller(agent_a);
         register_identity(agent_a.as_ptr(), AGENT_TYPE_GENERAL, name_a.as_ptr(), name_a.len() as u32);
+        test_mock::set_caller(agent_b);
         register_identity(agent_b.as_ptr(), AGENT_TYPE_GENERAL, name_b.as_ptr(), name_b.len() as u32);
 
+        test_mock::set_caller(agent_a);
         vouch(agent_a.as_ptr(), agent_b.as_ptr());
         let result = vouch(agent_a.as_ptr(), agent_b.as_ptr());
         assert_eq!(result, 6); // already vouched
@@ -4053,6 +4283,7 @@ mod tests {
         test_mock::set_timestamp(5_000);
 
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let target = [2u8; 32];
@@ -4060,6 +4291,7 @@ mod tests {
         let guardians = [[4u8; 32], [5u8; 32], [6u8; 32], [7u8; 32], [8u8; 32]];
 
         let target_name = b"Target";
+        test_mock::set_caller(target);
         assert_eq!(register_identity(target.as_ptr(), AGENT_TYPE_GENERAL, target_name.as_ptr(), target_name.len() as u32), 0);
 
         for (idx, guardian) in guardians.iter().enumerate() {
@@ -4070,10 +4302,12 @@ mod tests {
                 3 => b"G3".as_slice(),
                 _ => b"G4".as_slice(),
             };
+            test_mock::set_caller(*guardian);
             assert_eq!(register_identity(guardian.as_ptr(), AGENT_TYPE_GENERAL, g_name.as_ptr(), g_name.len() as u32), 0);
             assert_eq!(vouch(guardian.as_ptr(), target.as_ptr()), 0);
         }
 
+        test_mock::set_caller(target);
         assert_eq!(
             set_recovery_guardians(
                 target.as_ptr(),
@@ -4086,8 +4320,11 @@ mod tests {
             0
         );
 
+        test_mock::set_caller(guardians[0]);
         assert_eq!(approve_recovery(guardians[0].as_ptr(), target.as_ptr(), new_owner.as_ptr()), 0);
+        test_mock::set_caller(guardians[1]);
         assert_eq!(approve_recovery(guardians[1].as_ptr(), target.as_ptr(), new_owner.as_ptr()), 0);
+        test_mock::set_caller(guardians[2]);
         assert_eq!(approve_recovery(guardians[2].as_ptr(), target.as_ptr(), new_owner.as_ptr()), 0);
 
         assert_eq!(execute_recovery(guardians[2].as_ptr(), target.as_ptr(), new_owner.as_ptr()), 0);
@@ -4108,6 +4345,7 @@ mod tests {
         test_mock::set_timestamp(5_000);
 
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let target = [2u8; 32];
@@ -4115,7 +4353,9 @@ mod tests {
         let outsider = [9u8; 32];
         let guardians = [[4u8; 32], [5u8; 32], [6u8; 32], [7u8; 32], [8u8; 32]];
 
+        test_mock::set_caller(target);
         assert_eq!(register_identity(target.as_ptr(), AGENT_TYPE_GENERAL, b"Target".as_ptr(), 6), 0);
+        test_mock::set_caller(outsider);
         assert_eq!(register_identity(outsider.as_ptr(), AGENT_TYPE_GENERAL, b"Out".as_ptr(), 3), 0);
 
         for (idx, guardian) in guardians.iter().enumerate() {
@@ -4126,10 +4366,12 @@ mod tests {
                 3 => b"A3".as_slice(),
                 _ => b"A4".as_slice(),
             };
+            test_mock::set_caller(*guardian);
             assert_eq!(register_identity(guardian.as_ptr(), AGENT_TYPE_GENERAL, g_name.as_ptr(), g_name.len() as u32), 0);
             assert_eq!(vouch(guardian.as_ptr(), target.as_ptr()), 0);
         }
 
+        test_mock::set_caller(target);
         assert_eq!(
             set_recovery_guardians(
                 target.as_ptr(),
@@ -4142,8 +4384,11 @@ mod tests {
             0
         );
 
+        test_mock::set_caller(outsider);
         assert_eq!(approve_recovery(outsider.as_ptr(), target.as_ptr(), new_owner.as_ptr()), 2);
+        test_mock::set_caller(guardians[0]);
         assert_eq!(approve_recovery(guardians[0].as_ptr(), target.as_ptr(), new_owner.as_ptr()), 0);
+        test_mock::set_caller(guardians[1]);
         assert_eq!(approve_recovery(guardians[1].as_ptr(), target.as_ptr(), new_owner.as_ptr()), 0);
 
         assert_eq!(execute_recovery(guardians[1].as_ptr(), target.as_ptr(), new_owner.as_ptr()), 5);
@@ -4155,12 +4400,15 @@ mod tests {
         test_mock::set_timestamp(10_000);
 
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let owner = [2u8; 32];
         let delegate = [3u8; 32];
 
+        test_mock::set_caller(owner);
         assert_eq!(register_identity(owner.as_ptr(), AGENT_TYPE_GENERAL, b"Owner".as_ptr(), 5), 0);
+        test_mock::set_caller(delegate);
         assert_eq!(register_identity(delegate.as_ptr(), AGENT_TYPE_GENERAL, b"Agent".as_ptr(), 5), 0);
 
         let expires = 10_000 + 60_000;
@@ -4192,14 +4440,18 @@ mod tests {
         test_mock::set_timestamp(20_000);
 
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let owner = [2u8; 32];
         let delegate = [3u8; 32];
         let outsider = [4u8; 32];
 
+        test_mock::set_caller(owner);
         assert_eq!(register_identity(owner.as_ptr(), AGENT_TYPE_GENERAL, b"Owner".as_ptr(), 5), 0);
+        test_mock::set_caller(delegate);
         assert_eq!(register_identity(delegate.as_ptr(), AGENT_TYPE_GENERAL, b"Agent".as_ptr(), 5), 0);
+        test_mock::set_caller(outsider);
         assert_eq!(register_identity(outsider.as_ptr(), AGENT_TYPE_GENERAL, b"Other".as_ptr(), 5), 0);
 
         // only profile permission
@@ -4233,11 +4485,14 @@ mod tests {
         test_mock::set_timestamp(30_000);
 
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let owner = [2u8; 32];
         let delegate = [3u8; 32];
+        test_mock::set_caller(owner);
         assert_eq!(register_identity(owner.as_ptr(), AGENT_TYPE_GENERAL, b"Owner".as_ptr(), 5), 0);
+        test_mock::set_caller(delegate);
         assert_eq!(register_identity(delegate.as_ptr(), AGENT_TYPE_GENERAL, b"Agent".as_ptr(), 5), 0);
 
         test_mock::set_slot(5_000);
@@ -4273,11 +4528,14 @@ mod tests {
     fn test_premium_name_auction_lifecycle() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let bidder1 = [2u8; 32];
         let bidder2 = [3u8; 32];
+        test_mock::set_caller(bidder1);
         assert_eq!(register_identity(bidder1.as_ptr(), AGENT_TYPE_GENERAL, b"Bid1".as_ptr(), 4), 0);
+        test_mock::set_caller(bidder2);
         assert_eq!(register_identity(bidder2.as_ptr(), AGENT_TYPE_GENERAL, b"Bid2".as_ptr(), 4), 0);
 
         test_mock::set_slot(10_000);
@@ -4312,13 +4570,16 @@ mod tests {
         test_mock::set_timestamp(5000);
 
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let agent = [2u8; 32];
         let name = b"RepBot";
+        test_mock::set_caller(agent);
         register_identity(agent.as_ptr(), AGENT_TYPE_GENERAL, name.as_ptr(), name.len() as u32);
 
         // Admin increases reputation
+        test_mock::set_caller(admin);
         let result = update_reputation(admin.as_ptr(), agent.as_ptr(), 50, 1);
         assert_eq!(result, 0);
 
@@ -4331,13 +4592,16 @@ mod tests {
     fn test_update_reputation_unauthorized() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let agent = [2u8; 32];
         let name = b"Bot";
+        test_mock::set_caller(agent);
         register_identity(agent.as_ptr(), AGENT_TYPE_GENERAL, name.as_ptr(), name.len() as u32);
 
         let non_admin = [9u8; 32];
+        test_mock::set_caller(non_admin);
         let result = update_reputation(non_admin.as_ptr(), agent.as_ptr(), 50, 1);
         assert_eq!(result, 2); // unauthorized
     }
@@ -4348,10 +4612,12 @@ mod tests {
         test_mock::set_timestamp(5000);
 
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let agent = [2u8; 32];
         let name = b"DeactivateMe";
+        test_mock::set_caller(agent);
         register_identity(agent.as_ptr(), AGENT_TYPE_GENERAL, name.as_ptr(), name.len() as u32);
 
         // Owner deactivates
@@ -4369,10 +4635,12 @@ mod tests {
         test_mock::set_timestamp(5000);
 
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let agent = [2u8; 32];
         let name = b"RepCheck";
+        test_mock::set_caller(agent);
         register_identity(agent.as_ptr(), AGENT_TYPE_GENERAL, name.as_ptr(), name.len() as u32);
 
         let result = get_reputation(agent.as_ptr());
@@ -4388,15 +4656,18 @@ mod tests {
     fn test_reputation_decay_on_lookup() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let agent = [2u8; 32];
         let name = b"DecayBot";
 
         test_mock::set_timestamp(1_000_000);
+        test_mock::set_caller(agent);
         register_identity(agent.as_ptr(), AGENT_TYPE_GENERAL, name.as_ptr(), name.len() as u32);
 
         // Raise from 100 -> 1000
+        test_mock::set_caller(admin);
         let result = update_reputation(admin.as_ptr(), agent.as_ptr(), 900, 1);
         assert_eq!(result, 0);
 
@@ -4422,6 +4693,7 @@ mod tests {
         test_mock::set_timestamp(5000);
 
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let agent_a = [2u8; 32];
@@ -4429,7 +4701,9 @@ mod tests {
         let name_a = b"AgentA";
         let name_b = b"AgentB";
 
+        test_mock::set_caller(agent_a);
         register_identity(agent_a.as_ptr(), AGENT_TYPE_GENERAL, name_a.as_ptr(), name_a.len() as u32);
+        test_mock::set_caller(agent_b);
         register_identity(agent_b.as_ptr(), AGENT_TYPE_GENERAL, name_b.as_ptr(), name_b.len() as u32);
 
         // Agent B attests Agent A's "Rust" skill at level 4
@@ -4456,6 +4730,7 @@ mod tests {
         assert_eq!(result, 6); // already attested
 
         // Self-attestation should fail
+        test_mock::set_caller(agent_a);
         let result = attest_skill(
             agent_a.as_ptr(), agent_a.as_ptr(), skill.as_ptr(), skill.len() as u32, 5,
         );
@@ -4468,6 +4743,7 @@ mod tests {
         test_mock::set_timestamp(5000);
 
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let agent_a = [2u8; 32];
@@ -4475,7 +4751,9 @@ mod tests {
         let name_a = b"AgentA";
         let name_b = b"AgentB";
 
+        test_mock::set_caller(agent_a);
         register_identity(agent_a.as_ptr(), AGENT_TYPE_GENERAL, name_a.as_ptr(), name_a.len() as u32);
+        test_mock::set_caller(agent_b);
         register_identity(agent_b.as_ptr(), AGENT_TYPE_GENERAL, name_b.as_ptr(), name_b.len() as u32);
 
         let skill = b"Solidity";
@@ -4513,8 +4791,10 @@ mod tests {
         test_mock::set_timestamp(5000);
         test_mock::set_slot(slot);
         test_mock::set_value(value);
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let name = b"TestAgent";
+        test_mock::set_caller(*owner);
         register_identity(
             owner.as_ptr(),
             AGENT_TYPE_GENERAL,
@@ -4650,6 +4930,7 @@ mod tests {
         // Register new owner identity
         let new_owner = [3u8; 32];
         let new_name = b"NewOwner";
+        test_mock::set_caller(new_owner);
         register_identity(
             new_owner.as_ptr(),
             AGENT_TYPE_GENERAL,
@@ -4850,10 +5131,12 @@ mod tests {
         let admin = [1u8; 32];
         test_mock::set_timestamp(5000);
         test_mock::set_slot(1000);
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let agent = [2u8; 32];
         let name = b"TierBot";
+        test_mock::set_caller(agent);
         register_identity(agent.as_ptr(), AGENT_TYPE_GENERAL, name.as_ptr(), name.len() as u32);
 
         // Initial reputation = 100 → Tier 1
@@ -4862,6 +5145,7 @@ mod tests {
         assert_eq!(ret[0], 1); // Verified tier
 
         // Boost to 500 → Tier 2
+        test_mock::set_caller(admin);
         update_reputation(admin.as_ptr(), agent.as_ptr(), 400, 1);
         get_trust_tier(agent.as_ptr());
         let ret = test_mock::get_return_data();
@@ -4902,6 +5186,7 @@ mod tests {
     fn test_pause_blocks_registration() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         // Pause
@@ -4910,6 +5195,7 @@ mod tests {
         // Registration blocked
         let agent = [2u8; 32];
         let name = b"test-agent";
+        test_mock::set_caller(agent);
         let result = register_identity(agent.as_ptr(), 1, name.as_ptr(), name.len() as u32);
         assert_eq!(result, 20);
 
@@ -4926,6 +5212,7 @@ mod tests {
         setup();
         let admin = [1u8; 32];
         let non_admin = [2u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         assert_eq!(mid_pause(non_admin.as_ptr()), 1); // not admin
@@ -4940,6 +5227,7 @@ mod tests {
     fn test_vouch_cooldown() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         test_mock::set_timestamp(1_000_000);
 
@@ -4949,14 +5237,19 @@ mod tests {
         let name1 = b"voucher";
         let name2 = b"vouchee1";
         let name3 = b"vouchee2";
+        test_mock::set_caller(voucher);
         register_identity(voucher.as_ptr(), 1, name1.as_ptr(), name1.len() as u32);
+        test_mock::set_caller(vouchee1);
         register_identity(vouchee1.as_ptr(), 1, name2.as_ptr(), name2.len() as u32);
+        test_mock::set_caller(vouchee2);
         register_identity(vouchee2.as_ptr(), 1, name3.as_ptr(), name3.len() as u32);
 
         // Boost voucher rep so they can vouch
+        test_mock::set_caller(admin);
         update_reputation(admin.as_ptr(), voucher.as_ptr(), 100, 1);
 
         // First vouch works
+        test_mock::set_caller(voucher);
         let result = vouch(voucher.as_ptr(), vouchee1.as_ptr());
         assert_eq!(result, 0);
 
@@ -4975,6 +5268,7 @@ mod tests {
     fn test_pause_blocks_vouch() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         test_mock::set_timestamp(1_000_000);
 
@@ -4982,12 +5276,16 @@ mod tests {
         let vouchee = [3u8; 32];
         let name1 = b"voucher2";
         let name2 = b"vouchee3";
+        test_mock::set_caller(voucher);
         register_identity(voucher.as_ptr(), 1, name1.as_ptr(), name1.len() as u32);
+        test_mock::set_caller(vouchee);
         register_identity(vouchee.as_ptr(), 1, name2.as_ptr(), name2.len() as u32);
+        test_mock::set_caller(admin);
         update_reputation(admin.as_ptr(), voucher.as_ptr(), 100, 1);
 
         // Pause
         mid_pause(admin.as_ptr());
+        test_mock::set_caller(voucher);
         let result = vouch(voucher.as_ptr(), vouchee.as_ptr());
         assert_eq!(result, 20);
 
@@ -5003,6 +5301,7 @@ mod tests {
         let admin = [1u8; 32];
         let new_admin = [10u8; 32];
         let other = [11u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         // Non-admin can't transfer
@@ -5021,6 +5320,7 @@ mod tests {
     fn test_admin_register_reserved_name() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         test_mock::set_timestamp(1_000_000);
 
@@ -5074,6 +5374,7 @@ mod tests {
     fn test_admin_register_reserved_name_treasury() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         test_mock::set_timestamp(1_000_000);
 

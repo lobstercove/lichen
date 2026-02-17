@@ -241,10 +241,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 let t = 0; asks.forEach(a => { t += a.amount; a.total = t; });
                 const bids = map(data.bids); bids.sort((a, b) => b.price - a.price);
                 t = 0; bids.forEach(b => { t += b.amount; b.total = t; });
-                state.orderBook = { asks, bids }; renderOrderBook(); return;
+                state.orderBook = { asks, bids }; renderOrderBook();
+                document.querySelector('.book-asks')?.parentElement?.querySelector('.demo-badge')?.remove();
+                return;
             }
         } catch { /* fallback */ }
         genOrderBookFallback();
+        const _obP = document.querySelector('.book-asks')?.parentElement;
+        if (_obP && !_obP.querySelector('.demo-badge')) _obP.insertAdjacentHTML('afterbegin', '<div class="demo-badge" style="background:#ff6b35;color:#fff;padding:2px 8px;border-radius:4px;font-size:0.7rem;text-align:center;margin-bottom:4px;">[DEMO] Sample Order Book</div>');
     }
 
     function genOrderBookFallback() {
@@ -277,7 +281,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const buy = Math.random() > 0.5, price = state.lastPrice + (Math.random() - 0.5) * state.lastPrice * 0.004;
             rows.push(`<div class="trade-row"><span class="trade-price ${buy ? 'buy' : 'sell'}">${formatPrice(price)}</span><span>${formatAmount(Math.random() * 10000 + 100)}</span><span class="trade-time">${new Date(now - i * Math.random() * 15000).toLocaleTimeString()}</span></div>`);
         }
-        container.innerHTML = rows.join('');
+        container.innerHTML = '<div class="demo-badge" style="background:#ff6b35;color:#fff;padding:2px 8px;border-radius:4px;font-size:0.7rem;text-align:center;margin-bottom:4px;">[DEMO] Sample Trades</div>' + rows.join('');
     }
 
     async function loadCandles(from, to, interval) {
@@ -691,9 +695,12 @@ document.addEventListener('DOMContentLoaded', () => {
                         </tr>`;
                     }).join('');
                 }
+                const _pdb = document.getElementById('poolDemoBadge'); if (_pdb) _pdb.remove();
                 return;
             }
         } catch { /* keep static fallback */ }
+        const _ptb = document.getElementById('poolTableBody');
+        if (_ptb && !document.getElementById('poolDemoBadge')) _ptb.parentElement.insertAdjacentHTML('beforebegin', '<div id="poolDemoBadge" class="demo-badge" style="background:#ff6b35;color:#fff;padding:2px 8px;border-radius:4px;font-size:0.7rem;text-align:center;margin-bottom:4px;">[DEMO] Sample Pool Data</div>');
     }
 
     async function loadLPPositions() {
@@ -1233,7 +1240,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         <span class="market-cat-tag">${catTag}</span>
                         <span class="market-id-tag">${idTag}</span>
                     </div>
-                    <h4 class="market-question">${m.question}</h4>
+                    <h4 class="market-question">${m.question}${!predictState.live ? ' <span class="demo-badge" style="background:#ff6b35;color:#fff;padding:2px 6px;border-radius:4px;font-size:0.75rem;margin-left:8px;vertical-align:middle;">[DEMO]</span>' : ''}</h4>
                     <div class="market-meta">
                         ${closesLabel}${creatorLabel}
                     </div>

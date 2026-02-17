@@ -1,7 +1,7 @@
 // MoltFaucet JavaScript
 // Connects to the MoltChain faucet backend (Rust/axum on port 9100)
 
-const FAUCET_API = 'http://localhost:9100';
+const FAUCET_API = (window.MOLT_CONFIG && window.MOLT_CONFIG.faucet) || 'http://localhost:9100';
 const MOLT_PER_REQUEST = 100;
 
 // Generate random captcha

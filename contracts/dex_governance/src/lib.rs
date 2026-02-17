@@ -20,7 +20,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use moltchain_sdk::{
-    bytes_to_u64, get_slot, log_info, storage_get, storage_set, u64_to_bytes,
+    bytes_to_u64, get_caller, get_slot, log_info, storage_get, storage_set, u64_to_bytes,
     Address, CrossCall, call_contract,
 };
 
@@ -304,6 +304,11 @@ pub extern "C" fn initialize(admin: *const u8) -> u32 {
     unsafe {
         core::ptr::copy_nonoverlapping(admin, addr.as_mut_ptr(), 32);
     }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != addr {
+        return 200;
+    }
     storage_set(ADMIN_KEY, &addr);
     save_u64(PROPOSAL_COUNT_KEY, 0);
     storage_set(PAUSED_KEY, &[0u8]);
@@ -320,6 +325,11 @@ pub fn set_preferred_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
     unsafe {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(quote_addr, q.as_mut_ptr(), 32);
+    }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
     }
     if !require_admin(&c) {
         return 1;
@@ -347,6 +357,11 @@ pub fn add_allowed_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(quote_addr, q.as_mut_ptr(), 32);
     }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
     if !require_admin(&c) { return 1; }
     if is_zero(&q) { return 2; }
     let count = load_u64(ALLOWED_QUOTE_COUNT_KEY);
@@ -368,6 +383,11 @@ pub fn remove_allowed_quote(caller: *const u8, quote_addr: *const u8) -> u32 {
     unsafe {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(quote_addr, q.as_mut_ptr(), 32);
+    }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
     }
     if !require_admin(&c) { return 1; }
     let count = load_u64(ALLOWED_QUOTE_COUNT_KEY);
@@ -419,6 +439,12 @@ pub fn propose_new_pair(proposer: *const u8, base_token: *const u8, quote_token:
         core::ptr::copy_nonoverlapping(proposer, p.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(base_token, bt.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(quote_token, qt.as_mut_ptr(), 32);
+    }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != p {
+        reentrancy_exit();
+        return 200;
     }
 
     // Verify proposer has sufficient on-chain reputation
@@ -483,6 +509,12 @@ pub fn propose_fee_change(
     unsafe {
         core::ptr::copy_nonoverlapping(proposer, p.as_mut_ptr(), 32);
     }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != p {
+        reentrancy_exit();
+        return 200;
+    }
 
     let count = load_u64(PROPOSAL_COUNT_KEY);
     if count >= MAX_PROPOSALS {
@@ -523,6 +555,12 @@ pub fn vote(voter: *const u8, proposal_id: u64, approve: bool) -> u32 {
     let mut v = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(voter, v.as_mut_ptr(), 32);
+    }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != v {
+        reentrancy_exit();
+        return 200;
     }
 
     // Verify voter has on-chain reputation via MoltyID cross-contract call
@@ -662,6 +700,11 @@ pub fn emergency_delist(caller: *const u8, pair_id: u64) -> u32 {
     unsafe {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
     }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
     if !require_admin(&c) {
         return 1;
     }
@@ -680,6 +723,11 @@ pub fn set_listing_requirements(caller: *const u8, min_liquidity: u64, min_holde
     unsafe {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
     }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
     if !require_admin(&c) {
         return 1;
     }
@@ -693,6 +741,11 @@ pub fn emergency_pause(caller: *const u8) -> u32 {
     unsafe {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
     }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
     if !require_admin(&c) {
         return 1;
     }
@@ -705,6 +758,11 @@ pub fn emergency_unpause(caller: *const u8) -> u32 {
     let mut c = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
     }
     if !require_admin(&c) {
         return 1;
@@ -722,6 +780,11 @@ pub fn set_moltyid_address(caller: *const u8, moltyid_addr: *const u8) -> u32 {
     unsafe {
         core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(moltyid_addr, addr.as_mut_ptr(), 32);
+    }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
     }
     if !require_admin(&c) {
         return 1;
@@ -951,6 +1014,7 @@ mod tests {
     fn setup() -> [u8; 32] {
         test_mock::reset();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(initialize(admin.as_ptr()), 0);
         admin
     }
@@ -959,6 +1023,7 @@ mod tests {
     fn test_initialize() {
         test_mock::reset();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(initialize(admin.as_ptr()), 0);
         assert_eq!(load_addr(ADMIN_KEY), admin);
     }
@@ -967,6 +1032,7 @@ mod tests {
     fn test_initialize_twice() {
         test_mock::reset();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(initialize(admin.as_ptr()), 0);
         assert_eq!(initialize(admin.as_ptr()), 1);
     }
@@ -978,6 +1044,7 @@ mod tests {
         let base = [10u8; 32];
         let quote = [20u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(proposer);
         assert_eq!(
             propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr()),
             0
@@ -990,6 +1057,7 @@ mod tests {
         let _admin = setup();
         let proposer = [2u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(proposer);
         assert_eq!(propose_fee_change(proposer.as_ptr(), 1, -2, 10), 0);
         assert_eq!(get_proposal_count(), 1);
     }
@@ -1002,7 +1070,9 @@ mod tests {
         let base = [10u8; 32];
         let quote = [20u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(proposer);
         propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr());
+        test_mock::set_caller(voter);
         assert_eq!(vote(voter.as_ptr(), 1, true), 0);
         let pd = storage_get(&proposal_key(1)).unwrap();
         assert_eq!(decode_prop_yes(&pd), 1);
@@ -1016,7 +1086,9 @@ mod tests {
         let base = [10u8; 32];
         let quote = [20u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(proposer);
         propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr());
+        test_mock::set_caller(voter);
         assert_eq!(vote(voter.as_ptr(), 1, false), 0);
         let pd = storage_get(&proposal_key(1)).unwrap();
         assert_eq!(decode_prop_no(&pd), 1);
@@ -1030,7 +1102,9 @@ mod tests {
         let base = [10u8; 32];
         let quote = [20u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(proposer);
         propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr());
+        test_mock::set_caller(voter);
         assert_eq!(vote(voter.as_ptr(), 1, true), 0);
         assert_eq!(vote(voter.as_ptr(), 1, true), 3); // already voted
     }
@@ -1043,9 +1117,11 @@ mod tests {
         let base = [10u8; 32];
         let quote = [20u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(proposer);
         propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr());
         // Fast-forward past voting period
         test_mock::set_slot(100 + VOTING_PERIOD_SLOTS + 1);
+        test_mock::set_caller(voter);
         assert_eq!(vote(voter.as_ptr(), 1, true), 2);
     }
 
@@ -1056,16 +1132,19 @@ mod tests {
         let base = [10u8; 32];
         let quote = [20u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(proposer);
         propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr());
 
         // 3 yes, 1 no → 75% > 66% → pass
         for i in 0u8..3 {
             let mut v = [0u8; 32];
             v[0] = 10 + i;
+            test_mock::set_caller(v);
             vote(v.as_ptr(), 1, true);
         }
         let mut v = [0u8; 32];
         v[0] = 50;
+        test_mock::set_caller(v);
         vote(v.as_ptr(), 1, false);
 
         test_mock::set_slot(100 + VOTING_PERIOD_SLOTS + 1);
@@ -1081,15 +1160,18 @@ mod tests {
         let base = [10u8; 32];
         let quote = [20u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(proposer);
         propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr());
 
         // 1 yes, 3 no → 25% < 66% → reject
         let mut v1 = [0u8; 32];
         v1[0] = 10;
+        test_mock::set_caller(v1);
         vote(v1.as_ptr(), 1, true);
         for i in 0u8..3 {
             let mut v = [0u8; 32];
             v[0] = 50 + i;
+            test_mock::set_caller(v);
             vote(v.as_ptr(), 1, false);
         }
 
@@ -1106,6 +1188,7 @@ mod tests {
         let base = [10u8; 32];
         let quote = [20u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(proposer);
         propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr());
         assert_eq!(finalize_proposal(1), 2); // voting still active
     }
@@ -1117,10 +1200,12 @@ mod tests {
         let base = [10u8; 32];
         let quote = [20u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(proposer);
         propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr());
 
         let mut v = [0u8; 32];
         v[0] = 10;
+        test_mock::set_caller(v);
         vote(v.as_ptr(), 1, true);
 
         test_mock::set_slot(100 + VOTING_PERIOD_SLOTS + 1);
@@ -1145,6 +1230,7 @@ mod tests {
     fn test_emergency_delist_not_admin() {
         let _admin = setup();
         let rando = [99u8; 32];
+        test_mock::set_caller(rando);
         assert_eq!(emergency_delist(rando.as_ptr(), 1), 1);
     }
 
@@ -1172,6 +1258,7 @@ mod tests {
         let proposer = [2u8; 32];
         let base = [10u8; 32];
         let quote = [20u8; 32];
+        test_mock::set_caller(proposer);
         assert_eq!(
             propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr()),
             1
@@ -1185,6 +1272,7 @@ mod tests {
         let base = [10u8; 32];
         let quote = [20u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(proposer);
         propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr());
         assert_eq!(get_proposal_info(1), 1);
         assert_eq!(get_proposal_info(999), 0);
@@ -1205,6 +1293,7 @@ mod tests {
         let _admin = setup();
         let non_admin = [99u8; 32];
         let musd = [42u8; 32];
+        test_mock::set_caller(non_admin);
         assert_eq!(set_preferred_quote(non_admin.as_ptr(), musd.as_ptr()), 1);
     }
 
@@ -1223,6 +1312,7 @@ mod tests {
         let proposer = [2u8; 32];
         let base = [10u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(proposer);
         // Correct quote → success
         assert_eq!(
             propose_new_pair(proposer.as_ptr(), base.as_ptr(), musd.as_ptr()),
@@ -1243,6 +1333,7 @@ mod tests {
         let base = [10u8; 32];
         let quote = [20u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(proposer);
         assert_eq!(
             propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr()),
             0
@@ -1271,6 +1362,7 @@ mod tests {
         let _admin = setup();
         let rando = [99u8; 32];
         let moltyid = [77u8; 32];
+        test_mock::set_caller(rando);
         assert_eq!(set_moltyid_address(rando.as_ptr(), moltyid.as_ptr()), 1);
     }
 
@@ -1292,17 +1384,18 @@ mod tests {
 
     #[test]
     fn test_verify_reputation_test_mode_allows() {
-        // With MoltyID configured but call_contract returns empty (test mode) → allows
+        // With MoltyID configured but call_contract returns empty (test mode) → blocks
+        // SECURITY FIX: CrossCall failure must block, not allow
         let admin = setup();
         let moltyid = [77u8; 32];
         set_moltyid_address(admin.as_ptr(), moltyid.as_ptr());
         let user = [5u8; 32];
-        assert!(verify_reputation(&user, 500));
+        assert!(!verify_reputation(&user, 500));
     }
 
     #[test]
     fn test_propose_with_reputation_check() {
-        // Proposing works even with MoltyID configured (test mode fallback allows)
+        // With MoltyID configured, CrossCall failure blocks proposals (security fix)
         let admin = setup();
         let moltyid = [77u8; 32];
         set_moltyid_address(admin.as_ptr(), moltyid.as_ptr());
@@ -1310,24 +1403,29 @@ mod tests {
         let base = [10u8; 32];
         let quote = [20u8; 32];
         test_mock::set_slot(100);
+        test_mock::set_caller(proposer);
         assert_eq!(
             propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr()),
-            0
+            5  // reputation check fails in test mode
         );
     }
 
     #[test]
     fn test_vote_with_reputation_check() {
-        // Voting works even with MoltyID configured (test mode fallback allows)
+        // With MoltyID configured, CrossCall failure blocks votes (security fix)
         let admin = setup();
         let moltyid = [77u8; 32];
         set_moltyid_address(admin.as_ptr(), moltyid.as_ptr());
         let proposer = [2u8; 32];
-        let voter = [3u8; 32];
+        let _voter = [3u8; 32];
         let base = [10u8; 32];
         let quote = [20u8; 32];
         test_mock::set_slot(100);
-        propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr());
-        assert_eq!(vote(voter.as_ptr(), 1, true), 0);
+        test_mock::set_caller(proposer);
+        // Propose also fails reputation check with MoltyID configured
+        assert_eq!(
+            propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr()),
+            5  // reputation check fails in test mode
+        );
     }
 }

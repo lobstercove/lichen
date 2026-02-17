@@ -25,7 +25,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use moltchain_sdk::{
-    log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_slot,
+    log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_slot, get_caller,
     Address, CrossCall, call_contract,
 };
 
@@ -205,6 +205,12 @@ pub extern "C" fn create_stream(
     let mut recipient = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(recipient_ptr, recipient.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != sender {
+        return 200;
+    }
+
     if is_paused() {
         log_info("Protocol is paused");
         return 20;
@@ -295,6 +301,13 @@ pub extern "C" fn withdraw_from_stream(
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
+
     if amount == 0 {
         log_info("Amount must be > 0");
         return 1;
@@ -379,6 +392,13 @@ pub extern "C" fn cancel_stream(
 
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        reentrancy_exit();
+        return 200;
+    }
 
     let sk = stream_key(stream_id);
     let mut stream_data = match storage_get(&sk) {
@@ -536,6 +556,12 @@ pub extern "C" fn create_stream_with_cliff(
     let mut recipient = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(recipient_ptr, recipient.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != sender {
+        return 200;
+    }
+
     if total_amount == 0 || start_slot >= end_slot {
         return 1;
     }
@@ -599,6 +625,12 @@ pub extern "C" fn transfer_stream(
     let mut new_recipient = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(new_recipient_ptr, new_recipient.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     let sk = stream_key(stream_id);
     let mut stream_data = match storage_get(&sk) {
         Some(data) => data,
@@ -639,6 +671,13 @@ pub extern "C" fn transfer_stream(
 pub extern "C" fn initialize_cp_admin(admin_ptr: *const u8) -> u32 {
     let mut admin = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != admin {
+        return 200;
+    }
+
     if storage_get(ADMIN_KEY).is_some() {
         return 1;
     }
@@ -653,6 +692,13 @@ pub extern "C" fn initialize_cp_admin(admin_ptr: *const u8) -> u32 {
 pub extern "C" fn pause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_cp_admin(&caller) {
         return 1;
     }
@@ -670,6 +716,13 @@ pub extern "C" fn pause(caller_ptr: *const u8) -> u32 {
 pub extern "C" fn unpause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_cp_admin(&caller) {
         return 1;
     }
@@ -721,6 +774,12 @@ pub extern "C" fn set_identity_admin(admin_ptr: *const u8) -> u32 {
     let mut admin = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != admin {
+        return 200;
+    }
+
     if storage_get(IDENTITY_ADMIN_KEY).is_some() {
         log_info("Identity admin already set");
         return 1;
@@ -739,6 +798,12 @@ pub extern "C" fn set_moltyid_address(caller_ptr: *const u8, moltyid_addr_ptr: *
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
     let mut moltyid_addr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(moltyid_addr_ptr, moltyid_addr.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
 
     let admin = match storage_get(IDENTITY_ADMIN_KEY) {
         Some(data) => data,
@@ -759,6 +824,12 @@ pub extern "C" fn set_moltyid_address(caller_ptr: *const u8, moltyid_addr_ptr: *
 pub extern "C" fn set_identity_gate(caller_ptr: *const u8, min_reputation: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
 
     let admin = match storage_get(IDENTITY_ADMIN_KEY) {
         Some(data) => data,

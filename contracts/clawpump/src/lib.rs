@@ -16,7 +16,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use moltchain_sdk::{
     storage_get, storage_set, log_info, set_return_data,
-    bytes_to_u64, u64_to_bytes, get_timestamp,
+    bytes_to_u64, u64_to_bytes, get_timestamp, get_caller,
     Address, CrossCall, call_contract,
 };
 
@@ -202,6 +202,12 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
     let mut admin = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != admin {
+        return 200;
+    }
+
     if storage_get(ADMIN_KEY).is_some() {
         log_info("Already initialized");
         return 1;
@@ -225,6 +231,12 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
 pub extern "C" fn create_token(creator_ptr: *const u8, fee_paid: u64) -> u64 {
     let mut creator = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(creator_ptr, creator.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != creator {
+        return 200;
+    }
 
     if fee_paid < CREATION_FEE {
         log_info("Insufficient creation fee (need 0.1 MOLT)");
@@ -338,6 +350,14 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, molt_amount: u64) -> 
 
     let mut buyer = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(buyer_ptr, buyer.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != buyer {
+        reentrancy_exit();
+        return 200;
+    }
+
     let buyer_hex = hex_encode_addr(&buyer);
 
     // v2: Buy cooldown
@@ -544,6 +564,14 @@ pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) 
 
     let mut seller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(seller_ptr, seller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != seller {
+        reentrancy_exit();
+        return 200;
+    }
+
     let seller_hex = hex_encode_addr(&seller);
 
     // v2: Sell cooldown — check last buy timestamp
@@ -698,6 +726,13 @@ pub extern "C" fn get_platform_stats() -> u32 {
 pub extern "C" fn pause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_admin(&caller) { return 1; }
     if is_paused() { return 2; }
     storage_set(PAUSE_KEY, &[1]);
@@ -710,6 +745,13 @@ pub extern "C" fn pause(caller_ptr: *const u8) -> u32 {
 pub extern "C" fn unpause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_admin(&caller) { return 1; }
     if !is_paused() { return 2; }
     storage_set(PAUSE_KEY, &[0]);
@@ -722,6 +764,13 @@ pub extern "C" fn unpause(caller_ptr: *const u8) -> u32 {
 pub extern "C" fn freeze_token(caller_ptr: *const u8, token_id: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_admin(&caller) { return 1; }
     let id_hex = u64_to_hex(token_id);
     let key = make_key(b"cpf:", &id_hex);
@@ -735,6 +784,13 @@ pub extern "C" fn freeze_token(caller_ptr: *const u8, token_id: u64) -> u32 {
 pub extern "C" fn unfreeze_token(caller_ptr: *const u8, token_id: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_admin(&caller) { return 1; }
     let id_hex = u64_to_hex(token_id);
     let key = make_key(b"cpf:", &id_hex);
@@ -748,6 +804,13 @@ pub extern "C" fn unfreeze_token(caller_ptr: *const u8, token_id: u64) -> u32 {
 pub extern "C" fn set_buy_cooldown(caller_ptr: *const u8, cooldown_ms: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_admin(&caller) { return 1; }
     store_u64(b"cp_buy_cooldown", cooldown_ms);
     0
@@ -758,6 +821,13 @@ pub extern "C" fn set_buy_cooldown(caller_ptr: *const u8, cooldown_ms: u64) -> u
 pub extern "C" fn set_sell_cooldown(caller_ptr: *const u8, cooldown_ms: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_admin(&caller) { return 1; }
     store_u64(b"cp_sell_cooldown", cooldown_ms);
     0
@@ -768,6 +838,13 @@ pub extern "C" fn set_sell_cooldown(caller_ptr: *const u8, cooldown_ms: u64) -> 
 pub extern "C" fn set_max_buy(caller_ptr: *const u8, max_amount: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_admin(&caller) { return 1; }
     if max_amount == 0 { return 2; }
     store_u64(b"cp_max_buy", max_amount);
@@ -779,6 +856,13 @@ pub extern "C" fn set_max_buy(caller_ptr: *const u8, max_amount: u64) -> u32 {
 pub extern "C" fn set_creator_royalty(caller_ptr: *const u8, bps: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_admin(&caller) { return 1; }
     if bps > 1000 { return 2; } // Max 10%
     store_u64(b"cp_creator_royalty", bps);
@@ -790,6 +874,13 @@ pub extern "C" fn set_creator_royalty(caller_ptr: *const u8, bps: u64) -> u32 {
 pub extern "C" fn withdraw_fees(caller_ptr: *const u8, amount: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_admin(&caller) { return 1; }
     if amount == 0 { return 2; }
     let fees = load_u64(b"cp_fees_collected");
@@ -805,6 +896,13 @@ pub extern "C" fn withdraw_fees(caller_ptr: *const u8, amount: u64) -> u32 {
 pub extern "C" fn set_dex_addresses(caller_ptr: *const u8, core_ptr: *const u8, amm_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_admin(&caller) {
         return 1;
     }
@@ -863,6 +961,7 @@ mod tests {
     fn test_initialize() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         let result = initialize(admin.as_ptr());
         assert_eq!(result, 0);
         let stored = test_mock::get_storage(ADMIN_KEY);
@@ -874,6 +973,7 @@ mod tests {
     fn test_initialize_already_initialized() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(initialize(admin.as_ptr()), 0);
         assert_eq!(initialize(admin.as_ptr()), 1);
     }
@@ -882,8 +982,10 @@ mod tests {
     fn test_create_token() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let creator = [2u8; 32];
+        test_mock::set_caller(creator);
         let token_id = create_token(creator.as_ptr(), CREATION_FEE);
         assert_eq!(token_id, 1);
         assert_eq!(get_token_count(), 1);
@@ -895,8 +997,10 @@ mod tests {
     fn test_create_token_insufficient_fee() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let creator = [2u8; 32];
+        test_mock::set_caller(creator);
         assert_eq!(create_token(creator.as_ptr(), CREATION_FEE - 1), 0);
         assert_eq!(get_token_count(), 0);
     }
@@ -905,8 +1009,10 @@ mod tests {
     fn test_create_multiple_tokens() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let creator = [2u8; 32];
+        test_mock::set_caller(creator);
         assert_eq!(create_token(creator.as_ptr(), CREATION_FEE), 1);
         assert_eq!(create_token(creator.as_ptr(), CREATION_FEE), 2);
         assert_eq!(get_token_count(), 2);
@@ -918,10 +1024,13 @@ mod tests {
     fn test_buy() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let creator = [2u8; 32];
+        test_mock::set_caller(creator);
         let token_id = create_token(creator.as_ptr(), CREATION_FEE);
         let buyer = [3u8; 32];
+        test_mock::set_caller(buyer);
         let tokens = buy(buyer.as_ptr(), token_id, 1_000_000_000);
         assert!(tokens > 0, "Should receive tokens for 1 MOLT");
     }
@@ -936,7 +1045,9 @@ mod tests {
     fn test_buy_nonexistent_token() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
+        test_mock::set_caller([3u8; 32]);
         assert_eq!(buy([3u8; 32].as_ptr(), 999, 1_000_000_000), 0);
     }
 
@@ -944,11 +1055,14 @@ mod tests {
     fn test_sell() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let creator = [2u8; 32];
+        test_mock::set_caller(creator);
         let token_id = create_token(creator.as_ptr(), CREATION_FEE);
         let buyer = [3u8; 32];
         test_mock::set_timestamp(10_000);
+        test_mock::set_caller(buyer);
         let bought = buy(buyer.as_ptr(), token_id, 1_000_000_000);
         assert!(bought > 0);
         // Advance past sell cooldown (default 5000ms)
@@ -971,9 +1085,12 @@ mod tests {
     fn test_sell_insufficient_balance() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let creator = [2u8; 32];
+        test_mock::set_caller(creator);
         create_token(creator.as_ptr(), CREATION_FEE);
+        test_mock::set_caller([3u8; 32]);
         assert_eq!(sell([3u8; 32].as_ptr(), 1, 1000), 0);
     }
 
@@ -987,8 +1104,10 @@ mod tests {
     fn test_get_token_info() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let creator = [2u8; 32];
+        test_mock::set_caller(creator);
         let tid = create_token(creator.as_ptr(), CREATION_FEE);
         assert_eq!(get_token_info(tid), 0);
         let ret = test_mock::get_return_data();
@@ -999,6 +1118,7 @@ mod tests {
     fn test_get_token_info_nonexistent() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         assert_eq!(get_token_info(999), 1);
     }
@@ -1007,8 +1127,10 @@ mod tests {
     fn test_get_buy_quote() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let creator = [2u8; 32];
+        test_mock::set_caller(creator);
         let tid = create_token(creator.as_ptr(), CREATION_FEE);
         let quote = get_buy_quote(tid, 1_000_000_000);
         assert!(quote > 0);
@@ -1018,9 +1140,11 @@ mod tests {
     fn test_get_token_count() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         assert_eq!(get_token_count(), 0);
         let c = [2u8; 32];
+        test_mock::set_caller(c);
         create_token(c.as_ptr(), CREATION_FEE);
         assert_eq!(get_token_count(), 1);
         create_token(c.as_ptr(), CREATION_FEE);
@@ -1031,8 +1155,10 @@ mod tests {
     fn test_get_platform_stats() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let c = [2u8; 32];
+        test_mock::set_caller(c);
         create_token(c.as_ptr(), CREATION_FEE);
         assert_eq!(get_platform_stats(), 0);
         let ret = test_mock::get_return_data();
@@ -1049,18 +1175,22 @@ mod tests {
     fn test_pause_unpause() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let creator = [2u8; 32];
+        test_mock::set_caller(creator);
         create_token(creator.as_ptr(), CREATION_FEE);
 
+        test_mock::set_caller(admin);
         assert_eq!(pause(admin.as_ptr()), 0);
         assert!(is_paused());
-        // Buy blocked
+        // Buy blocked (paused check is before caller check)
         let buyer = [3u8; 32];
         assert_eq!(buy(buyer.as_ptr(), 1, 1_000_000_000), 0);
         // Sell blocked
         assert_eq!(sell(buyer.as_ptr(), 1, 100), 0);
 
+        test_mock::set_caller(admin);
         assert_eq!(unpause(admin.as_ptr()), 0);
         assert!(!is_paused());
     }
@@ -1069,8 +1199,10 @@ mod tests {
     fn test_pause_non_admin() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let other = [9u8; 32];
+        test_mock::set_caller(other);
         assert_eq!(pause(other.as_ptr()), 1);
     }
 
@@ -1078,21 +1210,26 @@ mod tests {
     fn test_freeze_token() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let creator = [2u8; 32];
+        test_mock::set_caller(creator);
         create_token(creator.as_ptr(), CREATION_FEE);
 
+        test_mock::set_caller(admin);
         assert_eq!(freeze_token(admin.as_ptr(), 1), 0);
         assert!(is_token_frozen(1));
-        // Buy blocked
+        // Buy blocked (frozen check is before caller check)
         let buyer = [3u8; 32];
         test_mock::set_timestamp(10_000);
         assert_eq!(buy(buyer.as_ptr(), 1, 1_000_000_000), 0);
 
         // Unfreeze
+        test_mock::set_caller(admin);
         assert_eq!(unfreeze_token(admin.as_ptr(), 1), 0);
         assert!(!is_token_frozen(1));
         // Buy works
+        test_mock::set_caller(buyer);
         let tokens = buy(buyer.as_ptr(), 1, 1_000_000_000);
         assert!(tokens > 0);
     }
@@ -1101,8 +1238,10 @@ mod tests {
     fn test_freeze_non_admin() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let other = [9u8; 32];
+        test_mock::set_caller(other);
         assert_eq!(freeze_token(other.as_ptr(), 1), 1);
         assert_eq!(unfreeze_token(other.as_ptr(), 1), 1);
     }
@@ -1111,12 +1250,15 @@ mod tests {
     fn test_buy_cooldown() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let creator = [2u8; 32];
+        test_mock::set_caller(creator);
         create_token(creator.as_ptr(), CREATION_FEE);
 
         let buyer = [3u8; 32];
         test_mock::set_timestamp(10_000);
+        test_mock::set_caller(buyer);
         let tokens = buy(buyer.as_ptr(), 1, 1_000_000_000);
         assert!(tokens > 0);
 
@@ -1134,12 +1276,15 @@ mod tests {
     fn test_sell_cooldown() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let creator = [2u8; 32];
+        test_mock::set_caller(creator);
         create_token(creator.as_ptr(), CREATION_FEE);
 
         let buyer = [3u8; 32];
         test_mock::set_timestamp(10_000);
+        test_mock::set_caller(buyer);
         let tokens = buy(buyer.as_ptr(), 1, 1_000_000_000);
         assert!(tokens > 0);
 
@@ -1157,16 +1302,20 @@ mod tests {
     fn test_max_buy_limit() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let creator = [2u8; 32];
+        test_mock::set_caller(creator);
         create_token(creator.as_ptr(), CREATION_FEE);
 
         // Set low max buy
+        test_mock::set_caller(admin);
         assert_eq!(set_max_buy(admin.as_ptr(), 500_000_000), 0); // 0.5 MOLT
 
         let buyer = [3u8; 32];
         test_mock::set_timestamp(10_000);
-        // Over limit rejected
+        test_mock::set_caller(buyer);
+        // Over limit rejected (max buy check is before caller check)
         assert_eq!(buy(buyer.as_ptr(), 1, 1_000_000_000), 0);
         // Under limit works
         let tokens = buy(buyer.as_ptr(), 1, 400_000_000);
@@ -1177,6 +1326,7 @@ mod tests {
     fn test_admin_set_cooldowns() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         assert_eq!(set_buy_cooldown(admin.as_ptr(), 5000), 0);
@@ -1187,6 +1337,7 @@ mod tests {
 
         // Non-admin rejected
         let other = [9u8; 32];
+        test_mock::set_caller(other);
         assert_eq!(set_buy_cooldown(other.as_ptr(), 1), 1);
         assert_eq!(set_sell_cooldown(other.as_ptr(), 1), 1);
     }
@@ -1195,6 +1346,7 @@ mod tests {
     fn test_set_creator_royalty() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         assert_eq!(set_creator_royalty(admin.as_ptr(), 100), 0);
@@ -1205,6 +1357,7 @@ mod tests {
 
         // Non-admin rejected
         let other = [9u8; 32];
+        test_mock::set_caller(other);
         assert_eq!(set_creator_royalty(other.as_ptr(), 50), 1);
     }
 
@@ -1212,14 +1365,17 @@ mod tests {
     fn test_withdraw_fees() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         let creator = [2u8; 32];
+        test_mock::set_caller(creator);
         create_token(creator.as_ptr(), CREATION_FEE);
 
         let fees_before = load_u64(b"cp_fees_collected");
         assert!(fees_before > 0);
 
         // Withdraw some
+        test_mock::set_caller(admin);
         assert_eq!(withdraw_fees(admin.as_ptr(), CREATION_FEE / 2), 0);
         assert_eq!(load_u64(b"cp_fees_collected"), fees_before - CREATION_FEE / 2);
 
@@ -1231,6 +1387,7 @@ mod tests {
 
         // Non-admin rejected
         let other = [9u8; 32];
+        test_mock::set_caller(other);
         assert_eq!(withdraw_fees(other.as_ptr(), 1), 1);
     }
 
@@ -1238,6 +1395,7 @@ mod tests {
     fn test_set_max_buy_zero_rejected() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         assert_eq!(set_max_buy(admin.as_ptr(), 0), 2);
     }
@@ -1259,6 +1417,7 @@ mod tests {
     fn test_set_dex_addresses() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let core_addr = [10u8; 32];
@@ -1277,11 +1436,13 @@ mod tests {
     fn test_set_dex_addresses_not_admin() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let other = [9u8; 32];
         let core_addr = [10u8; 32];
         let amm_addr = [20u8; 32];
+        test_mock::set_caller(other);
         assert_eq!(set_dex_addresses(other.as_ptr(), core_addr.as_ptr(), amm_addr.as_ptr()), 1);
     }
 
@@ -1289,6 +1450,7 @@ mod tests {
     fn test_set_dex_addresses_zero_core() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let zero = [0u8; 32];
@@ -1300,6 +1462,7 @@ mod tests {
     fn test_set_dex_addresses_zero_amm() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let core_addr = [10u8; 32];
@@ -1311,6 +1474,7 @@ mod tests {
     fn test_graduation_with_dex_migration() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         // Configure DEX addresses
@@ -1319,9 +1483,11 @@ mod tests {
         set_dex_addresses(admin.as_ptr(), core_addr.as_ptr(), amm_addr.as_ptr());
 
         let creator = [2u8; 32];
+        test_mock::set_caller(creator);
         let token_id = create_token(creator.as_ptr(), CREATION_FEE);
 
         // Set max buy very high to allow huge purchases
+        test_mock::set_caller(admin);
         set_max_buy(admin.as_ptr(), u64::MAX);
 
         // Buy massive amounts to trigger graduation
@@ -1330,6 +1496,7 @@ mod tests {
         // We need to buy enough supply to push market cap over threshold
         let buyer = [3u8; 32];
         test_mock::set_timestamp(10_000);
+        test_mock::set_caller(buyer);
 
         // Buy in large chunks. Each buy pushes supply higher.
         // With linear bonding curve, we need substantial purchases.
@@ -1373,15 +1540,19 @@ mod tests {
     fn test_graduation_without_dex_addresses() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         // Do NOT set DEX addresses
         let creator = [2u8; 32];
+        test_mock::set_caller(creator);
         let token_id = create_token(creator.as_ptr(), CREATION_FEE);
+        test_mock::set_caller(admin);
         set_max_buy(admin.as_ptr(), u64::MAX);
 
         let buyer = [3u8; 32];
         test_mock::set_timestamp(10_000);
+        test_mock::set_caller(buyer);
 
         let huge_amount: u64 = 10_000_000_000_000_000;
         let _ = buy(buyer.as_ptr(), token_id, huge_amount);
@@ -1403,6 +1574,7 @@ mod tests {
     fn test_get_graduation_info_initial() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         assert_eq!(get_graduation_info(), 0);
@@ -1418,6 +1590,7 @@ mod tests {
     fn test_get_graduation_info_after_address_set() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let core_addr = [10u8; 32];
@@ -1436,6 +1609,7 @@ mod tests {
     fn test_graduated_token_buy_blocked() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let core_addr = [10u8; 32];
@@ -1444,11 +1618,13 @@ mod tests {
         set_max_buy(admin.as_ptr(), u64::MAX);
 
         let creator = [2u8; 32];
+        test_mock::set_caller(creator);
         let token_id = create_token(creator.as_ptr(), CREATION_FEE);
         let buyer = [3u8; 32];
 
         // Push to graduation
         test_mock::set_timestamp(10_000);
+        test_mock::set_caller(buyer);
         let huge: u64 = 10_000_000_000_000_000;
         let _ = buy(buyer.as_ptr(), token_id, huge);
         test_mock::set_timestamp(15_000);
@@ -1475,15 +1651,18 @@ mod tests {
     fn test_graduated_token_sell_blocked() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         set_max_buy(admin.as_ptr(), u64::MAX);
 
         let creator = [2u8; 32];
+        test_mock::set_caller(creator);
         let token_id = create_token(creator.as_ptr(), CREATION_FEE);
         let buyer = [3u8; 32];
 
         // Buy and potentially graduate
         test_mock::set_timestamp(10_000);
+        test_mock::set_caller(buyer);
         let huge: u64 = 10_000_000_000_000_000;
         let bought = buy(buyer.as_ptr(), token_id, huge);
         test_mock::set_timestamp(15_000);

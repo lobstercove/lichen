@@ -156,7 +156,7 @@ class MoltChainWS {
             this.ws = new WebSocket(this.url);
 
             this.ws.onopen = () => {
-                console.log('WebSocket connected');
+                // console.log('WebSocket connected');
                 this.reconnectDelay = 1000;
                 this.subscriptions.clear();
                 this.resubscribeAll();
@@ -204,7 +204,7 @@ class MoltChainWS {
             };
 
             this.ws.onclose = () => {
-                console.log('WebSocket closed, reconnecting...');
+                // console.log('WebSocket closed, reconnecting...');
                 if (this._keepalive) { clearInterval(this._keepalive); this._keepalive = null; }
                 this.closeHandlers.forEach((handler) => handler());
                 setTimeout(() => this.connect(), this.reconnectDelay);
@@ -686,7 +686,7 @@ function setupSearch() {
 
 // Initialize Dashboard
 document.addEventListener('DOMContentLoaded', () => {
-    console.log('🦞 Reef Explorer loaded');
+    // console.log('🦞 Reef Explorer loaded');
 
     initExplorerNetworkSelector();
     

@@ -16,7 +16,7 @@ use alloc::vec::Vec;
 
 use moltchain_sdk::{
     Address, log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes,
-    call_token_transfer, call_nft_transfer, call_nft_owner
+    call_token_transfer, call_nft_transfer, call_nft_owner, get_caller
 };
 
 const MM_SALE_COUNT_KEY: &[u8] = b"mm_sale_count";
@@ -80,6 +80,13 @@ pub extern "C" fn initialize(owner_ptr: *const u8, fee_addr_ptr: *const u8) {
     unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
     let mut fee_addr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(fee_addr_ptr, fee_addr.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != owner {
+        return;
+    }
+
     storage_set(b"marketplace_fee", &u64_to_bytes(250)); // 2.5% fee
     storage_set(b"marketplace_owner", &owner);
     storage_set(b"marketplace_fee_addr", &fee_addr);
@@ -101,6 +108,12 @@ pub extern "C" fn list_nft(
         let seller = parse_address(seller_ptr);
         let nft_contract = parse_address(nft_contract_ptr);
         let payment_token = parse_address(payment_token_ptr);
+
+        // AUDIT-FIX: verify caller matches transaction signer
+        let real_caller = get_caller();
+        if real_caller.0 != seller.0 {
+            return 200;
+        }
         
         // Verify seller owns the NFT (cross-contract call!)
         match call_nft_owner(nft_contract, token_id) {
@@ -154,6 +167,13 @@ pub extern "C" fn buy_nft(
     unsafe {
         let buyer = parse_address(buyer_ptr);
         let nft_contract = parse_address(nft_contract_ptr);
+
+        // AUDIT-FIX: verify caller matches transaction signer
+        let real_caller = get_caller();
+        if real_caller.0 != buyer.0 {
+            reentrancy_exit();
+            return 200;
+        }
         
         // Load listing
         let listing_key = create_listing_key(nft_contract, token_id);
@@ -273,6 +293,12 @@ pub extern "C" fn cancel_listing(
     unsafe {
         let seller = parse_address(seller_ptr);
         let nft_contract = parse_address(nft_contract_ptr);
+
+        // AUDIT-FIX: verify caller matches transaction signer
+        let real_caller = get_caller();
+        if real_caller.0 != seller.0 {
+            return 200;
+        }
         
         let listing_key = create_listing_key(nft_contract, token_id);
         let listing_data = match storage_get(&listing_key) {
@@ -329,6 +355,13 @@ pub extern "C" fn set_marketplace_fee(caller_ptr: *const u8, new_fee: u64) -> u3
     // Verify caller is owner
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     let owner = match storage_get(b"marketplace_owner") {
         Some(data) if data.len() == 32 => data,
         _ => {
@@ -366,6 +399,12 @@ pub extern "C" fn list_nft_with_royalty(
         let nft_contract = parse_address(nft_contract_ptr);
         let payment_token = parse_address(payment_token_ptr);
         let royalty = parse_address(royalty_recipient_ptr);
+
+        // AUDIT-FIX: verify caller matches transaction signer
+        let real_caller = get_caller();
+        if real_caller.0 != seller.0 {
+            return 200;
+        }
 
         match call_nft_owner(nft_contract, token_id) {
             Ok(owner) if owner.0 == seller.0 => {
@@ -414,6 +453,13 @@ pub extern "C" fn make_offer(
     }
     let mut offerer = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(offerer_ptr, offerer.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != offerer {
+        return 200;
+    }
+
     let nft_contract = unsafe { parse_address(nft_contract_ptr) };
     let mut payment_token = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(payment_token_ptr, payment_token.as_mut_ptr(), 32); }
@@ -445,6 +491,13 @@ pub extern "C" fn cancel_offer(
 ) -> u32 {
     let mut offerer = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(offerer_ptr, offerer.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != offerer {
+        return 200;
+    }
+
     let nft_contract = unsafe { parse_address(nft_contract_ptr) };
 
     let mut key = b"offer:".to_vec();
@@ -488,6 +541,13 @@ pub extern "C" fn accept_offer(
         let nft_contract = parse_address(nft_contract_ptr);
         let mut offerer = [0u8; 32];
         core::ptr::copy_nonoverlapping(offerer_ptr, offerer.as_mut_ptr(), 32);
+
+        // AUDIT-FIX: verify caller matches transaction signer
+        let real_caller = get_caller();
+        if real_caller.0 != seller.0 {
+            reentrancy_exit();
+            return 200;
+        }
 
         // Load offer
         let mut key = b"offer:".to_vec();
@@ -610,6 +670,13 @@ unsafe fn parse_address(ptr: *const u8) -> Address {
 pub extern "C" fn mm_pause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_mm_admin(&caller) {
         return 1;
     }
@@ -623,6 +690,13 @@ pub extern "C" fn mm_pause(caller_ptr: *const u8) -> u32 {
 pub extern "C" fn mm_unpause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
     if !is_mm_admin(&caller) {
         return 1;
     }
