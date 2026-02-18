@@ -420,9 +420,10 @@ fn test_redeem_winning_shares() {
 
     // Redeem winning shares
     moltchain_sdk::test_mock::set_caller(t);
-    let payout = redeem_shares(t.as_ptr(), mid, 0);
-    assert!(payout > 0, "Winner should get payout");
-    assert_eq!(payout as u64, shares_before, "Payout = number of winning shares");
+    let result = redeem_shares(t.as_ptr(), mid, 0);
+    assert_eq!(result, 1, "Winner should succeed");
+    let payout = moltchain_sdk::bytes_to_u64(&moltchain_sdk::test_mock::get_return_data());
+    assert_eq!(payout, shares_before, "Payout = number of winning shares");
 
     // Position should be cleared
     let (shares_after, _) = read_position(mid, &t, 0);
@@ -454,9 +455,11 @@ fn test_redeem_losing_shares() {
     moltchain_sdk::test_mock::set_caller(t);
     finalize_resolution(t.as_ptr(), mid);
 
-    // Redeem losing shares — payout should be 0
+    // Redeem losing shares — succeeds but payout is 0
     moltchain_sdk::test_mock::set_caller(t);
-    let payout = redeem_shares(t.as_ptr(), mid, 1);
+    let result = redeem_shares(t.as_ptr(), mid, 1);
+    assert_eq!(result, 1, "Losing redeem succeeds (clears position)");
+    let payout = moltchain_sdk::bytes_to_u64(&moltchain_sdk::test_mock::get_return_data());
     assert_eq!(payout, 0, "Loser gets 0 payout");
 
     // Position should still be cleared (shares zeroed)
@@ -487,7 +490,7 @@ fn test_double_redemption_prevented() {
     // First redemption
     moltchain_sdk::test_mock::set_caller(t);
     let payout1 = redeem_shares(t.as_ptr(), mid, 0);
-    assert!(payout1 > 0);
+    assert_eq!(payout1, 1);
 
     // Second redemption — should return 0 (shares cleared)
     moltchain_sdk::test_mock::set_caller(t);
@@ -567,12 +570,16 @@ fn test_multi_outcome_resolution_and_redemption() {
 
     // Redeem outcome 2 (winner) → payout = shares_o2
     moltchain_sdk::test_mock::set_caller(t);
-    let payout_win = redeem_shares(t.as_ptr(), mid, 2);
-    assert_eq!(payout_win as u64, shares_o2, "Winning outcome pays shares");
+    let result_win = redeem_shares(t.as_ptr(), mid, 2);
+    assert_eq!(result_win, 1, "Winning outcome succeeds");
+    let payout_win = moltchain_sdk::bytes_to_u64(&moltchain_sdk::test_mock::get_return_data());
+    assert_eq!(payout_win, shares_o2, "Winning outcome pays shares");
 
     // Redeem outcome 0 (loser) → payout = 0
     moltchain_sdk::test_mock::set_caller(t);
-    let payout_lose = redeem_shares(t.as_ptr(), mid, 0);
+    let result_lose = redeem_shares(t.as_ptr(), mid, 0);
+    assert_eq!(result_lose, 1, "Losing outcome clears position");
+    let payout_lose = moltchain_sdk::bytes_to_u64(&moltchain_sdk::test_mock::get_return_data());
     assert_eq!(payout_lose, 0, "Losing outcome pays 0");
 }
 
@@ -624,20 +631,24 @@ fn test_full_lifecycle_binary_resolve_yes() {
 
     // Trader 1 redeems YES → profit
     moltchain_sdk::test_mock::set_caller(t_yes);
-    let p1 = redeem_shares(t_yes.as_ptr(), mid, 0) as u64;
+    assert_eq!(redeem_shares(t_yes.as_ptr(), mid, 0), 1);
+    let p1 = moltchain_sdk::bytes_to_u64(&moltchain_sdk::test_mock::get_return_data());
     assert_eq!(p1, yes_shares_t1);
 
     // Trader 2 redeems NO → 0
     moltchain_sdk::test_mock::set_caller(t_no);
-    let p2 = redeem_shares(t_no.as_ptr(), mid, 1) as u64;
+    assert_eq!(redeem_shares(t_no.as_ptr(), mid, 1), 1);
+    let p2 = moltchain_sdk::bytes_to_u64(&moltchain_sdk::test_mock::get_return_data());
     assert_eq!(p2, 0);
 
     // Trader 3 redeems YES → profit, NO → 0
     moltchain_sdk::test_mock::set_caller(t_both);
-    let p3y = redeem_shares(t_both.as_ptr(), mid, 0) as u64;
+    assert_eq!(redeem_shares(t_both.as_ptr(), mid, 0), 1);
+    let p3y = moltchain_sdk::bytes_to_u64(&moltchain_sdk::test_mock::get_return_data());
     assert_eq!(p3y, yes_shares_t3);
     moltchain_sdk::test_mock::set_caller(t_both);
-    let p3n = redeem_shares(t_both.as_ptr(), mid, 1) as u64;
+    assert_eq!(redeem_shares(t_both.as_ptr(), mid, 1), 1);
+    let p3n = moltchain_sdk::bytes_to_u64(&moltchain_sdk::test_mock::get_return_data());
     assert_eq!(p3n, 0);
 }
 
@@ -674,7 +685,8 @@ fn test_full_lifecycle_dispute_dao_override() {
 
     // Trader redeems YES shares — profit!
     moltchain_sdk::test_mock::set_caller(t);
-    let payout = redeem_shares(t.as_ptr(), mid, 0) as u64;
+    assert_eq!(redeem_shares(t.as_ptr(), mid, 0), 1);
+    let payout = moltchain_sdk::bytes_to_u64(&moltchain_sdk::test_mock::get_return_data());
     assert_eq!(payout, yes_shares);
 }
 
@@ -710,8 +722,10 @@ fn test_full_lifecycle_void_after_dispute() {
 
     // Trader reclaims collateral
     moltchain_sdk::test_mock::set_caller(t);
-    let refund = reclaim_collateral(t.as_ptr(), mid);
-    assert!(refund > 0, "Trader should get refund from voided market");
+    let result = reclaim_collateral(t.as_ptr(), mid);
+    assert_eq!(result, 1, "Trader should get refund from voided market");
+    let refund = moltchain_sdk::bytes_to_u64(&moltchain_sdk::test_mock::get_return_data());
+    assert!(refund > 0, "Refund amount should be > 0");
 }
 
 // ============================================================================
@@ -741,15 +755,17 @@ fn test_voided_reclaim_multiple_traders() {
     // Both reclaim
     moltchain_sdk::test_mock::set_caller(t1);
     let r1 = reclaim_collateral(t1.as_ptr(), mid);
-    assert!(r1 > 0, "Trader 1 should reclaim");
+    assert_eq!(r1, 1, "Trader 1 should reclaim");
+    let refund1 = moltchain_sdk::bytes_to_u64(&moltchain_sdk::test_mock::get_return_data());
 
     moltchain_sdk::test_mock::set_caller(t2);
     let r2 = reclaim_collateral(t2.as_ptr(), mid);
-    assert!(r2 > 0, "Trader 2 should reclaim");
+    assert_eq!(r2, 1, "Trader 2 should reclaim");
+    let refund2 = moltchain_sdk::bytes_to_u64(&moltchain_sdk::test_mock::get_return_data());
 
     // Each gets back their cost basis
-    assert_eq!(r1 as u64, cost1, "Refund ~= cost basis for t1");
-    assert_eq!(r2 as u64, cost2, "Refund ~= cost basis for t2");
+    assert_eq!(refund1, cost1, "Refund ~= cost basis for t1");
+    assert_eq!(refund2, cost2, "Refund ~= cost basis for t2");
 }
 
 #[test]
@@ -767,12 +783,14 @@ fn test_voided_reclaim_with_mint_position() {
 
     // Reclaim — should get back 10M (= 10M cost_basis sum = 10M × 2 outcomes = 20M total cost, but capped)
     moltchain_sdk::test_mock::set_caller(t);
-    let refund = reclaim_collateral(t.as_ptr(), mid);
+    let result = reclaim_collateral(t.as_ptr(), mid);
     // cost_basis per outcome = 10M, 2 outcomes → total_cost = 20M
     // But actual collateral is only 10M, so refund is capped at market_total_collateral
     // (100M pool + 10M mint = 110M total collateral)
     // refund = min(20M, 110M) = 20M
-    assert_eq!(refund as u64, 20_000_000, "Mint refund = sum of cost_basis");
+    assert_eq!(result, 1, "Reclaim should succeed");
+    let refund = moltchain_sdk::bytes_to_u64(&moltchain_sdk::test_mock::get_return_data());
+    assert_eq!(refund, 20_000_000, "Mint refund = sum of cost_basis");
 }
 
 // ============================================================================

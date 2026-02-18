@@ -262,7 +262,7 @@ fn test_double_reclaim_from_voided_market() {
     // First reclaim
     moltchain_sdk::test_mock::set_caller(t);
     let r1 = reclaim_collateral(t.as_ptr(), mid);
-    assert!(r1 > 0);
+    assert_eq!(r1, 1);
 
     // Second reclaim should return 0 (shares already zeroed)
     moltchain_sdk::test_mock::set_caller(t);

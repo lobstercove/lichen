@@ -2704,7 +2704,7 @@ pub fn redeem_shares(
         save_position(market_id, user, outcome, 0, 0);
         moltchain_sdk::set_return_data(&u64_to_bytes(0));
         reentrancy_exit();
-        return 0; // losing shares are worthless — backward-compat returns 0
+        return 1; // success — position cleared, payout=0 in return_data
     }
 
     // Transfer mUSD to the user BEFORE updating state (checks-effects-interactions
@@ -2740,11 +2740,11 @@ pub fn redeem_shares(
 
     log_info("Shares redeemed — mUSD transferred!");
     reentrancy_exit();
-    payout as u32 // backward-compat; full u64 in return_data
+    1 // success — full u64 payout in return_data
 }
 
 /// Reclaim collateral from a VOIDED market.
-/// Returns mUSD refund amount.
+/// Returns 1 on success (refund amount in return data as u64), 0 on failure.
 pub fn reclaim_collateral(
     user_ptr: *const u8,
     market_id: u64,
@@ -2843,7 +2843,7 @@ pub fn reclaim_collateral(
     log_info("Collateral reclaimed — mUSD transferred!");
 
     reentrancy_exit();
-    refund as u32 // backward-compat; full u64 in return_data
+    1 // success — full u64 refund in return_data
 }
 
 /// Withdraw liquidity from an ACTIVE market.
@@ -4163,7 +4163,7 @@ mod tests {
         assert!(user_shares > 0);
 
         let result = redeem_shares(trader.as_ptr(), mid, 0);
-        assert!(result > 0, "redeem_shares should return payout as u32");
+        assert_eq!(result, 1, "redeem_shares should return 1 on success");
 
         // Return data should have full u64 payout
         let payout = bytes_to_u64(&test_mock::get_return_data());
@@ -4194,8 +4194,8 @@ mod tests {
 
         test_mock::set_caller(trader);
         let result = redeem_shares(trader.as_ptr(), mid, 1);
-        // Losing shares: returns 0 (worthless) — backward-compatible
-        assert_eq!(result, 0, "Losing shares should return 0");
+        // Losing shares: returns 1 (position cleared, payout=0 in return_data)
+        assert_eq!(result, 1, "Losing shares redeem should succeed");
         let payout = bytes_to_u64(&test_mock::get_return_data());
         assert_eq!(payout, 0, "Losing shares should have zero payout");
     }
@@ -4217,7 +4217,7 @@ mod tests {
         force_resolve_market(mid, 0);
 
         test_mock::set_caller(trader);
-        assert!(redeem_shares(trader.as_ptr(), mid, 0) > 0); // first redeem succeeds
+        assert_eq!(redeem_shares(trader.as_ptr(), mid, 0), 1); // first redeem succeeds
         assert_eq!(redeem_shares(trader.as_ptr(), mid, 0), 0); // second blocked (no shares)
     }
 
@@ -4264,9 +4264,7 @@ mod tests {
 
         test_mock::set_caller(trader);
         let result = redeem_shares(trader.as_ptr(), mid, 0);
-        // Return value is payout as u32 — truncated for very large payouts
-        // But return_data has the full u64
-        assert!(result > 0);
+        assert_eq!(result, 1, "Redeem should succeed");
 
         let payout = bytes_to_u64(&test_mock::get_return_data());
         assert_eq!(payout, large_shares, "Full u64 payout should be preserved in return_data");
@@ -4297,7 +4295,7 @@ mod tests {
 
         test_mock::set_caller(user);
         let result = reclaim_collateral(user.as_ptr(), mid);
-        assert!(result > 0, "Reclaim should succeed for voided market");
+        assert_eq!(result, 1, "Reclaim should succeed for voided market");
 
         let refund = bytes_to_u64(&test_mock::get_return_data());
         assert!(refund > 0, "Refund should be > 0");
@@ -4520,13 +4518,13 @@ mod tests {
         let (yes_held, _) = load_position(mid, &trader_yes, 0);
         assert!(yes_held > 0);
         let rdm = redeem_shares(trader_yes.as_ptr(), mid, 0);
-        assert!(rdm > 0);
+        assert_eq!(rdm, 1);
         let payout = bytes_to_u64(&test_mock::get_return_data());
         assert_eq!(payout, yes_held);
 
         // 8. Losing trader redeems (zero payout)
         test_mock::set_caller(trader_no);
-        assert_eq!(redeem_shares(trader_no.as_ptr(), mid, 1), 0); // losing returns 0
+        assert_eq!(redeem_shares(trader_no.as_ptr(), mid, 1), 1); // losing returns 1
         let no_payout = bytes_to_u64(&test_mock::get_return_data());
         assert_eq!(no_payout, 0);
 

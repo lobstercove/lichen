@@ -702,7 +702,7 @@ fn test_voided_market_refund() {
     assert_eq!(dao_void(admin.as_ptr(), market_id), 1);
     moltchain_sdk::test_mock::set_caller(trader);
     let refund = reclaim_collateral(trader.as_ptr(), market_id);
-    assert!(refund > 0, "Should get refund from voided market");
+    assert_eq!(refund, 1, "Should get refund from voided market");
 }
 
 #[test]
@@ -976,9 +976,9 @@ fn test_full_binary_lifecycle_to_void() {
     assert_eq!(dao_void(admin.as_ptr(), market_id), 1);
 
     moltchain_sdk::test_mock::set_caller(t1);
-    assert!(reclaim_collateral(t1.as_ptr(), market_id) > 0);
+    assert_eq!(reclaim_collateral(t1.as_ptr(), market_id), 1);
     moltchain_sdk::test_mock::set_caller(t2);
-    assert!(reclaim_collateral(t2.as_ptr(), market_id) > 0);
+    assert_eq!(reclaim_collateral(t2.as_ptr(), market_id), 1);
 }
 
 #[test]
