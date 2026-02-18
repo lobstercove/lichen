@@ -14,10 +14,14 @@ impl Balance {
         Self { shells }
     }
     
-    /// Create from MOLT
+    /// Create from MOLT (handles negative, NaN, and overflow gracefully)
     pub fn from_molt(molt: f64) -> Self {
+        if molt.is_nan() || molt < 0.0 {
+            return Self { shells: 0 };
+        }
+        let shells = molt * 1_000_000_000.0;
         Self {
-            shells: (molt * 1_000_000_000.0) as u64,
+            shells: shells.min(u64::MAX as f64) as u64,
         }
     }
     
@@ -57,3 +61,45 @@ pub struct NetworkInfo {
 
 /// Re-export transaction from core
 pub use moltchain_core::Transaction;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_balance_roundtrip() {
+        let b = Balance::from_shells(1_500_000_000);
+        assert_eq!(b.shells(), 1_500_000_000);
+        assert!((b.molt() - 1.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn test_balance_from_molt_normal() {
+        let b = Balance::from_molt(2.5);
+        assert_eq!(b.shells(), 2_500_000_000);
+    }
+
+    #[test]
+    fn test_balance_from_molt_negative() {
+        let b = Balance::from_molt(-1.0);
+        assert_eq!(b.shells(), 0);
+    }
+
+    #[test]
+    fn test_balance_from_molt_nan() {
+        let b = Balance::from_molt(f64::NAN);
+        assert_eq!(b.shells(), 0);
+    }
+
+    #[test]
+    fn test_balance_from_molt_infinity() {
+        let b = Balance::from_molt(f64::INFINITY);
+        assert_eq!(b.shells(), u64::MAX);
+    }
+
+    #[test]
+    fn test_balance_from_molt_zero() {
+        let b = Balance::from_molt(0.0);
+        assert_eq!(b.shells(), 0);
+    }
+}

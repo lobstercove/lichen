@@ -319,10 +319,14 @@ pub fn u64_to_bytes(n: u64) -> [u8; 8] {
     n.to_le_bytes()
 }
 
-/// Helper for u64 deserialization
+/// Helper for u64 deserialization (handles short input with zero-padding)
 pub fn bytes_to_u64(bytes: &[u8]) -> u64 {
     let mut array = [0u8; 8];
-    array.copy_from_slice(&bytes[..8]);
+    if bytes.len() >= 8 {
+        array.copy_from_slice(&bytes[..8]);
+    } else {
+        array[..bytes.len()].copy_from_slice(bytes);
+    }
     u64::from_le_bytes(array)
 }
 
@@ -404,3 +408,39 @@ pub use log::info as log_info;
 pub use contract::{args as get_args, set_return as set_return_data};
 pub use event::emit as emit_event;
 // get_caller, get_value, get_slot, get_timestamp are already top-level pub fns
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bytes_to_u64_exact_8_bytes() {
+        let val: u64 = 0x0807060504030201;
+        let bytes = val.to_le_bytes();
+        assert_eq!(bytes_to_u64(&bytes), val);
+    }
+
+    #[test]
+    fn test_bytes_to_u64_short_4_bytes() {
+        // Little-endian: [0x01, 0x02, 0x03, 0x04] = 0x04030201
+        let bytes = [0x01, 0x02, 0x03, 0x04];
+        assert_eq!(bytes_to_u64(&bytes), 0x04030201);
+    }
+
+    #[test]
+    fn test_bytes_to_u64_empty() {
+        assert_eq!(bytes_to_u64(&[]), 0);
+    }
+
+    #[test]
+    fn test_bytes_to_u64_single_byte() {
+        assert_eq!(bytes_to_u64(&[42]), 42);
+    }
+
+    #[test]
+    fn test_bytes_to_u64_long_input() {
+        // More than 8 bytes — only first 8 matter
+        let bytes = [1, 2, 3, 4, 5, 6, 7, 8, 0xFF, 0xFF];
+        assert_eq!(bytes_to_u64(&bytes), 0x0807060504030201);
+    }
+}

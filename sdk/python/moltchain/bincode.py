@@ -61,5 +61,13 @@ def encode_message(instructions: List[EncodedInstruction], recent_blockhash: str
 
 
 def encode_transaction(signatures: List[str], message_bytes: bytes) -> bytes:
-    encoded_sigs = _encode_vec(_encode_string(sig) for sig in signatures)
-    return encoded_sigs + message_bytes
+    """Encode transaction matching Rust bincode Vec<[u8; 64]> format.
+
+    Signatures are hex strings that map to 64 raw bytes each.
+    Fixed-size arrays in bincode have no per-element length prefix.
+    """
+    sig_bytes = [bytes.fromhex(sig) for sig in signatures]
+    for sig in sig_bytes:
+        if len(sig) != 64:
+            raise ValueError(f"Signature must be 64 bytes, got {len(sig)}")
+    return _encode_u64(len(sig_bytes)) + b"".join(sig_bytes) + message_bytes
