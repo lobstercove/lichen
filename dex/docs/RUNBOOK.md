@@ -34,7 +34,7 @@ cargo build --target wasm32-unknown-unknown --release
 ./scripts/testnet-deploy.sh --skip-build
 
 # 3. Verify state continuity
-curl -s http://localhost:8000/api/v1/pairs | jq '.data | length'
+curl -s http://localhost:8899/api/v1/pairs | jq '.data | length'
 ```
 
 ### RPC Server Restart
@@ -49,7 +49,7 @@ sleep 5
 cd rpc && cargo run --release &
 
 # Verify
-curl -s http://localhost:8000/ \
+curl -s http://localhost:8899/ \
   -X POST -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"health"}'
 ```
@@ -61,14 +61,14 @@ curl -s http://localhost:8000/ \
 ### Quick Health
 ```bash
 # RPC health
-curl -s http://localhost:8000/ -X POST -H "Content-Type: application/json" \
+curl -s http://localhost:8899/ -X POST -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"health"}' | jq .
 
 # DEX API health
-curl -s http://localhost:8000/api/v1/pairs | jq '.data | length'
+curl -s http://localhost:8899/api/v1/pairs | jq '.data | length'
 
 # Active WebSocket connections
-curl -s http://localhost:8000/metrics | grep ws_connections
+curl -s http://localhost:8899/metrics | grep ws_connections
 ```
 
 ### Deep Health Check
@@ -78,30 +78,30 @@ echo "=== MoltyDEX Health Check ==="
 
 # 1. RPC responding
 echo -n "RPC: "
-curl -sf http://localhost:8000/ -X POST -H "Content-Type: application/json" \
+curl -sf http://localhost:8899/ -X POST -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"health"}' > /dev/null && echo "OK" || echo "FAIL"
 
 # 2. DEX pairs exist
-PAIRS=$(curl -sf http://localhost:8000/api/v1/pairs | python3 -c "import json,sys; print(len(json.load(sys.stdin).get('data',[])))") 
+PAIRS=$(curl -sf http://localhost:8899/api/v1/pairs | python3 -c "import json,sys; print(len(json.load(sys.stdin).get('data',[])))") 
 echo "Pairs: $PAIRS"
 
 # 3. Block height advancing
-SLOT1=$(curl -sf http://localhost:8000/ -X POST -H "Content-Type: application/json" \
+SLOT1=$(curl -sf http://localhost:8899/ -X POST -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getSlot"}' | python3 -c "import json,sys; print(json.load(sys.stdin).get('result',0))")
 sleep 2
-SLOT2=$(curl -sf http://localhost:8000/ -X POST -H "Content-Type: application/json" \
+SLOT2=$(curl -sf http://localhost:8899/ -X POST -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getSlot"}' | python3 -c "import json,sys; print(json.load(sys.stdin).get('result',0))")
 echo "Slots: $SLOT1 → $SLOT2 (advancing: $([ $SLOT2 -gt $SLOT1 ] && echo YES || echo NO))"
 
 # 4. Orderbook has depth
-DEPTH=$(curl -sf "http://localhost:8000/api/v1/pairs/0/orderbook?depth=5" | python3 -c "
+DEPTH=$(curl -sf "http://localhost:8899/api/v1/pairs/0/orderbook?depth=5" | python3 -c "
 import json,sys
 d = json.load(sys.stdin).get('data',{})
 print(f\"bids={len(d.get('bids',[]))} asks={len(d.get('asks',[]))}\")")
 echo "Orderbook: $DEPTH"
 
 # 5. Insurance fund
-FUND=$(curl -sf http://localhost:8000/api/v1/margin/info | python3 -c "import json,sys; print(json.load(sys.stdin).get('data',{}).get('insurance_fund',0))")
+FUND=$(curl -sf http://localhost:8899/api/v1/margin/info | python3 -c "import json,sys; print(json.load(sys.stdin).get('data',{}).get('insurance_fund',0))")
 echo "Insurance fund: $FUND"
 ```
 
@@ -116,7 +116,7 @@ If anomalous activity is detected (oracle manipulation, flash loan attack, etc):
 # 1. Pause all DEX contracts via governance
 # This sets the `paused` flag in each contract's storage
 for contract in dex_core dex_amm dex_router dex_margin; do
-  curl -s http://localhost:8000/ -X POST -H "Content-Type: application/json" \
+  curl -s http://localhost:8899/ -X POST -H "Content-Type: application/json" \
     -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"sendTransaction\",\"params\":{\"to\":\"$contract\",\"data\":\"0xFF\"}}"
 done
 
@@ -124,7 +124,7 @@ done
 echo "DEX HALTED at $(date)" >> /var/log/moltchain/incidents.log
 
 # 3. Investigate — check recent transactions
-curl -s http://localhost:8000/ -X POST -H "Content-Type: application/json" \
+curl -s http://localhost:8899/ -X POST -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getRecentTransactions","params":{"limit":100}}' | jq .
 ```
 
@@ -141,7 +141,7 @@ If multiple margin positions are being liquidated simultaneously:
 top -l 1 -s 0 | grep moltchain
 
 # Check pending transaction pool
-curl -s http://localhost:8000/ -X POST -H "Content-Type: application/json" \
+curl -s http://localhost:8899/ -X POST -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","id":1,"method":"getPendingTransactionCount"}' | jq .
 
 # If backlogged, consider temporarily rejecting new orders
@@ -157,7 +157,7 @@ curl -s http://localhost:8000/ -X POST -H "Content-Type: application/json" \
 # Args: base_name, quote_name, tick_size, lot_size, min_order_size
 # Encoded as: opcode 0x01 + args
 
-curl -s http://localhost:8000/api/v1/pairs \
+curl -s http://localhost:8899/api/v1/pairs \
   -X POST -H "Content-Type: application/json" \
   -d '{
     "baseName": "NEWTOKEN",
@@ -170,7 +170,7 @@ curl -s http://localhost:8000/api/v1/pairs \
 
 ### Create AMM Pool for Pair
 ```bash
-curl -s http://localhost:8000/api/v1/pools \
+curl -s http://localhost:8899/api/v1/pools \
   -X POST -H "Content-Type: application/json" \
   -d '{
     "pairId": 4,
@@ -187,7 +187,7 @@ curl -s http://localhost:8000/api/v1/pools \
 ### Export Trade History
 ```bash
 # Get last 1000 trades for a pair
-curl -s "http://localhost:8000/api/v1/pairs/0/trades?limit=1000" | jq '.data' > trades-export.json
+curl -s "http://localhost:8899/api/v1/pairs/0/trades?limit=1000" | jq '.data' > trades-export.json
 ```
 
 ---

@@ -1,6 +1,6 @@
 # MoltyDEX REST API Reference
 
-**Base URL**: `http://localhost:8000/api/v1`
+**Base URL**: `http://localhost:8899/api/v1`
 
 All responses follow the format:
 ```json
@@ -351,7 +351,7 @@ Get proposal details.
 
 ## WebSocket API
 
-**URL**: `ws://localhost:8000/ws`
+**URL**: `ws://localhost:8900/ws`
 
 ### Subscribe
 ```json

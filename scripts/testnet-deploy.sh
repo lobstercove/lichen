@@ -11,7 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 
 # Defaults
-RPC_URL="${MOLTCHAIN_RPC_URL:-http://localhost:8000}"
+RPC_URL="${MOLTCHAIN_RPC_URL:-http://localhost:8899}"
 SKIP_BUILD=false
 SEED_PAIRS=false
 SEED_POOLS=false

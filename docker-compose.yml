@@ -8,8 +8,9 @@ services:
     container_name: moltchain-validator
     restart: unless-stopped
     ports:
-      - "8000:8000"   # P2P
-      - "9000:9000"   # RPC
+      - "7001:7001"   # P2P
+      - "8899:8899"   # RPC
+      - "8900:8900"   # WebSocket
       - "9100:9100"   # Metrics
     volumes:
       - moltchain-data:/var/lib/moltchain
@@ -21,7 +22,7 @@ services:
     networks:
       - moltchain
     healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:9000/ -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getHealth\"}' -H 'Content-Type: application/json' || exit 1"]
+      test: ["CMD-SHELL", "curl -sf http://localhost:8899/ -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getHealth\"}' -H 'Content-Type: application/json' || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -35,10 +36,11 @@ services:
     restart: unless-stopped
     entrypoint: ["moltchain-faucet"]
     ports:
-      - "9001:9001"
+      - "9100:9100"
     environment:
       - RUST_LOG=info
-      - MOLTCHAIN_RPC_URL=http://validator:9000
+      - PORT=9100
+      - MOLTCHAIN_RPC_URL=http://validator:8899
     depends_on:
       validator:
         condition: service_healthy
