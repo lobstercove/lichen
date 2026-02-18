@@ -199,20 +199,24 @@ impl GossipManager {
         }
 
         // Create peer info list (M12 fix: cap at 50 peers to bound message size)
+        // AUDIT-FIX M3: Use actual peer scores instead of hardcoded 500.
         // L4 note: last_seen is set to local clock. A malicious peer could relay
         // fabricated timestamps in incoming PeerInfoMsg to inflate reputation of
         // stale peers. Receivers should treat last_seen as untrusted advisory data
         // and not use it for critical decisions without independent verification.
-        let peer_infos: Vec<PeerInfoMsg> = peers
+        let peer_infos_raw = peer_manager.get_peer_infos();
+        let peer_infos: Vec<PeerInfoMsg> = peer_infos_raw
             .iter()
             .take(50)
-            .map(|addr| PeerInfoMsg {
+            .map(|(addr, score)| PeerInfoMsg {
                 address: *addr,
                 last_seen: std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs(),
-                reputation: 500,
+                // Map i64 score [-20..20] to u64 reputation [0..1000]:
+                // score -20 → reputation 0, score 0 → reputation 500, score 20 → reputation 1000
+                reputation: ((*score as i128 + 20) * 1000 / 40).clamp(0, 1000) as u64,
                 validator_pubkey,
             })
             .collect();

@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// P2P network configuration
 #[derive(Debug, Clone)]
@@ -25,7 +25,7 @@ pub struct P2PConfig {
 impl Default for P2PConfig {
     fn default() -> Self {
         P2PConfig {
-            listen_addr: "127.0.0.1:8000".parse().unwrap(),
+            listen_addr: "127.0.0.1:7001".parse().unwrap(),
             seed_peers: Vec::new(),
             gossip_interval: 10,
             cleanup_timeout: 300,
@@ -235,8 +235,8 @@ impl P2PNetwork {
     ) -> Result<(), String> {
         match message.msg_type {
             MessageType::Block(block) => {
-                info!(
-                    "🦞 P2P: Received block slot {} from {}",
+                debug!(
+                    "P2P: Received block slot {} from {}",
                     block.header.slot, peer_addr
                 );
                 self.block_tx
@@ -246,8 +246,8 @@ impl P2PNetwork {
             }
 
             MessageType::Vote(vote) => {
-                info!(
-                    "🦞 P2P: Received vote for slot {} from {}",
+                debug!(
+                    "P2P: Received vote for slot {} from {}",
                     vote.slot, peer_addr
                 );
                 self.vote_tx
@@ -257,7 +257,7 @@ impl P2PNetwork {
             }
 
             MessageType::Transaction(tx) => {
-                info!("🦞 P2P: Received transaction from {}", peer_addr);
+                debug!("P2P: Received transaction from {}", peer_addr);
                 self.transaction_tx
                     .send(tx)
                     .await
@@ -265,8 +265,8 @@ impl P2PNetwork {
             }
 
             MessageType::PeerInfo(peer_infos) => {
-                info!(
-                    "🦞 P2P: Received peer info from {} ({} peers)",
+                debug!(
+                    "P2P: Received peer info from {} ({} peers)",
                     peer_addr,
                     peer_infos.len()
                 );
@@ -274,18 +274,19 @@ impl P2PNetwork {
             }
 
             MessageType::PeerRequest => {
-                info!("🦞 P2P: Received peer request from {}", peer_addr);
-                // Send our peer list
-                let peers = self.peer_manager.get_peers();
-                let peer_infos = peers
+                debug!("P2P: Received peer request from {}", peer_addr);
+                // AUDIT-FIX M3: Use actual peer scores, not hardcoded 500
+                let peer_infos_raw = self.peer_manager.get_peer_infos();
+                let peer_infos = peer_infos_raw
                     .iter()
-                    .map(|addr| crate::message::PeerInfoMsg {
+                    .take(50) // Cap response size
+                    .map(|(addr, score)| crate::message::PeerInfoMsg {
                         address: *addr,
                         last_seen: std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .unwrap_or_default()
                             .as_secs(),
-                        reputation: 500,
+                        reputation: ((*score as i128 + 20) * 1000 / 40).clamp(0, 1000) as u64,
                         validator_pubkey: None, // Populated when validator identity is known
                     })
                     .collect();
@@ -295,18 +296,18 @@ impl P2PNetwork {
             }
 
             MessageType::Ping => {
-                info!("🦞 P2P: Received ping from {}", peer_addr);
+                debug!("P2P: Received ping from {}", peer_addr);
                 let pong = P2PMessage::new(MessageType::Pong, self.local_addr);
                 self.peer_manager.send_to_peer(&peer_addr, pong).await?;
             }
 
             MessageType::Pong => {
-                info!("🦞 P2P: Received pong from {}", peer_addr);
+                debug!("P2P: Received pong from {}", peer_addr);
             }
 
             MessageType::BlockRequest { slot } => {
-                info!(
-                    "🦞 P2P: Received block request for slot {} from {}",
+                debug!(
+                    "P2P: Received block request for slot {} from {}",
                     slot, peer_addr
                 );
                 let request = BlockRangeRequestMsg {
@@ -324,8 +325,26 @@ impl P2PNetwork {
                 start_slot,
                 end_slot,
             } => {
-                info!(
-                    "🦞 P2P: Received block range request {}-{} from {}",
+                // AUDIT-FIX H1: Cap max block range to prevent DoS via unbounded requests.
+                // A malicious peer could request start=0, end=u64::MAX causing OOM.
+                const MAX_BLOCK_RANGE: u64 = 100;
+                let range = end_slot.saturating_sub(start_slot);
+                if range > MAX_BLOCK_RANGE {
+                    warn!(
+                        "P2P: Rejecting block range request {}-{} from {} — range {} exceeds max {}",
+                        start_slot, end_slot, peer_addr, range, MAX_BLOCK_RANGE
+                    );
+                    return Ok(());
+                }
+                if end_slot < start_slot {
+                    warn!(
+                        "P2P: Rejecting invalid block range {}-{} from {} — end < start",
+                        start_slot, end_slot, peer_addr
+                    );
+                    return Ok(());
+                }
+                debug!(
+                    "P2P: Received block range request {}-{} from {}",
                     start_slot, end_slot, peer_addr
                 );
                 // Forward to validator to load blocks from state
@@ -341,8 +360,8 @@ impl P2PNetwork {
             }
 
             MessageType::BlockResponse(block) => {
-                info!(
-                    "🦞 P2P: Received block response for slot {} from {}",
+                debug!(
+                    "P2P: Received block response for slot {} from {}",
                     block.header.slot, peer_addr
                 );
                 self.block_tx
@@ -352,8 +371,8 @@ impl P2PNetwork {
             }
 
             MessageType::BlockRangeResponse { blocks } => {
-                info!(
-                    "🦞 P2P: Received {} blocks from {}",
+                debug!(
+                    "P2P: Received {} blocks from {}",
                     blocks.len(),
                     peer_addr
                 );
@@ -366,7 +385,7 @@ impl P2PNetwork {
             }
 
             MessageType::StatusRequest => {
-                info!("🦞 P2P: Received status request from {}", peer_addr);
+                debug!("P2P: Received status request from {}", peer_addr);
                 let request = StatusRequestMsg {
                     requester: peer_addr,
                 };
@@ -380,8 +399,8 @@ impl P2PNetwork {
                 current_slot,
                 total_blocks,
             } => {
-                info!(
-                    "🦞 P2P: Peer {} is at slot {} ({} blocks)",
+                debug!(
+                    "P2P: Peer {} is at slot {} ({} blocks)",
                     peer_addr, current_slot, total_blocks
                 );
                 let response = StatusResponseMsg {
