@@ -472,7 +472,14 @@ let walletState = {
 };
 
 // Initialize
+// Cache original welcome HTML before any lock screen overwrites it  
+let _originalWelcomeHTML = '';
+
 document.addEventListener('DOMContentLoaded', () => {
+    // Capture original welcome-container before showUnlockScreen can overwrite it
+    const welcomeContainer = document.querySelector('.welcome-container');
+    if (welcomeContainer) _originalWelcomeHTML = welcomeContainer.innerHTML;
+
     // console.log('MoltWallet loaded');
     loadWalletState();
     loadTokenRegistry();
@@ -1488,7 +1495,7 @@ async function loadStaking() {
                         <button onclick="showReefStakeModal()" class="btn btn-primary" style="width: 100%; padding: 1rem;">
                             <i class="fas fa-arrow-down"></i> Stake MOLT
                         </button>
-                        <button onclick="showReefUnstakeModal()" class="btn btn-secondary" style="width: 100%; padding: 1rem;">
+                        <button id="reefUnstakeBtn" onclick="showReefUnstakeModal()" class="btn btn-secondary" style="width: 100%; padding: 1rem;">
                             <i class="fas fa-arrow-up"></i> Unstake stMOLT
                         </button>
                     </div>
@@ -1686,6 +1693,24 @@ async function loadReefStakePosition(address) {
             }
         } else if (lockStatus) {
             lockStatus.style.display = 'none';
+        }
+
+        // Disable unstake button when position is locked
+        const unstakeBtn = document.getElementById('reefUnstakeBtn');
+        if (unstakeBtn) {
+            const currentSlot = Math.floor(Date.now() / 400);
+            const posLocked = position.lock_until > 0 && position.lock_until > currentSlot;
+            if (posLocked) {
+                unstakeBtn.disabled = true;
+                unstakeBtn.style.opacity = '0.5';
+                unstakeBtn.style.cursor = 'not-allowed';
+                unstakeBtn.title = `Locked until slot ${position.lock_until.toLocaleString()}`;
+            } else {
+                unstakeBtn.disabled = false;
+                unstakeBtn.style.opacity = '1';
+                unstakeBtn.style.cursor = 'pointer';
+                unstakeBtn.title = '';
+            }
         }
 
         // Render tier cards
@@ -2767,6 +2792,12 @@ function logoutWallet() {
         
         // Hide all screens including dashboard
         document.querySelectorAll('.wallet-screen, .wallet-dashboard').forEach(s => s.style.display = 'none');
+        
+        // Restore original welcome HTML (showUnlockScreen may have overwritten it)
+        const welcomeContainer = document.querySelector('.welcome-container');
+        if (welcomeContainer && _originalWelcomeHTML) {
+            welcomeContainer.innerHTML = _originalWelcomeHTML;
+        }
         
         // Show welcome screen
         document.getElementById('welcomeScreen').style.display = 'flex';

@@ -151,6 +151,10 @@
                 <a href="#getFeeConfig" class="sidebar-link">getFeeConfig</a>
                 <a href="#getRentParams" class="sidebar-link">getRentParams</a>
             </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Live Additions</h3>
+                <a href="#live-methods" class="sidebar-link">Implemented Methods</a>
+            </div>
         </aside>
 
         <main class="docs-main">
@@ -1163,6 +1167,82 @@
                     <p>Object — Rent parameters.</p>
                 </div>
             </div>
+
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <!-- LIVE ADDITIONS -->
+            <!-- ═══════════════════════════════════════════════════════════ -->
+            <section id="live-methods" style="margin-top:2rem;">
+                <h2>Additional Implemented Methods</h2>
+                <p>These JSON-RPC methods are implemented in the live server dispatch (`rpc/src/lib.rs`) and may not yet have individual method cards on this page.</p>
+
+                <div class="callout callout-info">
+                    <p><strong>Compatibility endpoints:</strong> <code>POST /solana</code> and <code>POST /evm</code> are also supported in addition to <code>POST /</code>.</p>
+                </div>
+
+                <h3>Chain / Account / Tx</h3>
+                <ul>
+                    <li><code>confirmTransaction</code></li>
+                    <li><code>getRecentTransactions</code></li>
+                    <li><code>getTokenAccounts</code></li>
+                </ul>
+
+                <h3>Fee / Network / Validator</h3>
+                <ul>
+                    <li><code>setFeeConfig</code></li>
+                    <li><code>setRentParams</code></li>
+                    <li><code>getClusterInfo</code></li>
+                </ul>
+
+                <h3>Staking (ReefStake)</h3>
+                <ul>
+                    <li><code>stakeToReefStake</code></li>
+                    <li><code>unstakeFromReefStake</code></li>
+                    <li><code>claimUnstakedTokens</code></li>
+                    <li><code>getStakingPosition</code></li>
+                    <li><code>getReefStakePoolInfo</code></li>
+                    <li><code>getUnstakingQueue</code></li>
+                    <li><code>getRewardAdjustmentInfo</code></li>
+                </ul>
+
+                <h3>Contracts / Registry / Program</h3>
+                <ul>
+                    <li><code>setContractAbi</code></li>
+                    <li><code>deployContract</code></li>
+                    <li><code>upgradeContract</code></li>
+                    <li><code>getContractEvents</code></li>
+                    <li><code>getSymbolRegistry</code></li>
+                    <li><code>getSymbolRegistryByProgram</code></li>
+                    <li><code>getAllSymbolRegistry</code></li>
+                </ul>
+
+                <h3>MoltyID / Names / Identity</h3>
+                <ul>
+                    <li><code>getMoltyIdIdentity</code>, <code>getMoltyIdReputation</code>, <code>getMoltyIdSkills</code>, <code>getMoltyIdVouches</code>, <code>getMoltyIdAchievements</code>, <code>getMoltyIdProfile</code></li>
+                    <li><code>resolveMoltName</code>, <code>reverseMoltName</code>, <code>batchReverseMoltNames</code>, <code>searchMoltNames</code></li>
+                    <li><code>getMoltyIdAgentDirectory</code>, <code>getMoltyIdStats</code></li>
+                    <li><code>getEvmRegistration</code>, <code>lookupEvmAddress</code></li>
+                </ul>
+
+                <h3>NFT / Market / Prediction / Platform Stats</h3>
+                <ul>
+                    <li><code>getNFTsByCollection</code></li>
+                    <li><code>getNFTActivity</code></li>
+                    <li><code>getPredictionMarketStats</code>, <code>getPredictionMarkets</code>, <code>getPredictionMarket</code>, <code>getPredictionPositions</code>, <code>getPredictionTraderStats</code>, <code>getPredictionLeaderboard</code>, <code>getPredictionTrending</code>, <code>getPredictionMarketAnalytics</code></li>
+                    <li><code>getDexCoreStats</code>, <code>getDexAmmStats</code>, <code>getDexMarginStats</code>, <code>getDexRewardsStats</code>, <code>getDexRouterStats</code>, <code>getDexAnalyticsStats</code>, <code>getDexGovernanceStats</code></li>
+                    <li><code>getMoltswapStats</code>, <code>getLobsterLendStats</code>, <code>getClawPayStats</code>, <code>getBountyBoardStats</code>, <code>getComputeMarketStats</code>, <code>getReefStorageStats</code>, <code>getMoltMarketStats</code>, <code>getMoltAuctionStats</code>, <code>getMoltPunksStats</code></li>
+                    <li><code>requestAirdrop</code> (testnet utility)</li>
+                </ul>
+
+                <h3>Solana-Compatible Endpoint (<code>/solana</code>)</h3>
+                <ul>
+                    <li><code>getLatestBlockhash</code>, <code>getRecentBlockhash</code>, <code>getBalance</code>, <code>getAccountInfo</code>, <code>getBlock</code>, <code>getBlockHeight</code>, <code>getSignaturesForAddress</code>, <code>getSignatureStatuses</code>, <code>getSlot</code>, <code>getTransaction</code>, <code>sendTransaction</code>, <code>getHealth</code>, <code>getVersion</code></li>
+                </ul>
+
+                <h3>EVM-Compatible Endpoint (<code>/evm</code>)</h3>
+                <ul>
+                    <li><code>eth_getBalance</code>, <code>eth_sendRawTransaction</code>, <code>eth_call</code>, <code>eth_chainId</code>, <code>eth_blockNumber</code>, <code>eth_getTransactionReceipt</code>, <code>eth_getTransactionByHash</code>, <code>eth_accounts</code>, <code>net_version</code></li>
+                </ul>
+            </section>
 
             <div class="callout callout-tip" style="margin-top:2rem;">
                 <p><strong>Looking for real-time events?</strong> Check out the <a href="ws-reference.html">WebSocket Reference</a> for subscription-based streaming of blocks, transactions, and account changes.</p>

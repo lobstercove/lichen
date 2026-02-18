@@ -31,14 +31,16 @@ export async function loadStakingSnapshot(address, network) {
   };
 }
 
-export async function stakeMolt({ wallet, password, amountMolt, network }) {
+export async function stakeMolt({ wallet, password, amountMolt, tier = 0, network }) {
   if (!wallet) throw new Error('No active wallet');
   const amount = validateAmount(amountMolt, 'Stake amount');
+  const tierByte = Math.max(0, Math.min(3, Number(tier) || 0));
   const rpc = new MoltChainRPC(await getConfiguredRpcEndpoint(network));
 
   const latestBlock = await rpc.getLatestBlock();
   const privateKeyHex = await decryptPrivateKey(wallet.encryptedKey, password);
-  const instructionData = buildAmountInstructionData(13, amount);
+  // Build 10-byte instruction: [opcode(1), amount_le(8), tier(1)]
+  const instructionData = buildAmountInstructionData(13, amount, tierByte);
 
   const transaction = await buildSignedSingleInstructionTransaction({
     privateKeyHex,

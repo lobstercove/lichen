@@ -107,16 +107,18 @@ export async function buildSignedNativeTransferTransaction({
   };
 }
 
-export function buildAmountInstructionData(opcode, amountMolt) {
+export function buildAmountInstructionData(opcode, amountMolt, extraByte) {
   const shells = Math.floor(Number(amountMolt) * 1_000_000_000);
   if (!Number.isFinite(shells) || shells <= 0) {
     throw new Error('Invalid amount');
   }
 
-  const instructionData = new Uint8Array(9);
+  const hasExtra = extraByte !== undefined && extraByte !== null;
+  const instructionData = new Uint8Array(hasExtra ? 10 : 9);
   instructionData[0] = opcode;
   const view = new DataView(instructionData.buffer);
   view.setBigUint64(1, BigInt(shells), true);
+  if (hasExtra) instructionData[9] = extraByte & 0xff;
   return instructionData;
 }
 

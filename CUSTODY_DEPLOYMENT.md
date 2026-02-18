@@ -223,6 +223,7 @@ Override with `CUSTODY_SIGNER_THRESHOLD` env var.
 | POST | `/deposits` | Create deposit address → returns `{deposit_id, address}` |
 | GET | `/deposits/:deposit_id` | Get deposit status |
 | POST | `/withdrawals` | Initiate withdrawal (burn_tx_signature required) |
+| PUT | `/withdrawals/:job_id/burn` | Submit burn tx signature (required to advance pending_burn jobs) |
 | GET | `/reserves` | Current reserve balances per chain/asset |
 
 ### Create Deposit Request
@@ -255,6 +256,26 @@ POST /withdrawals
   "dest_chain": "solana",
   "dest_address": "<solana-address>",
   "preferred_stablecoin": "usdt"
+}
+```
+
+### Submit Burn Signature (required for withdrawal finalization)
+
+```json
+PUT /withdrawals/:job_id/burn
+{
+  "burn_tx_signature": "<moltchain-burn-tx-signature>"
+}
+```
+
+Response:
+
+```json
+{
+  "job_id": "<job_id>",
+  "status": "pending_burn",
+  "burn_tx_signature": "<moltchain-burn-tx-signature>",
+  "message": "Burn signature recorded. Verification will proceed automatically."
 }
 ```
 

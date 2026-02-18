@@ -3421,15 +3421,19 @@ async fn handle_get_validators(state: &RpcState) -> Result<serde_json::Value, Rp
     let validator_list: Vec<_> = validators
         .iter()
         .map(|v| {
-            // Get stake from StakePool (authoritative source)
-            let pool_stake = if let Some(ref pool_arc) = state.stake_pool {
+            // Get stake + bootstrap info from StakePool (authoritative source)
+            let (pool_stake, bootstrap_debt, vesting_status, earned_amount, graduation_slot) = if let Some(ref pool_arc) = state.stake_pool {
                 if let Ok(pool) = pool_arc.try_read() {
-                    pool.get_stake(&v.pubkey).map(|s| s.amount).unwrap_or(0)
+                    if let Some(s) = pool.get_stake(&v.pubkey) {
+                        (s.amount, s.bootstrap_debt, format!("{:?}", s.status), s.earned_amount, s.graduation_slot)
+                    } else {
+                        (0, 0, "Unknown".to_string(), 0, None)
+                    }
                 } else {
-                    0
+                    (0, 0, "Unknown".to_string(), 0, None)
                 }
             } else {
-                0
+                (0, 0, "Unknown".to_string(), 0, None)
             };
             // Fallback to account staked field if pool has nothing
             let actual_stake = if pool_stake > 0 {
@@ -3461,6 +3465,10 @@ async fn handle_get_validators(state: &RpcState) -> Result<serde_json::Value, Rp
                 "correct_votes": v.correct_votes,
                 "last_active_slot": v.last_active_slot,
                 "last_vote_slot": v.last_active_slot,
+                "bootstrap_debt": bootstrap_debt,
+                "vesting_status": vesting_status,
+                "earned_amount": earned_amount,
+                "graduation_slot": graduation_slot,
             })
         })
         .collect();
