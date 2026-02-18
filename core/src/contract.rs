@@ -768,6 +768,27 @@ impl ContractRuntime {
                 .map_err(|e| format!("Failed to grow WASM memory for args: {}", e))?;
             let args_base: u32 = old_pages.0 * 65536; // byte offset of the new page
 
+            // ── ABI-aware JSON arg encoding ─────────────────────────────
+            // When the CLI sends JSON-encoded args (e.g. ["addr", 1, "name", 21]),
+            // auto-encode them to binary with a layout descriptor so the WASM
+            // function receives correctly laid-out memory (base58 → 32 bytes,
+            // strings → pointer data, integers → raw bytes).
+            let args = if !args.is_empty()
+                && args[0] == b'['
+                && !params.is_empty()
+                && args[0] != 0xAB
+            {
+                if let Ok(json_vals) = serde_json::from_slice::<Vec<serde_json::Value>>(args) {
+                    encode_json_args_to_binary(&json_vals, &params)
+                        .unwrap_or_else(|_| args.to_vec())
+                } else {
+                    args.to_vec()
+                }
+            } else {
+                args.to_vec()
+            };
+            let args = &args;
+
             let view = memory.view(&self.store);
             view.write(args_base as u64, args)
                 .map_err(|e| format!("Failed to write args to WASM memory: {}", e))?;
@@ -942,15 +963,46 @@ impl ContractRuntime {
         }
 
         match exec_result {
-            Ok(_) => Ok(ContractResult {
-                return_data: final_ctx.return_data.clone(),
-                logs: final_ctx.logs.clone(),
-                events: final_ctx.events.clone(),
-                storage_changes: final_ctx.storage_changes.clone(),
-                success: true,
-                error: None,
-                compute_used,
-            }),
+            Ok(values) => {
+                // Defence-in-depth: if the WASM function returned a non-zero
+                // I32 AND produced no storage changes, treat it as a soft
+                // failure.  Many contracts use 0 = success / non-zero = error
+                // code, but we only flag it when there's also no side-effect
+                // to avoid regressing contracts that return meaningful values.
+                let ret_code = values
+                    .first()
+                    .and_then(|v| match v {
+                        Value::I32(n) => Some(*n),
+                        _ => None,
+                    });
+                let is_soft_fail = matches!(ret_code, Some(c) if c != 0)
+                    && final_ctx.storage_changes.is_empty();
+
+                if is_soft_fail {
+                    Ok(ContractResult {
+                        return_data: final_ctx.return_data.clone(),
+                        logs: final_ctx.logs.clone(),
+                        events: Vec::new(),
+                        storage_changes: HashMap::new(),
+                        success: false,
+                        error: Some(format!(
+                            "Contract returned non-zero error code: {}",
+                            ret_code.unwrap()
+                        )),
+                        compute_used,
+                    })
+                } else {
+                    Ok(ContractResult {
+                        return_data: final_ctx.return_data.clone(),
+                        logs: final_ctx.logs.clone(),
+                        events: final_ctx.events.clone(),
+                        storage_changes: final_ctx.storage_changes.clone(),
+                        success: true,
+                        error: None,
+                        compute_used,
+                    })
+                }
+            }
             Err(e) => {
                 let error_msg = if metering_remaining == 0 {
                     "Contract execution exceeded compute budget (out of gas)".to_string()
@@ -1405,6 +1457,115 @@ fn host_cross_contract_call(
     // Return 0 = failure. Cross-contract calls require re-entrant execution
     // which is planned for Phase 2. The import exists so contracts compile.
     0
+}
+
+// ============================================================================
+// ABI-AWARE JSON ARG ENCODING
+// ============================================================================
+//
+// When the CLI or an agent sends contract call args as a JSON array (e.g.
+// ["8nRM2Fk...", 1, "my-name", 21]), this encoder converts them to binary
+// with a 0xAB layout descriptor so the WASM runtime can correctly map:
+//   - Base58 string → 32-byte pubkey pointer (stride 32)
+//   - Plain string  → UTF-8 byte pointer (stride = byte length)
+//   - Integer       → raw bytes (stride 1, 2, or 4 depending on magnitude)
+//   - I64 param     → 8-byte LE value (stride 8)
+//
+// This makes generic contract calls "just work" without clients needing to
+// manually construct layout descriptors.
+
+fn encode_json_args_to_binary(
+    json_vals: &[serde_json::Value],
+    wasm_params: &[wasmer::Type],
+) -> Result<Vec<u8>, String> {
+    if json_vals.len() != wasm_params.len() {
+        return Err("JSON arg count does not match WASM param count".into());
+    }
+
+    // First pass: encode each JSON value to bytes and determine stride
+    let mut parts: Vec<(u8, Vec<u8>)> = Vec::with_capacity(json_vals.len()); // (stride, data)
+
+    for (val, param_type) in json_vals.iter().zip(wasm_params.iter()) {
+        match param_type {
+            wasmer::Type::I32 => {
+                match val {
+                    serde_json::Value::String(s) => {
+                        // Try base58 decode (32-byte pubkey)
+                        if let Ok(pk) = crate::Pubkey::from_base58(s) {
+                            parts.push((32, pk.0.to_vec()));
+                        } else {
+                            // Plain UTF-8 string (passed as pointer)
+                            let bytes = s.as_bytes().to_vec();
+                            let padded_len = ((bytes.len() + 31) / 32) * 32;
+                            let mut padded = bytes;
+                            padded.resize(padded_len.max(32), 0);
+                            parts.push((padded.len() as u8, padded));
+                        }
+                    }
+                    serde_json::Value::Number(n) => {
+                        if let Some(v) = n.as_u64() {
+                            if v <= 0xFF {
+                                parts.push((1, vec![v as u8]));
+                            } else if v <= 0xFFFF {
+                                parts.push((2, (v as u16).to_le_bytes().to_vec()));
+                            } else {
+                                parts.push((4, (v as u32).to_le_bytes().to_vec()));
+                            }
+                        } else if let Some(v) = n.as_i64() {
+                            parts.push((4, (v as i32).to_le_bytes().to_vec()));
+                        } else {
+                            parts.push((4, 0u32.to_le_bytes().to_vec()));
+                        }
+                    }
+                    serde_json::Value::Bool(b) => {
+                        parts.push((1, vec![*b as u8]));
+                    }
+                    serde_json::Value::Array(arr) => {
+                        // Byte array: [1, 2, 3, ...] → raw bytes as pointer
+                        let bytes: Vec<u8> = arr
+                            .iter()
+                            .filter_map(|v| v.as_u64().map(|n| n as u8))
+                            .collect();
+                        let padded_len = ((bytes.len() + 31) / 32) * 32;
+                        let mut padded = bytes;
+                        padded.resize(padded_len.max(32), 0);
+                        parts.push((padded.len() as u8, padded));
+                    }
+                    _ => {
+                        parts.push((4, 0u32.to_le_bytes().to_vec()));
+                    }
+                }
+            }
+            wasmer::Type::I64 => {
+                let v = val.as_u64().or_else(|| val.as_i64().map(|i| i as u64)).unwrap_or(0);
+                parts.push((8, v.to_le_bytes().to_vec()));
+            }
+            wasmer::Type::F32 => {
+                let v = val.as_f64().unwrap_or(0.0) as f32;
+                parts.push((4, v.to_le_bytes().to_vec()));
+            }
+            wasmer::Type::F64 => {
+                let v = val.as_f64().unwrap_or(0.0);
+                parts.push((8, v.to_le_bytes().to_vec()));
+            }
+            _ => {
+                parts.push((4, 0u32.to_le_bytes().to_vec()));
+            }
+        }
+    }
+
+    // Build layout descriptor blob: 0xAB + [stride per param] + [data...]
+    let n = parts.len();
+    let data_len: usize = parts.iter().map(|(_, d)| d.len()).sum();
+    let mut buf = Vec::with_capacity(1 + n + data_len);
+    buf.push(0xAB); // layout descriptor marker
+    for (stride, _) in &parts {
+        buf.push(*stride);
+    }
+    for (_, data) in &parts {
+        buf.extend_from_slice(data);
+    }
+    Ok(buf)
 }
 
 #[cfg(test)]
