@@ -772,12 +772,6 @@ impl RpcClient {
 }
 
 fn base64_encode(data: &[u8]) -> String {
-    use std::io::Write;
-    let mut buf = Vec::new();
-    {
-        let mut encoder =
-            base64::write::EncoderWriter::new(&mut buf, &base64::engine::general_purpose::STANDARD);
-        encoder.write_all(data).unwrap();
-    }
-    String::from_utf8(buf).unwrap()
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(data)
 }

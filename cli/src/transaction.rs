@@ -8,6 +8,19 @@ use std::io::{self, Write};
 use crate::config::CliConfig;
 use crate::keygen;
 
+/// Convert MOLT (f64) to shells (u64) with precise integer arithmetic.
+fn molt_to_shells(molt: f64) -> u64 {
+    if molt <= 0.0 {
+        return 0;
+    }
+    if molt >= (u64::MAX / 1_000_000_000) as f64 {
+        return u64::MAX;
+    }
+    let whole = molt.trunc() as u64;
+    let frac = ((molt.fract() * 1_000_000_000.0).round()) as u64;
+    whole.saturating_mul(1_000_000_000).saturating_add(frac)
+}
+
 /// Transfer tokens between accounts
 pub async fn transfer(
     config: &CliConfig,
@@ -24,8 +37,8 @@ pub async fn transfer(
     let recipient = Pubkey::from_base58(&to_address)
         .context("Invalid recipient address")?;
     
-    // Convert MOLT to shells
-    let shells = (amount * 1_000_000_000.0) as u64;
+    // Convert MOLT to shells using precise integer arithmetic
+    let shells = molt_to_shells(amount);
     
     // Display transaction details
     println!("📤 Transfer Transaction");
