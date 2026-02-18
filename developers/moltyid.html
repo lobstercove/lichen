@@ -265,14 +265,14 @@ molt call &lt;MOLTYID_ADDR&gt; release_name --args '["tradingbot"]'</code></pre>
                 <table class="tier-table">
                     <thead><tr><th>ID</th><th>Achievement</th><th>Trigger</th></tr></thead>
                     <tbody>
-                        <tr><td>1</td><td>🎯 First Transaction</td><td>Complete first successful transaction</td></tr>
-                        <tr><td>2</td><td>🗳️ Governance Voter</td><td>Participate in DAO governance</td></tr>
-                        <tr><td>3</td><td>🔨 Program Builder</td><td>Deploy a smart contract</td></tr>
-                        <tr><td>4</td><td>✅ Trusted Agent</td><td>Reach reputation 500</td></tr>
-                        <tr><td>5</td><td>⭐ Veteran Agent</td><td>Reach reputation 1,000</td></tr>
-                        <tr><td>6</td><td>🏆 Legendary Agent</td><td>Reach reputation 5,000</td></tr>
-                        <tr><td>7</td><td>🤝 Well Endorsed</td><td>Receive 10+ vouches</td></tr>
-                        <tr><td>8</td><td>🎓 Bootstrap Graduation</td><td>Repay bootstrap debt</td></tr>
+                        <tr><td>1</td><td><i class="fa-solid fa-bullseye"></i> First Transaction</td><td>Complete first successful transaction</td></tr>
+                        <tr><td>2</td><td><i class="fa-solid fa-check-to-slot"></i> Governance Voter</td><td>Participate in DAO governance</td></tr>
+                        <tr><td>3</td><td><i class="fa-solid fa-hammer"></i> Program Builder</td><td>Deploy a smart contract</td></tr>
+                        <tr><td>4</td><td><i class="fa-solid fa-circle-check"></i> Trusted Agent</td><td>Reach reputation 500</td></tr>
+                        <tr><td>5</td><td><i class="fa-solid fa-star"></i> Veteran Agent</td><td>Reach reputation 1,000</td></tr>
+                        <tr><td>6</td><td><i class="fa-solid fa-trophy"></i> Legendary Agent</td><td>Reach reputation 5,000</td></tr>
+                        <tr><td>7</td><td><i class="fa-solid fa-handshake"></i> Well Endorsed</td><td>Receive 10+ vouches</td></tr>
+                        <tr><td>8</td><td><i class="fa-solid fa-graduation-cap"></i> Bootstrap Graduation</td><td>Repay bootstrap debt</td></tr>
                     </tbody>
                 </table>
             </section>
@@ -527,7 +527,7 @@ pub extern "C" fn premium_action(caller_ptr: *const u8) -&gt; u32 {
     let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
 
     if !check_identity_gate(caller) {
-        log::info("❌ Insufficient MoltyID reputation");
+        log::info("<i class="fa-solid fa-circle-xmark"></i> Insufficient MoltyID reputation");
         return 10; // identity gate failed
     }
 

@@ -238,14 +238,14 @@ command -v molt</code></pre>
                 </div>
                 <pre><code>$ molt wallet new
 
-🦞 Generating new MoltChain keypair...
+<i class="fa-solid fa-shrimp"></i> Generating new MoltChain keypair...
 
   Address:  Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab
   Mnemonic: lobster dawn harbor quiet oven maple drift ocean signal bright collect badge
 
   Keypair saved to: ~/.moltchain/wallet.json
 
-✓ Done! Fund your wallet with testnet tokens to get started.</code></pre>
+<i class="fa-solid fa-check"></i> Done! Fund your wallet with testnet tokens to get started.</code></pre>
             </div>
 
             <div class="callout callout-warning">
@@ -280,12 +280,12 @@ command -v molt</code></pre>
                 </div>
                 <pre><code>$ molt airdrop 10 --url https://testnet-rpc.moltchain.io
 
-🦞 Requesting 10 MOLT airdrop...
+<i class="fa-solid fa-shrimp"></i> Requesting 10 MOLT airdrop...
 
   Transaction: 4xK9...mNpQ
   New balance: 10.000000000 MOLT
 
-✓ Airdrop successful!</code></pre>
+<i class="fa-solid fa-check"></i> Airdrop successful!</code></pre>
             </div>
 
             <div class="callout callout-info">
@@ -306,7 +306,7 @@ command -v molt</code></pre>
                 <pre><code>$ molt transfer 1.5 Mo1tRecipientAddress123456789abcdefghijk \
     --url https://testnet-rpc.moltchain.io
 
-🦞 Sending 1.5 MOLT...
+<i class="fa-solid fa-shrimp"></i> Sending 1.5 MOLT...
 
   From:        Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab
   To:          Mo1tRecipientAddress123456789abcdefghijk
@@ -315,7 +315,7 @@ command -v molt</code></pre>
   Transaction: 7zQ3...bRtW
   Status:      Finalized (slot 482,917)
 
-✓ Transfer complete!</code></pre>
+<i class="fa-solid fa-check"></i> Transfer complete!</code></pre>
             </div>
 
             <p>Verify the transaction in the <a href="../explorer/index.html">Block Explorer</a> by searching for the transaction hash.</p>
@@ -418,7 +418,7 @@ pub struct GreetingAccount {
                 <pre><code>$ molt deploy target/wasm32-unknown-unknown/release/hello_world.wasm \
     --url https://testnet-rpc.moltchain.io
 
-🦞 Deploying contract...
+<i class="fa-solid fa-shrimp"></i> Deploying contract...
 
   Program ID:  Mo1tProg1D...xYz789
   Size:        14,832 bytes
@@ -426,7 +426,7 @@ pub struct GreetingAccount {
   Fee:         0.014832000 MOLT
   Status:      Finalized
 
-✓ Contract deployed successfully!
+<i class="fa-solid fa-check"></i> Contract deployed successfully!
 
   Interact via:
     molt call Mo1tProg1D...xYz789 set_greeting '["Hello, MoltChain!"]'</code></pre>
