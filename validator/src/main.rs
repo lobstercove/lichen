@@ -3254,7 +3254,7 @@ async fn run_validator() {
 
         // Save all distribution keypairs (one per whitepaper wallet)
         let dist_keypair_paths = GenesisWallet::save_distribution_keypairs(
-            wallet.distribution_wallets.as_ref().unwrap(),
+            wallet.distribution_wallets.as_deref().unwrap_or(&[]),
             &distribution_keypairs,
             &genesis_keypairs_dir,
             &genesis_config.chain_id,
@@ -3356,14 +3356,14 @@ async fn run_validator() {
             let parts: Vec<&str> = peer.split(':').collect();
             if let (Some(host), Some(p2p_port_str)) = (parts.first(), parts.get(1)) {
                 if let Ok(peer_p2p) = p2p_port_str.parse::<u16>() {
-                    let peer_rpc = if peer_p2p == 8000 {
-                        8899
-                    } else {
-                        let offset = peer_p2p % 1000;
-                        8900u16
-                            .saturating_add(offset.saturating_mul(2))
-                            .saturating_add(1)
-                    };
+                    // AUDIT-FIX V5.1: Use the same port derivation formula
+                    // as the RPC server binding (L6410). The previous formula
+                    // used `peer_p2p % 1000` which produced wrong ports for
+                    // V2/V3 validators (e.g. p2p=8001 → 8903, actual RPC=8901).
+                    let base_p2p = if peer_p2p >= 9000 { 9000u16 } else { 8000u16 };
+                    let base_rpc = if peer_p2p >= 9000 { 9899u16 } else { 8899u16 };
+                    let offset = peer_p2p.saturating_sub(base_p2p);
+                    let peer_rpc = base_rpc.saturating_add(offset.saturating_mul(2));
                     let url = format!("http://{}:{}/", host, peer_rpc);
                     let body = serde_json::json!({
                         "jsonrpc": "2.0", "id": 1, "method": "getGenesisAccounts"
@@ -5182,8 +5182,14 @@ async fn run_validator() {
                     info!("❌ P2P transaction rejected: {}", e);
                     continue;
                 }
+                // AUDIT-FIX V5.3: Look up on-chain MoltyID reputation
+                // so express-lane priority works for P2P-received transactions.
+                let reputation = sender_pubkey
+                    .as_ref()
+                    .and_then(|pk| state_for_p2p_txs.get_reputation(pk).ok())
+                    .unwrap_or(0);
                 let mut pool = mempool_for_txs.lock().await;
-                if let Err(e) = pool.add_transaction(tx, BASE_FEE, 0u64) {
+                if let Err(e) = pool.add_transaction(tx, BASE_FEE, reputation) {
                     info!("Mempool: {}", e);
                 }
             }
@@ -6455,6 +6461,7 @@ async fn run_validator() {
 
     // Forward RPC transactions to P2P network and mempool
     let mempool_for_rpc_txs = mempool.clone();
+    let state_for_rpc_lookup = state.clone(); // AUDIT-FIX V5.2: reputation lookup
     let p2p_peer_manager_for_txs = p2p_peer_manager.clone();
     let p2p_config_for_txs = p2p_config.clone();
     tokio::spawn(async move {
@@ -6467,11 +6474,17 @@ async fn run_validator() {
                 continue;
             }
 
+            // AUDIT-FIX V5.2: Look up on-chain MoltyID reputation so
+            // high-reputation agents get express-lane mempool priority.
+            let reputation = tx.message.instructions.first()
+                .and_then(|ix| ix.accounts.first())
+                .and_then(|sender| state_for_rpc_lookup.get_reputation(sender).ok())
+                .unwrap_or(0);
+
             // Add to mempool
             {
                 let mut pool = mempool_for_rpc_txs.lock().await;
-                // TODO: look up sender reputation from state for priority boost
-                if let Err(e) = pool.add_transaction(tx.clone(), BASE_FEE, 0u64) {
+                if let Err(e) = pool.add_transaction(tx.clone(), BASE_FEE, reputation) {
                     info!("Mempool add failed: {}", e);
                 }
             }

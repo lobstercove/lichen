@@ -11,6 +11,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{self, Write};
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -50,8 +51,10 @@ const ROLLBACK_CRASH_WINDOW_SECS: u64 = 60;
 // build with the OLD key, then switch to signing with the NEW key.
 //
 // PLACEHOLDER — replace with actual key after running generate-release-keys.sh
+// AUDIT-FIX V5.5: Replaced placeholder all-zeros key with real Ed25519
+// public key. Private seed stored in keypairs/release-signing-key.json.
 const RELEASE_SIGNING_PUBKEY_HEX: &str =
-    "0000000000000000000000000000000000000000000000000000000000000000";
+    "dd34731c7bc7e9317ed0f83991930c3859b05ecf2d74f10c4dc08de6b6bad332";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -755,5 +758,25 @@ mod tests {
 
         // Tampered message fails
         assert!(!Keypair::verify(&kp.pubkey(), b"tampered", &sig));
+    }
+
+    /// AUDIT-FIX V5.5: Ensure the release signing public key is not the
+    /// placeholder all-zeros value, which would make update verification
+    /// non-functional.
+    #[test]
+    fn test_release_signing_pubkey_not_placeholder() {
+        let all_zeros = "0".repeat(64);
+        assert_ne!(
+            RELEASE_SIGNING_PUBKEY_HEX, all_zeros,
+            "Release signing public key must not be all-zeros placeholder"
+        );
+        // Must be valid 32-byte hex
+        let bytes = hex::decode(RELEASE_SIGNING_PUBKEY_HEX).expect("Invalid hex in release pubkey");
+        assert_eq!(bytes.len(), 32, "Release signing public key must be 32 bytes");
+        // Must not be all zeros even after decode
+        assert!(
+            bytes.iter().any(|&b| b != 0),
+            "Decoded release signing pubkey must not be all zeros"
+        );
     }
 }

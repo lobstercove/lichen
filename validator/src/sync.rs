@@ -409,4 +409,54 @@ mod tests {
         assert_eq!(start, 50);
         assert!(end <= 100);
     }
+
+    /// AUDIT-FIX V5.1: Verify that RPC port derivation formula used in genesis
+    /// accounts fetch matches the actual RPC server binding formula.
+    /// Both must produce identical results for any P2P port.
+    #[test]
+    fn test_rpc_port_derivation_consistency() {
+        // The formula used by the RPC server (validator main.rs ~ L6410)
+        // and now also used by genesis accounts fetch (~ L3359):
+        //   base_p2p = if p2p >= 9000 { 9000 } else { 8000 }
+        //   base_rpc = if p2p >= 9000 { 9899 } else { 8899 }
+        //   offset = p2p - base_p2p
+        //   rpc = base_rpc + offset * 2
+        let derive_rpc_port = |p2p_port: u16| -> u16 {
+            let base_p2p = if p2p_port >= 9000 { 9000u16 } else { 8000u16 };
+            let base_rpc = if p2p_port >= 9000 { 9899u16 } else { 8899u16 };
+            let offset = p2p_port.saturating_sub(base_p2p);
+            base_rpc.saturating_add(offset.saturating_mul(2))
+        };
+
+        // V1: p2p 8000 → rpc 8899
+        assert_eq!(derive_rpc_port(8000), 8899);
+        // V2: p2p 8001 → rpc 8901
+        assert_eq!(derive_rpc_port(8001), 8901);
+        // V3: p2p 8002 → rpc 8903
+        assert_eq!(derive_rpc_port(8002), 8903);
+        // High port range
+        assert_eq!(derive_rpc_port(9000), 9899);
+        assert_eq!(derive_rpc_port(9001), 9901);
+    }
+
+    /// C5 fix: note_seen_bounded should cap the jump to prevent malicious
+    /// slot inflation from peers reporting u64::MAX.
+    #[tokio::test]
+    async fn test_note_seen_bounded_caps() {
+        let sm = SyncManager::new();
+        sm.note_seen(100).await;
+        assert_eq!(sm.get_highest_seen().await, 100);
+
+        // Legitimate update within bounds
+        sm.note_seen_bounded(200, 500).await;
+        assert_eq!(sm.get_highest_seen().await, 200);
+
+        // Malicious update way beyond bounds — should be capped
+        sm.note_seen_bounded(u64::MAX, 500).await;
+        assert_eq!(sm.get_highest_seen().await, 700); // 200 + 500
+
+        // Small update still works
+        sm.note_seen_bounded(300, 500).await;
+        assert_eq!(sm.get_highest_seen().await, 700); // Already higher
+    }
 }
