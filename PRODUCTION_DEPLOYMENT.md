@@ -1,6 +1,6 @@
 # MoltChain Production Deployment — Complete Strategy
 
-> Full step-by-step guide for deploying MoltChain across 3 VPS (EU/US/ASIA) with the `moltchain.network` domain. Covers genesis bootstrapping, DNS, seed discovery, custody bridge, faucet, and how agent-run validators connect.
+> Full step-by-step guide for deploying MoltChain across seed + relay infrastructure with 3 to 6 validators using the `moltchain.network` domain. Covers genesis bootstrapping, DNS, seed discovery, RPC/WS rotation, custody bridge, faucet, and how agent-run validators connect.
 
 ---
 
@@ -8,6 +8,7 @@
 
 1. [Binary Inventory](#binary-inventory)
 2. [Network Architecture](#network-architecture)
+3. [Operator Runbook — Relay/Seed Topology (3 → 6 Validators)](#operator-runbook--relayseed-topology-3--6-validators)
 3. [DNS & Subdomains](#dns--subdomains)
 4. [Port Map](#port-map)
 5. [Phase 1 — Genesis on Local Machine](#phase-1--genesis-on-local-machine)
@@ -126,6 +127,69 @@ cargo build --release
                     └──────────────────────────────┘
 ```
 
+        ---
+
+        ## Operator Runbook — Relay/Seed Topology (3 → 6 Validators)
+
+        This is the recommended production topology when you start at 3 validators and plan to scale to 6.
+
+        ### Node roles
+
+        | Role | Count (start → scale) | Purpose | Public surface |
+        |---|---:|---|---|
+        | Seed validators | 3 → 6 | Consensus + bootstrap peers | `seed-*.moltchain.network:8000` |
+        | RPC relays | 1 → 2 | Stable HTTPS/WSS front door + upstream rotation | `rpc.moltchain.network`, `ws.moltchain.network` |
+        | Custody host | 1 | Custody service + workers | `custody.moltchain.network` |
+        | Faucet host (testnet) | 1 | Test token distribution | `faucet.moltchain.network` |
+
+        ### Phased rollout (exact order)
+
+        1. **Provision VPS + DNS skeleton**
+          - reserve subdomains for `seed-01..seed-06`, `rpc-relay-01`, `rpc-relay-02`, `rpc`, `ws`, `custody`, `faucet`
+        2. **Bootstrap genesis on seed-01**
+          - generate initial state, verify chain health, export seeds list
+        3. **Join seed-02 and seed-03**
+          - copy state snapshot, regenerate node-specific keys, start validator with bootstrap peers
+        4. **Deploy relay-01**
+          - configure Caddy upstream pool to seed validators for `/` (RPC) and WS endpoint rotation
+        5. **Switch public client traffic to relay**
+          - set `rpc.moltchain.network` and `ws.moltchain.network` to relay host(s) instead of direct validator round-robin
+        6. **Scale to seed-04..seed-06**
+          - add new validators, update relay upstream pools, update `seeds.json`
+        7. **Add relay-02 for HA**
+          - run same config as relay-01 and enable DNS/LB failover across relays
+
+        ### Why relay-first for RPC rotation
+
+        - validators keep stable consensus ports while relay absorbs public traffic spikes
+        - upstream health checks remove unhealthy validator RPC endpoints automatically
+        - clients keep one canonical URL (`rpc.moltchain.network`) while backend rotation changes without client config churn
+
+        ### Seed vs relay traffic policy
+
+        - **P2P bootstrap**: always direct to `seed-*` records on port `8000`
+        - **Wallet/app/agent RPC**: route via relays (`rpc.moltchain.network`)
+        - **WS subscriptions**: route via relays (`ws.moltchain.network`) where possible; client-side fallback list remains recommended
+
+        ### Step-by-step checklist (operator execution)
+
+        ```bash
+        # 1) Verify all validators are healthy
+        for h in seed-01.moltchain.network seed-02.moltchain.network seed-03.moltchain.network; do
+          curl -sS -X POST "https://$h" -H 'Content-Type: application/json' \
+           -d '{"jsonrpc":"2.0","id":1,"method":"health","params":[]}'
+        done
+
+        # 2) Verify relay front door health
+        curl -sS -X POST https://rpc.moltchain.network -H 'Content-Type: application/json' \
+          -d '{"jsonrpc":"2.0","id":1,"method":"health","params":[]}'
+
+        # 3) Verify WS endpoint is reachable (handshake check)
+        curl -i https://ws.moltchain.network || true
+        ```
+
+        When adding seed-04..seed-06, update all relay upstream pools first, then update DNS and `seeds.json`.
+
 ---
 
 ## DNS & Subdomains
@@ -149,6 +213,20 @@ Set these up on your DNS provider. I recommend Cloudflare for geo-based load bal
 | **A** | `ws` | `<ASIA_VPS_IP>` | DNS only | 300 | WebSocket round-robin |
 | **A** | `custody` | `<US_VPS_IP>` | Proxied | Auto | Custody bridge (single instance) |
 | **A** | `faucet` | `<US_VPS_IP>` | Proxied | Auto | Faucet (testnet only) |
+
+### Recommended DNS layout for 3 → 6 validators + relays
+
+Use stable relay hostnames as the only public RPC entrypoint; keep validator hostnames explicit for operational control.
+
+| Record | Example | Purpose |
+|---|---|---|
+| `seed-01..seed-06` (A, DNS only) | `seed-01.moltchain.network` | P2P bootstrap + direct validator diagnostics |
+| `rpc-relay-01` / `rpc-relay-02` (A, proxied) | `rpc-relay-01.moltchain.network` | RPC relay frontends |
+| `ws-relay-01` / `ws-relay-02` (A, DNS only or proxied per plan) | `ws-relay-01.moltchain.network` | WS relay frontends |
+| `rpc` (CNAME/LB) | `rpc.moltchain.network -> rpc-relay-*` | Canonical client RPC URL |
+| `ws` (CNAME/LB) | `ws.moltchain.network -> ws-relay-*` | Canonical client WS URL |
+
+Operational rule: do not point `rpc`/`ws` directly at every validator once relay is in place; keep relays as the control plane for rotation.
 
 ### Static Portals (CNAME → Cloudflare Pages)
 
@@ -203,6 +281,123 @@ On the free plan, DNS round-robin works fine — clients get a random IP from th
 | Faucet API | **9100** | TCP | YES — via Caddy → `faucet.moltchain.network` |
 | Caddy (HTTPS) | **443** | TCP | YES |
 | Caddy (HTTP→HTTPS) | **80** | TCP | YES (redirect only) |
+
+---
+
+## Day 0 Execution Sheet (copy/paste runbook)
+
+Use this section as your first production worksheet before you own the VPS. Keep naming stable now so every future script/config matches.
+
+### 0.1 Canonical node inventory (recommended naming)
+
+| Role | Hostname | Public DNS | Private DNS (optional) | Example IP placeholder |
+|---|---|---|---|---|
+| Seed validator 1 (genesis) | `seed-01` | `seed-01.moltchain.network` | `seed-01.internal.moltchain.network` | `203.0.113.11` |
+| Seed validator 2 | `seed-02` | `seed-02.moltchain.network` | `seed-02.internal.moltchain.network` | `203.0.113.12` |
+| Seed validator 3 | `seed-03` | `seed-03.moltchain.network` | `seed-03.internal.moltchain.network` | `203.0.113.13` |
+| Seed validator 4 (future) | `seed-04` | `seed-04.moltchain.network` | `seed-04.internal.moltchain.network` | `203.0.113.14` |
+| Seed validator 5 (future) | `seed-05` | `seed-05.moltchain.network` | `seed-05.internal.moltchain.network` | `203.0.113.15` |
+| Seed validator 6 (future) | `seed-06` | `seed-06.moltchain.network` | `seed-06.internal.moltchain.network` | `203.0.113.16` |
+| RPC relay 1 | `relay-01` | `rpc-relay-01.moltchain.network` | `relay-01.internal.moltchain.network` | `198.51.100.21` |
+| RPC relay 2 (HA) | `relay-02` | `rpc-relay-02.moltchain.network` | `relay-02.internal.moltchain.network` | `198.51.100.22` |
+| Custody + faucet host | `custody-01` | `custody.moltchain.network` / `faucet.moltchain.network` | `custody-01.internal.moltchain.network` | `198.51.100.31` |
+
+### 0.2 Canonical public entrypoints
+
+| Service | Canonical URL | Backing nodes |
+|---|---|---|
+| JSON-RPC | `https://rpc.moltchain.network` | `relay-01`, `relay-02` |
+| WebSocket | `wss://ws.moltchain.network` | `relay-01`, `relay-02` |
+| Custody API | `https://custody.moltchain.network` | `custody-01` |
+| Faucet (testnet) | `https://faucet.moltchain.network` | `custody-01` |
+
+### 0.3 Variable block (fill once, reuse everywhere)
+
+```bash
+# Domain
+export DOMAIN="moltchain.network"
+
+# Seed validators (public IP placeholders)
+export SEED01_IP="203.0.113.11"
+export SEED02_IP="203.0.113.12"
+export SEED03_IP="203.0.113.13"
+export SEED04_IP="203.0.113.14"
+export SEED05_IP="203.0.113.15"
+export SEED06_IP="203.0.113.16"
+
+# Relays
+export RELAY01_IP="198.51.100.21"
+export RELAY02_IP="198.51.100.22"
+
+# Custody/faucet host
+export CUSTODY01_IP="198.51.100.31"
+
+# Hostnames
+export SEED01_HOST="seed-01.${DOMAIN}"
+export SEED02_HOST="seed-02.${DOMAIN}"
+export SEED03_HOST="seed-03.${DOMAIN}"
+export SEED04_HOST="seed-04.${DOMAIN}"
+export SEED05_HOST="seed-05.${DOMAIN}"
+export SEED06_HOST="seed-06.${DOMAIN}"
+export RELAY01_HOST="rpc-relay-01.${DOMAIN}"
+export RELAY02_HOST="rpc-relay-02.${DOMAIN}"
+export RPC_HOST="rpc.${DOMAIN}"
+export WS_HOST="ws.${DOMAIN}"
+export CUSTODY_HOST="custody.${DOMAIN}"
+export FAUCET_HOST="faucet.${DOMAIN}"
+```
+
+### 0.4 DNS records to create Day 0
+
+Create these first, before server hardening and service startup.
+
+```text
+# Seeds (DNS only)
+seed-01  A  203.0.113.11
+seed-02  A  203.0.113.12
+seed-03  A  203.0.113.13
+seed-04  A  203.0.113.14
+seed-05  A  203.0.113.15
+seed-06  A  203.0.113.16
+
+# Relays
+rpc-relay-01  A  198.51.100.21
+rpc-relay-02  A  198.51.100.22
+
+# Canonical client endpoints -> relays
+rpc  CNAME  rpc-relay-01.moltchain.network  (or LB pool relay-01/02)
+ws   CNAME  rpc-relay-01.moltchain.network  (or LB pool relay-01/02)
+
+# Custody/faucet
+custody  A  198.51.100.31
+faucet   A  198.51.100.31
+```
+
+### 0.5 Bootstrap order (operator timeline)
+
+1. provision `seed-01`, `seed-02`, `seed-03`, `relay-01`, `custody-01`
+2. create DNS records from section 0.4
+3. run genesis on `seed-01`; snapshot state
+4. restore state on `seed-02` + `seed-03`, regenerate per-node identity/signer keys
+5. bring up relay-01 with upstreams `seed-01..03`
+6. verify `https://rpc.moltchain.network` health
+7. deploy custody/faucet on `custody-01`
+8. scale with `seed-04..06` + `relay-02`, then update relay upstream pools
+
+### 0.6 Day 0 verification commands
+
+```bash
+curl -sS -X POST "https://rpc.moltchain.network" -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"health","params":[]}'
+
+curl -sS "https://custody.moltchain.network/health"
+curl -sS "https://faucet.moltchain.network/health"
+
+for host in seed-01.moltchain.network seed-02.moltchain.network seed-03.moltchain.network; do
+  curl -sS -X POST "https://$host" -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"health","params":[]}'
+done
+```
 
 ---
 
@@ -795,6 +990,40 @@ Add a Cloudflare Load Balancer on `rpc.moltchain.network` with:
 
 This is the proper production setup but round-robin works fine to start.
 
+### RPC rotation model (recommended)
+
+For 3+ validators, use **two-layer rotation**:
+
+1. **Layer 1 (public):** `rpc.moltchain.network` load-balances across `rpc-relay-01` and `rpc-relay-02`
+2. **Layer 2 (inside relay):** each relay load-balances across validator RPC upstreams (`seed-01..seed-06`)
+
+Benefits:
+
+- fast failover if a validator RPC stalls
+- no client reconfiguration when adding/removing validators
+- easier maintenance windows (drain a single upstream)
+
+### Client-side fallback rotation (agents/wallets)
+
+Even with relay, keep explicit fallback endpoints in clients:
+
+```bash
+RPC_ENDPOINTS=(
+  "https://rpc.moltchain.network"
+  "https://rpc-relay-01.moltchain.network"
+  "https://rpc-relay-02.moltchain.network"
+  "https://seed-01.moltchain.network"
+)
+
+for rpc in "${RPC_ENDPOINTS[@]}"; do
+  if curl -fsS -X POST "$rpc" -H 'Content-Type: application/json' \
+      -d '{"jsonrpc":"2.0","id":1,"method":"health","params":[]}' >/dev/null; then
+    export RPC_URL="$rpc"
+    break
+  fi
+done
+```
+
 ---
 
 ## Reverse Proxy (Caddy)
@@ -868,6 +1097,47 @@ ws.moltchain.network {
 ```bash
 sudo systemctl enable caddy
 sudo systemctl restart caddy
+```
+
+### Caddyfile — Dedicated RPC relay (recommended for 3 → 6 validators)
+
+Deploy this on `rpc-relay-01` and `rpc-relay-02`.
+
+```
+# /etc/caddy/Caddyfile
+
+rpc.moltchain.network {
+    reverse_proxy \
+      http://10.0.10.11:8899 \
+      http://10.0.10.12:8899 \
+      http://10.0.10.13:8899 {
+        lb_policy least_conn
+        fail_duration 30s
+        max_fails 2
+        unhealthy_status 500
+        unhealthy_status 502
+        unhealthy_status 503
+        unhealthy_status 504
+    }
+}
+
+ws.moltchain.network {
+    reverse_proxy \
+      http://10.0.10.11:8900 \
+      http://10.0.10.12:8900 \
+      http://10.0.10.13:8900 {
+        lb_policy random
+        fail_duration 30s
+        max_fails 2
+    }
+}
+```
+
+When scaling to seed-04..seed-06, append those upstreams and reload Caddy:
+
+```bash
+sudo caddy validate --config /etc/caddy/Caddyfile
+sudo systemctl reload caddy
 ```
 
 ---
@@ -967,6 +1237,51 @@ echo "*/5 * * * * /opt/moltchain/bin/healthcheck.sh" | sudo crontab -u moltchain
 | Blockchain state | `/var/lib/moltchain/state-testnet/` | Daily | Medium — can re-sync from peers |
 | Custody DB | `/var/lib/moltchain/custody-db/` | Hourly | YES — deposit/withdrawal state |
 | Airdrops file | `/var/lib/moltchain/airdrops.json` | Daily | Low |
+
+### Key Material Retention Policy (online vs offline)
+
+Keep this policy strict; do not delete genesis keys after deployment.
+
+| Material | Keep online? | Keep offline? | Notes |
+|---|---|---|---|
+| `genesis-keys/` | **Minimal** (only where strictly required) | **Yes, mandatory** (multiple encrypted backups) | Root treasury/admin control; loss is catastrophic |
+| `genesis-wallet.json` | Optional | Yes | Metadata/reference; not a replacement for keys |
+| validator identity keypair | Yes (on each validator host) | Yes | One keypair per validator; never reused across nodes |
+| signer keypair (`:9200`) | Yes (only on signer-enabled nodes) | Yes | Restrict access to private network + file perms |
+| custody treasury keypair | Yes (custody host only) | Yes | Treat as production hot wallet material |
+
+Minimum controls:
+
+- file owner `moltchain:moltchain`, mode `600` for private key files
+- no keys in git, CI artifacts, chat logs, or support tickets
+- encrypted offline backups in at least two independent locations
+
+### Encryption Status Checklist (must pass before mainnet)
+
+This document defines required encryption posture; actual VPS state must be verified during deployment.
+
+Required:
+
+- **at rest:** full-disk or volume encryption on hosts storing keys/state/backups
+- **in transit:** TLS for public endpoints (`rpc`, `ws`, `custody`, `faucet`)
+- **backup encryption:** encrypted backup archives/object storage + key separation
+
+Quick verification commands (Ubuntu examples):
+
+```bash
+# disk/volume encryption (example check)
+lsblk -f
+sudo cryptsetup status <luks_mapping_name> 2>/dev/null || true
+
+# key file permissions
+find /var/lib/moltchain -type f \( -name "*key*" -o -name "*wallet*.json" \) -exec ls -l {} \;
+
+# TLS endpoint check
+curl -I https://rpc.moltchain.network
+curl -I https://custody.moltchain.network
+```
+
+If any item fails, block production rollout until fixed.
 
 ### Backup Script
 

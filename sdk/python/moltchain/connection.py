@@ -56,14 +56,14 @@ class Connection:
                 "params": params
             },
         )
-            self._next_id += 1
-            
-            data = response.json()
-            
-            if "error" in data:
-                raise Exception(f"RPC Error: {data['error']['message']}")
-            
-            return data.get("result")
+        self._next_id += 1
+
+        data = response.json()
+
+        if "error" in data:
+            raise Exception(f"RPC Error: {data['error']['message']}")
+
+        return data.get("result")
     
     # ============================================================================
     # BASIC QUERIES

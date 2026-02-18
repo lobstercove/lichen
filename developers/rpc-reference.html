@@ -551,7 +551,8 @@
                 </div>
                 <div class="method-section">
                     <h4 class="method-section-title">Returns</h4>
-                    <p>Object — Simulation result with logs and any error messages.</p>
+                    <p>Object — Simulation result with logs, runtime error messages, and <code>returnCode</code> for contract-level result inspection.</p>
+                    <p><strong>Debugging tip:</strong> A transaction can be structurally valid but contract-semantically rejected; inspect <code>returnCode</code> to detect these cases.</p>
                 </div>
             </div>
 

@@ -2841,6 +2841,7 @@ async fn handle_simulate_transaction(
         "error": result.error,
         "computeUsed": result.compute_used,
         "returnData": return_data_b64,
+        "returnCode": result.return_code,
     }))
 }
 

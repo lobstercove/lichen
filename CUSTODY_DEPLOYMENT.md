@@ -225,6 +225,86 @@ Override with `CUSTODY_SIGNER_THRESHOLD` env var.
 | POST | `/withdrawals` | Initiate withdrawal (burn_tx_signature required) |
 | PUT | `/withdrawals/:job_id/burn` | Submit burn tx signature (required to advance pending_burn jobs) |
 | GET | `/reserves` | Current reserve balances per chain/asset |
+| POST | `/webhooks` | Register webhook endpoint with HMAC-SHA256 signing secret |
+| GET | `/webhooks` | List webhook configurations (secrets redacted) |
+| DELETE | `/webhooks/:id` | Remove webhook subscription |
+| GET | `/ws/events` | Real-time event stream (Bearer auth via `?token=`, optional `?filter=`) |
+| GET | `/events` | Paginated custody event history |
+
+### Webhook Registration
+
+```json
+POST /webhooks
+{
+  "url": "https://your-agent.example/webhook/custody",
+  "secret": "<hmac-shared-secret>",
+  "events": ["deposit.confirmed", "credit.confirmed", "withdrawal.confirmed"]
+}
+```
+
+Notes:
+
+- webhook payloads are signed with HMAC-SHA256
+- delivery retries: 3 attempts with exponential backoff
+- webhook secrets are redacted from list responses
+
+### WebSocket Event Stream
+
+```text
+GET /ws/events?token=<bearer_token>&filter=deposit.confirmed,credit.confirmed
+```
+
+Notes:
+
+- supports keepalive for long-running clients
+- `filter` narrows stream to selected event types (comma-separated)
+
+### Event History
+
+```text
+GET /events?page=1&limit=100
+```
+
+Use this endpoint for replay/recovery when webhook or WS consumers were offline.
+
+### Event Types (wired)
+
+Deposits:
+
+- `deposit.created`
+- `deposit.confirmed`
+- `deposit.expired`
+
+Sweeps:
+
+- `sweep.signing`
+- `sweep.submitted`
+- `sweep.failed`
+- `sweep.confirmed`
+
+Credits:
+
+- `credit.queued`
+- `credit.build_failed`
+- `credit.submitted`
+- `credit.confirmed`
+
+Withdrawals:
+
+- `withdrawal.requested`
+- `withdrawal.burn_submitted`
+- `withdrawal.burn_confirmed`
+- `withdrawal.signatures_collected`
+- `withdrawal.broadcast`
+- `withdrawal.confirmed`
+- `withdrawal.permanently_failed`
+
+Rebalancing:
+
+- `rebalance.submitted`
+- `rebalance.confirmed`
+- `rebalance.slippage_exceeded`
+- `rebalance.output_unverified`
 
 ### Create Deposit Request
 

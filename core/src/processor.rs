@@ -21,6 +21,12 @@ pub struct TxResult {
     pub success: bool,
     pub fee_paid: u64,
     pub error: Option<String>,
+    /// Contract return code (if the transaction includes a contract call).
+    /// This is the raw WASM function return value — interpretation depends on the
+    /// contract's ABI. For MoltyID: 0=success, 1=bad input, 2=identity not found, etc.
+    pub return_code: Option<i32>,
+    /// Log messages emitted by the contract during execution.
+    pub contract_logs: Vec<String>,
 }
 
 /// Simulation result (dry-run)
@@ -32,6 +38,8 @@ pub struct SimulationResult {
     pub error: Option<String>,
     pub compute_used: u64,
     pub return_data: Option<Vec<u8>>,
+    /// Contract function return code (if a contract call was simulated).
+    pub return_code: Option<i32>,
 }
 
 fn is_evm_instruction(tx: &Transaction) -> bool {
@@ -113,6 +121,9 @@ impl FeeConfig {
 pub struct TxProcessor {
     state: StateStore,
     batch: Mutex<Option<StateBatch>>,
+    /// Metadata from the most recent contract call execution, accumulated
+    /// during process_transaction and drained into TxResult.
+    contract_meta: Mutex<(Option<i32>, Vec<String>)>,
 }
 
 impl TxProcessor {
@@ -120,7 +131,21 @@ impl TxProcessor {
         TxProcessor {
             state,
             batch: Mutex::new(None),
+            contract_meta: Mutex::new((None, Vec::new())),
         }
+    }
+
+    /// Drain accumulated contract execution metadata (return_code, logs).
+    /// Called when building a TxResult to capture the contract's diagnostics.
+    fn drain_contract_meta(&self) -> (Option<i32>, Vec<String>) {
+        let mut meta = self.contract_meta.lock().unwrap_or_else(|e| e.into_inner());
+        (meta.0.take(), std::mem::take(&mut meta.1))
+    }
+
+    /// Build a TxResult, draining any accumulated contract metadata.
+    fn make_result(&self, success: bool, fee_paid: u64, error: Option<String>) -> TxResult {
+        let (return_code, contract_logs) = self.drain_contract_meta();
+        TxResult { success, fee_paid, error, return_code, contract_logs }
     }
 
     /// Calculate total fees for a transaction (base + program-specific)
@@ -544,32 +569,27 @@ impl TxProcessor {
         _validator: &Pubkey,
         cached_blockhashes: Option<&HashSet<Hash>>,
     ) -> TxResult {
+        // Reset contract execution metadata for this transaction
+        {
+            let mut meta = self.contract_meta.lock().unwrap_or_else(|e| e.into_inner());
+            meta.0 = None;
+            meta.1.clear();
+        }
+
         // T1.7: Validate transaction structure (size limits)
         if let Err(e) = tx.validate_structure() {
-            return TxResult {
-                success: false,
-                fee_paid: 0,
-                error: Some(format!("Invalid transaction structure: {}", e)),
-            };
+            return self.make_result(false, 0, Some(format!("Invalid transaction structure: {}", e)));
         }
 
         // T1.3: Reject transactions with zero blockhash (no bypass)
         if tx.message.recent_blockhash == crate::hash::Hash::default() {
-            return TxResult {
-                success: false,
-                fee_paid: 0,
-                error: Some("Zero blockhash is not valid for replay protection".to_string()),
-            };
+            return self.make_result(false, 0, Some("Zero blockhash is not valid for replay protection".to_string()));
         }
 
         // Reject replayed transactions
         let tx_hash = tx.hash();
         if let Ok(Some(_)) = self.state.get_transaction(&tx_hash) {
-            return TxResult {
-                success: false,
-                fee_paid: 0,
-                error: Some("Transaction already processed".to_string()),
-            };
+            return self.make_result(false, 0, Some("Transaction already processed".to_string()));
         }
 
         // Validate recent_blockhash for replay protection
@@ -582,11 +602,7 @@ impl TxProcessor {
                 recent.contains(&tx.message.recent_blockhash)
             };
             if !valid {
-                return TxResult {
-                    success: false,
-                    fee_paid: 0,
-                    error: Some("Blockhash not found or too old".to_string()),
-                };
+                return self.make_result(false, 0, Some("Blockhash not found or too old".to_string()));
             }
         }
 
@@ -596,19 +612,11 @@ impl TxProcessor {
 
         // 1. Verify signatures
         if tx.signatures.is_empty() {
-            return TxResult {
-                success: false,
-                fee_paid: 0,
-                error: Some("No signatures".to_string()),
-            };
+            return self.make_result(false, 0, Some("No signatures".to_string()));
         }
 
         if tx.message.instructions.is_empty() {
-            return TxResult {
-                success: false,
-                fee_paid: 0,
-                error: Some("No instructions".to_string()),
-            };
+            return self.make_result(false, 0, Some("No instructions".to_string()));
         }
 
         // Collect all unique signer accounts (first account of each instruction)
@@ -617,25 +625,17 @@ impl TxProcessor {
             if let Some(first_acc) = ix.accounts.first() {
                 required_signers.insert(*first_acc);
             } else {
-                return TxResult {
-                    success: false,
-                    fee_paid: 0,
-                    error: Some("Instruction has no accounts".to_string()),
-                };
+                return self.make_result(false, 0, Some("Instruction has no accounts".to_string()));
             }
         }
 
         // We need at least as many signatures as unique signers
         if tx.signatures.len() < required_signers.len() {
-            return TxResult {
-                success: false,
-                fee_paid: 0,
-                error: Some(format!(
-                    "Insufficient signatures: got {}, need {}",
-                    tx.signatures.len(),
-                    required_signers.len()
-                )),
-            };
+            return self.make_result(false, 0, Some(format!(
+                "Insufficient signatures: got {}, need {}",
+                tx.signatures.len(),
+                required_signers.len()
+            )));
         }
 
         // Verify all signatures against the transaction message and build verified set
@@ -683,14 +683,10 @@ impl TxProcessor {
         // Ensure all required signers have a valid signature
         for signer in &required_signers {
             if !verified_signers.contains(signer) {
-                return TxResult {
-                    success: false,
-                    fee_paid: 0,
-                    error: Some(format!(
-                        "Missing or invalid signature for account {}",
-                        signer
-                    )),
-                };
+                return self.make_result(false, 0, Some(format!(
+                    "Missing or invalid signature for account {}",
+                    signer
+                )));
             }
         }
 
@@ -712,11 +708,7 @@ impl TxProcessor {
         // preventing free-compute DoS attacks via intentionally-failing TXs.
         if total_fee > 0 {
             if let Err(e) = self.charge_fee_direct(&fee_payer, total_fee) {
-                return TxResult {
-                    success: false,
-                    fee_paid: 0,
-                    error: Some(format!("Fee error: {}", e)),
-                };
+                return self.make_result(false, 0, Some(format!("Fee error: {}", e)));
             }
         }
 
@@ -726,48 +718,28 @@ impl TxProcessor {
         // 3. Apply rent for involved accounts
         if let Err(e) = self.apply_rent(tx) {
             self.rollback_batch();
-            return TxResult {
-                success: false,
-                fee_paid: total_fee, // M4: fee already charged directly
-                error: Some(format!("Rent error: {}", e)),
-            };
+            return self.make_result(false, total_fee, Some(format!("Rent error: {}", e)));
         }
 
         // 4. Execute each instruction
         for instruction in &tx.message.instructions {
             if let Err(e) = self.execute_instruction(instruction) {
                 self.rollback_batch();
-                return TxResult {
-                    success: false,
-                    fee_paid: total_fee, // M4: fee already charged directly
-                    error: Some(format!("Execution error: {}", e)),
-                };
+                return self.make_result(false, total_fee, Some(format!("Execution error: {}", e)));
             }
         }
 
         if let Err(e) = self.b_put_transaction(tx) {
             self.rollback_batch();
-            return TxResult {
-                success: false,
-                fee_paid: total_fee, // M4: fee already charged directly
-                error: Some(format!("Transaction storage error: {}", e)),
-            };
+            return self.make_result(false, total_fee, Some(format!("Transaction storage error: {}", e)));
         }
 
         if let Err(e) = self.commit_batch() {
             self.rollback_batch();
-            return TxResult {
-                success: false,
-                fee_paid: total_fee, // M4: fee already charged directly
-                error: Some(format!("Atomic commit failed: {}", e)),
-            };
+            return self.make_result(false, total_fee, Some(format!("Atomic commit failed: {}", e)));
         }
 
-        TxResult {
-            success: true,
-            fee_paid: total_fee,
-            error: None,
-        }
+        self.make_result(true, total_fee, None)
     }
 
     /// Process multiple transactions in parallel where possible.
@@ -889,6 +861,8 @@ impl TxProcessor {
                     success: false,
                     fee_paid: 0,
                     error: None,
+                    return_code: None,
+                    contract_logs: Vec::new(),
                 })
                 .collect(),
         );
@@ -915,6 +889,7 @@ impl TxProcessor {
     /// Returns the result with estimated fee, logs, and any errors.
     pub fn simulate_transaction(&self, tx: &Transaction) -> SimulationResult {
         let mut logs = Vec::new();
+        let mut last_return_code: Option<i32> = None;
 
         // Validate blockhash
         {
@@ -927,6 +902,7 @@ impl TxProcessor {
                     error: Some("Blockhash not found or too old".to_string()),
                     compute_used: 0,
                     return_data: None,
+                    return_code: None,
                 };
             }
         }
@@ -939,6 +915,7 @@ impl TxProcessor {
                 error: Some("Missing signatures or instructions".to_string()),
                 compute_used: 0,
                 return_data: None,
+                return_code: None,
             };
         }
 
@@ -972,6 +949,7 @@ impl TxProcessor {
                     error: Some(format!("Missing or invalid signature for {}", signer)),
                     compute_used: 0,
                     return_data: None,
+                    return_code: None,
                 };
             }
         }
@@ -999,6 +977,7 @@ impl TxProcessor {
                 )),
                 compute_used: 0,
                 return_data: None,
+                return_code: None,
             };
         }
         logs.push(format!("Fee estimate: {} shells", total_fee));
@@ -1044,6 +1023,7 @@ impl TxProcessor {
                                             {
                                                 Ok(result) => {
                                                     total_compute += result.compute_used;
+                                                    last_return_code = result.return_code;
                                                     for log in &result.logs {
                                                         logs.push(format!("[ix{}] {}", idx, log));
                                                     }
@@ -1059,6 +1039,7 @@ impl TxProcessor {
                                                             error: result.error,
                                                             compute_used: total_compute,
                                                             return_data: last_return_data,
+                                                            return_code: last_return_code,
                                                         };
                                                     }
                                                     logs.push(format!(
@@ -1077,6 +1058,7 @@ impl TxProcessor {
                                                         )),
                                                         compute_used: total_compute,
                                                         return_data: last_return_data,
+                                                        return_code: last_return_code,
                                                     };
                                                 }
                                             }
@@ -1133,6 +1115,7 @@ impl TxProcessor {
             error: None,
             compute_used: total_compute,
             return_data: last_return_data,
+            return_code: last_return_code,
         }
     }
 
@@ -1144,11 +1127,7 @@ impl TxProcessor {
     /// fees) go through a single `StateBatch` and commit atomically.
     fn process_evm_transaction(&self, tx: &Transaction) -> TxResult {
         if tx.message.instructions.len() != 1 {
-            return TxResult {
-                success: false,
-                fee_paid: 0,
-                error: Some("Invalid EVM transaction format".to_string()),
-            };
+            return self.make_result(false, 0, Some("Invalid EVM transaction format".to_string()));
         }
 
         let instruction = &tx.message.instructions[0];
@@ -1157,40 +1136,24 @@ impl TxProcessor {
         let evm_tx = match decode_evm_transaction(raw) {
             Ok(tx) => tx,
             Err(err) => {
-                return TxResult {
-                    success: false,
-                    fee_paid: 0,
-                    error: Some(err),
-                }
+                return self.make_result(false, 0, Some(err));
             }
         };
 
         if !u256_is_multiple_of_shell(&evm_tx.value) {
-            return TxResult {
-                success: false,
-                fee_paid: 0,
-                error: Some("EVM value must be multiple of 1e9 wei".to_string()),
-            };
+            return self.make_result(false, 0, Some("EVM value must be multiple of 1e9 wei".to_string()));
         }
 
         let from_address: [u8; 20] = evm_tx.from.into();
         let mapping = match self.state.lookup_evm_address(&from_address) {
             Ok(value) => value,
             Err(err) => {
-                return TxResult {
-                    success: false,
-                    fee_paid: 0,
-                    error: Some(err),
-                }
+                return self.make_result(false, 0, Some(err));
             }
         };
 
         if mapping.is_none() {
-            return TxResult {
-                success: false,
-                fee_paid: 0,
-                error: Some("EVM address not registered".to_string()),
-            };
+            return self.make_result(false, 0, Some("EVM address not registered".to_string()));
         }
 
         let chain_id = evm_tx.chain_id.unwrap_or(0);
@@ -1198,11 +1161,7 @@ impl TxProcessor {
             match execute_evm_transaction(self.state.clone(), &evm_tx, chain_id) {
                 Ok(res) => res,
                 Err(err) => {
-                    return TxResult {
-                        success: false,
-                        fee_paid: 0,
-                        error: Some(err),
-                    }
+                    return self.make_result(false, 0, Some(err));
                 }
             };
 
@@ -1241,11 +1200,7 @@ impl TxProcessor {
         if fee_paid > 0 {
             let native_payer = mapping.unwrap(); // guaranteed Some from earlier check
             if let Err(e) = self.charge_fee_direct(&native_payer, fee_paid) {
-                return TxResult {
-                    success: false,
-                    fee_paid: 0,
-                    error: Some(format!("EVM fee charge error: {}", e)),
-                };
+                return self.make_result(false, 0, Some(format!("EVM fee charge error: {}", e)));
             }
         }
 
@@ -1254,28 +1209,16 @@ impl TxProcessor {
 
         if let Err(e) = self.b_put_evm_tx(&record) {
             self.rollback_batch();
-            return TxResult {
-                success: false,
-                fee_paid,
-                error: Some(format!("EVM tx storage error: {}", e)),
-            };
+            return self.make_result(false, fee_paid, Some(format!("EVM tx storage error: {}", e)));
         }
         if let Err(e) = self.b_put_evm_receipt(&receipt) {
             self.rollback_batch();
-            return TxResult {
-                success: false,
-                fee_paid,
-                error: Some(format!("EVM receipt storage error: {}", e)),
-            };
+            return self.make_result(false, fee_paid, Some(format!("EVM receipt storage error: {}", e)));
         }
 
         if let Err(e) = self.b_put_transaction(tx) {
             self.rollback_batch();
-            return TxResult {
-                success: false,
-                fee_paid,
-                error: Some(format!("Transaction storage error: {}", e)),
-            };
+            return self.make_result(false, fee_paid, Some(format!("Transaction storage error: {}", e)));
         }
 
         // Fee already charged via charge_fee_direct before batch (AUDIT-FIX 0.7)
@@ -1284,31 +1227,19 @@ impl TxProcessor {
         // through the same atomic batch. This guarantees all-or-nothing commit.
         if let Err(e) = self.b_apply_evm_state_changes(&evm_state_changes) {
             self.rollback_batch();
-            return TxResult {
-                success: false,
-                fee_paid,
-                error: Some(format!("EVM state apply error: {}", e)),
-            };
+            return self.make_result(false, fee_paid, Some(format!("EVM state apply error: {}", e)));
         }
 
         if let Err(e) = self.commit_batch() {
             self.rollback_batch();
-            return TxResult {
-                success: false,
-                fee_paid,
-                error: Some(format!("Atomic commit failed: {}", e)),
-            };
+            return self.make_result(false, fee_paid, Some(format!("Atomic commit failed: {}", e)));
         }
 
-        TxResult {
-            success: result.success,
-            fee_paid,
-            error: if result.success {
-                None
-            } else {
-                Some("EVM execution reverted".to_string())
-            },
-        }
+        self.make_result(result.success, fee_paid, if result.success {
+            None
+        } else {
+            Some("EVM execution reverted".to_string())
+        })
     }
 
     /// Charge transaction fee from spendable balance only (not staked/locked)
@@ -2360,6 +2291,28 @@ impl TxProcessor {
 
         // Return runtime to thread-local pool for reuse
         runtime.return_to_pool();
+
+        // Accumulate contract execution metadata (return_code, logs) for TxResult
+        {
+            let mut meta = self.contract_meta.lock().unwrap_or_else(|e| e.into_inner());
+            meta.0 = result.return_code;
+            meta.1.extend(result.logs.iter().cloned());
+        }
+
+        // Diagnostic: log when a contract call produces no storage changes despite
+        // returning success — this helps diagnose "silent failure" issues where the
+        // contract returns a non-zero error code but doesn't trap.
+        if result.success && result.storage_changes.is_empty() {
+            if let Some(rc) = result.return_code {
+                if rc != 0 {
+                    eprintln!(
+                        "[contract_call] WARNING: '{}' returned non-zero code {} with 0 storage changes. \
+                         Logs: {:?}. The contract likely hit an error branch.",
+                        function, rc, result.logs
+                    );
+                }
+            }
+        }
 
         if !result.success {
             return Err(result

@@ -2266,6 +2266,14 @@ pub extern "C" fn revoke_attestation(
     unsafe { core::ptr::copy_nonoverlapping(attester_ptr, attester.as_mut_ptr(), 32); }
     let mut identity = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(identity_ptr, identity.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify attester matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != attester {
+        log_info("revoke_attestation: caller does not match transaction signer");
+        return 200;
+    }
+
     let skill_name_len = skill_name_len as usize;
 
     if skill_name_len == 0 || skill_name_len > MAX_SKILL_LEN {
@@ -2325,6 +2333,14 @@ pub extern "C" fn register_name(
 
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        log_info("register_name: caller does not match transaction signer");
+        return 200;
+    }
+
     let name_len = name_len as usize;
     let mut name = alloc::vec![0u8; name_len];
     unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
@@ -2518,6 +2534,14 @@ pub extern "C" fn create_name_auction(
 
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        log_info("create_name_auction: caller does not match transaction signer");
+        return 200;
+    }
+
     if !is_mid_admin(&caller) {
         log_info("Unauthorized: only admin can create name auction");
         return 1;
@@ -2603,6 +2627,14 @@ pub extern "C" fn bid_name_auction(
 
     let mut bidder = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(bidder_ptr, bidder.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify bidder matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != bidder {
+        log_info("bid_name_auction: caller does not match transaction signer");
+        return 200;
+    }
+
     let name_len = name_len as usize;
     let mut name = alloc::vec![0u8; name_len];
     unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
@@ -2812,6 +2844,14 @@ pub extern "C" fn transfer_name(
 ) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        log_info("transfer_name: caller does not match transaction signer");
+        return 200;
+    }
+
     let name_len = name_len as usize;
     let mut name = alloc::vec![0u8; name_len];
     unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
@@ -2896,6 +2936,14 @@ pub extern "C" fn renew_name(
 ) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        log_info("renew_name: caller does not match transaction signer");
+        return 200;
+    }
+
     let name_len = name_len as usize;
     let mut name = alloc::vec![0u8; name_len];
     unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
@@ -2959,6 +3007,14 @@ pub extern "C" fn release_name(
 ) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        log_info("release_name: caller does not match transaction signer");
+        return 200;
+    }
+
     let name_len = name_len as usize;
     let mut name = alloc::vec![0u8; name_len];
     unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
@@ -3010,6 +3066,14 @@ pub extern "C" fn transfer_name_as(
     unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
     let mut owner = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify delegate matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != delegate {
+        log_info("transfer_name_as: caller does not match transaction signer");
+        return 200;
+    }
+
     let name_len = name_len as usize;
     let mut name = alloc::vec![0u8; name_len];
     unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
@@ -3086,6 +3150,14 @@ pub extern "C" fn renew_name_as(
     unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
     let mut owner = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify delegate matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != delegate {
+        log_info("renew_name_as: caller does not match transaction signer");
+        return 200;
+    }
+
     let name_len = name_len as usize;
     let mut name = alloc::vec![0u8; name_len];
     unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
@@ -3146,6 +3218,14 @@ pub extern "C" fn release_name_as(
     unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
     let mut owner = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify delegate matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != delegate {
+        log_info("release_name_as: caller does not match transaction signer");
+        return 200;
+    }
+
     let name_len = name_len as usize;
     let mut name = alloc::vec![0u8; name_len];
     unsafe { core::ptr::copy_nonoverlapping(name_ptr, name.as_mut_ptr(), name_len); }
@@ -3198,6 +3278,14 @@ pub extern "C" fn release_name_as(
 pub extern "C" fn set_endpoint(caller_ptr: *const u8, url_ptr: *const u8, url_len: u32) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer (same as register_identity)
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        log_info("set_endpoint: caller does not match transaction signer");
+        return 200;
+    }
+
     let url_len = url_len as usize;
 
     if url_len == 0 || url_len > MAX_ENDPOINT_LEN {
@@ -3254,6 +3342,14 @@ pub extern "C" fn get_endpoint(addr_ptr: *const u8) -> u32 {
 pub extern "C" fn set_metadata(caller_ptr: *const u8, json_ptr: *const u8, json_len: u32) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        log_info("set_metadata: caller does not match transaction signer");
+        return 200;
+    }
+
     let json_len = json_len as usize;
 
     if json_len == 0 || json_len > MAX_METADATA_LEN {
@@ -3310,6 +3406,13 @@ pub extern "C" fn set_availability(caller_ptr: *const u8, status: u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        log_info("set_availability: caller does not match transaction signer");
+        return 200;
+    }
+
     if status > 2 {
         log_info("Invalid availability status (0=offline, 1=available, 2=busy)");
         return 1;
@@ -3361,6 +3464,13 @@ pub extern "C" fn get_availability(addr_ptr: *const u8) -> u32 {
 pub extern "C" fn set_rate(caller_ptr: *const u8, molt_per_unit: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        log_info("set_rate: caller does not match transaction signer");
+        return 200;
+    }
 
     // Must have identity
     let idk = identity_key(&caller);
@@ -3419,6 +3529,13 @@ pub extern "C" fn set_delegate(
     unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
     let mut delegate = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify owner matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != owner {
+        log_info("set_delegate: caller does not match transaction signer");
+        return 200;
+    }
 
     let id_owner = identity_key(&owner);
     if storage_get(&id_owner).is_none() {
@@ -3481,6 +3598,13 @@ pub extern "C" fn revoke_delegate(owner_ptr: *const u8, delegate_ptr: *const u8)
     let mut delegate = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify owner matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != owner {
+        log_info("revoke_delegate: caller does not match transaction signer");
+        return 200;
+    }
+
     let dk = delegation_key(&owner, &delegate);
     if storage_get(&dk).is_none() {
         log_info("Delegation not found");
@@ -3526,6 +3650,14 @@ pub extern "C" fn set_endpoint_as(
     unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
     let mut owner = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify delegate matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != delegate {
+        log_info("set_endpoint_as: caller does not match transaction signer");
+        return 200;
+    }
+
     let url_len = url_len as usize;
 
     if url_len == 0 || url_len > MAX_ENDPOINT_LEN {
@@ -3564,6 +3696,14 @@ pub extern "C" fn set_metadata_as(
     unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
     let mut owner = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify delegate matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != delegate {
+        log_info("set_metadata_as: caller does not match transaction signer");
+        return 200;
+    }
+
     let json_len = json_len as usize;
 
     if json_len == 0 || json_len > MAX_METADATA_LEN {
@@ -3602,6 +3742,13 @@ pub extern "C" fn set_availability_as(
     let mut owner = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify delegate matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != delegate {
+        log_info("set_availability_as: caller does not match transaction signer");
+        return 200;
+    }
+
     if status > 2 {
         log_info("Invalid availability status (0=offline, 1=available, 2=busy)");
         return 1;
@@ -3636,6 +3783,13 @@ pub extern "C" fn set_rate_as(
     let mut owner = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify delegate matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != delegate {
+        log_info("set_rate_as: caller does not match transaction signer");
+        return 200;
+    }
+
     let now = get_timestamp();
     if !has_active_permission(&owner, &delegate, DELEGATE_PERM_PROFILE, now) {
         log_info("Unauthorized delegate for rate update");
@@ -3664,6 +3818,13 @@ pub extern "C" fn update_agent_type_as(
     unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
     let mut owner = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify delegate matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != delegate {
+        log_info("update_agent_type_as: caller does not match transaction signer");
+        return 200;
+    }
 
     if !is_valid_agent_type(new_agent_type) {
         log_info("Invalid agent type");
@@ -3869,6 +4030,14 @@ pub extern "C" fn get_trust_tier(pubkey_ptr: *const u8) -> u32 {
 pub extern "C" fn mid_pause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        log_info("mid_pause: caller does not match transaction signer");
+        return 200;
+    }
+
     if !is_mid_admin(&caller) { return 1; }
     if is_mid_paused() { return 2; }
     storage_set(MID_PAUSE_KEY, &[1]);
@@ -3882,6 +4051,14 @@ pub extern "C" fn mid_pause(caller_ptr: *const u8) -> u32 {
 pub extern "C" fn mid_unpause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        log_info("mid_unpause: caller does not match transaction signer");
+        return 200;
+    }
+
     if !is_mid_admin(&caller) { return 1; }
     if !is_mid_paused() { return 2; }
     storage_set(MID_PAUSE_KEY, &[0]);
@@ -3895,6 +4072,14 @@ pub extern "C" fn mid_unpause(caller_ptr: *const u8) -> u32 {
 pub extern "C" fn transfer_admin(caller_ptr: *const u8, new_admin_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        log_info("transfer_admin: caller does not match transaction signer");
+        return 200;
+    }
+
     if !is_mid_admin(&caller) { return 1; }
     let mut new_admin = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(new_admin_ptr, new_admin.as_mut_ptr(), 32); }
