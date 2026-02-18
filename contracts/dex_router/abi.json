@@ -1,0 +1,20 @@
+{
+  "contract": "dex_router",
+  "version": "1.0",
+  "functions": [
+    {"name": "initialize", "opcode": 0, "params": [{"name": "admin", "type": "Pubkey"}]},
+    {"name": "set_addresses", "opcode": 1, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "core_address", "type": "Pubkey"}, {"name": "amm_address", "type": "Pubkey"}, {"name": "legacy_address", "type": "Pubkey"}]},
+    {"name": "register_route", "opcode": 2, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "token_in", "type": "Pubkey"}, {"name": "token_out", "type": "Pubkey"}, {"name": "route_type", "type": "u8"}, {"name": "pool_id", "type": "u64"}, {"name": "secondary_id", "type": "u64"}, {"name": "split_percent", "type": "u8"}]},
+    {"name": "swap", "opcode": 3, "params": [{"name": "trader", "type": "Pubkey"}, {"name": "token_in", "type": "Pubkey"}, {"name": "token_out", "type": "Pubkey"}, {"name": "amount_in", "type": "u64"}, {"name": "min_out", "type": "u64"}, {"name": "deadline", "type": "u64"}]},
+    {"name": "set_route_enabled", "opcode": 4, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "route_id", "type": "u64"}, {"name": "enabled", "type": "bool"}]},
+    {"name": "get_best_route", "opcode": 5, "params": [{"name": "token_in", "type": "Pubkey"}, {"name": "token_out", "type": "Pubkey"}, {"name": "amount", "type": "u64"}]},
+    {"name": "get_route_info", "opcode": 6, "params": [{"name": "route_id", "type": "u64"}]},
+    {"name": "emergency_pause", "opcode": 7, "params": [{"name": "caller", "type": "Pubkey"}]},
+    {"name": "emergency_unpause", "opcode": 8, "params": [{"name": "caller", "type": "Pubkey"}]},
+    {"name": "multi_hop_swap", "opcode": 9, "params": [{"name": "trader", "type": "Pubkey"}, {"name": "path_count", "type": "u64"}, {"name": "amount_in", "type": "u64"}, {"name": "min_out", "type": "u64"}, {"name": "deadline", "type": "u64"}]},
+    {"name": "get_route_count", "opcode": 10, "params": []},
+    {"name": "get_swap_count", "opcode": 11, "params": []},
+    {"name": "get_total_volume_routed", "opcode": 12, "params": []},
+    {"name": "get_router_stats", "opcode": 13, "params": []}
+  ]
+}

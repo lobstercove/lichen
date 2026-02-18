@@ -576,6 +576,9 @@ pub struct StateStore {
     /// AUDIT-FIX CP-8: Mutex to serialize next_transfer_seq read-modify-write operations,
     /// preventing duplicate transfer sequence numbers under concurrent access.
     transfer_seq_lock: Arc<std::sync::Mutex<()>>,
+    /// PHASE1-FIX S-2: Mutex to serialize next_tx_slot_seq read-modify-write operations,
+    /// preventing duplicate tx sequence numbers under concurrent block processing.
+    tx_slot_seq_lock: Arc<std::sync::Mutex<()>>,
 }
 
 /// Atomic write batch for transaction processing (T1.4/T3.1).
@@ -791,6 +794,7 @@ impl StateStore {
             metrics,
             event_seq_lock: Arc::new(std::sync::Mutex::new(())),
             transfer_seq_lock: Arc::new(std::sync::Mutex::new(())),
+            tx_slot_seq_lock: Arc::new(std::sync::Mutex::new(())),
         })
     }
 
@@ -3465,12 +3469,39 @@ impl StateStore {
     }
 
     /// Save entire validator set to state (replaces all existing entries)
+    /// PHASE1-FIX S-4: Atomic clear-and-replace in a single WriteBatch to prevent
+    /// intermediate states where validators are partially cleared.
     pub fn save_validator_set(&self, set: &crate::consensus::ValidatorSet) -> Result<(), String> {
-        // Clear stale validators first to prevent ghost entries from old keypairs
-        self.clear_all_validators()?;
-        for validator in set.validators() {
-            self.put_validator(validator)?;
+        let cf = self
+            .db
+            .cf_handle(CF_VALIDATORS)
+            .ok_or_else(|| "Validators CF not found".to_string())?;
+
+        let mut batch = rocksdb::WriteBatch::default();
+
+        // Delete all existing validator entries
+        let keys: Vec<Box<[u8]>> = self
+            .db
+            .iterator_cf(&cf, rocksdb::IteratorMode::Start)
+            .filter_map(|item| item.ok().map(|(k, _)| k))
+            .collect();
+        for key in &keys {
+            batch.delete_cf(&cf, key);
         }
+
+        // Insert all current validators
+        for validator in set.validators() {
+            let data = serde_json::to_vec(validator)
+                .map_err(|e| format!("Failed to serialize validator: {}", e))?;
+            batch.put_cf(&cf, validator.pubkey.0, data);
+        }
+
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Failed to save validator set: {}", e))?;
+
+        // Update counter
+        *self.metrics.validator_count.lock().unwrap_or_else(|e| e.into_inner()) = set.validators().len() as u64;
         Ok(())
     }
 
@@ -3657,6 +3688,7 @@ impl StateStore {
     }
 
     /// Store rent parameters
+    /// PHASE1-FIX S-6: Atomic WriteBatch for both rent parameters.
     pub fn set_rent_params(
         &self,
         rate_shells_per_kb_month: u64,
@@ -3667,18 +3699,13 @@ impl StateStore {
             .cf_handle(CF_STATS)
             .ok_or_else(|| "Stats CF not found".to_string())?;
 
-        self.db
-            .put_cf(
-                &cf,
-                b"rent_rate_shells_per_kb_month",
-                rate_shells_per_kb_month.to_le_bytes(),
-            )
-            .map_err(|e| format!("Failed to store rent rate: {}", e))?;
-        self.db
-            .put_cf(&cf, b"rent_free_kb", free_kb.to_le_bytes())
-            .map_err(|e| format!("Failed to store rent free tier: {}", e))?;
+        let mut batch = rocksdb::WriteBatch::default();
+        batch.put_cf(&cf, b"rent_rate_shells_per_kb_month", rate_shells_per_kb_month.to_le_bytes());
+        batch.put_cf(&cf, b"rent_free_kb", free_kb.to_le_bytes());
 
-        Ok(())
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Failed to store rent params: {}", e))
     }
 
     /// Load rent parameters (defaults if missing)
@@ -3736,73 +3763,27 @@ impl StateStore {
     }
 
     /// Store complete fee configuration including distribution percentages
+    /// PHASE1-FIX S-5: Single atomic WriteBatch for all 9 fee config keys.
     pub fn set_fee_config_full(&self, config: &crate::FeeConfig) -> Result<(), String> {
         let cf = self
             .db
             .cf_handle(CF_STATS)
             .ok_or_else(|| "Stats CF not found".to_string())?;
 
-        self.db
-            .put_cf(&cf, b"fee_base_shells", config.base_fee.to_le_bytes())
-            .map_err(|e| format!("Failed to store base fee: {}", e))?;
-        self.db
-            .put_cf(
-                &cf,
-                b"fee_contract_deploy_shells",
-                config.contract_deploy_fee.to_le_bytes(),
-            )
-            .map_err(|e| format!("Failed to store deploy fee: {}", e))?;
-        self.db
-            .put_cf(
-                &cf,
-                b"fee_contract_upgrade_shells",
-                config.contract_upgrade_fee.to_le_bytes(),
-            )
-            .map_err(|e| format!("Failed to store upgrade fee: {}", e))?;
-        self.db
-            .put_cf(
-                &cf,
-                b"fee_nft_mint_shells",
-                config.nft_mint_fee.to_le_bytes(),
-            )
-            .map_err(|e| format!("Failed to store NFT mint fee: {}", e))?;
-        self.db
-            .put_cf(
-                &cf,
-                b"fee_nft_collection_shells",
-                config.nft_collection_fee.to_le_bytes(),
-            )
-            .map_err(|e| format!("Failed to store NFT collection fee: {}", e))?;
-        self.db
-            .put_cf(
-                &cf,
-                b"fee_burn_percent",
-                config.fee_burn_percent.to_le_bytes(),
-            )
-            .map_err(|e| format!("Failed to store burn percent: {}", e))?;
-        self.db
-            .put_cf(
-                &cf,
-                b"fee_producer_percent",
-                config.fee_producer_percent.to_le_bytes(),
-            )
-            .map_err(|e| format!("Failed to store producer percent: {}", e))?;
-        self.db
-            .put_cf(
-                &cf,
-                b"fee_voters_percent",
-                config.fee_voters_percent.to_le_bytes(),
-            )
-            .map_err(|e| format!("Failed to store voters percent: {}", e))?;
-        self.db
-            .put_cf(
-                &cf,
-                b"fee_treasury_percent",
-                config.fee_treasury_percent.to_le_bytes(),
-            )
-            .map_err(|e| format!("Failed to store treasury percent: {}", e))?;
+        let mut batch = rocksdb::WriteBatch::default();
+        batch.put_cf(&cf, b"fee_base_shells", config.base_fee.to_le_bytes());
+        batch.put_cf(&cf, b"fee_contract_deploy_shells", config.contract_deploy_fee.to_le_bytes());
+        batch.put_cf(&cf, b"fee_contract_upgrade_shells", config.contract_upgrade_fee.to_le_bytes());
+        batch.put_cf(&cf, b"fee_nft_mint_shells", config.nft_mint_fee.to_le_bytes());
+        batch.put_cf(&cf, b"fee_nft_collection_shells", config.nft_collection_fee.to_le_bytes());
+        batch.put_cf(&cf, b"fee_burn_percent", config.fee_burn_percent.to_le_bytes());
+        batch.put_cf(&cf, b"fee_producer_percent", config.fee_producer_percent.to_le_bytes());
+        batch.put_cf(&cf, b"fee_voters_percent", config.fee_voters_percent.to_le_bytes());
+        batch.put_cf(&cf, b"fee_treasury_percent", config.fee_treasury_percent.to_le_bytes());
 
-        Ok(())
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Failed to store fee config: {}", e))
     }
 
     /// Load fee configuration (defaults if missing)
@@ -4169,6 +4150,7 @@ impl StateStore {
 impl StateStore {
     /// Register EVM address mapping (EVM address → Native pubkey)
     /// Called on first transaction from an EVM address
+    /// PHASE1-FIX S-8: Atomic WriteBatch for forward + reverse EVM address mapping.
     pub fn register_evm_address(
         &self,
         evm_address: &[u8; 20],
@@ -4179,20 +4161,20 @@ impl StateStore {
             .cf_handle(CF_EVM_MAP)
             .ok_or_else(|| "EVM Map CF not found".to_string())?;
 
-        // Store: 20-byte EVM address → 32-byte native pubkey
-        self.db
-            .put_cf(&cf, evm_address, native_pubkey.0)
-            .map_err(|e| format!("Failed to register EVM address: {}", e))?;
+        let mut batch = rocksdb::WriteBatch::default();
 
-        // M3 fix: also write reverse mapping (native → EVM) for consistency with batch path
+        // Forward: 20-byte EVM address → 32-byte native pubkey
+        batch.put_cf(&cf, evm_address, native_pubkey.0);
+
+        // Reverse: native → EVM (M3 fix preserved)
         let mut reverse_key = Vec::with_capacity(52);
         reverse_key.extend_from_slice(b"reverse:");
         reverse_key.extend_from_slice(&native_pubkey.0);
-        self.db
-            .put_cf(&cf, &reverse_key, evm_address)
-            .map_err(|e| format!("Failed to register reverse EVM mapping: {}", e))?;
+        batch.put_cf(&cf, &reverse_key, evm_address);
 
-        Ok(())
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Failed to register EVM address: {}", e))
     }
 
     /// Lookup native pubkey from EVM address
@@ -4351,6 +4333,7 @@ impl StateStore {
     }
 
     /// Clear EVM storage for an account
+    /// PHASE1-FIX S-3: Use WriteBatch for atomic bulk delete instead of one-by-one.
     pub fn clear_evm_storage(&self, evm_address: &[u8; 20]) -> Result<(), String> {
         let cf = self
             .db
@@ -4358,18 +4341,25 @@ impl StateStore {
             .ok_or_else(|| "EVM Storage CF not found".to_string())?;
 
         let prefix = evm_address;
-        let iter = self
+        let keys: Vec<Box<[u8]>> = self
             .db
-            .iterator_cf(&cf, rocksdb::IteratorMode::From(prefix, Direction::Forward));
-        for (key, _) in iter.flatten() {
-            if !key.starts_with(prefix) {
-                break;
-            }
-            self.db
-                .delete_cf(&cf, key)
-                .map_err(|e| format!("Failed to delete EVM storage: {}", e))?;
+            .iterator_cf(&cf, rocksdb::IteratorMode::From(prefix, Direction::Forward))
+            .filter_map(|item| item.ok())
+            .take_while(|(k, _)| k.starts_with(prefix))
+            .map(|(k, _)| k)
+            .collect();
+
+        if keys.is_empty() {
+            return Ok(());
         }
-        Ok(())
+
+        let mut batch = rocksdb::WriteBatch::default();
+        for key in &keys {
+            batch.delete_cf(&cf, key);
+        }
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Failed to batch-delete EVM storage: {}", e))
     }
 
     /// Clear a single EVM storage slot
@@ -5135,7 +5125,11 @@ impl StateStore {
             .map_err(|e| format!("Failed to index tx to slot: {}", e))
     }
 
+    /// PHASE1-FIX S-2: Protected by tx_slot_seq_lock to prevent duplicate
+    /// sequence numbers under concurrent access (mirrors event_seq_lock pattern).
     fn next_tx_slot_seq(&self, slot: u64) -> Result<u64, String> {
+        let _guard = self.tx_slot_seq_lock.lock().map_err(|e| format!("TX slot seq lock poisoned: {}", e))?;
+
         let cf = self
             .db
             .cf_handle(CF_STATS)

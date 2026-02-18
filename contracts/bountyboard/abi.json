@@ -1,0 +1,128 @@
+{
+  "contract": "bountyboard",
+  "version": "1.0",
+  "functions": [
+    {
+      "name": "create_bounty",
+      "opcode": 0,
+      "params": [
+        { "name": "creator_ptr", "type": "Pubkey" },
+        { "name": "title_hash_ptr", "type": "Pubkey" },
+        { "name": "reward_amount", "type": "u64" },
+        { "name": "deadline_slot", "type": "u64" }
+      ]
+    },
+    {
+      "name": "submit_work",
+      "opcode": 1,
+      "params": [
+        { "name": "bounty_id", "type": "u64" },
+        { "name": "worker_ptr", "type": "Pubkey" },
+        { "name": "proof_hash_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "approve_work",
+      "opcode": 2,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "bounty_id", "type": "u64" },
+        { "name": "submission_idx", "type": "u64" }
+      ]
+    },
+    {
+      "name": "cancel_bounty",
+      "opcode": 3,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "bounty_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_bounty",
+      "opcode": 4,
+      "params": [
+        { "name": "bounty_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "set_identity_admin",
+      "opcode": 5,
+      "params": [
+        { "name": "admin_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "set_moltyid_address",
+      "opcode": 6,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "moltyid_addr_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "set_identity_gate",
+      "opcode": 7,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "min_reputation", "type": "u64" }
+      ]
+    },
+    {
+      "name": "set_token_address",
+      "opcode": 8,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "token_addr_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "initialize",
+      "opcode": 9,
+      "params": [
+        { "name": "admin_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "approve_submission",
+      "opcode": 10,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "bounty_id", "type": "u64" },
+        { "name": "submission_idx", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_bounty_count",
+      "opcode": 11,
+      "params": []
+    },
+    {
+      "name": "set_platform_fee",
+      "opcode": 12,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "fee_bps", "type": "u64" }
+      ]
+    },
+    {
+      "name": "bb_pause",
+      "opcode": 13,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "bb_unpause",
+      "opcode": 14,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "get_platform_stats",
+      "opcode": 15,
+      "params": []
+    }
+  ]
+}

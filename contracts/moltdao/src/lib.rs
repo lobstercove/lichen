@@ -27,6 +27,13 @@ fn reentrancy_exit() {
     storage_set(DAO_REENTRANCY_KEY, &[0u8]);
 }
 
+// AUDIT-FIX P2: Pause check helper (was stored but never checked)
+fn is_dao_paused() -> bool {
+    storage_get(b"dao_paused")
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
+}
+
 // ============================================================================
 // DAO CONFIGURATION (per whitepaper)
 // ============================================================================
@@ -273,8 +280,22 @@ pub extern "C" fn create_proposal_typed(
 ) -> u32 {
     log_info("Creating proposal...");
     
+    // AUDIT-FIX P2: Enforce pause
+    if is_dao_paused() {
+        log_info("DAO is paused");
+        return 0;
+    }
+    
     let mut proposer = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(proposer_ptr, proposer.as_mut_ptr(), 32); }
+    
+    // AUDIT-FIX P2: Verify caller matches proposer
+    let real_caller = get_caller();
+    if real_caller.0 != proposer {
+        log_info("Create proposal rejected: caller mismatch");
+        return 0;
+    }
+    
     let mut title = alloc::vec![0u8; title_len as usize];
     unsafe { core::ptr::copy_nonoverlapping(title_ptr, title.as_mut_ptr(), title_len as usize); }
     let mut description = alloc::vec![0u8; description_len as usize];
@@ -389,8 +410,21 @@ pub extern "C" fn vote_with_reputation(
 ) -> u32 {
     log_info(" Casting vote (quadratic)...");
     
+    // AUDIT-FIX P2: Enforce pause
+    if is_dao_paused() {
+        log_info("DAO is paused");
+        return 0;
+    }
+    
     let mut voter = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(voter_ptr, voter.as_mut_ptr(), 32); }
+    
+    // AUDIT-FIX P2: Verify caller matches voter
+    let real_caller = get_caller();
+    if real_caller.0 != voter {
+        log_info("Vote rejected: caller mismatch");
+        return 0;
+    }
     
     // Look up voter's actual token balance via cross-contract call
     let token_addr_data = storage_get(b"governance_token")
@@ -591,7 +625,8 @@ pub extern "C" fn execute_proposal(
         return 0;
     }
     
-    let approval_pct = votes_for * 100 / total_votes;
+    // AUDIT-FIX P2: Use u128 to prevent overflow with large vote totals
+    let approval_pct = ((votes_for as u128) * 100 / (total_votes as u128)) as u64;
     
     if approval_pct < approval_threshold {
         log_info("Approval threshold not met");
@@ -680,8 +715,21 @@ pub extern "C" fn veto_proposal(
 ) -> u32 {
     log_info("Vetoing proposal...");
     
+    // AUDIT-FIX P2: Enforce pause
+    if is_dao_paused() {
+        log_info("DAO is paused");
+        return 0;
+    }
+    
     let mut voter = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(voter_ptr, voter.as_mut_ptr(), 32); }
+    
+    // AUDIT-FIX P2: Verify caller matches voter
+    let real_caller = get_caller();
+    if real_caller.0 != voter {
+        log_info("Veto rejected: caller mismatch");
+        return 0;
+    }
     
     // AUDIT-FIX 1.9: Query actual on-chain token balance instead of trusting caller
     let token_addr_data = storage_get(b"governance_token")
@@ -1087,6 +1135,9 @@ pub extern "C" fn get_total_supply() -> u64 {
 pub extern "C" fn set_quorum(caller_ptr: *const u8, quorum: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    // AUDIT-FIX P2: Verify caller is the actual transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller { return 1; }
     let owner = storage_get(b"dao_owner").unwrap_or_default();
     if caller[..] != owner[..] { return 1; }
     storage_set(b"custom_quorum", &u64_to_bytes(quorum));
@@ -1099,6 +1150,9 @@ pub extern "C" fn set_quorum(caller_ptr: *const u8, quorum: u64) -> u32 {
 pub extern "C" fn set_voting_period(caller_ptr: *const u8, period: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    // AUDIT-FIX P2: Verify caller is the actual transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller { return 1; }
     let owner = storage_get(b"dao_owner").unwrap_or_default();
     if caller[..] != owner[..] { return 1; }
     storage_set(b"custom_voting_period", &u64_to_bytes(period));
@@ -1111,6 +1165,9 @@ pub extern "C" fn set_voting_period(caller_ptr: *const u8, period: u64) -> u32 {
 pub extern "C" fn set_timelock_delay(caller_ptr: *const u8, delay: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    // AUDIT-FIX P2: Verify caller is the actual transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller { return 1; }
     let owner = storage_get(b"dao_owner").unwrap_or_default();
     if caller[..] != owner[..] { return 1; }
     storage_set(b"timelock_delay", &u64_to_bytes(delay));
@@ -1123,6 +1180,9 @@ pub extern "C" fn set_timelock_delay(caller_ptr: *const u8, delay: u64) -> u32 {
 pub extern "C" fn dao_pause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    // AUDIT-FIX P2: Verify caller is the actual transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller { return 1; }
     let owner = storage_get(b"dao_owner").unwrap_or_default();
     if caller[..] != owner[..] { return 1; }
     storage_set(b"dao_paused", &[1u8]);
@@ -1135,6 +1195,9 @@ pub extern "C" fn dao_pause(caller_ptr: *const u8) -> u32 {
 pub extern "C" fn dao_unpause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    // AUDIT-FIX P2: Verify caller is the actual transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller { return 1; }
     let owner = storage_get(b"dao_owner").unwrap_or_default();
     if caller[..] != owner[..] { return 1; }
     storage_set(b"dao_paused", &[0u8]);

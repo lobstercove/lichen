@@ -1,0 +1,261 @@
+{
+  "contract": "compute_market",
+  "version": "1.0",
+  "functions": [
+    {
+      "name": "register_provider",
+      "opcode": 0,
+      "params": [
+        { "name": "provider_ptr", "type": "Pubkey" },
+        { "name": "compute_units_available", "type": "u64" },
+        { "name": "price_per_unit", "type": "u64" }
+      ]
+    },
+    {
+      "name": "submit_job",
+      "opcode": 1,
+      "params": [
+        { "name": "requester_ptr", "type": "Pubkey" },
+        { "name": "compute_units_needed", "type": "u64" },
+        { "name": "max_price", "type": "u64" },
+        { "name": "code_hash_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "claim_job",
+      "opcode": 2,
+      "params": [
+        { "name": "provider_ptr", "type": "Pubkey" },
+        { "name": "job_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "complete_job",
+      "opcode": 3,
+      "params": [
+        { "name": "provider_ptr", "type": "Pubkey" },
+        { "name": "job_id", "type": "u64" },
+        { "name": "result_hash_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "dispute_job",
+      "opcode": 4,
+      "params": [
+        { "name": "requester_ptr", "type": "Pubkey" },
+        { "name": "job_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_job",
+      "opcode": 5,
+      "params": [
+        { "name": "job_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "initialize",
+      "opcode": 6,
+      "params": [
+        { "name": "admin_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "set_claim_timeout",
+      "opcode": 7,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "timeout", "type": "u64" }
+      ]
+    },
+    {
+      "name": "set_complete_timeout",
+      "opcode": 8,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "timeout", "type": "u64" }
+      ]
+    },
+    {
+      "name": "set_challenge_period",
+      "opcode": 9,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "period", "type": "u64" }
+      ]
+    },
+    {
+      "name": "add_arbitrator",
+      "opcode": 10,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "arbitrator_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "remove_arbitrator",
+      "opcode": 11,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "arbitrator_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "cancel_job",
+      "opcode": 12,
+      "params": [
+        { "name": "requester_ptr", "type": "Pubkey" },
+        { "name": "job_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "release_payment",
+      "opcode": 13,
+      "params": [
+        { "name": "job_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "resolve_dispute",
+      "opcode": 14,
+      "params": [
+        { "name": "arbitrator_ptr", "type": "Pubkey" },
+        { "name": "job_id", "type": "u64" },
+        { "name": "requester_pct", "type": "u64" }
+      ]
+    },
+    {
+      "name": "deactivate_provider",
+      "opcode": 15,
+      "params": [
+        { "name": "provider_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "reactivate_provider",
+      "opcode": 16,
+      "params": [
+        { "name": "provider_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "update_provider",
+      "opcode": 17,
+      "params": [
+        { "name": "provider_ptr", "type": "Pubkey" },
+        { "name": "compute_units", "type": "u64" },
+        { "name": "price_per_unit", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_escrow",
+      "opcode": 18,
+      "params": [
+        { "name": "job_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "set_identity_admin",
+      "opcode": 19,
+      "params": [
+        { "name": "admin_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "set_moltyid_address",
+      "opcode": 20,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "moltyid_addr_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "set_identity_gate",
+      "opcode": 21,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "min_reputation", "type": "u64" }
+      ]
+    },
+    {
+      "name": "create_job",
+      "opcode": 22,
+      "params": [
+        { "name": "requester_ptr", "type": "Pubkey" },
+        { "name": "compute_units_needed", "type": "u64" },
+        { "name": "max_price", "type": "u64" },
+        { "name": "code_hash_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "accept_job",
+      "opcode": 23,
+      "params": [
+        { "name": "provider_ptr", "type": "Pubkey" },
+        { "name": "job_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "submit_result",
+      "opcode": 24,
+      "params": [
+        { "name": "provider_ptr", "type": "Pubkey" },
+        { "name": "job_id", "type": "u64" },
+        { "name": "result_hash_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "confirm_result",
+      "opcode": 25,
+      "params": [
+        { "name": "job_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_job_info",
+      "opcode": 26,
+      "params": [
+        { "name": "job_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_job_count",
+      "opcode": 27,
+      "params": []
+    },
+    {
+      "name": "get_provider_info",
+      "opcode": 28,
+      "params": [
+        { "name": "provider_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "set_platform_fee",
+      "opcode": 29,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "fee_bps", "type": "u64" }
+      ]
+    },
+    {
+      "name": "cm_pause",
+      "opcode": 30,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "cm_unpause",
+      "opcode": 31,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "get_platform_stats",
+      "opcode": 32,
+      "params": []
+    }
+  ]
+}

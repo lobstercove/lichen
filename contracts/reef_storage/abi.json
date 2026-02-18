@@ -1,0 +1,131 @@
+{
+  "contract": "reef_storage",
+  "version": "1.0",
+  "functions": [
+    {
+      "name": "store_data",
+      "opcode": 0,
+      "params": [
+        { "name": "owner_ptr", "type": "Pubkey" },
+        { "name": "data_hash_ptr", "type": "Pubkey" },
+        { "name": "size", "type": "u64" },
+        { "name": "replication_factor", "type": "u8" },
+        { "name": "duration_slots", "type": "u64" }
+      ]
+    },
+    {
+      "name": "confirm_storage",
+      "opcode": 1,
+      "params": [
+        { "name": "provider_ptr", "type": "Pubkey" },
+        { "name": "data_hash_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "get_storage_info",
+      "opcode": 2,
+      "params": [
+        { "name": "data_hash_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "register_provider",
+      "opcode": 3,
+      "params": [
+        { "name": "provider_ptr", "type": "Pubkey" },
+        { "name": "capacity_bytes", "type": "u64" }
+      ]
+    },
+    {
+      "name": "claim_storage_rewards",
+      "opcode": 4,
+      "params": [
+        { "name": "provider_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "initialize",
+      "opcode": 5,
+      "params": [
+        { "name": "admin_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "set_challenge_window",
+      "opcode": 6,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "window_slots", "type": "u64" }
+      ]
+    },
+    {
+      "name": "set_slash_percent",
+      "opcode": 7,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "percent", "type": "u64" }
+      ]
+    },
+    {
+      "name": "stake_collateral",
+      "opcode": 8,
+      "params": [
+        { "name": "provider_ptr", "type": "Pubkey" },
+        { "name": "amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "set_storage_price",
+      "opcode": 9,
+      "params": [
+        { "name": "provider_ptr", "type": "Pubkey" },
+        { "name": "price_per_byte_per_slot", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_storage_price",
+      "opcode": 10,
+      "params": [
+        { "name": "provider_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "get_provider_stake",
+      "opcode": 11,
+      "params": [
+        { "name": "provider_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "issue_challenge",
+      "opcode": 12,
+      "params": [
+        { "name": "data_hash_ptr", "type": "Pubkey" },
+        { "name": "provider_ptr", "type": "Pubkey" },
+        { "name": "nonce", "type": "u64" }
+      ]
+    },
+    {
+      "name": "respond_challenge",
+      "opcode": 13,
+      "params": [
+        { "name": "provider_ptr", "type": "Pubkey" },
+        { "name": "data_hash_ptr", "type": "Pubkey" },
+        { "name": "response_hash_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "slash_provider",
+      "opcode": 14,
+      "params": [
+        { "name": "data_hash_ptr", "type": "Pubkey" },
+        { "name": "provider_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "get_platform_stats",
+      "opcode": 15,
+      "params": []
+    }
+  ]
+}

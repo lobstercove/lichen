@@ -1,0 +1,26 @@
+{
+  "contract": "dex_amm",
+  "version": "1.0",
+  "functions": [
+    {"name": "initialize", "opcode": 0, "params": [{"name": "admin", "type": "Pubkey"}]},
+    {"name": "create_pool", "opcode": 1, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "token_a", "type": "Pubkey"}, {"name": "token_b", "type": "Pubkey"}, {"name": "fee_tier", "type": "u8"}, {"name": "initial_sqrt_price", "type": "u64"}]},
+    {"name": "set_pool_protocol_fee", "opcode": 2, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "pool_id", "type": "u64"}, {"name": "fee_percent", "type": "u8"}]},
+    {"name": "add_liquidity", "opcode": 3, "params": [{"name": "provider", "type": "Pubkey"}, {"name": "pool_id", "type": "u64"}, {"name": "lower_tick", "type": "i32"}, {"name": "upper_tick", "type": "i32"}, {"name": "amount_a", "type": "u64"}, {"name": "amount_b", "type": "u64"}]},
+    {"name": "remove_liquidity", "opcode": 4, "params": [{"name": "provider", "type": "Pubkey"}, {"name": "position_id", "type": "u64"}, {"name": "liquidity_amount", "type": "u64"}]},
+    {"name": "collect_fees", "opcode": 5, "params": [{"name": "provider", "type": "Pubkey"}, {"name": "position_id", "type": "u64"}]},
+    {"name": "swap_exact_in", "opcode": 6, "params": [{"name": "trader", "type": "Pubkey"}, {"name": "pool_id", "type": "u64"}, {"name": "is_token_a_in", "type": "bool"}, {"name": "amount_in", "type": "u64"}, {"name": "min_out", "type": "u64"}, {"name": "deadline", "type": "u64"}]},
+    {"name": "swap_exact_out", "opcode": 7, "params": [{"name": "trader", "type": "Pubkey"}, {"name": "pool_id", "type": "u64"}, {"name": "is_token_a_out", "type": "bool"}, {"name": "amount_out", "type": "u64"}, {"name": "max_in", "type": "u64"}, {"name": "deadline", "type": "u64"}]},
+    {"name": "emergency_pause", "opcode": 8, "params": [{"name": "caller", "type": "Pubkey"}]},
+    {"name": "emergency_unpause", "opcode": 9, "params": [{"name": "caller", "type": "Pubkey"}]},
+    {"name": "get_pool_info", "opcode": 10, "params": [{"name": "pool_id", "type": "u64"}]},
+    {"name": "get_position", "opcode": 11, "params": [{"name": "position_id", "type": "u64"}]},
+    {"name": "get_pool_count", "opcode": 12, "params": []},
+    {"name": "get_position_count", "opcode": 13, "params": []},
+    {"name": "get_tvl", "opcode": 14, "params": [{"name": "pool_id", "type": "u64"}]},
+    {"name": "quote_swap", "opcode": 15, "params": [{"name": "pool_id", "type": "u64"}, {"name": "is_token_a_in", "type": "bool"}, {"name": "amount_in", "type": "u64"}]},
+    {"name": "get_total_volume", "opcode": 16, "params": []},
+    {"name": "get_swap_count", "opcode": 17, "params": []},
+    {"name": "get_total_fees_collected", "opcode": 18, "params": []},
+    {"name": "get_amm_stats", "opcode": 19, "params": []}
+  ]
+}

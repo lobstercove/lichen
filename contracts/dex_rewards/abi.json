@@ -1,0 +1,25 @@
+{
+  "contract": "dex_rewards",
+  "version": "1.0",
+  "functions": [
+    {"name": "initialize", "opcode": 0, "params": [{"name": "admin", "type": "Pubkey"}]},
+    {"name": "record_trade", "opcode": 1, "params": [{"name": "trader", "type": "Pubkey"}, {"name": "fee_paid", "type": "u64"}, {"name": "volume", "type": "u64"}]},
+    {"name": "claim_trading_rewards", "opcode": 2, "params": [{"name": "trader", "type": "Pubkey"}]},
+    {"name": "claim_lp_rewards", "opcode": 3, "params": [{"name": "provider", "type": "Pubkey"}, {"name": "position_id", "type": "u64"}]},
+    {"name": "register_referral", "opcode": 4, "params": [{"name": "trader", "type": "Pubkey"}, {"name": "referrer", "type": "Pubkey"}]},
+    {"name": "set_reward_rate", "opcode": 5, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "pair_id", "type": "u64"}, {"name": "rate", "type": "u64"}]},
+    {"name": "accrue_lp_rewards", "opcode": 6, "params": [{"name": "position_id", "type": "u64"}, {"name": "liquidity", "type": "u64"}, {"name": "pair_id", "type": "u64"}]},
+    {"name": "get_pending_rewards", "opcode": 7, "params": [{"name": "addr", "type": "Pubkey"}]},
+    {"name": "get_trading_tier", "opcode": 8, "params": [{"name": "addr", "type": "Pubkey"}]},
+    {"name": "emergency_pause", "opcode": 9, "params": [{"name": "caller", "type": "Pubkey"}]},
+    {"name": "emergency_unpause", "opcode": 10, "params": [{"name": "caller", "type": "Pubkey"}]},
+    {"name": "set_referral_rate", "opcode": 11, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "rate_bps", "type": "u64"}]},
+    {"name": "set_moltcoin_address", "opcode": 12, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "addr", "type": "Pubkey"}]},
+    {"name": "set_rewards_pool", "opcode": 13, "params": [{"name": "caller", "type": "Pubkey"}, {"name": "addr", "type": "Pubkey"}]},
+    {"name": "get_referral_rate", "opcode": 14, "params": []},
+    {"name": "get_total_distributed", "opcode": 15, "params": []},
+    {"name": "get_trader_count", "opcode": 16, "params": []},
+    {"name": "get_total_volume", "opcode": 17, "params": []},
+    {"name": "get_reward_stats", "opcode": 18, "params": []}
+  ]
+}

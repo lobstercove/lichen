@@ -453,6 +453,16 @@
                                 </div>
                             </div>
 
+                            <!-- Multi-Outcome: dynamic outcome name inputs (hidden for binary) -->
+                            <div class="form-group hidden" id="multiOutcomeSection">
+                                <label>Outcome Names <span style="font-weight:400;color:var(--text-muted);font-size:0.8rem;">(2-8 choices)</span></label>
+                                <div id="outcomeInputs">
+                                    <div class="outcome-input-row"><span class="outcome-dot multi-1"></span><input type="text" class="form-input outcome-name" placeholder="Outcome 1" maxlength="64"></div>
+                                    <div class="outcome-input-row"><span class="outcome-dot multi-2"></span><input type="text" class="form-input outcome-name" placeholder="Outcome 2" maxlength="64"></div>
+                                </div>
+                                <button type="button" class="btn btn-small btn-secondary" id="addOutcomeBtn" style="margin-top:6px;"><i class="fas fa-plus"></i> Add Outcome</button>
+                            </div>
+
                             <div class="form-group">
                                 <label>Close Date</label>
                                 <input type="date" id="predictCloseDate" class="form-input">
@@ -812,15 +822,15 @@
                             <div class="reward-metrics">
                                 <div class="reward-metric">
                                     <span class="metric-label">Pending</span>
-                                    <span class="metric-value accent-text">0 MOLT</span>
+                                    <span class="metric-value accent-text" id="rewardTradePending">0 MOLT</span>
                                 </div>
                                 <div class="reward-metric">
                                     <span class="metric-label">This Month</span>
-                                    <span class="metric-value">0 MOLT</span>
+                                    <span class="metric-value" id="rewardTradeMonth">0 MOLT</span>
                                 </div>
                                 <div class="reward-metric">
                                     <span class="metric-label">All Time</span>
-                                    <span class="metric-value">0 MOLT</span>
+                                    <span class="metric-value" id="rewardTradeAll">0 MOLT</span>
                                 </div>
                             </div>
                         </div>
@@ -836,15 +846,15 @@
                             <div class="reward-metrics">
                                 <div class="reward-metric">
                                     <span class="metric-label">Pending</span>
-                                    <span class="metric-value accent-text">0 MOLT</span>
+                                    <span class="metric-value accent-text" id="rewardLpPending">0 MOLT</span>
                                 </div>
                                 <div class="reward-metric">
                                     <span class="metric-label">Active Positions</span>
-                                    <span class="metric-value">0</span>
+                                    <span class="metric-value" id="rewardLpPositions">0</span>
                                 </div>
                                 <div class="reward-metric">
                                     <span class="metric-label">Combined Liquidity</span>
-                                    <span class="metric-value">—</span>
+                                    <span class="metric-value" id="rewardLpLiquidity">—</span>
                                 </div>
                             </div>
                         </div>
@@ -859,15 +869,15 @@
                             <div class="reward-metrics">
                                 <div class="reward-metric">
                                     <span class="metric-label">Your Referrals</span>
-                                    <span class="metric-value">0 traders</span>
+                                    <span class="metric-value" id="rewardRefCount">0 traders</span>
                                 </div>
                                 <div class="reward-metric">
                                     <span class="metric-label">Referral Earnings</span>
-                                    <span class="metric-value accent-text">0 MOLT</span>
+                                    <span class="metric-value accent-text" id="rewardRefEarnings">0 MOLT</span>
                                 </div>
                                 <div class="reward-metric">
                                     <span class="metric-label">Your Rate</span>
-                                    <span class="metric-value">10%</span>
+                                    <span class="metric-value" id="rewardRefRate">10%</span>
                                 </div>
                             </div>
                             <div class="referral-link-box">

@@ -1,0 +1,171 @@
+{
+  "contract": "moltpunks",
+  "version": "1.0",
+  "functions": [
+    {
+      "name": "initialize",
+      "opcode": 0,
+      "params": [
+        { "name": "minter_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "mint",
+      "opcode": 1,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "to_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" },
+        { "name": "metadata_ptr", "type": "Pubkey" },
+        { "name": "metadata_len", "type": "u64" }
+      ]
+    },
+    {
+      "name": "transfer",
+      "opcode": 2,
+      "params": [
+        { "name": "from_ptr", "type": "Pubkey" },
+        { "name": "to_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "owner_of",
+      "opcode": 3,
+      "params": [
+        { "name": "token_id", "type": "u64" },
+        { "name": "out_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "balance_of",
+      "opcode": 4,
+      "params": [
+        { "name": "account_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "approve",
+      "opcode": 5,
+      "params": [
+        { "name": "owner_ptr", "type": "Pubkey" },
+        { "name": "spender_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "transfer_from",
+      "opcode": 6,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "from_ptr", "type": "Pubkey" },
+        { "name": "to_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "burn",
+      "opcode": 7,
+      "params": [
+        { "name": "owner_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "total_minted",
+      "opcode": 8,
+      "params": []
+    },
+    {
+      "name": "mint_punk",
+      "opcode": 9,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "to_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" },
+        { "name": "metadata_ptr", "type": "Pubkey" },
+        { "name": "metadata_len", "type": "u64" }
+      ]
+    },
+    {
+      "name": "transfer_punk",
+      "opcode": 10,
+      "params": [
+        { "name": "from_ptr", "type": "Pubkey" },
+        { "name": "to_ptr", "type": "Pubkey" },
+        { "name": "token_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_owner_of",
+      "opcode": 11,
+      "params": [
+        { "name": "token_id", "type": "u64" },
+        { "name": "out_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "get_total_supply",
+      "opcode": 12,
+      "params": []
+    },
+    {
+      "name": "get_punk_metadata",
+      "opcode": 13,
+      "params": [
+        { "name": "token_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_punks_by_owner",
+      "opcode": 14,
+      "params": [
+        { "name": "owner_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "set_base_uri",
+      "opcode": 15,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "uri_ptr", "type": "Pubkey" },
+        { "name": "uri_len", "type": "u64" }
+      ]
+    },
+    {
+      "name": "set_max_supply",
+      "opcode": 16,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "max_supply", "type": "u64" }
+      ]
+    },
+    {
+      "name": "set_royalty",
+      "opcode": 17,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "bps", "type": "u64" }
+      ]
+    },
+    {
+      "name": "mp_pause",
+      "opcode": 18,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "mp_unpause",
+      "opcode": 19,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "get_collection_stats",
+      "opcode": 20,
+      "params": []
+    }
+  ]
+}

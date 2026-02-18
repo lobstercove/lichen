@@ -412,6 +412,21 @@ document.addEventListener('DOMContentLoaded', () => {
     function switchView(v) { state.currentView = v; views.forEach(el => el.classList.toggle('hidden', el.id !== `view-${v}`)); navLinks.forEach(l => l.classList.toggle('active', l.dataset.view === v)); if (v === 'trade') { drawChart(); loadTradeHistory(); loadPositionsTab(); } if (v === 'predict') { loadPredictionStats(); loadPredictionMarkets(); loadPredictionPositions(); } if (v === 'pool') { loadPoolStats(); loadPools(); loadLPPositions(); } if (v === 'margin') { loadMarginStats(); loadMarginPositions(); } if (v === 'rewards') { loadRewardsStats(); } if (v === 'governance') { loadGovernanceStats(); loadProposals(); } }
     navLinks.forEach(l => l.addEventListener('click', e => { e.preventDefault(); switchView(l.dataset.view); }));
 
+    // Mobile nav toggle
+    const navToggle = document.getElementById('navToggle');
+    const navMenu = document.querySelector('.nav-menu');
+    if (navToggle && navMenu) {
+        navToggle.addEventListener('click', () => {
+            navMenu.classList.toggle('nav-open');
+            navToggle.classList.toggle('active');
+        });
+        // Close on link click
+        navMenu.querySelectorAll('a').forEach(a => a.addEventListener('click', () => {
+            navMenu.classList.remove('nav-open');
+            navToggle.classList.remove('active');
+        }));
+    }
+
     // ═══════════════════════════════════════════════════════════════════════
     // Pair Selector
     // ═══════════════════════════════════════════════════════════════════════
@@ -980,6 +995,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 const multipliers = [1.0, 1.5, 2.0, 3.0];
                 el('rewardsMultiplier', `${multipliers[tierNum] || 1.0}x`);
                 el('rewardsMultiplierSub', `${tierName} tier bonus`);
+                // Trading reward card metrics
+                el('rewardTradePending', formatAmount(pending) + ' MOLT');
+                el('rewardTradeMonth', formatAmount(data.monthly_earned ? data.monthly_earned / 1e9 : 0) + ' MOLT');
+                el('rewardTradeAll', formatAmount(data.total_earned ? data.total_earned / 1e9 : 0) + ' MOLT');
+                // LP Mining card metrics
+                el('rewardLpPending', formatAmount(data.lp_pending ? data.lp_pending / 1e9 : 0) + ' MOLT');
+                el('rewardLpPositions', data.lp_positions ?? '0');
+                el('rewardLpLiquidity', data.lp_liquidity ? '$' + formatAmount(data.lp_liquidity / 1e9) : '—');
+                // Referral card metrics
+                el('rewardRefCount', (data.referral_count ?? 0) + ' traders');
+                el('rewardRefEarnings', formatAmount(data.referral_earnings ? data.referral_earnings / 1e9 : 0) + ' MOLT');
+                el('rewardRefRate', (data.referral_rate ?? 10) + '%');
             }
         } catch { /* API unavailable */ }
     }
@@ -1203,13 +1230,14 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!grid) return;
 
         // Keep only the grid container, regenerate cards
-        const existingCards = grid.querySelectorAll('.market-card');
-        existingCards.forEach(c => c.remove());
+        // Remove all previously rendered cards AND empty-state placeholders
+        grid.querySelectorAll('.market-card, .predict-empty-state').forEach(c => c.remove());
 
         if (!predictState.markets.length) {
             const emptyEl = document.createElement('div');
+            emptyEl.className = 'predict-empty-state';
             emptyEl.style.cssText = 'text-align:center;color:var(--text-muted);padding:40px;font-size:0.9rem;grid-column:1/-1;';
-            emptyEl.innerHTML = '<i class="fas fa-crystal-ball" style="font-size:2rem;margin-bottom:12px;display:block;opacity:0.4;"></i><p>No prediction markets yet</p><p style="font-size:0.8rem;margin-top:8px;">Create a market to get started</p>';
+            emptyEl.innerHTML = '<i class="fas fa-chart-line" style="font-size:2rem;margin-bottom:12px;display:block;opacity:0.4;"></i><p>No prediction markets yet</p><p style="font-size:0.8rem;margin-top:8px;">Create a market to get started</p>';
             grid.appendChild(emptyEl);
             return;
         }
@@ -1325,7 +1353,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ─── Render user positions in bottom panel ──────────────────
     function renderPredictionPositions() {
-        const tbody = document.querySelector('.predict-positions-table tbody');
+        const tbody = document.getElementById('predictPositionsBody');
         if (!tbody) return;
         if (!predictState.positions.length) {
             tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted)">No positions found</td></tr>';
@@ -1653,20 +1681,54 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!q) { showNotification('Enter market question', 'warning'); return; }
         const liq = parseFloat(document.getElementById('predictInitLiq')?.value) || 0;
         if (liq < 100) { showNotification('Min 100 mUSD initial liquidity', 'warning'); return; }
+
+        // Collect outcomes for multi-outcome markets
+        let outcomes = [];
+        if (predictMarketType === 'multi') {
+            const inputs = document.querySelectorAll('#outcomeInputs .outcome-name');
+            inputs.forEach(inp => { const v = inp.value.trim(); if (v) outcomes.push(v); });
+            if (outcomes.length < 2) { showNotification('Enter at least 2 outcome names', 'warning'); return; }
+            if (outcomes.length > 8) { showNotification('Maximum 8 outcomes', 'warning'); return; }
+        }
+
         predictCreateBtn.disabled = true; predictCreateBtn.textContent = 'Creating...';
         try {
-            await api.post('/prediction-market/create', { question: q, category: document.getElementById('predictCategory')?.value, initialLiquidity: liq, creator: wallet.address });
+            const payload = { question: q, category: document.getElementById('predictCategory')?.value, initialLiquidity: liq, creator: wallet.address };
+            if (outcomes.length > 0) payload.outcomes = outcomes;
+            await api.post('/prediction-market/create', payload);
             showNotification(`Market created: "${q.slice(0, 50)}..." with $${liq} liquidity`, 'success');
+            await loadPredictionMarkets();
         } catch { showNotification('Create failed — prediction market API unavailable', 'error'); }
         predictCreateBtn.disabled = false; predictCreateBtn.innerHTML = '<i class="fas fa-rocket"></i> Create Market';
         if (document.getElementById('predictQuestion')) document.getElementById('predictQuestion').value = '';
     });
 
-    // Market type toggle
+    // Market type toggle — show/hide multi-outcome inputs
+    let predictMarketType = 'binary';
     document.querySelectorAll('.predict-type-btn').forEach(btn => btn.addEventListener('click', () => {
         document.querySelectorAll('.predict-type-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
+        predictMarketType = btn.dataset.type;
+        const multiSection = document.getElementById('multiOutcomeSection');
+        if (multiSection) multiSection.classList.toggle('hidden', predictMarketType === 'binary');
     }));
+
+    // Add/remove outcome inputs (max 8)
+    const addOutcomeBtn = document.getElementById('addOutcomeBtn');
+    if (addOutcomeBtn) addOutcomeBtn.addEventListener('click', () => {
+        const container = document.getElementById('outcomeInputs');
+        if (!container) return;
+        const count = container.querySelectorAll('.outcome-input-row').length;
+        if (count >= 8) { showNotification('Maximum 8 outcomes', 'warning'); return; }
+        const row = document.createElement('div');
+        row.className = 'outcome-input-row';
+        row.innerHTML = `<span class="outcome-dot multi-${count + 1}"></span><input type="text" class="form-input outcome-name" placeholder="Outcome ${count + 1}" maxlength="64"><button type="button" class="btn-remove-outcome"><i class="fas fa-times"></i></button>`;
+        row.querySelector('.btn-remove-outcome').addEventListener('click', () => {
+            if (container.querySelectorAll('.outcome-input-row').length <= 2) { showNotification('Minimum 2 outcomes', 'warning'); return; }
+            row.remove();
+        });
+        container.appendChild(row);
+    });
 
     // Sort selector
     const predictSort = document.getElementById('predictSort');

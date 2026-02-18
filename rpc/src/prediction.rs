@@ -183,6 +183,9 @@ struct CreateMarketRequest {
     #[serde(rename = "initialLiquidity")]
     initial_liquidity: u64,
     creator: String,
+    /// Optional outcome names for multi-outcome markets (2-8). Omit for binary (Yes/No).
+    #[serde(default)]
+    outcomes: Vec<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -630,6 +633,22 @@ async fn post_create(
     let market_count = read_u64_key(&state, b"pm_market_count");
     let new_id = market_count + 1;
 
+    // Determine outcome names — binary (Yes/No) or multi-outcome
+    let outcome_names: Vec<String> = if req.outcomes.is_empty() {
+        vec!["Yes".to_string(), "No".to_string()]
+    } else {
+        if req.outcomes.len() < 2 || req.outcomes.len() > 8 {
+            return api_err("Outcomes must be 2-8 entries");
+        }
+        for name in &req.outcomes {
+            if name.is_empty() || name.len() > 64 {
+                return api_err("Each outcome name must be 1-64 characters");
+            }
+        }
+        req.outcomes.clone()
+    };
+    let outcome_count = outcome_names.len() as u8;
+
     // ── Build 192-byte market record ─────────────────────────────────────
     let mut record = vec![0u8; 192];
     record[0..8].copy_from_slice(&new_id.to_le_bytes());         // market_id
@@ -638,7 +657,7 @@ async fn post_create(
     record[48..56].copy_from_slice(&(slot + 100_000).to_le_bytes()); // close_slot
     record[56..64].copy_from_slice(&0u64.to_le_bytes());          // resolve_slot
     record[64] = 1;                                               // status = active
-    record[65] = 2;                                               // outcome_count = 2
+    record[65] = outcome_count;                                   // outcome_count (2-8)
     record[66] = 0xFF;                                            // winning_outcome = none
     record[67] = cat_id;                                          // category
     let init_liq = req.initial_liquidity as u64;
@@ -658,21 +677,19 @@ async fn post_create(
     let q_key = format!("pm_q_{}", new_id);
     let _ = state.state.put_contract_storage(&program_pubkey, q_key.as_bytes(), req.question.as_bytes());
 
-    // Outcome pools (Yes/No) — seed with initial liquidity split 50/50
-    let half = init_liq / 2;
-    let mut pool_data = vec![0u8; 16];
-    pool_data[0..8].copy_from_slice(&half.to_le_bytes());
-    pool_data[8..16].copy_from_slice(&half.to_le_bytes());
+    // Outcome pools — split liquidity equally across all outcomes
+    let per_outcome = init_liq / outcome_count as u64;
+    for (i, name) in outcome_names.iter().enumerate() {
+        let mut pool_data = vec![0u8; 16];
+        pool_data[0..8].copy_from_slice(&per_outcome.to_le_bytes());
+        pool_data[8..16].copy_from_slice(&per_outcome.to_le_bytes());
 
-    let o0 = format!("pm_o_{}_0", new_id);
-    let o1 = format!("pm_o_{}_1", new_id);
-    let _ = state.state.put_contract_storage(&program_pubkey, o0.as_bytes(), &pool_data);
-    let _ = state.state.put_contract_storage(&program_pubkey, o1.as_bytes(), &pool_data);
+        let o_key = format!("pm_o_{}_{}", new_id, i);
+        let _ = state.state.put_contract_storage(&program_pubkey, o_key.as_bytes(), &pool_data);
 
-    let on0 = format!("pm_on_{}_0", new_id);
-    let on1 = format!("pm_on_{}_1", new_id);
-    let _ = state.state.put_contract_storage(&program_pubkey, on0.as_bytes(), b"Yes");
-    let _ = state.state.put_contract_storage(&program_pubkey, on1.as_bytes(), b"No");
+        let on_key = format!("pm_on_{}_{}", new_id, i);
+        let _ = state.state.put_contract_storage(&program_pubkey, on_key.as_bytes(), name.as_bytes());
+    }
 
     #[derive(Serialize)]
     struct CreateResult {

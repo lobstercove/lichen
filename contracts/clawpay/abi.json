@@ -1,0 +1,130 @@
+{
+  "contract": "clawpay",
+  "version": "1.0",
+  "functions": [
+    {
+      "name": "create_stream",
+      "opcode": 0,
+      "params": [
+        { "name": "sender_ptr", "type": "Pubkey" },
+        { "name": "recipient_ptr", "type": "Pubkey" },
+        { "name": "total_amount", "type": "u64" },
+        { "name": "start_slot", "type": "u64" },
+        { "name": "end_slot", "type": "u64" }
+      ]
+    },
+    {
+      "name": "withdraw_from_stream",
+      "opcode": 1,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "stream_id", "type": "u64" },
+        { "name": "amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "cancel_stream",
+      "opcode": 2,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "stream_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_stream",
+      "opcode": 3,
+      "params": [
+        { "name": "stream_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_withdrawable",
+      "opcode": 4,
+      "params": [
+        { "name": "stream_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "create_stream_with_cliff",
+      "opcode": 5,
+      "params": [
+        { "name": "sender_ptr", "type": "Pubkey" },
+        { "name": "recipient_ptr", "type": "Pubkey" },
+        { "name": "total_amount", "type": "u64" },
+        { "name": "start_slot", "type": "u64" },
+        { "name": "end_slot", "type": "u64" },
+        { "name": "cliff_slot", "type": "u64" }
+      ]
+    },
+    {
+      "name": "transfer_stream",
+      "opcode": 6,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "new_recipient_ptr", "type": "Pubkey" },
+        { "name": "stream_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "initialize_cp_admin",
+      "opcode": 7,
+      "params": [
+        { "name": "admin_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "pause",
+      "opcode": 8,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "unpause",
+      "opcode": 9,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "get_stream_info",
+      "opcode": 10,
+      "params": [
+        { "name": "stream_id", "type": "u64" }
+      ]
+    },
+    {
+      "name": "set_identity_admin",
+      "opcode": 11,
+      "params": [
+        { "name": "admin_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "set_moltyid_address",
+      "opcode": 12,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "moltyid_addr_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "set_identity_gate",
+      "opcode": 13,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "min_reputation", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_stream_count",
+      "opcode": 14,
+      "params": []
+    },
+    {
+      "name": "get_platform_stats",
+      "opcode": 15,
+      "params": []
+    }
+  ]
+}

@@ -1,0 +1,166 @@
+{
+  "contract": "moltbridge",
+  "version": "1.0",
+  "functions": [
+    {
+      "name": "initialize",
+      "opcode": 0,
+      "params": [
+        { "name": "owner_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "add_bridge_validator",
+      "opcode": 1,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "validator_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "remove_bridge_validator",
+      "opcode": 2,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "validator_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "set_required_confirmations",
+      "opcode": 3,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "required", "type": "u64" }
+      ]
+    },
+    {
+      "name": "set_request_timeout",
+      "opcode": 4,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "timeout_slots", "type": "u64" }
+      ]
+    },
+    {
+      "name": "lock_tokens",
+      "opcode": 5,
+      "params": [
+        { "name": "sender_ptr", "type": "Pubkey" },
+        { "name": "amount", "type": "u64" },
+        { "name": "dest_chain_ptr", "type": "Pubkey" },
+        { "name": "dest_addr_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "submit_mint",
+      "opcode": 6,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "recipient_ptr", "type": "Pubkey" },
+        { "name": "amount", "type": "u64" },
+        { "name": "source_chain_ptr", "type": "Pubkey" },
+        { "name": "source_tx_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "confirm_mint",
+      "opcode": 7,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "nonce", "type": "u64" }
+      ]
+    },
+    {
+      "name": "submit_unlock",
+      "opcode": 8,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "recipient_ptr", "type": "Pubkey" },
+        { "name": "amount", "type": "u64" },
+        { "name": "burn_proof_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "confirm_unlock",
+      "opcode": 9,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "nonce", "type": "u64" }
+      ]
+    },
+    {
+      "name": "cancel_expired_request",
+      "opcode": 10,
+      "params": [
+        { "name": "nonce", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_bridge_status",
+      "opcode": 11,
+      "params": [
+        { "name": "nonce", "type": "u64" }
+      ]
+    },
+    {
+      "name": "has_confirmed_mint",
+      "opcode": 12,
+      "params": [
+        { "name": "validator_ptr", "type": "Pubkey" },
+        { "name": "nonce", "type": "u64" }
+      ]
+    },
+    {
+      "name": "has_confirmed_unlock",
+      "opcode": 13,
+      "params": [
+        { "name": "validator_ptr", "type": "Pubkey" },
+        { "name": "nonce", "type": "u64" }
+      ]
+    },
+    {
+      "name": "is_source_tx_used",
+      "opcode": 14,
+      "params": [
+        { "name": "tx_hash_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "is_burn_proof_used",
+      "opcode": 15,
+      "params": [
+        { "name": "proof_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "set_moltyid_address",
+      "opcode": 16,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "moltyid_addr_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "set_identity_gate",
+      "opcode": 17,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "min_reputation", "type": "u64" }
+      ]
+    },
+    {
+      "name": "mb_pause",
+      "opcode": 18,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "mb_unpause",
+      "opcode": 19,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" }
+      ]
+    }
+  ]
+}

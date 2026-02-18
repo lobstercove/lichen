@@ -111,6 +111,12 @@ pub extern "C" fn submit_price(
     price: u64,
     decimals: u8,
 ) -> u32 {
+    // AUDIT-FIX P2: Enforce pause on submit_price
+    if is_mo_paused() {
+        log_info("Oracle is paused");
+        return 0;
+    }
+    if !reentrancy_enter() { return 0; }
     let mut feeder = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(feeder_ptr, feeder.as_mut_ptr(), 32); }
 
@@ -118,6 +124,7 @@ pub extern "C" fn submit_price(
     let real_caller = get_caller();
     if real_caller.0 != feeder {
         log_info("submit_price rejected: caller is not the feeder");
+        reentrancy_exit();
         return 0;
     }
 
@@ -132,6 +139,7 @@ pub extern "C" fn submit_price(
         Some(data) if data.len() == 32 => data,
         _ => {
             log_info("No authorized feeder for this asset");
+            reentrancy_exit();
             return 0;
         }
     };
@@ -139,6 +147,7 @@ pub extern "C" fn submit_price(
     // Verify the submitter matches the authorized feeder
     if feeder[..] != authorized_feeder[..] {
         log_info("Feeder not authorized for this asset");
+        reentrancy_exit();
         return 0;
     }
     
@@ -168,6 +177,7 @@ pub extern "C" fn submit_price(
         price % 10u64.pow(decimals as u32)
     ));
     
+    reentrancy_exit();
     1
 }
 
@@ -231,8 +241,22 @@ pub extern "C" fn commit_randomness(
 ) -> u32 {
     log_info("Committing randomness request...");
     
+    // AUDIT-FIX P2: Enforce pause
+    if is_mo_paused() {
+        log_info("Oracle is paused");
+        return 0;
+    }
+    
     let mut requester = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(requester_ptr, requester.as_mut_ptr(), 32); }
+    
+    // AUDIT-FIX P2: Verify caller matches requester
+    let real_caller = get_caller();
+    if real_caller.0 != requester {
+        log_info("commit_randomness rejected: caller mismatch");
+        return 0;
+    }
+    
     let mut commit_hash = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(commit_hash_ptr, commit_hash.as_mut_ptr(), 32); }
     let timestamp = get_timestamp();
@@ -264,6 +288,14 @@ pub extern "C" fn reveal_randomness(
     
     let mut requester = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(requester_ptr, requester.as_mut_ptr(), 32); }
+    
+    // AUDIT-FIX P2: Verify caller matches requester
+    let real_caller = get_caller();
+    if real_caller.0 != requester {
+        log_info("reveal_randomness rejected: caller mismatch");
+        return 0;
+    }
+    
     let mut secret = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(secret_ptr, secret.as_mut_ptr(), 32); }
     let reveal_timestamp = get_timestamp();
@@ -460,6 +492,31 @@ fn hex_encode(bytes: &[u8]) -> alloc::string::String {
     s
 }
 
+// AUDIT-FIX P2: Reentrancy guard (was completely missing)
+const ORACLE_REENTRANCY_KEY: &[u8] = b"oracle_reentrancy";
+
+fn reentrancy_enter() -> bool {
+    if storage_get(ORACLE_REENTRANCY_KEY)
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    storage_set(ORACLE_REENTRANCY_KEY, &[1u8]);
+    true
+}
+
+fn reentrancy_exit() {
+    storage_set(ORACLE_REENTRANCY_KEY, &[0u8]);
+}
+
+// AUDIT-FIX P2: Pause check helper (flag was stored but never checked)
+fn is_mo_paused() -> bool {
+    storage_get(b"oracle_paused")
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
+}
+
 /// Legacy compatibility: request_randomness now creates a commit+reveal in one step
 /// using the seed as both secret and seed (less secure but backward compatible)
 #[no_mangle]
@@ -467,8 +524,22 @@ pub extern "C" fn request_randomness(
     requester_ptr: *const u8,
     seed: u64,
 ) -> u32 {
+    // AUDIT-FIX P2: Enforce pause
+    if is_mo_paused() {
+        log_info("Oracle is paused");
+        return 0;
+    }
+    
     let mut requester = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(requester_ptr, requester.as_mut_ptr(), 32); }
+    
+    // AUDIT-FIX P2: Verify caller matches requester
+    let real_caller = get_caller();
+    if real_caller.0 != requester {
+        log_info("request_randomness rejected: caller mismatch");
+        return 0;
+    }
+    
     let timestamp = get_timestamp();
     
     // Self-reveal mode: derive randomness from seed + timestamp directly

@@ -1,0 +1,17 @@
+{
+  "contract": "dex_analytics",
+  "version": "1.0",
+  "functions": [
+    {"name": "initialize", "opcode": 0, "params": [{"name": "admin", "type": "Pubkey"}]},
+    {"name": "record_trade", "opcode": 1, "params": [{"name": "pair_id", "type": "u64"}, {"name": "price", "type": "u64"}, {"name": "volume", "type": "u64"}, {"name": "trader", "type": "Pubkey"}]},
+    {"name": "get_ohlcv", "opcode": 2, "params": [{"name": "pair_id", "type": "u64"}, {"name": "interval", "type": "u64"}, {"name": "count", "type": "u64"}]},
+    {"name": "get_24h_stats", "opcode": 3, "params": [{"name": "pair_id", "type": "u64"}]},
+    {"name": "get_trader_stats", "opcode": 4, "params": [{"name": "addr", "type": "Pubkey"}]},
+    {"name": "get_last_price", "opcode": 5, "params": [{"name": "pair_id", "type": "u64"}]},
+    {"name": "get_record_count", "opcode": 6, "params": []},
+    {"name": "emergency_pause", "opcode": 7, "params": [{"name": "caller", "type": "Pubkey"}]},
+    {"name": "emergency_unpause", "opcode": 8, "params": [{"name": "caller", "type": "Pubkey"}]},
+    {"name": "get_trader_count", "opcode": 9, "params": []},
+    {"name": "get_global_stats", "opcode": 10, "params": []}
+  ]
+}

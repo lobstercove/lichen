@@ -1,0 +1,237 @@
+{
+  "contract": "moltswap",
+  "version": "1.0",
+  "functions": [
+    {
+      "name": "initialize",
+      "opcode": 0,
+      "params": [
+        { "name": "token_a_ptr", "type": "Pubkey" },
+        { "name": "token_b_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "add_liquidity",
+      "opcode": 1,
+      "params": [
+        { "name": "provider_ptr", "type": "Pubkey" },
+        { "name": "amount_a", "type": "u64" },
+        { "name": "amount_b", "type": "u64" },
+        { "name": "min_liquidity", "type": "u64" }
+      ]
+    },
+    {
+      "name": "remove_liquidity",
+      "opcode": 2,
+      "params": [
+        { "name": "provider_ptr", "type": "Pubkey" },
+        { "name": "liquidity", "type": "u64" },
+        { "name": "min_amount_a", "type": "u64" },
+        { "name": "min_amount_b", "type": "u64" },
+        { "name": "out_a_ptr", "type": "Pubkey" },
+        { "name": "out_b_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "swap_a_for_b",
+      "opcode": 3,
+      "params": [
+        { "name": "amount_a_in", "type": "u64" },
+        { "name": "min_amount_b_out", "type": "u64" }
+      ]
+    },
+    {
+      "name": "swap_b_for_a",
+      "opcode": 4,
+      "params": [
+        { "name": "amount_b_in", "type": "u64" },
+        { "name": "min_amount_a_out", "type": "u64" }
+      ]
+    },
+    {
+      "name": "swap_a_for_b_with_deadline",
+      "opcode": 5,
+      "params": [
+        { "name": "amount_a_in", "type": "u64" },
+        { "name": "min_amount_b_out", "type": "u64" },
+        { "name": "deadline", "type": "u64" }
+      ]
+    },
+    {
+      "name": "swap_b_for_a_with_deadline",
+      "opcode": 6,
+      "params": [
+        { "name": "amount_b_in", "type": "u64" },
+        { "name": "min_amount_a_out", "type": "u64" },
+        { "name": "deadline", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_quote",
+      "opcode": 7,
+      "params": [
+        { "name": "amount_in", "type": "u64" },
+        { "name": "is_a_to_b", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_reserves",
+      "opcode": 8,
+      "params": [
+        { "name": "out_a_ptr", "type": "Pubkey" },
+        { "name": "out_b_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "get_liquidity_balance",
+      "opcode": 9,
+      "params": [
+        { "name": "provider_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "get_total_liquidity",
+      "opcode": 10,
+      "params": []
+    },
+    {
+      "name": "flash_loan_borrow",
+      "opcode": 11,
+      "params": [
+        { "name": "amount", "type": "u64" },
+        { "name": "token_is_a", "type": "u64" }
+      ]
+    },
+    {
+      "name": "flash_loan_repay",
+      "opcode": 12,
+      "params": [
+        { "name": "repay_amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "flash_loan_abort",
+      "opcode": 13,
+      "params": []
+    },
+    {
+      "name": "get_flash_loan_fee",
+      "opcode": 14,
+      "params": [
+        { "name": "amount", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_twap_cumulatives",
+      "opcode": 15,
+      "params": []
+    },
+    {
+      "name": "get_twap_snapshot_count",
+      "opcode": 16,
+      "params": []
+    },
+    {
+      "name": "set_protocol_fee",
+      "opcode": 17,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "treasury_ptr", "type": "Pubkey" },
+        { "name": "fee_share", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_protocol_fees",
+      "opcode": 18,
+      "params": []
+    },
+    {
+      "name": "set_identity_admin",
+      "opcode": 19,
+      "params": [
+        { "name": "admin_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "set_moltyid_address",
+      "opcode": 20,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "moltyid_addr_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "set_reputation_discount",
+      "opcode": 21,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "threshold", "type": "u64" },
+        { "name": "discount_bps", "type": "u64" }
+      ]
+    },
+    {
+      "name": "ms_pause",
+      "opcode": 22,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "ms_unpause",
+      "opcode": 23,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "create_pool",
+      "opcode": 24,
+      "params": [
+        { "name": "token_a_ptr", "type": "Pubkey" },
+        { "name": "token_b_ptr", "type": "Pubkey" }
+      ]
+    },
+    {
+      "name": "swap",
+      "opcode": 25,
+      "params": [
+        { "name": "amount_in", "type": "u64" },
+        { "name": "min_out", "type": "u64" },
+        { "name": "a_to_b", "type": "u32" }
+      ]
+    },
+    {
+      "name": "get_pool_info",
+      "opcode": 26,
+      "params": []
+    },
+    {
+      "name": "get_pool_count",
+      "opcode": 27,
+      "params": []
+    },
+    {
+      "name": "set_platform_fee",
+      "opcode": 28,
+      "params": [
+        { "name": "caller_ptr", "type": "Pubkey" },
+        { "name": "fee_bps", "type": "u64" }
+      ]
+    },
+    {
+      "name": "get_swap_count",
+      "opcode": 29,
+      "params": []
+    },
+    {
+      "name": "get_total_volume",
+      "opcode": 30,
+      "params": []
+    },
+    {
+      "name": "get_swap_stats",
+      "opcode": 31,
+      "params": []
+    }
+  ]
+}
