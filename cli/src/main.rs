@@ -514,6 +514,23 @@ enum GovCommands {
     },
 }
 
+/// Convert MOLT (f64) to shells (u64) with precise integer arithmetic.
+/// Avoids floating-point precision loss for amounts near the f64 precision boundary
+/// by splitting into whole and fractional parts and computing with integers.
+fn molt_to_shells(molt: f64) -> u64 {
+    if molt <= 0.0 {
+        return 0;
+    }
+    // Clamp to max safe value representable in u64 shells
+    if molt >= (u64::MAX / 1_000_000_000) as f64 {
+        return u64::MAX;
+    }
+    let whole = molt.trunc() as u64;
+    // Extract fractional part, round to 9 decimal places to avoid float noise
+    let frac = ((molt.fract() * 1_000_000_000.0).round()) as u64;
+    whole.saturating_mul(1_000_000_000).saturating_add(frac)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -688,7 +705,7 @@ async fn main() -> Result<()> {
 
             let to_pubkey = Pubkey::from_base58(&to)
                 .map_err(|e| anyhow::anyhow!("Invalid destination address: {}", e))?;
-            let shells = (amount * 1_000_000_000.0) as u64;
+            let shells = molt_to_shells(amount);
 
             println!("🦞 Transferring {} MOLT ({} shells)", amount, shells);
             println!("📤 From: {}", from_pubkey.to_base58());
@@ -894,9 +911,14 @@ async fn main() -> Result<()> {
                         println!("📊 Epoch Performance:");
                         println!("   Blocks produced: {}", perf.blocks_produced);
                         println!("   Blocks expected: {}", perf.blocks_expected);
+                        let success_rate = if perf.blocks_expected > 0 {
+                            (perf.blocks_produced as f64 / perf.blocks_expected as f64) * 100.0
+                        } else {
+                            0.0
+                        };
                         println!(
                             "   Success rate: {:.2}%",
-                            (perf.blocks_produced as f64 / perf.blocks_expected as f64) * 100.0
+                            success_rate
                         );
                         println!("   Average block time: {}ms", perf.avg_block_time_ms);
                         println!();
@@ -1265,15 +1287,25 @@ async fn main() -> Result<()> {
                         "   Circulating: {} MOLT",
                         metrics.circulating_supply as f64 / 1_000_000_000.0
                     );
+                    let burn_pct = if metrics.total_supply > 0 {
+                        (metrics.total_burned as f64 / metrics.total_supply as f64) * 100.0
+                    } else {
+                        0.0
+                    };
+                    let stake_pct = if metrics.total_supply > 0 {
+                        (metrics.total_staked as f64 / metrics.total_supply as f64) * 100.0
+                    } else {
+                        0.0
+                    };
                     println!(
                         "   Burned: {} MOLT ({:.2}%)",
                         metrics.total_burned as f64 / 1_000_000_000.0,
-                        (metrics.total_burned as f64 / metrics.total_supply as f64) * 100.0
+                        burn_pct
                     );
                     println!(
                         "   Staked: {} MOLT ({:.2}%)",
                         metrics.total_staked as f64 / 1_000_000_000.0,
-                        (metrics.total_staked as f64 / metrics.total_supply as f64) * 100.0
+                        stake_pct
                     );
                 }
                 Err(e) => {
@@ -1295,7 +1327,7 @@ async fn main() -> Result<()> {
                 kp.pubkey()
             };
 
-            let shells = (amount * 1_000_000_000.0) as u64;
+            let shells = molt_to_shells(amount);
             println!("🦞 Requesting {} MOLT airdrop...", amount);
             println!("📥 To: {}", recipient.to_base58());
             println!();
@@ -1444,8 +1476,25 @@ async fn main() -> Result<()> {
             }
             TokenCommands::Info { token } => {
                 println!("🪙 Token Info: {}", token);
-                println!("   ⚠️  Token info lookup requires symbol registry RPC");
-                println!("   💡 Use: molt call <token_address> get_info");
+                println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+
+                let _contract_addr = moltchain_core::Pubkey::from_base58(&token)
+                    .map_err(|e| anyhow::anyhow!("Invalid token address: {}", e))?;
+
+                match client.get_contract_info(&token).await {
+                    Ok(info) => {
+                        println!("📍 Address: {}", info.address);
+                        println!("👤 Deployer: {}", info.deployer);
+                        println!("📏 Code size: {} bytes", info.code_size);
+                        println!("📅 Deployed at slot: {}", info.deployed_at);
+                        println!();
+                        println!("💡 Query token metadata: molt call {} get_info '[]'", token);
+                    }
+                    Err(e) => {
+                        println!("⚠️  Token contract not found: {}", e);
+                        println!("💡 Verify the token address is a deployed contract");
+                    }
+                }
             }
             TokenCommands::Mint {
                 token,
@@ -1504,16 +1553,62 @@ async fn main() -> Result<()> {
                     let kp = keypair_mgr.load_keypair(&path)?;
                     kp.pubkey().to_base58()
                 };
-                println!(
-                    "🪙 Token balance for {} on {}: (pending RPC implementation)",
-                    addr, token
-                );
+
+                let contract_addr = moltchain_core::Pubkey::from_base58(&token)
+                    .map_err(|e| anyhow::anyhow!("Invalid token address: {}", e))?;
+
+                println!("🪙 Token Balance");
+                println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+                println!("📍 Token:   {}", token);
+                println!("👤 Account: {}", addr);
+                println!();
+
+                let data = addr.as_bytes().to_vec();
+                match client
+                    .call_contract(
+                        &keypair_mgr.load_keypair(&keypair_mgr.default_keypair_path())
+                            .unwrap_or_else(|_| Keypair::new()),
+                        &contract_addr,
+                        "balance_of".to_string(),
+                        data,
+                        0,
+                    )
+                    .await
+                {
+                    Ok(sig) => {
+                        println!("📝 Query submitted (sig: {})", sig);
+                        println!("💡 Check transaction result for balance value");
+                    }
+                    Err(e) => {
+                        println!("⚠️  Could not query token balance: {}", e);
+                        println!("💡 Ensure token contract is deployed and supports balance_of");
+                    }
+                }
             }
             TokenCommands::List => {
-                println!("🪙 Registered Tokens");
+                println!("🪙 Deployed Token Contracts");
                 println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                println!("   ⚠️  Token listing requires symbol registry RPC");
-                println!("   💡 Use: molt account info <address> to check token programs");
+                println!();
+
+                match client.get_all_contracts().await {
+                    Ok(contracts) => {
+                        if contracts.is_empty() {
+                            println!("No token contracts deployed yet");
+                        } else {
+                            for (i, contract) in contracts.iter().enumerate() {
+                                println!("#{} {}", i + 1, contract.address);
+                                println!("   Deployer: {}", contract.deployer);
+                                println!();
+                            }
+                            println!("Total: {} contracts", contracts.len());
+                            println!();
+                            println!("💡 Get token details: molt token info <address>");
+                        }
+                    }
+                    Err(e) => {
+                        println!("⚠️  Could not fetch contracts: {}", e);
+                    }
+                }
             }
         },
 
@@ -1543,9 +1638,11 @@ async fn main() -> Result<()> {
 
                     println!("📜 Creating {} proposal", proposal_type);
                     println!("   Title: {}", title);
+                    let desc_preview: String = description.chars().take(80).collect();
                     println!(
-                        "   Description: {}...",
-                        &description[..description.len().min(80)]
+                        "   Description: {}{}",
+                        desc_preview,
+                        if description.len() > desc_preview.len() { "..." } else { "" }
                     );
                     println!("   Proposer: {}", proposer.pubkey().to_base58());
                     println!("   Stake: 1000 MOLT required");
@@ -1610,15 +1707,61 @@ async fn main() -> Result<()> {
                         if all { "(all)" } else { "(active)" }
                     );
                     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                    println!("   (Fetching from DAO contract...)");
-                    // Would call get_active_proposals on the DAO contract
-                    println!("   ⚠️  gov list requires MoltyDAO contract deployment");
+                    println!();
+
+                    let dao_addr = moltchain_core::Pubkey([0xDA; 32]);
+                    let filter = if all { "all" } else { "active" };
+                    let data = filter.as_bytes().to_vec();
+
+                    match client
+                        .call_contract(
+                            &keypair_mgr.load_keypair(&keypair_mgr.default_keypair_path())
+                                .unwrap_or_else(|_| Keypair::new()),
+                            &dao_addr,
+                            "get_proposals".to_string(),
+                            data,
+                            0,
+                        )
+                        .await
+                    {
+                        Ok(sig) => {
+                            println!("📝 Query submitted (sig: {})", sig);
+                            println!("💡 Check transaction logs for proposal list");
+                        }
+                        Err(e) => {
+                            println!("⚠️  Could not query proposals: {}", e);
+                            println!("💡 Ensure the MoltyDAO contract is deployed at the well-known address");
+                        }
+                    }
                 }
                 GovCommands::Info { proposal_id } => {
                     println!("📜 Proposal #{}", proposal_id);
                     println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-                    // Would call get_proposal on the DAO contract
-                    println!("   ⚠️  gov info requires MoltyDAO contract deployment");
+                    println!();
+
+                    let dao_addr = moltchain_core::Pubkey([0xDA; 32]);
+                    let data = proposal_id.to_le_bytes().to_vec();
+
+                    match client
+                        .call_contract(
+                            &keypair_mgr.load_keypair(&keypair_mgr.default_keypair_path())
+                                .unwrap_or_else(|_| Keypair::new()),
+                            &dao_addr,
+                            "get_proposal".to_string(),
+                            data,
+                            0,
+                        )
+                        .await
+                    {
+                        Ok(sig) => {
+                            println!("📝 Query submitted (sig: {})", sig);
+                            println!("💡 Check transaction logs for proposal details");
+                        }
+                        Err(e) => {
+                            println!("⚠️  Could not query proposal: {}", e);
+                            println!("💡 Ensure the MoltyDAO contract is deployed at the well-known address");
+                        }
+                    }
                 }
                 GovCommands::Execute {
                     proposal_id,
@@ -1669,4 +1812,47 @@ async fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_molt_to_shells_basic() {
+        assert_eq!(molt_to_shells(1.0), 1_000_000_000);
+        assert_eq!(molt_to_shells(0.5), 500_000_000);
+        assert_eq!(molt_to_shells(100.0), 100_000_000_000);
+    }
+
+    #[test]
+    fn test_molt_to_shells_zero_and_negative() {
+        assert_eq!(molt_to_shells(0.0), 0);
+        assert_eq!(molt_to_shells(-1.0), 0);
+        assert_eq!(molt_to_shells(-0.001), 0);
+    }
+
+    #[test]
+    fn test_molt_to_shells_fractional_precision() {
+        // Exact fractional values
+        assert_eq!(molt_to_shells(0.000000001), 1); // 1 shell
+        assert_eq!(molt_to_shells(1.123456789), 1_123_456_789);
+        assert_eq!(molt_to_shells(0.1), 100_000_000);
+        assert_eq!(molt_to_shells(0.01), 10_000_000);
+    }
+
+    #[test]
+    fn test_molt_to_shells_large_values() {
+        // Large values that could cause float precision loss with naive (amount * 1e9) as u64
+        assert_eq!(molt_to_shells(1_000_000.0), 1_000_000_000_000_000);
+        // Near the u64 overflow boundary → saturates
+        assert_eq!(molt_to_shells(f64::MAX), u64::MAX);
+    }
+
+    #[test]
+    fn test_molt_to_shells_saturating() {
+        // Values near the u64 limit should saturate, not overflow
+        let huge = (u64::MAX / 1_000_000_000) as f64 + 1.0;
+        assert_eq!(molt_to_shells(huge), u64::MAX);
+    }
 }

@@ -87,17 +87,10 @@ impl WalletManager {
         let keypair = Keypair::new();
         let address = keypair.pubkey().to_base58();
 
-        // Save keypair to file
+        // Save keypair to file using KeypairFile (supports encryption via MOLTCHAIN_KEYPAIR_PASSWORD)
         let keypair_path = self.wallets_dir.join(format!("{}.json", wallet_name));
-        let seed = keypair.to_seed();
-        let public_key = keypair.pubkey().0;
-
-        let keypair_json = serde_json::json!({
-            "privateKey": hex::encode(seed),
-            "publicKey": hex::encode(public_key),
-            "address": address,
-        });
-        fs::write(&keypair_path, serde_json::to_string_pretty(&keypair_json)?)?;
+        let keypair_file = crate::keygen::KeypairFile::from_keypair(&keypair);
+        keypair_file.save(&keypair_path)?;
 
         // Create wallet info
         let wallet_info = WalletInfo {

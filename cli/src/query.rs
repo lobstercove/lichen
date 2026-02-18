@@ -7,8 +7,8 @@ use crate::config::CliConfig;
 
 /// Get account balance
 pub async fn get_balance(config: &CliConfig, address: &str) -> Result<()> {
-    // Parse address
-    let pubkey = Pubkey::from_base58(address)
+    // Validate address format
+    let _pubkey = Pubkey::from_base58(address)
         .context("Invalid address format")?;
     
     println!("🔍 Querying balance for: {}", address);
@@ -116,7 +116,7 @@ pub async fn list_validators(config: &CliConfig) -> Result<()> {
             let molt = stake as f64 / 1_000_000_000.0;
             
             println!("{:<45} {:>15.2} {:>10}", 
-                &pubkey[..44], 
+                pubkey.get(..44).unwrap_or(pubkey), 
                 molt,
                 "Active"
             );

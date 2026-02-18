@@ -73,18 +73,20 @@ fn xor_cipher(data: &[u8], key: &[u8; 32]) -> Vec<u8> {
 }
 
 /// AES-256-GCM encryption: returns nonce (12) || ciphertext || tag (16).
-fn encrypt_aes_gcm(data: &[u8], key: &[u8; 32]) -> Vec<u8> {
-    let cipher = Aes256Gcm::new_from_slice(key).expect("Invalid AES key length");
+fn encrypt_aes_gcm(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>> {
+    let cipher = Aes256Gcm::new_from_slice(key)
+        .map_err(|_| anyhow::anyhow!("Invalid AES key length"))?;
     let mut nonce_bytes = [0u8; 12];
-    getrandom::fill(&mut nonce_bytes).expect("Failed to generate random nonce");
+    getrandom::fill(&mut nonce_bytes)
+        .map_err(|e| anyhow::anyhow!("Failed to generate random nonce: {}", e))?;
     let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
         .encrypt(nonce, data)
-        .expect("AES-GCM encryption failed");
+        .map_err(|_| anyhow::anyhow!("AES-GCM encryption failed"))?;
     let mut result = Vec::with_capacity(12 + ciphertext.len());
     result.extend_from_slice(&nonce_bytes);
     result.extend_from_slice(&ciphertext);
-    result
+    Ok(result)
 }
 
 /// AES-256-GCM decryption: expects nonce (12) || ciphertext || tag (16).
@@ -139,7 +141,7 @@ impl KeypairFile {
                 let mut salt = [0u8; 16];
                 getrandom::fill(&mut salt).expect("Failed to generate random salt");
                 let key = derive_encryption_key(&password, &salt);
-                let encrypted_pk = encrypt_aes_gcm(&self.private_key, &key);
+                let encrypted_pk = encrypt_aes_gcm(&self.private_key, &key)?;
                 KeypairFile {
                     private_key: encrypted_pk,
                     public_key: self.public_key.clone(),
@@ -389,7 +391,7 @@ mod tests {
     fn test_aes_gcm_roundtrip() {
         let key = derive_encryption_key("test", b"salt");
         let data: Vec<u8> = (0..64).collect();
-        let encrypted = encrypt_aes_gcm(&data, &key);
+        let encrypted = encrypt_aes_gcm(&data, &key).unwrap();
         assert_ne!(encrypted, data);
         assert_eq!(encrypted.len(), 12 + data.len() + 16); // nonce + data + tag
         let decrypted = decrypt_aes_gcm(&encrypted, &key).unwrap();
@@ -401,7 +403,7 @@ mod tests {
         let key1 = derive_encryption_key("password1", b"salt");
         let key2 = derive_encryption_key("password2", b"salt");
         let data = vec![42u8; 32];
-        let encrypted = encrypt_aes_gcm(&data, &key1);
+        let encrypted = encrypt_aes_gcm(&data, &key1).unwrap();
         let result = decrypt_aes_gcm(&encrypted, &key2);
         assert!(result.is_err());
     }
