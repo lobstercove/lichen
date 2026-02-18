@@ -15,7 +15,7 @@ use alloc::vec::Vec;
 
 use moltchain_sdk::{
     log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_timestamp,
-    Address, CrossCall, call_contract, get_caller,
+    Address, call_token_transfer, get_caller,
 };
 
 // ============================================================================
@@ -2049,9 +2049,25 @@ pub extern "C" fn get_achievements(pubkey_ptr: *const u8) -> u32 {
 // SKILL ATTESTATION HELPERS
 // ============================================================================
 
-/// Build a simple hash of a skill name (first 16 bytes, zero-padded)
-/// SECURITY FIX: Increased from 8 to 16 bytes to reduce collision risk
+/// FNV-1a 128-bit hash of a skill name. Produces a collision-resistant 16-byte
+/// digest, unlike the old truncation approach which copied the first 16 bytes
+/// verbatim and collided on shared prefixes (e.g. "smart_contracts_audit" vs
+/// "smart_contracts_dev").
 fn skill_name_hash(skill_name: &[u8]) -> [u8; 16] {
+    // FNV-1a 128-bit constants (per the FNV spec)
+    const FNV_OFFSET_BASIS: u128 = 0x6c62272e07bb0142_62b821756295c58d;
+    const FNV_PRIME: u128 = 0x0000000001000000_000000000000013B;
+    let mut hash: u128 = FNV_OFFSET_BASIS;
+    for &byte in skill_name {
+        hash ^= byte as u128;
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash.to_le_bytes()
+}
+
+/// Legacy hash: copies first 16 bytes of skill name (zero-padded). Used for
+/// backward-compatible lookups of attestations written before the FNV-1a upgrade.
+fn skill_name_hash_legacy(skill_name: &[u8]) -> [u8; 16] {
     let mut hash = [0u8; 16];
     for (i, &b) in skill_name.iter().enumerate() {
         if i >= 16 { break; }
@@ -2095,6 +2111,37 @@ fn attestation_count_key(identity: &[u8], skill_hash: &[u8; 16]) -> Vec<u8> {
     key.push(b'_');
     key.extend_from_slice(&skill_hex);
     key
+}
+
+// ============================================================================
+// TOKEN / SELF-ADDRESS STORAGE FOR ESCROW OPERATIONS
+// ============================================================================
+
+const MID_TOKEN_ADDR_KEY: &[u8] = b"mid_token_addr";
+const MID_SELF_ADDR_KEY: &[u8] = b"mid_self_addr";
+
+fn get_mid_token_address() -> Option<Address> {
+    storage_get(MID_TOKEN_ADDR_KEY).and_then(|d| {
+        if d.len() == 32 {
+            let mut addr = [0u8; 32];
+            addr.copy_from_slice(&d);
+            Some(Address(addr))
+        } else {
+            None
+        }
+    })
+}
+
+fn get_mid_self_address() -> Option<Address> {
+    storage_get(MID_SELF_ADDR_KEY).and_then(|d| {
+        if d.len() == 32 {
+            let mut addr = [0u8; 32];
+            addr.copy_from_slice(&d);
+            Some(Address(addr))
+        } else {
+            None
+        }
+    })
 }
 
 // ============================================================================
@@ -2174,9 +2221,12 @@ pub extern "C" fn attest_skill(
     }
 
     let s_hash = skill_name_hash(&skill_name);
+    let s_hash_legacy = skill_name_hash_legacy(&skill_name);
     let ak = attestation_key(&identity, &s_hash, &attester);
+    let ak_legacy = attestation_key(&identity, &s_hash_legacy, &attester);
 
-    if storage_get(&ak).is_some() {
+    // Check both new hash and legacy hash to prevent duplicate attestation
+    if storage_get(&ak).is_some() || storage_get(&ak_legacy).is_some() {
         log_info("Already attested this skill for this identity");
         reentrancy_exit();
         return 6;
@@ -2188,11 +2238,23 @@ pub extern "C" fn attest_skill(
     att_data.extend_from_slice(&u64_to_bytes(get_timestamp()));
     storage_set(&ak, &att_data);
 
-    // Increment attestation count
+    // Increment attestation count (new hash key).
+    // Also migrate any legacy count forward on first write under new hash.
     let ck = attestation_count_key(&identity, &s_hash);
-    let count = storage_get(&ck)
+    let ck_legacy = attestation_count_key(&identity, &s_hash_legacy);
+    let mut count = storage_get(&ck)
         .map(|d| bytes_to_u64(&d))
         .unwrap_or(0);
+    // If this is the first attestation under the new hash and there's a legacy
+    // count, absorb it so future reads see the combined total.
+    if count == 0 {
+        if let Some(legacy_count_data) = storage_get(&ck_legacy) {
+            let legacy_count = bytes_to_u64(&legacy_count_data);
+            if legacy_count > 0 {
+                count = legacy_count;
+            }
+        }
+    }
     storage_set(&ck, &u64_to_bytes(count + 1));
 
     log_info("Skill attestation recorded");
@@ -2232,9 +2294,18 @@ pub extern "C" fn get_attestations(
     let s_hash = skill_name_hash(&skill_name);
     let ck = attestation_count_key(&identity, &s_hash);
 
-    let count = storage_get(&ck)
+    let mut count = storage_get(&ck)
         .map(|d| bytes_to_u64(&d))
         .unwrap_or(0);
+
+    // Dual-lookup: if no count under new FNV hash, check legacy truncated hash
+    if count == 0 {
+        let s_hash_legacy = skill_name_hash_legacy(&skill_name);
+        let ck_legacy = attestation_count_key(&identity, &s_hash_legacy);
+        count = storage_get(&ck_legacy)
+            .map(|d| bytes_to_u64(&d))
+            .unwrap_or(0);
+    }
 
     moltchain_sdk::set_return_data(&u64_to_bytes(count));
     0
@@ -2283,24 +2354,32 @@ pub extern "C" fn revoke_attestation(
 
     let mut skill_name = alloc::vec![0u8; skill_name_len];
     unsafe { core::ptr::copy_nonoverlapping(skill_name_ptr, skill_name.as_mut_ptr(), skill_name_len); }
-    let s_hash = skill_name_hash(&skill_name);
-    let ak = attestation_key(&identity, &s_hash, &attester);
 
-    if storage_get(&ak).is_none() {
+    // Dual-lookup: try new FNV hash first, then legacy truncated hash
+    let s_hash = skill_name_hash(&skill_name);
+    let s_hash_legacy = skill_name_hash_legacy(&skill_name);
+    let ak = attestation_key(&identity, &s_hash, &attester);
+    let ak_legacy = attestation_key(&identity, &s_hash_legacy, &attester);
+
+    // Determine which key holds the attestation (prefer new, fallback legacy)
+    let (active_ak, active_ck) = if storage_get(&ak).is_some() {
+        (ak, attestation_count_key(&identity, &s_hash))
+    } else if storage_get(&ak_legacy).is_some() {
+        (ak_legacy, attestation_count_key(&identity, &s_hash_legacy))
+    } else {
         log_info("No attestation found to revoke");
         return 2;
-    }
+    };
 
     // Remove attestation
-    moltchain_sdk::storage::remove(&ak);
+    moltchain_sdk::storage::remove(&active_ak);
 
     // Decrement count
-    let ck = attestation_count_key(&identity, &s_hash);
-    let count = storage_get(&ck)
+    let count = storage_get(&active_ck)
         .map(|d| bytes_to_u64(&d))
         .unwrap_or(0);
     if count > 0 {
-        storage_set(&ck, &u64_to_bytes(count - 1));
+        storage_set(&active_ck, &u64_to_bytes(count - 1));
     }
 
     log_info("Attestation revoked");
@@ -2678,24 +2757,41 @@ pub extern "C" fn bid_name_auction(
         return 6;
     }
 
-    // SECURITY FIX: Refund previous highest bidder before accepting new bid
+    // SECURITY FIX: Refund previous highest bidder before accepting new bid.
+    // Uses call_token_transfer with stored token address and self-address
+    // instead of the broken CrossCall to zero-address which silently failed.
     let prev_bid_amount = bytes_to_u64(&record[25..33]);
     let mut prev_bidder = [0u8; 32];
     prev_bidder.copy_from_slice(&record[33..65]);
     if prev_bid_amount > 0 && !prev_bidder.iter().all(|&b| b == 0) {
-        // Refund previous bidder via host-level transfer
-        let refund_call = CrossCall::new(
-            Address([0u8; 32]), // host-level runtime call
-            "transfer",
-            {
-                let mut args = alloc::vec::Vec::with_capacity(40);
-                args.extend_from_slice(&prev_bidder);
-                args.extend_from_slice(&u64_to_bytes(prev_bid_amount));
-                args
-            },
-        );
-        let _ = call_contract(refund_call);
-        log_info("Previous highest bidder refunded");
+        let token_addr = match get_mid_token_address() {
+            Some(a) => a,
+            None => {
+                log_info("bid_name_auction: token address not configured");
+                return 30;
+            }
+        };
+        let self_addr = match get_mid_self_address() {
+            Some(a) => a,
+            None => {
+                log_info("bid_name_auction: self address not configured");
+                return 31;
+            }
+        };
+        match call_token_transfer(
+            token_addr,
+            self_addr,
+            Address(prev_bidder),
+            prev_bid_amount,
+        ) {
+            Err(_) => {
+                log_info("bid_name_auction: refund transfer failed");
+                return 32;
+            }
+            Ok(_) => {
+                log_info("Previous highest bidder refunded");
+            }
+        }
     }
 
     record[25..33].copy_from_slice(&u64_to_bytes(bid_amount));
@@ -4085,6 +4181,52 @@ pub extern "C" fn transfer_admin(caller_ptr: *const u8, new_admin_ptr: *const u8
     unsafe { core::ptr::copy_nonoverlapping(new_admin_ptr, new_admin.as_mut_ptr(), 32); }
     storage_set(b"mid_admin", &new_admin);
     log_info("Admin key transferred");
+    0
+}
+
+/// Set the MOLT token contract address for auction refunds. Admin only.
+/// Returns: 0 success, 1 not admin, 2 zero address rejected
+#[no_mangle]
+pub extern "C" fn set_mid_token_address(caller_ptr: *const u8, token_addr_ptr: *const u8) -> u32 {
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        log_info("set_mid_token_address: caller mismatch");
+        return 200;
+    }
+    if !is_mid_admin(&caller) { return 1; }
+    let mut token_addr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(token_addr_ptr, token_addr.as_mut_ptr(), 32); }
+    if token_addr.iter().all(|&b| b == 0) {
+        log_info("set_mid_token_address: zero address rejected");
+        return 2;
+    }
+    storage_set(MID_TOKEN_ADDR_KEY, &token_addr);
+    log_info("MoltyID token address set");
+    0
+}
+
+/// Set this contract's own address (needed as transfer source). Admin only.
+/// Returns: 0 success, 1 not admin, 2 zero address rejected
+#[no_mangle]
+pub extern "C" fn set_mid_self_address(caller_ptr: *const u8, self_addr_ptr: *const u8) -> u32 {
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        log_info("set_mid_self_address: caller mismatch");
+        return 200;
+    }
+    if !is_mid_admin(&caller) { return 1; }
+    let mut self_addr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(self_addr_ptr, self_addr.as_mut_ptr(), 32); }
+    if self_addr.iter().all(|&b| b == 0) {
+        log_info("set_mid_self_address: zero address rejected");
+        return 2;
+    }
+    storage_set(MID_SELF_ADDR_KEY, &self_addr);
+    log_info("MoltyID self address set");
     0
 }
 
@@ -5586,5 +5728,477 @@ mod tests {
         // Verify name count
         let count = storage_get(b"molt_name_count").map(|d| bytes_to_u64(&d)).unwrap_or(0);
         assert_eq!(count, 1);
+    }
+
+    // ========================================================================
+    // FNV-1a HASH COLLISION PREVENTION TESTS
+    // ========================================================================
+
+    #[test]
+    fn test_fnv1a_hash_no_collision_on_shared_prefix() {
+        // Two skill names sharing a 16-byte prefix must hash to DIFFERENT values.
+        // The old truncation approach would produce identical hashes.
+        let skill_a = b"smart_contracts_audit";
+        let skill_b = b"smart_contracts_dev";
+
+        let hash_a = skill_name_hash(skill_a);
+        let hash_b = skill_name_hash(skill_b);
+        assert_ne!(hash_a, hash_b, "FNV-1a must distinguish skills with shared 16-byte prefix");
+
+        // Verify the legacy function DOES collide (proves the bug existed)
+        let legacy_a = skill_name_hash_legacy(skill_a);
+        let legacy_b = skill_name_hash_legacy(skill_b);
+        assert_eq!(legacy_a, legacy_b, "Legacy truncation should collide on shared prefix");
+    }
+
+    #[test]
+    fn test_fnv1a_hash_deterministic() {
+        let skill = b"rust_programming";
+        let h1 = skill_name_hash(skill);
+        let h2 = skill_name_hash(skill);
+        assert_eq!(h1, h2, "Same input must produce same hash");
+    }
+
+    #[test]
+    fn test_fnv1a_hash_empty_and_edge_cases() {
+        // Empty input should not panic
+        let h_empty = skill_name_hash(b"");
+        // Single byte
+        let h_a = skill_name_hash(b"a");
+        let h_b = skill_name_hash(b"b");
+        assert_ne!(h_a, h_b);
+        // Very long input
+        let long = [0x42u8; 256];
+        let h_long = skill_name_hash(&long);
+        assert_ne!(h_long, h_empty);
+    }
+
+    #[test]
+    fn test_attest_skill_uses_fnv_hash() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let identity = [10u8; 32];
+        let attester = [11u8; 32];
+        test_mock::set_caller(identity);
+        assert_eq!(register_identity(identity.as_ptr(), AGENT_TYPE_GENERAL, b"Ident".as_ptr(), 5), 0);
+        test_mock::set_caller(attester);
+        assert_eq!(register_identity(attester.as_ptr(), AGENT_TYPE_GENERAL, b"Attest".as_ptr(), 6), 0);
+        test_mock::set_timestamp(1000);
+
+        // Attest a skill — should be stored under FNV hash key
+        let skill = b"smart_contracts_audit";
+        assert_eq!(attest_skill(
+            attester.as_ptr(), identity.as_ptr(),
+            skill.as_ptr(), skill.len() as u32, 3
+        ), 0);
+
+        // Verify it's under the FNV hash
+        let s_hash = skill_name_hash(skill);
+        let ak = attestation_key(&identity, &s_hash, &attester);
+        assert!(storage_get(&ak).is_some(), "Attestation must be stored under FNV hash");
+
+        // Verify it's NOT under the legacy hash (they differ for this skill)
+        let s_hash_legacy = skill_name_hash_legacy(skill);
+        let ak_legacy = attestation_key(&identity, &s_hash_legacy, &attester);
+        assert!(storage_get(&ak_legacy).is_none(), "Should not be stored under legacy hash");
+    }
+
+    #[test]
+    fn test_attest_skill_no_collision_between_similar_skills() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let identity = [10u8; 32];
+        let attester = [11u8; 32];
+        test_mock::set_caller(identity);
+        assert_eq!(register_identity(identity.as_ptr(), AGENT_TYPE_GENERAL, b"Ident".as_ptr(), 5), 0);
+        test_mock::set_caller(attester);
+        assert_eq!(register_identity(attester.as_ptr(), AGENT_TYPE_GENERAL, b"Attest".as_ptr(), 6), 0);
+        test_mock::set_timestamp(1000);
+
+        let skill_a = b"smart_contracts_audit";
+        let skill_b = b"smart_contracts_dev";
+
+        // Attest both — both must succeed (no collision)
+        assert_eq!(attest_skill(
+            attester.as_ptr(), identity.as_ptr(),
+            skill_a.as_ptr(), skill_a.len() as u32, 3
+        ), 0);
+        assert_eq!(attest_skill(
+            attester.as_ptr(), identity.as_ptr(),
+            skill_b.as_ptr(), skill_b.len() as u32, 4
+        ), 0);
+
+        // Verify separate counts
+        assert_eq!(get_attestations(identity.as_ptr(), skill_a.as_ptr(), skill_a.len() as u32), 0);
+        let count_a = bytes_to_u64(&test_mock::get_return_data());
+        assert_eq!(count_a, 1);
+
+        assert_eq!(get_attestations(identity.as_ptr(), skill_b.as_ptr(), skill_b.len() as u32), 0);
+        let count_b = bytes_to_u64(&test_mock::get_return_data());
+        assert_eq!(count_b, 1);
+    }
+
+    #[test]
+    fn test_duplicate_attestation_blocked_under_new_hash() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let identity = [10u8; 32];
+        let attester = [11u8; 32];
+        test_mock::set_caller(identity);
+        assert_eq!(register_identity(identity.as_ptr(), AGENT_TYPE_GENERAL, b"Ident".as_ptr(), 5), 0);
+        test_mock::set_caller(attester);
+        assert_eq!(register_identity(attester.as_ptr(), AGENT_TYPE_GENERAL, b"Attest".as_ptr(), 6), 0);
+        test_mock::set_timestamp(1000);
+
+        let skill = b"blockchain";
+        assert_eq!(attest_skill(
+            attester.as_ptr(), identity.as_ptr(),
+            skill.as_ptr(), skill.len() as u32, 2
+        ), 0);
+        // Second attestation must fail
+        assert_eq!(attest_skill(
+            attester.as_ptr(), identity.as_ptr(),
+            skill.as_ptr(), skill.len() as u32, 4
+        ), 6);
+    }
+
+    #[test]
+    fn test_duplicate_attestation_blocked_under_legacy_hash() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let identity = [10u8; 32];
+        let attester = [11u8; 32];
+        test_mock::set_caller(identity);
+        assert_eq!(register_identity(identity.as_ptr(), AGENT_TYPE_GENERAL, b"Ident".as_ptr(), 5), 0);
+        test_mock::set_caller(attester);
+        assert_eq!(register_identity(attester.as_ptr(), AGENT_TYPE_GENERAL, b"Attest".as_ptr(), 6), 0);
+        test_mock::set_timestamp(1000);
+
+        // Simulate a legacy attestation by writing directly under the old hash
+        let skill = b"testing";
+        let s_hash_legacy = skill_name_hash_legacy(skill);
+        let ak_legacy = attestation_key(&identity, &s_hash_legacy, &attester);
+        storage_set(&ak_legacy, &[2, 0, 0, 0, 0, 0, 0, 0, 1]); // level=2, timestamp=1
+
+        // Attempting to attest the same skill under the new hash must be blocked
+        assert_eq!(attest_skill(
+            attester.as_ptr(), identity.as_ptr(),
+            skill.as_ptr(), skill.len() as u32, 3
+        ), 6, "Must detect legacy attestation and block duplicate");
+    }
+
+    #[test]
+    fn test_get_attestations_falls_back_to_legacy() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let identity = [10u8; 32];
+        test_mock::set_caller(identity);
+        assert_eq!(register_identity(identity.as_ptr(), AGENT_TYPE_GENERAL, b"Ident".as_ptr(), 5), 0);
+
+        // Write a count directly under legacy hash key (simulating pre-upgrade data)
+        let skill = b"solidity";
+        let s_hash_legacy = skill_name_hash_legacy(skill);
+        let ck_legacy = attestation_count_key(&identity, &s_hash_legacy);
+        storage_set(&ck_legacy, &u64_to_bytes(7));
+
+        // get_attestations should find the legacy count
+        assert_eq!(get_attestations(identity.as_ptr(), skill.as_ptr(), skill.len() as u32), 0);
+        let count = bytes_to_u64(&test_mock::get_return_data());
+        assert_eq!(count, 7, "Must fall back to legacy count");
+    }
+
+    #[test]
+    fn test_revoke_attestation_under_new_hash() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let identity = [10u8; 32];
+        let attester = [11u8; 32];
+        test_mock::set_caller(identity);
+        assert_eq!(register_identity(identity.as_ptr(), AGENT_TYPE_GENERAL, b"Ident".as_ptr(), 5), 0);
+        test_mock::set_caller(attester);
+        assert_eq!(register_identity(attester.as_ptr(), AGENT_TYPE_GENERAL, b"Attest".as_ptr(), 6), 0);
+        test_mock::set_timestamp(1000);
+
+        let skill = b"defi";
+        assert_eq!(attest_skill(
+            attester.as_ptr(), identity.as_ptr(),
+            skill.as_ptr(), skill.len() as u32, 5
+        ), 0);
+
+        // Revoke
+        assert_eq!(revoke_attestation(
+            attester.as_ptr(), identity.as_ptr(),
+            skill.as_ptr(), skill.len() as u32
+        ), 0);
+
+        // Attestation gone
+        let s_hash = skill_name_hash(skill);
+        let ak = attestation_key(&identity, &s_hash, &attester);
+        assert!(storage_get(&ak).is_none());
+
+        // Count back to 0
+        assert_eq!(get_attestations(identity.as_ptr(), skill.as_ptr(), skill.len() as u32), 0);
+        let count = bytes_to_u64(&test_mock::get_return_data());
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn test_revoke_attestation_under_legacy_hash() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let identity = [10u8; 32];
+        let attester = [11u8; 32];
+        test_mock::set_caller(identity);
+        assert_eq!(register_identity(identity.as_ptr(), AGENT_TYPE_GENERAL, b"Ident".as_ptr(), 5), 0);
+        test_mock::set_caller(attester);
+        assert_eq!(register_identity(attester.as_ptr(), AGENT_TYPE_GENERAL, b"Attest".as_ptr(), 6), 0);
+
+        // Write attestation directly under legacy hash (simulating pre-upgrade data)
+        let skill = b"zk_proofs";
+        let s_hash_legacy = skill_name_hash_legacy(skill);
+        let ak_legacy = attestation_key(&identity, &s_hash_legacy, &attester);
+        storage_set(&ak_legacy, &[4, 0, 0, 0, 0, 0, 0, 0, 1]);
+        let ck_legacy = attestation_count_key(&identity, &s_hash_legacy);
+        storage_set(&ck_legacy, &u64_to_bytes(1));
+
+        // Revoke should find and remove the legacy attestation
+        assert_eq!(revoke_attestation(
+            attester.as_ptr(), identity.as_ptr(),
+            skill.as_ptr(), skill.len() as u32
+        ), 0);
+
+        assert!(storage_get(&ak_legacy).is_none(), "Legacy attestation must be removed");
+        let count = bytes_to_u64(&storage_get(&ck_legacy).unwrap());
+        assert_eq!(count, 0, "Legacy count must be decremented");
+    }
+
+    #[test]
+    fn test_attest_migrates_legacy_count_forward() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let identity = [10u8; 32];
+        let attester1 = [11u8; 32];
+        let attester2 = [12u8; 32];
+        test_mock::set_caller(identity);
+        assert_eq!(register_identity(identity.as_ptr(), AGENT_TYPE_GENERAL, b"Ident".as_ptr(), 5), 0);
+        test_mock::set_caller(attester1);
+        assert_eq!(register_identity(attester1.as_ptr(), AGENT_TYPE_GENERAL, b"Att1".as_ptr(), 4), 0);
+        test_mock::set_caller(attester2);
+        assert_eq!(register_identity(attester2.as_ptr(), AGENT_TYPE_GENERAL, b"Att2".as_ptr(), 4), 0);
+        test_mock::set_timestamp(1000);
+
+        // Seed a legacy attestation from attester1
+        let skill = b"nft_minting";
+        let s_hash_legacy = skill_name_hash_legacy(skill);
+        let ak_legacy = attestation_key(&identity, &s_hash_legacy, &attester1);
+        storage_set(&ak_legacy, &[3, 0, 0, 0, 0, 0, 0, 0, 1]);
+        let ck_legacy = attestation_count_key(&identity, &s_hash_legacy);
+        storage_set(&ck_legacy, &u64_to_bytes(1));
+
+        // Now attester2 attests the same skill via the new code path
+        assert_eq!(attest_skill(
+            attester2.as_ptr(), identity.as_ptr(),
+            skill.as_ptr(), skill.len() as u32, 4
+        ), 0);
+
+        // The new FNV count should be legacy_count + 1 = 2
+        let s_hash_new = skill_name_hash(skill);
+        let ck_new = attestation_count_key(&identity, &s_hash_new);
+        let count = bytes_to_u64(&storage_get(&ck_new).unwrap());
+        assert_eq!(count, 2, "Legacy count must be migrated forward on first new write");
+    }
+
+    // ========================================================================
+    // BID REFUND FIX TESTS
+    // ========================================================================
+
+    fn configure_mid_escrow(_admin: &[u8; 32]) {
+        let token_addr = [0xAA; 32];
+        let self_addr = [0xBB; 32];
+        storage_set(MID_TOKEN_ADDR_KEY, &token_addr);
+        storage_set(MID_SELF_ADDR_KEY, &self_addr);
+    }
+
+    #[test]
+    fn test_set_mid_token_address_admin_only() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let token = [0xCC; 32];
+
+        // Non-admin rejected
+        let other = [99u8; 32];
+        test_mock::set_caller(other);
+        assert_eq!(set_mid_token_address(other.as_ptr(), token.as_ptr()), 1);
+
+        // Admin succeeds
+        test_mock::set_caller(admin);
+        assert_eq!(set_mid_token_address(admin.as_ptr(), token.as_ptr()), 0);
+        assert_eq!(storage_get(MID_TOKEN_ADDR_KEY).unwrap(), token.to_vec());
+    }
+
+    #[test]
+    fn test_set_mid_self_address_admin_only() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let self_addr = [0xDD; 32];
+
+        // Non-admin rejected
+        let other = [99u8; 32];
+        test_mock::set_caller(other);
+        assert_eq!(set_mid_self_address(other.as_ptr(), self_addr.as_ptr()), 1);
+
+        // Admin succeeds
+        test_mock::set_caller(admin);
+        assert_eq!(set_mid_self_address(admin.as_ptr(), self_addr.as_ptr()), 0);
+        assert_eq!(storage_get(MID_SELF_ADDR_KEY).unwrap(), self_addr.to_vec());
+    }
+
+    #[test]
+    fn test_set_mid_addresses_reject_zero() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let zero = [0u8; 32];
+        assert_eq!(set_mid_token_address(admin.as_ptr(), zero.as_ptr()), 2);
+        assert_eq!(set_mid_self_address(admin.as_ptr(), zero.as_ptr()), 2);
+    }
+
+    #[test]
+    fn test_bid_auction_refund_requires_token_config() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let bidder1 = [2u8; 32];
+        let bidder2 = [3u8; 32];
+        test_mock::set_caller(bidder1);
+        assert_eq!(register_identity(bidder1.as_ptr(), AGENT_TYPE_GENERAL, b"Bid1".as_ptr(), 4), 0);
+        test_mock::set_caller(bidder2);
+        assert_eq!(register_identity(bidder2.as_ptr(), AGENT_TYPE_GENERAL, b"Bid2".as_ptr(), 4), 0);
+
+        test_mock::set_slot(10_000);
+        let name = b"abc";
+
+        // Create auction
+        test_mock::set_caller(admin);
+        assert_eq!(create_name_auction(admin.as_ptr(), name.as_ptr(), name.len() as u32, 500, 200_500), 0);
+
+        // First bid succeeds (no refund needed yet)
+        test_mock::set_caller(bidder1);
+        test_mock::set_value(600);
+        assert_eq!(bid_name_auction(bidder1.as_ptr(), name.as_ptr(), name.len() as u32, 600), 0);
+
+        // Second bid: triggers refund but token address not configured → error 30
+        test_mock::set_caller(bidder2);
+        test_mock::set_value(700);
+        assert_eq!(bid_name_auction(bidder2.as_ptr(), name.as_ptr(), name.len() as u32, 700), 30);
+    }
+
+    #[test]
+    fn test_bid_auction_refund_with_token_config() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let bidder1 = [2u8; 32];
+        let bidder2 = [3u8; 32];
+        test_mock::set_caller(bidder1);
+        assert_eq!(register_identity(bidder1.as_ptr(), AGENT_TYPE_GENERAL, b"Bid1".as_ptr(), 4), 0);
+        test_mock::set_caller(bidder2);
+        assert_eq!(register_identity(bidder2.as_ptr(), AGENT_TYPE_GENERAL, b"Bid2".as_ptr(), 4), 0);
+
+        test_mock::set_slot(10_000);
+        let name = b"xyz";
+
+        // Configure escrow
+        configure_mid_escrow(&admin);
+
+        // Create auction
+        test_mock::set_caller(admin);
+        assert_eq!(create_name_auction(admin.as_ptr(), name.as_ptr(), name.len() as u32, 500, 200_500), 0);
+
+        // First bid
+        test_mock::set_caller(bidder1);
+        test_mock::set_value(600);
+        assert_eq!(bid_name_auction(bidder1.as_ptr(), name.as_ptr(), name.len() as u32, 600), 0);
+
+        // Second bid: triggers refund, should succeed with token configured
+        test_mock::set_caller(bidder2);
+        test_mock::set_value(700);
+        assert_eq!(bid_name_auction(bidder2.as_ptr(), name.as_ptr(), name.len() as u32, 700), 0);
+
+        // Verify the auction record was updated to bidder2
+        let ak = name_auction_key(name);
+        let record = storage_get(&ak).unwrap();
+        assert_eq!(bytes_to_u64(&record[25..33]), 700);
+        assert_eq!(&record[33..65], &bidder2);
+    }
+
+    #[test]
+    fn test_bid_auction_refund_requires_self_address() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let bidder1 = [2u8; 32];
+        let bidder2 = [3u8; 32];
+        test_mock::set_caller(bidder1);
+        assert_eq!(register_identity(bidder1.as_ptr(), AGENT_TYPE_GENERAL, b"Bid1".as_ptr(), 4), 0);
+        test_mock::set_caller(bidder2);
+        assert_eq!(register_identity(bidder2.as_ptr(), AGENT_TYPE_GENERAL, b"Bid2".as_ptr(), 4), 0);
+
+        test_mock::set_slot(10_000);
+        let name = b"def";
+
+        // Only set token address, not self address
+        let token_addr = [0xAA; 32];
+        storage_set(MID_TOKEN_ADDR_KEY, &token_addr);
+
+        test_mock::set_caller(admin);
+        assert_eq!(create_name_auction(admin.as_ptr(), name.as_ptr(), name.len() as u32, 500, 200_500), 0);
+
+        test_mock::set_caller(bidder1);
+        test_mock::set_value(600);
+        assert_eq!(bid_name_auction(bidder1.as_ptr(), name.as_ptr(), name.len() as u32, 600), 0);
+
+        // Second bid: token set but self-address not → error 31
+        test_mock::set_caller(bidder2);
+        test_mock::set_value(700);
+        assert_eq!(bid_name_auction(bidder2.as_ptr(), name.as_ptr(), name.len() as u32, 700), 31);
     }
 }
