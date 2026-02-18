@@ -556,28 +556,48 @@ Each contract must be validated for: correct opcode dispatch, proper authority c
 ## PHASE 9: SDKs
 
 ### 9.1 Rust SDK (`sdk/rust/src/` — 614 lines, `sdk/src/` — 1,339 lines)
-- [ ] Verify client connection to RPC
-- [ ] Verify transaction construction
-- [ ] Verify keypair generation
-- [ ] Verify all RPC methods are wrapped
-- [ ] Verify DEX / NFT / Token helper modules
-- [ ] Test: send a real transaction using Rust SDK
-- [ ] **Findings:**
+- [x] Verify client connection to RPC
+- [x] Verify transaction construction
+- [x] Verify keypair generation
+- [x] Verify all RPC methods are wrapped
+- [x] Verify DEX / NFT / Token helper modules
+- [x] Test: send a real transaction using Rust SDK
+- [x] **Findings:**
+
+**F9.1 (HIGH → FIXED):** `bytes_to_u64` panics on input shorter than 8 bytes — called from dex/nft/token on storage values that could be corrupted or truncated. Fixed with length check and zero-padding.
+
+**F9.3 (MEDIUM → FIXED):** All DEX AMM arithmetic (`add_liquidity` sqrt, subsequent liquidity, `swap_a_for_b`, `swap_b_for_a`, `remove_liquidity`, `get_amount_out`) overflows u64 for large token amounts — financial bug. All calculations now use u128 intermediates.
+
+**F9.4 (MEDIUM → FIXED):** `Balance::from_molt` unsafe `f64 as u64` cast — negative, NaN, and infinity produce garbage values. Added guards: NaN/negative → 0, overflow → u64::MAX.
+
+**F9.5 (MEDIUM → FIXED):** `Client::rpc_call` hardcoded `"id": 1` for every request — concurrent async requests can't be correlated. Replaced with `Arc<AtomicU64>` counter.
+
+**F9.6 (MEDIUM → FIXED):** `cross_contract_call` result buffer hardcoded to 1024 bytes — silently truncates larger responses. Increased to 65536 to match storage read buffer.
+
+**F9.7 (MEDIUM → FIXED):** `remove_liquidity` divides by `total_liquidity` without checking for zero — panics on corrupted pool state. Added explicit check returning error.
 
 ### 9.2 JavaScript SDK (`sdk/js/src/` — 1,114 lines)
-- [ ] Verify connection module — all RPC methods
-- [ ] Verify keypair module — ed25519 signing
-- [ ] Verify transaction module — serialization format
-- [ ] Verify bincode module — encoding/decoding
-- [ ] Test: send a real transaction using JS SDK
-- [ ] **Findings:**
+- [x] Verify connection module — all RPC methods
+- [x] Verify keypair module — ed25519 signing
+- [x] Verify transaction module — serialization format
+- [x] Verify bincode module — encoding/decoding
+- [x] Test: send a real transaction using JS SDK
+- [x] **Findings:**
+
+**F9.2 (HIGH → FIXED):** `encodeTransaction` encoded signatures as length-prefixed UTF-8 strings (`encodeString`), but Rust server deserializes `Vec<[u8; 64]>` — completely incompatible wire format. Fixed to encode signatures as raw 64-byte arrays with no per-element length prefix.
 
 ### 9.3 Python SDK (`sdk/python/moltchain/` — 853 lines)
-- [ ] Verify connection module — all RPC methods
-- [ ] Verify keypair module — ed25519 signing
-- [ ] Verify transaction module — serialization
-- [ ] Test: send a real transaction using Python SDK
-- [ ] **Findings:**
+- [x] Verify connection module — all RPC methods
+- [x] Verify keypair module — ed25519 signing
+- [x] Verify transaction module — serialization
+- [x] Test: send a real transaction using Python SDK
+- [x] **Findings:**
+
+**F9.2 (HIGH → FIXED):** `encode_transaction` same string-encoding bug as JS — signatures encoded as `_encode_string` instead of raw bytes. Fixed to match Rust bincode `Vec<[u8; 64]>` format.
+
+**F9.8 (LOW → FIXED):** `Connection` lacks async context manager — httpx client and websocket resources leak if `close()` isn't called. Added `__aenter__`/`__aexit__`.
+
+**F9.9 (LOW → FIXED):** `close()` didn't cancel pending response futures — in-flight subscribe calls hang forever. Now cancels all pending futures before teardown.
 
 ---
 
