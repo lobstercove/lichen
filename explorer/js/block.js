@@ -24,6 +24,12 @@ function formatTime(timestamp) {
     return date.toLocaleString() + ' (' + timeAgo + ')';
 }
 
+function formatTimeShort(timestamp) {
+    if (timestamp === null || timestamp === undefined) return 'N/A';
+    if (timestamp <= 0) return 'Genesis';
+    return new Date(timestamp * 1000).toLocaleString();
+}
+
 function formatBytes(bytes) {
     if (bytes < 1024) return bytes + ' bytes';
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB';
@@ -99,7 +105,7 @@ async function displayBlock(block) {
     // Header
     document.getElementById('blockSlot').textContent = formatNumber(slot);
     document.getElementById('blockNumber').textContent = 'Block #' + formatNumber(slot);
-    document.getElementById('blockTimestamp').textContent = formatTime(timestamp);
+    document.getElementById('blockTimestamp').textContent = formatTimeShort(timestamp);
     document.getElementById('blockTxCount').textContent = txCount;
     document.getElementById('blockSize').textContent = formatBytes(size);
     

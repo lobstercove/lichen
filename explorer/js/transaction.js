@@ -163,7 +163,7 @@ async function displayAirdrop(txHash) {
     const timestampMs = parseInt(txHash.replace('airdrop-', ''), 10);
     const timestampSec = Math.floor(timestampMs / 1000);
     const amountDisplay = amountMolt
-        ? formatMolt(Math.round(amountMolt * 1_000_000_000)) + ' (' + formatShells(Math.round(amountMolt * 1_000_000_000)) + ')'
+        ? formatMolt(Math.round(amountMolt * 1_000_000_000))
         : 'Unknown';
 
     // Header
@@ -301,7 +301,7 @@ async function displayTransaction(tx) {
         ? tx.amount_shells
         : Math.round((tx.amount || 0) * 1_000_000_000);
     const amountDisplay = amountShells > 0
-        ? formatMolt(amountShells) + ' (' + formatShells(amountShells) + ')'
+        ? formatMolt(amountShells)
         : '-';
     const recentBlockhash = tx.message.recent_blockhash;
     const instructions = tx.message.instructions || [];
