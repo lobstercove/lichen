@@ -6367,22 +6367,25 @@ async fn handle_get_moltyid_profile(
     }
 
     Ok(serde_json::json!({
-        "address": pubkey.to_base58(),
-        "owner": identity.owner.to_base58(),
-        "name": identity.name,
+        "identity": {
+            "address": pubkey.to_base58(),
+            "owner": identity.owner.to_base58(),
+            "name": identity.name,
+            "agent_type": identity.agent_type,
+            "agent_type_name": moltyid_agent_type_name(identity.agent_type),
+            "reputation": reputation,
+            "created_at": identity.created_at,
+            "updated_at": identity.updated_at,
+            "skill_count": identity.skill_count,
+            "vouch_count": identity.vouch_count,
+            "is_active": identity.is_active,
+        },
         "molt_name": molt_name,
-        "agent_type": identity.agent_type,
-        "agent_type_name": moltyid_agent_type_name(identity.agent_type),
         "reputation": {
             "score": reputation,
             "tier": tier,
             "tier_name": moltyid_trust_tier_name(tier),
         },
-        "created_at": identity.created_at,
-        "updated_at": identity.updated_at,
-        "skill_count": identity.skill_count,
-        "vouch_count": identity.vouch_count,
-        "is_active": identity.is_active,
         "skills": skills,
         "vouches": {
             "received": received_vouches,

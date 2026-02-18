@@ -5,6 +5,10 @@ use crate::Pubkey;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Percentage of each block reward allocated to ReefStake stakers (basis points).
+/// 1000 bp = 10% of block reward funds the liquid staking pool.
+pub const REEFSTAKE_BLOCK_SHARE_BPS: u64 = 1_000;
+
 /// Serde helper: serialize/deserialize HashMap<Pubkey, V> with base58 string keys.
 /// JSON requires map keys to be strings; Pubkey normally serializes as [u8;32].
 mod pubkey_map_serde {
@@ -270,10 +274,11 @@ impl ReefStakePool {
             // Upgrade tier if new tier is higher
             if (tier as u8) > (position.lock_tier as u8) {
                 position.lock_tier = tier;
-            }
-            // Extend lock if new lock is longer
-            if lock_until > position.lock_until {
-                position.lock_until = lock_until;
+                // Only update lock when tier upgrades (same-tier deposits
+                // don't extend the lock — the original lock covers all deposits)
+                if lock_until > position.lock_until {
+                    position.lock_until = lock_until;
+                }
             }
         } else {
             self.positions.insert(

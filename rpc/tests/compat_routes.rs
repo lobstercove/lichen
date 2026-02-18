@@ -50,6 +50,8 @@ async fn test_solana_health_route() {
         "molt-test".to_string(),
         None,
         None,
+        None,
+        None,
     );
 
     let response = rpc_call(&app, "/solana", "getHealth").await.unwrap();
@@ -67,6 +69,8 @@ async fn test_evm_chain_id_route() {
         None,
         "moltchain-test".to_string(),
         "molt-test".to_string(),
+        None,
+        None,
         None,
         None,
     );

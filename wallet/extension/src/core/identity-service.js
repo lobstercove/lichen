@@ -15,6 +15,94 @@ function normalizeName(input) {
   return String(input || '').trim().toLowerCase().replace(/\.molt$/, '');
 }
 
+// ── Binary Arg Encoding (WASM ABI layout descriptor) ──
+
+function hexToBytes(hex) {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+  return bytes;
+}
+
+function buildLayoutArgs(layout, chunks) {
+  const hdr = new Uint8Array(1 + layout.length);
+  hdr[0] = 0xAB;
+  for (let i = 0; i < layout.length; i++) hdr[1 + i] = layout[i];
+  let total = 0;
+  for (const c of chunks) total += c.length;
+  const out = new Uint8Array(hdr.length + total);
+  out.set(hdr, 0);
+  let off = hdr.length;
+  for (const c of chunks) { out.set(c, off); off += c.length; }
+  return out;
+}
+
+function padBytes(data, len) {
+  if (data.length >= len) return data.subarray ? data.subarray(0, len) : data.slice(0, len);
+  const r = new Uint8Array(len);
+  r.set(data, 0);
+  return r;
+}
+
+function u32LE(v) {
+  return new Uint8Array([v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF, (v >> 24) & 0xFF]);
+}
+
+function u64LE(v) {
+  const b = new Uint8Array(8);
+  const big = BigInt(v);
+  for (let i = 0; i < 8; i++) b[i] = Number((big >> BigInt(i * 8)) & 0xFFn);
+  return b;
+}
+
+function encodeMoltyIdArgs(callerHex, functionName, params) {
+  const caller = hexToBytes(callerHex);
+  const te = new TextEncoder();
+  switch (functionName) {
+    case 'register_identity': {
+      const nm = te.encode(params.name || '');
+      return buildLayoutArgs([0x20, 0x01, 0x40, 0x04], [caller, new Uint8Array([params.agent_type & 0xFF]), padBytes(nm, 64), u32LE(nm.length)]);
+    }
+    case 'update_agent_type':
+      return buildLayoutArgs([0x20, 0x01], [caller, new Uint8Array([params.agent_type & 0xFF])]);
+    case 'register_name': {
+      const nm = te.encode(params.name || '');
+      return buildLayoutArgs([0x20, 0x20, 0x04, 0x01], [caller, padBytes(nm, 32), u32LE(nm.length), new Uint8Array([(params.duration_years || 1) & 0xFF])]);
+    }
+    case 'renew_name': {
+      const nm = te.encode(params.name || '');
+      return buildLayoutArgs([0x20, 0x20, 0x04, 0x01], [caller, padBytes(nm, 32), u32LE(nm.length), new Uint8Array([(params.additional_years || 1) & 0xFF])]);
+    }
+    case 'transfer_name': {
+      const nm = te.encode(params.name || '');
+      return buildLayoutArgs([0x20, 0x20, 0x04, 0x20], [caller, padBytes(nm, 32), u32LE(nm.length), base58Decode(params.new_owner)]);
+    }
+    case 'release_name': {
+      const nm = te.encode(params.name || '');
+      return buildLayoutArgs([0x20, 0x20, 0x04], [caller, padBytes(nm, 32), u32LE(nm.length)]);
+    }
+    case 'add_skill': {
+      const nm = te.encode(params.name || '');
+      return buildLayoutArgs([0x20, 0x20, 0x04, 0x01], [caller, padBytes(nm, 32), u32LE(nm.length), new Uint8Array([(params.proficiency || 50) & 0xFF])]);
+    }
+    case 'vouch': {
+      return buildLayoutArgs([0x20, 0x20], [caller, base58Decode(params.vouchee)]);
+    }
+    case 'set_endpoint': {
+      const url = te.encode(params.url || '');
+      const stride = Math.max(32, Math.min(255, url.length));
+      return buildLayoutArgs([0x20, stride, 0x04], [caller, padBytes(url, stride), u32LE(url.length)]);
+    }
+    case 'set_rate': {
+      const d = new Uint8Array(40); d.set(caller, 0); d.set(u64LE(params.molt_per_unit || 0), 32);
+      return d;
+    }
+    case 'set_availability':
+      return buildLayoutArgs([0x20, 0x01], [caller, new Uint8Array([(params.status || 0) & 0xFF])]);
+    default:
+      return new TextEncoder().encode(JSON.stringify(params));
+  }
+}
+
 function validateNameFormat(normalized) {
   if (!normalized) throw new Error('Name required');
   if (normalized.length < 3 || normalized.length > 32 || !/^[a-z0-9][a-z0-9-]*[a-z0-9]$/.test(normalized)) {
@@ -76,10 +164,12 @@ export async function loadIdentitySnapshot(address, network) {
 
   const rpc = new MoltChainRPC(await getConfiguredRpcEndpoint(network));
 
-  const [profile, moltName] = await Promise.all([
+  const [profile, moltNameResult] = await Promise.all([
     rpc.call('getMoltyIdProfile', [address]).catch(() => null),
     rpc.call('reverseMoltName', [address]).catch(() => null)
   ]);
+  // reverseMoltName returns {"name": "x.molt"} or null — extract string
+  const moltName = moltNameResult?.name || null;
 
   const rep = Number(profile?.reputation?.score || profile?.identity?.reputation || 0);
   const skills = Array.isArray(profile?.skills) ? profile.skills.length : 0;
@@ -97,17 +187,18 @@ export async function loadIdentityDetails(address, network) {
   if (!address) return null;
 
   const rpc = new MoltChainRPC(await getConfiguredRpcEndpoint(network));
-  const [profile, moltName] = await Promise.all([
+  const [profile, moltNameResult2] = await Promise.all([
     rpc.call('getMoltyIdProfile', [address]).catch(() => null),
     rpc.call('reverseMoltName', [address]).catch(() => null)
   ]);
+  const moltName2 = moltNameResult2?.name || null;
 
   if (!profile) {
     return null;
   }
 
   return {
-    name: moltName || profile?.identity?.name || null,
+    name: moltName2 || profile?.identity?.name || null,
     reputation: Number(profile?.reputation?.score || profile?.identity?.reputation || 0),
     agentType: profile?.identity?.agent_type ?? null,
     active: profile?.identity?.is_active !== false && profile?.identity?.is_active !== 0,
@@ -159,10 +250,13 @@ async function sendIdentityContractCall({ wallet, password, network, functionNam
   const contractProgramId = new Uint8Array(32).fill(0xff);
   const moltyIdPubkey = base58Decode(moltyidAddr);
 
+  // Encode args as proper binary with WASM ABI layout descriptor
+  const argsBytes = encodeMoltyIdArgs(wallet.publicKey, functionName, args);
+
   const callPayload = JSON.stringify({
     Call: {
       function: functionName,
-      args: Array.from(new TextEncoder().encode(JSON.stringify(args))),
+      args: Array.from(argsBytes),
       value: Math.floor(valueMolt * 1_000_000_000)
     }
   });
