@@ -203,23 +203,23 @@ pub fn record_trade(trader: *const u8, fee_paid: u64, volume: u64) -> u32 {
     let current_vol = load_u64(&trader_volume_key(&t));
     if current_vol == 0 {
         // First trade for this trader — increment unique trader count
-        save_u64(TRADER_COUNT_KEY, load_u64(TRADER_COUNT_KEY) + 1);
+        save_u64(TRADER_COUNT_KEY, load_u64(TRADER_COUNT_KEY).saturating_add(1));
     }
-    save_u64(&trader_volume_key(&t), current_vol + volume);
+    save_u64(&trader_volume_key(&t), current_vol.saturating_add(volume));
 
     // Track global volume and trade count
     save_u64(TOTAL_VOLUME_KEY, load_u64(TOTAL_VOLUME_KEY).saturating_add(volume));
-    save_u64(TRADE_COUNT_KEY, load_u64(TRADE_COUNT_KEY) + 1);
+    save_u64(TRADE_COUNT_KEY, load_u64(TRADE_COUNT_KEY).saturating_add(1));
 
     // Calculate reward based on tier
-    let tier = get_tier(current_vol + volume);
+    let tier = get_tier(current_vol.saturating_add(volume));
     let multiplier = get_multiplier(tier);
     let base_reward = fee_paid; // 1:1 fee mining
-    let reward = base_reward * multiplier / 10_000;
+    let reward = base_reward.saturating_mul(multiplier) / 10_000;
 
     // Add to pending
     let pending = load_u64(&trader_pending_key(&t));
-    save_u64(&trader_pending_key(&t), pending + reward);
+    save_u64(&trader_pending_key(&t), pending.saturating_add(reward));
 
     // Handle referral bonus
     let referrer_data = storage_get(&referral_key(&t));
@@ -232,7 +232,7 @@ pub fn record_trade(trader: *const u8, fee_paid: u64, volume: u64) -> u32 {
                 let effective_rate = if dynamic_rate > 0 { dynamic_rate } else { REFERRAL_RATE_BPS };
                 let ref_bonus = fee_paid * effective_rate / 10_000;
                 let ref_earnings = load_u64(&referrer_earnings_key(&referrer));
-                save_u64(&referrer_earnings_key(&referrer), ref_earnings + ref_bonus);
+                save_u64(&referrer_earnings_key(&referrer), ref_earnings.saturating_add(ref_bonus));
             }
         }
     }

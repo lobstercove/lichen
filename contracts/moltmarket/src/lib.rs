@@ -590,6 +590,17 @@ pub extern "C" fn accept_offer(
             }
         }
 
+        // AUDIT-FIX P2: Actually transfer fee to platform
+        if fee_amount > 0 {
+            if let Some(fee_addr_data) = storage_get(b"marketplace_fee_addr") {
+                if fee_addr_data.len() >= 32 {
+                    let mut fee_addr = [0u8; 32];
+                    fee_addr.copy_from_slice(&fee_addr_data[..32]);
+                    let _ = call_token_transfer(payment_token, buyer, Address(fee_addr), fee_amount);
+                }
+            }
+        }
+
         // Transfer NFT
         match call_nft_transfer(nft_contract, seller, buyer, token_id) {
             Ok(true) => {
@@ -738,6 +749,8 @@ mod tests {
         setup();
         let owner = [1u8; 32];
         let fee_addr = [2u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(owner);
         initialize(owner.as_ptr(), fee_addr.as_ptr());
         let stored = test_mock::get_storage(b"marketplace_owner");
         assert_eq!(stored, Some(owner.to_vec()));
@@ -750,10 +763,14 @@ mod tests {
         setup();
         let owner = [1u8; 32];
         let fee_addr = [2u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(owner);
         initialize(owner.as_ptr(), fee_addr.as_ptr());
         let seller = [3u8; 32];
         let nft = [4u8; 32];
         let pay = [5u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(seller);
         // call_nft_owner returns Err in test mock → falls through to _ arm
         let result = list_nft(seller.as_ptr(), nft.as_ptr(), 1, 1000, pay.as_ptr());
         assert_eq!(result, 0);
@@ -764,6 +781,8 @@ mod tests {
         setup();
         let buyer = [3u8; 32];
         let nft = [4u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(buyer);
         assert_eq!(buy_nft(buyer.as_ptr(), nft.as_ptr(), 1), 0);
     }
 
@@ -772,6 +791,8 @@ mod tests {
         setup();
         let owner = [1u8; 32];
         let fee_addr = [2u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(owner);
         initialize(owner.as_ptr(), fee_addr.as_ptr());
         let seller = [3u8; 32];
         let nft = Address([4u8; 32]);
@@ -782,7 +803,10 @@ mod tests {
         let mut data = moltchain_sdk::storage_get(&key).unwrap();
         data[144] = 0;
         moltchain_sdk::storage_set(&key, &data);
-        assert_eq!(buy_nft([6u8; 32].as_ptr(), nft.0.as_ptr(), 1), 0);
+        let buyer = [6u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(buyer);
+        assert_eq!(buy_nft(buyer.as_ptr(), nft.0.as_ptr(), 1), 0);
     }
 
     #[test]
@@ -790,11 +814,15 @@ mod tests {
         setup();
         let owner = [1u8; 32];
         let fee_addr = [2u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(owner);
         initialize(owner.as_ptr(), fee_addr.as_ptr());
         let seller = [3u8; 32];
         let nft = Address([4u8; 32]);
         let pay = Address([5u8; 32]);
         create_test_listing(&seller, &nft, 1, 1000, &pay);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(seller);
         assert_eq!(cancel_listing(seller.as_ptr(), nft.0.as_ptr(), 1), 1);
         let key = create_listing_key(nft, 1);
         let data = moltchain_sdk::storage_get(&key).unwrap();
@@ -809,6 +837,8 @@ mod tests {
         let pay = Address([5u8; 32]);
         create_test_listing(&seller, &nft, 1, 1000, &pay);
         let other = [6u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(other);
         assert_eq!(cancel_listing(other.as_ptr(), nft.0.as_ptr(), 1), 0);
     }
 
@@ -817,6 +847,8 @@ mod tests {
         setup();
         let seller = [3u8; 32];
         let nft = [4u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(seller);
         assert_eq!(cancel_listing(seller.as_ptr(), nft.as_ptr(), 999), 0);
     }
 
@@ -846,6 +878,8 @@ mod tests {
         setup();
         let owner = [1u8; 32];
         let fee_addr = [2u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(owner);
         initialize(owner.as_ptr(), fee_addr.as_ptr());
         assert_eq!(set_marketplace_fee(owner.as_ptr(), 500), 1);
         let fee = bytes_to_u64(&test_mock::get_storage(b"marketplace_fee").unwrap());
@@ -857,8 +891,12 @@ mod tests {
         setup();
         let owner = [1u8; 32];
         let fee_addr = [2u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(owner);
         initialize(owner.as_ptr(), fee_addr.as_ptr());
         let other = [3u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(other);
         assert_eq!(set_marketplace_fee(other.as_ptr(), 500), 0);
     }
 
@@ -882,6 +920,8 @@ mod tests {
         let pay = [5u8; 32];
         let offerer = [6u8; 32];
 
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(offerer);
         // Make offer
         assert_eq!(make_offer(offerer.as_ptr(), nft.0.as_ptr(), 1, 5000, pay.as_ptr()), 1);
 
@@ -916,6 +956,8 @@ mod tests {
         setup();
         let offerer = [6u8; 32];
         let nft = [4u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(offerer);
         assert_eq!(cancel_offer(offerer.as_ptr(), nft.as_ptr(), 1), 0);
     }
 
@@ -924,11 +966,13 @@ mod tests {
         setup();
         let owner = [1u8; 32];
         let fee_addr = [2u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(owner);
         initialize(owner.as_ptr(), fee_addr.as_ptr());
 
         assert_eq!(get_marketplace_stats(), 0);
         let ret = test_mock::get_return_data();
-        assert_eq!(ret.len(), 16);
+        assert_eq!(ret.len(), 32); // 4 x u64: count, fee, sale_count, sale_volume
         assert_eq!(bytes_to_u64(&ret[0..8]), 0); // no listings
         assert_eq!(bytes_to_u64(&ret[8..16]), 250); // 2.5% fee
     }

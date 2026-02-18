@@ -85,6 +85,12 @@ fn reentrancy_exit() {
     storage_set(BB_REENTRANCY_KEY, &[0u8]);
 }
 
+fn is_bb_paused() -> bool {
+    storage_get(b"bb_paused")
+        .map(|v| v.first().copied() == Some(1))
+        .unwrap_or(false)
+}
+
 // ============================================================================
 // BOUNTY LAYOUT
 // ============================================================================
@@ -165,6 +171,8 @@ pub extern "C" fn create_bounty(
     deadline_slot: u64,
 ) -> u32 {
     log_info("Creating bounty...");
+    // AUDIT-FIX P2: Enforce pause
+    if is_bb_paused() { log_info("BountyBoard is paused"); return 0; }
     if !reentrancy_enter() { return 100; }
 
     let mut creator_arr = [0u8; 32];
@@ -243,6 +251,8 @@ pub extern "C" fn submit_work(
     proof_hash_ptr: *const u8,
 ) -> u32 {
     log_info("Submitting work for bounty...");
+    // AUDIT-FIX P2: Enforce pause
+    if is_bb_paused() { log_info("BountyBoard is paused"); return 0; }
     if !reentrancy_enter() { return 100; }
 
     let mut worker_arr = [0u8; 32];
@@ -335,6 +345,8 @@ pub extern "C" fn approve_work(
     submission_idx: u8,
 ) -> u32 {
     log_info("Approving bounty work...");
+    // AUDIT-FIX P2: Enforce pause
+    if is_bb_paused() { log_info("BountyBoard is paused"); return 0; }
     if !reentrancy_enter() { return 100; }
 
     let mut caller = [0u8; 32];
@@ -469,6 +481,8 @@ pub extern "C" fn cancel_bounty(
     bounty_id: u64,
 ) -> u32 {
     log_info("Cancelling bounty...");
+    // AUDIT-FIX P2: Enforce pause
+    if is_bb_paused() { log_info("BountyBoard is paused"); return 0; }
     if !reentrancy_enter() { return 100; }
 
     let mut caller = [0u8; 32];
@@ -874,6 +888,8 @@ mod tests {
         let creator = [1u8; 32];
         let title_hash = [0xAA; 32];
 
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(creator);
         let result = create_bounty(
             creator.as_ptr(),
             title_hash.as_ptr(),
@@ -901,11 +917,15 @@ mod tests {
 
         let creator = [1u8; 32];
         let title_hash = [0xAA; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(creator);
         create_bounty(creator.as_ptr(), title_hash.as_ptr(), 500_000, 1000);
 
         // Submit work
         let worker = [2u8; 32];
         let proof_hash = [0xBB; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(worker);
         let result = submit_work(0, worker.as_ptr(), proof_hash.as_ptr());
         assert_eq!(result, 0);
 
@@ -921,6 +941,8 @@ mod tests {
         assert_eq!(&sub[0..32], &worker);
 
         // Approve
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(creator);
         let result = approve_work(creator.as_ptr(), 0, 0);
         assert_eq!(result, 0);
 
@@ -936,6 +958,8 @@ mod tests {
 
         let creator = [1u8; 32];
         let title_hash = [0xAA; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(creator);
         create_bounty(creator.as_ptr(), title_hash.as_ptr(), 300_000, 1000);
 
         let result = cancel_bounty(creator.as_ptr(), 0);
@@ -950,6 +974,8 @@ mod tests {
 
         // Non-creator can't cancel (creator check fires before status check)
         let other = [9u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(other);
         let result = cancel_bounty(other.as_ptr(), 0);
         assert_eq!(result, 3);
     }
@@ -961,6 +987,8 @@ mod tests {
 
         let creator = [1u8; 32];
         let title_hash = [0xAA; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(creator);
         create_bounty(creator.as_ptr(), title_hash.as_ptr(), 100_000, 500);
 
         let result = get_bounty(0);
@@ -979,6 +1007,8 @@ mod tests {
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let admin = [1u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(admin);
         assert_eq!(set_identity_admin(admin.as_ptr()), 0);
         let moltyid_addr = [0x42u8; 32];
         assert_eq!(set_moltyid_address(admin.as_ptr(), moltyid_addr.as_ptr()), 0);
@@ -986,6 +1016,8 @@ mod tests {
 
         let creator = [2u8; 32];
         let title_hash = [0xAA; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(creator);
         let result = create_bounty(creator.as_ptr(), title_hash.as_ptr(), 500_000, 1000);
         assert_eq!(result, 10);
     }
@@ -998,10 +1030,14 @@ mod tests {
         // Create a bounty first (no gate yet)
         let creator = [1u8; 32];
         let title_hash = [0xAA; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(creator);
         create_bounty(creator.as_ptr(), title_hash.as_ptr(), 500_000, 1000);
 
         // Now configure gate
         let admin = [5u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(admin);
         assert_eq!(set_identity_admin(admin.as_ptr()), 0);
         let moltyid_addr = [0x42u8; 32];
         assert_eq!(set_moltyid_address(admin.as_ptr(), moltyid_addr.as_ptr()), 0);
@@ -1009,6 +1045,8 @@ mod tests {
 
         let worker = [2u8; 32];
         let proof_hash = [0xBB; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(worker);
         let result = submit_work(0, worker.as_ptr(), proof_hash.as_ptr());
         assert_eq!(result, 10);
     }
@@ -1020,11 +1058,15 @@ mod tests {
 
         let creator = [1u8; 32];
         let title_hash = [0xAA; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(creator);
         let result = create_bounty(creator.as_ptr(), title_hash.as_ptr(), 500_000, 1000);
         assert_eq!(result, 0);
 
         let worker = [2u8; 32];
         let proof_hash = [0xBB; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(worker);
         let result = submit_work(0, worker.as_ptr(), proof_hash.as_ptr());
         assert_eq!(result, 0);
     }
@@ -1034,11 +1076,17 @@ mod tests {
         setup();
 
         let admin = [1u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(admin);
         assert_eq!(set_identity_admin(admin.as_ptr()), 0);
         assert_eq!(set_identity_admin(admin.as_ptr()), 1); // already set
 
         let other = [9u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(other);
         assert_eq!(set_identity_gate(other.as_ptr(), 100), 2);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(admin);
         assert_eq!(set_identity_gate(admin.as_ptr(), 100), 0);
     }
 
@@ -1048,6 +1096,8 @@ mod tests {
     fn test_set_token_address_success() {
         setup();
         let admin = [1u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(admin);
         set_identity_admin(admin.as_ptr());
         let token = [0xDD; 32];
         assert_eq!(set_token_address(admin.as_ptr(), token.as_ptr()), 0);
@@ -1059,9 +1109,13 @@ mod tests {
     fn test_set_token_address_not_admin() {
         setup();
         let admin = [1u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(admin);
         set_identity_admin(admin.as_ptr());
         let rando = [99u8; 32];
         let token = [0xDD; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(rando);
         assert_eq!(set_token_address(rando.as_ptr(), token.as_ptr()), 2);
     }
 
@@ -1070,6 +1124,8 @@ mod tests {
         setup();
         let caller = [1u8; 32];
         let token = [0xDD; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(caller);
         assert_eq!(set_token_address(caller.as_ptr(), token.as_ptr()), 1);
     }
 
@@ -1077,6 +1133,8 @@ mod tests {
     fn test_set_token_address_zero_rejected() {
         setup();
         let admin = [1u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(admin);
         set_identity_admin(admin.as_ptr());
         let zero = [0u8; 32];
         assert_eq!(set_token_address(admin.as_ptr(), zero.as_ptr()), 3);
@@ -1089,6 +1147,8 @@ mod tests {
 
         // Configure token address
         let admin = [5u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(admin);
         set_identity_admin(admin.as_ptr());
         let token = [0xDD; 32];
         set_token_address(admin.as_ptr(), token.as_ptr());
@@ -1096,14 +1156,20 @@ mod tests {
         // Create bounty and submit work
         let creator = [1u8; 32];
         let title_hash = [0xAA; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(creator);
         create_bounty(creator.as_ptr(), title_hash.as_ptr(), 500_000, 1000);
 
         let worker = [2u8; 32];
         let proof_hash = [0xBB; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(worker);
         submit_work(0, worker.as_ptr(), proof_hash.as_ptr());
 
         // Approve — call_token_transfer returns Ok(false) in test mode
         // SECURITY-FIX: bounty now reverts to OPEN when transfer fails
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(creator);
         let result = approve_work(creator.as_ptr(), 0, 0);
         assert_eq!(result, 8);
 
@@ -1120,17 +1186,69 @@ mod tests {
         // No token address configured — approve still works (no transfer attempted)
         let creator = [1u8; 32];
         let title_hash = [0xAA; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(creator);
         create_bounty(creator.as_ptr(), title_hash.as_ptr(), 500_000, 1000);
 
         let worker = [2u8; 32];
         let proof_hash = [0xBB; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(worker);
         submit_work(0, worker.as_ptr(), proof_hash.as_ptr());
 
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(creator);
         let result = approve_work(creator.as_ptr(), 0, 0);
         assert_eq!(result, 0);
 
         let bk = bounty_key(0);
         let bounty = test_mock::get_storage(&bk).unwrap();
         assert_eq!(bounty[80], BOUNTY_COMPLETED);
+    }
+
+    // AUDIT-FIX P2: Security regression test
+    #[test]
+    fn test_create_bounty_when_paused() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        // Set up admin and pause the contract
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        set_identity_admin(admin.as_ptr());
+        bb_pause(admin.as_ptr());
+
+        // Attempt to create bounty while paused → should fail
+        let creator = [2u8; 32];
+        let title_hash = [0xAA; 32];
+        test_mock::set_caller(creator);
+        let result = create_bounty(creator.as_ptr(), title_hash.as_ptr(), 500_000, 1000);
+        assert_eq!(result, 0);
+    }
+
+    // AUDIT-FIX P2: Security regression test
+    #[test]
+    fn test_submit_work_when_paused() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        // Create a bounty first (before pause)
+        let creator = [1u8; 32];
+        let title_hash = [0xAA; 32];
+        test_mock::set_caller(creator);
+        create_bounty(creator.as_ptr(), title_hash.as_ptr(), 500_000, 1000);
+
+        // Set up admin and pause the contract
+        let admin = [5u8; 32];
+        test_mock::set_caller(admin);
+        set_identity_admin(admin.as_ptr());
+        bb_pause(admin.as_ptr());
+
+        // Attempt to submit work while paused → should fail
+        let worker = [2u8; 32];
+        let proof_hash = [0xBB; 32];
+        test_mock::set_caller(worker);
+        let result = submit_work(0, worker.as_ptr(), proof_hash.as_ptr());
+        assert_eq!(result, 0);
     }
 }

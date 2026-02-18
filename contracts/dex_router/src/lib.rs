@@ -520,9 +520,9 @@ fn execute_clob_swap(amount_in: u64, pair_id: u64) -> u64 {
             }
         }
     }
-    // Fallback: simulated 99.95% fill (5 bps taker fee)
-    let fee = amount_in * 5 / 10_000;
-    amount_in.saturating_sub(fee)
+    // AUDIT-FIX P2: Removed dangerous simulation fallback
+    log_info("AUDIT-FIX P2: Cross-contract call failed — CLOB swap rejected (no simulation fallback)");
+    0
 }
 
 /// Execute swap via AMM (dex_amm) — cross-contract call
@@ -540,9 +540,9 @@ fn execute_amm_swap(amount_in: u64, pool_id: u64) -> u64 {
             }
         }
     }
-    // Fallback: simulated 99.7% fill (30 bps fee)
-    let fee = amount_in * 30 / 10_000;
-    amount_in.saturating_sub(fee)
+    // AUDIT-FIX P2: Removed dangerous simulation fallback
+    log_info("AUDIT-FIX P2: Cross-contract call failed — AMM swap rejected (no simulation fallback)");
+    0
 }
 
 /// Execute swap via legacy MoltSwap — cross-contract call
@@ -560,9 +560,9 @@ fn execute_legacy_swap(amount_in: u64, pool_id: u64) -> u64 {
             }
         }
     }
-    // Fallback: simulated 99.7% fill (30 bps fee)
-    let fee = amount_in * 30 / 10_000;
-    amount_in.saturating_sub(fee)
+    // AUDIT-FIX P2: Removed dangerous simulation fallback
+    log_info("AUDIT-FIX P2: Cross-contract call failed — legacy swap rejected (no simulation fallback)");
+    0
 }
 
 /// Emergency pause
@@ -898,8 +898,8 @@ mod tests {
 
         let ret = test_mock::get_return_data();
         let out = bytes_to_u64(&ret);
-        // CLOB: 5 bps fee → 1_000_000 - 500 = 999_500
-        assert_eq!(out, 999_500);
+        // AUDIT-FIX P2: Simulation fallback removed — cross-contract call returns 0 in test
+        assert_eq!(out, 0);
     }
 
     #[test]
@@ -915,8 +915,8 @@ mod tests {
 
         let ret = test_mock::get_return_data();
         let out = bytes_to_u64(&ret);
-        // AMM: 30 bps fee → 1_000_000 - 3_000 = 997_000
-        assert_eq!(out, 997_000);
+        // AUDIT-FIX P2: Simulation fallback removed — cross-contract call returns 0 in test
+        assert_eq!(out, 0);
     }
 
     #[test]
@@ -932,9 +932,8 @@ mod tests {
 
         let ret = test_mock::get_return_data();
         let out = bytes_to_u64(&ret);
-        // 60% CLOB: 600_000 * 0.9995 = 599_700
-        // 40% AMM:  400_000 * 0.9970 = 398_800
-        assert_eq!(out, 599_700 + 398_800);
+        // AUDIT-FIX P2: Simulation fallback removed — cross-contract calls return 0 in test
+        assert_eq!(out, 0);
     }
 
     #[test]
@@ -950,9 +949,8 @@ mod tests {
 
         let ret = test_mock::get_return_data();
         let out = bytes_to_u64(&ret);
-        // Hop1: 1_000_000 * 0.9970 = 997_000
-        // Hop2: 997_000 * 0.9970 = 994_009
-        assert_eq!(out, 994_009);
+        // AUDIT-FIX P2: Simulation fallback removed — cross-contract calls return 0 in test
+        assert_eq!(out, 0);
     }
 
     #[test]
@@ -1093,7 +1091,7 @@ mod tests {
     #[test]
     fn test_swap_with_addresses_configured() {
         // When addresses are configured, cross-contract calls are attempted.
-        // In test mode, call_contract returns Ok(Vec::new()) → empty result → fallback to simulation.
+        // AUDIT-FIX P2: Simulation fallback removed — cross-contract call returns 0 in test
         let admin = setup();
         let ta = token_a();
         let tb = token_b();
@@ -1107,9 +1105,9 @@ mod tests {
         register_route(admin.as_ptr(), ta.as_ptr(), tb.as_ptr(), ROUTE_DIRECT_CLOB, 1, 0, 0);
         test_mock::set_caller(trader);
         assert_eq!(swap(trader.as_ptr(), ta.as_ptr(), tb.as_ptr(), 1_000_000, 0, 0), 0);
-        // Fallback simulation: CLOB 5 bps → 999_500
+        // AUDIT-FIX P2: No simulation fallback — output is 0
         let ret = test_mock::get_return_data();
-        assert_eq!(bytes_to_u64(&ret), 999_500);
+        assert_eq!(bytes_to_u64(&ret), 0);
     }
 
     #[test]
@@ -1124,8 +1122,8 @@ mod tests {
         assert_eq!(swap(trader.as_ptr(), ta.as_ptr(), tb.as_ptr(), 1_000_000, 0, 0), 0);
         let ret = test_mock::get_return_data();
         let out = bytes_to_u64(&ret);
-        // Legacy: 30 bps fee → 997_000
-        assert_eq!(out, 997_000);
+        // AUDIT-FIX P2: Simulation fallback removed — cross-contract call returns 0 in test
+        assert_eq!(out, 0);
     }
 
     #[test]
@@ -1146,11 +1144,39 @@ mod tests {
         };
         test_mock::set_caller(trader);
         let result = multi_hop_swap(trader.as_ptr(), path.as_ptr(), 3, 1_000_000, 0, 0);
-        assert_eq!(result, 0);
+        // AUDIT-FIX P2: Simulation fallback removed — AMM cross-contract call returns 0,
+        // causing multi_hop_swap to return error 4 (swap amount is zero)
+        assert_eq!(result, 4);
+    }
+
+    // AUDIT-FIX P2: Security regression test
+    #[test]
+    fn test_swap_no_simulation_fallback() {
+        // Verify that when cross-contract calls fail, the router returns amount_out=0
+        // (not a simulated/fabricated value). This is the critical security fix.
+        let admin = setup();
+        let ta = token_a();
+        let tb = token_b();
+        let trader = [2u8; 32];
+        test_mock::set_slot(100);
+
+        // Configure addresses so cross-contract calls are attempted (but fail in test mock)
+        let core = [50u8; 32];
+        let amm = [51u8; 32];
+        let legacy = [52u8; 32];
+        set_addresses(admin.as_ptr(), core.as_ptr(), amm.as_ptr(), legacy.as_ptr());
+
+        // Register a CLOB route
+        register_route(admin.as_ptr(), ta.as_ptr(), tb.as_ptr(), ROUTE_DIRECT_CLOB, 1, 0, 0);
+
+        // Execute swap — cross-contract call will fail in test
+        test_mock::set_caller(trader);
+        let result = swap(trader.as_ptr(), ta.as_ptr(), tb.as_ptr(), 1_000_000, 0, 0);
+        assert_eq!(result, 0, "swap should succeed (min_out=0)");
+
+        // Verify amount_out is 0 (no simulation fallback)
         let ret = test_mock::get_return_data();
-        let out = bytes_to_u64(&ret);
-        // Hop1: 1_000_000 * 0.9970 = 997_000
-        // Hop2: 997_000 * 0.9970 = 994_009
-        assert_eq!(out, 994_009);
+        let amount_out = bytes_to_u64(&ret);
+        assert_eq!(amount_out, 0, "amount_out must be 0 when cross-contract call fails — no simulation fallback");
     }
 }

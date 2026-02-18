@@ -29,6 +29,11 @@ fn make_nft() -> NFT {
     NFT::new("MoltPunks", "MPNK")
 }
 
+/// Check if MoltPunks is paused
+fn is_mp_paused() -> bool {
+    storage_get(b"mp_paused").map(|d| d.first().copied() == Some(1)).unwrap_or(false)
+}
+
 /// Initialize the NFT collection
 #[no_mangle]
 pub extern "C" fn initialize(minter_ptr: *const u8) {
@@ -65,6 +70,11 @@ pub extern "C" fn mint(
     metadata_ptr: *const u8,
     metadata_len: u32,
 ) -> u32 {
+    // AUDIT-FIX P2: Check pause state
+    if is_mp_paused() {
+        log_info("MoltPunks is paused");
+        return 0;
+    }
     unsafe {
         // Parse caller
         let mut caller_addr = [0u8; 32];
@@ -75,6 +85,16 @@ pub extern "C" fn mint(
         if caller.0 != get_minter().0 {
             log_info("Unauthorized: Only minter can mint");
             return 0;
+        }
+        
+        // AUDIT-FIX P2: Enforce max supply cap
+        let current_supply = total_minted();
+        if let Some(max_data) = storage_get(b"max_supply") {
+            let max = bytes_to_u64(&max_data);
+            if max > 0 && current_supply >= max {
+                log_info("Max supply reached");
+                return 0;
+            }
         }
         
         // Parse recipient
@@ -104,6 +124,11 @@ pub extern "C" fn mint(
 /// Transfer NFT
 #[no_mangle]
 pub extern "C" fn transfer(from_ptr: *const u8, to_ptr: *const u8, token_id: u64) -> u32 {
+    // AUDIT-FIX P2: Check pause state
+    if is_mp_paused() {
+        log_info("MoltPunks is paused");
+        return 0;
+    }
     unsafe {
         // Parse from address
         let mut from_addr = [0u8; 32];
@@ -173,6 +198,13 @@ pub extern "C" fn approve(owner_ptr: *const u8, spender_ptr: *const u8, token_id
         core::ptr::copy_nonoverlapping(owner_ptr, owner_addr.as_mut_ptr(), 32);
         let owner = Address(owner_addr);
         
+        // AUDIT-FIX P2: Verify caller is the owner
+        let real_caller = get_caller();
+        if real_caller.0 != owner_addr {
+            log_info("Approve rejected: caller mismatch");
+            return 0;
+        }
+        
         let mut spender_addr = [0u8; 32];
         core::ptr::copy_nonoverlapping(spender_ptr, spender_addr.as_mut_ptr(), 32);
         let spender = Address(spender_addr);
@@ -225,6 +257,13 @@ pub extern "C" fn burn(owner_ptr: *const u8, token_id: u64) -> u32 {
         let mut owner_addr = [0u8; 32];
         core::ptr::copy_nonoverlapping(owner_ptr, owner_addr.as_mut_ptr(), 32);
         let owner = Address(owner_addr);
+        
+        // AUDIT-FIX P2: Verify caller is the owner
+        let real_caller = get_caller();
+        if real_caller.0 != owner_addr {
+            log_info("Burn rejected: caller mismatch");
+            return 0;
+        }
         
         let mut nft = make_nft();
         match nft.burn(owner, token_id) {
@@ -442,6 +481,8 @@ mod tests {
         let to = [3u8; 32];
         let metadata = b"ipfs://QmTest";
         mint(minter.as_ptr(), from.as_ptr(), 1, metadata.as_ptr(), metadata.len() as u32);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(from);
         assert_eq!(transfer(from.as_ptr(), to.as_ptr(), 1), 1);
     }
 
@@ -503,6 +544,8 @@ mod tests {
         let spender = [3u8; 32];
         let metadata = b"ipfs://QmTest";
         mint(minter.as_ptr(), owner.as_ptr(), 1, metadata.as_ptr(), metadata.len() as u32);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(owner);
         assert_eq!(approve(owner.as_ptr(), spender.as_ptr(), 1), 1);
     }
 
@@ -529,6 +572,8 @@ mod tests {
         let to = [4u8; 32];
         let metadata = b"ipfs://QmTest";
         mint(minter.as_ptr(), owner.as_ptr(), 1, metadata.as_ptr(), metadata.len() as u32);
+        // AUDIT-FIX P2: Set caller for security check on approve
+        test_mock::set_caller(owner);
         approve(owner.as_ptr(), spender.as_ptr(), 1);
         assert_eq!(transfer_from(spender.as_ptr(), owner.as_ptr(), to.as_ptr(), 1), 1);
         // Verify new owner
@@ -558,6 +603,8 @@ mod tests {
         let owner = [2u8; 32];
         let metadata = b"ipfs://QmTest";
         mint(minter.as_ptr(), owner.as_ptr(), 1, metadata.as_ptr(), metadata.len() as u32);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(owner);
         assert_eq!(burn(owner.as_ptr(), 1), 1);
         let mut out = [0u8; 32];
         assert_eq!(owner_of(1, out.as_mut_ptr()), 0);
@@ -582,5 +629,70 @@ mod tests {
         initialize(minter.as_ptr());
         let owner = [2u8; 32];
         assert_eq!(burn(owner.as_ptr(), 999), 0);
+    }
+
+    // AUDIT-FIX P2: Security regression test
+    #[test]
+    fn test_mint_when_paused() {
+        setup();
+        let minter = [1u8; 32];
+        initialize(minter.as_ptr());
+        // Pause the contract
+        test_mock::set_caller(minter);
+        assert_eq!(mp_pause(minter.as_ptr()), 1);
+        // Attempt to mint while paused → should fail
+        let to = [2u8; 32];
+        let metadata = b"ipfs://QmTest";
+        assert_eq!(mint(minter.as_ptr(), to.as_ptr(), 1, metadata.as_ptr(), metadata.len() as u32), 0);
+    }
+
+    // AUDIT-FIX P2: Security regression test
+    #[test]
+    fn test_transfer_when_paused() {
+        setup();
+        let minter = [1u8; 32];
+        initialize(minter.as_ptr());
+        let owner = [2u8; 32];
+        let to = [3u8; 32];
+        let metadata = b"ipfs://QmTest";
+        // Mint a token first
+        assert_eq!(mint(minter.as_ptr(), owner.as_ptr(), 1, metadata.as_ptr(), metadata.len() as u32), 1);
+        // Pause the contract
+        test_mock::set_caller(minter);
+        assert_eq!(mp_pause(minter.as_ptr()), 1);
+        // Attempt to transfer while paused → should fail
+        test_mock::set_caller(owner);
+        assert_eq!(transfer(owner.as_ptr(), to.as_ptr(), 1), 0);
+    }
+
+    // AUDIT-FIX P2: Security regression test
+    #[test]
+    fn test_approve_wrong_caller() {
+        setup();
+        let minter = [1u8; 32];
+        initialize(minter.as_ptr());
+        let owner = [2u8; 32];
+        let spender = [3u8; 32];
+        let attacker = [4u8; 32];
+        let metadata = b"ipfs://QmTest";
+        assert_eq!(mint(minter.as_ptr(), owner.as_ptr(), 1, metadata.as_ptr(), metadata.len() as u32), 1);
+        // set_caller differs from owner arg → should fail
+        test_mock::set_caller(attacker);
+        assert_eq!(approve(owner.as_ptr(), spender.as_ptr(), 1), 0);
+    }
+
+    // AUDIT-FIX P2: Security regression test
+    #[test]
+    fn test_burn_wrong_caller() {
+        setup();
+        let minter = [1u8; 32];
+        initialize(minter.as_ptr());
+        let owner = [2u8; 32];
+        let attacker = [4u8; 32];
+        let metadata = b"ipfs://QmTest";
+        assert_eq!(mint(minter.as_ptr(), owner.as_ptr(), 1, metadata.as_ptr(), metadata.len() as u32), 1);
+        // set_caller differs from owner arg → should fail
+        test_mock::set_caller(attacker);
+        assert_eq!(burn(owner.as_ptr(), 1), 0);
     }
 }

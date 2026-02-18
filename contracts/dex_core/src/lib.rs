@@ -792,6 +792,24 @@ pub fn create_pair(
         return 4;
     }
 
+    // AUDIT-FIX P2: Reject duplicate trading pair
+    for i in 1..=count {
+        let pk = pair_key(i);
+        if let Some(existing) = storage_get(&pk) {
+            if existing.len() >= 64 {
+                let mut existing_base = [0u8; 32];
+                let mut existing_quote = [0u8; 32];
+                existing_base.copy_from_slice(&existing[0..32]);
+                existing_quote.copy_from_slice(&existing[32..64]);
+                if existing_base == bt && existing_quote == qt {
+                    log_info("create_pair rejected: pair already exists");
+                    reentrancy_exit();
+                    return 7;
+                }
+            }
+        }
+    }
+
     // Enforce allowed quote tokens (supports multiple: e.g. mUSD + MOLT)
     if !is_allowed_quote(&qt) {
         reentrancy_exit();
@@ -3058,5 +3076,36 @@ mod tests {
     fn test_get_preferred_quote_unset() {
         let _admin = setup();
         assert_eq!(get_preferred_quote(), 0); // 0 = not set
+    }
+
+    // AUDIT-FIX P2: Security regression test
+    #[test]
+    fn test_duplicate_pair_rejected() {
+        let admin = setup();
+        let base = [10u8; 32];
+        let quote = [20u8; 32];
+
+        // First pair creation should succeed
+        let result1 = create_pair(
+            admin.as_ptr(),
+            base.as_ptr(),
+            quote.as_ptr(),
+            1000,
+            100,
+            1000,
+        );
+        assert_eq!(result1, 0, "first create_pair should succeed");
+
+        // Second creation with same base/quote should fail with error 7
+        let result2 = create_pair(
+            admin.as_ptr(),
+            base.as_ptr(),
+            quote.as_ptr(),
+            1000,
+            100,
+            1000,
+        );
+        assert_ne!(result2, 0, "duplicate pair must be rejected");
+        assert_eq!(result2, 7, "duplicate pair should return error code 7");
     }
 }

@@ -1146,6 +1146,8 @@ mod tests {
         setup();
         let requester = [1u8; 32];
         let commit_hash = [0xAAu8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(requester);
         assert_eq!(commit_randomness(requester.as_ptr(), commit_hash.as_ptr(), 12345), 1);
         let key = alloc::format!("rng_commit_{}", hex_encode(&requester));
         let data = moltchain_sdk::storage_get(key.as_bytes()).unwrap();
@@ -1164,6 +1166,8 @@ mod tests {
         preimage.extend_from_slice(&secret);
         preimage.extend_from_slice(&moltchain_sdk::u64_to_bytes(seed));
         let commit_hash = simple_hash(&preimage);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(requester);
         assert_eq!(commit_randomness(requester.as_ptr(), commit_hash.as_ptr(), seed), 1);
         test_mock::set_timestamp(2000);
         let mut result = [0u8; 8];
@@ -1218,6 +1222,8 @@ mod tests {
     fn test_request_randomness() {
         setup();
         let requester = [1u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(requester);
         assert_eq!(request_randomness(requester.as_ptr(), 42), 1);
         let key = alloc::format!("random_{}", hex_encode(&requester));
         assert!(moltchain_sdk::storage_get(key.as_bytes()).is_some());
@@ -1303,6 +1309,8 @@ mod tests {
         preimage.extend_from_slice(&moltchain_sdk::u64_to_bytes(seed));
         let commit_hash = sha256(&preimage);
 
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(requester);
         // Commit
         assert_eq!(commit_randomness(requester.as_ptr(), commit_hash.as_ptr(), seed), 1);
 
@@ -1315,5 +1323,50 @@ mod tests {
         let random_value = u64::from_le_bytes(result);
         // Value should be non-trivial
         assert_ne!(random_value, 0, "Random value should be non-zero");
+    }
+
+    // AUDIT-FIX P2: Security regression test
+    #[test]
+    fn test_submit_price_when_paused() {
+        setup();
+        let owner = [1u8; 32];
+        initialize_oracle(owner.as_ptr());
+        test_mock::set_caller(owner);
+        let feeder = [2u8; 32];
+        let asset = b"MOLT/USD";
+        add_price_feeder(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32);
+
+        // Pause the oracle
+        mo_pause(owner.as_ptr());
+
+        // Try to submit price while paused
+        test_mock::set_caller(feeder);
+        let result = submit_price(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32, 42_000_000, 6);
+        assert_eq!(result, 0, "submit_price must fail when oracle is paused");
+    }
+
+    // AUDIT-FIX P2: Security regression test
+    #[test]
+    fn test_request_randomness_wrong_caller() {
+        setup();
+        let requester = [1u8; 32];
+        let wrong_caller = [9u8; 32];
+        // Set caller to a different address than the requester
+        test_mock::set_caller(wrong_caller);
+        let result = request_randomness(requester.as_ptr(), 42);
+        assert_eq!(result, 0, "request_randomness must reject caller mismatch");
+    }
+
+    // AUDIT-FIX P2: Security regression test
+    #[test]
+    fn test_commit_randomness_wrong_caller() {
+        setup();
+        let requester = [1u8; 32];
+        let commit_hash = [0xAAu8; 32];
+        let wrong_caller = [9u8; 32];
+        // Set caller to a different address than the requester
+        test_mock::set_caller(wrong_caller);
+        let result = commit_randomness(requester.as_ptr(), commit_hash.as_ptr(), 12345);
+        assert_eq!(result, 0, "commit_randomness must reject caller mismatch");
     }
 }

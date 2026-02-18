@@ -1256,6 +1256,8 @@ mod tests {
         let target_contract = [4u8; 32];
         let action = b"upgrade_v2";
 
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(proposer);
         let proposal_id = create_proposal(
             proposer.as_ptr(),
             title.as_ptr(),
@@ -1300,6 +1302,8 @@ mod tests {
         let target = [4u8; 32];
         let action = b"test";
 
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(proposer);
         create_proposal(
             proposer.as_ptr(),
             title.as_ptr(),
@@ -1316,6 +1320,8 @@ mod tests {
         // which returns 0 in mock, so voting power will be 0
         // Use the simple vote() function instead
         let voter = [5u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(voter);
         let result = vote(
             voter.as_ptr(),
             1,  // proposal_id
@@ -1375,6 +1381,8 @@ mod tests {
         let target = [4u8; 32];
         let action = b"y";
 
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(proposer);
         create_proposal(
             proposer.as_ptr(),
             title.as_ptr(),
@@ -1387,6 +1395,8 @@ mod tests {
         );
 
         let voter = [5u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(voter);
         let r1 = vote(voter.as_ptr(), 1, 1, 100);
         assert_eq!(r1, 1);
 
@@ -1409,6 +1419,8 @@ mod tests {
         let target = [4u8; 32];
         let action = b"z";
 
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(proposer);
         create_proposal(
             proposer.as_ptr(),
             title.as_ptr(),
@@ -1437,7 +1449,170 @@ mod tests {
             action.as_ptr(),
             action.len() as u32,
         );
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(other);
         let result2 = cancel_proposal(other.as_ptr(), 2);
         assert_eq!(result2, 0); // unauthorized
+    }
+
+    // AUDIT-FIX P2: Security regression test
+    #[test]
+    fn test_create_proposal_wrong_caller() {
+        setup();
+        let gov_token = [1u8; 32];
+        let treasury = [2u8; 32];
+        initialize_dao(gov_token.as_ptr(), treasury.as_ptr(), 1000);
+        test_mock::set_timestamp(10000);
+
+        let proposer = [3u8; 32];
+        let wrong_caller = [9u8; 32];
+        let title = b"Unauthorized Proposal";
+        let description = b"Should be rejected";
+        let target = [4u8; 32];
+        let action = b"hack";
+
+        // Set caller to a different address than the proposer
+        test_mock::set_caller(wrong_caller);
+        let result = create_proposal(
+            proposer.as_ptr(),
+            title.as_ptr(),
+            title.len() as u32,
+            description.as_ptr(),
+            description.len() as u32,
+            target.as_ptr(),
+            action.as_ptr(),
+            action.len() as u32,
+        );
+        assert_eq!(result, 0, "create_proposal must reject caller mismatch");
+    }
+
+    // AUDIT-FIX P2: Security regression test
+    #[test]
+    fn test_vote_wrong_caller() {
+        setup();
+        let gov_token = [1u8; 32];
+        let treasury = [2u8; 32];
+        initialize_dao(gov_token.as_ptr(), treasury.as_ptr(), 1000);
+        test_mock::set_timestamp(10000);
+
+        let proposer = [3u8; 32];
+        test_mock::set_caller(proposer);
+        create_proposal(
+            proposer.as_ptr(),
+            b"Test".as_ptr(), 4,
+            b"Desc".as_ptr(), 4,
+            [4u8; 32].as_ptr(),
+            b"act".as_ptr(), 3,
+        );
+
+        let voter = [5u8; 32];
+        let wrong_caller = [9u8; 32];
+        // Set caller to a different address than the voter
+        test_mock::set_caller(wrong_caller);
+        let result = vote(voter.as_ptr(), 1, 1, 100);
+        assert_eq!(result, 0, "vote must reject caller mismatch");
+    }
+
+    // AUDIT-FIX P2: Security regression test
+    #[test]
+    fn test_pause_blocks_create_proposal() {
+        setup();
+        let gov_token = [1u8; 32];
+        let treasury = [2u8; 32];
+        initialize_dao(gov_token.as_ptr(), treasury.as_ptr(), 1000);
+        test_mock::set_timestamp(10000);
+
+        // dao_owner is set to get_caller() during init, which is [0u8; 32] after reset()
+        let owner = [0u8; 32];
+        test_mock::set_caller(owner);
+        let pause_result = dao_pause(owner.as_ptr());
+        assert_eq!(pause_result, 0, "dao_pause should succeed for owner");
+
+        let proposer = [3u8; 32];
+        test_mock::set_caller(proposer);
+        let result = create_proposal(
+            proposer.as_ptr(),
+            b"Blocked".as_ptr(), 7,
+            b"Should fail".as_ptr(), 11,
+            [4u8; 32].as_ptr(),
+            b"x".as_ptr(), 1,
+        );
+        assert_eq!(result, 0, "create_proposal must fail when DAO is paused");
+    }
+
+    // AUDIT-FIX P2: Security regression test
+    #[test]
+    fn test_pause_blocks_vote() {
+        setup();
+        let gov_token = [1u8; 32];
+        let treasury = [2u8; 32];
+        initialize_dao(gov_token.as_ptr(), treasury.as_ptr(), 1000);
+        test_mock::set_timestamp(10000);
+
+        // Create a proposal before pausing
+        let proposer = [3u8; 32];
+        test_mock::set_caller(proposer);
+        create_proposal(
+            proposer.as_ptr(),
+            b"Pre-pause".as_ptr(), 9,
+            b"Created before pause".as_ptr(), 20,
+            [4u8; 32].as_ptr(),
+            b"y".as_ptr(), 1,
+        );
+
+        // Pause the DAO (owner is [0u8; 32] from init)
+        let owner = [0u8; 32];
+        test_mock::set_caller(owner);
+        dao_pause(owner.as_ptr());
+
+        // Try to vote while paused
+        let voter = [5u8; 32];
+        test_mock::set_caller(voter);
+        let result = vote(voter.as_ptr(), 1, 1, 100);
+        assert_eq!(result, 0, "vote must fail when DAO is paused");
+    }
+
+    // AUDIT-FIX P2: Security regression test
+    #[test]
+    fn test_veto_wrong_caller() {
+        setup();
+        let gov_token = [1u8; 32];
+        let treasury = [2u8; 32];
+        initialize_dao(gov_token.as_ptr(), treasury.as_ptr(), 1000);
+        test_mock::set_timestamp(10000);
+
+        let proposer = [3u8; 32];
+        test_mock::set_caller(proposer);
+        create_proposal(
+            proposer.as_ptr(),
+            b"Veto test".as_ptr(), 9,
+            b"Desc".as_ptr(), 4,
+            [4u8; 32].as_ptr(),
+            b"z".as_ptr(), 1,
+        );
+
+        // Advance into the time-lock period (after voting ends)
+        test_mock::set_timestamp(10000 + 604800 + 1);
+
+        let voter = [5u8; 32];
+        let wrong_caller = [9u8; 32];
+        // Set caller to a different address than the voter
+        test_mock::set_caller(wrong_caller);
+        let result = veto_proposal(voter.as_ptr(), 1, 100, 0);
+        assert_eq!(result, 0, "veto must reject caller mismatch");
+    }
+
+    // AUDIT-FIX P2: Security regression test
+    #[test]
+    fn test_set_quorum_wrong_caller() {
+        setup();
+        let gov_token = [1u8; 32];
+        let treasury = [2u8; 32];
+        initialize_dao(gov_token.as_ptr(), treasury.as_ptr(), 1000);
+
+        let non_admin = [9u8; 32];
+        test_mock::set_caller(non_admin);
+        let result = set_quorum(non_admin.as_ptr(), 50);
+        assert_eq!(result, 1, "set_quorum must reject non-admin caller");
     }
 }

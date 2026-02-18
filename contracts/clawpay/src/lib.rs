@@ -652,6 +652,10 @@ pub extern "C" fn transfer_stream(
     new_recipient_ptr: *const u8,
     stream_id: u64,
 ) -> u32 {
+    if !reentrancy_enter() {
+        return 0;
+    }
+
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
     let mut new_recipient = [0u8; 32];
@@ -660,25 +664,32 @@ pub extern "C" fn transfer_stream(
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
     if real_caller.0 != caller {
+        reentrancy_exit();
         return 200;
     }
 
     let sk = stream_key(stream_id);
     let mut stream_data = match storage_get(&sk) {
         Some(data) => data,
-        None => return 1,
+        None => {
+            reentrancy_exit();
+            return 1;
+        }
     };
     if stream_data.len() < STREAM_SIZE {
+        reentrancy_exit();
         return 1;
     }
 
     // Only current recipient can transfer
     if caller[..] != stream_data[32..64] {
+        reentrancy_exit();
         return 2;
     }
 
     // Cannot transfer cancelled stream
     if stream_data[96] == 1 {
+        reentrancy_exit();
         return 3;
     }
 
@@ -686,6 +697,7 @@ pub extern "C" fn transfer_stream(
     let total = bytes_to_u64(&stream_data[64..72]);
     let withdrawn = bytes_to_u64(&stream_data[72..80]);
     if withdrawn >= total {
+        reentrancy_exit();
         return 4;
     }
 
@@ -694,6 +706,7 @@ pub extern "C" fn transfer_stream(
     storage_set(&sk, &stream_data);
 
     log_info("Stream transferred to new recipient");
+    reentrancy_exit();
     0
 }
 
@@ -956,6 +969,8 @@ mod tests {
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
 
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(sender);
         let result = create_stream(
             sender.as_ptr(),
             recipient.as_ptr(),
@@ -986,6 +1001,8 @@ mod tests {
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
 
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(sender);
         create_stream(
             sender.as_ptr(),
             recipient.as_ptr(),
@@ -1004,6 +1021,8 @@ mod tests {
         assert_eq!(bytes_to_u64(&ret), 500_000);
 
         // Withdraw 300,000
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(recipient);
         let result = withdraw_from_stream(recipient.as_ptr(), 0, 300_000);
         assert_eq!(result, 0);
 
@@ -1026,6 +1045,8 @@ mod tests {
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
 
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(sender);
         create_stream(
             sender.as_ptr(),
             recipient.as_ptr(),
@@ -1064,6 +1085,8 @@ mod tests {
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
 
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(sender);
         create_stream(sender.as_ptr(), recipient.as_ptr(), 500_000, 100, 600);
 
         // Move past end
@@ -1074,6 +1097,8 @@ mod tests {
         let ret = test_mock::get_return_data();
         assert_eq!(bytes_to_u64(&ret), 500_000); // full amount
 
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(recipient);
         let result = withdraw_from_stream(recipient.as_ptr(), 0, 500_000);
         assert_eq!(result, 0);
 
@@ -1090,6 +1115,8 @@ mod tests {
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let admin = [5u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(admin);
         assert_eq!(set_identity_admin(admin.as_ptr()), 0);
         let moltyid_addr = [0x42u8; 32];
         assert_eq!(set_moltyid_address(admin.as_ptr(), moltyid_addr.as_ptr()), 0);
@@ -1097,6 +1124,8 @@ mod tests {
 
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(sender);
         let result = create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100);
         assert_eq!(result, 10); // sender blocked
     }
@@ -1108,6 +1137,8 @@ mod tests {
 
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(sender);
         let result = create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100);
         assert_eq!(result, 0);
     }
@@ -1117,10 +1148,16 @@ mod tests {
         setup();
 
         let admin = [1u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(admin);
         assert_eq!(set_identity_admin(admin.as_ptr()), 0);
 
         let other = [9u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(other);
         assert_eq!(set_identity_gate(other.as_ptr(), 100), 2);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(admin);
         assert_eq!(set_identity_gate(admin.as_ptr(), 100), 0);
     }
 
@@ -1136,6 +1173,8 @@ mod tests {
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
 
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(sender);
         // cliff at slot 500 (400 slots into 1000-slot stream)
         let result = create_stream_with_cliff(
             sender.as_ptr(),
@@ -1158,6 +1197,8 @@ mod tests {
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
 
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(sender);
         create_stream_with_cliff(
             sender.as_ptr(),
             recipient.as_ptr(),
@@ -1175,6 +1216,8 @@ mod tests {
         assert_eq!(bytes_to_u64(&ret), 0);
 
         // Try to withdraw — should fail
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(recipient);
         let result = withdraw_from_stream(recipient.as_ptr(), 0, 1);
         assert_eq!(result, 6); // exceeds withdrawable (0)
     }
@@ -1187,6 +1230,8 @@ mod tests {
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
 
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(sender);
         create_stream_with_cliff(
             sender.as_ptr(),
             recipient.as_ptr(),
@@ -1204,6 +1249,8 @@ mod tests {
         assert_eq!(bytes_to_u64(&ret), 500_000);
 
         // Withdraw works after cliff
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(recipient);
         let result = withdraw_from_stream(recipient.as_ptr(), 0, 500_000);
         assert_eq!(result, 0);
     }
@@ -1216,6 +1263,8 @@ mod tests {
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
 
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(sender);
         // cliff before start
         let result = create_stream_with_cliff(
             sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100, 50,
@@ -1238,6 +1287,8 @@ mod tests {
         let recipient = [2u8; 32];
         let new_recipient = [3u8; 32];
 
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(sender);
         create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100);
 
         // Non-recipient cannot transfer
@@ -1245,15 +1296,21 @@ mod tests {
         assert_eq!(result, 2);
 
         // Recipient can transfer
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(recipient);
         let result = transfer_stream(recipient.as_ptr(), new_recipient.as_ptr(), 0);
         assert_eq!(result, 0);
 
         // New recipient can now withdraw
         test_mock::SLOT.with(|s| *s.borrow_mut() = 600);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(new_recipient);
         let result = withdraw_from_stream(new_recipient.as_ptr(), 0, 100_000);
         assert_eq!(result, 0);
 
         // Old recipient cannot withdraw
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(recipient);
         let result = withdraw_from_stream(recipient.as_ptr(), 0, 100_000);
         assert_eq!(result, 4); // not recipient
     }
@@ -1267,9 +1324,13 @@ mod tests {
         let recipient = [2u8; 32];
         let new_recip = [3u8; 32];
 
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(sender);
         create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100);
         cancel_stream(sender.as_ptr(), 0);
 
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(recipient);
         let result = transfer_stream(recipient.as_ptr(), new_recip.as_ptr(), 0);
         assert_eq!(result, 3); // cancelled
     }
@@ -1284,20 +1345,28 @@ mod tests {
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
 
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(admin);
         // Init admin
         assert_eq!(initialize_cp_admin(admin.as_ptr()), 0);
         // Cannot init twice
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(non_admin);
         assert_eq!(initialize_cp_admin(non_admin.as_ptr()), 1);
 
         // Non-admin cannot pause
         assert_eq!(pause(non_admin.as_ptr()), 1);
 
         // Admin pauses
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(admin);
         assert_eq!(pause(admin.as_ptr()), 0);
         // Cannot pause again
         assert_eq!(pause(admin.as_ptr()), 2);
 
         // create_stream blocked when paused
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(sender);
         let result = create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100);
         assert_eq!(result, 20);
 
@@ -1308,13 +1377,19 @@ mod tests {
         assert_eq!(result, 20);
 
         // Non-admin cannot unpause
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(non_admin);
         assert_eq!(unpause(non_admin.as_ptr()), 1);
         // Unpause
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(admin);
         assert_eq!(unpause(admin.as_ptr()), 0);
         // Cannot unpause again
         assert_eq!(unpause(admin.as_ptr()), 2);
 
         // Now create_stream works again
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(sender);
         let result = create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100);
         assert_eq!(result, 0);
     }
@@ -1327,6 +1402,8 @@ mod tests {
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
 
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(sender);
         create_stream_with_cliff(
             sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100, 500,
         );
@@ -1357,18 +1434,26 @@ mod tests {
         let recipient = [2u8; 32];
 
         // Create before pause
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(sender);
         create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100);
 
         // Pause
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(admin);
         initialize_cp_admin(admin.as_ptr());
         pause(admin.as_ptr());
 
         // Withdraw still works (safety valve)
         test_mock::SLOT.with(|s| *s.borrow_mut() = 600);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(recipient);
         let result = withdraw_from_stream(recipient.as_ptr(), 0, 100_000);
         assert_eq!(result, 0);
 
         // Cancel still works
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(sender);
         let result = cancel_stream(sender.as_ptr(), 0);
         assert_eq!(result, 0);
     }
