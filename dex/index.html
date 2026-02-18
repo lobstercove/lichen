@@ -236,23 +236,18 @@
                     </div>
                 </div>
 
-                <!-- Wallet Balance -->
-                <div class="wallet-panel">
+                <!-- Wallet Balance — hidden until wallet connected -->
+                <div class="wallet-panel hidden" id="walletBalancePanel">
                     <div class="panel-header">
                         <h3>Balances</h3>
                     </div>
-                    <div class="balance-list" id="balanceList">
-                        <div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;">
-                            <i class="fas fa-wallet" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
-                            Connect wallet to view balances
-                        </div>
-                    </div>
+                    <div class="balance-list" id="balanceList"></div>
                 </div>
             </div>
         </div>
 
-        <!-- Bottom Panel: Orders / History / Positions — full width -->
-        <div class="bottom-panel">
+        <!-- Bottom Panel: Orders / History / Positions — hidden until wallet connected -->
+        <div class="bottom-panel hidden" id="tradeBottomPanel">
             <div class="positions-panel">
                 <div class="positions-tabs">
                     <button class="pos-tab active" data-target="content-orders">Open Orders <span class="badge orders-badge"></span></button>
@@ -280,14 +275,14 @@
                 </div>
                 <div class="positions-content hidden" id="content-history">
                     <div style="text-align:center;color:var(--text-muted);padding:30px;font-size:0.85rem;">
-                        <i class="fas fa-history" style="font-size:1.5rem;margin-bottom:8px;display:block;"></i>
-                        No trade history yet
+                        <i class="fas fa-wallet" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
+                        Connect wallet to view trade history
                     </div>
                 </div>
                 <div class="positions-content hidden" id="content-positions">
                     <div style="text-align:center;color:var(--text-muted);padding:30px;font-size:0.85rem;">
-                        <i class="fas fa-chart-line" style="font-size:1.5rem;margin-bottom:8px;display:block;"></i>
-                        No open positions
+                        <i class="fas fa-wallet" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
+                        Connect wallet to view positions
                     </div>
                 </div>
             </div>
@@ -597,10 +592,7 @@
                         <div class="form-group">
                             <label>Select Pool</label>
                             <select class="form-select" id="liqPoolSelect">
-                                <option>MOLT / mUSD</option>
-                                <option>wSOL / mUSD</option>
-                                <option>wETH / mUSD</option>
-                                <option>wSOL / MOLT</option>
+                                <!-- Populated dynamically from pairs[] -->
                             </select>
                         </div>
 
@@ -712,10 +704,7 @@
                     <div class="form-group">
                         <label>Pair</label>
                         <select class="form-select" id="marginPairSelect">
-                            <option value="0">MOLT/mUSD</option>
-                            <option value="1">wSOL/mUSD</option>
-                            <option value="2">wETH/mUSD</option>
-                            <option value="4">wSOL/MOLT</option>
+                            <!-- Populated dynamically from pairs[] -->
                         </select>
                     </div>
                     <div class="form-group">
@@ -1080,10 +1069,7 @@
                             <div class="form-group">
                                 <label>Trading Pair</label>
                                 <select class="form-select" id="propFeePair">
-                                    <option>MOLT/mUSD</option>
-                                    <option>wSOL/mUSD</option>
-                                    <option>wETH/mUSD</option>
-                                    <option>wSOL/MOLT</option>
+                                    <!-- Populated dynamically from pairs[] -->
                                 </select>
                             </div>
                             <div class="form-group">

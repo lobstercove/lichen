@@ -130,9 +130,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 this.subs.set(subId, { channel, method: 'subscribeDex', params: { channel }, callback });
                 return subId;
             } catch {
-                const fakeId = this.nextReqId++;
-                this.subs.set(fakeId, { channel, method: 'subscribeDex', params: { channel }, callback });
-                return fakeId;
+                const pendingId = this.nextReqId++;
+                this.subs.set(pendingId, { channel, method: 'subscribeDex', params: { channel }, callback });
+                return pendingId;
             }
         }
         unsubscribe(subId) {
@@ -258,6 +258,18 @@ document.addEventListener('DOMContentLoaded', () => {
             state.activePair = null; state.activePairId = null; state.lastPrice = 0;
             console.warn('[DEX] No trading pairs on-chain — create pairs via dex_core.create_pair()');
         }
+        // Populate all select dropdowns from real pairs
+        populateSelectsFromPairs();
+    }
+
+    function populateSelectsFromPairs() {
+        const poolSelect = document.getElementById('liqPoolSelect');
+        const marginSelect = document.getElementById('marginPairSelect');
+        const feeSelect = document.getElementById('propFeePair');
+        const opts = pairs.map((p, i) => `<option value="${p.pairId}">${p.id}</option>`).join('');
+        if (poolSelect) poolSelect.innerHTML = opts || '<option>No pairs available</option>';
+        if (marginSelect) marginSelect.innerHTML = opts || '<option>No pairs available</option>';
+        if (feeSelect) feeSelect.innerHTML = opts || '<option>No pairs available</option>';
     }
 
     async function loadOrderBook() {
@@ -273,7 +285,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
         } catch { /* API unavailable */ }
-        // Real empty state — no mock data
+        // Empty state — no data from API
         state.orderBook = { asks: [], bids: [] }; renderOrderBook();
     }
 
@@ -289,7 +301,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }).join(''); return;
             }
         } catch { /* API unavailable */ }
-        // Real empty state — no mock trades
+        // Empty state — no trades from API
         const container = document.querySelector('.trades-list'); if (container) container.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;"><i class="fas fa-exchange-alt" style="margin-right:6px;"></i>No recent trades</div>';
     }
 
@@ -636,7 +648,9 @@ document.addEventListener('DOMContentLoaded', () => {
     async function connectWalletTo(address, shortAddr) {
         state.connected = true; state.walletAddress = address;
         if (connectBtn) { connectBtn.innerHTML = `<i class="fas fa-wallet"></i> ${shortAddr}`; connectBtn.className = 'btn btn-small btn-secondary'; }
+        toggleWalletPanels(true);
         await Promise.all([loadBalances(address), loadUserOrders(address)]);
+        renderBalances(); renderOpenOrders(); loadTradeHistory(); loadPositionsTab();
         if (dexWs && state.activePairId != null) subscribePair(state.activePairId);
     }
 
@@ -644,9 +658,17 @@ document.addEventListener('DOMContentLoaded', () => {
         state.connected = false; state.walletAddress = null; wallet.keypair = null; wallet.address = null;
         if (connectBtn) { connectBtn.innerHTML = '<i class="fas fa-wallet"></i> Connect Wallet'; connectBtn.className = 'btn btn-small btn-primary'; }
         openOrders = []; balances = {};
+        toggleWalletPanels(false);
         renderBalances(); renderOpenOrders();
         // Clear wallet-gated sections
         loadTradeHistory(); loadPositionsTab(); loadLPPositions(); loadPredictionPositions();
+    }
+
+    function toggleWalletPanels(show) {
+        const bp = document.getElementById('walletBalancePanel');
+        const tp = document.getElementById('tradeBottomPanel');
+        if (bp) bp.classList.toggle('hidden', !show);
+        if (tp) tp.classList.toggle('hidden', !show);
     }
 
     function renderWalletList() {
@@ -660,7 +682,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function renderBalances() {
         const c = document.querySelector('.balance-list'); if (!c) return;
-        if (!state.connected) { c.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;">Connect wallet to view balances</div>'; return; }
+        if (!state.connected) { c.innerHTML = ''; return; }
         c.innerHTML = Object.entries(balances).map(([t, b]) => `<div class="balance-row"><div class="balance-token"><div class="token-icon ${t.toLowerCase()}-icon">${t[0]}</div><span>${t}</span></div><div class="balance-amounts"><span class="balance-available">${formatAmount(b.available)}</span><span class="balance-usd">≈ $${formatAmount(b.usd)}</span></div></div>`).join('');
     }
 
@@ -680,7 +702,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // Pool View — Load data from API with mock fallback
+    // Pool View — Load data from API
     // ═══════════════════════════════════════════════════════════════════════
     async function loadPoolStats() {
         try {
@@ -717,11 +739,10 @@ document.addEventListener('DOMContentLoaded', () => {
                         </tr>`;
                     }).join('');
                 }
-                const _pdb = document.getElementById('poolDemoBadge'); if (_pdb) _pdb.remove();
                 return;
             }
         } catch { /* API unavailable */ }
-        // Real empty state — no mock pools
+        // Empty state — no pools from API
         const _ptb = document.getElementById('poolTableBody');
         if (_ptb) _ptb.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px;"><i class="fas fa-water" style="margin-right:6px;"></i>No liquidity pools — create one to get started</td></tr>';
     }
@@ -777,10 +798,10 @@ document.addEventListener('DOMContentLoaded', () => {
         addLiqBtn.disabled = true; addLiqBtn.textContent = 'Adding...';
         try {
             const poolSelect = document.getElementById('liqPoolSelect');
-            const poolIdx = poolSelect ? poolSelect.selectedIndex : 0;
+            const poolId = poolSelect ? parseInt(poolSelect.value) || 0 : 0;
             await wallet.sendTransaction([{
                 programId: '0000000000000000000000000000000000000000000000000000000000000002', // dex_amm
-                data: JSON.stringify({ op: 'add_liquidity', pool_id: poolIdx, amount_a: Math.round(amtA * 1e9), amount_b: Math.round(amtB * 1e9), lower_tick: fullRange ? -887272 : Math.round(minPrice * 1e6), upper_tick: fullRange ? 887272 : Math.round(maxPrice * 1e6) })
+                data: JSON.stringify({ op: 'add_liquidity', pool_id: poolId, amount_a: Math.round(amtA * 1e9), amount_b: Math.round(amtB * 1e9), lower_tick: fullRange ? -887272 : Math.round(minPrice * 1e6), upper_tick: fullRange ? 887272 : Math.round(maxPrice * 1e6) })
             }]);
             showNotification(`Liquidity added: ${formatAmount(amtA)} + ${formatAmount(amtB)}`, 'success');
         } catch (e) { showNotification(`Add liquidity: ${e.message}`, 'error'); }
@@ -1088,10 +1109,10 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // ═══════════════════════════════════════════════════════════════════════
-    // PredictionReef — Predict View (Live API + Mock Fallback)
+    // PredictionReef — Predict View (Live API)
     // ═══════════════════════════════════════════════════════════════════════
 
-    // Mock data removed — only real on-chain prediction markets displayed
+    // Only real on-chain prediction markets displayed
     const INITIAL_MARKETS = [];
 
     const predictState = {
@@ -1154,7 +1175,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
         } catch { /* API unavailable */ }
-        // Real empty state — no mock markets
+        // Empty state — no markets from API
         predictState.markets = [];
         predictState.live = true;
         renderPredictionMarkets();
@@ -1506,7 +1527,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (modal) modal.style.display = 'none';
     }
 
-    // Load real price history from RPC, falls back to mock
+    // Load real price history from RPC
     async function loadRealPriceHistory(marketId, range, market) {
         try {
             const { data: snapshots } = await api.get(`/prediction-market/markets/${marketId}/price-history?limit=200`);
@@ -1521,7 +1542,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 predictChartState.realData = data;
                 return;
             }
-        } catch { /* RPC unavailable — keep mock */ }
+        } catch { /* RPC unavailable */ }
         predictChartState.realData = null;
     }
 
@@ -1729,6 +1750,7 @@ document.addEventListener('DOMContentLoaded', () => {
     (async function init() {
         await loadPairs();
         renderPairList(); renderBalances(); renderOpenOrders(); updateSubmitBtn();
+        loadTradeHistory(); loadPositionsTab();
         if (state.activePair) {
             if (pairActive) pairActive.querySelector('.pair-name').textContent = state.activePair.id;
             updatePairStats(state.activePair); updateTickerDisplay(); updateMarginInfo();
@@ -1745,6 +1767,15 @@ document.addEventListener('DOMContentLoaded', () => {
             setTimeout(initTradingView, 200);
             connectWebSocket();
         }
-        if (savedWallets.length) { const l = savedWallets[savedWallets.length - 1]; connectWalletTo(l.address, l.short); }
+        if (savedWallets.length) {
+            const l = savedWallets[savedWallets.length - 1];
+            // Auto-connect is display-only — keypair not stored. User must re-import to sign.
+            state.connected = true; state.walletAddress = l.address;
+            if (connectBtn) { connectBtn.innerHTML = `<i class="fas fa-wallet"></i> ${l.short || l.address.slice(0, 8) + '...'}`; connectBtn.className = 'btn btn-small btn-secondary'; }
+            toggleWalletPanels(true);
+            try { await loadBalances(l.address); await loadUserOrders(l.address); } catch { /* API unavailable */ }
+            renderBalances(); renderOpenOrders(); loadTradeHistory(); loadPositionsTab();
+            if (dexWs && state.activePairId != null) subscribePair(state.activePairId);
+        }
     })().catch(e => console.error('[DEX] Init error:', e));
 });
