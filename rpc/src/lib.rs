@@ -544,6 +544,8 @@ fn solana_message_json(tx: &Transaction) -> (Vec<String>, Vec<serde_json::Value>
 
 fn solana_transaction_json(
     tx: &Transaction,
+    // STUB F1: preBalances/postBalances are always empty arrays in Solana-format TX JSON.
+    // TODO: Capture account balances before/after TX execution to populate these fields.
     slot: u64,
     timestamp: u64,
     fee: u64,
@@ -1143,9 +1145,13 @@ async fn handle_evm_rpc(
         "eth_accounts" => Ok(serde_json::json!([])), // No accounts (users use MetaMask)
         "net_version" => Ok(serde_json::json!("1297368660")), // "Molt" as decimal
         // AUDIT-FIX RPC-8: Added missing ETH methods required for MetaMask/wallet compatibility
-        "eth_gasPrice" => Ok(serde_json::json!("0x3b9aca00")), // 1 Gwei in hex
+        // STUB F5: Returns 1 Gwei fixed gas price. TODO: derive from fee config when EVM gas metering lands.
+        "eth_gasPrice" => Ok(serde_json::json!("0x3b9aca00")),
+        // STUB F5b: Same as gasPrice.
         "eth_maxPriorityFeePerGas" => Ok(serde_json::json!("0x3b9aca00")),
-        "eth_estimateGas" => Ok(serde_json::json!("0x5208")), // 21000 gas (standard transfer)
+        // STUB F4: Returns 21000 (standard transfer). TODO: implement real gas estimation when EVM execution metering lands.
+        "eth_estimateGas" => Ok(serde_json::json!("0x5208")),
+        // STUB F2: Always returns 0x (no code). TODO: look up contract bytecode via EVM address registry.
         "eth_getCode" => {
             // Return contract code if it exists, otherwise 0x (EOA)
             let code = if let Some(ref params) = req.params {
@@ -1166,10 +1172,12 @@ async fn handle_evm_rpc(
             };
             Ok(serde_json::json!(code))
         }
+        // STUB F3: Returns 0x0 (nonce=0). TODO: track per-address nonce for EVM compatibility.
         "eth_getTransactionCount" => {
             // Return nonce (transaction count) — we use 0 since MoltChain uses sequence-based tracking
             Ok(serde_json::json!("0x0"))
         }
+        // STUB F6: Minimal block structure for MetaMask. TODO: populate transactions array from real block.
         "eth_getBlockByNumber" => {
             // Return a minimal block structure for compatibility
             let slot = state.state.get_last_slot().unwrap_or(0);
@@ -1186,6 +1194,7 @@ async fn handle_evm_rpc(
                 "transactions": [],
             }))
         }
+        // STUB F6b: Minimal block stub. TODO: look up real block by hash.
         "eth_getBlockByHash" => {
             // Minimal stub — return latest block
             let slot = state.state.get_last_slot().unwrap_or(0);
@@ -1201,7 +1210,9 @@ async fn handle_evm_rpc(
                 "transactions": [],
             }))
         }
+        // STUB F7: Returns empty array. TODO: implement log filtering when EVM event indexing lands.
         "eth_getLogs" => Ok(serde_json::json!([])),
+        // STUB F8: Returns zero. TODO: implement storage slot reads when EVM storage layout is implemented.
         "eth_getStorageAt" => Ok(serde_json::json!("0x0000000000000000000000000000000000000000000000000000000000000000")),
         "net_listening" => Ok(serde_json::json!(true)),
         "web3_clientVersion" => Ok(serde_json::json!(format!("MoltChain/{}", state.version))),
@@ -3930,6 +3941,13 @@ async fn handle_get_validator_info(
         message: "Validator not found".to_string(),
     })?;
 
+    // FIX F9: commission_rate not yet stored per validator — default to 5% with TODO
+    // TODO: Add commission_rate field to ValidatorInfo struct when configurable commissions are implemented
+    let commission_rate = 5u64;
+    // FIX F10: Compute is_active from last_active_slot vs current slot (active = within 1000 slots)
+    let current_slot = state.state.get_last_slot().unwrap_or(0);
+    let is_active = current_slot.saturating_sub(validator.last_active_slot) < 1000;
+
     Ok(serde_json::json!({
         "pubkey": validator.pubkey.to_base58(),
         "stake": validator.stake,
@@ -3939,8 +3957,8 @@ async fn handle_get_validator_info(
         "correct_votes": validator.correct_votes,
         "last_active_slot": validator.last_active_slot,
         "joined_slot": validator.joined_slot,
-        "commission_rate": 5, // 5% default commission rate for validators
-        "is_active": true,
+        "commission_rate": commission_rate,
+        "is_active": is_active,
     }))
 }
 

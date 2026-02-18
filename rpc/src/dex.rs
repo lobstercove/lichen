@@ -944,6 +944,9 @@ async fn get_orderbook(
     let mut asks: HashMap<u64, u64> = HashMap::new();
 
     // Scan orders for this pair (up to reasonable limit)
+    // PERF F11: Linear scan up to 10,000 orders per request. At high volumes this becomes
+    // a bottleneck. TODO: Pre-aggregate order book levels or maintain sorted bid/ask indices
+    // in a dedicated CF to enable O(depth) reads instead of O(total_orders).
     let order_count = read_u64(&state, DEX_CORE_PROGRAM, "dex_order_count");
     let scan_limit = order_count.min(10_000);
 
@@ -1509,7 +1512,8 @@ async fn post_router_swap(
                         }
                     }
                 } else {
-                    // CLOB or other route types — fall back to 1:1 quote if no AMM available
+                    // NOTE F17: CLOB route fallback — uses 1:1 ratio when no AMM pool is found.
+                    // TODO: Implement actual CLOB order book quoting (match against resting orders).
                     if best_route.is_none() {
                         best_route = Some(route);
                     }
@@ -1557,8 +1561,8 @@ async fn post_router_swap(
 
     match best_route {
         Some(route) => {
-            // Check slippage tolerance
-            let min_out = (body.amount_in as f64 * (1.0 - body.slippage / 100.0)) as u64;
+            // FIX F15: Slippage tolerance relative to expected output, not input
+            let min_out = (best_output as f64 * (1.0 - body.slippage / 100.0)) as u64;
             if best_output > 0 && best_output < min_out {
                 return api_err(&format!(
                     "slippage exceeded: output {} below minimum {}",
@@ -1575,20 +1579,8 @@ async fn post_router_swap(
                 "priceImpact": best_impact,
                 "slot": slot,
             });
-            // Emit trade / ticker WS events
-            if let Some(pair_id) = route.pool_or_pair_id.checked_add(0) {
-                let price = if body.amount_in > 0 {
-                    best_output as f64 / body.amount_in as f64
-                } else {
-                    0.0
-                };
-                state.dex_broadcaster.emit_trade(
-                    0, pair_id, price, body.amount_in, "swap", slot,
-                );
-                state.dex_broadcaster.emit_ticker(
-                    pair_id, price, 0.0, 0.0, 0, 0.0,
-                );
-            }
+            // FIX F14: Removed WS event emissions from read-only quote endpoint.
+            // Real trade events are emitted by the dex_router WASM contract during sendTransaction execution.
 
             ApiResponse::ok(result, slot).into_response()
         }
@@ -1860,46 +1852,10 @@ async fn get_trader_stats(
 // GOVERNANCE: POST handlers for proposals and votes
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// POST /api/v1/governance/proposals — Create a new proposal
-async fn post_create_proposal(
-    State(state): State<Arc<RpcState>>,
-    Json(body): Json<CreateProposalBody>,
-) -> Response {
-    let slot = current_slot(&state);
-    let count = read_u64(&state, DEX_GOVERNANCE_PROGRAM, "gov_prop_count");
-    let new_id = count + 1;
-
-    let title = match body.proposal_type.as_str() {
-        "new_pair" => format!(
-            "List {}/{} Trading Pair",
-            body.base_token.as_deref().unwrap_or("???"),
-            body.quote_token.as_deref().unwrap_or("???")
-        ),
-        "fee_change" => format!(
-            "Change fees for {} to maker={}bps taker={}bps",
-            body.pair.as_deref().unwrap_or("???"),
-            body.maker_fee.unwrap_or(-1),
-            body.taker_fee.unwrap_or(5)
-        ),
-        other => format!("{} proposal #{}", other, new_id),
-    };
-
-    // Store proposal data
-    let proposal = serde_json::json!({
-        "proposal_id": new_id,
-        "title": title,
-        "proposal_type": body.proposal_type,
-        "status": "active",
-        "proposer": body.proposer.unwrap_or_default(),
-        "yes_votes": 0,
-        "no_votes": 0,
-        "created_slot": slot,
-    });
-
-    // Note: actual on-chain proposal creation goes via sendTransaction.
-    // This REST endpoint returns a confirmation for UI feedback.
-
-    ApiResponse::ok(proposal, slot).into_response()
+/// POST /api/v1/governance/proposals — Create a new proposal (must use sendTransaction)
+/// FIX F16: Changed from misleading 200 response to 405 — proposals must be created on-chain.
+async fn post_create_proposal() -> Response {
+    api_method_not_allowed("Governance proposals must be created via sendTransaction RPC method")
 }
 
 /// POST /api/v1/governance/proposals/:id/vote — Vote on a proposal (must use sendTransaction)

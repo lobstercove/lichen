@@ -186,6 +186,9 @@ struct CreateMarketRequest {
     /// Optional outcome names for multi-outcome markets (2-8). Omit for binary (Yes/No).
     #[serde(default)]
     outcomes: Vec<String>,
+    /// FIX F13: Admin token required for market creation
+    #[serde(default)]
+    admin_token: Option<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -576,14 +579,8 @@ async fn post_trade(
         status: &'static str,
     }
 
-    // Emit prediction market WS event
-    state.prediction_broadcaster.emit_trade(
-        req.market_id,
-        &format!("outcome_{}", req.outcome),
-        shares as u64,
-        price,
-        slot,
-    );
+    // FIX F12: Removed WS event emission from preview-only endpoint.
+    // Trades must go through sendTransaction to emit real events.
 
     ApiResponse::ok(
         TradePreview {
@@ -607,6 +604,21 @@ async fn post_create(
     Json(req): Json<CreateMarketRequest>,
 ) -> Response {
     let slot = current_slot(&state);
+
+    // FIX F13: Require admin authentication for market creation
+    match &state.admin_token {
+        Some(required) => match &req.admin_token {
+            Some(provided) => {
+                let a = provided.as_bytes();
+                let b = required.as_bytes();
+                if a.len() != b.len() || a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) != 0 {
+                    return api_err("Invalid admin_token");
+                }
+            }
+            None => return api_err("Missing admin_token — market creation requires admin authentication"),
+        },
+        None => return api_err("Admin endpoints disabled: no admin_token configured"),
+    }
 
     if req.question.is_empty() || req.question.len() > 512 {
         return api_err("Question must be 1-512 characters");
