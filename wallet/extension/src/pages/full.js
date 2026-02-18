@@ -36,6 +36,7 @@ import {
   transferMoltName,
   releaseMoltName
 } from '../core/identity-service.js';
+import { stakeMolt, unstakeStMolt, claimReefStake, loadStakingSnapshot } from '../core/staking-service.js';
 
 /* ──────────────────────────────────────────
    State
@@ -483,6 +484,7 @@ function setupDashboardTabs() {
       if (name === 'activity') loadActivity();
       if (name === 'assets') loadAssets();
       if (name === 'identity') loadIdentityTab();
+      if (name === 'staking') loadStakingTab();
     });
   });
 }
@@ -559,6 +561,261 @@ function getAgentTypeName(val) {
 function fmtAddr(addr, len = 8) {
   if (!addr || addr.length < 16) return addr || '—';
   return addr.slice(0, len) + '…' + addr.slice(-4);
+}
+
+/* ──────────────────────────────────────────
+   Staking Tab
+   ────────────────────────────────────────── */
+async function loadStakingTab() {
+  const wallet = getActiveWallet();
+  const container = $('stakingValidatorInfo');
+  if (!wallet || !container) return;
+  container.style.display = 'block';
+
+  const rpcClient = rpc();
+
+  try {
+    const [poolInfo, position, queue] = await Promise.all([
+      rpcClient.call('getReefStakePoolInfo').catch(() => null),
+      rpcClient.call('getStakingPosition', [wallet.address]).catch(() => null),
+      rpcClient.call('getUnstakingQueue', [wallet.address]).catch(() => ({ pending_requests: [] })),
+    ]);
+
+    const stMolt = Number(position?.st_molt_amount || 0) / 1e9;
+    const value = Number(position?.current_value_molt || 0) / 1e9;
+    const rewards = Number(position?.rewards_earned || 0) / 1e9;
+    const totalStaked = Number(poolInfo?.total_molt_staked || 0) / 1e9;
+    const lockTier = position?.lock_tier_name || 'Flexible';
+    const multiplier = position?.reward_multiplier || 1.0;
+    const lockUntil = Number(position?.lock_until || 0);
+
+    // Determine if position is locked
+    const currentSlot = Math.floor(Date.now() / 400);
+    const isLocked = lockUntil > 0 && lockUntil > currentSlot;
+    const remainingDays = isLocked ? Math.ceil((lockUntil - currentSlot) / 216000) : 0;
+
+    const tierNames = ['Flexible', '30-Day', '90-Day', '365-Day'];
+    const tierMultipliers = ['1.0x', '1.5x', '2.0x', '3.0x'];
+    const tierColors = ['#94a3b8', '#60a5fa', '#a78bfa', '#f59e0b'];
+    const poolTiers = poolInfo?.tiers || [];
+
+    const lockBanner = isLocked
+      ? `<div style="margin-top:1rem;padding:0.75rem 1rem;background:rgba(249,115,22,0.1);border:1px solid rgba(249,115,22,0.3);border-radius:8px;font-size:0.85rem;color:#f97316;">
+           <i class="fas fa-lock"></i> Position locked (${lockTier}). ~${remainingDays} days remaining.
+         </div>`
+      : '';
+
+    container.innerHTML = `
+      <div style="background:linear-gradient(135deg,rgba(59,130,246,0.1),rgba(37,99,235,0.1));padding:1.5rem;border-radius:12px;margin-bottom:1.5rem;">
+        <h3 style="margin:0 0 0.5rem 0;display:flex;align-items:center;gap:0.5rem;">
+          <i class="fas fa-water" style="color:#3b82f6;"></i> ReefStake — Liquid Staking
+        </h3>
+        <p style="margin:0;font-size:0.85rem;color:var(--text-muted);">
+          Stake MOLT to receive stMOLT. Rewards auto-compound. Choose a lock tier for boosted rewards.
+        </p>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1rem;margin-bottom:1.5rem;">
+        <div style="background:var(--card-bg);padding:1rem;border-radius:10px;border:1px solid var(--border);text-align:center;">
+          <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.25rem;">Your stMOLT</div>
+          <div style="font-size:1.2rem;font-weight:700;color:var(--text);">${stMolt.toLocaleString(undefined,{maximumFractionDigits:4})}</div>
+        </div>
+        <div style="background:var(--card-bg);padding:1rem;border-radius:10px;border:1px solid var(--border);text-align:center;">
+          <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.25rem;">Value</div>
+          <div style="font-size:1.2rem;font-weight:700;color:var(--text);">${value.toLocaleString(undefined,{maximumFractionDigits:4})} MOLT</div>
+        </div>
+        <div style="background:var(--card-bg);padding:1rem;border-radius:10px;border:1px solid var(--border);text-align:center;">
+          <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.25rem;">Rewards Earned</div>
+          <div style="font-size:1.2rem;font-weight:700;color:#10b981;">${rewards.toLocaleString(undefined,{maximumFractionDigits:4})} MOLT</div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:0.75rem;margin-bottom:1.5rem;">
+        <div style="background:var(--card-bg);padding:0.75rem;border-radius:8px;border:1px solid var(--border);text-align:center;">
+          <div style="font-size:0.7rem;color:var(--text-muted);">Your Tier</div>
+          <div style="font-weight:600;color:#a78bfa;">${lockTier}</div>
+        </div>
+        <div style="background:var(--card-bg);padding:0.75rem;border-radius:8px;border:1px solid var(--border);text-align:center;">
+          <div style="font-size:0.7rem;color:var(--text-muted);">Total Pool</div>
+          <div style="font-weight:600;color:var(--text);">${totalStaked.toLocaleString(undefined,{maximumFractionDigits:0})} MOLT</div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:0.75rem;margin-bottom:1.5rem;" id="fullTiersGrid">
+        ${tierNames.map((name, i) => {
+          const isActive = lockTier === name || (i === 0 && lockTier === 'Flexible');
+          const apyVal = poolTiers[i]?.apy_percent;
+          const apyLabel = apyVal != null && apyVal > 0 ? apyVal.toFixed(1) + '% APY' : tierMultipliers[i] + ' rewards';
+          return `<div style="background:var(--card-bg);padding:0.75rem;border-radius:8px;border:2px solid ${isActive ? tierColors[i] : 'var(--border)'};text-align:center;">
+            <div style="font-size:0.8rem;font-weight:600;color:${tierColors[i]};">${name}</div>
+            <div style="font-size:0.72rem;color:var(--text-muted);">${apyLabel}</div>
+          </div>`;
+        }).join('')}
+      </div>
+
+      <div style="background:var(--card-bg);padding:1rem;border-radius:10px;border:1px solid var(--border);margin-bottom:1rem;font-size:0.85rem;color:var(--text-muted);">
+        <i class="fas fa-info-circle" style="color:#3b82f6;"></i>
+        <strong>Flexible:</strong> 7-day cooldown, 1x rewards.
+        <strong>Locked tiers</strong> earn boosted rewards but funds are locked for the chosen duration.
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1rem;">
+        <button id="fullStakeBtn" class="btn btn-primary" style="width:100%;padding:1rem;font-size:0.9rem;">
+          <i class="fas fa-arrow-down"></i> Stake MOLT
+        </button>
+        <button id="fullUnstakeBtn" class="btn btn-secondary" style="width:100%;padding:1rem;font-size:0.9rem;${isLocked ? 'opacity:0.5;cursor:not-allowed;' : ''}">
+          <i class="fas fa-arrow-up"></i> Unstake stMOLT
+        </button>
+      </div>
+
+      ${lockBanner}
+
+      <div id="fullPendingUnstakes" style="margin-top:1.5rem;display:none;">
+        <h4 style="margin-bottom:1rem;">Pending Unstakes (7-day cooldown)</h4>
+        <div id="fullUnstakesList"></div>
+      </div>
+    `;
+
+    // Pending unstakes
+    const pendingReqs = queue?.pending_requests || [];
+    if (pendingReqs.length > 0) {
+      $('fullPendingUnstakes').style.display = 'block';
+      $('fullUnstakesList').innerHTML = pendingReqs.map(req => {
+        const amt = (Number(req.molt_to_receive || req.amount || 0) / 1e9).toLocaleString(undefined, { maximumFractionDigits: 4 });
+        const cs = Math.floor(Date.now() / 400);
+        const claimable = req.claimable_at <= cs;
+        return `<div style="padding:0.75rem;background:var(--card-bg);border-radius:8px;border:1px solid var(--border);margin-bottom:0.5rem;display:flex;justify-content:space-between;align-items:center;">
+          <span style="font-weight:600;">${amt} MOLT</span>
+          ${claimable
+            ? '<button class="btn btn-small fullClaimBtn" style="padding:0.3rem 0.8rem;font-size:0.8rem;background:#10b981;border:none;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;"><i class="fas fa-check-circle"></i> Claim</button>'
+            : `<span style="color:var(--text-muted);font-size:0.8rem;"><i class="fas fa-clock"></i> ~${((req.claimable_at - cs) / 216000).toFixed(1)} days</span>`
+          }
+        </div>`;
+      }).join('');
+
+      document.querySelectorAll('.fullClaimBtn').forEach(btn => {
+        btn.addEventListener('click', () => handleFullClaim());
+      });
+    }
+
+    // Stake button
+    $('fullStakeBtn')?.addEventListener('click', () => showStakeModal());
+    // Unstake button — disabled when locked
+    $('fullUnstakeBtn')?.addEventListener('click', () => {
+      if (isLocked) {
+        alert(`Position is locked (${lockTier}). ~${remainingDays} days remaining until unlock.`);
+        return;
+      }
+      showUnstakeModal();
+    });
+  } catch (err) {
+    container.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--text-muted);"><i class="fas fa-exclamation-circle"></i> Failed to load staking data: ${err.message}</div>`;
+  }
+}
+
+async function showStakeModal() {
+  const wallet = getActiveWallet();
+  if (!wallet) return;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:10000;';
+  overlay.innerHTML = `
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:16px;padding:2rem;width:420px;max-width:90vw;">
+      <h3 style="margin:0 0 1rem;"><i class="fas fa-layer-group" style="color:#3b82f6;"></i> Stake to ReefStake</h3>
+      <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Amount (MOLT)</label>
+      <input type="number" id="stakeAmountInput" placeholder="0.00" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
+      <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Lock Tier</label>
+      <select id="stakeTierSelect" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
+        <option value="0">Flexible — 7-day cooldown, 1x rewards</option>
+        <option value="1">30-Day Lock — 1.5x rewards</option>
+        <option value="2">90-Day Lock — 2x rewards</option>
+        <option value="3">365-Day Lock — 3x rewards</option>
+      </select>
+      <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Wallet Password</label>
+      <input type="password" id="stakePasswordInput" placeholder="Enter password" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1.25rem;box-sizing:border-box;">
+      <div style="display:flex;gap:0.75rem;">
+        <button id="stakeConfirmBtn" class="btn btn-primary" style="flex:1;padding:0.75rem;">Stake MOLT</button>
+        <button id="stakeCancelBtn" class="btn btn-secondary" style="flex:1;padding:0.75rem;">Cancel</button>
+      </div>
+      <div id="stakeModalStatus" style="margin-top:0.75rem;font-size:0.85rem;text-align:center;"></div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  overlay.querySelector('#stakeCancelBtn').addEventListener('click', () => overlay.remove());
+  overlay.querySelector('#stakeConfirmBtn').addEventListener('click', async () => {
+    const amount = parseFloat(overlay.querySelector('#stakeAmountInput').value);
+    const tier = parseInt(overlay.querySelector('#stakeTierSelect').value, 10);
+    const password = overlay.querySelector('#stakePasswordInput').value;
+    const statusEl = overlay.querySelector('#stakeModalStatus');
+    if (!amount || amount <= 0) { statusEl.textContent = 'Enter a valid amount'; return; }
+    if (!password) { statusEl.textContent = 'Password required'; return; }
+    try {
+      statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Staking...';
+      await stakeMolt({ wallet, password, amountMolt: amount, tier, network: state.network?.selected || 'local-testnet' });
+      statusEl.innerHTML = '<span style="color:#10b981;">✓ Staked successfully!</span>';
+      setTimeout(() => { overlay.remove(); loadStakingTab(); }, 1500);
+    } catch (err) {
+      statusEl.innerHTML = `<span style="color:#ef4444;">${err.message}</span>`;
+    }
+  });
+}
+
+async function showUnstakeModal() {
+  const wallet = getActiveWallet();
+  if (!wallet) return;
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:10000;';
+  overlay.innerHTML = `
+    <div style="background:var(--bg);border:1px solid var(--border);border-radius:16px;padding:2rem;width:420px;max-width:90vw;">
+      <h3 style="margin:0 0 1rem;"><i class="fas fa-unlock-alt" style="color:#f59e0b;"></i> Unstake from ReefStake</h3>
+      <p style="font-size:0.85rem;color:var(--text-muted);margin-bottom:1rem;">After requesting, there is a <strong>7-day cooldown</strong> before you can claim your MOLT.</p>
+      <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Amount (stMOLT)</label>
+      <input type="number" id="unstakeAmountInput" placeholder="0.00" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1rem;box-sizing:border-box;">
+      <label style="font-size:0.85rem;font-weight:600;display:block;margin-bottom:0.25rem;">Wallet Password</label>
+      <input type="password" id="unstakePasswordInput" placeholder="Enter password" style="width:100%;padding:0.75rem;border-radius:8px;border:1px solid var(--border);background:var(--card-bg);color:var(--text);margin-bottom:1.25rem;box-sizing:border-box;">
+      <div style="display:flex;gap:0.75rem;">
+        <button id="unstakeConfirmBtn" class="btn btn-primary" style="flex:1;padding:0.75rem;">Unstake</button>
+        <button id="unstakeCancelBtn" class="btn btn-secondary" style="flex:1;padding:0.75rem;">Cancel</button>
+      </div>
+      <div id="unstakeModalStatus" style="margin-top:0.75rem;font-size:0.85rem;text-align:center;"></div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  overlay.querySelector('#unstakeCancelBtn').addEventListener('click', () => overlay.remove());
+  overlay.querySelector('#unstakeConfirmBtn').addEventListener('click', async () => {
+    const amount = parseFloat(overlay.querySelector('#unstakeAmountInput').value);
+    const password = overlay.querySelector('#unstakePasswordInput').value;
+    const statusEl = overlay.querySelector('#unstakeModalStatus');
+    if (!amount || amount <= 0) { statusEl.textContent = 'Enter a valid amount'; return; }
+    if (!password) { statusEl.textContent = 'Password required'; return; }
+    try {
+      statusEl.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Unstaking...';
+      await unstakeStMolt({ wallet, password, amountMolt: amount, network: state.network?.selected || 'local-testnet' });
+      statusEl.innerHTML = '<span style="color:#10b981;">✓ Unstake initiated! 7-day cooldown.</span>';
+      setTimeout(() => { overlay.remove(); loadStakingTab(); }, 1500);
+    } catch (err) {
+      statusEl.innerHTML = `<span style="color:#ef4444;">${err.message}</span>`;
+    }
+  });
+}
+
+async function handleFullClaim() {
+  const wallet = getActiveWallet();
+  if (!wallet) return;
+  const password = prompt('Enter wallet password to claim unstake:');
+  if (!password) return;
+  try {
+    await claimReefStake({ wallet, password, network: state.network?.selected || 'local-testnet' });
+    alert('Claim successful!');
+    loadStakingTab();
+  } catch (err) {
+    alert('Claim failed: ' + err.message);
+  }
 }
 
 async function loadIdentityTab() {

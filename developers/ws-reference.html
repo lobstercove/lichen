@@ -94,6 +94,7 @@
             </div>
             <div class="sidebar-section">
                 <h3 class="sidebar-heading">Best Practices</h3>
+                <a href="#live-channels" class="sidebar-link">Live Channels</a>
                 <a href="#reconnection" class="sidebar-link">Reconnection</a>
                 <a href="#limits" class="sidebar-link">Rate Limits</a>
             </div>
@@ -785,6 +786,72 @@ await conn.offSignatureStatus(subId);</pre></code>
 }</pre></code>
                 </div>
             </div>
+
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <!-- LIVE CHANNELS -->
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <section id="live-channels" style="margin-top:2rem;">
+                <h2>Additional Implemented Live Channels</h2>
+                <p>These subscription families are implemented in the WebSocket server (`rpc/src/ws.rs`) and channel parsing in `rpc/src/dex_ws.rs`.</p>
+
+                <h3>DEX Multiplexed Channels</h3>
+                <p><code>subscribeDex</code> / <code>unsubscribeDex</code></p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Channel Param Format</h4>
+                    <ul>
+                        <li><code>orderbook:&lt;pair_id&gt;</code></li>
+                        <li><code>trades:&lt;pair_id&gt;</code></li>
+                        <li><code>ticker:&lt;pair_id&gt;</code></li>
+                        <li><code>candles:&lt;pair_id&gt;:&lt;interval&gt;</code></li>
+                        <li><code>orders:&lt;trader_addr&gt;</code></li>
+                        <li><code>positions:&lt;trader_addr&gt;</code></li>
+                    </ul>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">JSON-RPC</span></div>
+                    <code><pre>{
+  "jsonrpc": "2.0",
+  "id": 101,
+  "method": "subscribeDex",
+  "params": { "channel": "trades:1" }
+}
+
+{
+  "jsonrpc": "2.0",
+  "id": 102,
+  "method": "unsubscribeDex",
+  "params": { "subscription": 101 }
+}</pre></code>
+                </div>
+
+                <h3>Prediction Multiplexed Channels</h3>
+                <p><code>subscribePrediction</code> / <code>unsubscribePrediction</code><br>
+                Aliases: <code>subscribePredictionMarket</code> / <code>unsubscribePredictionMarket</code></p>
+                <div class="method-section">
+                    <h4 class="method-section-title">Channel Param Format</h4>
+                    <ul>
+                        <li><code>all</code> or <code>markets</code> — all markets</li>
+                        <li><code>market:&lt;market_id&gt;</code></li>
+                        <li><code>&lt;market_id&gt;</code></li>
+                    </ul>
+                </div>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">JSON-RPC</span></div>
+                    <code><pre>{
+  "jsonrpc": "2.0",
+  "id": 201,
+  "method": "subscribePrediction",
+  "params": { "channel": "market:42" }
+}
+
+{
+  "jsonrpc": "2.0",
+  "id": 202,
+  "method": "unsubscribePrediction",
+  "params": { "subscription": 201 }
+}</pre></code>
+                </div>
+            </section>
 
             <!-- ═══════════════════════════════════════════════════════ -->
             <!-- BEST PRACTICES -->

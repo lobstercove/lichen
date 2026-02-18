@@ -335,20 +335,30 @@ Always verify exact signature from `getContractAbi` before invoking.
 
 ---
 
-## 5) JSON-RPC Method Catalog (from developer portal sidebar)
+## 5) JSON-RPC Method Catalog (source-verified from `rpc/src/lib.rs`)
 
-Endpoint: `POST http://localhost:8899`
+Primary endpoint:
 
-## 5.1 Chain
+- `POST http://localhost:8899/`
 
+Compatibility endpoints:
+
+- `POST http://localhost:8899/solana`
+- `POST http://localhost:8899/evm`
+
+## 5.1 Canonical Molt RPC (`/`)
+
+Chain/core:
+
+- `health`
 - `getSlot`
 - `getLatestBlock`
 - `getRecentBlockhash`
-- `health`
 - `getMetrics`
 - `getChainStatus`
+- `getTotalBurned`
 
-## 5.2 Account / block / tx
+Account/tx/history:
 
 - `getBalance`
 - `getAccount`
@@ -356,58 +366,165 @@ Endpoint: `POST http://localhost:8899`
 - `getAccountTxCount`
 - `getBlock`
 - `getTransaction`
-- `sendTransaction`
-- `simulateTransaction`
 - `getTransactionsByAddress`
+- `getRecentTransactions`
 - `getTransactionHistory`
+- `getTokenAccounts`
+- `sendTransaction`
+- `confirmTransaction`
+- `simulateTransaction`
 
-## 5.3 Validator / staking / network
+Network/validator:
 
 - `getValidators`
 - `getValidatorInfo`
 - `getValidatorPerformance`
-- `getStakingStatus`
-- `getStakingRewards`
+- `getPeers`
+- `getNetworkInfo`
+- `getClusterInfo`
+
+Fee/rent/treasury/genesis:
+
+- `getFeeConfig`
+- `setFeeConfig`
+- `getRentParams`
+- `setRentParams`
+- `getTreasuryInfo`
+- `getGenesisAccounts`
+
+Staking + ReefStake:
+
 - `stake`
 - `unstake`
-- `getNetworkInfo`
-- `getPeers`
+- `getStakingStatus`
+- `getStakingRewards`
+- `stakeToReefStake`
+- `unstakeFromReefStake`
+- `claimUnstakedTokens`
+- `getStakingPosition`
+- `getReefStakePoolInfo`
+- `getUnstakingQueue`
+- `getRewardAdjustmentInfo`
 
-## 5.4 Contracts / programs
+Contracts/programs:
 
 - `getContractInfo`
-- `getAllContracts`
 - `getContractLogs`
 - `getContractAbi`
+- `setContractAbi`
+- `getAllContracts`
+- `deployContract`
+- `upgradeContract`
+- `getContractEvents`
 - `getProgram`
 - `getPrograms`
 - `getProgramStats`
 - `getProgramCalls`
 - `getProgramStorage`
 
-## 5.5 Tokens / NFT / market / economics
+MoltyID + names + identity directories:
 
+- `getMoltyIdIdentity`
+- `getMoltyIdReputation`
+- `getMoltyIdSkills`
+- `getMoltyIdVouches`
+- `getMoltyIdAchievements`
+- `getMoltyIdProfile`
+- `resolveMoltName`
+- `reverseMoltName`
+- `batchReverseMoltNames`
+- `searchMoltNames`
+- `getMoltyIdAgentDirectory`
+- `getMoltyIdStats`
+- `getEvmRegistration`
+- `lookupEvmAddress`
+
+Registry/token/NFT/market:
+
+- `getSymbolRegistry`
+- `getSymbolRegistryByProgram`
+- `getAllSymbolRegistry`
 - `getTokenBalance`
 - `getTokenHolders`
 - `getTokenTransfers`
 - `getCollection`
 - `getNFT`
 - `getNFTsByOwner`
+- `getNFTsByCollection`
+- `getNFTActivity`
 - `getMarketListings`
 - `getMarketSales`
-- `getTotalBurned`
-- `getFeeConfig`
-- `getRentParams`
+
+Prediction + platform stats:
+
+- `getPredictionMarketStats`
+- `getPredictionMarkets`
+- `getPredictionMarket`
+- `getPredictionPositions`
+- `getPredictionTraderStats`
+- `getPredictionLeaderboard`
+- `getPredictionTrending`
+- `getPredictionMarketAnalytics`
+- `getDexCoreStats`
+- `getDexAmmStats`
+- `getDexMarginStats`
+- `getDexRewardsStats`
+- `getDexRouterStats`
+- `getDexAnalyticsStats`
+- `getDexGovernanceStats`
+- `getMoltswapStats`
+- `getLobsterLendStats`
+- `getClawPayStats`
+- `getBountyBoardStats`
+- `getComputeMarketStats`
+- `getReefStorageStats`
+- `getMoltMarketStats`
+- `getMoltAuctionStats`
+- `getMoltPunksStats`
+
+Testnet utility:
+
+- `requestAirdrop`
+
+## 5.2 Solana-compatible RPC (`/solana`)
+
+- `getLatestBlockhash`
+- `getRecentBlockhash`
+- `getBalance`
+- `getAccountInfo`
+- `getBlock`
+- `getBlockHeight`
+- `getSignaturesForAddress`
+- `getSignatureStatuses`
+- `getSlot`
+- `getTransaction`
+- `sendTransaction`
+- `getHealth`
+- `getVersion`
+
+## 5.3 EVM-compatible RPC (`/evm`)
+
+- `eth_getBalance`
+- `eth_sendRawTransaction`
+- `eth_call`
+- `eth_chainId`
+- `eth_blockNumber`
+- `eth_getTransactionReceipt`
+- `eth_getTransactionByHash`
+- `eth_accounts`
+- `net_version`
 
 ---
 
-## 6) WebSocket Subscriptions (real-time automation)
+## 6) WebSocket Subscriptions (source-verified from `rpc/src/ws.rs` + `rpc/src/dex_ws.rs`)
 
-Endpoint: `ws://localhost:8900`
+Endpoint:
 
-Supported subscription families:
+- `ws://localhost:8900`
 
-- `subscribeSlots` / `unsubscribeSlots`
+Core subscriptions:
+
+- `subscribeSlots` / `unsubscribeSlots` (aliases: `slotSubscribe`, `slotUnsubscribe`)
 - `subscribeBlocks` / `unsubscribeBlocks`
 - `subscribeTransactions` / `unsubscribeTransactions`
 - `subscribeAccount` / `unsubscribeAccount`
@@ -418,14 +535,44 @@ Supported subscription families:
 - `subscribeNftTransfers` / `unsubscribeNftTransfers`
 - `subscribeMarketListings` / `unsubscribeMarketListings`
 - `subscribeMarketSales` / `unsubscribeMarketSales`
+- `subscribeBridgeLocks` / `unsubscribeBridgeLocks`
+- `subscribeBridgeMints` / `unsubscribeBridgeMints`
 
-Use WebSocket streams for event-driven bots: market making, copy-trading triggers, alerting, liquidation watchers, oracle freshness monitors.
+Newer subscriptions + aliases:
+
+- `subscribeSignatureStatus` / `unsubscribeSignatureStatus` (aliases: `signatureSubscribe`, `signatureUnsubscribe`)
+- `subscribeValidators` / `unsubscribeValidators` (aliases: `validatorSubscribe`, `validatorUnsubscribe`)
+- `subscribeTokenBalance` / `unsubscribeTokenBalance` (aliases: `tokenBalanceSubscribe`, `tokenBalanceUnsubscribe`)
+- `subscribeEpochs` / `unsubscribeEpochs` (aliases: `epochSubscribe`, `epochUnsubscribe`)
+- `subscribeGovernance` / `unsubscribeGovernance` (aliases: `governanceSubscribe`, `governanceUnsubscribe`)
+
+DEX stream multiplexing:
+
+- `subscribeDex` / `unsubscribeDex`
+- DEX channel formats:
+  - `orderbook:<pair_id>`
+  - `trades:<pair_id>`
+  - `ticker:<pair_id>`
+  - `candles:<pair_id>:<interval>`
+  - `orders:<trader_addr>`
+  - `positions:<trader_addr>`
+
+Prediction stream multiplexing:
+
+- `subscribePrediction` / `unsubscribePrediction`
+- `subscribePredictionMarket` / `unsubscribePredictionMarket`
+- Prediction channel formats:
+  - `all` or `markets` (all markets)
+  - `market:<market_id>`
+  - `<market_id>`
+
+Use WS streams for event-driven bots, alerting, copy-trading triggers, and execution monitoring.
 
 ---
 
-## 7) High-Value Action Recipes (trade, vote, market actions)
+## 7) Full Contract Interaction Sweep (source-verified from `developers/contract-reference.html`)
 
-Always do ABI-first before any contract write:
+Always do ABI-first before any write:
 
 ```bash
 CONTRACT_ID=<CONTRACT_ADDR>
@@ -434,101 +581,156 @@ curl -sS -X POST "$RPC_URL" -H 'Content-Type: application/json' \
   -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getContractAbi\",\"params\":[\"$CONTRACT_ID\"]}" | jq
 ```
 
-## 7.1 Place DEX order (example: `dex_core`)
+Read/write execution pattern (all contracts):
 
 ```bash
+# Write (state change)
+$MOLT_BIN --rpc-url "$RPC_URL" call <CONTRACT_ADDR> <FUNCTION_NAME> --args '<JSON_ARRAY_ARGS>'
+
+# Read (view-style call)
+$MOLT_BIN --rpc-url "$RPC_URL" call <CONTRACT_ADDR> <FUNCTION_NAME> --args '<JSON_ARRAY_ARGS>'
+
+# Verify post-state
+curl -sS -X POST "$RPC_URL" -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"getProgramCalls","params":["<CONTRACT_ADDR>"]}' | jq
+```
+
+Autonomous trading examples:
+
+```bash
+# DEX Core: place limit order
 $MOLT_BIN --rpc-url "$RPC_URL" call <DEX_CORE_ADDR> place_order --args '["<TRADER>",1,0,0,1000000000,10000,0]'
-```
 
-## 7.2 Swap on AMM (example: `dex_amm`)
-
-```bash
+# DEX AMM: exact-in swap
 $MOLT_BIN --rpc-url "$RPC_URL" call <DEX_AMM_ADDR> swap_exact_in --args '["<TRADER>",1,true,1000,0,0]'
-```
 
-## 7.3 Open margin position (example: `dex_margin`)
+# DEX Margin: open leveraged position
+$MOLT_BIN --rpc-url "$RPC_URL" call <DEX_MARGIN_ADDR> open_margin_position --args '["<TRADER>",1,0,1000000000,2,300000000]'
 
-```bash
-$MOLT_BIN --rpc-url "$RPC_URL" call <DEX_MARGIN_ADDR> open_position --args '["<TRADER>",1,0,1000000000,2,300000000]'
-```
-
-## 7.4 Submit governance vote (CLI + contract)
-
-CLI governance vote:
-
-```bash
-$MOLT_BIN --rpc-url "$RPC_URL" gov vote <PROPOSAL_ID> yes
-```
-
-Contract governance vote (DAO contract path):
-
-```bash
-$MOLT_BIN --rpc-url "$RPC_URL" call <DAO_ADDR> vote --args '[<PROPOSAL_ID>,1]'
-```
-
-## 7.5 Prediction market trade
-
-```bash
+# Prediction Market: buy shares
 $MOLT_BIN --rpc-url "$RPC_URL" call <PREDICTION_MARKET_ADDR> buy_shares --args '["<TRADER>",<MARKET_ID>,<OUTCOME>,<AMOUNT>]'
 ```
 
-## 7.6 NFT market actions
+Canonical deployed contract surfaces:
 
-```bash
-$MOLT_BIN --rpc-url "$RPC_URL" call <MARKET_ADDR> list_nft --args '["<SELLER>",<TOKEN_ID>,<PRICE>]'
-$MOLT_BIN --rpc-url "$RPC_URL" call <AUCTION_ADDR> place_bid --args '["<BIDDER>",<TOKEN_ID>,<BID_AMOUNT>]'
-```
+- `moltcoin`: `initialize`, `balance_of`, `transfer`, `mint`, `burn`, `approve`, `total_supply`
+- `moltswap`: `initialize`, `add_liquidity`, `remove_liquidity`, `swap_a_for_b`, `swap_b_for_a`, `get_quote`, `get_reserves`, `get_liquidity_balance`, `get_total_liquidity`, `flash_loan_borrow`, `flash_loan_repay`, `flash_loan_abort`, `get_flash_loan_fee`, `set_identity_admin`, `set_moltyid_address`, `set_reputation_discount`
+- `lobsterlend`: `initialize`, `deposit`, `withdraw`, `borrow`, `repay`, `liquidate`, `get_account_info`, `get_protocol_stats`
+- `clawpump`: `initialize`, `create_token`, `buy`, `sell`, `get_token_info`, `get_buy_quote`, `get_token_count`, `get_platform_stats`
+- `clawpay`: `create_stream`, `withdraw_from_stream`, `cancel_stream`, `get_stream`, `get_withdrawable`, `set_identity_admin`, `set_moltyid_address`, `set_identity_gate`
+- `clawvault`: `initialize`, `add_strategy`, `deposit`, `withdraw`, `harvest`, `get_vault_stats`, `get_user_position`, `get_strategy_info`
+- `moltyid` (33): `initialize`, `register_identity`, `get_identity`, `update_reputation`, `update_reputation_typed`, `add_skill`, `get_skills`, `vouch`, `get_reputation`, `deactivate_identity`, `get_identity_count`, `update_agent_type`, `get_vouches`, `award_contribution_achievement`, `get_achievements`, `attest_skill`, `get_attestations`, `revoke_attestation`, `register_name`, `resolve_name`, `reverse_resolve`, `transfer_name`, `renew_name`, `release_name`, `set_endpoint`, `get_endpoint`, `set_metadata`, `get_metadata`, `set_availability`, `get_availability`, `set_rate`, `get_rate`, `get_agent_profile`
+- `moltdao`: `initialize_dao`, `create_proposal`, `create_proposal_typed`, `vote`, `vote_with_reputation`, `execute_proposal`, `veto_proposal`, `cancel_proposal`, `treasury_transfer`, `get_treasury_balance`, `get_proposal`, `get_dao_stats`
+- `moltpunks`: `initialize`, `mint`, `transfer`, `owner_of`, `balance_of`, `approve`, `transfer_from`, `burn`, `total_minted`
+- `moltmarket`: `initialize`, `list_nft`, `buy_nft`, `cancel_listing`, `get_listing`, `set_marketplace_fee`
+- `moltauction`: `initialize`, `create_auction`, `place_bid`, `finalize_auction`, `make_offer`, `accept_offer`, `set_royalty`, `update_collection_stats`, `get_collection_stats`
+- `moltoracle`: `initialize_oracle`, `add_price_feeder`, `submit_price`, `get_price`, `commit_randomness`, `reveal_randomness`, `request_randomness`, `get_randomness`, `submit_attestation`, `verify_attestation`, `get_attestation_data`, `query_oracle`, `get_aggregated_price`, `get_oracle_stats`
+- `moltbridge`: `initialize`, `add_bridge_validator`, `lock_tokens`, `mint_bridged`, `unlock_tokens`, `get_bridge_status`, `set_moltyid_address`, `set_identity_gate`
+- `bountyboard`: `create_bounty`, `submit_work`, `approve_work`, `cancel_bounty`, `get_bounty`, `set_identity_admin`, `set_moltyid_address`, `set_identity_gate`
+- `compute`: `register_provider`, `submit_job`, `claim_job`, `complete_job`, `dispute_job`, `get_job`, `set_identity_admin`, `set_moltyid_address`, `set_identity_gate`
+- `storage`: `store_data`, `confirm_storage`, `get_storage_info`, `register_provider`, `claim_storage_rewards`
+- `dex-core`: `create_pair`, `update_pair_fees`, `pause_pair`, `unpause_pair`, `place_order`, `cancel_order`, `cancel_all_orders`, `modify_order`, `match_order`, `settle_trade`, `get_order`, `get_open_orders`, `get_order_book`, `get_best_bid`, `get_best_ask`, `get_spread`, `get_trade_history`, `get_pair_info`
+- `dex-amm`: `create_pool`, `add_liquidity`, `remove_liquidity`, `collect_fees`, `swap_exact_in`, `swap_exact_out`, `get_pool_info`, `quote_swap`
+- `dex-router`: `swap`, `swap_exact_out`, `get_best_route`, `multi_hop_swap`
+- `dex-governance`: `propose_new_pair`, `vote_on_pair`, `execute_pair_proposal`, `propose_fee_change`, `vote_on_fee`, `execute_fee_proposal`, `set_listing_requirements`, `emergency_delist`
+- `dex-rewards`: `claim_trading_rewards`, `claim_lp_rewards`, `get_pending_rewards`, `set_reward_rate`, `register_referral`, `get_trading_tier`
+- `dex-margin`: `open_margin_position`, `close_margin_position`, `add_margin`, `remove_margin`, `liquidate`, `get_margin_ratio`, `set_max_leverage`, `get_liquidatable_positions`
+- `dex-analytics`: `record_trade`, `get_ohlcv`, `get_24h_stats`, `get_all_pairs_stats`, `get_trader_stats`, `get_leaderboard`, `update_price_feed`
+- `prediction-market`: opcode-dispatch ABI, includes `create_market`, `buy_shares`, `sell_shares`, `add_liquidity`, `add_initial_liquidity`, `mint_complete_set`, `redeem_complete_set`, `get_market`, `submit_resolution`, `challenge_resolution`, `finalize_resolution`, `dao_resolve`, `dao_void`, `redeem_shares`, `reclaim_collateral`, `withdraw_liquidity`, `close_market`
+- `musd-token`: `initialize`, `mint`, `burn`, `transfer`, `approve`, `transfer_from`, `total_supply`, `balance_of`, `get_reserves`
+- `weth-token`: `initialize`, `mint`, `burn`, `transfer`, `approve`, `transfer_from`, `total_supply`, `balance_of`, `get_reserves`
+- `wsol-token`: `initialize`, `mint`, `burn`, `transfer`, `approve`, `transfer_from`, `total_supply`, `balance_of`, `get_reserves`
 
-## 7.7 Discovery command (deployed contracts)
-
-```bash
-curl -sS -X POST "$RPC_URL" \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"getAllContracts","params":[]}' | jq
-```
-
-## 7.8 Runtime contract action catalog (quick index)
-
-- `dex_core`: `create_pair`, `place_order`, `modify_order`, `cancel_all_orders`
-- `dex_amm`: `create_pool`, `add_liquidity`, `swap_exact_in`, `remove_liquidity`
-- `dex_router`: `register_route`, `set_route_enabled`, `get_best_route`
-- `dex_margin`: `set_mark_price`, `open_position`, `add_margin`, `remove_margin`, `close_position`
-- `dex_rewards`: `set_reward_rate`, `record_trade`, `register_referral`
-- `dex_governance`: `propose_fee_change`, `set_listing_requirements`
-- `prediction_market`: `buy_shares`, `sell_shares`, `mint_complete_set`, `redeem_shares`, `close_market`
-- `lobsterlend`: `deposit`, `borrow`, `repay`
-- `moltmarket`: `list_nft`, `cancel_listing`
-- `moltauction`: `create_auction`, `place_bid`, `cancel_auction`
-- `moltpunks`: `mint`, `transfer`, `approve`, `transfer_from`
-- `moltdao`: `create_proposal_typed`, `vote`, `execute`
-- `moltyid`: `register_identity`, `set_endpoint`, `set_metadata`, `add_skill`, `vouch`, `set_delegate`
-- `moltoracle`: `add_price_feeder`, `submit_price`, `request_randomness`
-- `clawpump`: `create_token`, `buy`
-- `clawvault`: `deposit`, `withdraw`
-- `reef_storage`: `register_provider`, `set_storage_price`
-
-For any action above, always confirm exact parameter order/types from `getContractAbi` before calling.
+For any contract write, always confirm runtime function signature and arg order with `getContractAbi` before building `molt call`.
 
 ---
 
-## 8) REST API Use (runtime data plane)
+## 8) REST Data Planes + Custody/Cross-Chain
 
-If API is exposed at `API_URL`, use it for read-heavy bot logic.
+RPC REST services:
 
-DEX examples:
+- DEX base: `GET/POST http://localhost:8899/api/v1/*`
+- Prediction base: `GET/POST http://localhost:8899/api/v1/prediction-market/*`
 
-```bash
-curl -sS "$API_URL/dex/pairs" | jq
-curl -sS "$API_URL/dex/tickers" | jq
-curl -sS "$API_URL/dex/pools" | jq
-```
+DEX REST routes (`rpc/src/dex.rs`):
 
-Prediction market examples:
+- `/pairs`
+- `/pairs/:id`
+- `/pairs/:id/orderbook`
+- `/pairs/:id/trades`
+- `/pairs/:id/candles`
+- `/pairs/:id/stats`
+- `/pairs/:id/ticker`
+- `/tickers`
+- `/orders` (GET/POST)
+- `/orders/:id` (GET/DELETE)
+- `/router/swap` (POST)
+- `/router/quote` (POST)
+- `/routes`
+- `/pools`
+- `/pools/:id`
+- `/pools/positions`
+- `/margin/open` (POST)
+- `/margin/close` (POST)
+- `/margin/positions`
+- `/margin/positions/:id`
+- `/margin/info`
+- `/leaderboard`
+- `/traders/:addr/stats`
+- `/rewards/:addr`
+- `/governance/proposals` (GET/POST)
+- `/governance/proposals/:id`
+- `/governance/proposals/:id/vote` (POST)
+- `/stats/core`
+- `/stats/amm`
+- `/stats/margin`
+- `/stats/router`
+- `/stats/rewards`
+- `/stats/analytics`
+- `/stats/governance`
+- `/stats/moltswap`
 
-```bash
-curl -sS "$API_URL/prediction-market/stats" | jq
-curl -sS "$API_URL/prediction-market/markets?limit=20&offset=0" | jq
-```
+Prediction REST routes (`rpc/src/prediction.rs`):
+
+- `/stats`
+- `/markets`
+- `/markets/:id`
+- `/markets/:id/price-history`
+- `/markets/:id/analytics`
+- `/positions`
+- `/traders/:addr/stats`
+- `/leaderboard`
+- `/trending`
+- `/trade` (POST)
+- `/create` (POST)
+
+Custody API (`moltchain-custody`, default `http://localhost:9105`):
+
+- `GET /health`
+- `GET /status`
+- `POST /deposits`
+- `GET /deposits/:deposit_id`
+- `POST /withdrawals`
+- `PUT /withdrawals/:job_id/burn`
+- `GET /reserves`
+
+Custody notes for autonomous agents:
+
+- deposit flow: `issued -> confirmed -> swept -> credited`
+- withdrawals require burn signature submission via `PUT /withdrawals/:job_id/burn`
+- no webhook endpoint is present; use polling (`/deposits/:deposit_id`, `/status`) and/or WS subscriptions for notifications
+
+---
+
+## 8.1 Missing Coverage / Functionality Report (do not assume unsupported features)
+
+Observed gaps between live code and docs:
+
+- `developers/rpc-reference.html` does not document many live RPC methods in `rpc/src/lib.rs` (MoltyID RPC set, ReefStake methods, prediction stats methods, symbol registry, contract mutation methods, extended platform stats).
+- `developers/ws-reference.html` does not document `subscribeDex`/`unsubscribeDex` and `subscribePrediction*`/`unsubscribePrediction*` channel families present in `rpc/src/ws.rs`.
+- custody docs (`CUSTODY_DEPLOYMENT.md`) omit `PUT /withdrawals/:job_id/burn`, but endpoint exists and is required in `custody/src/main.rs`.
+- hook/webhook callback endpoints are not implemented in custody service code; agents must use polling + WS instead.
+- prediction market contract reference shows opcode-dispatch contract but only partially enumerates opcodes in docs (listed opcodes are sparse vs declared “24 fns”).
 
 ---
 
