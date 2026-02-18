@@ -53,7 +53,7 @@ extern "C" {
 pub fn call_contract(call: CrossCall) -> CallResult<Vec<u8>> {
     #[cfg(target_arch = "wasm32")]
     {
-        let mut result_buffer = [0u8; 1024];
+        let mut result_buffer = [0u8; 65536];
         
         let status = unsafe {
             cross_contract_call(

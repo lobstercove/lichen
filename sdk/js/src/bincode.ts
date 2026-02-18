@@ -79,7 +79,17 @@ export function encodeMessage(message: Message): Uint8Array {
 }
 
 export function encodeTransaction(transaction: Transaction): Uint8Array {
-  const signatures = encodeVec(transaction.signatures.map(encodeString));
+  // Encode signatures as Vec<[u8; 64]> matching Rust bincode format.
+  // Each signature is a hex string → 64 raw bytes. Fixed-size arrays in
+  // bincode have no per-element length prefix.
+  const sigBytes = transaction.signatures.map(hexSig => {
+    const raw = hexToBytes(hexSig);
+    if (raw.length !== 64) {
+      throw new Error(`Signature must be 64 bytes, got ${raw.length}`);
+    }
+    return raw;
+  });
+  const encodedSigs = concat([encodeU64LE(sigBytes.length), ...sigBytes]);
   const messageBytes = encodeMessage(transaction.message);
-  return concat([signatures, messageBytes]);
+  return concat([encodedSigs, messageBytes]);
 }

@@ -486,7 +486,13 @@ class Connection:
         return await self._unsubscribe("unsubscribeMarketSales", sub_id)
     
     async def close(self):
-        """Close connection"""
+        """Close connection and clean up all resources"""
+        # Cancel all pending response futures
+        for future in self._pending_responses.values():
+            if not future.done():
+                future.cancel()
+        self._pending_responses.clear()
+
         if self._ws_task:
             self._ws_task.cancel()
             try:
@@ -502,3 +508,12 @@ class Connection:
             self._client = None
         
         self._subscriptions.clear()
+
+    async def __aenter__(self):
+        """Async context manager entry"""
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit — ensures resources are released"""
+        await self.close()
+        return False

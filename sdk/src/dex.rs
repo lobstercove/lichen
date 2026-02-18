@@ -61,17 +61,17 @@ impl Pool {
 
         if self.total_liquidity == 0 {
             // First liquidity provider
-            // Liquidity = sqrt(amount_a * amount_b)
-            liquidity = self.sqrt(amount_a * amount_b);
+            // Liquidity = sqrt(amount_a * amount_b), use u128 to avoid overflow
+            liquidity = Self::sqrt((amount_a as u128) * (amount_b as u128));
             
             if liquidity < min_liquidity {
                 return Err(ContractError::Custom("Insufficient liquidity minted"));
             }
         } else {
             // Subsequent liquidity providers
-            // Calculate liquidity proportional to pool reserves
-            let liquidity_a = (amount_a * self.total_liquidity) / self.reserve_a;
-            let liquidity_b = (amount_b * self.total_liquidity) / self.reserve_b;
+            // Calculate liquidity proportional to pool reserves (u128 to avoid overflow)
+            let liquidity_a = ((amount_a as u128) * (self.total_liquidity as u128) / (self.reserve_a as u128)) as u64;
+            let liquidity_b = ((amount_b as u128) * (self.total_liquidity as u128) / (self.reserve_b as u128)) as u64;
             
             liquidity = if liquidity_a < liquidity_b { liquidity_a } else { liquidity_b };
             
@@ -107,14 +107,18 @@ impl Pool {
             return Err(ContractError::InvalidInput);
         }
 
+        if self.total_liquidity == 0 {
+            return Err(ContractError::Custom("Pool has no liquidity"));
+        }
+
         let provider_balance = self.get_liquidity_balance(provider);
         if provider_balance < liquidity {
             return Err(ContractError::InsufficientFunds);
         }
 
-        // Calculate amounts to return
-        let amount_a = (liquidity * self.reserve_a) / self.total_liquidity;
-        let amount_b = (liquidity * self.reserve_b) / self.total_liquidity;
+        // Calculate amounts to return (u128 to avoid overflow)
+        let amount_a = ((liquidity as u128) * (self.reserve_a as u128) / (self.total_liquidity as u128)) as u64;
+        let amount_b = ((liquidity as u128) * (self.reserve_b as u128) / (self.total_liquidity as u128)) as u64;
 
         if amount_a < min_amount_a || amount_b < min_amount_b {
             return Err(ContractError::Custom("Insufficient output amount"));
@@ -144,14 +148,14 @@ impl Pool {
             return Err(ContractError::InvalidInput);
         }
 
-        // Calculate output amount using constant product formula
+        // Calculate output amount using constant product formula (u128 to avoid overflow)
         // amount_out = (amount_in * reserve_out * (1 - fee)) / (reserve_in + amount_in * (1 - fee))
         
-        let amount_a_with_fee = amount_a_in * (self.fee_denominator - self.fee_numerator);
-        let numerator = amount_a_with_fee * self.reserve_b;
-        let denominator = (self.reserve_a * self.fee_denominator) + amount_a_with_fee;
+        let amount_a_with_fee = (amount_a_in as u128) * ((self.fee_denominator - self.fee_numerator) as u128);
+        let numerator = amount_a_with_fee * (self.reserve_b as u128);
+        let denominator = ((self.reserve_a as u128) * (self.fee_denominator as u128)) + amount_a_with_fee;
         
-        let amount_b_out = numerator / denominator;
+        let amount_b_out = (numerator / denominator) as u64;
 
         if amount_b_out < min_amount_b_out {
             return Err(ContractError::Custom("Insufficient output amount"));
@@ -181,11 +185,11 @@ impl Pool {
             return Err(ContractError::InvalidInput);
         }
 
-        let amount_b_with_fee = amount_b_in * (self.fee_denominator - self.fee_numerator);
-        let numerator = amount_b_with_fee * self.reserve_a;
-        let denominator = (self.reserve_b * self.fee_denominator) + amount_b_with_fee;
+        let amount_b_with_fee = (amount_b_in as u128) * ((self.fee_denominator - self.fee_numerator) as u128);
+        let numerator = amount_b_with_fee * (self.reserve_a as u128);
+        let denominator = ((self.reserve_b as u128) * (self.fee_denominator as u128)) + amount_b_with_fee;
         
-        let amount_a_out = numerator / denominator;
+        let amount_a_out = (numerator / denominator) as u64;
 
         if amount_a_out < min_amount_a_out {
             return Err(ContractError::Custom("Insufficient output amount"));
@@ -211,11 +215,11 @@ impl Pool {
             return 0;
         }
 
-        let amount_in_with_fee = amount_in * (self.fee_denominator - self.fee_numerator);
-        let numerator = amount_in_with_fee * reserve_out;
-        let denominator = (reserve_in * self.fee_denominator) + amount_in_with_fee;
+        let amount_in_with_fee = (amount_in as u128) * ((self.fee_denominator - self.fee_numerator) as u128);
+        let numerator = amount_in_with_fee * (reserve_out as u128);
+        let denominator = ((reserve_in as u128) * (self.fee_denominator as u128)) + amount_in_with_fee;
         
-        numerator / denominator
+        (numerator / denominator) as u64
     }
 
     /// Get liquidity balance of provider
@@ -283,8 +287,8 @@ impl Pool {
         key
     }
 
-    // Integer square root (for initial liquidity)
-    fn sqrt(&self, x: u64) -> u64 {
+    // Integer square root over u128 (for initial liquidity without overflow)
+    fn sqrt(x: u128) -> u64 {
         if x == 0 {
             return 0;
         }
@@ -297,6 +301,66 @@ impl Pool {
             y = (x / y + y) / 2;
         }
         
-        z
+        z as u64
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_mock;
+
+    fn addr(byte: u8) -> Address {
+        let mut arr = [0u8; 32];
+        arr[0] = byte;
+        Address(arr)
+    }
+
+    #[test]
+    fn test_sqrt() {
+        assert_eq!(Pool::sqrt(0), 0);
+        assert_eq!(Pool::sqrt(1), 1);
+        assert_eq!(Pool::sqrt(4), 2);
+        assert_eq!(Pool::sqrt(9), 3);
+        assert_eq!(Pool::sqrt(100), 10);
+        // floor(sqrt(2^64 - 1)) = 4294967295
+        assert_eq!(Pool::sqrt(u64::MAX as u128), 4294967295);
+    }
+
+    #[test]
+    fn test_add_liquidity_large_amounts_no_overflow() {
+        test_mock::reset();
+        let mut pool = Pool::new(addr(1), addr(2));
+        // Values that would overflow u64 if multiplied directly
+        let amount_a: u64 = 10_000_000_000_000; // 10 trillion
+        let amount_b: u64 = 10_000_000_000_000;
+        let result = pool.add_liquidity(addr(3), amount_a, amount_b, 0);
+        assert!(result.is_ok());
+        assert!(result.unwrap() > 0);
+    }
+
+    #[test]
+    fn test_remove_liquidity_zero_pool_errors() {
+        test_mock::reset();
+        let mut pool = Pool::new(addr(1), addr(2));
+        // Simulate corrupted state: provider has balance but pool has no liquidity
+        let key = Pool::liquidity_key(addr(3));
+        crate::storage_set(&key, &crate::u64_to_bytes(100));
+        let result = pool.remove_liquidity(addr(3), 50, 0, 0);
+        assert!(result.is_err()); // Should error, not panic with div-by-zero
+    }
+
+    #[test]
+    fn test_swap_large_amounts_no_overflow() {
+        test_mock::reset();
+        let mut pool = Pool::new(addr(1), addr(2));
+        pool.reserve_a = 1_000_000_000_000;
+        pool.reserve_b = 1_000_000_000_000;
+        pool.total_liquidity = 1_000_000_000_000;
+        // Without u128, amount_a_with_fee * reserve_b overflows
+        let result = pool.swap_a_for_b(500_000_000_000, 0);
+        assert!(result.is_ok());
+        let out = result.unwrap();
+        assert!(out > 0);
     }
 }

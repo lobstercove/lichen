@@ -5,12 +5,15 @@ use crate::types::{Balance, Block, NetworkInfo};
 use crate::{Hash, Instruction, Keypair, Pubkey, SYSTEM_PROGRAM_ID, TransactionBuilder};
 use reqwest;
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 /// MoltChain RPC client
 #[derive(Debug, Clone)]
 pub struct Client {
     rpc_url: String,
     client: reqwest::Client,
+    next_id: Arc<AtomicU64>,
 }
 
 impl Client {
@@ -19,6 +22,7 @@ impl Client {
         Self {
             rpc_url: rpc_url.into(),
             client: reqwest::Client::new(),
+            next_id: Arc::new(AtomicU64::new(1)),
         }
     }
     
@@ -29,9 +33,10 @@ impl Client {
     
     /// Make an RPC call
     async fn rpc_call(&self, method: &str, params: Value) -> Result<Value> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let request = json!({
             "jsonrpc": "2.0",
-            "id": 1,
+            "id": id,
             "method": method,
             "params": params
         });
@@ -356,6 +361,46 @@ impl ClientBuilder {
         Ok(Client {
             rpc_url,
             client: client_builder.build()?,
+            next_id: Arc::new(AtomicU64::new(1)),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_client_new() {
+        let client = Client::new("http://localhost:8899");
+        assert_eq!(client.rpc_url, "http://localhost:8899");
+    }
+
+    #[test]
+    fn test_client_builder() {
+        let client = Client::builder()
+            .rpc_url("http://localhost:8899")
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("should build client");
+        assert_eq!(client.rpc_url, "http://localhost:8899");
+    }
+
+    #[test]
+    fn test_client_id_increments() {
+        let client = Client::new("http://localhost:8899");
+        let v1 = client.next_id.fetch_add(1, Ordering::Relaxed);
+        let v2 = client.next_id.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(v1, 1);
+        assert_eq!(v2, 2);
+    }
+
+    #[test]
+    fn test_client_clone_shares_counter() {
+        let client = Client::new("http://localhost:8899");
+        client.next_id.fetch_add(1, Ordering::Relaxed);
+        let clone = client.clone();
+        let v = clone.next_id.fetch_add(1, Ordering::Relaxed);
+        assert_eq!(v, 2); // Shared via Arc
     }
 }
