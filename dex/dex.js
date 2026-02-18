@@ -135,7 +135,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 return fakeId;
             }
         }
-        unsubscribe(subId) { this.subs.delete(subId); }
+        unsubscribe(subId) {
+            const sub = this.subs.get(subId);
+            this.subs.delete(subId);
+            if (sub && this.ws?.readyState === WebSocket.OPEN) {
+                try {
+                    this.ws.send(JSON.stringify({ jsonrpc: '2.0', id: this.nextReqId++, method: 'unsubscribeDex', params: { subscription: subId } }));
+                } catch { /* connection may have closed */ }
+            }
+        }
     }
 
     let dexWs = null;
@@ -565,7 +573,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     function renderOpenOrders() {
         const tb = document.getElementById('openOrdersBody'), badge = document.querySelector('.orders-badge'); if (!tb) return;
-        if (badge) badge.textContent = openOrders.length;
+        if (badge) badge.textContent = openOrders.length || '';
+        if (!state.connected) { tb.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:20px;"><i class="fas fa-wallet" style="margin-right:6px;"></i>Connect wallet to view orders</td></tr>'; return; }
         if (!openOrders.length) { tb.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:20px;">No open orders</td></tr>'; return; }
         tb.innerHTML = openOrders.map(o => `<tr class="order-row"><td>${o.pair}</td><td class="side-${o.side}">${o.side.toUpperCase()}</td><td style="text-transform:capitalize">${o.type}</td><td>${formatPrice(o.price)}</td><td>${formatAmount(o.amount)}</td><td>${(o.filled * 100).toFixed(0)}%</td><td>${o.time instanceof Date ? o.time.toLocaleTimeString() : ''}</td><td><button class="cancel-btn" data-id="${o.id}"><i class="fas fa-times"></i></button></td></tr>`).join('');
         tb.querySelectorAll('.cancel-btn').forEach(btn => btn.addEventListener('click', async () => {
@@ -634,7 +643,10 @@ document.addEventListener('DOMContentLoaded', () => {
     function disconnectWallet() {
         state.connected = false; state.walletAddress = null; wallet.keypair = null; wallet.address = null;
         if (connectBtn) { connectBtn.innerHTML = '<i class="fas fa-wallet"></i> Connect Wallet'; connectBtn.className = 'btn btn-small btn-primary'; }
-        renderBalances();
+        openOrders = []; balances = {};
+        renderBalances(); renderOpenOrders();
+        // Clear wallet-gated sections
+        loadTradeHistory(); loadPositionsTab(); loadLPPositions(); loadPredictionPositions();
     }
 
     function renderWalletList() {
@@ -680,7 +692,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 el('poolFees24h', formatVolume(data.total_fees || 0));
                 el('poolCount', data.pool_count ?? '—');
             }
-        } catch { /* keep static fallback */ }
+        } catch { /* API unavailable — keep placeholder */ }
     }
 
     async function loadPools() {
@@ -715,7 +727,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function loadLPPositions() {
-        if (!state.connected) return;
+        const container = document.getElementById('pool-positions');
+        if (!state.connected) {
+            if (container) container.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:30px;font-size:0.85rem;"><i class="fas fa-wallet" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>Connect wallet to view LP positions</div>';
+            return;
+        }
         try {
             const { data } = await api.get(`/pools/positions?address=${wallet.address}`);
             if (Array.isArray(data) && data.length > 0) {
@@ -745,7 +761,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 return;
             }
-        } catch { /* keep static fallback */ }
+        } catch { /* API unavailable */ }
     }
 
     // Add Liquidity submit handler
@@ -793,7 +809,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
                 el('marginInsurance', formatVolume(data.insurance_fund || 0));
             }
-        } catch { /* keep static fallback */ }
+        } catch { /* API unavailable */ }
         // Load margin info
         try {
             const { data } = await api.get('/margin/info');
@@ -805,7 +821,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function loadMarginPositions() {
-        if (!state.connected) return;
+        if (!state.connected) {
+            const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+            el('marginEquity', '—'); el('marginUsed', '—'); el('marginAvailable', '—');
+            return;
+        }
         try {
             const { data } = await api.get(`/margin/positions?trader=${wallet.address}`);
             if (Array.isArray(data) && data.length > 0) {
@@ -855,9 +875,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Trade History tab (bottom panel of Trade view)
     async function loadTradeHistory() {
-        if (!state.connected) return;
         const container = document.getElementById('content-history');
         if (!container) return;
+        if (!state.connected) { container.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:30px;font-size:0.85rem;"><i class="fas fa-wallet" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>Connect wallet to view trade history</div>'; return; }
         try {
             const { data } = await api.get(`/pairs/${state.activePairId}/trades?limit=50&trader=${wallet.address}`);
             if (Array.isArray(data) && data.length > 0) {
@@ -871,9 +891,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Margin positions tab (bottom panel of Trade view)
     async function loadPositionsTab() {
-        if (!state.connected) return;
         const container = document.getElementById('content-positions');
         if (!container) return;
+        if (!state.connected) { container.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:30px;font-size:0.85rem;"><i class="fas fa-wallet" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>Connect wallet to view positions</div>'; return; }
         try {
             const { data } = await api.get(`/margin/positions?trader=${wallet.address}`);
             if (Array.isArray(data) && data.length > 0) {
@@ -920,7 +940,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
                 el('rewardsTotalDist', formatAmount(data.total_distributed ? data.total_distributed / 1e9 : 0) + ' MOLT');
             }
-        } catch { /* keep static */ }
+        } catch { /* API unavailable */ }
         // User rewards
         if (!state.connected) return;
         try {
@@ -940,7 +960,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 el('rewardsMultiplier', `${multipliers[tierNum] || 1.0}x`);
                 el('rewardsMultiplierSub', `${tierName} tier bonus`);
             }
-        } catch { /* keep static fallback */ }
+        } catch { /* API unavailable */ }
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -954,7 +974,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 el('govTotalProposals', data.proposal_count ?? '—');
                 el('govActiveProposals', data.active_proposals ?? '—');
             }
-        } catch { /* keep static fallback */ }
+        } catch { /* API unavailable */ }
     }
 
     async function loadProposals() {
@@ -999,7 +1019,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 return;
             }
-        } catch { /* keep static fallback */ }
+        } catch { /* API unavailable — keep empty state */ }
         // Bind vote buttons on static content
         bindVoteButtons();
     }
@@ -1072,12 +1092,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
 
     // Mock data removed — only real on-chain prediction markets displayed
-    const MOCK_MARKETS = [];
+    const INITIAL_MARKETS = [];
 
     const predictState = {
         selectedMarket: 1,
         selectedOutcome: 'yes',
-        markets: [...MOCK_MARKETS],
+        markets: [...INITIAL_MARKETS],
         positions: [],
         stats: null,
         live: false,
@@ -1142,7 +1162,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ─── Load user positions from API ───────────────────────────
     async function loadPredictionPositions() {
-        if (!state.connected) return;
+        if (!state.connected) {
+            const tbody = document.querySelector('.predict-positions-table tbody') || document.getElementById('predictPositionsBody');
+            if (tbody) tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:20px;"><i class="fas fa-wallet" style="margin-right:6px;"></i>Connect wallet to view positions</td></tr>';
+            return;
+        }
         try {
             const data = await api.rpc('getPredictionPositions', [wallet.address]);
             if (Array.isArray(data)) {

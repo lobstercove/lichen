@@ -34,8 +34,8 @@
             <div class="nav-actions">
                 <div class="price-ticker" id="priceTicker">
                     <span class="ticker-pair">MOLT/mUSD</span>
-                    <span class="ticker-price" id="tickerPrice">$0.4217</span>
-                    <span class="ticker-change positive" id="tickerChange">+5.23%</span>
+                    <span class="ticker-price" id="tickerPrice">—</span>
+                    <span class="ticker-change" id="tickerChange">—</span>
                 </div>
                 <select id="networkSelect" class="network-select">
                     <option value="mainnet">Mainnet</option>
@@ -65,41 +65,27 @@
                         </div>
                         <div class="pair-dropdown" id="pairDropdown">
                             <input type="text" placeholder="Search pairs..." class="pair-search" id="pairSearch">
-                            <div class="pair-list">
-                                <div class="pair-item active" data-pair="MOLT/mUSD">
-                                    <span>MOLT/mUSD</span><span class="pair-price">$0.4217</span>
-                                </div>
-                                <div class="pair-item" data-pair="wSOL/mUSD">
-                                    <span>wSOL/mUSD</span><span class="pair-price">$178.42</span>
-                                </div>
-                                <div class="pair-item" data-pair="wETH/mUSD">
-                                    <span>wETH/mUSD</span><span class="pair-price">$3,521.80</span>
-                                </div>
-                                <div class="pair-item" data-pair="wSOL/MOLT">
-                                    <span>wSOL/MOLT</span><span class="pair-price">423.05</span>
-                                </div>
-                                <div class="pair-item" data-pair="wETH/MOLT">
-                                    <span>wETH/MOLT</span><span class="pair-price">8,351.20</span>
-                                </div>
+                            <div class="pair-list" id="pairList">
+                                <!-- Populated from RPC -->
                             </div>
                         </div>
                     </div>
                     <div class="pair-stats">
                         <div class="stat-item">
                             <span class="stat-label">24h High</span>
-                            <span class="stat-value" id="high24h">$0.0891</span>
+                            <span class="stat-value" id="high24h">—</span>
                         </div>
                         <div class="stat-item">
                             <span class="stat-label">24h Low</span>
-                            <span class="stat-value" id="low24h">$0.0802</span>
+                            <span class="stat-value" id="low24h">—</span>
                         </div>
                         <div class="stat-item">
                             <span class="stat-label">24h Volume</span>
-                            <span class="stat-value" id="vol24h">$2.4M</span>
+                            <span class="stat-value" id="vol24h">—</span>
                         </div>
                         <div class="stat-item">
                             <span class="stat-label">24h Trades</span>
-                            <span class="stat-value" id="trades24h">14,832</span>
+                            <span class="stat-value" id="trades24h">—</span>
                         </div>
                     </div>
                 </div>
@@ -132,8 +118,8 @@
                         </div>
                         <div class="book-asks" id="bookAsks"></div>
                         <div class="book-spread">
-                            <span class="spread-price" id="spreadPrice">$0.0847</span>
-                            <span class="spread-value" id="spreadValue">Spread: 0.02%</span>
+                            <span class="spread-price" id="spreadPrice">—</span>
+                            <span class="spread-value" id="spreadValue">—</span>
                         </div>
                         <div class="book-bids" id="bookBids"></div>
                     </div>
@@ -236,11 +222,11 @@
                         <div class="order-summary">
                             <div class="summary-row">
                                 <span>Est. Fee</span>
-                                <span id="feeEstimate">~0.05 mUSD</span>
+                                <span id="feeEstimate">—</span>
                             </div>
                             <div class="summary-row">
                                 <span>Route</span>
-                                <span id="routeInfo"><i class="fas fa-bolt"></i> CLOB Direct</span>
+                                <span id="routeInfo">—</span>
                             </div>
                         </div>
 
@@ -256,25 +242,9 @@
                         <h3>Balances</h3>
                     </div>
                     <div class="balance-list" id="balanceList">
-                        <div class="balance-row">
-                            <div class="balance-token">
-                                <div class="token-icon molt-icon">M</div>
-                                <span>MOLT</span>
-                            </div>
-                            <div class="balance-amounts">
-                                <span class="balance-available">125,847.32</span>
-                                <span class="balance-usd">$10,663.27</span>
-                            </div>
-                        </div>
-                        <div class="balance-row">
-                            <div class="balance-token">
-                                <div class="token-icon musd-icon">$</div>
-                                <span>mUSD</span>
-                            </div>
-                            <div class="balance-amounts">
-                                <span class="balance-available">12,500.00</span>
-                                <span class="balance-usd">$12,500.00</span>
-                            </div>
+                        <div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;">
+                            <i class="fas fa-wallet" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
+                            Connect wallet to view balances
                         </div>
                     </div>
                 </div>
@@ -285,7 +255,7 @@
         <div class="bottom-panel">
             <div class="positions-panel">
                 <div class="positions-tabs">
-                    <button class="pos-tab active" data-target="content-orders">Open Orders <span class="badge orders-badge">3</span></button>
+                    <button class="pos-tab active" data-target="content-orders">Open Orders <span class="badge orders-badge"></span></button>
                     <button class="pos-tab" data-target="content-history">Trade History</button>
                     <button class="pos-tab" data-target="content-positions">Positions</button>
                 </div>
@@ -304,30 +274,7 @@
                             </tr>
                         </thead>
                         <tbody id="openOrdersBody">
-                            <tr class="order-row buy-row">
-                                <td>MOLT/mUSD</td>
-                                <td class="side-buy">Buy</td>
-                                <td>0.0820</td>
-                                <td>10,000</td>
-                                <td>0%</td>
-                                <td><button class="cancel-btn"><i class="fas fa-times"></i></button></td>
-                            </tr>
-                            <tr class="order-row buy-row">
-                                <td>MOLT/mUSD</td>
-                                <td class="side-buy">Buy</td>
-                                <td>0.0800</td>
-                                <td>25,000</td>
-                                <td>0%</td>
-                                <td><button class="cancel-btn"><i class="fas fa-times"></i></button></td>
-                            </tr>
-                            <tr class="order-row sell-row">
-                                <td>MOLT/mUSD</td>
-                                <td class="side-sell">Sell</td>
-                                <td>0.0900</td>
-                                <td>5,000</td>
-                                <td>40%</td>
-                                <td><button class="cancel-btn"><i class="fas fa-times"></i></button></td>
-                            </tr>
+                            <tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:20px;"><i class="fas fa-wallet" style="margin-right:6px;"></i>Connect wallet to view orders</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -370,25 +317,25 @@
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap accent-icon"><i class="fas fa-chart-line"></i></div>
                     <div class="pool-stat-label">Total Volume</div>
-                    <div class="pool-stat-value accent-text" id="pmTotalVolume">$2.8M</div>
+                    <div class="pool-stat-value accent-text" id="pmTotalVolume">—</div>
                     <div class="stat-sub">All-time</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-fire"></i></div>
                     <div class="pool-stat-label">Active Markets</div>
-                    <div class="pool-stat-value" id="pmOpenMarkets">12</div>
-                    <div class="stat-sub">3 trending</div>
+                    <div class="pool-stat-value" id="pmOpenMarkets">0</div>
+                    <div class="stat-sub">Live</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-lock"></i></div>
                     <div class="pool-stat-label">Collateral Locked</div>
-                    <div class="pool-stat-value" id="pmTotalCollateral">$1.4M</div>
+                    <div class="pool-stat-value" id="pmTotalCollateral">—</div>
                     <div class="stat-sub">mUSD</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-coins"></i></div>
                     <div class="pool-stat-label">Fees Collected</div>
-                    <div class="pool-stat-value" id="pmFees">$14,200</div>
+                    <div class="pool-stat-value" id="pmFees">—</div>
                     <div class="stat-sub">2% trading fee</div>
                 </div>
                 <div class="pool-stat-card">
@@ -426,275 +373,7 @@
             <div class="predict-grid">
                 <!-- LEFT: Active Markets -->
                 <div class="predict-markets-section">
-                    <!-- Market Card 1 — Binary (YES/NO) -->
-                    <div class="market-card panel-card" data-market-id="1" data-cat="crypto">
-                        <div class="market-card-header">
-                            <div class="market-status-row">
-                                <span class="market-status-badge active">Active</span>
-                                <span class="market-cat-tag"><i class="fab fa-bitcoin"></i> Crypto</span>
-                                <span class="market-id-tag">#PM-001</span>
-                            </div>
-                            <h4 class="market-question">Will BTC exceed $150,000 by March 31, 2026?</h4>
-                            <div class="market-meta">
-                                <span><i class="fas fa-clock"></i> Closes Feb 28, 2026</span>
-                                <span><i class="fas fa-user"></i> Creator: reef_whale.molt</span>
-                            </div>
-                        </div>
-                        <div class="market-outcomes">
-                            <div class="outcome-row yes-outcome">
-                                <div class="outcome-label">
-                                    <span class="outcome-dot yes"></span>
-                                    <span>YES</span>
-                                </div>
-                                <div class="outcome-bar-wrap">
-                                    <div class="outcome-bar yes-bar" style="width: 62%"></div>
-                                </div>
-                                <div class="outcome-price">
-                                    <span class="outcome-price-val yes-price">$0.62</span>
-                                    <span class="outcome-change positive">+4.2%</span>
-                                </div>
-                                <button class="btn btn-small btn-predict-buy" data-outcome="yes" data-market="1">Buy</button>
-                            </div>
-                            <div class="outcome-row no-outcome">
-                                <div class="outcome-label">
-                                    <span class="outcome-dot no"></span>
-                                    <span>NO</span>
-                                </div>
-                                <div class="outcome-bar-wrap">
-                                    <div class="outcome-bar no-bar" style="width: 38%"></div>
-                                </div>
-                                <div class="outcome-price">
-                                    <span class="outcome-price-val no-price">$0.38</span>
-                                    <span class="outcome-change negative">-4.2%</span>
-                                </div>
-                                <button class="btn btn-small btn-predict-sell" data-outcome="no" data-market="1">Buy</button>
-                            </div>
-                        </div>
-                        <div class="market-footer">
-                            <div class="market-stats-mini">
-                                <span><i class="fas fa-exchange-alt"></i> $842K vol</span>
-                                <span><i class="fas fa-lock"></i> $320K liq</span>
-                                <span><i class="fas fa-users"></i> 284 traders</span>
-                                <button class="btn-predict-chart" data-market="1" title="Price Chart"><i class="fas fa-chart-line"></i></button>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Market Card 2 — Binary -->
-                    <div class="market-card panel-card" data-market-id="2" data-cat="politics">
-                        <div class="market-card-header">
-                            <div class="market-status-row">
-                                <span class="market-status-badge active">Active</span>
-                                <span class="market-cat-tag"><i class="fas fa-landmark"></i> Politics</span>
-                                <span class="market-id-tag">#PM-002</span>
-                            </div>
-                            <h4 class="market-question">Will the EU pass comprehensive AI regulation by Q2 2026?</h4>
-                            <div class="market-meta">
-                                <span><i class="fas fa-clock"></i> Closes Jun 30, 2026</span>
-                                <span><i class="fas fa-user"></i> Creator: lobster_gov.molt</span>
-                            </div>
-                        </div>
-                        <div class="market-outcomes">
-                            <div class="outcome-row yes-outcome">
-                                <div class="outcome-label">
-                                    <span class="outcome-dot yes"></span>
-                                    <span>YES</span>
-                                </div>
-                                <div class="outcome-bar-wrap">
-                                    <div class="outcome-bar yes-bar" style="width: 45%"></div>
-                                </div>
-                                <div class="outcome-price">
-                                    <span class="outcome-price-val yes-price">$0.45</span>
-                                    <span class="outcome-change positive">+1.8%</span>
-                                </div>
-                                <button class="btn btn-small btn-predict-buy" data-outcome="yes" data-market="2">Buy</button>
-                            </div>
-                            <div class="outcome-row no-outcome">
-                                <div class="outcome-label">
-                                    <span class="outcome-dot no"></span>
-                                    <span>NO</span>
-                                </div>
-                                <div class="outcome-bar-wrap">
-                                    <div class="outcome-bar no-bar" style="width: 55%"></div>
-                                </div>
-                                <div class="outcome-price">
-                                    <span class="outcome-price-val no-price">$0.55</span>
-                                    <span class="outcome-change negative">-1.8%</span>
-                                </div>
-                                <button class="btn btn-small btn-predict-sell" data-outcome="no" data-market="2">Buy</button>
-                            </div>
-                        </div>
-                        <div class="market-footer">
-                            <div class="market-stats-mini">
-                                <span><i class="fas fa-exchange-alt"></i> $523K vol</span>
-                                <span><i class="fas fa-lock"></i> $210K liq</span>
-                                <span><i class="fas fa-users"></i> 178 traders</span>
-                                <button class="btn-predict-chart" data-market="2" title="Price Chart"><i class="fas fa-chart-line"></i></button>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Market Card 3 — Multi-Outcome -->
-                    <div class="market-card panel-card" data-market-id="3" data-cat="crypto">
-                        <div class="market-card-header">
-                            <div class="market-status-row">
-                                <span class="market-status-badge active">Active</span>
-                                <span class="market-cat-tag"><i class="fab fa-bitcoin"></i> Crypto</span>
-                                <span class="market-id-tag">#PM-003</span>
-                            </div>
-                            <h4 class="market-question">Which L1 blockchain will have the highest TVL by Q3 2026?</h4>
-                            <div class="market-meta">
-                                <span><i class="fas fa-clock"></i> Closes Sep 30, 2026</span>
-                                <span><i class="fas fa-user"></i> Creator: molt_analyst.molt</span>
-                            </div>
-                        </div>
-                        <div class="market-outcomes">
-                            <div class="outcome-row multi-outcome">
-                                <div class="outcome-label"><span class="outcome-dot multi-1"></span><span>Ethereum</span></div>
-                                <div class="outcome-bar-wrap"><div class="outcome-bar multi-bar-1" style="width: 48%"></div></div>
-                                <div class="outcome-price"><span class="outcome-price-val">$0.48</span></div>
-                                <button class="btn btn-small btn-predict-buy" data-outcome="0" data-market="3">Buy</button>
-                            </div>
-                            <div class="outcome-row multi-outcome">
-                                <div class="outcome-label"><span class="outcome-dot multi-2"></span><span>Solana</span></div>
-                                <div class="outcome-bar-wrap"><div class="outcome-bar multi-bar-2" style="width: 28%"></div></div>
-                                <div class="outcome-price"><span class="outcome-price-val">$0.28</span></div>
-                                <button class="btn btn-small btn-predict-buy" data-outcome="1" data-market="3">Buy</button>
-                            </div>
-                            <div class="outcome-row multi-outcome">
-                                <div class="outcome-label"><span class="outcome-dot multi-3"></span><span>MoltChain</span></div>
-                                <div class="outcome-bar-wrap"><div class="outcome-bar multi-bar-3" style="width: 15%"></div></div>
-                                <div class="outcome-price"><span class="outcome-price-val">$0.15</span></div>
-                                <button class="btn btn-small btn-predict-buy" data-outcome="2" data-market="3">Buy</button>
-                            </div>
-                            <div class="outcome-row multi-outcome">
-                                <div class="outcome-label"><span class="outcome-dot multi-4"></span><span>Other</span></div>
-                                <div class="outcome-bar-wrap"><div class="outcome-bar multi-bar-4" style="width: 9%"></div></div>
-                                <div class="outcome-price"><span class="outcome-price-val">$0.09</span></div>
-                                <button class="btn btn-small btn-predict-buy" data-outcome="3" data-market="3">Buy</button>
-                            </div>
-                        </div>
-                        <div class="market-footer">
-                            <div class="market-stats-mini">
-                                <span><i class="fas fa-exchange-alt"></i> $1.2M vol</span>
-                                <span><i class="fas fa-lock"></i> $480K liq</span>
-                                <span><i class="fas fa-users"></i> 412 traders</span>
-                                <button class="btn-predict-chart" data-market="3" title="Price Chart"><i class="fas fa-chart-line"></i></button>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Market Card 4 — Sports -->
-                    <div class="market-card panel-card" data-market-id="4" data-cat="sports">
-                        <div class="market-card-header">
-                            <div class="market-status-row">
-                                <span class="market-status-badge active">Active</span>
-                                <span class="market-cat-tag"><i class="fas fa-football-ball"></i> Sports</span>
-                                <span class="market-id-tag">#PM-004</span>
-                            </div>
-                            <h4 class="market-question">Will the FIFA Club World Cup 2025 champion be a European team?</h4>
-                            <div class="market-meta">
-                                <span><i class="fas fa-clock"></i> Closes Jul 13, 2026</span>
-                                <span><i class="fas fa-user"></i> Creator: sport_oracle.molt</span>
-                            </div>
-                        </div>
-                        <div class="market-outcomes">
-                            <div class="outcome-row yes-outcome">
-                                <div class="outcome-label"><span class="outcome-dot yes"></span><span>YES</span></div>
-                                <div class="outcome-bar-wrap"><div class="outcome-bar yes-bar" style="width: 71%"></div></div>
-                                <div class="outcome-price"><span class="outcome-price-val yes-price">$0.71</span><span class="outcome-change positive">+2.1%</span></div>
-                                <button class="btn btn-small btn-predict-buy" data-outcome="yes" data-market="4">Buy</button>
-                            </div>
-                            <div class="outcome-row no-outcome">
-                                <div class="outcome-label"><span class="outcome-dot no"></span><span>NO</span></div>
-                                <div class="outcome-bar-wrap"><div class="outcome-bar no-bar" style="width: 29%"></div></div>
-                                <div class="outcome-price"><span class="outcome-price-val no-price">$0.29</span><span class="outcome-change negative">-2.1%</span></div>
-                                <button class="btn btn-small btn-predict-sell" data-outcome="no" data-market="4">Buy</button>
-                            </div>
-                        </div>
-                        <div class="market-footer">
-                            <div class="market-stats-mini">
-                                <span><i class="fas fa-exchange-alt"></i> $198K vol</span>
-                                <span><i class="fas fa-lock"></i> $85K liq</span>
-                                <span><i class="fas fa-users"></i> 96 traders</span>
-                                <button class="btn-predict-chart" data-market="4" title="Price Chart"><i class="fas fa-chart-line"></i></button>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Market Card 5 — Tech, Resolved -->
-                    <div class="market-card panel-card resolved" data-market-id="5" data-cat="tech">
-                        <div class="market-card-header">
-                            <div class="market-status-row">
-                                <span class="market-status-badge resolved">Resolved</span>
-                                <span class="market-cat-tag"><i class="fas fa-microchip"></i> Tech</span>
-                                <span class="market-id-tag">#PM-005</span>
-                            </div>
-                            <h4 class="market-question">Will OpenAI release GPT-5 before February 2026?</h4>
-                            <div class="market-meta">
-                                <span><i class="fas fa-check-circle"></i> Resolved: NO (Feb 10, 2026)</span>
-                                <span><i class="fas fa-user"></i> Creator: ai_watcher.molt</span>
-                            </div>
-                        </div>
-                        <div class="market-outcomes">
-                            <div class="outcome-row yes-outcome">
-                                <div class="outcome-label"><span class="outcome-dot yes"></span><span>YES</span></div>
-                                <div class="outcome-bar-wrap"><div class="outcome-bar yes-bar" style="width: 0%"></div></div>
-                                <div class="outcome-price"><span class="outcome-price-val" style="color: var(--text-muted)">$0.00</span></div>
-                            </div>
-                            <div class="outcome-row no-outcome winner">
-                                <div class="outcome-label"><span class="outcome-dot no"></span><span>NO <i class="fas fa-trophy" style="color: #ffd700; font-size: 0.7rem; margin-left: 4px;"></i></span></div>
-                                <div class="outcome-bar-wrap"><div class="outcome-bar no-bar" style="width: 100%"></div></div>
-                                <div class="outcome-price"><span class="outcome-price-val" style="color: var(--green-success)">$1.00</span></div>
-                            </div>
-                        </div>
-                        <div class="market-footer">
-                            <div class="market-stats-mini">
-                                <span><i class="fas fa-exchange-alt"></i> $156K vol</span>
-                                <span><i class="fas fa-users"></i> 142 traders</span>
-                                <span><i class="fas fa-check"></i> Settled</span>
-                                <button class="btn-predict-chart" data-market="5" title="Price Chart"><i class="fas fa-chart-line"></i></button>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Market Card 6 — Science -->
-                    <div class="market-card panel-card" data-market-id="6" data-cat="science">
-                        <div class="market-card-header">
-                            <div class="market-status-row">
-                                <span class="market-status-badge active">Active</span>
-                                <span class="market-cat-tag"><i class="fas fa-flask"></i> Science</span>
-                                <span class="market-id-tag">#PM-006</span>
-                            </div>
-                            <h4 class="market-question">Will SpaceX Starship complete a successful orbital flight by Q2 2026?</h4>
-                            <div class="market-meta">
-                                <span><i class="fas fa-clock"></i> Closes Jun 30, 2026</span>
-                                <span><i class="fas fa-user"></i> Creator: space_fan.molt</span>
-                            </div>
-                        </div>
-                        <div class="market-outcomes">
-                            <div class="outcome-row yes-outcome">
-                                <div class="outcome-label"><span class="outcome-dot yes"></span><span>YES</span></div>
-                                <div class="outcome-bar-wrap"><div class="outcome-bar yes-bar" style="width: 83%"></div></div>
-                                <div class="outcome-price"><span class="outcome-price-val yes-price">$0.83</span><span class="outcome-change positive">+0.5%</span></div>
-                                <button class="btn btn-small btn-predict-buy" data-outcome="yes" data-market="6">Buy</button>
-                            </div>
-                            <div class="outcome-row no-outcome">
-                                <div class="outcome-label"><span class="outcome-dot no"></span><span>NO</span></div>
-                                <div class="outcome-bar-wrap"><div class="outcome-bar no-bar" style="width: 17%"></div></div>
-                                <div class="outcome-price"><span class="outcome-price-val no-price">$0.17</span><span class="outcome-change negative">-0.5%</span></div>
-                                <button class="btn btn-small btn-predict-sell" data-outcome="no" data-market="6">Buy</button>
-                            </div>
-                        </div>
-                        <div class="market-footer">
-                            <div class="market-stats-mini">
-                                <span><i class="fas fa-exchange-alt"></i> $367K vol</span>
-                                <span><i class="fas fa-lock"></i> $145K liq</span>
-                                <span><i class="fas fa-users"></i> 203 traders</span>
-                                <button class="btn-predict-chart" data-market="6" title="Price Chart"><i class="fas fa-chart-line"></i></button>
-                            </div>
-                        </div>
-                    </div>
+                    <!-- Market cards populated from RPC by renderPredictionMarkets() -->
                 </div>
 
                 <!-- RIGHT: Trade Panel + Create Market -->
@@ -707,17 +386,17 @@
                         <div class="predict-trade-form">
                             <div class="predict-selected-market">
                                 <span class="predict-selected-label">Selected Market</span>
-                                <span class="predict-selected-question" id="predictSelectedQ">Will BTC exceed $150,000 by March 31, 2026?</span>
+                                <span class="predict-selected-question" id="predictSelectedQ">Select a market to trade</span>
                             </div>
 
                             <div class="predict-outcome-toggle">
                                 <button class="predict-toggle-btn yes-toggle active" id="predictYesBtn">
                                     <span class="toggle-label">YES</span>
-                                    <span class="toggle-price" id="predictYesPrice">$0.62</span>
+                                    <span class="toggle-price" id="predictYesPrice">—</span>
                                 </button>
                                 <button class="predict-toggle-btn no-toggle" id="predictNoBtn">
                                     <span class="toggle-label">NO</span>
-                                    <span class="toggle-price" id="predictNoPrice">$0.38</span>
+                                    <span class="toggle-price" id="predictNoPrice">—</span>
                                 </button>
                             </div>
 
@@ -737,7 +416,7 @@
 
                             <div class="predict-summary">
                                 <div class="summary-row"><span>Shares received</span><span class="mono-value" id="predictShares">0.00</span></div>
-                                <div class="summary-row"><span>Avg price</span><span class="mono-value" id="predictAvgPrice">$0.62</span></div>
+                                <div class="summary-row"><span>Avg price</span><span class="mono-value" id="predictAvgPrice">—</span></div>
                                 <div class="summary-row"><span>Max payout</span><span class="mono-value accent-text" id="predictPayout">$0.00</span></div>
                                 <div class="summary-row"><span>Fee (2%)</span><span class="mono-value" id="predictFee">$0.00</span></div>
                             </div>
@@ -810,7 +489,7 @@
             <div class="predict-bottom-panel">
                 <div class="panel-card">
                     <div class="positions-tabs">
-                        <button class="pos-tab active" data-target="predict-positions">My Positions <span class="badge">3</span></button>
+                        <button class="pos-tab active" data-target="predict-positions">My Positions</button>
                         <button class="pos-tab" data-target="predict-history">Trade History</button>
                         <button class="pos-tab" data-target="predict-created">My Markets</button>
                     </div>
@@ -820,74 +499,15 @@
                                 <tr><th>Market</th><th>Outcome</th><th>Shares</th><th>Avg Price</th><th>Current</th><th>P&L</th><th>Value</th><th></th></tr>
                             </thead>
                             <tbody id="predictPositionsBody">
-                                <tr>
-                                    <td class="predict-market-cell">BTC &gt; $150K by Mar 31</td>
-                                    <td><span class="outcome-tag yes-tag">YES</span></td>
-                                    <td class="mono-value">1,200</td>
-                                    <td class="mono-value">$0.58</td>
-                                    <td class="mono-value">$0.62</td>
-                                    <td class="mono-value positive">+$48.00</td>
-                                    <td class="mono-value">$744.00</td>
-                                    <td><button class="btn btn-small btn-secondary">Sell</button></td>
-                                </tr>
-                                <tr>
-                                    <td class="predict-market-cell">EU AI Regulation by Q2</td>
-                                    <td><span class="outcome-tag no-tag">NO</span></td>
-                                    <td class="mono-value">800</td>
-                                    <td class="mono-value">$0.50</td>
-                                    <td class="mono-value">$0.55</td>
-                                    <td class="mono-value positive">+$40.00</td>
-                                    <td class="mono-value">$440.00</td>
-                                    <td><button class="btn btn-small btn-secondary">Sell</button></td>
-                                </tr>
-                                <tr>
-                                    <td class="predict-market-cell">L1 TVL Leader Q3</td>
-                                    <td><span class="outcome-tag multi-tag">Ethereum</span></td>
-                                    <td class="mono-value">500</td>
-                                    <td class="mono-value">$0.44</td>
-                                    <td class="mono-value">$0.48</td>
-                                    <td class="mono-value positive">+$20.00</td>
-                                    <td class="mono-value">$240.00</td>
-                                    <td><button class="btn btn-small btn-secondary">Sell</button></td>
-                                </tr>
+                                <tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:20px;"><i class="fas fa-wallet" style="margin-right:6px;"></i>Connect wallet to view positions</td></tr>
                             </tbody>
                         </table>
                     </div>
                     <div class="positions-content hidden" id="predict-history">
-                        <table class="orders-table">
-                            <thead>
-                                <tr><th>Market</th><th>Side</th><th>Outcome</th><th>Shares</th><th>Price</th><th>Total</th><th>Time</th></tr>
-                            </thead>
-                            <tbody>
-                                <tr>
-                                    <td>BTC &gt; $150K</td>
-                                    <td class="side-buy">BUY</td>
-                                    <td><span class="outcome-tag yes-tag">YES</span></td>
-                                    <td class="mono-value">500</td>
-                                    <td class="mono-value">$0.60</td>
-                                    <td class="mono-value">$300.00</td>
-                                    <td class="mono-value" style="color:var(--text-muted)">Feb 12, 2026</td>
-                                </tr>
-                                <tr>
-                                    <td>BTC &gt; $150K</td>
-                                    <td class="side-buy">BUY</td>
-                                    <td><span class="outcome-tag yes-tag">YES</span></td>
-                                    <td class="mono-value">700</td>
-                                    <td class="mono-value">$0.57</td>
-                                    <td class="mono-value">$399.00</td>
-                                    <td class="mono-value" style="color:var(--text-muted)">Feb 10, 2026</td>
-                                </tr>
-                                <tr>
-                                    <td>GPT-5 before Feb</td>
-                                    <td class="side-sell">SELL</td>
-                                    <td><span class="outcome-tag yes-tag">YES</span></td>
-                                    <td class="mono-value">300</td>
-                                    <td class="mono-value">$0.22</td>
-                                    <td class="mono-value">$66.00</td>
-                                    <td class="mono-value" style="color:var(--text-muted)">Feb 8, 2026</td>
-                                </tr>
-                            </tbody>
-                        </table>
+                        <div style="text-align:center;color:var(--text-muted);padding:30px;font-size:0.85rem;">
+                            <i class="fas fa-wallet" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
+                            Connect wallet to view trade history
+                        </div>
                     </div>
                     <div class="positions-content hidden" id="predict-created">
                         <div class="empty-state"><i class="fas fa-chart-pie"></i><p>Create a market to see it here</p></div>
@@ -919,22 +539,22 @@
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-lock"></i></div>
                     <div class="pool-stat-label">Total Value Locked</div>
-                    <div class="pool-stat-value" id="poolTvl">$12.4M</div>
+                    <div class="pool-stat-value" id="poolTvl">—</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-exchange-alt"></i></div>
                     <div class="pool-stat-label">24h Volume</div>
-                    <div class="pool-stat-value" id="poolVolume24h">$2.4M</div>
+                    <div class="pool-stat-value" id="poolVolume24h">—</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-coins"></i></div>
                     <div class="pool-stat-label">24h Fees</div>
-                    <div class="pool-stat-value" id="poolFees24h">$7,200</div>
+                    <div class="pool-stat-value" id="poolFees24h">—</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-cubes"></i></div>
                     <div class="pool-stat-label">Active Pools</div>
-                    <div class="pool-stat-value" id="poolCount">24</div>
+                    <div class="pool-stat-value" id="poolCount">0</div>
                 </div>
             </div>
 
@@ -962,46 +582,7 @@
                                 </tr>
                             </thead>
                             <tbody id="poolTableBody">
-                                <tr class="pool-row">
-                                    <td class="pool-pair"><span class="token-pair-icons"><span class="mini-icon molt-icon">M</span><span class="mini-icon musd-icon">$</span></span> MOLT/mUSD</td>
-                                    <td><span class="fee-badge">0.30%</span></td>
-                                    <td class="mono-value">$5.2M</td>
-                                    <td class="mono-value">$1.1M</td>
-                                    <td class="apr-value">38.4%</td>
-                                    <td><button class="btn btn-small btn-secondary">Add</button></td>
-                                </tr>
-                                <tr class="pool-row">
-                                    <td class="pool-pair"><span class="token-pair-icons"><span class="mini-icon sol-icon">◎</span><span class="mini-icon musd-icon">$</span></span> wSOL/mUSD</td>
-                                    <td><span class="fee-badge">0.30%</span></td>
-                                    <td class="mono-value">$4.1M</td>
-                                    <td class="mono-value">$920K</td>
-                                    <td class="apr-value">29.2%</td>
-                                    <td><button class="btn btn-small btn-secondary">Add</button></td>
-                                </tr>
-                                <tr class="pool-row">
-                                    <td class="pool-pair"><span class="token-pair-icons"><span class="mini-icon eth-icon">Ξ</span><span class="mini-icon musd-icon">$</span></span> wETH/mUSD</td>
-                                    <td><span class="fee-badge">0.05%</span></td>
-                                    <td class="mono-value">$3.8M</td>
-                                    <td class="mono-value">$890K</td>
-                                    <td class="apr-value">24.1%</td>
-                                    <td><button class="btn btn-small btn-secondary">Add</button></td>
-                                </tr>
-                                <tr class="pool-row">
-                                    <td class="pool-pair"><span class="token-pair-icons"><span class="mini-icon sol-icon">◎</span><span class="mini-icon molt-icon">M</span></span> wSOL/MOLT</td>
-                                    <td><span class="fee-badge">0.30%</span></td>
-                                    <td class="mono-value">$2.1M</td>
-                                    <td class="mono-value">$340K</td>
-                                    <td class="apr-value">18.7%</td>
-                                    <td><button class="btn btn-small btn-secondary">Add</button></td>
-                                </tr>
-                                <tr class="pool-row">
-                                    <td class="pool-pair"><span class="token-pair-icons"><span class="mini-icon reef-icon">R</span><span class="mini-icon molt-icon">M</span></span> REEF/MOLT</td>
-                                    <td><span class="fee-badge fee-volatile">1.00%</span></td>
-                                    <td class="mono-value">$1.3M</td>
-                                    <td class="mono-value">$120K</td>
-                                    <td class="apr-value">52.3%</td>
-                                    <td><button class="btn btn-small btn-secondary">Add</button></td>
-                                </tr>
+                                <tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:30px;"><i class="fas fa-water" style="font-size:1.5rem;margin-bottom:8px;display:block;opacity:0.4;"></i>Loading pools from RPC...</td></tr>
                             </tbody>
                         </table>
                     </div>
@@ -1020,7 +601,6 @@
                                 <option>wSOL / mUSD</option>
                                 <option>wETH / mUSD</option>
                                 <option>wSOL / MOLT</option>
-                                <option>REEF / MOLT</option>
                             </select>
                         </div>
 
@@ -1065,9 +645,9 @@
                         </div>
 
                         <div class="liq-preview">
-                            <div class="summary-row"><span>Current Price</span><span id="liqCurrentPrice">0.4229 mUSD</span></div>
+                            <div class="summary-row"><span>Current Price</span><span id="liqCurrentPrice">—</span></div>
                             <div class="summary-row"><span>Slippage Tolerance</span><span>0.5%</span></div>
-                            <div class="summary-row"><span>Pool Share</span><span id="liqPoolShare">~0.12%</span></div>
+                            <div class="summary-row"><span>Pool Share</span><span id="liqPoolShare">—</span></div>
                         </div>
 
                         <button class="btn btn-full btn-buy" id="addLiqBtn">Add Liquidity</button>
@@ -1079,49 +659,13 @@
             <div class="pool-bottom-panel">
                 <div class="panel-card">
                     <div class="positions-tabs">
-                        <button class="pos-tab active" data-target="pool-positions">My Positions <span class="badge">2</span></button>
+                        <button class="pos-tab active" data-target="pool-positions">My Positions</button>
                         <button class="pos-tab" data-target="pool-history">Transaction History</button>
                     </div>
                     <div class="positions-content" id="pool-positions">
-                        <div class="lp-position-card">
-                            <div class="lp-pos-header">
-                                <div class="lp-pos-pair">
-                                    <span class="token-pair-icons"><span class="mini-icon molt-icon">M</span><span class="mini-icon musd-icon">$</span></span>
-                                    <span class="lp-pair-name">MOLT/mUSD</span>
-                                    <span class="fee-badge">0.30%</span>
-                                </div>
-                                <span class="range-badge in-range"><i class="fas fa-circle"></i> In Range</span>
-                            </div>
-                            <div class="lp-pos-details">
-                                <div class="lp-detail"><span>Range</span><span class="mono-value">0.3800 — 0.4800</span></div>
-                                <div class="lp-detail"><span>Liquidity</span><span class="mono-value">$4,280.50</span></div>
-                                <div class="lp-detail"><span>Uncollected Fees</span><span class="mono-value accent-text">$42.18</span></div>
-                            </div>
-                            <div class="lp-pos-actions">
-                                <button class="btn btn-small btn-primary">Collect Fees</button>
-                                <button class="btn btn-small btn-secondary">Remove</button>
-                                <button class="btn btn-small btn-secondary">Add More</button>
-                            </div>
-                        </div>
-                        <div class="lp-position-card">
-                            <div class="lp-pos-header">
-                                <div class="lp-pos-pair">
-                                    <span class="token-pair-icons"><span class="mini-icon molt-icon">M</span><span class="mini-icon eth-icon">Ξ</span></span>
-                                    <span class="lp-pair-name">MOLT/wETH</span>
-                                    <span class="fee-badge">0.05%</span>
-                                </div>
-                                <span class="range-badge out-range"><i class="fas fa-circle"></i> Out of Range</span>
-                            </div>
-                            <div class="lp-pos-details">
-                                <div class="lp-detail"><span>Range</span><span class="mono-value">0.000012 — 0.000018</span></div>
-                                <div class="lp-detail"><span>Liquidity</span><span class="mono-value">$1,650.00</span></div>
-                                <div class="lp-detail"><span>Uncollected Fees</span><span class="mono-value accent-text">$8.73</span></div>
-                            </div>
-                            <div class="lp-pos-actions">
-                                <button class="btn btn-small btn-primary">Collect Fees</button>
-                                <button class="btn btn-small btn-secondary">Remove</button>
-                                <button class="btn btn-small btn-secondary">Add More</button>
-                            </div>
+                        <div style="text-align:center;color:var(--text-muted);padding:30px;font-size:0.85rem;">
+                            <i class="fas fa-wallet" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
+                            Connect wallet to view LP positions
                         </div>
                     </div>
                     <div class="positions-content hidden" id="pool-history">
@@ -1142,19 +686,19 @@
             <div class="margin-stats-row">
                 <div class="pool-stat-card">
                     <div class="pool-stat-label">Account Equity</div>
-                    <div class="pool-stat-value" id="marginEquity">$16,083.27</div>
+                    <div class="pool-stat-value" id="marginEquity">—</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="pool-stat-label">Used Margin</div>
-                    <div class="pool-stat-value" id="marginUsed">$0.00</div>
+                    <div class="pool-stat-value" id="marginUsed">—</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="pool-stat-label">Available Margin</div>
-                    <div class="pool-stat-value" id="marginAvailable">$16,083.27</div>
+                    <div class="pool-stat-value" id="marginAvailable">—</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="pool-stat-label">Insurance Fund</div>
-                    <div class="pool-stat-value" id="marginInsurance">$847K</div>
+                    <div class="pool-stat-value" id="marginInsurance">—</div>
                 </div>
             </div>
 
@@ -1172,7 +716,6 @@
                             <option value="1">wSOL/mUSD</option>
                             <option value="2">wETH/mUSD</option>
                             <option value="4">wSOL/MOLT</option>
-                            <option value="6">REEF/MOLT</option>
                         </select>
                     </div>
                     <div class="form-group">
@@ -1201,9 +744,9 @@
                         <input type="number" placeholder="0.00" class="form-input" id="marginAmount">
                     </div>
                     <div class="margin-info-rows">
-                        <div class="info-row"><span>Entry Price</span><span id="marginEntry">$0.0847</span></div>
-                        <div class="info-row"><span>Liq. Price</span><span class="text-warning" id="marginLiqPrice">$0.0712</span></div>
-                        <div class="info-row"><span>Margin Ratio</span><span id="marginRatio">20.00%</span></div>
+                        <div class="info-row"><span>Entry Price</span><span id="marginEntry">—</span></div>
+                        <div class="info-row"><span>Liq. Price</span><span class="text-warning" id="marginLiqPrice">—</span></div>
+                        <div class="info-row"><span>Margin Ratio</span><span id="marginRatio">—</span></div>
                     </div>
                     <button class="btn btn-full btn-buy" id="marginOpenBtn">Open Long</button>
                 </div>
@@ -1241,27 +784,27 @@
                 <div class="pool-stat-card highlight-card">
                     <div class="stat-icon-wrap accent-icon"><i class="fas fa-coins"></i></div>
                     <div class="pool-stat-label">Pending Rewards</div>
-                    <div class="pool-stat-value accent-text" id="rewardsPending">12,450 MOLT</div>
-                    <div class="stat-sub" id="rewardsPendingUsd">≈ $5,274.75</div>
+                    <div class="pool-stat-value accent-text" id="rewardsPending">0 MOLT</div>
+                    <div class="stat-sub" id="rewardsPendingUsd">≈ $0.00</div>
                     <button class="btn btn-small btn-primary claim-btn" id="claimAllBtn">Claim All</button>
                 </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-medal"></i></div>
                     <div class="pool-stat-label">Your Tier</div>
-                    <div class="pool-stat-value" id="rewardsTier"><span class="tier-badge silver">Silver</span></div>
-                    <div class="tier-progress"><div class="tier-bar" style="width: 45%"></div></div>
-                    <div class="stat-sub">45K / 100K MOLT to Gold</div>
+                    <div class="pool-stat-value" id="rewardsTier"><span class="tier-badge bronze">Bronze</span></div>
+                    <div class="tier-progress"><div class="tier-bar" style="width: 0%"></div></div>
+                    <div class="stat-sub">Connect wallet to view tier</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-bolt"></i></div>
                     <div class="pool-stat-label">Your Multiplier</div>
-                    <div class="pool-stat-value" id="rewardsMultiplier">1.5x</div>
-                    <div class="stat-sub" id="rewardsMultiplierSub">Silver tier bonus</div>
+                    <div class="pool-stat-value" id="rewardsMultiplier">1.0x</div>
+                    <div class="stat-sub" id="rewardsMultiplierSub">Base rate</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-chart-bar"></i></div>
                     <div class="pool-stat-label">Total Distributed</div>
-                    <div class="pool-stat-value" id="rewardsTotalDist">4.2M MOLT</div>
+                    <div class="pool-stat-value" id="rewardsTotalDist">—</div>
                     <div class="stat-sub">Since genesis</div>
                 </div>
             </div>
@@ -1280,15 +823,15 @@
                             <div class="reward-metrics">
                                 <div class="reward-metric">
                                     <span class="metric-label">Pending</span>
-                                    <span class="metric-value accent-text">8,320 MOLT</span>
+                                    <span class="metric-value accent-text">0 MOLT</span>
                                 </div>
                                 <div class="reward-metric">
                                     <span class="metric-label">This Month</span>
-                                    <span class="metric-value">12,450 MOLT</span>
+                                    <span class="metric-value">0 MOLT</span>
                                 </div>
                                 <div class="reward-metric">
                                     <span class="metric-label">All Time</span>
-                                    <span class="metric-value">48,920 MOLT</span>
+                                    <span class="metric-value">0 MOLT</span>
                                 </div>
                             </div>
                         </div>
@@ -1304,15 +847,15 @@
                             <div class="reward-metrics">
                                 <div class="reward-metric">
                                     <span class="metric-label">Pending</span>
-                                    <span class="metric-value accent-text">3,890 MOLT</span>
+                                    <span class="metric-value accent-text">0 MOLT</span>
                                 </div>
                                 <div class="reward-metric">
                                     <span class="metric-label">Active Positions</span>
-                                    <span class="metric-value">2</span>
+                                    <span class="metric-value">0</span>
                                 </div>
                                 <div class="reward-metric">
                                     <span class="metric-label">Combined Liquidity</span>
-                                    <span class="metric-value">$5,930</span>
+                                    <span class="metric-value">—</span>
                                 </div>
                             </div>
                         </div>
@@ -1327,11 +870,11 @@
                             <div class="reward-metrics">
                                 <div class="reward-metric">
                                     <span class="metric-label">Your Referrals</span>
-                                    <span class="metric-value">12 traders</span>
+                                    <span class="metric-value">0 traders</span>
                                 </div>
                                 <div class="reward-metric">
                                     <span class="metric-label">Referral Earnings</span>
-                                    <span class="metric-value accent-text">240 MOLT</span>
+                                    <span class="metric-value accent-text">0 MOLT</span>
                                 </div>
                                 <div class="reward-metric">
                                     <span class="metric-label">Your Rate</span>
@@ -1339,7 +882,7 @@
                                 </div>
                             </div>
                             <div class="referral-link-box">
-                                <code id="referralLink">moltydex.io/ref/0x1a2b...3c4d</code>
+                                <code id="referralLink">Connect wallet for referral link</code>
                                 <button class="copy-btn" id="copyReferral"><i class="fas fa-copy"></i></button>
                             </div>
                         </div>
@@ -1358,12 +901,12 @@
                                 <span>Volume Required</span>
                                 <span>Multiplier</span>
                             </div>
-                            <div class="tier-table-row">
+                            <div class="tier-table-row active-tier">
                                 <span class="tier-name bronze"><i class="fas fa-circle"></i> Bronze</span>
                                 <span class="mono-value">&lt; 10K MOLT</span>
                                 <span class="mono-value">1.0x</span>
                             </div>
-                            <div class="tier-table-row active-tier">
+                            <div class="tier-table-row">
                                 <span class="tier-name silver"><i class="fas fa-circle"></i> Silver</span>
                                 <span class="mono-value">10K — 100K</span>
                                 <span class="mono-value">1.5x</span>
@@ -1384,13 +927,13 @@
                             <h4>Your Progress</h4>
                             <div class="progress-stat">
                                 <span>Cumulative Volume</span>
-                                <span class="mono-value">45,320 MOLT</span>
+                                <span class="mono-value">—</span>
                             </div>
                             <div class="progress-stat">
-                                <span>Next Tier (Gold)</span>
-                                <span class="mono-value">54,680 MOLT remaining</span>
+                                <span>Next Tier</span>
+                                <span class="mono-value">Connect wallet</span>
                             </div>
-                            <div class="tier-progress lg"><div class="tier-bar" style="width: 45%"></div></div>
+                            <div class="tier-progress lg"><div class="tier-bar" style="width: 0%"></div></div>
                         </div>
 
                         <div class="referral-info-box">
@@ -1420,34 +963,10 @@
                         <button class="pos-tab" data-target="reward-activity">Reward Activity</button>
                     </div>
                     <div class="positions-content" id="reward-claims">
-                        <table class="orders-table">
-                            <thead>
-                                <tr><th>Type</th><th>Amount</th><th>Value</th><th>Tier</th><th>Time</th></tr>
-                            </thead>
-                            <tbody>
-                                <tr>
-                                    <td><span class="reward-type-tag trading">Trading</span></td>
-                                    <td class="mono-value">5,000 MOLT</td>
-                                    <td class="mono-value">$2,115</td>
-                                    <td><span class="tier-badge silver" style="font-size:0.65rem;padding:2px 8px;">Silver 1.5x</span></td>
-                                    <td class="mono-value" style="color:var(--text-muted)">Feb 8, 2026</td>
-                                </tr>
-                                <tr>
-                                    <td><span class="reward-type-tag lp">LP</span></td>
-                                    <td class="mono-value">2,200 MOLT</td>
-                                    <td class="mono-value">$930</td>
-                                    <td>—</td>
-                                    <td class="mono-value" style="color:var(--text-muted)">Feb 5, 2026</td>
-                                </tr>
-                                <tr>
-                                    <td><span class="reward-type-tag referral">Referral</span></td>
-                                    <td class="mono-value">120 MOLT</td>
-                                    <td class="mono-value">$50</td>
-                                    <td>—</td>
-                                    <td class="mono-value" style="color:var(--text-muted)">Feb 3, 2026</td>
-                                </tr>
-                            </tbody>
-                        </table>
+                        <div style="text-align:center;color:var(--text-muted);padding:30px;font-size:0.85rem;">
+                            <i class="fas fa-wallet" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
+                            Connect wallet to view claim history
+                        </div>
                     </div>
                     <div class="positions-content hidden" id="reward-activity">
                         <div class="empty-state"><i class="fas fa-chart-line"></i><p>Reward accrual activity will appear here</p></div>
@@ -1479,12 +998,12 @@
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap accent-icon"><i class="fas fa-bolt"></i></div>
                     <div class="pool-stat-label">Active Proposals</div>
-                    <div class="pool-stat-value" id="govActiveProposals">3</div>
+                    <div class="pool-stat-value" id="govActiveProposals">0</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-archive"></i></div>
                     <div class="pool-stat-label">Total Proposals</div>
-                    <div class="pool-stat-value" id="govTotalProposals">47</div>
+                    <div class="pool-stat-value" id="govTotalProposals">0</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-check-double"></i></div>
@@ -1513,95 +1032,10 @@
                             </div>
                         </div>
                         <div class="proposals-list-inner" id="proposalsList">
-                            <div class="proposal-card active-proposal" data-proposal-id="45">
-                                <div class="proposal-top-row">
-                                    <div class="proposal-status-badge active">Active</div>
-                                    <span class="proposal-type-tag">New Pair</span>
-                                    <span class="proposal-id">#45</span>
-                                </div>
-                                <h4>List CLAW/MOLT Trading Pair</h4>
-                                <p class="proposal-desc text-secondary">Add CLAW/MOLT pair with 0.30% fee tier, 10K MOLT minimum liquidity.</p>
-                                <div class="proposal-votes">
-                                    <div class="vote-bar"><div class="vote-yes" style="width: 72%"></div></div>
-                                    <div class="vote-counts">
-                                        <span class="vote-yes-text"><i class="fas fa-check"></i> 72% Yes (1,284 votes)</span>
-                                        <span class="vote-no-text"><i class="fas fa-times"></i> 28% No (502 votes)</span>
-                                    </div>
-                                </div>
-                                <div class="proposal-footer">
-                                    <span class="proposal-time"><i class="fas fa-clock"></i> 18h remaining</span>
-                                    <div class="proposal-actions">
-                                        <button class="btn btn-small btn-primary vote-btn vote-for">Vote Yes</button>
-                                        <button class="btn btn-small btn-secondary vote-btn vote-against">Vote No</button>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="proposal-card active-proposal" data-proposal-id="46">
-                                <div class="proposal-top-row">
-                                    <div class="proposal-status-badge active">Active</div>
-                                    <span class="proposal-type-tag">Fee Change</span>
-                                    <span class="proposal-id">#46</span>
-                                </div>
-                                <h4>Reduce MOLT/mUSD Taker Fee to 3bps</h4>
-                                <p class="proposal-desc text-secondary">Lower taker fee from 5bps to 3bps for the highest-volume pair. Maker rebate stays at -1bps.</p>
-                                <div class="proposal-votes">
-                                    <div class="vote-bar"><div class="vote-yes" style="width: 58%"></div></div>
-                                    <div class="vote-counts">
-                                        <span class="vote-yes-text"><i class="fas fa-check"></i> 58% Yes</span>
-                                        <span class="vote-no-text"><i class="fas fa-times"></i> 42% No</span>
-                                    </div>
-                                </div>
-                                <div class="proposal-footer">
-                                    <span class="proposal-time"><i class="fas fa-clock"></i> 36h remaining</span>
-                                    <div class="proposal-actions">
-                                        <button class="btn btn-small btn-primary vote-btn vote-for">Vote Yes</button>
-                                        <button class="btn btn-small btn-secondary vote-btn vote-against">Vote No</button>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="proposal-card passed-proposal" data-proposal-id="44">
-                                <div class="proposal-top-row">
-                                    <div class="proposal-status-badge passed">Passed</div>
-                                    <span class="proposal-type-tag">New Pair</span>
-                                    <span class="proposal-id">#44</span>
-                                </div>
-                                <h4>Add REEF/mUSD Trading Pair</h4>
-                                <p class="proposal-desc text-secondary">Community voted to add REEF/mUSD with 1.00% fee tier.</p>
-                                <div class="proposal-votes">
-                                    <div class="vote-bar"><div class="vote-yes" style="width: 89%"></div></div>
-                                    <div class="vote-counts">
-                                        <span class="vote-yes-text"><i class="fas fa-check"></i> 89% Yes</span>
-                                        <span class="vote-no-text"><i class="fas fa-times"></i> 11% No</span>
-                                    </div>
-                                </div>
-                                <div class="proposal-footer">
-                                    <span class="proposal-time"><i class="fas fa-lock-open"></i> Timelock: ready to execute</span>
-                                    <div class="proposal-actions">
-                                        <button class="btn btn-small btn-primary"><i class="fas fa-play"></i> Execute</button>
-                                    </div>
-                                </div>
-                            </div>
-
-                            <div class="proposal-card executed-proposal" data-proposal-id="43">
-                                <div class="proposal-top-row">
-                                    <div class="proposal-status-badge executed">Executed</div>
-                                    <span class="proposal-type-tag">New Pair</span>
-                                    <span class="proposal-id">#43</span>
-                                </div>
-                                <h4>Add MOLT/ETH Trading Pair</h4>
-                                <p class="proposal-desc text-secondary">Listed MOLT/ETH with 0.05% fee tier. Min liquidity 10K MOLT met.</p>
-                                <div class="proposal-votes">
-                                    <div class="vote-bar"><div class="vote-yes" style="width: 94%"></div></div>
-                                    <div class="vote-counts">
-                                        <span class="vote-yes-text"><i class="fas fa-check"></i> 94% Yes</span>
-                                        <span class="vote-no-text"><i class="fas fa-times"></i> 6% No</span>
-                                    </div>
-                                </div>
-                                <div class="proposal-footer">
-                                    <span class="proposal-time"><i class="fas fa-check-circle"></i> Executed on Feb 2, 2026</span>
-                                </div>
+                            <div style="text-align:center;color:var(--text-muted);padding:40px;font-size:0.9rem;">
+                                <i class="fas fa-landmark" style="font-size:2rem;margin-bottom:12px;display:block;opacity:0.4;"></i>
+                                <p>No proposals yet</p>
+                                <p style="font-size:0.8rem;margin-top:8px;">Submit a proposal to get started</p>
                             </div>
                         </div>
                     </div>
@@ -1650,7 +1084,6 @@
                                     <option>wSOL/mUSD</option>
                                     <option>wETH/mUSD</option>
                                     <option>wSOL/MOLT</option>
-                                    <option>REEF/MOLT</option>
                                 </select>
                             </div>
                             <div class="form-group">
