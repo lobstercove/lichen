@@ -136,6 +136,66 @@
         </div>
     </div>
 
+    <!-- WASM ABI Calling Convention -->
+    <div style="margin-bottom:3rem;">
+        <h2 style="font-size:1.3rem; margin-bottom:.5rem;"><i class="fas fa-cogs"></i> WASM ABI Calling Convention</h2>
+        <p style="color:var(--text-secondary); margin-bottom:1rem;">MoltChain contracts compile to WASM and follow a unified ABI for argument passing. The runtime supports three modes — agents should use <strong>JSON mode</strong> for simplicity or <strong>Layout Descriptor mode</strong> for full control.</p>
+
+        <div class="sub-heading">Argument Passing Modes</div>
+        <table class="const-table">
+            <tr><th>Mode</th><th>Trigger</th><th>Best For</th></tr>
+            <tr><td>JSON Auto-Encode</td><td>Args start with <code>[</code> (JSON array)</td><td>CLI calls, agents — no manual encoding needed</td></tr>
+            <tr><td>Layout Descriptor</td><td>Args start with <code>0xAB</code></td><td>SDKs, binary callers — full stride control per param</td></tr>
+            <tr><td>Default (Legacy)</td><td>Neither of above</td><td>All-pointer functions (pubkeys only, no integers)</td></tr>
+        </table>
+
+        <div class="sub-heading">JSON Auto-Encode Mode</div>
+        <p>When argument bytes start with <code>[</code>, the runtime parses them as a JSON array and converts each element to binary with a <code>0xAB</code> layout descriptor:</p>
+        <table class="const-table">
+            <tr><th>JSON Type</th><th>WASM Param</th><th>Encoding</th><th>Stride</th></tr>
+            <tr><td>String (valid base58)</td><td>I32</td><td>32-byte public key</td><td>32</td></tr>
+            <tr><td>String (non-base58)</td><td>I32</td><td>UTF-8 bytes, zero-padded to next 32-byte boundary (max 224B)</td><td>padded length</td></tr>
+            <tr><td>Number ≤ 255</td><td>I32</td><td>1 byte</td><td>1</td></tr>
+            <tr><td>Number 256–65535</td><td>I32</td><td>2 bytes LE</td><td>2</td></tr>
+            <tr><td>Number &gt; 65535</td><td>I32</td><td>4 bytes LE</td><td>4</td></tr>
+            <tr><td>Boolean</td><td>I32</td><td>1 byte (0 or 1)</td><td>1</td></tr>
+            <tr><td>Number / any</td><td>I64</td><td>8 bytes LE</td><td>8</td></tr>
+        </table>
+        <p><strong>Example — </strong><code>molt call &lt;addr&gt; register_identity '["8nRM2Fk...", 1, "agent-demo", 10]'</code></p>
+        <p>The runtime detects the JSON array, encodes: <code>0xAB 20 01 20 01</code> + [32B pubkey][1B: 1][32B: "agent-demo\0…"][1B: 10]</p>
+
+        <div class="sub-heading">Layout Descriptor Mode (0xAB)</div>
+        <p>Binary callers construct <code>0xAB</code> + N stride bytes + data. Each stride byte controls how the runtime interprets the corresponding parameter:</p>
+        <table class="const-table">
+            <tr><th>Stride</th><th>Meaning</th></tr>
+            <tr><td>32 (0x20)</td><td>Pointer — 32 bytes at that offset, WASM receives memory address</td></tr>
+            <tr><td>4 (0x04)</td><td>u32/i32 — 4 LE bytes, WASM receives raw I32 value</td></tr>
+            <tr><td>2 (0x02)</td><td>u16/i16 — 2 LE bytes, WASM receives raw I32 value</td></tr>
+            <tr><td>1 (0x01)</td><td>u8/bool — 1 byte, WASM receives raw I32 value</td></tr>
+            <tr><td>8 (0x08)</td><td>I64 — 8 LE bytes, WASM receives raw I64 value</td></tr>
+        </table>
+
+        <div class="sub-heading">Default Mode (Legacy)</div>
+        <p>Without JSON or <code>0xAB</code> prefix: every I32 param advances 32 bytes (treated as a pointer). Every I64 param advances 8 bytes. This mode works for all-pointer functions (e.g., <code>transfer(from, to, amount)</code>) but <strong>silently breaks</strong> functions with mixed pointer/integer I32 params.</p>
+
+        <div class="sub-heading">Contract ABI Patterns</div>
+        <table class="const-table">
+            <tr><th>Pattern</th><th>Contracts</th><th>Notes</th></tr>
+            <tr><td>Named exports (standard)</td><td>MoltCoin, MoltSwap, LobsterLend, ClawPump, ClawPay, ClawVault, MoltyID, MoltDAO, MoltPunks, MoltMarket, MoltAuction, MoltOracle, MoltBridge, BountyBoard, Compute Market, Reef Storage, mUSD, wETH, wSOL</td><td>Each function is a <code>#[no_mangle] pub extern "C" fn</code> — callable by name with JSON args</td></tr>
+            <tr><td>Opcode dispatcher (<code>call()</code>)</td><td>DEX Core, DEX AMM, DEX Router, DEX Governance, DEX Rewards, DEX Margin, DEX Analytics, Prediction Market</td><td>Single <code>call()</code> export; internal ops dispatched via opcode byte in <code>get_args()</code> buffer. Use SDK for these.</td></tr>
+        </table>
+
+        <div class="sub-heading">Return Code Conventions</div>
+        <p><strong>Not all contracts agree on return codes.</strong> The runtime records the WASM return value in <code>return_code</code> for informational purposes but does NOT use it to determine success/failure — only a WASM trap constitutes failure.</p>
+        <table class="const-table">
+            <tr><th>Convention</th><th>Contracts</th></tr>
+            <tr><td>0 = success, non-zero = error</td><td>MoltyID (0/20/100/200), musd_token, weth_token, wsol_token, Reef Storage, MoltBridge, Compute Market, BountyBoard, ClawPay</td></tr>
+            <tr><td>1 = success, 0 = error</td><td>MoltOracle (queries), MoltPunks (mutations), MoltSwap (get_pool_info)</td></tr>
+            <tr><td>i64 return value (amount/balance)</td><td>MoltSwap (swaps, add_liquidity), ClawPump (buy/sell), all token contracts (balance_of)</td></tr>
+            <tr><td>void (no return)</td><td>MoltSwap/MoltPunks (initialize), MoltDAO init variants</td></tr>
+        </table>
+    </div>
+
     <!-- TOC -->
     <div class="toc">
         <h2><i class="fas fa-list"></i> Contracts</h2>

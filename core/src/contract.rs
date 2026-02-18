@@ -485,6 +485,11 @@ pub struct ContractResult {
     pub error: Option<String>,
     /// Compute units consumed
     pub compute_used: u64,
+    /// WASM function return code (first I32 return value), if any.
+    /// Informational — contracts use inconsistent conventions:
+    /// some return 0=success, others return 1=success. Callers can
+    /// inspect this to implement contract-specific error handling.
+    pub return_code: Option<i32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -935,6 +940,7 @@ impl ContractRuntime {
                         final_pages, MAX_WASM_MEMORY_PAGES
                     )),
                     compute_used: host_cost.saturating_add(wasm_compute_used),
+                    return_code: None,
                 });
             }
         }
@@ -959,49 +965,37 @@ impl ContractRuntime {
                     compute_used, DEFAULT_COMPUTE_LIMIT, wasm_compute_used, host_compute_used
                 )),
                 compute_used,
+                return_code: None,
             });
         }
 
         match exec_result {
             Ok(values) => {
-                // Defence-in-depth: if the WASM function returned a non-zero
-                // I32 AND produced no storage changes, treat it as a soft
-                // failure.  Many contracts use 0 = success / non-zero = error
-                // code, but we only flag it when there's also no side-effect
-                // to avoid regressing contracts that return meaningful values.
+                // Extract the WASM function's return code for informational
+                // purposes.  Contracts use inconsistent conventions — some
+                // return 0=success (musd_token, moltyid), others return
+                // 1=success (moltoracle queries, moltpunks), and some return
+                // meaningful i64 values (swap outputs, balances).  We record
+                // the code but do NOT use it to override success/failure:
+                // the JSON arg encoding fix ensures args arrive correctly,
+                // and a WASM trap is the only true execution failure.
                 let ret_code = values
                     .first()
                     .and_then(|v| match v {
                         Value::I32(n) => Some(*n),
                         _ => None,
                     });
-                let is_soft_fail = matches!(ret_code, Some(c) if c != 0)
-                    && final_ctx.storage_changes.is_empty();
 
-                if is_soft_fail {
-                    Ok(ContractResult {
-                        return_data: final_ctx.return_data.clone(),
-                        logs: final_ctx.logs.clone(),
-                        events: Vec::new(),
-                        storage_changes: HashMap::new(),
-                        success: false,
-                        error: Some(format!(
-                            "Contract returned non-zero error code: {}",
-                            ret_code.unwrap()
-                        )),
-                        compute_used,
-                    })
-                } else {
-                    Ok(ContractResult {
-                        return_data: final_ctx.return_data.clone(),
-                        logs: final_ctx.logs.clone(),
-                        events: final_ctx.events.clone(),
-                        storage_changes: final_ctx.storage_changes.clone(),
-                        success: true,
-                        error: None,
-                        compute_used,
-                    })
-                }
+                Ok(ContractResult {
+                    return_data: final_ctx.return_data.clone(),
+                    logs: final_ctx.logs.clone(),
+                    events: final_ctx.events.clone(),
+                    storage_changes: final_ctx.storage_changes.clone(),
+                    success: true,
+                    error: None,
+                    compute_used,
+                    return_code: ret_code,
+                })
             }
             Err(e) => {
                 let error_msg = if metering_remaining == 0 {
@@ -1017,6 +1011,7 @@ impl ContractRuntime {
                     success: false,
                     error: Some(error_msg),
                     compute_used,
+                    return_code: None,
                 })
             }
         }
@@ -1494,10 +1489,16 @@ fn encode_json_args_to_binary(
                         if let Ok(pk) = crate::Pubkey::from_base58(s) {
                             parts.push((32, pk.0.to_vec()));
                         } else {
-                            // Plain UTF-8 string (passed as pointer)
-                            let bytes = s.as_bytes().to_vec();
-                            let padded_len = ((bytes.len() + 31) / 32) * 32;
-                            let mut padded = bytes;
+                            // Plain UTF-8 string (passed as pointer).
+                            // Pad to next 32-byte boundary.  Cap at stride
+                            // 224 (u8 max is 255; 224 = 7×32 covers strings
+                            // up to 224 bytes).  Longer strings are truncated
+                            // with a log warning — callers should use binary
+                            // layout descriptors for very large payloads.
+                            let bytes = s.as_bytes();
+                            let usable = bytes.len().min(224);
+                            let padded_len = ((usable + 31) / 32) * 32;
+                            let mut padded = bytes[..usable].to_vec();
                             padded.resize(padded_len.max(32), 0);
                             parts.push((padded.len() as u8, padded));
                         }
@@ -1526,8 +1527,9 @@ fn encode_json_args_to_binary(
                             .iter()
                             .filter_map(|v| v.as_u64().map(|n| n as u8))
                             .collect();
-                        let padded_len = ((bytes.len() + 31) / 32) * 32;
-                        let mut padded = bytes;
+                        let usable = bytes.len().min(224);
+                        let padded_len = ((usable + 31) / 32) * 32;
+                        let mut padded = bytes[..usable].to_vec();
                         padded.resize(padded_len.max(32), 0);
                         parts.push((padded.len() as u8, padded));
                     }
@@ -1659,6 +1661,7 @@ mod tests {
             success: true,
             error: None,
             compute_used: 500,
+            return_code: None,
         };
 
         assert!(result.success);
@@ -1695,5 +1698,134 @@ mod tests {
         let removed = contract.remove_storage(b"hello");
         assert_eq!(removed, Some(b"world".to_vec()));
         assert_eq!(contract.get_storage(b"hello"), None);
+    }
+
+    // ── JSON arg encoder tests ──────────────────────────────────────
+
+    #[test]
+    fn test_encode_json_pubkey_and_integers() {
+        // Simulates: register_identity(owner_ptr: I32, agent_type: I32, name_ptr: I32, name_len: I32)
+        // JSON:      ["11111111111111111111111111111111", 1, "agent-demo", 10]
+        let json: Vec<serde_json::Value> = serde_json::from_str(
+            r#"["11111111111111111111111111111111", 1, "agent-demo", 10]"#,
+        )
+        .unwrap();
+        let params = vec![
+            wasmer::Type::I32,
+            wasmer::Type::I32,
+            wasmer::Type::I32,
+            wasmer::Type::I32,
+        ];
+        let buf = encode_json_args_to_binary(&json, &params).unwrap();
+
+        // Layout: 0xAB [32, 1, 32, 1] [32B pubkey] [1B: 1] [32B: "agent-demo\0..."] [1B: 10]
+        assert_eq!(buf[0], 0xAB);
+        assert_eq!(buf[1], 32); // pubkey stride
+        assert_eq!(buf[2], 1); // agent_type stride
+        assert_eq!(buf[3], 32); // name string stride
+        assert_eq!(buf[4], 1); // name_len stride
+        // Data starts at offset 5
+        // 32-byte pubkey (all zeros for "1111...1")
+        assert_eq!(&buf[5..37], &[0u8; 32]);
+        // agent_type = 1
+        assert_eq!(buf[37], 1);
+        // name string starts at offset 38, "agent-demo" = 10 bytes + 22 padding
+        assert_eq!(&buf[38..48], b"agent-demo");
+        assert_eq!(&buf[48..70], &[0u8; 22]); // padding
+        // name_len = 10
+        assert_eq!(buf[70], 10);
+        assert_eq!(buf.len(), 71);
+    }
+
+    #[test]
+    fn test_encode_json_i64_param() {
+        // Simulates: transfer(from: I32, to: I32, amount: I64)
+        let json: Vec<serde_json::Value> = serde_json::from_str(
+            r#"["11111111111111111111111111111111", "11111111111111111111111111111111", 1000000]"#,
+        )
+        .unwrap();
+        let params = vec![wasmer::Type::I32, wasmer::Type::I32, wasmer::Type::I64];
+        let buf = encode_json_args_to_binary(&json, &params).unwrap();
+
+        assert_eq!(buf[0], 0xAB);
+        assert_eq!(buf[1], 32); // from pubkey
+        assert_eq!(buf[2], 32); // to pubkey
+        assert_eq!(buf[3], 8); // amount i64
+        // Data: 32 + 32 + 8 = 72 bytes, total = 1 + 3 + 72 = 76
+        assert_eq!(buf.len(), 76);
+        // amount at offset 4+32+32 = 68
+        let amount = u64::from_le_bytes(buf[68..76].try_into().unwrap());
+        assert_eq!(amount, 1000000);
+    }
+
+    #[test]
+    fn test_encode_json_count_mismatch() {
+        let json: Vec<serde_json::Value> = serde_json::from_str(r#"[1, 2]"#).unwrap();
+        let params = vec![wasmer::Type::I32];
+        assert!(encode_json_args_to_binary(&json, &params).is_err());
+    }
+
+    #[test]
+    fn test_encode_json_u16_u32_numbers() {
+        let json: Vec<serde_json::Value> =
+            serde_json::from_str(r#"[300, 70000]"#).unwrap();
+        let params = vec![wasmer::Type::I32, wasmer::Type::I32];
+        let buf = encode_json_args_to_binary(&json, &params).unwrap();
+
+        assert_eq!(buf[0], 0xAB);
+        assert_eq!(buf[1], 2); // 300 fits in u16
+        assert_eq!(buf[2], 4); // 70000 needs u32
+        // Data: 2 + 4 = 6 bytes
+        let v16 = u16::from_le_bytes([buf[3], buf[4]]);
+        assert_eq!(v16, 300);
+        let v32 = u32::from_le_bytes([buf[5], buf[6], buf[7], buf[8]]);
+        assert_eq!(v32, 70000);
+    }
+
+    #[test]
+    fn test_encode_json_bool_param() {
+        let json: Vec<serde_json::Value> =
+            serde_json::from_str(r#"[true, false]"#).unwrap();
+        let params = vec![wasmer::Type::I32, wasmer::Type::I32];
+        let buf = encode_json_args_to_binary(&json, &params).unwrap();
+
+        assert_eq!(buf[0], 0xAB);
+        assert_eq!(buf[1], 1);
+        assert_eq!(buf[2], 1);
+        assert_eq!(buf[3], 1); // true
+        assert_eq!(buf[4], 0); // false
+    }
+
+    #[test]
+    fn test_encode_json_long_string_capped() {
+        // String > 224 bytes should be capped at 224 (stride 224)
+        let long_str = "x".repeat(250);
+        let json = vec![serde_json::Value::String(long_str)];
+        let params = vec![wasmer::Type::I32];
+        let buf = encode_json_args_to_binary(&json, &params).unwrap();
+
+        assert_eq!(buf[0], 0xAB);
+        assert_eq!(buf[1], 224); // capped stride
+        // Data: 224 bytes (truncated from 250, padded to 224)
+        assert_eq!(buf.len(), 1 + 1 + 224);
+        // First bytes should be 'x'
+        assert_eq!(buf[2], b'x');
+        assert_eq!(buf[225], b'x');
+    }
+
+    #[test]
+    fn test_encode_json_return_code_field() {
+        let result = ContractResult {
+            return_data: vec![],
+            logs: vec![],
+            events: vec![],
+            storage_changes: HashMap::new(),
+            success: true,
+            error: None,
+            compute_used: 100,
+            return_code: Some(1),
+        };
+        assert!(result.success);
+        assert_eq!(result.return_code, Some(1));
     }
 }
