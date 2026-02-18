@@ -85,10 +85,17 @@ fn api_not_found(msg: &str) -> Response {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct TradingPairJson {
     pub pair_id: u64,
     pub base_token: String,
     pub quote_token: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_symbol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quote_symbol: Option<String>,
     pub tick_size: u64,
     pub lot_size: u64,
     pub min_order: u64,
@@ -96,9 +103,14 @@ pub struct TradingPairJson {
     pub maker_fee_bps: i16,
     pub taker_fee_bps: u16,
     pub daily_volume: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_price: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub change_24h: Option<f64>,
 }
 
 #[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct OrderJson {
     pub order_id: u64,
     pub trader: String,
@@ -115,6 +127,7 @@ pub struct OrderJson {
 }
 
 #[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct TradeJson {
     pub trade_id: u64,
     pub pair_id: u64,
@@ -127,6 +140,7 @@ pub struct TradeJson {
 }
 
 #[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct OrderBookLevel {
     pub price: f64,
     pub quantity: u64,
@@ -134,6 +148,7 @@ pub struct OrderBookLevel {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct OrderBookJson {
     pub pair_id: u64,
     pub bids: Vec<OrderBookLevel>,
@@ -142,10 +157,15 @@ pub struct OrderBookJson {
 }
 
 #[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct PoolJson {
     pub pool_id: u64,
     pub token_a: String,
     pub token_b: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_a_symbol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_b_symbol: Option<String>,
     pub sqrt_price: u64,
     pub tick: i32,
     pub liquidity: u64,
@@ -154,6 +174,7 @@ pub struct PoolJson {
 }
 
 #[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct PositionJson {
     pub position_id: u64,
     pub owner: String,
@@ -167,6 +188,7 @@ pub struct PositionJson {
 }
 
 #[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct MarginPositionJson {
     pub position_id: u64,
     pub trader: String,
@@ -184,6 +206,7 @@ pub struct MarginPositionJson {
 }
 
 #[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct MarginInfoJson {
     pub insurance_fund: u64,
     pub last_funding_slot: u64,
@@ -192,6 +215,7 @@ pub struct MarginInfoJson {
 }
 
 #[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct CandleJson {
     pub open: f64,
     pub high: f64,
@@ -202,6 +226,7 @@ pub struct CandleJson {
 }
 
 #[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct Stats24hJson {
     pub volume: u64,
     pub high: f64,
@@ -214,6 +239,7 @@ pub struct Stats24hJson {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TickerJson {
     pub pair_id: u64,
     pub last_price: f64,
@@ -221,9 +247,13 @@ pub struct TickerJson {
     pub ask: f64,
     pub volume_24h: u64,
     pub change_24h: f64,
+    pub high_24h: f64,
+    pub low_24h: f64,
+    pub trades_24h: u64,
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LeaderboardEntryJson {
     pub rank: u32,
     pub address: String,
@@ -233,6 +263,7 @@ pub struct LeaderboardEntryJson {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RewardInfoJson {
     pub pending: u64,
     pub claimed: u64,
@@ -242,6 +273,7 @@ pub struct RewardInfoJson {
 }
 
 #[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct RouteJson {
     pub route_id: u64,
     pub token_in: String,
@@ -254,6 +286,7 @@ pub struct RouteJson {
 }
 
 #[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct ProposalJson {
     pub proposal_id: u64,
     pub proposer: String,
@@ -409,6 +442,31 @@ fn current_slot(state: &crate::RpcState) -> u64 {
     state.state.get_last_slot().unwrap_or(0)
 }
 
+/// Build a hex-address→display-symbol map for known token contracts.
+/// Uses the symbol registry to resolve contract names to pubkey addresses,
+/// then maps to human-readable token symbols.
+fn build_token_symbol_map(state: &crate::RpcState) -> HashMap<String, String> {
+    // Map: registry_symbol → display_symbol
+    // Registry stores by uppercase symbol (e.g., "MOLT", "MUSD")
+    let known_tokens: &[(&str, &str)] = &[
+        ("MOLT", "MOLT"),
+        ("MUSD", "mUSD"),
+        ("WSOL", "wSOL"),
+        ("WETH", "wETH"),
+        ("REEF", "REEF"),
+        ("PUNKS", "PUNKS"),
+        ("BOUNTY", "BOUNTY"),
+        ("COMPUTE", "COMPUTE"),
+    ];
+    let mut map = HashMap::new();
+    for (registry_symbol, display_symbol) in known_tokens {
+        if let Ok(Some(entry)) = state.state.get_symbol_registry(registry_symbol) {
+            map.insert(hex::encode(entry.program.0), display_symbol.to_string());
+        }
+    }
+    map
+}
+
 /// Decode a trading pair from 112-byte blob
 fn decode_pair(data: &[u8]) -> Option<TradingPairJson> {
     if data.len() < 112 {
@@ -434,6 +492,9 @@ fn decode_pair(data: &[u8]) -> Option<TradingPairJson> {
         pair_id,
         base_token,
         quote_token,
+        symbol: None,
+        base_symbol: None,
+        quote_symbol: None,
         tick_size,
         lot_size,
         min_order,
@@ -441,6 +502,8 @@ fn decode_pair(data: &[u8]) -> Option<TradingPairJson> {
         maker_fee_bps,
         taker_fee_bps,
         daily_volume,
+        last_price: None,
+        change_24h: None,
     })
 }
 
@@ -542,6 +605,8 @@ fn decode_pool(data: &[u8]) -> Option<PoolJson> {
         pool_id,
         token_a,
         token_b,
+        token_a_symbol: None,
+        token_b_symbol: None,
         sqrt_price,
         tick,
         liquidity,
@@ -756,16 +821,46 @@ fn decode_proposal(data: &[u8]) -> Option<ProposalJson> {
 // Route Handlers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// GET /api/v1/pairs — All trading pairs
+/// GET /api/v1/pairs — All trading pairs (enriched with symbols + last price)
 async fn get_pairs(State(state): State<Arc<RpcState>>) -> Response {
     let count = read_u64(&state, DEX_CORE_PROGRAM, "dex_pair_count");
     let slot = current_slot(&state);
     let mut pairs = Vec::new();
 
+    // Build reverse address→symbol map using known token contracts
+    let symbol_map = build_token_symbol_map(&state);
+
     for i in 1..=count {
         let key = format!("dex_pair_{}", i);
         if let Some(data) = read_bytes(&state, DEX_CORE_PROGRAM, &key) {
-            if let Some(pair) = decode_pair(&data) {
+            if let Some(mut pair) = decode_pair(&data) {
+                // Resolve human-readable symbols
+                let base_sym = symbol_map.get(&pair.base_token).cloned();
+                let quote_sym = symbol_map.get(&pair.quote_token).cloned();
+                if let (Some(ref b), Some(ref q)) = (&base_sym, &quote_sym) {
+                    pair.symbol = Some(format!("{}/{}", b, q));
+                }
+                pair.base_symbol = base_sym;
+                pair.quote_symbol = quote_sym;
+
+                // Read last price from analytics
+                let lp_key = format!("ana_lp_{}", pair.pair_id);
+                let lp_raw = read_u64(&state, DEX_ANALYTICS_PROGRAM, &lp_key);
+                if lp_raw > 0 {
+                    pair.last_price = Some(lp_raw as f64 / PRICE_SCALE as f64);
+                }
+
+                // Read 24h stats for change
+                let stats_key = format!("ana_24h_{}", pair.pair_id);
+                if let Some(stats_data) = read_bytes(&state, DEX_ANALYTICS_PROGRAM, &stats_key) {
+                    if stats_data.len() >= 48 {
+                        let open = u64::from_le_bytes(stats_data[16..24].try_into().unwrap_or([0; 8]));
+                        if open > 0 && lp_raw > 0 {
+                            pair.change_24h = Some(((lp_raw as f64 - open as f64) / open as f64) * 100.0);
+                        }
+                    }
+                }
+
                 pairs.push(pair);
             }
         }
@@ -774,14 +869,26 @@ async fn get_pairs(State(state): State<Arc<RpcState>>) -> Response {
     ApiResponse::ok(pairs, slot).into_response()
 }
 
-/// GET /api/v1/pairs/:id — Pair details
+/// GET /api/v1/pairs/:id — Pair details (enriched with symbols + last price)
 async fn get_pair(State(state): State<Arc<RpcState>>, Path(pair_id): Path<u64>) -> Response {
     let key = format!("dex_pair_{}", pair_id);
     let slot = current_slot(&state);
 
     match read_bytes(&state, DEX_CORE_PROGRAM, &key) {
         Some(data) => match decode_pair(&data) {
-            Some(pair) => ApiResponse::ok(pair, slot).into_response(),
+            Some(mut pair) => {
+                let symbol_map = build_token_symbol_map(&state);
+                let base_sym = symbol_map.get(&pair.base_token).cloned();
+                let quote_sym = symbol_map.get(&pair.quote_token).cloned();
+                if let (Some(ref b), Some(ref q)) = (&base_sym, &quote_sym) {
+                    pair.symbol = Some(format!("{}/{}", b, q));
+                }
+                pair.base_symbol = base_sym;
+                pair.quote_symbol = quote_sym;
+                let lp_raw = read_u64(&state, DEX_ANALYTICS_PROGRAM, &format!("ana_lp_{}", pair.pair_id));
+                if lp_raw > 0 { pair.last_price = Some(lp_raw as f64 / PRICE_SCALE as f64); }
+                ApiResponse::ok(pair, slot).into_response()
+            },
             None => api_err("invalid pair data"),
         },
         None => api_not_found(&format!("pair {} not found", pair_id)),
@@ -991,24 +1098,19 @@ async fn get_pair_ticker(State(state): State<Arc<RpcState>>, Path(pair_id): Path
     );
 
     let stats_key = format!("ana_24h_{}", pair_id);
-    let volume_24h = match read_bytes(&state, DEX_ANALYTICS_PROGRAM, &stats_key) {
-        Some(data) if data.len() >= 8 => {
-            u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]))
+    let (volume_24h, change_24h, high_24h, low_24h, trades_24h) = match read_bytes(&state, DEX_ANALYTICS_PROGRAM, &stats_key) {
+        Some(data) if data.len() >= 48 => {
+            let vol = u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]));
+            let high_raw = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
+            let open_raw = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
+            let low_raw = u64::from_le_bytes(data[24..32].try_into().unwrap_or([0; 8]));
+            let _close_raw = u64::from_le_bytes(data[32..40].try_into().unwrap_or([0; 8]));
+            let tcount = u64::from_le_bytes(data[40..48].try_into().unwrap_or([0; 8]));
+            let open_f = open_raw as f64 / PRICE_SCALE as f64;
+            let change = if open_f > 0.0 { ((last_price - open_f) / open_f) * 100.0 } else { 0.0 };
+            (vol, change, high_raw as f64 / PRICE_SCALE as f64, low_raw as f64 / PRICE_SCALE as f64, tcount)
         }
-        _ => 0,
-    };
-
-    let open_24h = match read_bytes(&state, DEX_ANALYTICS_PROGRAM, &stats_key) {
-        Some(data) if data.len() >= 32 => {
-            let open = u64::from_le_bytes(data[24..32].try_into().unwrap_or([0; 8])) as f64
-                / PRICE_SCALE as f64;
-            if open > 0.0 {
-                ((last_price - open) / open) * 100.0
-            } else {
-                0.0
-            }
-        }
-        _ => 0.0,
+        _ => (0, 0.0, 0.0, 0.0, 0),
     };
 
     ApiResponse::ok(
@@ -1018,7 +1120,10 @@ async fn get_pair_ticker(State(state): State<Arc<RpcState>>, Path(pair_id): Path
             bid: best_bid_raw as f64 / PRICE_SCALE as f64,
             ask: best_ask_raw as f64 / PRICE_SCALE as f64,
             volume_24h,
-            change_24h: open_24h,
+            change_24h,
+            high_24h,
+            low_24h,
+            trades_24h,
         },
         slot,
     )
@@ -1031,7 +1136,7 @@ async fn get_all_tickers(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
     let mut tickers = Vec::new();
 
-    for pair_id in 0..count {
+    for pair_id in 1..=count {
         let last_price_raw = read_u64(
             &state,
             DEX_ANALYTICS_PROGRAM,
@@ -1048,13 +1153,34 @@ async fn get_all_tickers(State(state): State<Arc<RpcState>>) -> Response {
             &format!("dex_best_ask_{}", pair_id),
         );
 
+        let last_price = last_price_raw as f64 / PRICE_SCALE as f64;
+
+        // Read 24h stats
+        let stats_key = format!("ana_24h_{}", pair_id);
+        let (volume_24h, change_24h, high_24h, low_24h, trades_24h) = match read_bytes(&state, DEX_ANALYTICS_PROGRAM, &stats_key) {
+            Some(data) if data.len() >= 48 => {
+                let vol = u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]));
+                let high_raw = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
+                let open_raw = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
+                let low_raw = u64::from_le_bytes(data[24..32].try_into().unwrap_or([0; 8]));
+                let tcount = u64::from_le_bytes(data[40..48].try_into().unwrap_or([0; 8]));
+                let open_f = open_raw as f64 / PRICE_SCALE as f64;
+                let change = if open_f > 0.0 { ((last_price - open_f) / open_f) * 100.0 } else { 0.0 };
+                (vol, change, high_raw as f64 / PRICE_SCALE as f64, low_raw as f64 / PRICE_SCALE as f64, tcount)
+            }
+            _ => (0, 0.0, 0.0, 0.0, 0),
+        };
+
         tickers.push(TickerJson {
             pair_id,
-            last_price: last_price_raw as f64 / PRICE_SCALE as f64,
+            last_price,
             bid: best_bid_raw as f64 / PRICE_SCALE as f64,
             ask: best_ask_raw as f64 / PRICE_SCALE as f64,
-            volume_24h: 0,
-            change_24h: 0.0,
+            volume_24h,
+            change_24h,
+            high_24h,
+            low_24h,
+            trades_24h,
         });
     }
 
@@ -1199,11 +1325,14 @@ async fn get_pools(State(state): State<Arc<RpcState>>) -> Response {
     let count = read_u64(&state, DEX_AMM_PROGRAM, "amm_pool_count");
     let slot = current_slot(&state);
     let mut pools = Vec::new();
+    let symbol_map = build_token_symbol_map(&state);
 
     for i in 1..=count {
         let key = format!("amm_pool_{}", i);
         if let Some(data) = read_bytes(&state, DEX_AMM_PROGRAM, &key) {
-            if let Some(pool) = decode_pool(&data) {
+            if let Some(mut pool) = decode_pool(&data) {
+                pool.token_a_symbol = symbol_map.get(&pool.token_a).cloned();
+                pool.token_b_symbol = symbol_map.get(&pool.token_b).cloned();
                 pools.push(pool);
             }
         }

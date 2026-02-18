@@ -1,0 +1,126 @@
+{
+  "market_id": 1,
+  "wallet": null,
+  "results": [
+    {
+      "method": "GET",
+      "url": "http://localhost:8899/api/v1/prediction-market/markets/1",
+      "status": 200,
+      "ok": true,
+      "body": {
+        "success": true,
+        "data": {
+          "id": 1,
+          "creator": "0000000000000000000000000000000000000000000000000000000000000000",
+          "question": "Will MOLT > 1?",
+          "category": "crypto",
+          "status": "active",
+          "outcome_count": 2,
+          "winning_outcome": null,
+          "total_collateral": 1e-05,
+          "total_volume": 0.0,
+          "fees_collected": 0.0,
+          "created_slot": 898,
+          "close_slot": 100898,
+          "resolve_slot": 0,
+          "outcomes": [
+            {
+              "index": 0,
+              "name": "Yes",
+              "pool_yes": 5e-06,
+              "pool_no": 5e-06,
+              "price": 0.5
+            },
+            {
+              "index": 1,
+              "name": "No",
+              "pool_yes": 5e-06,
+              "pool_no": 5e-06,
+              "price": 0.5
+            }
+          ]
+        },
+        "slot": 907
+      }
+    },
+    {
+      "method": "POST",
+      "url": "http://localhost:8899/api/v1/prediction-market/trade",
+      "status": 200,
+      "ok": true,
+      "body": {
+        "success": true,
+        "data": {
+          "market_id": 1,
+          "outcome": 0,
+          "amount": 1e-06,
+          "shares": 1.96e-06,
+          "price": 0.5,
+          "fee": 2e-08,
+          "status": "preview"
+        },
+        "slot": 907
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://localhost:8899/api/v1/prediction-market/traders/111/stats",
+      "status": 200,
+      "ok": true,
+      "body": {
+        "success": true,
+        "data": {
+          "address": "111",
+          "total_volume": 0.0,
+          "trade_count": 0,
+          "last_trade_slot": 0
+        },
+        "slot": 907
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://localhost:8899/api/v1/prediction-market/positions?address=111",
+      "status": 200,
+      "ok": true,
+      "body": {
+        "success": true,
+        "data": [],
+        "slot": 907
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://localhost:8899/api/v1/orders?trader=111",
+      "status": 200,
+      "ok": true,
+      "body": {
+        "success": true,
+        "data": [],
+        "slot": 907
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://localhost:8899/api/v1/margin/positions?trader=111",
+      "status": 200,
+      "ok": true,
+      "body": {
+        "success": true,
+        "data": [],
+        "slot": 907
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://localhost:8899/api/v1/pools/positions?owner=111",
+      "status": 200,
+      "ok": true,
+      "body": {
+        "success": true,
+        "data": [],
+        "slot": 907
+      }
+    }
+  ]
+}

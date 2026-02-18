@@ -1,0 +1,1100 @@
+{
+  "timestamp": "2026-02-18T13:04:32Z",
+  "address_used": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+  "rpc_total": 21,
+  "rpc_ok": 20,
+  "contracts_total": 27,
+  "contracts_abi_ok": 27,
+  "contracts_info_ok": 27,
+  "contracts_fn_total": 427,
+  "rest_total": 10,
+  "rest_ok": 10,
+  "rpc_results": [
+    {
+      "method": "health",
+      "ok": true,
+      "error": null,
+      "result": {
+        "status": "ok"
+      }
+    },
+    {
+      "method": "getLatestBlock",
+      "ok": true,
+      "error": null,
+      "result": {
+        "slot": 926,
+        "hash": "b7d0509ec9ff7814eb4e0ae5b93f2d16062cbca83e8a7aa112bf086790ba15e3",
+        "parent_hash": "042907842747e9e6e67ab8a46ce34c70d18ab6608cd05dd5fc0778bb82e02862",
+        "state_root": "d8efea6324357b932ac662f6585381240ee7894b13723c0ee4c0492c2576c17e",
+        "tx_root": "0000000000000000000000000000000000000000000000000000000000000000",
+        "timestamp": 1771419869,
+        "validator": "D3Z1devPsYaNg8w2HpNXHHPzsGB4M8uAmBdUu7U64nSc",
+        "transaction_count": 0
+      }
+    },
+    {
+      "method": "getSlot",
+      "ok": true,
+      "error": null,
+      "result": 926
+    },
+    {
+      "method": "getRecentBlockhash",
+      "ok": true,
+      "error": null,
+      "result": {
+        "blockhash": "b7d0509ec9ff7814eb4e0ae5b93f2d16062cbca83e8a7aa112bf086790ba15e3",
+        "slot": 926
+      }
+    },
+    {
+      "method": "getAllContracts",
+      "ok": true,
+      "error": null,
+      "result": {
+        "contracts": [
+          {
+            "program_id": "9MDU2q8VvhyZVuuuUaMiXoBUcDBbnzyKANAPZNbg5ST",
+            "symbol": "WETH",
+            "name": "Wrapped ETH",
+            "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "metadata": null
+          },
+          {
+            "program_id": "JWvFTSRkwDFgHMbPwJMbkvFHRnZAQeM1eguSZHSAK29",
+            "symbol": "CLAWVAULT",
+            "name": "ClawVault",
+            "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "metadata": null
+          },
+          {
+            "program_id": "XvS8Z8KQ6H3hZ2RqsNbvUi1h6qE9x3QbrEFPA6Q9Cih",
+            "symbol": "DEX",
+            "name": "MoltChain DEX Core",
+            "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "metadata": null
+          },
+          {
+            "program_id": "3TjynozUEhwitWdJUqtvyf78zAaGWHcvmvEXQWjNZCyw",
+            "symbol": "PREDICT",
+            "name": "Prediction Markets",
+            "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "metadata": null
+          },
+          {
+            "program_id": "3qh5ZT8S3vKnhyoVqZv2ic632WBbviSCcDyLVFwxWVQp",
+            "symbol": "WSOL",
+            "name": "Wrapped SOL",
+            "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "metadata": null
+          },
+          {
+            "program_id": "4vJgUpfowJJyJ1HC94RBBBMjDzjTxswHHHV4uxaRZfpe",
+            "symbol": "PUNKS",
+            "name": "MoltPunks NFT",
+            "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "metadata": null
+          },
+          {
+            "program_id": "53zsSUsFbSASNnGh8A28aeUWNUzgaK69ztgP2PChaVNx",
+            "symbol": "MARKET",
+            "name": "MoltMarket",
+            "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "metadata": null
+          },
+          {
+            "program_id": "6UM3n43msvbsNmj5TLHk1TRypXjffAuiWWbaMpw4oFZB",
+            "symbol": "BRIDGE",
+            "name": "MoltBridge",
+            "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "metadata": null
+          },
+          {
+            "program_id": "6YAG2aDUEbu8tsygw6TNb5oQL7ddKmWxybZJNdgFUaa1",
+            "symbol": "ANALYTICS",
+            "name": "DEX Analytics",
+            "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "metadata": null
+          },
+          {
+            "program_id": "6bmvbPbdwEPzxeVVabiGLDfq9kLeYEDuTZJb5xJHNV8y",
+            "symbol": "MUSD",
+            "name": "Wrapped USD",
+            "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "metadata": null
+          },
+          {
+            "program_id": "7dgNtktjdXYWi9Bm4iMeP1EwUwmrwtrLnhqMAUsDFSnu",
+            "symbol": "BOUNTY",
+            "name": "BountyBoard",
+            "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "metadata": null
+          },
+          {
+            "program_id": "8DRLo95M2FbE2cVhvX4T5A6hmZ3KLj724hRncZURJoig",
+            "symbol": "DEXAMM",
+            "name": "DEX AMM Engine",
+            "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "metadata": null
+          },
+          {
+            "program_id": "9XBB25ojHhFkmwsg82cRBjWWaQWFkQYCGSqPBMecnW5p",
+            "symbol": "LEND",
+            "name": "LobsterLend",
+            "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "metadata": null
+          },
+          {
+            "program_id": "9pwAAVXWifTrhKaBNJEVRUDg1y1MfDmanV9df8et3keR",
+            "symbol": "DAO",
+            "name": "MoltDAO Governance",
+            "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "metadata": null
+          },
+          {
+            "program_id": "AcrkWeJnbR7sgqaPFuDkADeQ24jn7x9wGP96fx1mdWe7",
+            "symbol": "DEXMARGIN",
+            "name": "DEX Margin Trading",
+            "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "metadata": null
+          },
+          {
+            "program_id": "AggL8ajoTWRM4JpJK5nrSTaJWSrDKEkSeRNdecPjs7DT",
+            "symbol": "MOLT",
+            "name": "MoltCoin",
+            "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "metadata": null
+          },
+          {
+            "program_id": "CB137sGYPU5iBS5CtsTGDaiQzo1iRkrpdbRmEj1bHkg3",
+            "symbol": "ORACLE",
+            "name": "MoltOracle",
+            "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "metadata": null
+          },
+          {
+            "program_id": "DZekjhigNCvaT71rGzEUJpgjQwgQ4EpaeawWeNxXbpTw",
+            "symbol": "CLAWPAY",
+            "name": "ClawPay Payments",
+            "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "metadata": null
+          },
+          {
+            "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+            "symbol": "MOLTSWAP",
+            "name": "MoltSwap AMM",
+            "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "metadata": null
+          },
+          {
+            "program_id": "FRcbTgiZsSNSQyzvw7ZxbZ21g4xz7pBLpJ98UqGaxnN5",
+            "symbol": "DEXROUTER",
+            "name": "DEX Smart Router",
+            "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "metadata": null
+          },
+          {
+            "program_id": "FutpCFsmxr1c7dGeqPL9PGBaCXQoA9dFYnZm5V7NwPgp",
+            "symbol": "AUCTION",
+            "name": "MoltAuction",
+            "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "metadata": null
+          },
+          {
+            "program_id": "GBXtRAg277AJxG5NaJsacjm15pcYsPiFrJX5SjhYhxmp",
+            "symbol": "DEXREWARDS",
+            "name": "DEX Reward Distributor",
+            "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "metadata": null
+          },
+          {
+            "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+            "symbol": "COMPUTE",
+            "name": "Compute Market",
+            "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "metadata": null
+          },
+          {
+            "program_id": "GMiVfG87mff1ABhCy28UAa1yPm9mqf2g7vzSoMzRABZc",
+            "symbol": "DEXGOV",
+            "name": "DEX Governance",
+            "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "metadata": null
+          },
+          {
+            "program_id": "GkjLEran1ZR1L5fquaVY2FnZnVFNLApg3DEse8Y4TZwC",
+            "symbol": "CLAWPUMP",
+            "name": "ClawPump Launchpad",
+            "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "metadata": null
+          },
+          {
+            "program_id": "HMDpis6ERNgf7vRxzj5WV4rkK9XCBsy6z2PLAEj6NsNa",
+            "symbol": "REEF",
+            "name": "Reef Storage",
+            "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "metadata": null
+          },
+          {
+            "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+            "symbol": "YID",
+            "name": "MoltyID Identity",
+            "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "metadata": null
+          }
+        ],
+        "count": 27
+      }
+    },
+    {
+      "method": "getMetrics",
+      "ok": true,
+      "error": null,
+      "result": {
+        "tps": 0.0,
+        "peak_tps": 9.553571428571429,
+        "total_transactions": 548,
+        "daily_transactions": 548,
+        "total_blocks": 927,
+        "average_block_time": 2.19,
+        "avg_block_time_ms": 2190.0,
+        "avg_txs_per_block": 0.5911542610571737,
+        "total_accounts": 43,
+        "active_accounts": 15,
+        "total_supply": 999999999125000000,
+        "circulating_supply": 999999998250000000,
+        "total_burned": 875000000,
+        "total_staked": 300000000000000,
+        "treasury_balance": 149699670586869779,
+        "treasury_pubkey": "2KeMfQns7J5R9HiYPWN3CSe9Pg6PxczsWAuZ7bueeTdT",
+        "genesis_balance": 0,
+        "genesis_pubkey": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+        "total_contracts": 27,
+        "validator_count": 3,
+        "distribution_wallets": {
+          "validator_rewards_balance": 149699670586869779,
+          "validator_rewards_pubkey": "2KeMfQns7J5R9HiYPWN3CSe9Pg6PxczsWAuZ7bueeTdT",
+          "community_treasury_balance": 400000000000000000,
+          "community_treasury_pubkey": "G8AHJ8LQ5dwnShTiyS6s8pYbPvPNthkmdGbyWTE18RBM",
+          "builder_grants_balance": 250000000000000000,
+          "builder_grants_pubkey": "BB2t7Py7DUQVvumVepvvAQTvdExLnvgiVcVhabESRsr9",
+          "founding_moltys_balance": 100000000000000000,
+          "founding_moltys_pubkey": "42CPDdfRjQw4qmgPYEtQbRrkXLU7tiWBwb9puDe39gzu",
+          "ecosystem_partnerships_balance": 50000000000000000,
+          "ecosystem_partnerships_pubkey": "HsSz9AESJdV1fh1reW6U8JLvBfoAP3jwU5jFQMFxHp1m",
+          "reserve_pool_balance": 50000000000000000,
+          "reserve_pool_pubkey": "XzKVnF69wWShPzXnt5tUm9qL4PTs5MSGUyjNabNviXh"
+        }
+      }
+    },
+    {
+      "method": "getValidators",
+      "ok": true,
+      "error": null,
+      "result": {
+        "validators": [
+          {
+            "pubkey": "CXMiZjrenLDstGQbtdfTf9mKuUQuNrbjVR73BcuUXVFX",
+            "stake": 100000000000000,
+            "reputation": 1000.0,
+            "_normalized_reputation": 0.3333333333333333,
+            "_blocks_produced": 323,
+            "blocks_proposed": 323,
+            "votes_cast": 0,
+            "correct_votes": 0,
+            "last_active_slot": 925,
+            "last_vote_slot": 925,
+            "bootstrap_debt": 99906580000000,
+            "vesting_status": "Bootstrapping",
+            "earned_amount": 93420000000,
+            "graduation_slot": null
+          },
+          {
+            "pubkey": "D3Z1devPsYaNg8w2HpNXHHPzsGB4M8uAmBdUu7U64nSc",
+            "stake": 100000000000000,
+            "reputation": 1000.0,
+            "_normalized_reputation": 0.3333333333333333,
+            "_blocks_produced": 310,
+            "blocks_proposed": 310,
+            "votes_cast": 0,
+            "correct_votes": 0,
+            "last_active_slot": 926,
+            "last_vote_slot": 926,
+            "bootstrap_debt": 99916435000000,
+            "vesting_status": "Bootstrapping",
+            "earned_amount": 83565000000,
+            "graduation_slot": null
+          },
+          {
+            "pubkey": "HrSoXpmHtqT2jxU1PRGcqTd1j2vM78ruTiAc9BcgY8Em",
+            "stake": 100000000000000,
+            "reputation": 1000.0,
+            "_normalized_reputation": 0.3333333333333333,
+            "_blocks_produced": 295,
+            "blocks_proposed": 295,
+            "votes_cast": 0,
+            "correct_votes": 0,
+            "last_active_slot": 924,
+            "last_vote_slot": 924,
+            "bootstrap_debt": 99943165000000,
+            "vesting_status": "Bootstrapping",
+            "earned_amount": 56835000000,
+            "graduation_slot": null
+          }
+        ],
+        "count": 3,
+        "_count": 3
+      }
+    },
+    {
+      "method": "getChainStatus",
+      "ok": true,
+      "error": null,
+      "result": {
+        "slot": 926,
+        "_slot": 926,
+        "epoch": 2,
+        "_epoch": 2,
+        "block_height": 926,
+        "_block_height": 926,
+        "current_slot": 926,
+        "latest_block": 926,
+        "validator_count": 3,
+        "validators": 3,
+        "_validators": 3,
+        "total_stake": 300000000000000,
+        "total_staked": 300000000000000,
+        "tps": 0.0,
+        "peak_tps": 9.553571428571429,
+        "total_transactions": 548,
+        "total_blocks": 927,
+        "average_block_time": 2.19,
+        "block_time_ms": 2190.0,
+        "total_supply": 999999999125000000,
+        "total_burned": 875000000,
+        "peer_count": 3,
+        "chain_id": "moltchain-testnet-1",
+        "network": "moltchain-testnet-1",
+        "is_healthy": true
+      }
+    },
+    {
+      "method": "getNetworkInfo",
+      "ok": true,
+      "error": null,
+      "result": {
+        "chain_id": "moltchain-testnet-1",
+        "network_id": "moltchain-testnet-1",
+        "version": "0.1.0",
+        "current_slot": 926,
+        "validator_count": 3,
+        "peer_count": 3
+      }
+    },
+    {
+      "method": "getPeers",
+      "ok": true,
+      "error": null,
+      "result": {
+        "peers": [
+          {
+            "peer_id": "127.0.0.1:8004",
+            "address": "127.0.0.1:8004",
+            "connected": true
+          },
+          {
+            "peer_id": "127.0.0.1:8000",
+            "address": "127.0.0.1:8000",
+            "connected": true
+          },
+          {
+            "peer_id": "127.0.0.1:8001",
+            "address": "127.0.0.1:8001",
+            "connected": true
+          }
+        ],
+        "count": 3
+      }
+    },
+    {
+      "method": "getRewardAdjustmentInfo",
+      "ok": true,
+      "error": null,
+      "result": {
+        "currentMultiplier": 1.0,
+        "priceOracleActive": false,
+        "transactionBlockReward": 900000000,
+        "heartbeatBlockReward": 135000000,
+        "slotsPerYear": 78840000,
+        "minValidatorStake": 100000000000000,
+        "totalStaked": 300000000000000,
+        "totalSlashed": 30000000000000,
+        "activeValidators": 3,
+        "unclaimedRewards": 0,
+        "estimatedApy": "23652.00",
+        "note": "Price-based reward adjustment will activate when oracle is configured"
+      }
+    },
+    {
+      "method": "getMoltyIdStats",
+      "ok": true,
+      "error": null,
+      "result": {
+        "total_identities": 31,
+        "total_names": 32,
+        "tier_distribution": {
+          "newcomer": 0,
+          "verified": 3,
+          "trusted": 0,
+          "established": 0,
+          "elite": 0,
+          "legendary": 28
+        }
+      }
+    },
+    {
+      "method": "getBalance",
+      "ok": true,
+      "error": null,
+      "result": {
+        "shells": 0,
+        "molt": "0.0000",
+        "spendable": 0,
+        "spendable_molt": "0.0000",
+        "staked": 0,
+        "staked_molt": "0.0000",
+        "locked": 0,
+        "locked_molt": "0.0000",
+        "reef_staked": 0,
+        "reef_staked_molt": "0.0000",
+        "reef_value": 0,
+        "reef_value_molt": "0.0000"
+      }
+    },
+    {
+      "method": "requestAirdrop",
+      "ok": false,
+      "error": {
+        "code": -32602,
+        "message": "Amount must be between 1 and 100 MOLT"
+      },
+      "result": null
+    },
+    {
+      "method": "getBalance",
+      "ok": true,
+      "error": null,
+      "result": {
+        "shells": 0,
+        "molt": "0.0000",
+        "spendable": 0,
+        "spendable_molt": "0.0000",
+        "staked": 0,
+        "staked_molt": "0.0000",
+        "locked": 0,
+        "locked_molt": "0.0000",
+        "reef_staked": 0,
+        "reef_staked_molt": "0.0000",
+        "reef_value": 0,
+        "reef_value_molt": "0.0000"
+      }
+    },
+    {
+      "method": "getTokenAccounts",
+      "ok": true,
+      "error": null,
+      "result": {
+        "accounts": [],
+        "count": 0
+      }
+    },
+    {
+      "method": "getTransactionsByAddress",
+      "ok": true,
+      "error": null,
+      "result": {
+        "transactions": [
+          {
+            "hash": "6ee57772270f2c9c9546dda927d08612ecbe8b75cb8d49399e7e701aad3b1eb0",
+            "signature": "6ee57772270f2c9c9546dda927d08612ecbe8b75cb8d49399e7e701aad3b1eb0",
+            "slot": 0,
+            "timestamp": 1771418404,
+            "from": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "to": "XzKVnF69wWShPzXnt5tUm9qL4PTs5MSGUyjNabNviXh",
+            "type": "GenesisTransfer",
+            "amount": 50000000.0,
+            "amount_shells": 50000000000000000,
+            "fee": 0,
+            "fee_shells": 0,
+            "fee_molt": 0.0,
+            "success": true
+          },
+          {
+            "hash": "2f4d3d7e8e361e255237b43c963cea45bddb9b631819c48398e5dc896eb36c76",
+            "signature": "2f4d3d7e8e361e255237b43c963cea45bddb9b631819c48398e5dc896eb36c76",
+            "slot": 0,
+            "timestamp": 1771418404,
+            "from": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "to": "HsSz9AESJdV1fh1reW6U8JLvBfoAP3jwU5jFQMFxHp1m",
+            "type": "GenesisTransfer",
+            "amount": 50000000.0,
+            "amount_shells": 50000000000000000,
+            "fee": 0,
+            "fee_shells": 0,
+            "fee_molt": 0.0,
+            "success": true
+          },
+          {
+            "hash": "c71706706536e39b9680201d1e19358acdd34ec95ebc1ebe5e0788106e1d40e2",
+            "signature": "c71706706536e39b9680201d1e19358acdd34ec95ebc1ebe5e0788106e1d40e2",
+            "slot": 0,
+            "timestamp": 1771418404,
+            "from": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "to": "42CPDdfRjQw4qmgPYEtQbRrkXLU7tiWBwb9puDe39gzu",
+            "type": "GenesisTransfer",
+            "amount": 100000000.0,
+            "amount_shells": 100000000000000000,
+            "fee": 0,
+            "fee_shells": 0,
+            "fee_molt": 0.0,
+            "success": true
+          },
+          {
+            "hash": "0b12442ecab1e192cc7a4d999b650c38dd0df9a80c3da4c177d2bb7cf731049f",
+            "signature": "0b12442ecab1e192cc7a4d999b650c38dd0df9a80c3da4c177d2bb7cf731049f",
+            "slot": 0,
+            "timestamp": 1771418404,
+            "from": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "to": "BB2t7Py7DUQVvumVepvvAQTvdExLnvgiVcVhabESRsr9",
+            "type": "GenesisTransfer",
+            "amount": 250000000.0,
+            "amount_shells": 250000000000000000,
+            "fee": 0,
+            "fee_shells": 0,
+            "fee_molt": 0.0,
+            "success": true
+          },
+          {
+            "hash": "f8bcc976a814a64962b18b966e02ff76c44e2f47a7cbbbcae9dbe4ed87fcaaca",
+            "signature": "f8bcc976a814a64962b18b966e02ff76c44e2f47a7cbbbcae9dbe4ed87fcaaca",
+            "slot": 0,
+            "timestamp": 1771418404,
+            "from": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "to": "G8AHJ8LQ5dwnShTiyS6s8pYbPvPNthkmdGbyWTE18RBM",
+            "type": "GenesisTransfer",
+            "amount": 400000000.0,
+            "amount_shells": 400000000000000000,
+            "fee": 0,
+            "fee_shells": 0,
+            "fee_molt": 0.0,
+            "success": true
+          },
+          {
+            "hash": "987b31d743c36b5a90351f0084d4eb91346d245f8879ec4deafabd9638e7f544",
+            "signature": "987b31d743c36b5a90351f0084d4eb91346d245f8879ec4deafabd9638e7f544",
+            "slot": 0,
+            "timestamp": 1771418404,
+            "from": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "to": "2KeMfQns7J5R9HiYPWN3CSe9Pg6PxczsWAuZ7bueeTdT",
+            "type": "GenesisTransfer",
+            "amount": 150000000.0,
+            "amount_shells": 150000000000000000,
+            "fee": 0,
+            "fee_shells": 0,
+            "fee_molt": 0.0,
+            "success": true
+          },
+          {
+            "hash": "32a97abf5d0b06f5a881cf44c2730d8be9ddd9b568cc02a16ce86d794fcab229",
+            "signature": "32a97abf5d0b06f5a881cf44c2730d8be9ddd9b568cc02a16ce86d794fcab229",
+            "slot": 0,
+            "timestamp": 1771418404,
+            "from": "JAQ5MVHbCkSYRzXunsrNuM2m1LS859PGveHfoYPAmcvZ",
+            "to": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+            "type": "GenesisMint",
+            "amount": 1000000000.0,
+            "amount_shells": 1000000000000000000,
+            "fee": 0,
+            "fee_shells": 0,
+            "fee_molt": 0.0,
+            "success": true
+          }
+        ],
+        "has_more": false,
+        "next_before_slot": null
+      }
+    },
+    {
+      "method": "getAccountTxCount",
+      "ok": true,
+      "error": null,
+      "result": {
+        "address": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+        "count": 7
+      }
+    },
+    {
+      "method": "getMoltyIdIdentity",
+      "ok": true,
+      "error": null,
+      "result": {
+        "address": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+        "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+        "name": "moltchain",
+        "molt_name": "admin.molt",
+        "agent_type": 0,
+        "agent_type_name": "System",
+        "reputation": 10000,
+        "trust_tier": 5,
+        "trust_tier_name": "Legendary",
+        "created_at": 0,
+        "updated_at": 0,
+        "skill_count": 3,
+        "vouch_count": 0,
+        "is_active": true
+      }
+    },
+    {
+      "method": "getMoltyIdProfile",
+      "ok": true,
+      "error": null,
+      "result": {
+        "identity": {
+          "address": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+          "owner": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+          "name": "moltchain",
+          "agent_type": 0,
+          "agent_type_name": "System",
+          "reputation": 10000,
+          "created_at": 0,
+          "updated_at": 0,
+          "skill_count": 3,
+          "vouch_count": 0,
+          "is_active": true
+        },
+        "molt_name": "admin.molt",
+        "reputation": {
+          "score": 10000,
+          "tier": 5,
+          "tier_name": "Legendary"
+        },
+        "skills": [
+          {
+            "index": 0,
+            "name": "Infrastructure",
+            "proficiency": 100,
+            "attestation_count": 0,
+            "timestamp": 0
+          },
+          {
+            "index": 1,
+            "name": "Consensus",
+            "proficiency": 100,
+            "attestation_count": 0,
+            "timestamp": 0
+          },
+          {
+            "index": 2,
+            "name": "Security",
+            "proficiency": 100,
+            "attestation_count": 0,
+            "timestamp": 0
+          }
+        ],
+        "vouches": {
+          "received": [],
+          "given": []
+        },
+        "achievements": [],
+        "agent": {
+          "endpoint": null,
+          "metadata": null,
+          "availability": 0,
+          "availability_name": "offline",
+          "rate": 0
+        },
+        "contributions": {
+          "successful_txs": 0,
+          "governance_votes": 0,
+          "programs_deployed": 0,
+          "uptime_hours": 0,
+          "peer_endorsements": 0,
+          "failed_txs": 0,
+          "slashing_events": 0
+        }
+      }
+    },
+    {
+      "method": "resolveMoltName",
+      "ok": true,
+      "error": null,
+      "result": null
+    }
+  ],
+  "contract_checks": [
+    {
+      "symbol": "WETH",
+      "program_id": "9MDU2q8VvhyZVuuuUaMiXoBUcDBbnzyKANAPZNbg5ST",
+      "abi_ok": true,
+      "abi_fn_count": 20,
+      "info_ok": true
+    },
+    {
+      "symbol": "CLAWVAULT",
+      "program_id": "JWvFTSRkwDFgHMbPwJMbkvFHRnZAQeM1eguSZHSAK29",
+      "abi_ok": true,
+      "abi_fn_count": 18,
+      "info_ok": true
+    },
+    {
+      "symbol": "DEX",
+      "program_id": "XvS8Z8KQ6H3hZ2RqsNbvUi1h6qE9x3QbrEFPA6Q9Cih",
+      "abi_ok": true,
+      "abi_fn_count": 2,
+      "info_ok": true
+    },
+    {
+      "symbol": "PREDICT",
+      "program_id": "3TjynozUEhwitWdJUqtvyf78zAaGWHcvmvEXQWjNZCyw",
+      "abi_ok": true,
+      "abi_fn_count": 2,
+      "info_ok": true
+    },
+    {
+      "symbol": "WSOL",
+      "program_id": "3qh5ZT8S3vKnhyoVqZv2ic632WBbviSCcDyLVFwxWVQp",
+      "abi_ok": true,
+      "abi_fn_count": 20,
+      "info_ok": true
+    },
+    {
+      "symbol": "PUNKS",
+      "program_id": "4vJgUpfowJJyJ1HC94RBBBMjDzjTxswHHHV4uxaRZfpe",
+      "abi_ok": true,
+      "abi_fn_count": 21,
+      "info_ok": true
+    },
+    {
+      "symbol": "MARKET",
+      "program_id": "53zsSUsFbSASNnGh8A28aeUWNUzgaK69ztgP2PChaVNx",
+      "abi_ok": true,
+      "abi_fn_count": 13,
+      "info_ok": true
+    },
+    {
+      "symbol": "BRIDGE",
+      "program_id": "6UM3n43msvbsNmj5TLHk1TRypXjffAuiWWbaMpw4oFZB",
+      "abi_ok": true,
+      "abi_fn_count": 20,
+      "info_ok": true
+    },
+    {
+      "symbol": "ANALYTICS",
+      "program_id": "6YAG2aDUEbu8tsygw6TNb5oQL7ddKmWxybZJNdgFUaa1",
+      "abi_ok": true,
+      "abi_fn_count": 2,
+      "info_ok": true
+    },
+    {
+      "symbol": "MUSD",
+      "program_id": "6bmvbPbdwEPzxeVVabiGLDfq9kLeYEDuTZJb5xJHNV8y",
+      "abi_ok": true,
+      "abi_fn_count": 20,
+      "info_ok": true
+    },
+    {
+      "symbol": "BOUNTY",
+      "program_id": "7dgNtktjdXYWi9Bm4iMeP1EwUwmrwtrLnhqMAUsDFSnu",
+      "abi_ok": true,
+      "abi_fn_count": 16,
+      "info_ok": true
+    },
+    {
+      "symbol": "DEXAMM",
+      "program_id": "8DRLo95M2FbE2cVhvX4T5A6hmZ3KLj724hRncZURJoig",
+      "abi_ok": true,
+      "abi_fn_count": 2,
+      "info_ok": true
+    },
+    {
+      "symbol": "LEND",
+      "program_id": "9XBB25ojHhFkmwsg82cRBjWWaQWFkQYCGSqPBMecnW5p",
+      "abi_ok": true,
+      "abi_fn_count": 20,
+      "info_ok": true
+    },
+    {
+      "symbol": "DAO",
+      "program_id": "9pwAAVXWifTrhKaBNJEVRUDg1y1MfDmanV9df8et3keR",
+      "abi_ok": true,
+      "abi_fn_count": 25,
+      "info_ok": true
+    },
+    {
+      "symbol": "DEXMARGIN",
+      "program_id": "AcrkWeJnbR7sgqaPFuDkADeQ24jn7x9wGP96fx1mdWe7",
+      "abi_ok": true,
+      "abi_fn_count": 1,
+      "info_ok": true
+    },
+    {
+      "symbol": "MOLT",
+      "program_id": "AggL8ajoTWRM4JpJK5nrSTaJWSrDKEkSeRNdecPjs7DT",
+      "abi_ok": true,
+      "abi_fn_count": 7,
+      "info_ok": true
+    },
+    {
+      "symbol": "ORACLE",
+      "program_id": "CB137sGYPU5iBS5CtsTGDaiQzo1iRkrpdbRmEj1bHkg3",
+      "abi_ok": true,
+      "abi_fn_count": 24,
+      "info_ok": true
+    },
+    {
+      "symbol": "CLAWPAY",
+      "program_id": "DZekjhigNCvaT71rGzEUJpgjQwgQ4EpaeawWeNxXbpTw",
+      "abi_ok": true,
+      "abi_fn_count": 16,
+      "info_ok": true
+    },
+    {
+      "symbol": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "abi_ok": true,
+      "abi_fn_count": 32,
+      "info_ok": true
+    },
+    {
+      "symbol": "DEXROUTER",
+      "program_id": "FRcbTgiZsSNSQyzvw7ZxbZ21g4xz7pBLpJ98UqGaxnN5",
+      "abi_ok": true,
+      "abi_fn_count": 1,
+      "info_ok": true
+    },
+    {
+      "symbol": "AUCTION",
+      "program_id": "FutpCFsmxr1c7dGeqPL9PGBaCXQoA9dFYnZm5V7NwPgp",
+      "abi_ok": true,
+      "abi_fn_count": 16,
+      "info_ok": true
+    },
+    {
+      "symbol": "DEXREWARDS",
+      "program_id": "GBXtRAg277AJxG5NaJsacjm15pcYsPiFrJX5SjhYhxmp",
+      "abi_ok": true,
+      "abi_fn_count": 2,
+      "info_ok": true
+    },
+    {
+      "symbol": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "abi_ok": true,
+      "abi_fn_count": 33,
+      "info_ok": true
+    },
+    {
+      "symbol": "DEXGOV",
+      "program_id": "GMiVfG87mff1ABhCy28UAa1yPm9mqf2g7vzSoMzRABZc",
+      "abi_ok": true,
+      "abi_fn_count": 2,
+      "info_ok": true
+    },
+    {
+      "symbol": "CLAWPUMP",
+      "program_id": "GkjLEran1ZR1L5fquaVY2FnZnVFNLApg3DEse8Y4TZwC",
+      "abi_ok": true,
+      "abi_fn_count": 19,
+      "info_ok": true
+    },
+    {
+      "symbol": "REEF",
+      "program_id": "HMDpis6ERNgf7vRxzj5WV4rkK9XCBsy6z2PLAEj6NsNa",
+      "abi_ok": true,
+      "abi_fn_count": 16,
+      "info_ok": true
+    },
+    {
+      "symbol": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "abi_ok": true,
+      "abi_fn_count": 57,
+      "info_ok": true
+    }
+  ],
+  "rest_results": [
+    {
+      "method": "GET",
+      "url": "http://localhost:8899/api/v1/orders?trader=7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+      "ok": true,
+      "status": 200,
+      "body": {
+        "success": true,
+        "data": [],
+        "slot": 926
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://localhost:8899/api/v1/margin/positions?trader=7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+      "ok": true,
+      "status": 200,
+      "body": {
+        "success": true,
+        "data": [],
+        "slot": 926
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://localhost:8899/api/v1/pools/positions?owner=7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+      "ok": true,
+      "status": 200,
+      "body": {
+        "success": true,
+        "data": [],
+        "slot": 926
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://localhost:8899/api/v1/prediction-market/positions?address=7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+      "ok": true,
+      "status": 200,
+      "body": {
+        "success": true,
+        "data": [],
+        "slot": 926
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://localhost:8899/api/v1/prediction-market/traders/7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK/stats",
+      "ok": true,
+      "status": 200,
+      "body": {
+        "success": true,
+        "data": {
+          "address": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+          "total_volume": 0.0,
+          "trade_count": 0,
+          "last_trade_slot": 0
+        },
+        "slot": 926
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://localhost:8899/api/v1/traders/7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK/stats",
+      "ok": true,
+      "status": 200,
+      "body": {
+        "success": true,
+        "data": {
+          "rank": 0,
+          "address": "7oat8fmmxg6hh1idyvc3vrz4a8xm2vcmvku6bwzsrvqk",
+          "total_volume": 0,
+          "trade_count": 0,
+          "total_pnl": 0
+        },
+        "slot": 926
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://localhost:8899/api/v1/rewards/7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+      "ok": true,
+      "status": 200,
+      "body": {
+        "success": true,
+        "data": {
+          "pending": 0,
+          "claimed": 0,
+          "total_volume": 0,
+          "referral_count": 0,
+          "referral_earnings": 0
+        },
+        "slot": 926
+      }
+    },
+    {
+      "method": "POST",
+      "url": "http://localhost:8899/api/v1/prediction-market/create",
+      "status": 200,
+      "ok": true,
+      "body": {
+        "success": true,
+        "data": {
+          "next_market_id": 2,
+          "question": "Agent suite market",
+          "category": "crypto",
+          "initial_liquidity": 1e-05,
+          "creator": "7oaT8FMMxg6HH1iDYVC3vRz4a8Xm2VcmvkU6BwzsrvQK",
+          "status": "created"
+        },
+        "slot": 926
+      }
+    },
+    {
+      "method": "POST",
+      "url": "http://localhost:8899/api/v1/prediction-market/trade",
+      "status": 200,
+      "ok": true,
+      "body": {
+        "success": true,
+        "data": {
+          "market_id": 1,
+          "outcome": 0,
+          "amount": 1e-06,
+          "shares": 1.96e-06,
+          "price": 0.5,
+          "fee": 2e-08,
+          "status": "preview"
+        },
+        "slot": 926
+      }
+    },
+    {
+      "method": "GET",
+      "url": "http://localhost:8899/api/v1/prediction-market/markets/1",
+      "ok": true,
+      "status": 200,
+      "body": {
+        "success": true,
+        "data": {
+          "id": 1,
+          "creator": "0000000000000000000000000000000000000000000000000000000000000000",
+          "question": "Will MOLT > 1?",
+          "category": "crypto",
+          "status": "active",
+          "outcome_count": 2,
+          "winning_outcome": null,
+          "total_collateral": 1e-05,
+          "total_volume": 0.0,
+          "fees_collected": 0.0,
+          "created_slot": 898,
+          "close_slot": 100898,
+          "resolve_slot": 0,
+          "outcomes": [
+            {
+              "index": 0,
+              "name": "Yes",
+              "pool_yes": 5e-06,
+              "pool_no": 5e-06,
+              "price": 0.5
+            },
+            {
+              "index": 1,
+              "name": "No",
+              "pool_yes": 5e-06,
+              "pool_no": 5e-06,
+              "price": 0.5
+            }
+          ]
+        },
+        "slot": 926
+      }
+    }
+  ]
+}

@@ -244,16 +244,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 }));
             }
         } catch (e) { console.warn('[DEX] Pairs API unavailable:', e.message); }
-        if (!pairs.length) {
-            pairs = [
-                { id: 'MOLT/mUSD', pairId: 0, base: 'MOLT', quote: 'mUSD', price: 0.4217, change: 5.24 },
-                { id: 'wSOL/mUSD', pairId: 1, base: 'wSOL', quote: 'mUSD', price: 178.42, change: 2.14 },
-                { id: 'wETH/mUSD', pairId: 2, base: 'wETH', quote: 'mUSD', price: 3521.80, change: -0.42 },
-                { id: 'wSOL/MOLT', pairId: 3, base: 'wSOL', quote: 'MOLT', price: 423.05, change: 1.37 },
-                { id: 'wETH/MOLT', pairId: 4, base: 'wETH', quote: 'MOLT', price: 8351.20, change: -0.89 },
-            ];
+        if (pairs.length) {
+            state.activePair = pairs[0]; state.activePairId = pairs[0].pairId; state.lastPrice = pairs[0].price;
+        } else {
+            state.activePair = null; state.activePairId = null; state.lastPrice = 0;
+            console.warn('[DEX] No trading pairs on-chain — create pairs via dex_core.create_pair()');
         }
-        state.activePair = pairs[0]; state.activePairId = pairs[0].pairId; state.lastPrice = pairs[0].price;
     }
 
     async function loadOrderBook() {
@@ -266,23 +262,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 const bids = map(data.bids); bids.sort((a, b) => b.price - a.price);
                 t = 0; bids.forEach(b => { t += b.amount; b.total = t; });
                 state.orderBook = { asks, bids }; renderOrderBook();
-                document.querySelector('.book-asks')?.parentElement?.querySelector('.demo-badge')?.remove();
                 return;
             }
-        } catch { /* fallback */ }
-        genOrderBookFallback();
-        const _obP = document.querySelector('.book-asks')?.parentElement;
-        if (_obP && !_obP.querySelector('.demo-badge')) _obP.insertAdjacentHTML('afterbegin', '<div class="demo-badge" style="background:#ff6b35;color:#fff;padding:2px 8px;border-radius:4px;font-size:0.7rem;text-align:center;margin-bottom:4px;">[DEMO] Sample Order Book</div>');
+        } catch { /* API unavailable */ }
+        // Real empty state — no mock data
+        state.orderBook = { asks: [], bids: [] }; renderOrderBook();
     }
 
-    function genOrderBookFallback() {
-        const p = state.lastPrice || 0.42, sp = p * 0.001, asks = [], bids = [];
-        for (let i = 0; i < 15; i++) { asks.push({ price: p + sp + Math.random() * p * 0.008 * (i + 1), amount: Math.random() * 50000 + 1000, total: 0 }); }
-        asks.sort((a, b) => a.price - b.price); let t = 0; asks.forEach(a => { t += a.amount; a.total = t; });
-        for (let i = 0; i < 15; i++) { bids.push({ price: p - sp - Math.random() * p * 0.008 * (i + 1), amount: Math.random() * 50000 + 1000, total: 0 }); }
-        bids.sort((a, b) => b.price - a.price); t = 0; bids.forEach(b => { t += b.amount; b.total = t; });
-        state.orderBook = { asks, bids }; renderOrderBook();
-    }
 
     async function loadRecentTrades() {
         try {
@@ -294,19 +280,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     return `<div class="trade-row"><span class="trade-price ${buy ? 'buy' : 'sell'}">${formatPrice(price)}</span><span>${formatAmount(amount)}</span><span class="trade-time">${tr.timestamp ? new Date(tr.timestamp).toLocaleTimeString() : ''}</span></div>`;
                 }).join(''); return;
             }
-        } catch { /* fallback */ }
-        genTradesFallback();
+        } catch { /* API unavailable */ }
+        // Real empty state — no mock trades
+        const container = document.querySelector('.trades-list'); if (container) container.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;"><i class="fas fa-exchange-alt" style="margin-right:6px;"></i>No recent trades</div>';
     }
 
-    function genTradesFallback() {
-        const container = document.querySelector('.trades-list'); if (!container) return;
-        const now = Date.now(); const rows = [];
-        for (let i = 0; i < 30; i++) {
-            const buy = Math.random() > 0.5, price = state.lastPrice + (Math.random() - 0.5) * state.lastPrice * 0.004;
-            rows.push(`<div class="trade-row"><span class="trade-price ${buy ? 'buy' : 'sell'}">${formatPrice(price)}</span><span>${formatAmount(Math.random() * 10000 + 100)}</span><span class="trade-time">${new Date(now - i * Math.random() * 15000).toLocaleTimeString()}</span></div>`);
-        }
-        container.innerHTML = '<div class="demo-badge" style="background:#ff6b35;color:#fff;padding:2px 8px;border-radius:4px;font-size:0.7rem;text-align:center;margin-bottom:4px;">[DEMO] Sample Trades</div>' + rows.join('');
-    }
 
     async function loadCandles(from, to, interval) {
         try {
@@ -329,13 +307,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (result.shells !== undefined) balances['MOLT'] = { available: result.shells / 1e9, usd: (result.shells / 1e9) * state.lastPrice };
                 if (result.tokens) for (const [tok, amt] of Object.entries(result.tokens)) balances[tok] = { available: amt / 1e9, usd: 0 };
             }
-        } catch { /* demo fallback */ }
+        } catch { /* RPC unavailable */ }
         if (!Object.keys(balances).length) {
-            balances = { MOLT: { available: 125847.32, usd: 53087.21 }, mUSD: { available: 12500.00, usd: 12500.00 },
-                wSOL: { available: 28.45, usd: 5076.15 }, wETH: { available: 3.247, usd: 11435.33 } };
-            state._demoBalances = true;
-        } else {
-            state._demoBalances = false;
+            balances = { MOLT: { available: 0, usd: 0 }, mUSD: { available: 0, usd: 0 } };
         }
         renderBalances();
     }
@@ -432,7 +406,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function renderPairList(filter = '') {
         if (!pairList) return; const f = filter.toLowerCase();
-        pairList.innerHTML = pairs.filter(p => !f || p.id.toLowerCase().includes(f)).map(p => `
+        const filtered = pairs.filter(p => !f || p.id.toLowerCase().includes(f));
+        if (!filtered.length) {
+            pairList.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;"><i class="fas fa-search" style="margin-right:6px;"></i>No trading pairs available</div>';
+            return;
+        }
+        pairList.innerHTML = filtered.map(p => `
             <div class="pair-item ${state.activePair?.id === p.id ? 'active' : ''}" data-pair="${p.id}">
                 <span>${p.id}</span><span class="pair-price">${formatPrice(p.price)}</span>
             </div>`).join('');
@@ -452,8 +431,8 @@ document.addEventListener('DOMContentLoaded', () => {
     function updatePairStats(pair) {
         const stats = document.querySelectorAll('.pair-stats .stat-item .stat-value');
         if (stats.length >= 4) loadTicker(pair.pairId).then(t => {
-            if (t) { stats[0].textContent = formatPrice(t.high24h || pair.price * 1.04); stats[1].textContent = formatPrice(t.low24h || pair.price * 0.96); stats[2].textContent = formatVolume(t.volume24h || 0); stats[3].textContent = String(t.trades24h || '--'); }
-            else { stats[0].textContent = formatPrice(pair.price * 1.04); stats[1].textContent = formatPrice(pair.price * 0.96); stats[2].textContent = '--'; stats[3].textContent = '--'; }
+            if (t) { stats[0].textContent = formatPrice(t.high24h || 0); stats[1].textContent = formatPrice(t.low24h || 0); stats[2].textContent = formatVolume(t.volume24h || 0); stats[3].textContent = String(t.trades24h || '0'); }
+            else { stats[0].textContent = '--'; stats[1].textContent = '--'; stats[2].textContent = '--'; stats[3].textContent = '0'; }
         });
     }
 
@@ -469,6 +448,13 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderOrderBook() {
         const ac = document.querySelector('.book-asks'), bc = document.querySelector('.book-bids'), sp = document.querySelector('.spread-price'), sv = document.querySelector('.spread-value');
         if (!ac || !bc) return;
+        if (!state.orderBook.asks.length && !state.orderBook.bids.length) {
+            ac.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;"><i class="fas fa-layer-group" style="margin-right:6px;"></i>No asks</div>';
+            bc.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;"><i class="fas fa-layer-group" style="margin-right:6px;"></i>No bids</div>';
+            if (sp) sp.textContent = '—';
+            if (sv) sv.textContent = 'Spread: —';
+            return;
+        }
         const ma = Math.max(...state.orderBook.asks.map(a => a.total), 1), mb = Math.max(...state.orderBook.bids.map(b => b.total), 1);
         ac.innerHTML = [...state.orderBook.asks].reverse().map(a => `<div class="book-row ask"><span class="price">${formatPrice(a.price)}</span><span>${formatAmount(a.amount)}</span><span>${formatAmount(a.total)}</span><div class="depth-bar" style="width:${(a.total/ma*100).toFixed(1)}%"></div></div>`).join('');
         if (sp) { const tb = state.orderBook.bids[0]?.price || 0, ba = state.orderBook.asks[0]?.price || 0; sp.textContent = formatPrice((tb + ba) / 2); if (sv) { const s = ba - tb; sv.textContent = `Spread: ${formatPrice(Math.abs(s))} (${ba > 0 ? (s/ba*100).toFixed(3) : '0.000'}%)`; } }
@@ -480,13 +466,6 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     let tvWidget = null, realtimeCallback = null, lastBarTime = 0;
 
-    function genCandlesFallback() {
-        const c = [], now = Math.floor(Date.now() / 1000); let p = state.lastPrice * (0.85 + Math.random() * 0.3);
-        for (let i = 300; i >= 0; i--) { const o = p, ch = (Math.random() - 0.48) * 0.015, cl = o * (1 + ch); c.push({ time: (now - i * 900) * 1000, open: o, high: Math.max(o, cl) * (1 + Math.random() * 0.008), low: Math.min(o, cl) * (1 - Math.random() * 0.008), close: cl, volume: Math.random() * 500000 + 50000 }); p = cl; }
-        if (c.length) c[c.length - 1].close = state.lastPrice; state.candles = c; state._demoCandles = true;
-        const el = document.getElementById('tvChartContainer');
-        if (el && !el.querySelector('.demo-badge')) el.insertAdjacentHTML('afterbegin', '<div class="demo-badge" style="position:absolute;top:4px;right:4px;z-index:10;background:#ff6b35;color:#fff;padding:2px 8px;border-radius:4px;font-size:0.7rem;">[DEMO] Sample Chart Data</div>');
-    }
 
     function createDatafeed() {
         return {
@@ -500,12 +479,10 @@ document.addEventListener('DOMContentLoaded', () => {
             getBars: async (si, res, pp, ok) => {
                 const apiC = await loadCandles(pp.from, pp.to, res);
                 let bars;
-                if (apiC?.length) { bars = apiC; state.candles = apiC; state._demoCandles = false; const badge = document.querySelector('#tvChartContainer > .demo-badge'); if (badge) badge.remove(); }
+                if (apiC?.length) { bars = apiC; state.candles = apiC; }
                 else {
-                    if (!state.candles.length) genCandlesFallback();
-                    const rm = resolutionToMs(res), bm = new Map();
-                    state.candles.filter(c => c.time / 1000 >= pp.from && c.time / 1000 <= pp.to).forEach(c => { const t = Math.floor(c.time / rm) * rm; if (bm.has(t)) { const b = bm.get(t); b.high = Math.max(b.high, c.high); b.low = Math.min(b.low, c.low); b.close = c.close; b.volume += c.volume; } else bm.set(t, { ...c, time: t }); });
-                    bars = [...bm.values()].sort((a, b) => a.time - b.time);
+                    // No candle data on-chain — return empty
+                    bars = [];
                 }
                 if (bars.length) lastBarTime = bars[bars.length - 1].time;
                 ok(bars, { noData: !bars.length });
@@ -672,8 +649,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderBalances() {
         const c = document.querySelector('.balance-list'); if (!c) return;
         if (!state.connected) { c.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;">Connect wallet to view balances</div>'; return; }
-        const demoBadge = state._demoBalances ? '<div class="demo-badge" style="background:#ff6b35;color:#fff;padding:2px 8px;border-radius:4px;font-size:0.7rem;text-align:center;margin-bottom:4px;">[DEMO] Sample Balances — RPC unavailable</div>' : '';
-        c.innerHTML = demoBadge + Object.entries(balances).map(([t, b]) => `<div class="balance-row"><div class="balance-token"><div class="token-icon ${t.toLowerCase()}-icon">${t[0]}</div><span>${t}</span></div><div class="balance-amounts"><span class="balance-available">${formatAmount(b.available)}</span><span class="balance-usd">≈ $${formatAmount(b.usd)}</span></div></div>`).join('');
+        c.innerHTML = Object.entries(balances).map(([t, b]) => `<div class="balance-row"><div class="balance-token"><div class="token-icon ${t.toLowerCase()}-icon">${t[0]}</div><span>${t}</span></div><div class="balance-amounts"><span class="balance-available">${formatAmount(b.available)}</span><span class="balance-usd">≈ $${formatAmount(b.usd)}</span></div></div>`).join('');
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -732,9 +708,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 const _pdb = document.getElementById('poolDemoBadge'); if (_pdb) _pdb.remove();
                 return;
             }
-        } catch { /* keep static fallback */ }
+        } catch { /* API unavailable */ }
+        // Real empty state — no mock pools
         const _ptb = document.getElementById('poolTableBody');
-        if (_ptb && !document.getElementById('poolDemoBadge')) _ptb.parentElement.insertAdjacentHTML('beforebegin', '<div id="poolDemoBadge" class="demo-badge" style="background:#ff6b35;color:#fff;padding:2px 8px;border-radius:4px;font-size:0.7rem;text-align:center;margin-bottom:4px;">[DEMO] Sample Pool Data</div>');
+        if (_ptb) _ptb.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px;"><i class="fas fa-water" style="margin-right:6px;"></i>No liquidity pools — create one to get started</td></tr>';
     }
 
     async function loadLPPositions() {
@@ -1094,15 +1071,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // PredictionReef — Predict View (Live API + Mock Fallback)
     // ═══════════════════════════════════════════════════════════════════════
 
-    // Mock data fallback — used when API is unavailable
-    const MOCK_MARKETS = [
-        { id: 1, question: 'Will BTC exceed $150,000 by March 31, 2026?', cat: 'crypto', yes: 0.62, volume: 842000, liquidity: 320000, traders: 284, status: 'active' },
-        { id: 2, question: 'Will the EU pass comprehensive AI regulation by Q2 2026?', cat: 'politics', yes: 0.45, volume: 523000, liquidity: 210000, traders: 178, status: 'active' },
-        { id: 3, question: 'Which L1 blockchain will have the highest TVL by Q3 2026?', cat: 'crypto', yes: 0.48, volume: 1200000, liquidity: 480000, traders: 412, status: 'active', multi: true },
-        { id: 4, question: 'Will the FIFA Club World Cup 2025 champion be a European team?', cat: 'sports', yes: 0.71, volume: 198000, liquidity: 85000, traders: 96, status: 'active' },
-        { id: 5, question: 'Will OpenAI release GPT-5 before February 2026?', cat: 'tech', yes: 0, volume: 156000, liquidity: 0, traders: 142, status: 'resolved' },
-        { id: 6, question: 'Will SpaceX Starship complete a successful orbital flight by Q2 2026?', cat: 'science', yes: 0.83, volume: 367000, liquidity: 145000, traders: 203, status: 'active' },
-    ];
+    // Mock data removed — only real on-chain prediction markets displayed
+    const MOCK_MARKETS = [];
 
     const predictState = {
         selectedMarket: 1,
@@ -1164,9 +1134,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
         } catch { /* API unavailable */ }
-        // Fallback to mock data
-        predictState.markets = [...MOCK_MARKETS];
-        predictState.live = false;
+        // Real empty state — no mock markets
+        predictState.markets = [];
+        predictState.live = true;
         renderPredictionMarkets();
     }
 
@@ -1190,6 +1160,14 @@ document.addEventListener('DOMContentLoaded', () => {
         // Keep only the grid container, regenerate cards
         const existingCards = grid.querySelectorAll('.market-card');
         existingCards.forEach(c => c.remove());
+
+        if (!predictState.markets.length) {
+            const emptyEl = document.createElement('div');
+            emptyEl.style.cssText = 'text-align:center;color:var(--text-muted);padding:40px;font-size:0.9rem;grid-column:1/-1;';
+            emptyEl.innerHTML = '<i class="fas fa-crystal-ball" style="font-size:2rem;margin-bottom:12px;display:block;opacity:0.4;"></i><p>No prediction markets yet</p><p style="font-size:0.8rem;margin-top:8px;">Create a market to get started</p>';
+            grid.appendChild(emptyEl);
+            return;
+        }
 
         const catIconsHtml = {
             crypto: '<i class="fab fa-bitcoin"></i> Crypto',
@@ -1274,7 +1252,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         <span class="market-cat-tag">${catTag}</span>
                         <span class="market-id-tag">${idTag}</span>
                     </div>
-                    <h4 class="market-question">${m.question}${!predictState.live ? ' <span class="demo-badge" style="background:#ff6b35;color:#fff;padding:2px 6px;border-radius:4px;font-size:0.75rem;margin-left:8px;vertical-align:middle;">[DEMO]</span>' : ''}</h4>
+                    <h4 class="market-question">${m.question}</h4>
                     <div class="market-meta">
                         ${closesLabel}${creatorLabel}
                     </div>
@@ -1369,24 +1347,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let predictChartState = { marketId: null, range: '1d' };
 
-    function generateMockPriceHistory(market, range) {
-        const points = { '1h': 60, '6h': 72, '1d': 96, '1w': 168, 'all': 200 }[range] || 96;
-        const data = [];
+    function generateEmptyPriceHistory(market) {
+        // Return a flat line at current price when no real history exists
         const now = Date.now();
-        const interval = { '1h': 60000, '6h': 5 * 60000, '1d': 15 * 60000, '1w': 60 * 60000, 'all': 4 * 60 * 60000 }[range] || 15 * 60000;
-        let price = market.yes || 0.5;
-        // Walk backwards from a starting seed
-        const seed = price + (Math.random() - 0.5) * 0.15;
-        let p = Math.max(0.05, Math.min(0.95, seed));
-        for (let i = points; i >= 0; i--) {
-            const t = now - i * interval;
-            const drift = ((market.yes || 0.5) - p) * 0.015;
-            const noise = (Math.random() - 0.5) * 0.025;
-            p = Math.max(0.01, Math.min(0.99, p + drift + noise));
-            data.push({ t, p });
-        }
-        data[data.length - 1].p = market.yes || 0.5;
-        return data;
+        const price = market.yes || 0.5;
+        return [{ t: now - 86400000, p: price }, { t: now, p: price }];
     }
 
     function drawPredictChart(data, canvas) {
@@ -1489,8 +1454,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function openPredictChart(marketId) {
-        const m = predictState.markets.find(x => x.id === marketId)
-            || MOCK_MARKETS.find(x => x.id === marketId);
+        const m = predictState.markets.find(x => x.id === marketId);
         if (!m) return;
         predictChartState.marketId = marketId;
         predictChartState.range = '1d';
@@ -1503,12 +1467,12 @@ document.addEventListener('DOMContentLoaded', () => {
         document.querySelectorAll('.predict-chart-tab').forEach(t => t.classList.toggle('active', t.dataset.range === '1d'));
         // Show modal FIRST so canvas has layout dimensions
         modal.style.display = 'flex';
-        // Draw mock data on canvas (now has real clientWidth/clientHeight)
+        // Draw flat line initially, then load real data
         requestAnimationFrame(() => {
-            const mockData = generateMockPriceHistory(m, '1d');
-            drawPredictChart(mockData, canvas);
-            renderPredictChartStats(mockData, m);
-            // Attempt to load real price history from RPC
+            const emptyData = generateEmptyPriceHistory(m);
+            drawPredictChart(emptyData, canvas);
+            renderPredictChartStats(emptyData, m);
+            // Load real price history from RPC
             loadRealPriceHistory(marketId, '1d', m);
         });
     }
@@ -1542,20 +1506,13 @@ document.addEventListener('DOMContentLoaded', () => {
         const range = tab.dataset.range;
         predictChartState.range = range;
         document.querySelectorAll('.predict-chart-tab').forEach(t => t.classList.toggle('active', t === tab));
-        const m = predictState.markets.find(x => x.id === predictChartState.marketId)
-            || MOCK_MARKETS.find(x => x.id === predictChartState.marketId);
+        const m = predictState.markets.find(x => x.id === predictChartState.marketId);
         if (!m) return;
-        // Use real data if available, otherwise mock
-        if (predictChartState.realData && predictChartState.realData.length > 0) {
-            const canvas = document.getElementById('predictChartCanvas');
-            if (canvas) drawPredictChart(predictChartState.realData, canvas);
-            renderPredictChartStats(predictChartState.realData, m);
-        } else {
-            const data = generateMockPriceHistory(m, range);
-            const canvas = document.getElementById('predictChartCanvas');
-            if (canvas) drawPredictChart(data, canvas);
-            renderPredictChartStats(data, m);
-        }
+        // Use real data if available, otherwise show flat line
+        const chartData = (predictChartState.realData && predictChartState.realData.length > 0) ? predictChartState.realData : generateEmptyPriceHistory(m);
+        const canvas = document.getElementById('predictChartCanvas');
+        if (canvas) drawPredictChart(chartData, canvas);
+        renderPredictChartStats(chartData, m);
     }));
 
     // Close handlers
@@ -1711,7 +1668,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Polling fallback (when WS unavailable)
     // ═══════════════════════════════════════════════════════════════════════
     setInterval(async () => {
-        if (state.currentView === 'trade') {
+        if (state.currentView === 'trade' && state.activePairId != null) {
             try {
                 await loadOrderBook();
                 const t = await loadTicker(state.activePairId);
@@ -1748,10 +1705,22 @@ document.addEventListener('DOMContentLoaded', () => {
     (async function init() {
         await loadPairs();
         renderPairList(); renderBalances(); renderOpenOrders(); updateSubmitBtn();
-        if (state.activePair) { if (pairActive) pairActive.querySelector('.pair-name').textContent = state.activePair.id; updatePairStats(state.activePair); updateTickerDisplay(); updateMarginInfo(); if (priceInput) priceInput.value = formatPrice(state.lastPrice); }
-        await Promise.all([loadOrderBook(), loadRecentTrades()]);
-        setTimeout(initTradingView, 200);
-        connectWebSocket(); if (state.activePairId != null) subscribePair(state.activePairId);
+        if (state.activePair) {
+            if (pairActive) pairActive.querySelector('.pair-name').textContent = state.activePair.id;
+            updatePairStats(state.activePair); updateTickerDisplay(); updateMarginInfo();
+            if (priceInput) priceInput.value = formatPrice(state.lastPrice);
+            await Promise.all([loadOrderBook(), loadRecentTrades()]);
+            setTimeout(initTradingView, 200);
+            connectWebSocket(); subscribePair(state.activePairId);
+        } else {
+            // No pairs on-chain — show empty state
+            if (pairActive) pairActive.querySelector('.pair-name').textContent = 'No pairs';
+            state.orderBook = { asks: [], bids: [] }; renderOrderBook();
+            const tc = document.querySelector('.trades-list');
+            if (tc) tc.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;"><i class="fas fa-info-circle" style="margin-right:6px;"></i>No trading pairs available. Bootstrap pairs via dex_core contract.</div>';
+            setTimeout(initTradingView, 200);
+            connectWebSocket();
+        }
         if (savedWallets.length) { const l = savedWallets[savedWallets.length - 1]; connectWalletTo(l.address, l.short); }
     })().catch(e => console.error('[DEX] Init error:', e));
 });

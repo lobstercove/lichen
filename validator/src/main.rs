@@ -1985,9 +1985,16 @@ fn genesis_exec_contract(
             // Apply storage changes
             for (key, val_opt) in &result.storage_changes {
                 match val_opt {
-                    Some(val) => contract.set_storage(key.clone(), val.clone()),
+                    Some(val) => {
+                        contract.set_storage(key.clone(), val.clone());
+                        // Also write to CF_CONTRACT_STORAGE for fast-path RPC reads
+                        if let Err(e) = state.put_contract_storage(program_pubkey, key, val) {
+                            warn!("  WARN {}: put_contract_storage: {}", label, e);
+                        }
+                    }
                     None => {
                         contract.remove_storage(key);
+                        let _ = state.delete_contract_storage(program_pubkey, key);
                     }
                 }
             }
