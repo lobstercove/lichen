@@ -32,8 +32,8 @@ All config via environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `DEX_ENDPOINT` | `http://localhost:8000` | DEX API URL |
-| `DEX_WS_ENDPOINT` | `ws://localhost:8000/ws` | WebSocket URL |
+| `DEX_ENDPOINT` | `http://localhost:8899` | DEX API URL |
+| `DEX_WS_ENDPOINT` | `ws://localhost:8900/ws` | WebSocket URL |
 | `MM_PAIR_ID` | `0` | Trading pair ID |
 | `MM_STRATEGY` | `spread` | Strategy: `spread` or `grid` |
 | `MM_DRY_RUN` | `false` | Log only, no real orders |

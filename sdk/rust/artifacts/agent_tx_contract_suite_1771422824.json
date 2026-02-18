@@ -1,0 +1,3860 @@
+{
+  "rpc_url": "http://localhost:8899",
+  "caller": "64Lw4NRqws1xtRqmHayibvE6Go4eiB4n51Rov5hddNWM",
+  "contracts_total": 27,
+  "functions_total": 427,
+  "simulate_ok": 84,
+  "simulate_fail": 343,
+  "top_errors": {
+    "returnCode=None": 84,
+    "returnCode=Some(1)": 104,
+    "returnCode=Some(2)": 18,
+    "returnCode=Some(200)": 134,
+    "returnCode=Some(3)": 3
+  },
+  "results": [
+    {
+      "contract": "WETH",
+      "program_id": "9MDU2q8VvhyZVuuuUaMiXoBUcDBbnzyKANAPZNbg5ST",
+      "function": "allowance",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "WETH",
+      "program_id": "9MDU2q8VvhyZVuuuUaMiXoBUcDBbnzyKANAPZNbg5ST",
+      "function": "approve",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "WETH",
+      "program_id": "9MDU2q8VvhyZVuuuUaMiXoBUcDBbnzyKANAPZNbg5ST",
+      "function": "attest_reserves",
+      "readonly": false,
+      "ok": false,
+      "return_code": 2,
+      "error": null
+    },
+    {
+      "contract": "WETH",
+      "program_id": "9MDU2q8VvhyZVuuuUaMiXoBUcDBbnzyKANAPZNbg5ST",
+      "function": "balance_of",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "WETH",
+      "program_id": "9MDU2q8VvhyZVuuuUaMiXoBUcDBbnzyKANAPZNbg5ST",
+      "function": "burn",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "WETH",
+      "program_id": "9MDU2q8VvhyZVuuuUaMiXoBUcDBbnzyKANAPZNbg5ST",
+      "function": "emergency_pause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 2,
+      "error": null
+    },
+    {
+      "contract": "WETH",
+      "program_id": "9MDU2q8VvhyZVuuuUaMiXoBUcDBbnzyKANAPZNbg5ST",
+      "function": "emergency_unpause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 2,
+      "error": null
+    },
+    {
+      "contract": "WETH",
+      "program_id": "9MDU2q8VvhyZVuuuUaMiXoBUcDBbnzyKANAPZNbg5ST",
+      "function": "get_attestation_count",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "WETH",
+      "program_id": "9MDU2q8VvhyZVuuuUaMiXoBUcDBbnzyKANAPZNbg5ST",
+      "function": "get_epoch_remaining",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "WETH",
+      "program_id": "9MDU2q8VvhyZVuuuUaMiXoBUcDBbnzyKANAPZNbg5ST",
+      "function": "get_last_attestation_slot",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "WETH",
+      "program_id": "9MDU2q8VvhyZVuuuUaMiXoBUcDBbnzyKANAPZNbg5ST",
+      "function": "get_reserve_ratio",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "WETH",
+      "program_id": "9MDU2q8VvhyZVuuuUaMiXoBUcDBbnzyKANAPZNbg5ST",
+      "function": "get_transfer_count",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "WETH",
+      "program_id": "9MDU2q8VvhyZVuuuUaMiXoBUcDBbnzyKANAPZNbg5ST",
+      "function": "initialize",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "WETH",
+      "program_id": "9MDU2q8VvhyZVuuuUaMiXoBUcDBbnzyKANAPZNbg5ST",
+      "function": "mint",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "WETH",
+      "program_id": "9MDU2q8VvhyZVuuuUaMiXoBUcDBbnzyKANAPZNbg5ST",
+      "function": "total_burned",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "WETH",
+      "program_id": "9MDU2q8VvhyZVuuuUaMiXoBUcDBbnzyKANAPZNbg5ST",
+      "function": "total_minted",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "WETH",
+      "program_id": "9MDU2q8VvhyZVuuuUaMiXoBUcDBbnzyKANAPZNbg5ST",
+      "function": "total_supply",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "WETH",
+      "program_id": "9MDU2q8VvhyZVuuuUaMiXoBUcDBbnzyKANAPZNbg5ST",
+      "function": "transfer",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "WETH",
+      "program_id": "9MDU2q8VvhyZVuuuUaMiXoBUcDBbnzyKANAPZNbg5ST",
+      "function": "transfer_admin",
+      "readonly": false,
+      "ok": false,
+      "return_code": 2,
+      "error": null
+    },
+    {
+      "contract": "WETH",
+      "program_id": "9MDU2q8VvhyZVuuuUaMiXoBUcDBbnzyKANAPZNbg5ST",
+      "function": "transfer_from",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWVAULT",
+      "program_id": "JWvFTSRkwDFgHMbPwJMbkvFHRnZAQeM1eguSZHSAK29",
+      "function": "add_strategy",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWVAULT",
+      "program_id": "JWvFTSRkwDFgHMbPwJMbkvFHRnZAQeM1eguSZHSAK29",
+      "function": "cv_pause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWVAULT",
+      "program_id": "JWvFTSRkwDFgHMbPwJMbkvFHRnZAQeM1eguSZHSAK29",
+      "function": "cv_unpause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWVAULT",
+      "program_id": "JWvFTSRkwDFgHMbPwJMbkvFHRnZAQeM1eguSZHSAK29",
+      "function": "deposit",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "CLAWVAULT",
+      "program_id": "JWvFTSRkwDFgHMbPwJMbkvFHRnZAQeM1eguSZHSAK29",
+      "function": "get_strategy_info",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "CLAWVAULT",
+      "program_id": "JWvFTSRkwDFgHMbPwJMbkvFHRnZAQeM1eguSZHSAK29",
+      "function": "get_user_position",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "CLAWVAULT",
+      "program_id": "JWvFTSRkwDFgHMbPwJMbkvFHRnZAQeM1eguSZHSAK29",
+      "function": "get_vault_stats",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "CLAWVAULT",
+      "program_id": "JWvFTSRkwDFgHMbPwJMbkvFHRnZAQeM1eguSZHSAK29",
+      "function": "harvest",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "CLAWVAULT",
+      "program_id": "JWvFTSRkwDFgHMbPwJMbkvFHRnZAQeM1eguSZHSAK29",
+      "function": "initialize",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWVAULT",
+      "program_id": "JWvFTSRkwDFgHMbPwJMbkvFHRnZAQeM1eguSZHSAK29",
+      "function": "remove_strategy",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWVAULT",
+      "program_id": "JWvFTSRkwDFgHMbPwJMbkvFHRnZAQeM1eguSZHSAK29",
+      "function": "set_deposit_cap",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWVAULT",
+      "program_id": "JWvFTSRkwDFgHMbPwJMbkvFHRnZAQeM1eguSZHSAK29",
+      "function": "set_deposit_fee",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWVAULT",
+      "program_id": "JWvFTSRkwDFgHMbPwJMbkvFHRnZAQeM1eguSZHSAK29",
+      "function": "set_protocol_addresses",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWVAULT",
+      "program_id": "JWvFTSRkwDFgHMbPwJMbkvFHRnZAQeM1eguSZHSAK29",
+      "function": "set_risk_tier",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWVAULT",
+      "program_id": "JWvFTSRkwDFgHMbPwJMbkvFHRnZAQeM1eguSZHSAK29",
+      "function": "set_withdrawal_fee",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWVAULT",
+      "program_id": "JWvFTSRkwDFgHMbPwJMbkvFHRnZAQeM1eguSZHSAK29",
+      "function": "update_strategy_allocation",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWVAULT",
+      "program_id": "JWvFTSRkwDFgHMbPwJMbkvFHRnZAQeM1eguSZHSAK29",
+      "function": "withdraw",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "CLAWVAULT",
+      "program_id": "JWvFTSRkwDFgHMbPwJMbkvFHRnZAQeM1eguSZHSAK29",
+      "function": "withdraw_protocol_fees",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "DEX",
+      "program_id": "XvS8Z8KQ6H3hZ2RqsNbvUi1h6qE9x3QbrEFPA6Q9Cih",
+      "function": "call",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "DEX",
+      "program_id": "XvS8Z8KQ6H3hZ2RqsNbvUi1h6qE9x3QbrEFPA6Q9Cih",
+      "function": "initialize",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "PREDICT",
+      "program_id": "3TjynozUEhwitWdJUqtvyf78zAaGWHcvmvEXQWjNZCyw",
+      "function": "call",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "PREDICT",
+      "program_id": "3TjynozUEhwitWdJUqtvyf78zAaGWHcvmvEXQWjNZCyw",
+      "function": "initialize",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "WSOL",
+      "program_id": "3qh5ZT8S3vKnhyoVqZv2ic632WBbviSCcDyLVFwxWVQp",
+      "function": "allowance",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "WSOL",
+      "program_id": "3qh5ZT8S3vKnhyoVqZv2ic632WBbviSCcDyLVFwxWVQp",
+      "function": "approve",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "WSOL",
+      "program_id": "3qh5ZT8S3vKnhyoVqZv2ic632WBbviSCcDyLVFwxWVQp",
+      "function": "attest_reserves",
+      "readonly": false,
+      "ok": false,
+      "return_code": 2,
+      "error": null
+    },
+    {
+      "contract": "WSOL",
+      "program_id": "3qh5ZT8S3vKnhyoVqZv2ic632WBbviSCcDyLVFwxWVQp",
+      "function": "balance_of",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "WSOL",
+      "program_id": "3qh5ZT8S3vKnhyoVqZv2ic632WBbviSCcDyLVFwxWVQp",
+      "function": "burn",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "WSOL",
+      "program_id": "3qh5ZT8S3vKnhyoVqZv2ic632WBbviSCcDyLVFwxWVQp",
+      "function": "emergency_pause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 2,
+      "error": null
+    },
+    {
+      "contract": "WSOL",
+      "program_id": "3qh5ZT8S3vKnhyoVqZv2ic632WBbviSCcDyLVFwxWVQp",
+      "function": "emergency_unpause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 2,
+      "error": null
+    },
+    {
+      "contract": "WSOL",
+      "program_id": "3qh5ZT8S3vKnhyoVqZv2ic632WBbviSCcDyLVFwxWVQp",
+      "function": "get_attestation_count",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "WSOL",
+      "program_id": "3qh5ZT8S3vKnhyoVqZv2ic632WBbviSCcDyLVFwxWVQp",
+      "function": "get_epoch_remaining",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "WSOL",
+      "program_id": "3qh5ZT8S3vKnhyoVqZv2ic632WBbviSCcDyLVFwxWVQp",
+      "function": "get_last_attestation_slot",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "WSOL",
+      "program_id": "3qh5ZT8S3vKnhyoVqZv2ic632WBbviSCcDyLVFwxWVQp",
+      "function": "get_reserve_ratio",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "WSOL",
+      "program_id": "3qh5ZT8S3vKnhyoVqZv2ic632WBbviSCcDyLVFwxWVQp",
+      "function": "get_transfer_count",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "WSOL",
+      "program_id": "3qh5ZT8S3vKnhyoVqZv2ic632WBbviSCcDyLVFwxWVQp",
+      "function": "initialize",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "WSOL",
+      "program_id": "3qh5ZT8S3vKnhyoVqZv2ic632WBbviSCcDyLVFwxWVQp",
+      "function": "mint",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "WSOL",
+      "program_id": "3qh5ZT8S3vKnhyoVqZv2ic632WBbviSCcDyLVFwxWVQp",
+      "function": "total_burned",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "WSOL",
+      "program_id": "3qh5ZT8S3vKnhyoVqZv2ic632WBbviSCcDyLVFwxWVQp",
+      "function": "total_minted",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "WSOL",
+      "program_id": "3qh5ZT8S3vKnhyoVqZv2ic632WBbviSCcDyLVFwxWVQp",
+      "function": "total_supply",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "WSOL",
+      "program_id": "3qh5ZT8S3vKnhyoVqZv2ic632WBbviSCcDyLVFwxWVQp",
+      "function": "transfer",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "WSOL",
+      "program_id": "3qh5ZT8S3vKnhyoVqZv2ic632WBbviSCcDyLVFwxWVQp",
+      "function": "transfer_admin",
+      "readonly": false,
+      "ok": false,
+      "return_code": 2,
+      "error": null
+    },
+    {
+      "contract": "WSOL",
+      "program_id": "3qh5ZT8S3vKnhyoVqZv2ic632WBbviSCcDyLVFwxWVQp",
+      "function": "transfer_from",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "PUNKS",
+      "program_id": "4vJgUpfowJJyJ1HC94RBBBMjDzjTxswHHHV4uxaRZfpe",
+      "function": "approve",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "PUNKS",
+      "program_id": "4vJgUpfowJJyJ1HC94RBBBMjDzjTxswHHHV4uxaRZfpe",
+      "function": "balance_of",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "PUNKS",
+      "program_id": "4vJgUpfowJJyJ1HC94RBBBMjDzjTxswHHHV4uxaRZfpe",
+      "function": "burn",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "PUNKS",
+      "program_id": "4vJgUpfowJJyJ1HC94RBBBMjDzjTxswHHHV4uxaRZfpe",
+      "function": "get_collection_stats",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "PUNKS",
+      "program_id": "4vJgUpfowJJyJ1HC94RBBBMjDzjTxswHHHV4uxaRZfpe",
+      "function": "total_minted",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "PUNKS",
+      "program_id": "4vJgUpfowJJyJ1HC94RBBBMjDzjTxswHHHV4uxaRZfpe",
+      "function": "get_owner_of",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "PUNKS",
+      "program_id": "4vJgUpfowJJyJ1HC94RBBBMjDzjTxswHHHV4uxaRZfpe",
+      "function": "owner_of",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "PUNKS",
+      "program_id": "4vJgUpfowJJyJ1HC94RBBBMjDzjTxswHHHV4uxaRZfpe",
+      "function": "get_punk_metadata",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "PUNKS",
+      "program_id": "4vJgUpfowJJyJ1HC94RBBBMjDzjTxswHHHV4uxaRZfpe",
+      "function": "get_punks_by_owner",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "PUNKS",
+      "program_id": "4vJgUpfowJJyJ1HC94RBBBMjDzjTxswHHHV4uxaRZfpe",
+      "function": "get_total_supply",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "PUNKS",
+      "program_id": "4vJgUpfowJJyJ1HC94RBBBMjDzjTxswHHHV4uxaRZfpe",
+      "function": "initialize",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "PUNKS",
+      "program_id": "4vJgUpfowJJyJ1HC94RBBBMjDzjTxswHHHV4uxaRZfpe",
+      "function": "mint",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "PUNKS",
+      "program_id": "4vJgUpfowJJyJ1HC94RBBBMjDzjTxswHHHV4uxaRZfpe",
+      "function": "mint_punk",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "PUNKS",
+      "program_id": "4vJgUpfowJJyJ1HC94RBBBMjDzjTxswHHHV4uxaRZfpe",
+      "function": "mp_pause",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "PUNKS",
+      "program_id": "4vJgUpfowJJyJ1HC94RBBBMjDzjTxswHHHV4uxaRZfpe",
+      "function": "mp_unpause",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "PUNKS",
+      "program_id": "4vJgUpfowJJyJ1HC94RBBBMjDzjTxswHHHV4uxaRZfpe",
+      "function": "set_base_uri",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "PUNKS",
+      "program_id": "4vJgUpfowJJyJ1HC94RBBBMjDzjTxswHHHV4uxaRZfpe",
+      "function": "set_max_supply",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "PUNKS",
+      "program_id": "4vJgUpfowJJyJ1HC94RBBBMjDzjTxswHHHV4uxaRZfpe",
+      "function": "set_royalty",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "PUNKS",
+      "program_id": "4vJgUpfowJJyJ1HC94RBBBMjDzjTxswHHHV4uxaRZfpe",
+      "function": "transfer",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "PUNKS",
+      "program_id": "4vJgUpfowJJyJ1HC94RBBBMjDzjTxswHHHV4uxaRZfpe",
+      "function": "transfer_from",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "PUNKS",
+      "program_id": "4vJgUpfowJJyJ1HC94RBBBMjDzjTxswHHHV4uxaRZfpe",
+      "function": "transfer_punk",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "MARKET",
+      "program_id": "53zsSUsFbSASNnGh8A28aeUWNUzgaK69ztgP2PChaVNx",
+      "function": "accept_offer",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "MARKET",
+      "program_id": "53zsSUsFbSASNnGh8A28aeUWNUzgaK69ztgP2PChaVNx",
+      "function": "buy_nft",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "MARKET",
+      "program_id": "53zsSUsFbSASNnGh8A28aeUWNUzgaK69ztgP2PChaVNx",
+      "function": "cancel_listing",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "MARKET",
+      "program_id": "53zsSUsFbSASNnGh8A28aeUWNUzgaK69ztgP2PChaVNx",
+      "function": "cancel_offer",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "MARKET",
+      "program_id": "53zsSUsFbSASNnGh8A28aeUWNUzgaK69ztgP2PChaVNx",
+      "function": "get_listing",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "MARKET",
+      "program_id": "53zsSUsFbSASNnGh8A28aeUWNUzgaK69ztgP2PChaVNx",
+      "function": "get_marketplace_stats",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "MARKET",
+      "program_id": "53zsSUsFbSASNnGh8A28aeUWNUzgaK69ztgP2PChaVNx",
+      "function": "initialize",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MARKET",
+      "program_id": "53zsSUsFbSASNnGh8A28aeUWNUzgaK69ztgP2PChaVNx",
+      "function": "list_nft",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "MARKET",
+      "program_id": "53zsSUsFbSASNnGh8A28aeUWNUzgaK69ztgP2PChaVNx",
+      "function": "list_nft_with_royalty",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "MARKET",
+      "program_id": "53zsSUsFbSASNnGh8A28aeUWNUzgaK69ztgP2PChaVNx",
+      "function": "make_offer",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "MARKET",
+      "program_id": "53zsSUsFbSASNnGh8A28aeUWNUzgaK69ztgP2PChaVNx",
+      "function": "mm_pause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "MARKET",
+      "program_id": "53zsSUsFbSASNnGh8A28aeUWNUzgaK69ztgP2PChaVNx",
+      "function": "mm_unpause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "MARKET",
+      "program_id": "53zsSUsFbSASNnGh8A28aeUWNUzgaK69ztgP2PChaVNx",
+      "function": "set_marketplace_fee",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "BRIDGE",
+      "program_id": "6UM3n43msvbsNmj5TLHk1TRypXjffAuiWWbaMpw4oFZB",
+      "function": "add_bridge_validator",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "BRIDGE",
+      "program_id": "6UM3n43msvbsNmj5TLHk1TRypXjffAuiWWbaMpw4oFZB",
+      "function": "cancel_expired_request",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "BRIDGE",
+      "program_id": "6UM3n43msvbsNmj5TLHk1TRypXjffAuiWWbaMpw4oFZB",
+      "function": "confirm_mint",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "BRIDGE",
+      "program_id": "6UM3n43msvbsNmj5TLHk1TRypXjffAuiWWbaMpw4oFZB",
+      "function": "confirm_unlock",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "BRIDGE",
+      "program_id": "6UM3n43msvbsNmj5TLHk1TRypXjffAuiWWbaMpw4oFZB",
+      "function": "get_bridge_status",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "BRIDGE",
+      "program_id": "6UM3n43msvbsNmj5TLHk1TRypXjffAuiWWbaMpw4oFZB",
+      "function": "has_confirmed_mint",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "BRIDGE",
+      "program_id": "6UM3n43msvbsNmj5TLHk1TRypXjffAuiWWbaMpw4oFZB",
+      "function": "has_confirmed_unlock",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "BRIDGE",
+      "program_id": "6UM3n43msvbsNmj5TLHk1TRypXjffAuiWWbaMpw4oFZB",
+      "function": "initialize",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "BRIDGE",
+      "program_id": "6UM3n43msvbsNmj5TLHk1TRypXjffAuiWWbaMpw4oFZB",
+      "function": "is_burn_proof_used",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "BRIDGE",
+      "program_id": "6UM3n43msvbsNmj5TLHk1TRypXjffAuiWWbaMpw4oFZB",
+      "function": "is_source_tx_used",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "BRIDGE",
+      "program_id": "6UM3n43msvbsNmj5TLHk1TRypXjffAuiWWbaMpw4oFZB",
+      "function": "lock_tokens",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "BRIDGE",
+      "program_id": "6UM3n43msvbsNmj5TLHk1TRypXjffAuiWWbaMpw4oFZB",
+      "function": "mb_pause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "BRIDGE",
+      "program_id": "6UM3n43msvbsNmj5TLHk1TRypXjffAuiWWbaMpw4oFZB",
+      "function": "mb_unpause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "BRIDGE",
+      "program_id": "6UM3n43msvbsNmj5TLHk1TRypXjffAuiWWbaMpw4oFZB",
+      "function": "remove_bridge_validator",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "BRIDGE",
+      "program_id": "6UM3n43msvbsNmj5TLHk1TRypXjffAuiWWbaMpw4oFZB",
+      "function": "set_identity_gate",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "BRIDGE",
+      "program_id": "6UM3n43msvbsNmj5TLHk1TRypXjffAuiWWbaMpw4oFZB",
+      "function": "set_moltyid_address",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "BRIDGE",
+      "program_id": "6UM3n43msvbsNmj5TLHk1TRypXjffAuiWWbaMpw4oFZB",
+      "function": "set_request_timeout",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "BRIDGE",
+      "program_id": "6UM3n43msvbsNmj5TLHk1TRypXjffAuiWWbaMpw4oFZB",
+      "function": "set_required_confirmations",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "BRIDGE",
+      "program_id": "6UM3n43msvbsNmj5TLHk1TRypXjffAuiWWbaMpw4oFZB",
+      "function": "submit_mint",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "BRIDGE",
+      "program_id": "6UM3n43msvbsNmj5TLHk1TRypXjffAuiWWbaMpw4oFZB",
+      "function": "submit_unlock",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "ANALYTICS",
+      "program_id": "6YAG2aDUEbu8tsygw6TNb5oQL7ddKmWxybZJNdgFUaa1",
+      "function": "call",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "ANALYTICS",
+      "program_id": "6YAG2aDUEbu8tsygw6TNb5oQL7ddKmWxybZJNdgFUaa1",
+      "function": "initialize",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "MUSD",
+      "program_id": "6bmvbPbdwEPzxeVVabiGLDfq9kLeYEDuTZJb5xJHNV8y",
+      "function": "allowance",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MUSD",
+      "program_id": "6bmvbPbdwEPzxeVVabiGLDfq9kLeYEDuTZJb5xJHNV8y",
+      "function": "approve",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "MUSD",
+      "program_id": "6bmvbPbdwEPzxeVVabiGLDfq9kLeYEDuTZJb5xJHNV8y",
+      "function": "attest_reserves",
+      "readonly": false,
+      "ok": false,
+      "return_code": 2,
+      "error": null
+    },
+    {
+      "contract": "MUSD",
+      "program_id": "6bmvbPbdwEPzxeVVabiGLDfq9kLeYEDuTZJb5xJHNV8y",
+      "function": "balance_of",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MUSD",
+      "program_id": "6bmvbPbdwEPzxeVVabiGLDfq9kLeYEDuTZJb5xJHNV8y",
+      "function": "burn",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "MUSD",
+      "program_id": "6bmvbPbdwEPzxeVVabiGLDfq9kLeYEDuTZJb5xJHNV8y",
+      "function": "emergency_pause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 2,
+      "error": null
+    },
+    {
+      "contract": "MUSD",
+      "program_id": "6bmvbPbdwEPzxeVVabiGLDfq9kLeYEDuTZJb5xJHNV8y",
+      "function": "emergency_unpause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 2,
+      "error": null
+    },
+    {
+      "contract": "MUSD",
+      "program_id": "6bmvbPbdwEPzxeVVabiGLDfq9kLeYEDuTZJb5xJHNV8y",
+      "function": "get_attestation_count",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MUSD",
+      "program_id": "6bmvbPbdwEPzxeVVabiGLDfq9kLeYEDuTZJb5xJHNV8y",
+      "function": "get_epoch_remaining",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MUSD",
+      "program_id": "6bmvbPbdwEPzxeVVabiGLDfq9kLeYEDuTZJb5xJHNV8y",
+      "function": "get_last_attestation_slot",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MUSD",
+      "program_id": "6bmvbPbdwEPzxeVVabiGLDfq9kLeYEDuTZJb5xJHNV8y",
+      "function": "get_reserve_ratio",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MUSD",
+      "program_id": "6bmvbPbdwEPzxeVVabiGLDfq9kLeYEDuTZJb5xJHNV8y",
+      "function": "get_transfer_count",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MUSD",
+      "program_id": "6bmvbPbdwEPzxeVVabiGLDfq9kLeYEDuTZJb5xJHNV8y",
+      "function": "initialize",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "MUSD",
+      "program_id": "6bmvbPbdwEPzxeVVabiGLDfq9kLeYEDuTZJb5xJHNV8y",
+      "function": "mint",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "MUSD",
+      "program_id": "6bmvbPbdwEPzxeVVabiGLDfq9kLeYEDuTZJb5xJHNV8y",
+      "function": "total_burned",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MUSD",
+      "program_id": "6bmvbPbdwEPzxeVVabiGLDfq9kLeYEDuTZJb5xJHNV8y",
+      "function": "total_minted",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MUSD",
+      "program_id": "6bmvbPbdwEPzxeVVabiGLDfq9kLeYEDuTZJb5xJHNV8y",
+      "function": "total_supply",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MUSD",
+      "program_id": "6bmvbPbdwEPzxeVVabiGLDfq9kLeYEDuTZJb5xJHNV8y",
+      "function": "transfer",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "MUSD",
+      "program_id": "6bmvbPbdwEPzxeVVabiGLDfq9kLeYEDuTZJb5xJHNV8y",
+      "function": "transfer_admin",
+      "readonly": false,
+      "ok": false,
+      "return_code": 2,
+      "error": null
+    },
+    {
+      "contract": "MUSD",
+      "program_id": "6bmvbPbdwEPzxeVVabiGLDfq9kLeYEDuTZJb5xJHNV8y",
+      "function": "transfer_from",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "BOUNTY",
+      "program_id": "7dgNtktjdXYWi9Bm4iMeP1EwUwmrwtrLnhqMAUsDFSnu",
+      "function": "approve_submission",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "BOUNTY",
+      "program_id": "7dgNtktjdXYWi9Bm4iMeP1EwUwmrwtrLnhqMAUsDFSnu",
+      "function": "approve_work",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "BOUNTY",
+      "program_id": "7dgNtktjdXYWi9Bm4iMeP1EwUwmrwtrLnhqMAUsDFSnu",
+      "function": "bb_pause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "BOUNTY",
+      "program_id": "7dgNtktjdXYWi9Bm4iMeP1EwUwmrwtrLnhqMAUsDFSnu",
+      "function": "bb_unpause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "BOUNTY",
+      "program_id": "7dgNtktjdXYWi9Bm4iMeP1EwUwmrwtrLnhqMAUsDFSnu",
+      "function": "cancel_bounty",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "BOUNTY",
+      "program_id": "7dgNtktjdXYWi9Bm4iMeP1EwUwmrwtrLnhqMAUsDFSnu",
+      "function": "create_bounty",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "BOUNTY",
+      "program_id": "7dgNtktjdXYWi9Bm4iMeP1EwUwmrwtrLnhqMAUsDFSnu",
+      "function": "get_bounty",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "BOUNTY",
+      "program_id": "7dgNtktjdXYWi9Bm4iMeP1EwUwmrwtrLnhqMAUsDFSnu",
+      "function": "get_bounty_count",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "BOUNTY",
+      "program_id": "7dgNtktjdXYWi9Bm4iMeP1EwUwmrwtrLnhqMAUsDFSnu",
+      "function": "get_platform_stats",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "BOUNTY",
+      "program_id": "7dgNtktjdXYWi9Bm4iMeP1EwUwmrwtrLnhqMAUsDFSnu",
+      "function": "initialize",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "BOUNTY",
+      "program_id": "7dgNtktjdXYWi9Bm4iMeP1EwUwmrwtrLnhqMAUsDFSnu",
+      "function": "set_identity_admin",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "BOUNTY",
+      "program_id": "7dgNtktjdXYWi9Bm4iMeP1EwUwmrwtrLnhqMAUsDFSnu",
+      "function": "set_identity_gate",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "BOUNTY",
+      "program_id": "7dgNtktjdXYWi9Bm4iMeP1EwUwmrwtrLnhqMAUsDFSnu",
+      "function": "set_moltyid_address",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "BOUNTY",
+      "program_id": "7dgNtktjdXYWi9Bm4iMeP1EwUwmrwtrLnhqMAUsDFSnu",
+      "function": "set_platform_fee",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "BOUNTY",
+      "program_id": "7dgNtktjdXYWi9Bm4iMeP1EwUwmrwtrLnhqMAUsDFSnu",
+      "function": "set_token_address",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "BOUNTY",
+      "program_id": "7dgNtktjdXYWi9Bm4iMeP1EwUwmrwtrLnhqMAUsDFSnu",
+      "function": "submit_work",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "DEXAMM",
+      "program_id": "8DRLo95M2FbE2cVhvX4T5A6hmZ3KLj724hRncZURJoig",
+      "function": "call",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "DEXAMM",
+      "program_id": "8DRLo95M2FbE2cVhvX4T5A6hmZ3KLj724hRncZURJoig",
+      "function": "initialize",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "LEND",
+      "program_id": "9XBB25ojHhFkmwsg82cRBjWWaQWFkQYCGSqPBMecnW5p",
+      "function": "borrow",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "LEND",
+      "program_id": "9XBB25ojHhFkmwsg82cRBjWWaQWFkQYCGSqPBMecnW5p",
+      "function": "deposit",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "LEND",
+      "program_id": "9XBB25ojHhFkmwsg82cRBjWWaQWFkQYCGSqPBMecnW5p",
+      "function": "flash_borrow",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "LEND",
+      "program_id": "9XBB25ojHhFkmwsg82cRBjWWaQWFkQYCGSqPBMecnW5p",
+      "function": "flash_repay",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "LEND",
+      "program_id": "9XBB25ojHhFkmwsg82cRBjWWaQWFkQYCGSqPBMecnW5p",
+      "function": "get_account_info",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "LEND",
+      "program_id": "9XBB25ojHhFkmwsg82cRBjWWaQWFkQYCGSqPBMecnW5p",
+      "function": "get_borrow_count",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "LEND",
+      "program_id": "9XBB25ojHhFkmwsg82cRBjWWaQWFkQYCGSqPBMecnW5p",
+      "function": "get_deposit_count",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "LEND",
+      "program_id": "9XBB25ojHhFkmwsg82cRBjWWaQWFkQYCGSqPBMecnW5p",
+      "function": "get_interest_rate",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "LEND",
+      "program_id": "9XBB25ojHhFkmwsg82cRBjWWaQWFkQYCGSqPBMecnW5p",
+      "function": "get_liquidation_count",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "LEND",
+      "program_id": "9XBB25ojHhFkmwsg82cRBjWWaQWFkQYCGSqPBMecnW5p",
+      "function": "get_platform_stats",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "LEND",
+      "program_id": "9XBB25ojHhFkmwsg82cRBjWWaQWFkQYCGSqPBMecnW5p",
+      "function": "get_protocol_stats",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "LEND",
+      "program_id": "9XBB25ojHhFkmwsg82cRBjWWaQWFkQYCGSqPBMecnW5p",
+      "function": "initialize",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "LEND",
+      "program_id": "9XBB25ojHhFkmwsg82cRBjWWaQWFkQYCGSqPBMecnW5p",
+      "function": "liquidate",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "LEND",
+      "program_id": "9XBB25ojHhFkmwsg82cRBjWWaQWFkQYCGSqPBMecnW5p",
+      "function": "pause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "LEND",
+      "program_id": "9XBB25ojHhFkmwsg82cRBjWWaQWFkQYCGSqPBMecnW5p",
+      "function": "repay",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "LEND",
+      "program_id": "9XBB25ojHhFkmwsg82cRBjWWaQWFkQYCGSqPBMecnW5p",
+      "function": "set_deposit_cap",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "LEND",
+      "program_id": "9XBB25ojHhFkmwsg82cRBjWWaQWFkQYCGSqPBMecnW5p",
+      "function": "set_reserve_factor",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "LEND",
+      "program_id": "9XBB25ojHhFkmwsg82cRBjWWaQWFkQYCGSqPBMecnW5p",
+      "function": "unpause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "LEND",
+      "program_id": "9XBB25ojHhFkmwsg82cRBjWWaQWFkQYCGSqPBMecnW5p",
+      "function": "withdraw",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "LEND",
+      "program_id": "9XBB25ojHhFkmwsg82cRBjWWaQWFkQYCGSqPBMecnW5p",
+      "function": "withdraw_reserves",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "DAO",
+      "program_id": "9pwAAVXWifTrhKaBNJEVRUDg1y1MfDmanV9df8et3keR",
+      "function": "cancel_proposal",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "DAO",
+      "program_id": "9pwAAVXWifTrhKaBNJEVRUDg1y1MfDmanV9df8et3keR",
+      "function": "cast_vote",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "DAO",
+      "program_id": "9pwAAVXWifTrhKaBNJEVRUDg1y1MfDmanV9df8et3keR",
+      "function": "vote",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "DAO",
+      "program_id": "9pwAAVXWifTrhKaBNJEVRUDg1y1MfDmanV9df8et3keR",
+      "function": "create_proposal",
+      "readonly": false,
+      "ok": false,
+      "return_code": 2,
+      "error": null
+    },
+    {
+      "contract": "DAO",
+      "program_id": "9pwAAVXWifTrhKaBNJEVRUDg1y1MfDmanV9df8et3keR",
+      "function": "create_proposal_typed",
+      "readonly": false,
+      "ok": false,
+      "return_code": 2,
+      "error": null
+    },
+    {
+      "contract": "DAO",
+      "program_id": "9pwAAVXWifTrhKaBNJEVRUDg1y1MfDmanV9df8et3keR",
+      "function": "dao_pause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "DAO",
+      "program_id": "9pwAAVXWifTrhKaBNJEVRUDg1y1MfDmanV9df8et3keR",
+      "function": "dao_unpause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "DAO",
+      "program_id": "9pwAAVXWifTrhKaBNJEVRUDg1y1MfDmanV9df8et3keR",
+      "function": "execute_proposal",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "DAO",
+      "program_id": "9pwAAVXWifTrhKaBNJEVRUDg1y1MfDmanV9df8et3keR",
+      "function": "finalize_proposal",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "DAO",
+      "program_id": "9pwAAVXWifTrhKaBNJEVRUDg1y1MfDmanV9df8et3keR",
+      "function": "get_active_proposals",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "DAO",
+      "program_id": "9pwAAVXWifTrhKaBNJEVRUDg1y1MfDmanV9df8et3keR",
+      "function": "get_dao_stats",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "DAO",
+      "program_id": "9pwAAVXWifTrhKaBNJEVRUDg1y1MfDmanV9df8et3keR",
+      "function": "get_proposal",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "DAO",
+      "program_id": "9pwAAVXWifTrhKaBNJEVRUDg1y1MfDmanV9df8et3keR",
+      "function": "get_proposal_count",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "DAO",
+      "program_id": "9pwAAVXWifTrhKaBNJEVRUDg1y1MfDmanV9df8et3keR",
+      "function": "get_total_supply",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "DAO",
+      "program_id": "9pwAAVXWifTrhKaBNJEVRUDg1y1MfDmanV9df8et3keR",
+      "function": "get_treasury_balance",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "DAO",
+      "program_id": "9pwAAVXWifTrhKaBNJEVRUDg1y1MfDmanV9df8et3keR",
+      "function": "get_vote",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "DAO",
+      "program_id": "9pwAAVXWifTrhKaBNJEVRUDg1y1MfDmanV9df8et3keR",
+      "function": "get_vote_count",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "DAO",
+      "program_id": "9pwAAVXWifTrhKaBNJEVRUDg1y1MfDmanV9df8et3keR",
+      "function": "initialize",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "DAO",
+      "program_id": "9pwAAVXWifTrhKaBNJEVRUDg1y1MfDmanV9df8et3keR",
+      "function": "initialize_dao",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "DAO",
+      "program_id": "9pwAAVXWifTrhKaBNJEVRUDg1y1MfDmanV9df8et3keR",
+      "function": "set_quorum",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "DAO",
+      "program_id": "9pwAAVXWifTrhKaBNJEVRUDg1y1MfDmanV9df8et3keR",
+      "function": "set_timelock_delay",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "DAO",
+      "program_id": "9pwAAVXWifTrhKaBNJEVRUDg1y1MfDmanV9df8et3keR",
+      "function": "set_voting_period",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "DAO",
+      "program_id": "9pwAAVXWifTrhKaBNJEVRUDg1y1MfDmanV9df8et3keR",
+      "function": "treasury_transfer",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "DAO",
+      "program_id": "9pwAAVXWifTrhKaBNJEVRUDg1y1MfDmanV9df8et3keR",
+      "function": "veto_proposal",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "DAO",
+      "program_id": "9pwAAVXWifTrhKaBNJEVRUDg1y1MfDmanV9df8et3keR",
+      "function": "vote_with_reputation",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "DEXMARGIN",
+      "program_id": "AcrkWeJnbR7sgqaPFuDkADeQ24jn7x9wGP96fx1mdWe7",
+      "function": "call",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MOLT",
+      "program_id": "AggL8ajoTWRM4JpJK5nrSTaJWSrDKEkSeRNdecPjs7DT",
+      "function": "approve",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "MOLT",
+      "program_id": "AggL8ajoTWRM4JpJK5nrSTaJWSrDKEkSeRNdecPjs7DT",
+      "function": "balance_of",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MOLT",
+      "program_id": "AggL8ajoTWRM4JpJK5nrSTaJWSrDKEkSeRNdecPjs7DT",
+      "function": "burn",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "MOLT",
+      "program_id": "AggL8ajoTWRM4JpJK5nrSTaJWSrDKEkSeRNdecPjs7DT",
+      "function": "initialize",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MOLT",
+      "program_id": "AggL8ajoTWRM4JpJK5nrSTaJWSrDKEkSeRNdecPjs7DT",
+      "function": "mint",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "MOLT",
+      "program_id": "AggL8ajoTWRM4JpJK5nrSTaJWSrDKEkSeRNdecPjs7DT",
+      "function": "total_supply",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MOLT",
+      "program_id": "AggL8ajoTWRM4JpJK5nrSTaJWSrDKEkSeRNdecPjs7DT",
+      "function": "transfer",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "ORACLE",
+      "program_id": "CB137sGYPU5iBS5CtsTGDaiQzo1iRkrpdbRmEj1bHkg3",
+      "function": "add_price_feeder",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "ORACLE",
+      "program_id": "CB137sGYPU5iBS5CtsTGDaiQzo1iRkrpdbRmEj1bHkg3",
+      "function": "add_reporter",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "ORACLE",
+      "program_id": "CB137sGYPU5iBS5CtsTGDaiQzo1iRkrpdbRmEj1bHkg3",
+      "function": "commit_randomness",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "ORACLE",
+      "program_id": "CB137sGYPU5iBS5CtsTGDaiQzo1iRkrpdbRmEj1bHkg3",
+      "function": "get_aggregated_price",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "ORACLE",
+      "program_id": "CB137sGYPU5iBS5CtsTGDaiQzo1iRkrpdbRmEj1bHkg3",
+      "function": "get_attestation_data",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "ORACLE",
+      "program_id": "CB137sGYPU5iBS5CtsTGDaiQzo1iRkrpdbRmEj1bHkg3",
+      "function": "get_feed_count",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "ORACLE",
+      "program_id": "CB137sGYPU5iBS5CtsTGDaiQzo1iRkrpdbRmEj1bHkg3",
+      "function": "get_feed_list",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "ORACLE",
+      "program_id": "CB137sGYPU5iBS5CtsTGDaiQzo1iRkrpdbRmEj1bHkg3",
+      "function": "get_oracle_stats",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "ORACLE",
+      "program_id": "CB137sGYPU5iBS5CtsTGDaiQzo1iRkrpdbRmEj1bHkg3",
+      "function": "get_price",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "ORACLE",
+      "program_id": "CB137sGYPU5iBS5CtsTGDaiQzo1iRkrpdbRmEj1bHkg3",
+      "function": "get_randomness",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "ORACLE",
+      "program_id": "CB137sGYPU5iBS5CtsTGDaiQzo1iRkrpdbRmEj1bHkg3",
+      "function": "initialize",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "ORACLE",
+      "program_id": "CB137sGYPU5iBS5CtsTGDaiQzo1iRkrpdbRmEj1bHkg3",
+      "function": "initialize_oracle",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "ORACLE",
+      "program_id": "CB137sGYPU5iBS5CtsTGDaiQzo1iRkrpdbRmEj1bHkg3",
+      "function": "mo_pause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "ORACLE",
+      "program_id": "CB137sGYPU5iBS5CtsTGDaiQzo1iRkrpdbRmEj1bHkg3",
+      "function": "mo_unpause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "ORACLE",
+      "program_id": "CB137sGYPU5iBS5CtsTGDaiQzo1iRkrpdbRmEj1bHkg3",
+      "function": "query_oracle",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "ORACLE",
+      "program_id": "CB137sGYPU5iBS5CtsTGDaiQzo1iRkrpdbRmEj1bHkg3",
+      "function": "register_feed",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "ORACLE",
+      "program_id": "CB137sGYPU5iBS5CtsTGDaiQzo1iRkrpdbRmEj1bHkg3",
+      "function": "remove_reporter",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "ORACLE",
+      "program_id": "CB137sGYPU5iBS5CtsTGDaiQzo1iRkrpdbRmEj1bHkg3",
+      "function": "request_randomness",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "ORACLE",
+      "program_id": "CB137sGYPU5iBS5CtsTGDaiQzo1iRkrpdbRmEj1bHkg3",
+      "function": "reveal_randomness",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "ORACLE",
+      "program_id": "CB137sGYPU5iBS5CtsTGDaiQzo1iRkrpdbRmEj1bHkg3",
+      "function": "set_authorized_attester",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "ORACLE",
+      "program_id": "CB137sGYPU5iBS5CtsTGDaiQzo1iRkrpdbRmEj1bHkg3",
+      "function": "set_update_interval",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "ORACLE",
+      "program_id": "CB137sGYPU5iBS5CtsTGDaiQzo1iRkrpdbRmEj1bHkg3",
+      "function": "submit_attestation",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "ORACLE",
+      "program_id": "CB137sGYPU5iBS5CtsTGDaiQzo1iRkrpdbRmEj1bHkg3",
+      "function": "submit_price",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "ORACLE",
+      "program_id": "CB137sGYPU5iBS5CtsTGDaiQzo1iRkrpdbRmEj1bHkg3",
+      "function": "verify_attestation",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "CLAWPAY",
+      "program_id": "DZekjhigNCvaT71rGzEUJpgjQwgQ4EpaeawWeNxXbpTw",
+      "function": "cancel_stream",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWPAY",
+      "program_id": "DZekjhigNCvaT71rGzEUJpgjQwgQ4EpaeawWeNxXbpTw",
+      "function": "create_stream",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWPAY",
+      "program_id": "DZekjhigNCvaT71rGzEUJpgjQwgQ4EpaeawWeNxXbpTw",
+      "function": "create_stream_with_cliff",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWPAY",
+      "program_id": "DZekjhigNCvaT71rGzEUJpgjQwgQ4EpaeawWeNxXbpTw",
+      "function": "get_platform_stats",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "CLAWPAY",
+      "program_id": "DZekjhigNCvaT71rGzEUJpgjQwgQ4EpaeawWeNxXbpTw",
+      "function": "get_stream",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "CLAWPAY",
+      "program_id": "DZekjhigNCvaT71rGzEUJpgjQwgQ4EpaeawWeNxXbpTw",
+      "function": "get_stream_count",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "CLAWPAY",
+      "program_id": "DZekjhigNCvaT71rGzEUJpgjQwgQ4EpaeawWeNxXbpTw",
+      "function": "get_stream_info",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "CLAWPAY",
+      "program_id": "DZekjhigNCvaT71rGzEUJpgjQwgQ4EpaeawWeNxXbpTw",
+      "function": "get_withdrawable",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "CLAWPAY",
+      "program_id": "DZekjhigNCvaT71rGzEUJpgjQwgQ4EpaeawWeNxXbpTw",
+      "function": "initialize_cp_admin",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWPAY",
+      "program_id": "DZekjhigNCvaT71rGzEUJpgjQwgQ4EpaeawWeNxXbpTw",
+      "function": "pause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWPAY",
+      "program_id": "DZekjhigNCvaT71rGzEUJpgjQwgQ4EpaeawWeNxXbpTw",
+      "function": "set_identity_admin",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWPAY",
+      "program_id": "DZekjhigNCvaT71rGzEUJpgjQwgQ4EpaeawWeNxXbpTw",
+      "function": "set_identity_gate",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWPAY",
+      "program_id": "DZekjhigNCvaT71rGzEUJpgjQwgQ4EpaeawWeNxXbpTw",
+      "function": "set_moltyid_address",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWPAY",
+      "program_id": "DZekjhigNCvaT71rGzEUJpgjQwgQ4EpaeawWeNxXbpTw",
+      "function": "transfer_stream",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWPAY",
+      "program_id": "DZekjhigNCvaT71rGzEUJpgjQwgQ4EpaeawWeNxXbpTw",
+      "function": "unpause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWPAY",
+      "program_id": "DZekjhigNCvaT71rGzEUJpgjQwgQ4EpaeawWeNxXbpTw",
+      "function": "withdraw_from_stream",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "add_liquidity",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "create_pool",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "initialize",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "flash_loan_abort",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "flash_loan_borrow",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "flash_loan_repay",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "get_flash_loan_fee",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "get_liquidity_balance",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "get_pool_count",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "get_pool_info",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "get_total_liquidity",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "get_protocol_fees",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "get_quote",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "get_reserves",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "get_swap_count",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "get_swap_stats",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "get_total_volume",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "get_twap_cumulatives",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "get_twap_snapshot_count",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "ms_pause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "ms_unpause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "remove_liquidity",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "set_identity_admin",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "set_moltyid_address",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "set_platform_fee",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "set_protocol_fee",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "set_reputation_discount",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "swap",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "swap_b_for_a",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "swap_a_for_b",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "swap_a_for_b_with_deadline",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "MOLTSWAP",
+      "program_id": "Ezxu7oibwtZboSB1jcBjnDkqNtfsEFVpwYT1SakZ1aWS",
+      "function": "swap_b_for_a_with_deadline",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "DEXROUTER",
+      "program_id": "FRcbTgiZsSNSQyzvw7ZxbZ21g4xz7pBLpJ98UqGaxnN5",
+      "function": "call",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "AUCTION",
+      "program_id": "FutpCFsmxr1c7dGeqPL9PGBaCXQoA9dFYnZm5V7NwPgp",
+      "function": "accept_offer",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "AUCTION",
+      "program_id": "FutpCFsmxr1c7dGeqPL9PGBaCXQoA9dFYnZm5V7NwPgp",
+      "function": "cancel_auction",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "AUCTION",
+      "program_id": "FutpCFsmxr1c7dGeqPL9PGBaCXQoA9dFYnZm5V7NwPgp",
+      "function": "create_auction",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "AUCTION",
+      "program_id": "FutpCFsmxr1c7dGeqPL9PGBaCXQoA9dFYnZm5V7NwPgp",
+      "function": "finalize_auction",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "AUCTION",
+      "program_id": "FutpCFsmxr1c7dGeqPL9PGBaCXQoA9dFYnZm5V7NwPgp",
+      "function": "get_auction_info",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "AUCTION",
+      "program_id": "FutpCFsmxr1c7dGeqPL9PGBaCXQoA9dFYnZm5V7NwPgp",
+      "function": "get_auction_stats",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "AUCTION",
+      "program_id": "FutpCFsmxr1c7dGeqPL9PGBaCXQoA9dFYnZm5V7NwPgp",
+      "function": "get_collection_stats",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "AUCTION",
+      "program_id": "FutpCFsmxr1c7dGeqPL9PGBaCXQoA9dFYnZm5V7NwPgp",
+      "function": "initialize",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "AUCTION",
+      "program_id": "FutpCFsmxr1c7dGeqPL9PGBaCXQoA9dFYnZm5V7NwPgp",
+      "function": "initialize_ma_admin",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "AUCTION",
+      "program_id": "FutpCFsmxr1c7dGeqPL9PGBaCXQoA9dFYnZm5V7NwPgp",
+      "function": "ma_pause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "AUCTION",
+      "program_id": "FutpCFsmxr1c7dGeqPL9PGBaCXQoA9dFYnZm5V7NwPgp",
+      "function": "ma_unpause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "AUCTION",
+      "program_id": "FutpCFsmxr1c7dGeqPL9PGBaCXQoA9dFYnZm5V7NwPgp",
+      "function": "make_offer",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "AUCTION",
+      "program_id": "FutpCFsmxr1c7dGeqPL9PGBaCXQoA9dFYnZm5V7NwPgp",
+      "function": "place_bid",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "AUCTION",
+      "program_id": "FutpCFsmxr1c7dGeqPL9PGBaCXQoA9dFYnZm5V7NwPgp",
+      "function": "set_reserve_price",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "AUCTION",
+      "program_id": "FutpCFsmxr1c7dGeqPL9PGBaCXQoA9dFYnZm5V7NwPgp",
+      "function": "set_royalty",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "AUCTION",
+      "program_id": "FutpCFsmxr1c7dGeqPL9PGBaCXQoA9dFYnZm5V7NwPgp",
+      "function": "update_collection_stats",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "DEXREWARDS",
+      "program_id": "GBXtRAg277AJxG5NaJsacjm15pcYsPiFrJX5SjhYhxmp",
+      "function": "call",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "DEXREWARDS",
+      "program_id": "GBXtRAg277AJxG5NaJsacjm15pcYsPiFrJX5SjhYhxmp",
+      "function": "initialize",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "accept_job",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "claim_job",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "add_arbitrator",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "cancel_job",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "cm_pause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "cm_unpause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "complete_job",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "confirm_result",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "release_payment",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "create_job",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "submit_job",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "deactivate_provider",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "dispute_job",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "get_escrow",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "get_job",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "get_job_count",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "get_job_info",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "get_platform_stats",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "get_provider_info",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "initialize",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "reactivate_provider",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "register_provider",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "remove_arbitrator",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "resolve_dispute",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "set_challenge_period",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "set_claim_timeout",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "set_complete_timeout",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "set_identity_admin",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "set_identity_gate",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "set_moltyid_address",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "set_platform_fee",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "submit_result",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "COMPUTE",
+      "program_id": "GJoaY1dEqGM6B3zU6ma2YCWDXC4fWFNmyZ4x6hJ49eLU",
+      "function": "update_provider",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "DEXGOV",
+      "program_id": "GMiVfG87mff1ABhCy28UAa1yPm9mqf2g7vzSoMzRABZc",
+      "function": "call",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "DEXGOV",
+      "program_id": "GMiVfG87mff1ABhCy28UAa1yPm9mqf2g7vzSoMzRABZc",
+      "function": "initialize",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "CLAWPUMP",
+      "program_id": "GkjLEran1ZR1L5fquaVY2FnZnVFNLApg3DEse8Y4TZwC",
+      "function": "buy",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "CLAWPUMP",
+      "program_id": "GkjLEran1ZR1L5fquaVY2FnZnVFNLApg3DEse8Y4TZwC",
+      "function": "create_token",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "CLAWPUMP",
+      "program_id": "GkjLEran1ZR1L5fquaVY2FnZnVFNLApg3DEse8Y4TZwC",
+      "function": "freeze_token",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWPUMP",
+      "program_id": "GkjLEran1ZR1L5fquaVY2FnZnVFNLApg3DEse8Y4TZwC",
+      "function": "get_buy_quote",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "CLAWPUMP",
+      "program_id": "GkjLEran1ZR1L5fquaVY2FnZnVFNLApg3DEse8Y4TZwC",
+      "function": "get_graduation_info",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "CLAWPUMP",
+      "program_id": "GkjLEran1ZR1L5fquaVY2FnZnVFNLApg3DEse8Y4TZwC",
+      "function": "get_platform_stats",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "CLAWPUMP",
+      "program_id": "GkjLEran1ZR1L5fquaVY2FnZnVFNLApg3DEse8Y4TZwC",
+      "function": "get_token_count",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "CLAWPUMP",
+      "program_id": "GkjLEran1ZR1L5fquaVY2FnZnVFNLApg3DEse8Y4TZwC",
+      "function": "get_token_info",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "CLAWPUMP",
+      "program_id": "GkjLEran1ZR1L5fquaVY2FnZnVFNLApg3DEse8Y4TZwC",
+      "function": "initialize",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWPUMP",
+      "program_id": "GkjLEran1ZR1L5fquaVY2FnZnVFNLApg3DEse8Y4TZwC",
+      "function": "pause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWPUMP",
+      "program_id": "GkjLEran1ZR1L5fquaVY2FnZnVFNLApg3DEse8Y4TZwC",
+      "function": "sell",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "CLAWPUMP",
+      "program_id": "GkjLEran1ZR1L5fquaVY2FnZnVFNLApg3DEse8Y4TZwC",
+      "function": "set_buy_cooldown",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWPUMP",
+      "program_id": "GkjLEran1ZR1L5fquaVY2FnZnVFNLApg3DEse8Y4TZwC",
+      "function": "set_creator_royalty",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWPUMP",
+      "program_id": "GkjLEran1ZR1L5fquaVY2FnZnVFNLApg3DEse8Y4TZwC",
+      "function": "set_dex_addresses",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWPUMP",
+      "program_id": "GkjLEran1ZR1L5fquaVY2FnZnVFNLApg3DEse8Y4TZwC",
+      "function": "set_max_buy",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWPUMP",
+      "program_id": "GkjLEran1ZR1L5fquaVY2FnZnVFNLApg3DEse8Y4TZwC",
+      "function": "set_sell_cooldown",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWPUMP",
+      "program_id": "GkjLEran1ZR1L5fquaVY2FnZnVFNLApg3DEse8Y4TZwC",
+      "function": "unfreeze_token",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWPUMP",
+      "program_id": "GkjLEran1ZR1L5fquaVY2FnZnVFNLApg3DEse8Y4TZwC",
+      "function": "unpause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "CLAWPUMP",
+      "program_id": "GkjLEran1ZR1L5fquaVY2FnZnVFNLApg3DEse8Y4TZwC",
+      "function": "withdraw_fees",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "REEF",
+      "program_id": "HMDpis6ERNgf7vRxzj5WV4rkK9XCBsy6z2PLAEj6NsNa",
+      "function": "claim_storage_rewards",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "REEF",
+      "program_id": "HMDpis6ERNgf7vRxzj5WV4rkK9XCBsy6z2PLAEj6NsNa",
+      "function": "confirm_storage",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "REEF",
+      "program_id": "HMDpis6ERNgf7vRxzj5WV4rkK9XCBsy6z2PLAEj6NsNa",
+      "function": "get_platform_stats",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "REEF",
+      "program_id": "HMDpis6ERNgf7vRxzj5WV4rkK9XCBsy6z2PLAEj6NsNa",
+      "function": "get_provider_stake",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "REEF",
+      "program_id": "HMDpis6ERNgf7vRxzj5WV4rkK9XCBsy6z2PLAEj6NsNa",
+      "function": "get_storage_info",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "REEF",
+      "program_id": "HMDpis6ERNgf7vRxzj5WV4rkK9XCBsy6z2PLAEj6NsNa",
+      "function": "get_storage_price",
+      "readonly": false,
+      "ok": false,
+      "return_code": null,
+      "error": null
+    },
+    {
+      "contract": "REEF",
+      "program_id": "HMDpis6ERNgf7vRxzj5WV4rkK9XCBsy6z2PLAEj6NsNa",
+      "function": "initialize",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "REEF",
+      "program_id": "HMDpis6ERNgf7vRxzj5WV4rkK9XCBsy6z2PLAEj6NsNa",
+      "function": "issue_challenge",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "REEF",
+      "program_id": "HMDpis6ERNgf7vRxzj5WV4rkK9XCBsy6z2PLAEj6NsNa",
+      "function": "register_provider",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "REEF",
+      "program_id": "HMDpis6ERNgf7vRxzj5WV4rkK9XCBsy6z2PLAEj6NsNa",
+      "function": "respond_challenge",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "REEF",
+      "program_id": "HMDpis6ERNgf7vRxzj5WV4rkK9XCBsy6z2PLAEj6NsNa",
+      "function": "set_challenge_window",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "REEF",
+      "program_id": "HMDpis6ERNgf7vRxzj5WV4rkK9XCBsy6z2PLAEj6NsNa",
+      "function": "set_slash_percent",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "REEF",
+      "program_id": "HMDpis6ERNgf7vRxzj5WV4rkK9XCBsy6z2PLAEj6NsNa",
+      "function": "set_storage_price",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "REEF",
+      "program_id": "HMDpis6ERNgf7vRxzj5WV4rkK9XCBsy6z2PLAEj6NsNa",
+      "function": "slash_provider",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "REEF",
+      "program_id": "HMDpis6ERNgf7vRxzj5WV4rkK9XCBsy6z2PLAEj6NsNa",
+      "function": "stake_collateral",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "REEF",
+      "program_id": "HMDpis6ERNgf7vRxzj5WV4rkK9XCBsy6z2PLAEj6NsNa",
+      "function": "store_data",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "add_skill",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "add_skill_as",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "admin_register_reserved_name",
+      "readonly": false,
+      "ok": false,
+      "return_code": 3,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "approve_recovery",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "attest_skill",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "award_contribution_achievement",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "bid_name_auction",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "create_name_auction",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "deactivate_identity",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "execute_recovery",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "finalize_name_auction",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "get_achievements",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "get_agent_profile",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "get_attestations",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "get_availability",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "get_delegate",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "get_endpoint",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "get_identity",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "get_identity_count",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "get_metadata",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "get_name_auction",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "get_rate",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "get_reputation",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "get_skills",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "get_trust_tier",
+      "readonly": false,
+      "ok": true,
+      "return_code": 0,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "get_vouches",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "initialize",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "mid_pause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "mid_unpause",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "register_identity",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "register_name",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "release_name",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "release_name_as",
+      "readonly": false,
+      "ok": false,
+      "return_code": 2,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "renew_name",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "renew_name_as",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "resolve_name",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "reverse_resolve",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "revoke_attestation",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "revoke_delegate",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "set_availability",
+      "readonly": false,
+      "ok": false,
+      "return_code": 2,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "set_availability_as",
+      "readonly": false,
+      "ok": false,
+      "return_code": 3,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "set_delegate",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "set_endpoint",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "set_endpoint_as",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "set_metadata",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "set_metadata_as",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "set_rate",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "set_rate_as",
+      "readonly": false,
+      "ok": false,
+      "return_code": 2,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "set_recovery_guardians",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "transfer_admin",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "transfer_name",
+      "readonly": false,
+      "ok": false,
+      "return_code": 1,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "transfer_name_as",
+      "readonly": false,
+      "ok": false,
+      "return_code": 2,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "update_agent_type",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "update_agent_type_as",
+      "readonly": false,
+      "ok": false,
+      "return_code": 3,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "update_reputation",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "update_reputation_typed",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    },
+    {
+      "contract": "YID",
+      "program_id": "J4CXu4b8Ave1wmXvSeM6t1hg4gu4wTh8j3MPfjF9cCp6",
+      "function": "vouch",
+      "readonly": false,
+      "ok": false,
+      "return_code": 200,
+      "error": null
+    }
+  ]
+}

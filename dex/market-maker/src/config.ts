@@ -71,8 +71,8 @@ export function loadConfig(): BotConfig {
   const strategy = (process.env.MM_STRATEGY || 'spread') as 'spread' | 'grid';
 
   return {
-    endpoint: process.env.DEX_ENDPOINT || 'http://localhost:8000',
-    wsEndpoint: process.env.DEX_WS_ENDPOINT || 'ws://localhost:8000/ws',
+    endpoint: process.env.DEX_ENDPOINT || 'http://localhost:8899',
+    wsEndpoint: process.env.DEX_WS_ENDPOINT || 'ws://localhost:8900/ws',
     pairId: parseInt(process.env.MM_PAIR_ID || '0', 10),
     strategy,
     spread: {

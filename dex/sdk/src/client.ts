@@ -36,8 +36,8 @@ import type {
 } from './types';
 import { DexWebSocket } from './websocket';
 
-const DEFAULT_ENDPOINT = 'http://localhost:8000';
-const DEFAULT_WS_ENDPOINT = 'ws://localhost:8001';
+const DEFAULT_ENDPOINT = 'http://localhost:8899';
+const DEFAULT_WS_ENDPOINT = 'ws://localhost:8900/ws';
 const DEFAULT_TIMEOUT = 30_000;
 const PRICE_SCALE = 1_000_000_000;
 
