@@ -189,9 +189,14 @@ impl PeerManager {
         let peers = self.peers.clone();
         let message_tx = self.message_tx.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(connection, peer_addr, peers, message_tx).await {
+            if let Err(e) = handle_connection(connection, peer_addr, peers.clone(), message_tx).await {
                 error!("P2P: Connection error with {}: {}", peer_addr, e);
             }
+            // AUDIT-FIX H2: Remove peer from DashMap when connection drops.
+            // Without this, dead peers linger until cleanup_stale_peers runs,
+            // causing failed sends and inflated peer counts.
+            peers.remove(&peer_addr);
+            info!("P2P: Peer {} disconnected, removed from peer map", peer_addr);
         });
 
         Ok(())
@@ -288,6 +293,15 @@ impl PeerManager {
         self.peers.iter().map(|entry| *entry.key()).collect()
     }
 
+    /// Get peer info for all connected peers (address + score).
+    /// AUDIT-FIX M3: Gossip needs actual peer scores instead of hardcoded 500.
+    pub fn get_peer_infos(&self) -> Vec<(SocketAddr, i64)> {
+        self.peers
+            .iter()
+            .map(|entry| (*entry.key(), entry.value().score))
+            .collect()
+    }
+
     /// Record a peer violation (rate limit or invalid request)
     pub fn record_violation(&self, peer_addr: &SocketAddr) {
         if let Some(mut peer) = self.peers.get_mut(peer_addr) {
@@ -375,10 +389,13 @@ impl PeerManager {
 
                             // Handle connection
                             if let Err(e) =
-                                handle_connection(connection, peer_addr, peers, message_tx).await
+                                handle_connection(connection, peer_addr, peers.clone(), message_tx).await
                             {
                                 error!("P2P: Connection error with {}: {}", peer_addr, e);
                             }
+                            // AUDIT-FIX H2: Remove peer on disconnect (inbound path)
+                            peers.remove(&peer_addr);
+                            info!("P2P: Inbound peer {} disconnected, removed from peer map", peer_addr);
                         }
                         Err(e) => {
                             error!("P2P: Failed to accept connection: {}", e);
@@ -437,7 +454,8 @@ async fn handle_connection(
             .map_err(|e| format!("Failed to accept stream: {}", e))?;
 
         let bytes = stream
-            .read_to_end(2 * 1024 * 1024) // T4.8: 2MB max (enough for max block)
+            .read_to_end(16 * 1024 * 1024) // AUDIT-FIX H3: Align with P2PMessage serialize limit (16MB).
+            // Previous 2MB limit silently rejected valid state snapshot chunks.
             .await
             .map_err(|e| format!("Failed to read: {}", e))?;
 
@@ -652,5 +670,36 @@ mod tests {
         assert_eq!(peer.score, 5);
         peer.adjust_score(-8);
         assert_eq!(peer.score, -3);
+    }
+
+    #[test]
+    fn test_peer_info_default_values() {
+        let addr: SocketAddr = "10.0.0.1:7001".parse().unwrap();
+        let peer = PeerInfo::new(addr);
+        assert_eq!(peer.address, addr);
+        assert_eq!(peer.reputation, 500);
+        assert!(!peer.is_validator);
+        assert_eq!(peer.score, 0);
+        assert!(peer.connection.is_none());
+        // last_seen should be within the last second
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        assert!(peer.last_seen <= now);
+        assert!(peer.last_seen >= now.saturating_sub(2));
+    }
+
+    #[test]
+    fn test_peer_info_score_saturating() {
+        let addr: SocketAddr = "127.0.0.1:8000".parse().unwrap();
+        let mut peer = PeerInfo::new(addr);
+        // Verify saturating_add prevents overflow
+        peer.score = i64::MAX - 5;
+        peer.adjust_score(100);
+        assert_eq!(peer.score, 20); // clamped to max 20
+        peer.score = i64::MIN + 5;
+        peer.adjust_score(-100);
+        assert_eq!(peer.score, -20); // clamped to min -20
     }
 }

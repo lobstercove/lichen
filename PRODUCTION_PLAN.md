@@ -393,38 +393,53 @@ Each contract must be validated for: correct opcode dispatch, proper authority c
 ## PHASE 4: P2P NETWORK (`p2p/src/` — 2,211 lines)
 
 ### 4.1 Network Layer (`network.rs` — 603 lines)
-- [ ] Verify peer discovery / bootstrap
-- [ ] Verify QUIC transport setup
-- [ ] Verify message routing
-- [ ] **Findings:**
+- [x] Verify peer discovery / bootstrap
+- [x] Verify QUIC transport setup
+- [x] Verify message routing
+- [x] **Findings:**
+  - **H1 (FIXED)**: `BlockRangeRequest` had no max range cap — peer could request `start=0, end=u64::MAX` causing OOM. Added `MAX_BLOCK_RANGE=100` validation with start<end check.
+  - **M1 (FIXED)**: Every incoming message logged at `info!` — under high throughput causes I/O bottleneck. Downgraded Block/Vote/Transaction/Ping/Pong/PeerInfo/PeerRequest/BlockRequest/BlockResponse/BlockRange/Status to `debug!`. Lifecycle events (validator announce, slashing) stay at `info!`.
+  - **M2 (FIXED)**: Default P2P port was 8000, production uses 7001. Updated default.
+  - **M3 (FIXED)**: `PeerRequest` handler hardcoded reputation=500. Now uses actual peer scores via `get_peer_infos()`.
 
 ### 4.2 Peer Management (`peer.rs` — 656 lines)
-- [ ] Verify peer handshake / versioning
-- [ ] Verify peer scoring
-- [ ] Verify max peer limits
-- [ ] **Findings:**
+- [x] Verify peer handshake / versioning
+- [x] Verify peer scoring
+- [x] Verify max peer limits
+- [x] **Findings:**
+  - **H2 (FIXED)**: `handle_connection` didn't remove peer from DashMap on disconnect. Dead peers lingered until `cleanup_stale_peers` ran (every 60s), causing failed sends and inflated peer counts. Added `peers.remove(&peer_addr)` after connection handler returns — both outbound and inbound paths.
+  - **H3 (FIXED)**: `read_to_end(2MB)` mismatched `P2PMessage::serialize` limit (16MB). State snapshot chunks >2MB silently rejected at transport layer. Aligned read limit to 16MB.
+  - Added `get_peer_infos()` method returning `(SocketAddr, i64)` tuples for gossip to use actual scores.
+  - Existing: MAX_PEERS=50 enforced both inbound and outbound. DER certificate validation on TLS (T2.1). TLS 1.2/1.3 signature verification (C4). Score clamped [-20..20]. Deser failure disconnect after 10 consecutive (H18). DashMap guard-before-await fix (M18).
 
 ### 4.3 Gossip Protocol (`gossip.rs` — 325 lines)
-- [ ] Verify block propagation
-- [ ] Verify transaction propagation
-- [ ] Verify no message amplification attacks
-- [ ] **Findings:**
+- [x] Verify block propagation
+- [x] Verify transaction propagation
+- [x] Verify no message amplification attacks
+- [x] **Findings:**
+  - **M3 (FIXED)**: `do_gossip` hardcoded reputation=500 in PeerInfoMsg. Now calls `get_peer_infos()` and maps score [-20..20] → reputation [0..1000].
+  - Existing: Peer list capped at 50 (M12). Exponential backoff on reconnection attempts. Self-connection prevention. MIN_PEER_COUNT=2 triggers aggressive reconnect to all known peers. Ban check before reconnect.
 
 ### 4.4 Peer Banning (`peer_ban.rs` — 191 lines)
-- [ ] Verify ban criteria and duration
-- [ ] Verify ban persistence across restarts
-- [ ] **Findings:**
+- [x] Verify ban criteria and duration
+- [x] Verify ban persistence across restarts
+- [x] **Findings:**
+  - **L1 (FIXED)**: Ban duration was always 600s (10 min) regardless of repeat offenses. Added escalating bans: 600s base × 2^(ban_count-1), capped at 86400s (24h). `ban_count` tracked per entry and persisted.
+  - Existing: JSON persistence with `saved/load_from_path`. Prune removes expired entries. Periodic pruning from `cleanup_stale_peers` (H17).
 
 ### 4.5 Peer Store (`peer_store.rs` — 179 lines)
-- [ ] Verify peer persistence
-- [ ] Verify address rotation
-- [ ] **Findings:**
+- [x] Verify peer persistence
+- [x] Verify address rotation
+- [x] **Findings:**
+  - No issues found. Well-implemented: fsync on write (AUDIT-FIX 3.15), lock scope minimized (L5), max_peers enforced with FIFO rotation, duplicate check, JSON persistence roundtrip verified.
 
 ### 4.6 Messages (`message.rs` — 238 lines)
-- [ ] Verify message types cover all network operations
-- [ ] Verify serialization format
-- [ ] Verify size limits
-- [ ] **Findings:**
+- [x] Verify message types cover all network operations
+- [x] Verify serialization format
+- [x] Verify size limits
+- [x] **Findings:**
+  - **L2 (FIXED)**: Messages had no protocol version field. Added `P2P_PROTOCOL_VERSION=1` constant and `version: u32` field to `P2PMessage`. Deserialize rejects version mismatches. Backward compatible via `#[serde(default)]`.
+  - Existing: 16MB serialize/deserialize limit. Bincode with options. Signature [u8;64] serde helper. Comprehensive message type coverage (Block, Vote, Tx, PeerInfo, PeerRequest, Ping/Pong, BlockRequest/Response, StatusRequest/Response, ConsistencyReport, Snapshot ×4, ValidatorAnnounce, SlashingEvidence).
 
 ---
 
