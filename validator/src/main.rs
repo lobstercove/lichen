@@ -2492,9 +2492,6 @@ fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey, la
     let weth_addr = derive_contract_address(deployer_pubkey, "weth_token")
         .map(|p| p.0)
         .unwrap_or([0u8; 32]);
-    let reef_addr = derive_contract_address(deployer_pubkey, "reef_storage")
-        .map(|p| p.0)
-        .unwrap_or([0u8; 32]);
 
     // Resolve dex_governance for allowed-quote setup
     let dex_gov_pk = derive_contract_address(deployer_pubkey, "dex_governance");
@@ -2507,15 +2504,13 @@ fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey, la
     let lot_size: u64 = 1_000_000;
     let min_order: u64 = 1_000;
 
-    // All genesis CLOB pairs: 4 mUSD-quoted + 3 MOLT-quoted = 7 pairs
-    let pairs: [(&str, [u8; 32], [u8; 32]); 7] = [
+    // All genesis CLOB pairs: 3 mUSD-quoted + 2 MOLT-quoted = 5 pairs
+    let pairs: [(&str, [u8; 32], [u8; 32]); 5] = [
         ("MOLT/mUSD", molt_addr, musd_addr),
         ("wSOL/mUSD", wsol_addr, musd_addr),
         ("wETH/mUSD", weth_addr, musd_addr),
-        ("REEF/mUSD", reef_addr, musd_addr),
         ("wSOL/MOLT", wsol_addr, molt_addr),
         ("wETH/MOLT", weth_addr, molt_addr),
-        ("REEF/MOLT", reef_addr, molt_addr),
     ];
 
     let mut created_pairs: usize = 0;
@@ -2598,20 +2593,16 @@ fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey, la
     //   MOLT/mUSD  = 1.0          → sqrt_price = 1 << 32  (4_294_967_296)
     //   wSOL/mUSD  ~ $178         → sqrt_price = 13_360_000_000
     //   wETH/mUSD  ~ $3,521       → sqrt_price = 59_345_000_000
-    //   REEF/mUSD  ~ $0.018       → sqrt_price =    135_700_000
     //   wSOL/MOLT  ~ 424 MOLT     → sqrt_price = 20_591_000_000
     //   wETH/MOLT  ~ 8,383 MOLT   → sqrt_price = 91_558_000_000
-    //   REEF/MOLT  ~ 0.043 MOLT   → sqrt_price =    207_400_000
     let fee_tier: u8 = 2; // FEE_TIER_30BPS
 
-    let pool_configs: [(&str, [u8; 32], [u8; 32], u64); 7] = [
+    let pool_configs: [(&str, [u8; 32], [u8; 32], u64); 5] = [
         ("MOLT/mUSD",  molt_addr, musd_addr, 1u64 << 32),        // 1.0
         ("wSOL/mUSD",  wsol_addr, musd_addr, 13_360_000_000),    // ~$178
         ("wETH/mUSD",  weth_addr, musd_addr, 59_345_000_000),    // ~$3,521
-        ("REEF/mUSD",  reef_addr, musd_addr,    135_700_000),     // ~$0.018
         ("wSOL/MOLT",  wsol_addr, molt_addr, 20_591_000_000),    // ~424 MOLT
         ("wETH/MOLT",  weth_addr, molt_addr, 91_558_000_000),    // ~8,383 MOLT
-        ("REEF/MOLT",  reef_addr, molt_addr,    207_400_000),     // ~0.043 MOLT
     ];
 
     for (label, token_a, token_b, sqrt_price) in &pool_configs {

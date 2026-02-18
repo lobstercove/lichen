@@ -509,7 +509,6 @@
 .btc-icon { background: #f7931a; color: white; }
 .eth-icon { background: #627eea; color: white; }
 .sol-icon { background: linear-gradient(135deg, #9945ff, #14f195); color: white; }
-.reef-icon { background: #a855f7; color: white; }
 .balance-amounts { text-align: right; }
 .balance-available { display: block; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; font-weight: 600; }
 .balance-usd { display: block; font-size: 0.7rem; color: var(--text-muted); }
