@@ -511,12 +511,12 @@ Each contract must be validated for: correct opcode dispatch, proper authority c
 
 ## PHASE 7: COMPILER (`compiler/src/` — 649 lines)
 
-- [ ] Verify Rust-to-WASM compilation pipeline
-- [ ] Verify output format matches what contract runtime expects
-- [ ] Verify optimization passes
-- [ ] Verify error reporting
-- [ ] Test: compile a sample contract and deploy it
-- [ ] **Findings:**
+- [x] Verify Rust-to-WASM compilation pipeline
+- [x] Verify output format matches what contract runtime expects
+- [x] Verify optimization passes
+- [x] Verify error reporting
+- [x] Test: compile a sample contract and deploy it
+- [x] **Findings:** F7.1 (H) server bind panics → graceful exit; F7.2 (M) deprecated base64::encode → Engine::encode; F7.3 (M) LEB128 shift overflow guard; F7.4-5 (M) path .unwrap() → path_to_str helper; F7.6-8 (L) error parsers now extract file:line:col from rustc/clang/asc output, warnings read from stderr; F7.9 (M) 512KB source size limit; F7.10 (M) 120s compile timeout with child process kill
 
 ---
 
