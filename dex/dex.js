@@ -10,7 +10,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Configuration — override via window globals or <script> config block
     // ═══════════════════════════════════════════════════════════════════════
     const RPC_BASE  = (window.MOLTCHAIN_RPC || 'http://localhost:8899').replace(/\/$/, '');
-    const WS_URL    = (window.MOLTCHAIN_WS  || 'ws://localhost:8900/ws').replace(/\/$/, '');
+    const WS_URL    = (window.MOLTCHAIN_WS  || 'ws://localhost:8900').replace(/\/$/, '');
     const API_BASE  = `${RPC_BASE}/api/v1`;
     const PRICE_SCALE = 1_000_000_000;
 
@@ -239,7 +239,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const { data } = await api.get('/pairs');
             if (Array.isArray(data) && data.length > 0) {
                 pairs = data.map(p => ({
-                    id: p.symbol || `Pair#${p.pairId}`, pairId: p.pairId, base: p.baseToken, quote: p.quoteToken,
+                    id: p.symbol || `Pair#${p.pairId}`, pairId: p.pairId, base: p.baseSymbol || p.baseToken, quote: p.quoteSymbol || p.quoteToken,
                     price: p.lastPrice || 0, change: p.change24h || 0, tickSize: p.tickSize, lotSize: p.lotSize, symbol: p.symbol,
                 }));
             }
@@ -690,18 +690,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 const tbody = document.getElementById('poolTableBody');
                 if (tbody) {
                     tbody.innerHTML = data.map(p => {
-                        const pair = `${p.token_a_symbol || 'Token A'}/${p.token_b_symbol || 'Token B'}`;
-                        const fee = p.fee_tier ? (p.fee_tier / 100).toFixed(2) + '%' : '0.30%';
-                        const tvl = formatVolume(p.tvl || 0);
-                        const vol = formatVolume(p.volume_24h || 0);
+                        const pair = `${p.tokenASymbol || 'Token A'}/${p.tokenBSymbol || 'Token B'}`;
+                        const fee = p.feeTier ? (p.feeTier / 100).toFixed(2) + '%' : '0.30%';
+                        const tvl = formatVolume(p.liquidity || 0);
+                        const vol = formatVolume(p.totalVolume || 0);
                         const apr = p.apr ? p.apr.toFixed(1) + '%' : '—';
-                        return `<tr class="pool-row" data-pool-id="${p.pool_id || p.id || 0}">
-                            <td class="pool-pair"><span class="token-pair-icons"><span class="mini-icon">${(p.token_a_symbol || 'A')[0]}</span><span class="mini-icon">${(p.token_b_symbol || 'B')[0]}</span></span> ${pair}</td>
+                        return `<tr class="pool-row" data-pool-id="${p.poolId || p.id || 0}">
+                            <td class="pool-pair"><span class="token-pair-icons"><span class="mini-icon">${(p.tokenASymbol || 'A')[0]}</span><span class="mini-icon">${(p.tokenBSymbol || 'B')[0]}</span></span> ${pair}</td>
                             <td><span class="fee-badge">${fee}</span></td>
                             <td class="mono-value">${tvl}</td>
                             <td class="mono-value">${vol}</td>
                             <td class="apr-value">${apr}</td>
-                            <td><button class="btn btn-small btn-secondary pool-add-btn" data-pool-id="${p.pool_id || p.id || 0}">Add</button></td>
+                            <td><button class="btn btn-small btn-secondary pool-add-btn" data-pool-id="${p.poolId || p.id || 0}">Add</button></td>
                         </tr>`;
                     }).join('');
                 }
@@ -722,23 +722,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 const container = document.getElementById('pool-positions');
                 if (container) {
                     container.innerHTML = data.map(pos => `
-                        <div class="lp-position-card" data-position-id="${pos.position_id || 0}">
+                        <div class="lp-position-card" data-position-id="${pos.positionId || 0}">
                             <div class="lp-pos-header">
                                 <div class="lp-pos-pair">
-                                    <span class="lp-pair-name">${pos.pair || 'Pool'}</span>
-                                    <span class="fee-badge">${pos.fee_tier ? (pos.fee_tier / 100).toFixed(2) + '%' : '0.30%'}</span>
+                                    <span class="lp-pair-name">${pos.pair || 'Pool #' + (pos.poolId || '?')}</span>
+                                    <span class="fee-badge">LP</span>
                                 </div>
-                                <span class="range-badge ${pos.in_range ? 'in-range' : 'out-range'}"><i class="fas fa-circle"></i> ${pos.in_range ? 'In Range' : 'Out of Range'}</span>
+                                <span class="range-badge in-range"><i class="fas fa-circle"></i> Active</span>
                             </div>
                             <div class="lp-pos-details">
-                                <div class="lp-detail"><span>Range</span><span class="mono-value">${formatPrice(pos.lower_price || 0)} — ${formatPrice(pos.upper_price || 0)}</span></div>
-                                <div class="lp-detail"><span>Liquidity</span><span class="mono-value">${formatVolume(pos.liquidity_usd || 0)}</span></div>
-                                <div class="lp-detail"><span>Uncollected Fees</span><span class="mono-value accent-text">${formatVolume(pos.uncollected_fees || 0)}</span></div>
+                                <div class="lp-detail"><span>Tick Range</span><span class="mono-value">${pos.lowerTick ?? 0} — ${pos.upperTick ?? 0}</span></div>
+                                <div class="lp-detail"><span>Liquidity</span><span class="mono-value">${formatVolume(pos.liquidity || 0)}</span></div>
+                                <div class="lp-detail"><span>Uncollected Fees</span><span class="mono-value accent-text">${formatVolume((pos.feeAOwed || 0) + (pos.feeBOwed || 0))}</span></div>
                             </div>
                             <div class="lp-pos-actions">
-                                <button class="btn btn-small btn-primary lp-collect-btn" data-position-id="${pos.position_id || 0}">Collect Fees</button>
-                                <button class="btn btn-small btn-secondary lp-remove-btn" data-position-id="${pos.position_id || 0}">Remove</button>
-                                <button class="btn btn-small btn-secondary lp-add-btn" data-position-id="${pos.position_id || 0}">Add More</button>
+                                <button class="btn btn-small btn-primary lp-collect-btn" data-position-id="${pos.positionId || 0}">Collect Fees</button>
+                                <button class="btn btn-small btn-secondary lp-remove-btn" data-position-id="${pos.positionId || 0}">Remove</button>
+                                <button class="btn btn-small btn-secondary lp-add-btn" data-position-id="${pos.positionId || 0}">Add More</button>
                             </div>
                         </div>
                     `).join('');
@@ -799,7 +799,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const { data } = await api.get('/margin/info');
             if (data) {
                 const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
-                if (data.max_leverage) { const ls = document.getElementById('leverageSlider'); if (ls) ls.max = String(data.max_leverage); }
+                if (data.maxLeverage) { const ls = document.getElementById('leverageSlider'); if (ls) ls.max = String(data.maxLeverage); }
             }
         } catch { /* keep defaults */ }
     }
@@ -813,9 +813,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (container) {
                     container.className = 'margin-positions-list';
                     container.innerHTML = data.map(pos => {
-                        const side = pos.side === 'long' || pos.is_long ? 'Long' : 'Short';
+                        const side = pos.side === 'long' ? 'Long' : 'Short';
                         const sideClass = side === 'Long' ? 'side-buy' : 'side-sell';
-                        const pnl = pos.unrealized_pnl || 0;
+                        const pnl = pos.realizedPnl || 0;
                         return `<div class="margin-pos-row">
                             <div class="margin-pos-info">
                                 <span class="${sideClass}">${side} ${pos.pair || 'MOLT/mUSD'}</span>
@@ -823,10 +823,10 @@ document.addEventListener('DOMContentLoaded', () => {
                             </div>
                             <div class="margin-pos-details">
                                 <span>Size: ${formatAmount(pos.size || 0)}</span>
-                                <span>Entry: ${formatPrice(pos.entry_price || 0)}</span>
+                                <span>Entry: ${formatPrice(pos.entryPrice || 0)}</span>
                                 <span class="${pnl >= 0 ? 'positive' : 'negative'}">P&L: ${pnl >= 0 ? '+' : ''}${formatPrice(pnl)}</span>
                             </div>
-                            <button class="btn btn-small btn-secondary margin-close-btn" data-position-id="${pos.position_id || pos.id || 0}">Close</button>
+                            <button class="btn btn-small btn-secondary margin-close-btn" data-position-id="${pos.positionId || pos.id || 0}">Close</button>
                         </div>`;
                     }).join('');
                     // Bind close buttons
@@ -842,7 +842,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 // Update equity stats
                 let totalMargin = 0, totalPnl = 0;
-                data.forEach(p => { totalMargin += (p.margin || 0); totalPnl += (p.unrealized_pnl || 0); });
+                data.forEach(p => { totalMargin += (p.margin || 0); totalPnl += (p.realizedPnl || 0); });
                 const eq = (balances.mUSD?.available || 0) + totalPnl;
                 const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
                 el('marginEquity', formatVolume(eq));
@@ -879,9 +879,9 @@ document.addEventListener('DOMContentLoaded', () => {
             if (Array.isArray(data) && data.length > 0) {
                 container.innerHTML = `<table class="orders-table"><thead><tr><th>Pair</th><th>Side</th><th>Size</th><th>Entry</th><th>Mark</th><th>P&L</th><th>Lev</th><th></th></tr></thead><tbody>${
                     data.map(p => {
-                        const side = p.side === 'long' || p.is_long ? 'Long' : 'Short';
-                        const pnl = p.unrealized_pnl || 0;
-                        return `<tr><td>${p.pair || state.activePair?.id || ''}</td><td class="side-${side.toLowerCase()}">${side}</td><td class="mono-value">${formatAmount(p.size || 0)}</td><td class="mono-value">${formatPrice(p.entry_price || 0)}</td><td class="mono-value">${formatPrice(p.mark_price || state.lastPrice)}</td><td class="mono-value ${pnl >= 0 ? 'positive' : 'negative'}">${pnl >= 0 ? '+' : ''}${formatPrice(pnl)}</td><td>${p.leverage || '2'}x</td><td><button class="btn btn-small btn-secondary">Close</button></td></tr>`;
+                        const side = p.side === 'long' ? 'Long' : 'Short';
+                        const pnl = p.realizedPnl || 0;
+                        return `<tr><td>${p.pair || state.activePair?.id || ''}</td><td class="side-${side.toLowerCase()}">${side}</td><td class="mono-value">${formatAmount(p.size || 0)}</td><td class="mono-value">${formatPrice(p.entryPrice || 0)}</td><td class="mono-value">${formatPrice(p.markPrice || state.lastPrice)}</td><td class="mono-value ${pnl >= 0 ? 'positive' : 'negative'}">${pnl >= 0 ? '+' : ''}${formatPrice(pnl)}</td><td>${p.leverage || '2'}x</td><td><button class="btn btn-small btn-secondary">Close</button></td></tr>`;
                     }).join('')
                 }</tbody></table>`;
                 return;
@@ -965,16 +965,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (container) {
                     container.innerHTML = data.map(p => {
                         const status = p.status || 'active';
-                        const yesVotes = p.yes_votes || 0;
-                        const noVotes = p.no_votes || 0;
+                        const yesVotes = p.yesVotes || 0;
+                        const noVotes = p.noVotes || 0;
                         const totalVotes = yesVotes + noVotes;
                         const yesPct = totalVotes > 0 ? Math.round(yesVotes / totalVotes * 100) : 50;
                         const statusClass = status === 'active' ? 'active-proposal' : status === 'passed' ? 'passed-proposal' : 'executed-proposal';
-                        return `<div class="proposal-card ${statusClass}" data-proposal-id="${p.proposal_id || p.id || 0}">
+                        return `<div class="proposal-card ${statusClass}" data-proposal-id="${p.proposalId || p.id || 0}">
                             <div class="proposal-top-row">
                                 <div class="proposal-status-badge ${status}">${status.charAt(0).toUpperCase() + status.slice(1)}</div>
-                                <span class="proposal-type-tag">${p.proposal_type || 'New Pair'}</span>
-                                <span class="proposal-id">#${p.proposal_id || p.id || 0}</span>
+                                <span class="proposal-type-tag">${p.proposalType || 'New Pair'}</span>
+                                <span class="proposal-id">#${p.proposalId || p.id || 0}</span>
                             </div>
                             <h4>${p.title || p.description || 'Proposal'}</h4>
                             <p class="proposal-desc text-secondary">${p.description || ''}</p>
@@ -986,7 +986,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 </div>
                             </div>
                             <div class="proposal-footer">
-                                <span class="proposal-time"><i class="fas fa-clock"></i> ${p.time_remaining || ''}</span>
+                                <span class="proposal-time"><i class="fas fa-clock"></i> ${p.timeRemaining || ''}</span>
                                 ${status === 'active' ? `<div class="proposal-actions">
                                     <button class="btn btn-small btn-primary vote-btn vote-for">Vote Yes</button>
                                     <button class="btn btn-small btn-secondary vote-btn vote-against">Vote No</button>

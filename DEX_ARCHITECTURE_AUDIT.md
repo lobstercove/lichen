@@ -81,7 +81,7 @@
 
 **File**: `dex/dex.js` (1758 lines)  
 **Type**: Vanilla JavaScript SPA  
-**Connection**: `RPC_BASE` = `http://localhost:8899`, `WS_URL` = `ws://localhost:8900/ws`
+**Connection**: `RPC_BASE` = `http://localhost:8899`, `WS_URL` = `ws://localhost:8900`
 
 ### 2a. MOCK DATA — Complete Inventory
 

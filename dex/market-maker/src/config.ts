@@ -72,7 +72,7 @@ export function loadConfig(): BotConfig {
 
   return {
     endpoint: process.env.DEX_ENDPOINT || 'http://localhost:8899',
-    wsEndpoint: process.env.DEX_WS_ENDPOINT || 'ws://localhost:8900/ws',
+    wsEndpoint: process.env.DEX_WS_ENDPOINT || 'ws://localhost:8900',
     pairId: parseInt(process.env.MM_PAIR_ID || '0', 10),
     strategy,
     spread: {
