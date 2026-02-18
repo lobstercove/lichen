@@ -862,6 +862,13 @@ pub extern "C" fn respond_challenge(
     let mut response = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(response_hash_ptr, response.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX P2: Verify caller matches provider
+    let real_caller = get_caller();
+    if real_caller.0 != prov_arr {
+        log_info("respond_challenge rejected: caller mismatch");
+        return 0;
+    }
+
     // Load challenge
     let ck = challenge_key(&hash_arr, &prov_arr);
     let mut chal = match storage_get(&ck) {
@@ -998,6 +1005,8 @@ mod tests {
         let owner = [1u8; 32];
         let data_hash = [0xAA; 32];
 
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(owner);
         let result = store_data(
             owner.as_ptr(),
             data_hash.as_ptr(),
@@ -1031,6 +1040,8 @@ mod tests {
         let owner = [1u8; 32];
         let data_hash = [0xBB; 32];
 
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(owner);
         store_data(owner.as_ptr(), data_hash.as_ptr(), 512, 2, 2000);
         let result = store_data(owner.as_ptr(), data_hash.as_ptr(), 256, 1, 1000);
         assert_eq!(result, 4); // already registered
@@ -1046,13 +1057,19 @@ mod tests {
         let provider_addr = [2u8; 32];
 
         // Register provider first
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(provider_addr);
         let reg_result = register_provider(provider_addr.as_ptr(), 1_000_000);
         assert_eq!(reg_result, 0);
 
         // Store data
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(owner);
         store_data(owner.as_ptr(), data_hash.as_ptr(), 1024, 3, 5000);
 
         // Confirm storage
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(provider_addr);
         let result = confirm_storage(provider_addr.as_ptr(), data_hash.as_ptr());
         assert_eq!(result, 0);
 
@@ -1085,6 +1102,8 @@ mod tests {
         let owner = [1u8; 32];
         let data_hash = [0xDD; 32];
 
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(owner);
         store_data(owner.as_ptr(), data_hash.as_ptr(), 2048, 2, 3000);
 
         let result = get_storage_info(data_hash.as_ptr());
@@ -1109,6 +1128,8 @@ mod tests {
         test_mock::SLOT.with(|s| *s.borrow_mut() = 10);
 
         let provider_addr = [5u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(provider_addr);
         let result = register_provider(provider_addr.as_ptr(), 500_000);
         assert_eq!(result, 0);
 
@@ -1129,8 +1150,14 @@ mod tests {
         let data_hash = [0xEE; 32];
         let provider_addr = [2u8; 32];
 
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(provider_addr);
         register_provider(provider_addr.as_ptr(), 1_000_000);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(owner);
         store_data(owner.as_ptr(), data_hash.as_ptr(), 100, 1, 5000);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(provider_addr);
         confirm_storage(provider_addr.as_ptr(), data_hash.as_ptr());
 
         let result = claim_storage_rewards(provider_addr.as_ptr());
@@ -1154,6 +1181,8 @@ mod tests {
     fn test_initialize_admin() {
         setup();
         let admin = [9u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(admin);
         assert_eq!(initialize(admin.as_ptr()), 0);
         assert_eq!(initialize(admin.as_ptr()), 1); // double init
     }
@@ -1163,6 +1192,8 @@ mod tests {
         setup();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 10);
         let provider_addr = [2u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(provider_addr);
         register_provider(provider_addr.as_ptr(), 1_073_741_824); // 1 GB
         let result = stake_collateral(provider_addr.as_ptr(), 10_000_000);
         assert_eq!(result, 0);
@@ -1174,6 +1205,8 @@ mod tests {
         setup();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 10);
         let provider_addr = [2u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(provider_addr);
         register_provider(provider_addr.as_ptr(), 2_000_000_000); // ~2 GB
         // Needs >= 2M stake (2 * MIN_STAKE_PER_GB)
         assert_eq!(stake_collateral(provider_addr.as_ptr(), 500_000), 2);
@@ -1184,6 +1217,8 @@ mod tests {
         setup();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 10);
         let provider_addr = [2u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(provider_addr);
         register_provider(provider_addr.as_ptr(), 1_000_000);
         assert_eq!(set_storage_price(provider_addr.as_ptr(), 5), 0);
         assert_eq!(get_storage_price(provider_addr.as_ptr()), 5);
@@ -1202,13 +1237,21 @@ mod tests {
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let admin = [9u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
 
         let owner = [1u8; 32];
         let data_hash = [0xCC; 32];
         let provider_addr = [2u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(provider_addr);
         register_provider(provider_addr.as_ptr(), 1_000_000);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(owner);
         store_data(owner.as_ptr(), data_hash.as_ptr(), 1024, 3, 5000);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(provider_addr);
         confirm_storage(provider_addr.as_ptr(), data_hash.as_ptr());
 
         // Issue challenge
@@ -1229,13 +1272,21 @@ mod tests {
     fn test_challenge_duplicate_rejected() {
         setup();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller([9u8; 32]);
         initialize([9u8; 32].as_ptr());
 
         let owner = [1u8; 32];
         let data_hash = [0xCC; 32];
         let provider_addr = [2u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(provider_addr);
         register_provider(provider_addr.as_ptr(), 1_000_000);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(owner);
         store_data(owner.as_ptr(), data_hash.as_ptr(), 1024, 1, 5000);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(provider_addr);
         confirm_storage(provider_addr.as_ptr(), data_hash.as_ptr());
 
         assert_eq!(issue_challenge(data_hash.as_ptr(), provider_addr.as_ptr(), 42), 0);
@@ -1247,14 +1298,22 @@ mod tests {
     fn test_slash_unanswered_challenge() {
         setup();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller([9u8; 32]);
         initialize([9u8; 32].as_ptr());
 
         let owner = [1u8; 32];
         let data_hash = [0xCC; 32];
         let provider_addr = [2u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(provider_addr);
         register_provider(provider_addr.as_ptr(), 1_073_741_824);
         stake_collateral(provider_addr.as_ptr(), 10_000_000);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(owner);
         store_data(owner.as_ptr(), data_hash.as_ptr(), 1024, 1, 5000);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(provider_addr);
         confirm_storage(provider_addr.as_ptr(), data_hash.as_ptr());
         issue_challenge(data_hash.as_ptr(), provider_addr.as_ptr(), 42);
 
@@ -1277,14 +1336,22 @@ mod tests {
     fn test_slash_answered_challenge_fails() {
         setup();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller([9u8; 32]);
         initialize([9u8; 32].as_ptr());
 
         let owner = [1u8; 32];
         let data_hash = [0xCC; 32];
         let provider_addr = [2u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(provider_addr);
         register_provider(provider_addr.as_ptr(), 1_073_741_824);
         stake_collateral(provider_addr.as_ptr(), 1_000_000);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(owner);
         store_data(owner.as_ptr(), data_hash.as_ptr(), 1024, 1, 5000);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(provider_addr);
         confirm_storage(provider_addr.as_ptr(), data_hash.as_ptr());
         issue_challenge(data_hash.as_ptr(), provider_addr.as_ptr(), 42);
 
@@ -1302,13 +1369,21 @@ mod tests {
     fn test_slash_before_deadline_fails() {
         setup();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller([9u8; 32]);
         initialize([9u8; 32].as_ptr());
 
         let owner = [1u8; 32];
         let data_hash = [0xCC; 32];
         let provider_addr = [2u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(provider_addr);
         register_provider(provider_addr.as_ptr(), 1_000_000);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(owner);
         store_data(owner.as_ptr(), data_hash.as_ptr(), 1024, 1, 5000);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(provider_addr);
         confirm_storage(provider_addr.as_ptr(), data_hash.as_ptr());
         issue_challenge(data_hash.as_ptr(), provider_addr.as_ptr(), 42);
 
@@ -1320,9 +1395,13 @@ mod tests {
     fn test_set_challenge_window_admin_only() {
         setup();
         let admin = [9u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(admin);
         initialize(admin.as_ptr());
         assert_eq!(set_challenge_window(admin.as_ptr(), 500), 0);
         let other = [8u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(other);
         assert_eq!(set_challenge_window(other.as_ptr(), 500), 2);
     }
 
@@ -1330,13 +1409,21 @@ mod tests {
     fn test_challenge_zero_response_rejected() {
         setup();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller([9u8; 32]);
         initialize([9u8; 32].as_ptr());
 
         let owner = [1u8; 32];
         let data_hash = [0xCC; 32];
         let provider_addr = [2u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(provider_addr);
         register_provider(provider_addr.as_ptr(), 1_000_000);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(owner);
         store_data(owner.as_ptr(), data_hash.as_ptr(), 1024, 1, 5000);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(provider_addr);
         confirm_storage(provider_addr.as_ptr(), data_hash.as_ptr());
         issue_challenge(data_hash.as_ptr(), provider_addr.as_ptr(), 42);
 

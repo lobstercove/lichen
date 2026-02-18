@@ -137,6 +137,15 @@ pub extern "C" fn mint(caller_ptr: *const u8, to_ptr: *const u8, amount: u64) ->
     let to = Address::new(to_array);
     let owner = get_owner();
 
+    // AUDIT-FIX P2: Enforce supply cap — max 10 billion MOLT (10B * 1e9 decimals)
+    const MAX_SUPPLY: u64 = 10_000_000_000_000_000_000; // 10B MOLT in shells
+    let current_supply = total_supply();
+    if current_supply.saturating_add(amount) > MAX_SUPPLY {
+        log_info("Mint rejected: would exceed max supply of 10B MOLT");
+        reentrancy_exit();
+        return 0;
+    }
+
     let mut token = make_token();
     let result = match token.mint(to, amount, caller, owner) {
         Ok(_) => {
@@ -211,6 +220,45 @@ pub extern "C" fn approve(owner_ptr: *const u8, spender_ptr: *const u8, amount: 
             1
         }
         Err(_) => 0,
+    };
+    reentrancy_exit();
+    result
+}
+
+/// Transfer from another account using allowance
+/// AUDIT-FIX P2: Missing function — approve was dead code without this
+#[no_mangle]
+pub extern "C" fn transfer_from(spender_ptr: *const u8, from_ptr: *const u8, to_ptr: *const u8, amount: u64) -> u32 {
+    if !reentrancy_enter() { return 0; }
+    let mut spender_array = [0u8; 32];
+    let mut from_array = [0u8; 32];
+    let mut to_array = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(spender_ptr, spender_array.as_mut_ptr(), 32); }
+    unsafe { core::ptr::copy_nonoverlapping(from_ptr, from_array.as_mut_ptr(), 32); }
+    unsafe { core::ptr::copy_nonoverlapping(to_ptr, to_array.as_mut_ptr(), 32); }
+
+    // Verify caller matches spender
+    let caller = get_caller();
+    if caller.0 != spender_array {
+        log_info("TransferFrom rejected: caller mismatch");
+        reentrancy_exit();
+        return 0;
+    }
+
+    let spender = Address::new(spender_array);
+    let from = Address::new(from_array);
+    let to = Address::new(to_array);
+
+    let token = make_token();
+    let result = match token.transfer_from(spender, from, to, amount) {
+        Ok(_) => {
+            log_info("TransferFrom successful");
+            1
+        }
+        Err(_) => {
+            log_info("TransferFrom failed");
+            0
+        }
     };
     reentrancy_exit();
     result
@@ -376,5 +424,70 @@ mod tests {
         test_mock::set_caller(owner);
         let result = approve(owner.as_ptr(), spender.as_ptr(), 5000);
         assert_eq!(result, 1);
+    }
+
+    // AUDIT-FIX P2: Security regression test
+    #[test]
+    fn test_transfer_from_basic() {
+        setup();
+        let owner = [1u8; 32];
+        let spender = [2u8; 32];
+        let recipient = [3u8; 32];
+        initialize(owner.as_ptr());
+
+        // Owner approves spender for 100 tokens
+        test_mock::set_caller(owner);
+        let approve_result = approve(owner.as_ptr(), spender.as_ptr(), 100);
+        assert_eq!(approve_result, 1);
+
+        // Spender transfers 50 from owner to recipient
+        test_mock::set_caller(spender);
+        let result = transfer_from(spender.as_ptr(), owner.as_ptr(), recipient.as_ptr(), 50);
+        assert_eq!(result, 1, "transfer_from with valid allowance should succeed");
+
+        // Verify recipient balance
+        let recip_bal = balance_of(recipient.as_ptr());
+        assert_eq!(recip_bal, 50);
+
+        // Verify remaining allowance is 50
+        let token = make_token();
+        let remaining = token.allowance(Address::new(owner), Address::new(spender));
+        assert_eq!(remaining, 50, "allowance should be reduced to 50");
+    }
+
+    // AUDIT-FIX P2: Security regression test
+    #[test]
+    fn test_transfer_from_exceeds_allowance() {
+        setup();
+        let owner = [1u8; 32];
+        let spender = [2u8; 32];
+        let recipient = [3u8; 32];
+        initialize(owner.as_ptr());
+
+        // Owner approves spender for 100 tokens
+        test_mock::set_caller(owner);
+        approve(owner.as_ptr(), spender.as_ptr(), 100);
+
+        // Spender tries to transfer 200 — exceeds allowance
+        test_mock::set_caller(spender);
+        let result = transfer_from(spender.as_ptr(), owner.as_ptr(), recipient.as_ptr(), 200);
+        assert_eq!(result, 0, "transfer_from must fail when exceeding allowance");
+    }
+
+    // AUDIT-FIX P2: Security regression test
+    #[test]
+    fn test_mint_supply_cap() {
+        setup();
+        let owner = [1u8; 32];
+        let recipient = [3u8; 32];
+        initialize(owner.as_ptr());
+
+        // Try to mint more than MAX_SUPPLY (10B MOLT = 10_000_000_000_000_000_000 shells)
+        // Current supply after init = 1_000_000_000_000_000 (1M MOLT)
+        // Attempt to mint exactly MAX_SUPPLY which would exceed cap with existing supply
+        test_mock::set_caller(owner);
+        let huge_amount: u64 = 10_000_000_000_000_000_000u64;
+        let result = mint(owner.as_ptr(), recipient.as_ptr(), huge_amount);
+        assert_eq!(result, 0, "mint must reject amounts that exceed MAX_SUPPLY");
     }
 }

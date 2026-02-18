@@ -648,6 +648,16 @@ pub fn finalize_proposal(proposal_id: u64) -> u32 {
     let no = decode_prop_no(&data);
     let total = yes + no;
 
+    // AUDIT-FIX P2: Minimum quorum — prevent single-voter governance capture
+    const MIN_QUORUM: u64 = 3;
+    if total < MIN_QUORUM {
+        // Mark as rejected — insufficient quorum
+        update_prop_status(&mut data, STATUS_REJECTED);
+        storage_set(&pk, &data);
+        log_info("Proposal rejected: insufficient quorum");
+        return 1;
+    }
+
     let passed = if total == 0 {
         false
     } else {
@@ -1203,10 +1213,21 @@ mod tests {
         test_mock::set_caller(proposer);
         propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr());
 
+        // AUDIT-FIX P2: Need MIN_QUORUM (3) voters to finalize
         let mut v = [0u8; 32];
         v[0] = 10;
         test_mock::set_caller(v);
         vote(v.as_ptr(), 1, true);
+
+        let mut v2 = [0u8; 32];
+        v2[0] = 11;
+        test_mock::set_caller(v2);
+        vote(v2.as_ptr(), 1, true);
+
+        let mut v3 = [0u8; 32];
+        v3[0] = 12;
+        test_mock::set_caller(v3);
+        vote(v3.as_ptr(), 1, true);
 
         test_mock::set_slot(100 + VOTING_PERIOD_SLOTS + 1);
         finalize_proposal(1);
@@ -1427,5 +1448,33 @@ mod tests {
             propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr()),
             5  // reputation check fails in test mode
         );
+    }
+
+    // AUDIT-FIX P2: Security regression test
+    #[test]
+    fn test_finalize_insufficient_quorum() {
+        let _admin = setup();
+        let proposer = [2u8; 32];
+        let base = [10u8; 32];
+        let quote = [20u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(proposer);
+        // Create proposal
+        assert_eq!(
+            propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr()),
+            0
+        );
+        // Only 1 vote (quorum=3 not met)
+        let voter = [3u8; 32];
+        test_mock::set_caller(voter);
+        assert_eq!(vote(voter.as_ptr(), 1, true), 0);
+        // Fast-forward past voting period
+        test_mock::set_slot(100 + VOTING_PERIOD_SLOTS + 1);
+        // Finalize → should reject due to insufficient quorum
+        let result = finalize_proposal(1);
+        assert_eq!(result, 1); // rejected (insufficient quorum)
+        // Verify status is REJECTED
+        let pd = storage_get(&proposal_key(1)).unwrap();
+        assert_eq!(decode_prop_status(&pd), STATUS_REJECTED);
     }
 }

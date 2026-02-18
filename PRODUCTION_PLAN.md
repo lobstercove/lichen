@@ -210,61 +210,111 @@ The foundation. If this is wrong, everything is wrong.
 Each contract must be validated for: correct opcode dispatch, proper authority checks, no overflow, no re-entrancy, proper error handling, and ABI accuracy.
 
 ### 2.1 Token Contracts
-- [ ] `moltcoin` (380 lines) — Native token, mint/transfer/burn, supply cap
-- [ ] `musd_token` (1,178 lines) — Stablecoin, mint/burn authority, peg mechanism
-- [ ] `weth_token` (853 lines) — Wrapped ETH, 1:1 bridge backing
-- [ ] `wsol_token` (853 lines) — Wrapped SOL, 1:1 bridge backing
-- [ ] Verify all 4 tokens: transfer, approve, balance, supply cap enforcement
-- [ ] Verify ABI matches actual opcodes for all 4
-- [ ] **Findings:**
+- [x] `moltcoin` (380→430 lines) — Native token, mint/transfer/burn, supply cap
+- [x] `musd_token` (1,178 lines) — Stablecoin, mint/burn authority, peg mechanism
+- [x] `weth_token` (853 lines) — Wrapped ETH, 1:1 bridge backing
+- [x] `wsol_token` (853 lines) — Wrapped SOL, 1:1 bridge backing
+- [x] Verify all 4 tokens: transfer, approve, balance, supply cap enforcement
+- [x] Verify ABI matches actual opcodes for all 4
+- [x] **Findings:**
+  - **F-2.1.1 (CRITICAL → FIXED):** `moltcoin` — `approve()` was dead code — no `transfer_from` function existed. Added `transfer_from()` with get_caller verification, allowance check, and proper allowance decrement.
+  - **F-2.1.2 (HIGH → FIXED):** `moltcoin` — No supply cap on `mint()`. Added `MAX_SUPPLY = 10_000_000_000_000_000_000` (10B MOLT) enforcement.
+  - **F-2.1.3 (OK):** `musd_token` — Clean. Admin-only mint/burn, proper transfer logic, reentrancy-protected.
+  - **F-2.1.4 (OK):** `weth_token` — Clean. Same robust pattern as musd_token.
+  - **F-2.1.5 (OK):** `wsol_token` — Clean. Same robust pattern.
+  - **Tests:** 12 passing (3 new security regression tests added)
 
 ### 2.2 DEX Contracts
-- [ ] `dex_core` (3,062 lines) — CLOB engine, order matching, pair management
-- [ ] `dex_amm` (1,507 lines) — AMM pools, add/remove liquidity, swap
-- [ ] `dex_router` (1,156 lines) — Multi-hop routing, best price
-- [ ] `dex_margin` (1,679 lines) — Margin positions, liquidation
-- [ ] `dex_rewards` (1,032 lines) — Trading rewards, tier system
-- [ ] `dex_analytics` (1,085 lines) — Volume tracking, 24h stats
-- [ ] `dex_governance` (1,431 lines) — DEX parameter proposals, voting
-- [ ] Verify cross-contract calls between DEX contracts
-- [ ] Verify order matching engine correctness
-- [ ] Verify liquidation math (no bad debt)
-- [ ] Verify ABI matches actual opcodes for all 7
-- [ ] **Findings:**
+- [x] `dex_core` (3,062→3,080 lines) — CLOB engine, order matching, pair management
+- [x] `dex_amm` (1,507 lines) — AMM pools, add/remove liquidity, swap
+- [x] `dex_router` (1,156 lines) — Multi-hop routing, best price
+- [x] `dex_margin` (1,679 lines) — Margin positions, liquidation
+- [x] `dex_rewards` (1,032 lines) — Trading rewards, tier system
+- [x] `dex_analytics` (1,085 lines) — Volume tracking, 24h stats
+- [x] `dex_governance` (1,431→1,460 lines) — DEX parameter proposals, voting
+- [x] Verify cross-contract calls between DEX contracts
+- [x] Verify order matching engine correctness
+- [x] Verify liquidation math (no bad debt)
+- [x] Verify ABI matches actual opcodes for all 7
+- [x] **Findings:**
+  - **F-2.2.1 (CRITICAL → FIXED):** `dex_router` — `execute_clob_swap`, `execute_amm_swap`, `execute_legacy_swap` all had SIMULATION FALLBACKS returning fake amounts (e.g., `amount_in * 0.9995`) when cross-contract calls failed. Trades appeared to succeed but no real tokens moved. Removed all 3 fallbacks — now return 0 on failure.
+  - **F-2.2.2 (MEDIUM → FIXED):** `dex_core` — `create_pair` had no duplicate pair check. Added iteration over existing pairs to reject (base,quote) duplicates.
+  - **F-2.2.3 (HIGH → FIXED):** `dex_governance` — `finalize_proposal` had no quorum requirement — a single voter could pass governance proposals. Added `MIN_QUORUM = 3` check.
+  - **F-2.2.4 (HIGH → FIXED):** `dex_rewards` — `record_trade` used raw `+` for 7 volume accumulators. Replaced all with `saturating_add`/`saturating_mul` to prevent overflow DoS.
+  - **F-2.2.5 (MEDIUM):** `dex_core` — O(n) matching in active_orders scan. Acceptable for current volume but will need indexing at scale.
+  - **F-2.2.6 (MEDIUM):** `dex_amm` — Tick-to-price uses linear approximation; O(n) fee accrual. Acceptable for now.
+  - **F-2.2.7 (MEDIUM):** `dex_margin` — `execute_proposal` is a no-op stub. Documented.
+  - **F-2.2.8 (MEDIUM):** `dex_analytics` — Caller model wrong for cross-contract (reads get_caller() but will always get router address). Documented.
+  - **F-2.2.9 (LOW):** `dex_analytics` — Candle volume uses raw `+`.
+  - **Tests:** 177 passing (2 new security regression tests added)
 
 ### 2.3 DeFi Contracts
-- [ ] `lobsterlend` (1,450 lines) — Lending/borrowing, interest rates, collateral
-- [ ] `moltswap` (1,405 lines) — Token swap, AMM, staking
-- [ ] `clawpay` (1,375 lines) — Payment streams/splits
-- [ ] `clawvault` (1,445 lines) — Vault strategy, yield
-- [ ] `clawpump` (1,687 lines) — Token launchpad, bonding curve
-- [ ] Verify interest rate math (no overflow at scale)
-- [ ] Verify collateral ratio enforcement
-- [ ] Verify ABI matches actual opcodes for all 5
-- [ ] **Findings:**
+- [x] `lobsterlend` (1,450 lines) — Lending/borrowing, interest rates, collateral
+- [x] `moltswap` (1,405→1,425 lines) — Token swap, AMM, staking
+- [x] `clawpay` (1,375→1,460 lines) — Payment streams/splits
+- [x] `clawvault` (1,445 lines) — Vault strategy, yield
+- [x] `clawpump` (1,687 lines) — Token launchpad, bonding curve
+- [x] Verify interest rate math (no overflow at scale)
+- [x] Verify collateral ratio enforcement
+- [x] Verify ABI matches actual opcodes for all 5
+- [x] **Findings:**
+  - **F-2.3.1 (HIGH → FIXED):** `moltswap` — `set_moltyid_address` and `set_reputation_discount` had no `get_caller()` check — anyone could set identity integration address or discount. Added admin caller verification.
+  - **F-2.3.2 (HIGH → FIXED):** `clawpay` — `transfer_stream` had no reentrancy guard. Added `reentrancy_enter()`/`reentrancy_exit()` with proper exit on all 6 return paths.
+  - **F-2.3.3 (CRITICAL):** `clawpay` — No fund escrow on stream creation — accounting-only, tokens never locked. Deferred: requires design decision on escrow model.
+  - **F-2.3.4 (MEDIUM):** `lobsterlend` — No oracle integration (functional gap). Interest accrual counter uses raw `+`.
+  - **F-2.3.5 (MEDIUM):** `clawvault` — Risk tier code is dead (computed but unused). Error code 200 ambiguous with valid u64 returns.
+  - **F-2.3.6 (MEDIUM):** `clawpump` — Error code 200 ambiguous. Small trades can round to 0 output.
+  - **Tests:** 39 passing (moltswap 22, clawpay 17; 2 new security regression tests added)
 
 ### 2.4 Infrastructure Contracts
-- [ ] `moltbridge` (2,078 lines) — Cross-chain bridge, relayers, proofs
-- [ ] `moltoracle` (1,248 lines) — Price feeds, data providers, staleness
-- [ ] `moltdao` (1,380 lines) — Governance, proposals, voting, treasury
-- [ ] `reef_storage` (1,346 lines) — Decentralized storage, pinning
-- [ ] `compute_market` (2,017 lines) — Compute job marketplace
-- [ ] `bountyboard` (1,136 lines) — Bug bounties, task rewards
-- [ ] Verify oracle staleness protection
-- [ ] Verify bridge security (no unauthorized mints)
-- [ ] Verify ABI matches actual opcodes for all 6
-- [ ] **Findings:**
+- [x] `moltbridge` (2,078 lines) — Cross-chain bridge, relayers, proofs
+- [x] `moltoracle` (1,248→1,316 lines) — Price feeds, data providers, staleness
+- [x] `moltdao` (1,380→1,430 lines) — Governance, proposals, voting, treasury
+- [x] `reef_storage` (1,346→1,430 lines) — Decentralized storage, pinning
+- [x] `compute_market` (2,017 lines) — Compute job marketplace
+- [x] `bountyboard` (1,136→1,210 lines) — Bug bounties, task rewards
+- [x] Verify oracle staleness protection
+- [x] Verify bridge security (no unauthorized mints)
+- [x] Verify ABI matches actual opcodes for all 6
+- [x] **Findings:**
+  - **F-2.4.1 (CRITICAL → FIXED):** `moltdao` — No `get_caller()` on `create_proposal_typed`, `vote_with_reputation`, `veto_proposal`, `set_quorum`, `set_voting_period`, `set_timelock_delay`, `dao_pause`, `dao_unpause`. Complete governance takeover possible. Added caller verification to all 8 functions.
+  - **F-2.4.2 (CRITICAL → FIXED):** `moltdao` — Pause flag stored but never enforced. Added `is_dao_paused()` helper and pause checks in `create_proposal_typed`, `vote_with_reputation`, `veto_proposal`.
+  - **F-2.4.3 (HIGH → FIXED):** `moltdao` — Overflow in `votes_for * 100` quorum check. Cast to u128.
+  - **F-2.4.4 (HIGH → FIXED):** `moltoracle` — No `get_caller()` on `request_randomness`, `commit_randomness`, `reveal_randomness`. Added caller verification.
+  - **F-2.4.5 (HIGH → FIXED):** `moltoracle` — Pause flag never enforced. Added `is_mo_paused()` helper and enforcement in `submit_price`, `request_randomness`, `commit_randomness`.
+  - **F-2.4.6 (HIGH → FIXED):** `moltoracle` — No reentrancy guard on `submit_price`. Added `reentrancy_enter()`/`reentrancy_exit()`.
+  - **F-2.4.7 (HIGH → FIXED):** `reef_storage` — `respond_challenge` had no caller verification. Added `get_caller()` check.
+  - **F-2.4.8 (HIGH → FIXED):** `bountyboard` — Pause flag stored but never checked. Added `is_bb_paused()` helper and enforcement in `create_bounty`, `submit_work`, `approve_work`, `cancel_bounty`.
+  - **F-2.4.9 (HIGH):** `moltbridge` — Pause doesn't block validator operations (`validate_transfer`, `submit_proof`). Deferred: requires design review of bridge halt semantics.
+  - **F-2.4.10 (MEDIUM):** `moltdao` — Proposal stake never deducted from proposer balance. Only 6 tests for 1,380 lines.
+  - **F-2.4.11 (MEDIUM):** `reef_storage` — `respond_challenge` has stub verification logic (always passes). Challenge verification should be real.
+  - **Tests:** 72 passing (moltdao 12, moltoracle 25, bountyboard 16, reef_storage 19; 11 new security regression tests added)
+  - **Pre-existing failures:** compute_market (27 tests fail), moltbridge (38 tests fail) — no changes made to these contracts
 
 ### 2.5 NFT & Social Contracts
-- [ ] `moltpunks` (586 lines) — NFT collection, mint, trade
-- [ ] `moltmarket` (943 lines) — NFT marketplace, listings, bids
-- [ ] `moltauction` (1,314 lines) — Auction mechanism, timed bids
-- [ ] `moltyid` (5,590 lines) — Decentralized identity, credentials, agents
-- [ ] `prediction_market` (3,560 lines) — Binary + multi-outcome markets
-- [ ] Verify MoltyID auth chain is real
-- [ ] Verify prediction market resolution is trustless
-- [ ] Verify ABI matches actual opcodes for all 5
-- [ ] **Findings:**
+- [x] `moltpunks` (586→633 lines) — NFT collection, mint, trade
+- [x] `moltmarket` (943→990 lines) — NFT marketplace, listings, bids
+- [x] `moltauction` (1,314→1,350 lines) — Auction mechanism, timed bids
+- [x] `moltyid` (5,590 lines) — Decentralized identity, credentials, agents
+- [x] `prediction_market` (3,560 lines) — Binary + multi-outcome markets
+- [x] Verify MoltyID auth chain is real
+- [x] Verify prediction market resolution is trustless
+- [x] Verify ABI matches actual opcodes for all 5
+- [x] **Findings:**
+  - **F-2.5.1 (CRITICAL → FIXED):** `moltpunks` — Pause mechanism was dead code. Added `is_mp_paused()` helper and enforcement in `mint()`, `transfer()`.
+  - **F-2.5.2 (HIGH → FIXED):** `moltpunks` — `set_max_supply` was dead code (stored value never checked). Added max supply enforcement in `mint()`.
+  - **F-2.5.3 (HIGH → FIXED):** `moltpunks` — `approve()` and `burn()` had no `get_caller()` check. Added caller verification.
+  - **F-2.5.4 (CRITICAL → FIXED):** `moltauction` — `initialize()` had no re-initialization guard. Added check for existing admin.
+  - **F-2.5.5 (CRITICAL → FIXED):** `moltauction` — `update_collection_stats()` had no access control. Added admin-only ACL.
+  - **F-2.5.6 (HIGH → FIXED):** `moltauction` — `make_offer()` and `accept_offer()` had no `get_caller()` check. Added caller verification.
+  - **F-2.5.7 (HIGH → FIXED):** `moltmarket` — `accept_offer()` calculated platform fee but never transferred it. Added fee transfer via `call_token_transfer`.
+  - **F-2.5.8 (HIGH):** `moltyid` — `skill_name_hash` uses only first 16 bytes — collision risk for similar skill names. Deferred: needs hash function upgrade.
+  - **F-2.5.9 (HIGH):** `moltyid` — `bid_name_auction` refund sends tokens to zero address. Deferred: needs refund logic fix.
+  - **F-2.5.10 (CRITICAL):** `prediction_market` — Zero test coverage for 3,560 lines of complex market logic. Deferred: needs comprehensive test suite.
+  - **F-2.5.11 (CRITICAL):** `prediction_market` — Oracle reads foreign contract storage directly (bypasses cross-contract call). Deferred: architectural issue.
+  - **F-2.5.12 (HIGH):** `prediction_market` — No claim mechanism for resolution rewards. Users can't withdraw winnings.
+  - **Tests:** 71 passing (moltpunks 20, moltmarket 17, moltauction 28, prediction_market 0, moltyid 34-9=25 pre-existing failures; 6 new security regression tests added)
+  - **Pre-existing failures:** moltyid (9 tests fail) — no changes made to this contract
 
 ---
 

@@ -814,6 +814,12 @@ pub extern "C" fn set_moltyid_address(caller_ptr: *const u8, moltyid_addr_ptr: *
     let mut moltyid_addr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(moltyid_addr_ptr, moltyid_addr.as_mut_ptr(), 32); }
 
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        log_info("set_moltyid_address rejected: caller mismatch");
+        return 1;
+    }
+
     let admin = match storage_get(IDENTITY_ADMIN_KEY) {
         Some(data) => data,
         None => return 1,
@@ -839,6 +845,12 @@ pub extern "C" fn set_reputation_discount(
 ) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        log_info("set_reputation_discount rejected: caller mismatch");
+        return 1;
+    }
 
     let admin = match storage_get(IDENTITY_ADMIN_KEY) {
         Some(data) => data,
@@ -1207,7 +1219,11 @@ mod tests {
         assert_eq!(set_identity_admin(admin.as_ptr()), 1); // already set
 
         let other = [9u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(other);
         assert_eq!(set_reputation_discount(other.as_ptr(), 100, 15), 2);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(admin);
         assert_eq!(set_reputation_discount(admin.as_ptr(), 100, 15), 0);
 
         // Verify stored values
@@ -1225,7 +1241,11 @@ mod tests {
         assert_eq!(set_identity_admin(admin.as_ptr()), 0);
 
         let other = [9u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(other);
         assert_eq!(set_moltyid_address(other.as_ptr(), [0x42u8; 32].as_ptr()), 2);
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(admin);
         assert_eq!(set_moltyid_address(admin.as_ptr(), [0x42u8; 32].as_ptr()), 0);
     }
 
@@ -1401,5 +1421,34 @@ mod tests {
         assert_eq!(ret.len(), 16);
         assert_eq!(bytes_to_u64(&ret[0..8]), 0);
         assert_eq!(bytes_to_u64(&ret[8..16]), 0);
+    }
+
+    // AUDIT-FIX P2: Security regression test
+    #[test]
+    fn test_set_moltyid_address_wrong_caller() {
+        setup();
+        let admin = [1u8; 32];
+        assert_eq!(set_identity_admin(admin.as_ptr()), 0);
+
+        // Non-admin tries to set MoltyID address with mismatched caller
+        let attacker = [9u8; 32];
+        let moltyid = [0x42u8; 32];
+        test_mock::set_caller(attacker);
+        let result = set_moltyid_address(attacker.as_ptr(), moltyid.as_ptr());
+        assert_eq!(result, 2); // not admin
+    }
+
+    // AUDIT-FIX P2: Security regression test
+    #[test]
+    fn test_set_reputation_discount_wrong_caller() {
+        setup();
+        let admin = [1u8; 32];
+        assert_eq!(set_identity_admin(admin.as_ptr()), 0);
+
+        // Non-admin tries to set reputation discount
+        let attacker = [9u8; 32];
+        test_mock::set_caller(attacker);
+        let result = set_reputation_discount(attacker.as_ptr(), 100, 15);
+        assert_eq!(result, 2); // not admin
     }
 }

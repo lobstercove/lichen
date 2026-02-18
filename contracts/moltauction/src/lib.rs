@@ -481,6 +481,14 @@ pub extern "C" fn make_offer(
     
     let mut offerer = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(offerer_ptr, offerer.as_mut_ptr(), 32); }
+    
+    // AUDIT-FIX P2: Verify caller is the offerer
+    let real_caller = get_caller();
+    if real_caller.0 != offerer {
+        log_info("make_offer rejected: caller is not the offerer");
+        return 0;
+    }
+    
     let mut nft_contract = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(nft_contract_ptr, nft_contract.as_mut_ptr(), 32); }
     let mut payment_token = [0u8; 32];
@@ -524,6 +532,14 @@ pub extern "C" fn accept_offer(
     
     let mut seller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(seller_ptr, seller.as_mut_ptr(), 32); }
+    
+    // AUDIT-FIX P2: Verify caller is the seller
+    let real_caller = get_caller();
+    if real_caller.0 != seller {
+        log_info("accept_offer rejected: caller is not the seller");
+        return 0;
+    }
+    
     let mut offerer = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(offerer_ptr, offerer.as_mut_ptr(), 32); }
     let mut nft_contract = [0u8; 32];
@@ -678,6 +694,13 @@ pub extern "C" fn update_collection_stats(
     nft_contract_ptr: *const u8,
     sale_price: u64,
 ) -> u32 {
+    // AUDIT-FIX P2: Only admin can update collection stats
+    let real_caller = get_caller();
+    if !is_ma_admin(&real_caller.0) {
+        log_info("Unauthorized: only admin can update collection stats");
+        return 0;
+    }
+    
     let mut nft_contract = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(nft_contract_ptr, nft_contract.as_mut_ptr(), 32); }
     
@@ -749,12 +772,19 @@ pub extern "C" fn get_collection_stats(
 pub extern "C" fn initialize(marketplace_addr_ptr: *const u8) -> u32 {
     log_info("Initializing MoltAuction marketplace...");
     
+    // AUDIT-FIX P2: Re-initialization guard
+    if storage_get(b"ma_initialized").is_some() {
+        log_info("MoltAuction already initialized");
+        return 0;
+    }
+    
     // Store the marketplace escrow address for use in auctions/bids
     let mut addr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(marketplace_addr_ptr, addr.as_mut_ptr(), 32); }
     storage_set(MARKETPLACE_ADDR_KEY, &addr);
     log_info("   Escrow address configured");
     
+    storage_set(b"ma_initialized", &[1u8]);
     log_info("Marketplace ready!");
     log_info("   Features: Auctions, Offers, Royalties, Stats");
     1
@@ -1037,6 +1067,8 @@ mod tests {
         let offerer = [2u8; 32];
         let nft = [3u8; 32];
         let pay = [4u8; 32];
+        // AUDIT-FIX P2: Set caller for security check
+        test_mock::set_caller(offerer);
         let result = make_offer(offerer.as_ptr(), nft.as_ptr(), 1, 5000, pay.as_ptr(), 3600);
         assert_eq!(result, 1);
         let key = alloc::format!("offer_{}_{}_{}", hex_addr(&offerer), hex_addr(&nft), 1u64);
@@ -1093,7 +1125,11 @@ mod tests {
     #[test]
     fn test_update_and_get_collection_stats() {
         setup();
+        let admin = [1u8; 32];
         let nft = [3u8; 32];
+        // AUDIT-FIX P2: Set up admin and caller for ACL check on update_collection_stats
+        initialize_ma_admin(admin.as_ptr());
+        test_mock::set_caller(admin);
         assert_eq!(update_collection_stats(nft.as_ptr(), 5000), 1);
         assert_eq!(update_collection_stats(nft.as_ptr(), 3000), 1);
         let mut result_buf = [0u8; 24];
@@ -1310,5 +1346,30 @@ mod tests {
         setup();
         let nft = [3u8; 32];
         assert_eq!(get_auction_info(nft.as_ptr(), 999), 1);
+    }
+
+    // AUDIT-FIX P2: Security regression test
+    #[test]
+    fn test_initialize_twice_blocked() {
+        setup();
+        let addr = [1u8; 32];
+        // First initialize succeeds
+        assert_eq!(initialize(addr.as_ptr()), 1);
+        // Second initialize is blocked by re-init guard
+        assert_eq!(initialize(addr.as_ptr()), 0);
+    }
+
+    // AUDIT-FIX P2: Security regression test
+    #[test]
+    fn test_update_collection_stats_non_admin() {
+        setup();
+        let admin = [1u8; 32];
+        let non_admin = [9u8; 32];
+        let nft = [3u8; 32];
+        // Set up admin
+        initialize_ma_admin(admin.as_ptr());
+        // Non-admin calls update_collection_stats → should fail (return 0)
+        test_mock::set_caller(non_admin);
+        assert_eq!(update_collection_stats(nft.as_ptr(), 5000), 0);
     }
 }
