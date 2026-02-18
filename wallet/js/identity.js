@@ -914,6 +914,12 @@ async function showTransferNameModal() {
     });
     if (!values || !values.password || !values.recipient) return;
     
+    // AUDIT-FIX W-6: Validate recipient address format before building tx
+    if (!MoltCrypto.isValidAddress(values.recipient)) {
+        showToast('Invalid recipient address — must be a valid Base58 address');
+        return;
+    }
+    
     try {
         showToast('Transferring name...');
         const tx = await buildContractCall('transfer_name', {
@@ -1014,6 +1020,12 @@ async function showVouchModal() {
         ]
     });
     if (!values || !values.password || !values.vouchee) return;
+    
+    // AUDIT-FIX W-6: Validate vouchee address format before building tx
+    if (!MoltCrypto.isValidAddress(values.vouchee)) {
+        showToast('Invalid address — must be a valid Base58 address');
+        return;
+    }
     
     try {
         showToast('Sending vouch...');

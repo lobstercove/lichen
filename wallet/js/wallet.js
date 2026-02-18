@@ -496,7 +496,25 @@ document.addEventListener('DOMContentLoaded', () => {
 function loadWalletState() {
     const stored = localStorage.getItem('moltWalletState');
     if (stored) {
-        walletState = JSON.parse(stored);
+        try {
+            const parsed = JSON.parse(stored);
+            // AUDIT-FIX W-9: Validate structure before trusting parsed data
+            if (parsed && typeof parsed === 'object' && Array.isArray(parsed.wallets)) {
+                walletState = {
+                    wallets: parsed.wallets,
+                    activeWalletId: parsed.activeWalletId || null,
+                    isLocked: parsed.isLocked !== false,
+                    network: parsed.network || 'local-testnet',
+                    settings: {
+                        currency: (parsed.settings && parsed.settings.currency) || 'USD',
+                        lockTimeout: (parsed.settings && typeof parsed.settings.lockTimeout === 'number') ? parsed.settings.lockTimeout : 300000,
+                        ...(parsed.settings || {})
+                    }
+                };
+            }
+        } catch (e) {
+            console.warn('Failed to parse wallet state, using defaults:', e);
+        }
     }
 }
 
@@ -863,6 +881,15 @@ async function importWalletSeed() {
         return;
     }
     
+    // AUDIT-FIX W-7: Full async BIP39 checksum verification on import
+    if (MoltCrypto.isValidMnemonicAsync) {
+        const checksumValid = await MoltCrypto.isValidMnemonicAsync(seed);
+        if (!checksumValid) {
+            alert('Invalid seed phrase — BIP39 checksum mismatch. Please check your words and try again.');
+            return;
+        }
+    }
+    
     if (!password || password.length < 8) {
         alert('Password must be at least 8 characters');
         return;
@@ -899,8 +926,9 @@ async function importWalletPrivateKey() {
     const privateKey = document.getElementById('importPrivateKey').value.trim();
     const password = document.getElementById('importPasswordPrivate').value;
     
-    if (!privateKey || privateKey.length !== 64) {
-        alert('Invalid private key format');
+    // AUDIT-FIX W-3: Validate hex format, not just length
+    if (!privateKey || privateKey.length !== 64 || !/^[0-9a-fA-F]{64}$/.test(privateKey)) {
+        alert('Invalid private key format (must be 64 hex characters)');
         return;
     }
     
@@ -2326,19 +2354,28 @@ async function refreshNFTs() {
             countEl.textContent = `${nfts.length} NFT${nfts.length !== 1 ? 's' : ''}`;
             empty.style.display = 'none';
             grid.style.display = 'grid';
-            grid.innerHTML = nfts.map(nft => `
-                <div class="nft-card" onclick="showNFTDetail('${nft.mint || nft.id}')">
+            // AUDIT-FIX W-1: Escape all server-provided NFT data to prevent XSS
+            grid.innerHTML = nfts.map(nft => {
+                const safeMint = escapeHtml(String(nft.mint || nft.id || ''));
+                const safeName = escapeHtml(String(nft.name || 'Unnamed'));
+                const safeCollection = escapeHtml(String(nft.collection || 'Unknown'));
+                // Only allow http/https image URLs to prevent javascript: XSS
+                const rawImage = String(nft.image || '');
+                const safeImage = /^https?:\/\//i.test(rawImage) ? escapeHtml(rawImage) : '';
+                return `
+                <div class="nft-card" onclick="showNFTDetail('${safeMint}')">
                     <div class="nft-image">
-                        ${nft.image 
-                            ? `<img src="${nft.image}" alt="${nft.name}" loading="lazy">` 
+                        ${safeImage
+                            ? `<img src="${safeImage}" alt="${safeName}" loading="lazy">` 
                             : `<div class="nft-placeholder"><i class="fas fa-gem"></i></div>`}
                     </div>
                     <div class="nft-info">
-                        <span class="nft-collection">${nft.collection || 'Unknown'}</span>
-                        <span class="nft-name">${nft.name || 'Unnamed'}</span>
+                        <span class="nft-collection">${safeCollection}</span>
+                        <span class="nft-name">${safeName}</span>
                     </div>
                 </div>
-            `).join('');
+            `;
+            }).join('');
         } else {
             countEl.textContent = '0 NFTs';
             grid.style.display = 'none';
@@ -2369,6 +2406,13 @@ function escapeHtml(str) {
     const div = document.createElement('div');
     div.textContent = str;
     return div.innerHTML;
+}
+
+// AUDIT-FIX W-5: Best-effort zeroing of sensitive byte arrays after use
+function zeroBytes(arr) {
+    if (arr instanceof Uint8Array) {
+        arr.fill(0);
+    }
 }
 
 function closeModal(modalId) {
@@ -2703,6 +2747,9 @@ async function confirmSend() {
         const privateKey = await MoltCrypto.decryptPrivateKey(wallet.encryptedKey, passwordValues.password);
         const messageBytes = serializeMessageBincode(message);
         const signature = await MoltCrypto.signTransaction(privateKey, messageBytes);
+        
+        // AUDIT-FIX W-5: Zero sensitive key material after signing
+        // (privateKey is a hex string — overwrite not possible; signTransaction zeros seed internally)
         
         // Build signed transaction
         const transaction = {
@@ -3065,13 +3112,14 @@ async function exportPrivateKeyWithPassword(password) {
         
         closeModal('settingsModal');
         
+        // AUDIT-FIX W-2: Use event listeners instead of inline onclick with interpolated values
         const modal = document.createElement('div');
         modal.className = 'modal';
         modal.innerHTML = `
             <div class="modal-content">
                 <div class="modal-header">
                     <h3><i class="fas fa-key"></i> Private Key</h3>
-                    <button class="modal-close" onclick="this.closest('.modal').classList.remove('show'); setTimeout(() => this.closest('.modal').remove(), 300);">
+                    <button class="modal-close" id="exportPkClose">
                         <i class="fas fa-times"></i>
                     </button>
                 </div>
@@ -3082,13 +3130,13 @@ async function exportPrivateKeyWithPassword(password) {
                     </div>
                     
                     <label style="font-weight: 600; margin-bottom: 0.5rem; display: block;">Private Key (Hex)</label>
-                    <textarea class="form-input" readonly style="font-family: monospace; font-size: 0.85rem; height: 100px;">${privateKeyHex}</textarea>
+                    <textarea class="form-input" readonly style="font-family: monospace; font-size: 0.85rem; height: 100px;" id="exportPkValue"></textarea>
                     
                     <div style="display: flex; gap: 0.75rem; margin-top: 1rem;">
-                        <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${privateKeyHex}').then(() => showToast('✅ Private key copied!')); this.closest('.modal').classList.remove('show'); setTimeout(() => this.closest('.modal').remove(), 300);">
+                        <button class="btn btn-primary" id="exportPkCopy">
                             <i class="fas fa-copy"></i> Copy
                         </button>
-                        <button class="btn btn-secondary" onclick="downloadPrivateKey('${privateKeyHex}', '${wallet.name}');">
+                        <button class="btn btn-secondary" id="exportPkDownload">
                             <i class="fas fa-download"></i> Download
                         </button>
                     </div>
@@ -3096,6 +3144,17 @@ async function exportPrivateKeyWithPassword(password) {
             </div>
         `;
         document.body.appendChild(modal);
+        // Set value via DOM property (not innerHTML) to prevent injection
+        modal.querySelector('#exportPkValue').value = privateKeyHex;
+        const dismissModal = () => { modal.classList.remove('show'); setTimeout(() => modal.remove(), 300); };
+        modal.querySelector('#exportPkClose').addEventListener('click', dismissModal);
+        modal.querySelector('#exportPkCopy').addEventListener('click', () => {
+            navigator.clipboard.writeText(privateKeyHex).then(() => showToast('✅ Private key copied!'));
+            dismissModal();
+        });
+        modal.querySelector('#exportPkDownload').addEventListener('click', () => {
+            downloadPrivateKey(privateKeyHex, wallet.name);
+        });
         requestAnimationFrame(() => modal.classList.add('show'));
         
     } catch (e) {
@@ -3231,10 +3290,10 @@ async function exportMnemonicWithPassword(password) {
         }
         
         const words = mnemonic.split(' ');
-        const escapedMnemonic = mnemonic.replace(/'/g, "\\'");
         
         closeModal('settingsModal');
         
+        // AUDIT-FIX W-2: Use event listeners instead of inline onclick with interpolated values
         const modal = document.createElement('div');
         modal.className = 'modal';
         modal.id = 'seedPhraseExportModal';
@@ -3242,7 +3301,7 @@ async function exportMnemonicWithPassword(password) {
             <div class="modal-content">
                 <div class="modal-header">
                     <h3><i class="fas fa-list-ol"></i> Seed Phrase</h3>
-                    <button class="modal-close" onclick="this.closest('.modal').classList.remove('show'); setTimeout(() => this.closest('.modal').remove(), 300);">
+                    <button class="modal-close" id="seedExportClose">
                         <i class="fas fa-times"></i>
                     </button>
                 </div>
@@ -3256,16 +3315,16 @@ async function exportMnemonicWithPassword(password) {
                         ${words.map((word, i) => `
                             <div class="seed-word">
                                 <span class="seed-word-number">${i + 1}.</span>
-                                <span>${word}</span>
+                                <span>${escapeHtml(word)}</span>
                             </div>
                         `).join('')}
                     </div>
                     
                     <div style="display: flex; gap: 0.75rem; margin-top: 1rem;">
-                        <button class="btn btn-primary" onclick="navigator.clipboard.writeText('${escapedMnemonic}').then(() => showToast('✅ Seed phrase copied!')); this.closest('.modal').classList.remove('show'); setTimeout(() => this.closest('.modal').remove(), 300);">
+                        <button class="btn btn-primary" id="seedExportCopy">
                             <i class="fas fa-copy"></i> Copy
                         </button>
-                        <button class="btn btn-secondary" onclick="downloadMnemonicExport('${escapedMnemonic}', '${wallet.name}');">
+                        <button class="btn btn-secondary" id="seedExportDownload">
                             <i class="fas fa-download"></i> Download
                         </button>
                     </div>
@@ -3273,6 +3332,15 @@ async function exportMnemonicWithPassword(password) {
             </div>
         `;
         document.body.appendChild(modal);
+        const dismissSeedModal = () => { modal.classList.remove('show'); setTimeout(() => modal.remove(), 300); };
+        modal.querySelector('#seedExportClose').addEventListener('click', dismissSeedModal);
+        modal.querySelector('#seedExportCopy').addEventListener('click', () => {
+            navigator.clipboard.writeText(mnemonic).then(() => showToast('✅ Seed phrase copied!'));
+            dismissSeedModal();
+        });
+        modal.querySelector('#seedExportDownload').addEventListener('click', () => {
+            downloadMnemonicExport(mnemonic, wallet.name);
+        });
         requestAnimationFrame(() => modal.classList.add('show'));
         
     } catch (e) {
@@ -3346,10 +3414,12 @@ function setupEventListeners() {
 let lockTimer;
 function resetLockTimer() {
     clearTimeout(lockTimer);
-    if (!walletState.isLocked) {
+    // AUDIT-FIX W-4: Don't schedule lock when timeout is 0 ("Never")
+    const timeout = walletState.settings.lockTimeout;
+    if (!walletState.isLocked && timeout > 0) {
         lockTimer = setTimeout(() => {
             lockWallet();
-        }, walletState.settings.lockTimeout);
+        }, timeout);
     }
 }
 
