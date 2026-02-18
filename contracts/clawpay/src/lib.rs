@@ -26,7 +26,7 @@ use alloc::vec::Vec;
 
 use moltchain_sdk::{
     log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_slot, get_caller,
-    Address, CrossCall, call_contract,
+    Address, CrossCall, call_contract, call_token_transfer,
 };
 
 // Reentrancy guard
@@ -447,6 +447,38 @@ pub extern "C" fn cancel_stream(
     };
 
     let refund = total_amount.saturating_sub(streamed);
+
+    // AUDIT-FIX: Transfer refund to stream sender and streamed amount to recipient
+    if let Some(token_bytes) = storage_get(b"cp_token_address") {
+        if token_bytes.len() == 32 {
+            let mut token_addr = [0u8; 32];
+            token_addr.copy_from_slice(&token_bytes);
+            let contract_addr = get_caller();
+            // Refund unstreamed amount to sender
+            if refund > 0 {
+                let mut sender_arr = [0u8; 32];
+                sender_arr.copy_from_slice(&stream_data[0..32]);
+                let _ = call_token_transfer(
+                    Address(token_addr),
+                    contract_addr,
+                    Address(sender_arr),
+                    refund,
+                );
+            }
+            // Transfer already-streamed (minus withdrawn) to recipient
+            let recipient_due = streamed.saturating_sub(withdrawn);
+            if recipient_due > 0 {
+                let mut recipient_arr = [0u8; 32];
+                recipient_arr.copy_from_slice(&stream_data[32..64]);
+                let _ = call_token_transfer(
+                    Address(token_addr),
+                    contract_addr,
+                    Address(recipient_arr),
+                    recipient_due,
+                );
+            }
+        }
+    }
 
     // Mark as cancelled
     stream_data[96] = 1;

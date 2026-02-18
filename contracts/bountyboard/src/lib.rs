@@ -512,6 +512,27 @@ pub extern "C" fn cancel_bounty(
     storage_set(&bk, &bounty_data);
 
     let reward = bytes_to_u64(&bounty_data[64..72]);
+
+    // AUDIT-FIX: Actually transfer refund back to bounty creator
+    let mut creator_addr = [0u8; 32];
+    creator_addr.copy_from_slice(&bounty_data[0..32]);
+    if reward > 0 {
+        // Transfer from contract back to creator via the configured token
+        if let Some(token_bytes) = storage_get(b"bb_token_address") {
+            if token_bytes.len() == 32 {
+                let mut token_addr = [0u8; 32];
+                token_addr.copy_from_slice(&token_bytes);
+                let contract_addr = get_caller(); // contract itself during execution
+                let _ = call_token_transfer(
+                    Address(token_addr),
+                    contract_addr,
+                    Address(creator_addr),
+                    reward,
+                );
+            }
+        }
+    }
+
     moltchain_sdk::set_return_data(&u64_to_bytes(reward));
 
     let canc = storage_get(BB_CANCEL_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);

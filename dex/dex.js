@@ -154,7 +154,7 @@ document.addEventListener('DOMContentLoaded', () => {
         async generate() {
             const n = await this._ensureNacl();
             this.keypair = n ? n.sign.keyPair() : { publicKey: crypto.getRandomValues(new Uint8Array(32)), secretKey: new Uint8Array(64) };
-            this.address = bytesToHex(this.keypair.publicKey);
+            this.address = bs58encode(this.keypair.publicKey);
             this.shortAddr = this.address.slice(0, 8) + '...' + this.address.slice(-6);
             return this;
         },
@@ -164,7 +164,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (n && bytes.length === 64) this.keypair = { publicKey: bytes.slice(32), secretKey: bytes };
             else if (n && bytes.length === 32) this.keypair = n.sign.keyPair.fromSeed(bytes);
             else throw new Error('Invalid key (expected 32 or 64 byte hex)');
-            this.address = bytesToHex(this.keypair.publicKey);
+            this.address = bs58encode(this.keypair.publicKey);
             this.shortAddr = this.address.slice(0, 8) + '...' + this.address.slice(-6);
             return this;
         },
@@ -185,9 +185,35 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function bytesToHex(b) { return Array.from(b).map(x => x.toString(16).padStart(2, '0')).join(''); }
     function hexToBytes(h) { const c = h.startsWith('0x') ? h.slice(2) : h; const o = new Uint8Array(c.length / 2); for (let i = 0; i < o.length; i++) o[i] = parseInt(c.slice(i * 2, i * 2 + 2), 16); return o; }
+    // AUDIT-FIX DEX-1/DEX-2: Base58 encoding for addresses (must match wallet/RPC format)
+    const BS58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+    function bs58encode(bytes) {
+        let leadingZeros = 0;
+        for (let i = 0; i < bytes.length && bytes[i] === 0; i++) leadingZeros++;
+        // Convert to BigInt for base conversion
+        let num = 0n;
+        for (const b of bytes) num = num * 256n + BigInt(b);
+        let encoded = '';
+        while (num > 0n) { encoded = BS58_ALPHABET[Number(num % 58n)] + encoded; num = num / 58n; }
+        return '1'.repeat(leadingZeros) + encoded;
+    }
+    function bs58decode(str) {
+        let num = 0n;
+        for (const c of str) { const idx = BS58_ALPHABET.indexOf(c); if (idx < 0) throw new Error('Invalid base58'); num = num * 58n + BigInt(idx); }
+        const hex = num === 0n ? '' : num.toString(16);
+        const padded = hex.length % 2 ? '0' + hex : hex;
+        const bytes = [];
+        for (let i = 0; i < padded.length; i += 2) bytes.push(parseInt(padded.slice(i, i + 2), 16));
+        let leadingOnes = 0;
+        for (let i = 0; i < str.length && str[i] === '1'; i++) leadingOnes++;
+        const result = new Uint8Array(leadingOnes + bytes.length);
+        result.set(bytes, leadingOnes);
+        return result;
+    }
     function encodeTransactionMessage(instructions, blockhash, signer) {
         const enc = new TextEncoder();
-        const parts = [enc.encode(blockhash), hexToBytes(signer)];
+        // AUDIT-FIX DEX-1: Use base58 decoding for signer address (now base58, not hex)
+        const parts = [enc.encode(blockhash), bs58decode(signer)];
         const instrBytes = instructions.map(ix => { const d = typeof ix.data === 'string' ? enc.encode(ix.data) : ix.data; return new Uint8Array([...hexToBytes(ix.programId), ...new Uint8Array(new Uint32Array([d.length]).buffer), ...d]); });
         const all = [new Uint8Array(new Uint32Array([instrBytes.length]).buffer), ...parts, ...instrBytes];
         const total = all.reduce((s, a) => s + a.length, 0); const out = new Uint8Array(total); let off = 0;
@@ -610,7 +636,11 @@ document.addEventListener('DOMContentLoaded', () => {
     if (wmCreateBtn) wmCreateBtn.addEventListener('click', async () => {
         await wallet.generate();
         const ae = document.getElementById('wmNewAddress'), ke = document.getElementById('wmNewKey'), cd = document.getElementById('wmCreatedWallet');
-        if (ae) ae.textContent = wallet.address; if (ke) ke.textContent = bytesToHex(wallet.keypair.secretKey); if (cd) cd.classList.remove('hidden');
+        if (ae) ae.textContent = wallet.address;
+        // AUDIT-FIX DEX-3: Never display raw secret key in DOM — show masked placeholder
+        // Users should export/backup keys through the main wallet's encrypted export
+        if (ke) ke.textContent = '••••••••••••••••••••••••••••••••  (use main wallet for key backup)';
+        if (cd) cd.classList.remove('hidden');
         savedWallets.push({ address: wallet.address, short: wallet.shortAddr, added: Date.now() }); localStorage.setItem('dexWallets', JSON.stringify(savedWallets));
         connectWalletTo(wallet.address, wallet.shortAddr); showNotification('New wallet created: ' + wallet.shortAddr, 'success');
     });

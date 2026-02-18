@@ -4,6 +4,16 @@
 (function () {
     'use strict';
 
+    // AUDIT-FIX MK-3: XSS prevention utility
+    function escapeHtml(str) {
+        return String(str ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
     const RPC_URL = (window.moltMarketConfig && window.moltMarketConfig.rpcUrl) || 'http://localhost:8899';
     let currentWallet = null;
     let currentNFT = null;
@@ -114,7 +124,7 @@
         if (nftImage) {
             var imageUrl = normalizeImage(nft.metadata_uri || nft.image, nft.id);
             if (imageUrl) {
-                nftImage.innerHTML = '<img src="' + imageUrl + '" alt="' + (nft.name || 'NFT') + '" style="width:100%;height:100%;object-fit:cover;border-radius:12px;">';
+                nftImage.innerHTML = '<img src="' + escapeHtml(imageUrl) + '" alt="' + escapeHtml(nft.name || 'NFT') + '" style="width:100%;height:100%;object-fit:cover;border-radius:12px;">';
             } else {
                 nftImage.style.background = gradientFromHash(nft.id || 'default');
                 nftImage.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;font-size:64px;">🦞</div>';
@@ -199,8 +209,8 @@
         }
 
         container.innerHTML = properties.map(function (prop) {
-            var traitType = prop.trait_type || prop.key || 'Unknown';
-            var value = prop.value || '-';
+            var traitType = escapeHtml(prop.trait_type || prop.key || 'Unknown');
+            var value = escapeHtml(prop.value || '-');
             return '<div class="property-badge" style="background: var(--bg-secondary); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px; text-align: center;">' +
                 '<div style="font-size: 11px; color: var(--accent-color); text-transform: uppercase; margin-bottom: 4px;">' + traitType + '</div>' +
                 '<div style="font-weight: 600;">' + value + '</div>' +

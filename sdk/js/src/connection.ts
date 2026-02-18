@@ -487,8 +487,6 @@ export class Connection {
     
     return new Promise((resolve, reject) => {
       const id = this.nextId++;
-      const timeout = setTimeout(() => reject(new Error('Subscription timeout')), 5000);
-      
       const messageHandler = (data: WebSocket.Data) => {
         const msg = JSON.parse(data.toString());
         if (msg.id === id) {
@@ -501,6 +499,11 @@ export class Connection {
           }
         }
       };
+      
+      const timeout = setTimeout(() => {
+        this.ws?.off('message', messageHandler);
+        reject(new Error('Subscription timeout'));
+      }, 5000);
       
       this.ws!.on('message', messageHandler);
       this.ws!.send(JSON.stringify({
@@ -516,11 +519,14 @@ export class Connection {
    * Unsubscribe from subscription
    */
   private async unsubscribe(method: string, subscriptionId: number): Promise<boolean> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      this.subscriptions.delete(subscriptionId);
+      return false;
+    }
+    
     const id = this.nextId++;
     
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Unsubscribe timeout')), 5000);
-      
       const messageHandler = (data: WebSocket.Data) => {
         const msg = JSON.parse(data.toString());
         if (msg.id === id) {
@@ -534,6 +540,11 @@ export class Connection {
           }
         }
       };
+      
+      const timeout = setTimeout(() => {
+        this.ws?.off('message', messageHandler);
+        reject(new Error('Unsubscribe timeout'));
+      }, 5000);
       
       this.ws!.on('message', messageHandler);
       this.ws!.send(JSON.stringify({

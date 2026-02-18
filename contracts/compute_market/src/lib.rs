@@ -36,7 +36,7 @@ use alloc::vec::Vec;
 
 use moltchain_sdk::{
     log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_slot,
-    get_caller, Address, CrossCall, call_contract,
+    get_caller, Address, CrossCall, call_contract, call_token_transfer,
 };
 
 // SECURITY: Reentrancy guard
@@ -989,6 +989,36 @@ pub extern "C" fn resolve_dispute(
     let _to_requester = (escrowed as u128 * requester_pct as u128 / 100) as u64;
     let _to_provider = escrowed.saturating_sub(_to_requester);
 
+    // AUDIT-FIX: Actually transfer tokens to both parties
+    let mut requester_arr = [0u8; 32];
+    requester_arr.copy_from_slice(&job_data[0..32]);
+    let mut provider_arr = [0u8; 32];
+    provider_arr.copy_from_slice(&job_data[81..113]);
+    // Use the configured payment token for transfers
+    if let Some(token_bytes) = storage_get(b"cm_token_address") {
+        if token_bytes.len() == 32 {
+            let mut token_addr = [0u8; 32];
+            token_addr.copy_from_slice(&token_bytes);
+            let contract_addr = get_caller();
+            if _to_requester > 0 {
+                let _ = call_token_transfer(
+                    Address(token_addr),
+                    contract_addr,
+                    Address(requester_arr),
+                    _to_requester,
+                );
+            }
+            if _to_provider > 0 {
+                let _ = call_token_transfer(
+                    Address(token_addr),
+                    contract_addr,
+                    Address(provider_arr),
+                    _to_provider,
+                );
+            }
+        }
+    }
+
     // Mark resolved and clear escrow
     job_data[80] = JOB_RESOLVED;
     storage_set(&jk, &job_data);
@@ -1296,6 +1326,9 @@ pub extern "C" fn get_provider_info(provider_ptr: *const u8) -> u32 {
 pub extern "C" fn set_platform_fee(caller_ptr: *const u8, fee_bps: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32) };
+    // AUDIT-FIX: verify transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller { return 200; }
     if !is_admin(&caller) { return 1; }
     storage_set(b"platform_fee_bps", &u64_to_bytes(fee_bps));
     log_info("Platform fee set");
@@ -1307,6 +1340,9 @@ pub extern "C" fn set_platform_fee(caller_ptr: *const u8, fee_bps: u64) -> u32 {
 pub extern "C" fn cm_pause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32) };
+    // AUDIT-FIX: verify transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller { return 200; }
     if !is_admin(&caller) { return 1; }
     storage_set(b"cm_paused", &[1u8]);
     log_info("Compute market paused");
@@ -1318,6 +1354,9 @@ pub extern "C" fn cm_pause(caller_ptr: *const u8) -> u32 {
 pub extern "C" fn cm_unpause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32) };
+    // AUDIT-FIX: verify transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller { return 200; }
     if !is_admin(&caller) { return 1; }
     storage_set(b"cm_paused", &[0u8]);
     log_info("Compute market unpaused");

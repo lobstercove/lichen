@@ -35,6 +35,31 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;');
 }
 
+// AUDIT-FIX FE-8: Secure password prompt using modal with masked input instead of prompt()
+function securePasswordPrompt(label = 'Wallet password (for signing):') {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:99999;';
+    overlay.innerHTML = `
+      <div style="background:var(--bg,#1a1b26);border:1px solid var(--border,#333);border-radius:12px;padding:1.5rem;width:340px;max-width:90vw;">
+        <p style="margin:0 0 0.75rem;font-size:0.9rem;color:var(--text,#e0e0e0);">${escapeHtml(label)}</p>
+        <input type="password" id="_secPwInput" placeholder="Enter password" autocomplete="off"
+          style="width:100%;padding:0.6rem;border-radius:8px;border:1px solid var(--border,#444);background:var(--card-bg,#24253a);color:var(--text,#e0e0e0);box-sizing:border-box;margin-bottom:0.75rem;">
+        <div style="display:flex;gap:0.5rem;">
+          <button id="_secPwOk" style="flex:1;padding:0.5rem;border-radius:8px;border:none;background:var(--primary,#6C5CE7);color:#fff;cursor:pointer;">OK</button>
+          <button id="_secPwCancel" style="flex:1;padding:0.5rem;border-radius:8px;border:1px solid var(--border,#444);background:transparent;color:var(--text,#e0e0e0);cursor:pointer;">Cancel</button>
+        </div>
+      </div>`;
+    document.body.appendChild(overlay);
+    const input = overlay.querySelector('#_secPwInput');
+    input.focus();
+    const finish = (val) => { overlay.remove(); resolve(val); };
+    overlay.querySelector('#_secPwOk').addEventListener('click', () => finish(input.value || null));
+    overlay.querySelector('#_secPwCancel').addEventListener('click', () => finish(null));
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') finish(input.value || null); });
+  });
+}
+
 function setText(id, value) {
   const node = document.getElementById(id);
   if (node) {
@@ -287,7 +312,7 @@ async function handleStake() {
       return;
     }
 
-    const password = prompt('Wallet password (for signing):', '');
+    const password = await securePasswordPrompt();
     if (!password) return;
 
     try {
@@ -316,7 +341,7 @@ async function handleUnstake() {
       return;
     }
 
-    const password = prompt('Wallet password (for signing):', '');
+    const password = await securePasswordPrompt();
     if (!password) return;
 
     try {
@@ -348,7 +373,7 @@ async function handleRegisterIdentity() {
       setActionStatus(`Identity registration failed: ${error.message}`);
       return;
     }
-    const password = prompt('Wallet password (for signing):', '');
+    const password = await securePasswordPrompt();
     if (!password) return;
 
     try {
@@ -386,7 +411,7 @@ async function handleAddSkill() {
       setActionStatus(`Add skill failed: ${error.message}`);
       return;
     }
-    const password = prompt('Wallet password (for signing):', '');
+    const password = await securePasswordPrompt();
     if (!password) return;
 
     try {

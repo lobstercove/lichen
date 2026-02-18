@@ -2,6 +2,7 @@
 // Stake MOLT, receive stMOLT (liquid receipt token)
 
 use crate::Pubkey;
+use crate::consensus::UNSTAKE_COOLDOWN_SLOTS;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -344,8 +345,9 @@ impl ReefStakePool {
             .saturating_sub(molt_to_receive);
         self.st_molt_token.exchange_rate_fp = self.st_molt_token.calculate_exchange_rate_fp();
 
-        // Create unstake request (7 days at 400ms/slot = 86400*7/0.4 = 1,512,000 slots)
-        let cooldown_slots = 1_512_000; // 7 days
+        // Create unstake request
+        // AUDIT-FIX CP-4: Use constant from consensus module instead of hardcoded magic number
+        let cooldown_slots = UNSTAKE_COOLDOWN_SLOTS;
         let request = UnstakeRequest {
             owner: user,
             st_molt_amount,
@@ -495,10 +497,21 @@ impl ReefStakePool {
         if total_weighted == 0 { return; }
 
         // Distribute rewards proportionally to weighted stake
+        // AUDIT-FIX CP-5: Track distributed sum and assign remainder dust to last position
+        let mut distributed: u64 = 0;
+        let position_count = self.positions.len();
+        let mut idx = 0;
         for position in self.positions.values_mut() {
+            idx += 1;
             let weighted = (position.st_molt_amount as u128
                 * position.lock_tier.reward_multiplier_bp() as u128) / 10_000;
-            let reward_share = ((weighted * total_rewards as u128) / total_weighted) as u64;
+            let reward_share = if idx == position_count {
+                // Last position gets remainder to avoid dust loss
+                total_rewards.saturating_sub(distributed)
+            } else {
+                ((weighted * total_rewards as u128) / total_weighted) as u64
+            };
+            distributed += reward_share;
             position.rewards_earned += reward_share;
         }
     }

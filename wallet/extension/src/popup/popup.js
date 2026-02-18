@@ -1096,7 +1096,7 @@ async function handleCreateStep1Continue() {
     return;
   }
 
-  pendingGeneratedMnemonic = generateMnemonic();
+  pendingGeneratedMnemonic = await generateMnemonic();
   document.getElementById('createMnemonic').value = pendingGeneratedMnemonic;
   setCreateStep(2);
 }

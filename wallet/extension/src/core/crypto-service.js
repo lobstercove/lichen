@@ -330,22 +330,28 @@ export function base58Decode(string) {
   return new Uint8Array(bytes.reverse());
 }
 
-export function generateMnemonic() {
-  const entropy = new Uint8Array(16); // 128 bits → 12 words
+export async function generateMnemonic() {
+  // AUDIT-FIX FE-3: BIP39-compliant mnemonic with proper SHA-256 checksum
+  const entropy = new Uint8Array(16); // 128 bits
   crypto.getRandomValues(entropy);
 
-  const words = [];
-  const usedIndices = new Set();
+  // SHA-256 checksum
+  const hashBuffer = await crypto.subtle.digest('SHA-256', entropy);
+  const hashBytes = new Uint8Array(hashBuffer);
+  const checksumBits = 4; // 128 / 32 = 4 checksum bits
 
-  // Use entropy bytes to deterministically pick words (matches website algorithm)
+  // Concatenate entropy + checksum bits into a bit string (132 bits = 12 × 11-bit words)
+  let bits = '';
+  for (let i = 0; i < entropy.length; i++) {
+    bits += entropy[i].toString(2).padStart(8, '0');
+  }
+  bits += hashBytes[0].toString(2).padStart(8, '0').slice(0, checksumBits);
+
+  // Extract 12 × 11-bit indices
+  const words = [];
   for (let i = 0; i < 12; i++) {
-    const idx = ((entropy[i] << 3) | (entropy[(i + 1) % 16] >> 5)) % BIP39_WORDLIST.length;
-    let finalIdx = idx;
-    while (usedIndices.has(finalIdx)) {
-      finalIdx = (finalIdx + 1) % BIP39_WORDLIST.length;
-    }
-    usedIndices.add(finalIdx);
-    words.push(BIP39_WORDLIST[finalIdx]);
+    const idx = parseInt(bits.slice(i * 11, (i + 1) * 11), 2);
+    words.push(BIP39_WORDLIST[idx]);
   }
 
   return words.join(' ');

@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 
 use moltchain_sdk::{
     Address, log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_timestamp,
-    call_token_transfer, call_token_balance, get_caller,
+    call_token_transfer, call_token_balance, get_caller, CrossCall, call_contract,
 };
 
 // Reentrancy guard
@@ -487,11 +487,22 @@ pub extern "C" fn vote_with_reputation(
 pub extern "C" fn execute_proposal(
     executor_ptr: *const u8,
     proposal_id: u64,
+    action_ptr: *const u8,
+    action_len: u32,
 ) -> u32 {
     log_info("Executing proposal...");
     
     let mut _executor = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(executor_ptr, _executor.as_mut_ptr(), 32); }
+    
+    // Read raw action data provided by executor
+    let action_data = if action_len > 0 && !action_ptr.is_null() {
+        let mut buf = alloc::vec![0u8; action_len as usize];
+        unsafe { core::ptr::copy_nonoverlapping(action_ptr, buf.as_mut_ptr(), action_len as usize); }
+        buf
+    } else {
+        Vec::new()
+    };
     
     // Load proposal
     let key = alloc::format!("proposal_{}", proposal_id);
@@ -603,6 +614,51 @@ pub extern "C" fn execute_proposal(
     log_info(&alloc::format!("   Against: {}", votes_against));
     log_info(&alloc::format!("   Approval: {}%", approval_pct));
     
+    // AUDIT-FIX SC-8: Actually dispatch the proposal action to target_contract
+    // Verify provided action data matches stored action_hash (bytes 128-159)
+    let stored_action_hash: [u8; 32] = {
+        let mut h = [0u8; 32];
+        h.copy_from_slice(&proposal[128..160]);
+        h
+    };
+    
+    if !action_data.is_empty() {
+        let computed_hash = sha256(&action_data);
+        if computed_hash != stored_action_hash {
+            log_info("Action data does not match stored action hash — aborting execution");
+            return 0;
+        }
+        
+        // Extract target_contract address (bytes 96-127)
+        let mut target_addr = [0u8; 32];
+        target_addr.copy_from_slice(&proposal[96..128]);
+        
+        // Action data format: method_name (null-terminated) + args
+        // Find method name end (first null byte or end of data)
+        let method_end = action_data.iter().position(|&b| b == 0).unwrap_or(action_data.len());
+        let method_name = core::str::from_utf8(&action_data[..method_end]).unwrap_or("execute");
+        let args = if method_end + 1 < action_data.len() {
+            action_data[method_end + 1..].to_vec()
+        } else {
+            Vec::new()
+        };
+        
+        let target = Address::new(target_addr);
+        let call = CrossCall::new(target, method_name, args);
+        
+        match call_contract(call) {
+            Ok(result) => {
+                log_info(&alloc::format!("   Action dispatched to target contract, result: {} bytes", result.len()));
+            }
+            Err(_) => {
+                log_info("   Action dispatch to target contract failed");
+                // Don't revert — mark as executed anyway since the vote passed
+            }
+        }
+    } else {
+        log_info("   No action data provided — signaling proposal only");
+    }
+    
     // Mark as executed
     proposal[192] = 1;
     storage_set(key.as_bytes(), &proposal);
@@ -705,6 +761,13 @@ pub extern "C" fn cancel_proposal(
     
     let mut canceller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(canceller_ptr, canceller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify transaction signer matches claimed canceller
+    let real_caller = get_caller();
+    if real_caller.0 != canceller {
+        log_info("Cancel rejected: caller mismatch");
+        return 0;
+    }
     
     // Load proposal
     let key = alloc::format!("proposal_{}", proposal_id);

@@ -220,7 +220,7 @@ async function handleCreateStep2() {
   if (!pw || pw.length < 8) { showToast('Password must be at least 8 characters', 'error'); return; }
   if (pw !== confirm) { showToast('Passwords do not match', 'error'); return; }
 
-  createdMnemonic = generateMnemonic();
+  createdMnemonic = await generateMnemonic();
   createdKeypair = await mnemonicToKeypair(createdMnemonic);
 
   // Render seed phrase grid
@@ -439,10 +439,11 @@ async function showDashboard() {
   $('currentWalletName').textContent = wallet.name;
 
   // Populate wallet dropdown
+  // AUDIT-FIX FE-7: Escape wallet names to prevent XSS
   const dropdown = $('walletDropdown');
   dropdown.innerHTML = state.wallets.map(w =>
-    `<div class="wallet-dropdown-item ${w.id === state.activeWalletId ? 'active' : ''}" data-wid="${w.id}">
-      <i class="fas fa-wallet" style="margin-right:0.5rem;"></i> ${w.name} <span style="color:var(--text-muted);margin-left:auto;font-size:0.78rem;">${maskAddr(w.address)}</span>
+    `<div class="wallet-dropdown-item ${w.id === state.activeWalletId ? 'active' : ''}" data-wid="${escapeHtmlExt(w.id)}">
+      <i class="fas fa-wallet" style="margin-right:0.5rem;"></i> ${escapeHtmlExt(w.name)} <span style="color:var(--text-muted);margin-left:auto;font-size:0.78rem;">${maskAddr(w.address)}</span>
     </div>`
   ).join('') + `
     <div class="wallet-dropdown-item" data-wid="__create" style="color:var(--primary);"><i class="fas fa-plus" style="margin-right:0.5rem;"></i> Create New Wallet</div>
@@ -709,7 +710,7 @@ async function loadStakingTab() {
       showUnstakeModal();
     });
   } catch (err) {
-    container.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--text-muted);"><i class="fas fa-exclamation-circle"></i> Failed to load staking data: ${err.message}</div>`;
+    container.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--text-muted);"><i class="fas fa-exclamation-circle"></i> Failed to load staking data: ${escapeHtmlExt(err.message)}</div>`;
   }
 }
 
@@ -757,7 +758,7 @@ async function showStakeModal() {
       statusEl.innerHTML = '<span style="color:#10b981;">✓ Staked successfully!</span>';
       setTimeout(() => { overlay.remove(); loadStakingTab(); }, 1500);
     } catch (err) {
-      statusEl.innerHTML = `<span style="color:#ef4444;">${err.message}</span>`;
+      statusEl.innerHTML = `<span style="color:#ef4444;">${escapeHtmlExt(err.message)}</span>`;
     }
   });
 }
@@ -799,7 +800,7 @@ async function showUnstakeModal() {
       statusEl.innerHTML = '<span style="color:#10b981;">✓ Unstake initiated! 7-day cooldown.</span>';
       setTimeout(() => { overlay.remove(); loadStakingTab(); }, 1500);
     } catch (err) {
-      statusEl.innerHTML = `<span style="color:#ef4444;">${err.message}</span>`;
+      statusEl.innerHTML = `<span style="color:#ef4444;">${escapeHtmlExt(err.message)}</span>`;
     }
   });
 }
