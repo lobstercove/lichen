@@ -765,11 +765,11 @@ wasm-opt -Oz -o optimized.wasm \
 molt deploy target/wasm32-unknown-unknown/release/my_contract.wasm
 
 # Output:
-# 🦞 Deploying contract: my_contract.wasm
-# 📦 Size: 45 KB
-# 📍 Contract address: 7xK9...mN2q
-# ✅ Contract deployed!
-# 📝 Signature: 3hF8...pQ7r</code></pre>
+# <i class="fa-solid fa-shrimp"></i> Deploying contract: my_contract.wasm
+# <i class="fa-solid fa-cube"></i> Size: 45 KB
+# <i class="fa-solid fa-location-dot"></i> Contract address: 7xK9...mN2q
+# <i class="fa-solid fa-circle-check"></i> Contract deployed!
+# <i class="fa-solid fa-file-signature"></i> Signature: 3hF8...pQ7r</code></pre>
                 </div>
 
                 <h3>Call</h3>
@@ -820,15 +820,15 @@ pub extern "C" fn sensitive_operation() -&gt; u32 {
                 <p>Always use <code>saturating_add</code> and <code>saturating_sub</code> for arithmetic. MoltChain contracts run in <code>#![no_std]</code> where overflow panics abort the WASM instance.</p>
                 <div class="code-block">
                     <div class="code-header"><span>Safe Arithmetic</span></div>
-<pre><code>// ❌ BAD: can overflow/underflow
+<pre><code>// <i class="fa-solid fa-circle-xmark"></i> BAD: can overflow/underflow
 let new_balance = balance + amount;
 let new_balance = balance - amount;
 
-// ✅ GOOD: saturating arithmetic
+// <i class="fa-solid fa-circle-check"></i> GOOD: saturating arithmetic
 let new_balance = balance.saturating_add(amount);
 let new_balance = balance.saturating_sub(amount);
 
-// ✅ GOOD: explicit bounds check
+// <i class="fa-solid fa-circle-check"></i> GOOD: explicit bounds check
 if balance &lt; amount {
     return Err(ContractError::InsufficientFunds);
 }
