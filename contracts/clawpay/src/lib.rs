@@ -75,6 +75,34 @@ const PAUSE_KEY: &[u8] = b"cp_paused";
 const CP_TOTAL_STREAMED_KEY: &[u8] = b"cp_total_streamed";
 const CP_TOTAL_WITHDRAWN_KEY: &[u8] = b"cp_total_withdrawn";
 const CP_CANCEL_COUNT_KEY: &[u8] = b"cp_cancel_count";
+const CP_TOKEN_ADDR_KEY: &[u8] = b"cp_token_address";
+const CP_SELF_ADDR_KEY: &[u8] = b"cp_self_address";
+
+/// Load the configured payment token contract address.
+fn get_token_address() -> Option<Address> {
+    storage_get(CP_TOKEN_ADDR_KEY).and_then(|d| {
+        if d.len() == 32 {
+            let mut addr = [0u8; 32];
+            addr.copy_from_slice(&d);
+            Some(Address(addr))
+        } else {
+            None
+        }
+    })
+}
+
+/// Load the contract's own deployed address (stored during initialization).
+fn get_self_address() -> Option<Address> {
+    storage_get(CP_SELF_ADDR_KEY).and_then(|d| {
+        if d.len() == 32 {
+            let mut addr = [0u8; 32];
+            addr.copy_from_slice(&d);
+            Some(Address(addr))
+        } else {
+            None
+        }
+    })
+}
 
 fn cliff_key(stream_id: u64) -> Vec<u8> {
     let mut key = Vec::with_capacity(6 + 20);
@@ -190,6 +218,18 @@ fn calculate_withdrawable(
 ///   - end_slot: slot when streaming ends
 ///
 /// Returns 0 on success, stream_id in return data.
+///
+/// Error codes:
+///   1  = zero amount
+///   2  = end_slot <= start_slot
+///   3  = sender == recipient
+///   10 = sender lacks MoltyID reputation
+///   11 = recipient lacks MoltyID reputation
+///   20 = protocol paused / reentrancy
+///   30 = token address not configured
+///   31 = contract self-address not configured
+///   32 = escrow transfer failed (insufficient balance/approval)
+///   200 = caller spoofing
 #[no_mangle]
 pub extern "C" fn create_stream(
     sender_ptr: *const u8,
@@ -198,6 +238,9 @@ pub extern "C" fn create_stream(
     start_slot: u64,
     end_slot: u64,
 ) -> u32 {
+    if !reentrancy_enter() {
+        return 20;
+    }
     log_info("Creating payment stream...");
 
     let mut sender = [0u8; 32];
@@ -208,38 +251,70 @@ pub extern "C" fn create_stream(
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
     if real_caller.0 != sender {
+        reentrancy_exit();
         return 200;
     }
 
     if is_paused() {
         log_info("Protocol is paused");
+        reentrancy_exit();
         return 20;
     }
 
     if total_amount == 0 {
         log_info("Amount must be > 0");
+        reentrancy_exit();
         return 1;
     }
 
     if end_slot <= start_slot {
         log_info("End slot must be after start slot");
+        reentrancy_exit();
         return 2;
     }
 
     if sender == recipient {
         log_info("Sender and recipient must differ");
+        reentrancy_exit();
         return 3;
     }
 
     // MoltyID identity gate — both sender and recipient must have identity
     if !check_identity_gate(&sender) {
         log_info("Sender lacks required MoltyID reputation");
+        reentrancy_exit();
         return 10;
     }
     if !check_identity_gate(&recipient) {
         log_info("Recipient lacks required MoltyID reputation");
+        reentrancy_exit();
         return 11;
     }
+
+    // ── ESCROW: Lock tokens from sender into contract custody ───────────
+    let token_addr = match get_token_address() {
+        Some(addr) => addr,
+        None => {
+            log_info("Token address not configured — cannot escrow");
+            reentrancy_exit();
+            return 30;
+        }
+    };
+    let self_addr = match get_self_address() {
+        Some(addr) => addr,
+        None => {
+            log_info("Contract self-address not configured");
+            reentrancy_exit();
+            return 31;
+        }
+    };
+
+    if call_token_transfer(token_addr, Address(sender), self_addr, total_amount).is_err() {
+        log_info("Escrow transfer failed — sender lacks balance or approval");
+        reentrancy_exit();
+        return 32;
+    }
+    // ── END ESCROW ──────────────────────────────────────────────────────
 
     let mut sender_arr = [0u8; 32];
     sender_arr.copy_from_slice(&sender);
@@ -272,6 +347,7 @@ pub extern "C" fn create_stream(
 
     moltchain_sdk::set_return_data(&u64_to_bytes(stream_id));
     log_info("Payment stream created");
+    reentrancy_exit();
     0
 }
 
@@ -287,6 +363,19 @@ pub extern "C" fn create_stream(
 ///   - amount: amount to withdraw (must be <= withdrawable)
 ///
 /// Returns 0 on success.
+///
+/// Error codes:
+///   1  = zero amount
+///   2  = stream not found
+///   3  = bad stream data
+///   4  = caller is not recipient
+///   5  = stream cancelled
+///   6  = amount exceeds withdrawable
+///   20 = reentrancy guard
+///   30 = token address missing
+///   31 = self-address missing
+///   32 = token transfer failed
+///   200 = caller spoofing
 #[no_mangle]
 pub extern "C" fn withdraw_from_stream(
     caller_ptr: *const u8,
@@ -310,6 +399,7 @@ pub extern "C" fn withdraw_from_stream(
 
     if amount == 0 {
         log_info("Amount must be > 0");
+        reentrancy_exit();
         return 1;
     }
 
@@ -318,22 +408,26 @@ pub extern "C" fn withdraw_from_stream(
         Some(data) => data,
         None => {
             log_info("Stream not found");
+            reentrancy_exit();
             return 2;
         }
     };
 
     if stream_data.len() < STREAM_SIZE {
+        reentrancy_exit();
         return 3;
     }
 
     // Verify caller is recipient
     if stream_data[32..64] != caller[..] {
         log_info("Only recipient can withdraw");
+        reentrancy_exit();
         return 4;
     }
 
     if stream_data[96] == 1 {
         log_info("Stream is cancelled");
+        reentrancy_exit();
         return 5;
     }
 
@@ -350,13 +444,50 @@ pub extern "C" fn withdraw_from_stream(
 
     if amount > withdrawable {
         log_info("Amount exceeds withdrawable balance");
+        reentrancy_exit();
         return 6;
     }
 
-    // Update withdrawn
+    // Update withdrawn counter in storage first (checks-effects-interactions)
     let new_withdrawn = withdrawn.saturating_add(amount);
     stream_data[72..80].copy_from_slice(&u64_to_bytes(new_withdrawn));
     storage_set(&sk, &stream_data);
+
+    // ── DISBURSE: Transfer tokens from contract to recipient ────────────
+    let token_addr = match get_token_address() {
+        Some(addr) => addr,
+        None => {
+            // Revert withdrawn counter
+            stream_data[72..80].copy_from_slice(&u64_to_bytes(withdrawn));
+            storage_set(&sk, &stream_data);
+            log_info("Token address not configured");
+            reentrancy_exit();
+            return 30;
+        }
+    };
+    let self_addr = match get_self_address() {
+        Some(addr) => addr,
+        None => {
+            stream_data[72..80].copy_from_slice(&u64_to_bytes(withdrawn));
+            storage_set(&sk, &stream_data);
+            log_info("Contract self-address not configured");
+            reentrancy_exit();
+            return 31;
+        }
+    };
+
+    let mut recipient_addr = [0u8; 32];
+    recipient_addr.copy_from_slice(&stream_data[32..64]);
+
+    if call_token_transfer(token_addr, self_addr, Address(recipient_addr), amount).is_err() {
+        // Revert withdrawn counter on transfer failure
+        stream_data[72..80].copy_from_slice(&u64_to_bytes(withdrawn));
+        storage_set(&sk, &stream_data);
+        log_info("Token transfer to recipient failed");
+        reentrancy_exit();
+        return 32;
+    }
+    // ── END DISBURSE ────────────────────────────────────────────────────
 
     moltchain_sdk::set_return_data(&u64_to_bytes(amount));
     log_info("Withdrawal successful");
@@ -380,6 +511,18 @@ pub extern "C" fn withdraw_from_stream(
 ///   - stream_id: the stream to cancel
 ///
 /// Returns 0 on success. Unstreamed amount in return data.
+///
+/// Error codes:
+///   1  = stream not found
+///   2  = bad stream data
+///   3  = caller is not sender
+///   4  = already cancelled
+///   20 = reentrancy guard
+///   30 = token address missing
+///   31 = self-address missing
+///   32 = refund-to-sender transfer failed
+///   33 = transfer-to-recipient failed
+///   200 = caller spoofing
 #[no_mangle]
 pub extern "C" fn cancel_stream(
     caller_ptr: *const u8,
@@ -405,22 +548,26 @@ pub extern "C" fn cancel_stream(
         Some(data) => data,
         None => {
             log_info("Stream not found");
+            reentrancy_exit();
             return 1;
         }
     };
 
     if stream_data.len() < STREAM_SIZE {
+        reentrancy_exit();
         return 2;
     }
 
     // Verify caller is sender
     if stream_data[0..32] != caller[..] {
         log_info("Only sender can cancel");
+        reentrancy_exit();
         return 3;
     }
 
     if stream_data[96] == 1 {
         log_info("Stream already cancelled");
+        reentrancy_exit();
         return 4;
     }
 
@@ -448,37 +595,58 @@ pub extern "C" fn cancel_stream(
 
     let refund = total_amount.saturating_sub(streamed);
 
-    // AUDIT-FIX: Transfer refund to stream sender and streamed amount to recipient
-    if let Some(token_bytes) = storage_get(b"cp_token_address") {
-        if token_bytes.len() == 32 {
-            let mut token_addr = [0u8; 32];
-            token_addr.copy_from_slice(&token_bytes);
-            let contract_addr = get_caller();
-            // Refund unstreamed amount to sender
-            if refund > 0 {
-                let mut sender_arr = [0u8; 32];
-                sender_arr.copy_from_slice(&stream_data[0..32]);
-                let _ = call_token_transfer(
-                    Address(token_addr),
-                    contract_addr,
-                    Address(sender_arr),
-                    refund,
-                );
-            }
-            // Transfer already-streamed (minus withdrawn) to recipient
-            let recipient_due = streamed.saturating_sub(withdrawn);
-            if recipient_due > 0 {
-                let mut recipient_arr = [0u8; 32];
-                recipient_arr.copy_from_slice(&stream_data[32..64]);
-                let _ = call_token_transfer(
-                    Address(token_addr),
-                    contract_addr,
-                    Address(recipient_arr),
-                    recipient_due,
-                );
-            }
+    // ── ESCROW SETTLEMENT: Transfer refund to sender, streamed to recipient ─
+    let token_addr = match get_token_address() {
+        Some(addr) => addr,
+        None => {
+            // Pre-escrow stream (legacy) — mark cancelled without transfers
+            log_info("Token address not configured — cancelling without transfers (legacy stream)");
+            stream_data[96] = 1;
+            storage_set(&sk, &stream_data);
+            moltchain_sdk::set_return_data(&u64_to_bytes(refund));
+            let cc = storage_get(CP_CANCEL_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+            storage_set(CP_CANCEL_COUNT_KEY, &u64_to_bytes(cc + 1));
+            reentrancy_exit();
+            return 0;
+        }
+    };
+    let self_addr = match get_self_address() {
+        Some(addr) => addr,
+        None => {
+            log_info("Contract self-address not configured — cancelling without transfers (legacy stream)");
+            stream_data[96] = 1;
+            storage_set(&sk, &stream_data);
+            moltchain_sdk::set_return_data(&u64_to_bytes(refund));
+            let cc = storage_get(CP_CANCEL_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+            storage_set(CP_CANCEL_COUNT_KEY, &u64_to_bytes(cc + 1));
+            reentrancy_exit();
+            return 0;
+        }
+    };
+
+    // Refund unstreamed amount to sender
+    if refund > 0 {
+        let mut sender_addr = [0u8; 32];
+        sender_addr.copy_from_slice(&stream_data[0..32]);
+        if call_token_transfer(token_addr, self_addr, Address(sender_addr), refund).is_err() {
+            log_info("Refund to sender failed");
+            reentrancy_exit();
+            return 32;
         }
     }
+
+    // Transfer already-streamed (minus withdrawn) to recipient
+    let recipient_due = streamed.saturating_sub(withdrawn);
+    if recipient_due > 0 {
+        let mut recipient_addr = [0u8; 32];
+        recipient_addr.copy_from_slice(&stream_data[32..64]);
+        if call_token_transfer(token_addr, self_addr, Address(recipient_addr), recipient_due).is_err() {
+            log_info("Transfer to recipient failed");
+            reentrancy_exit();
+            return 33;
+        }
+    }
+    // ── END ESCROW SETTLEMENT ───────────────────────────────────────────
 
     // Mark as cancelled
     stream_data[96] = 1;
@@ -569,7 +737,7 @@ pub extern "C" fn get_withdrawable(stream_id: u64) -> u32 {
 /// No tokens vest until cliff_slot is reached; then linear vesting begins.
 ///
 /// Returns: 0 success, 1 bad params, 2 cliff before start, 3 cliff after end,
-///          10/11 identity gated, 20 paused
+///          10/11 identity gated, 20 paused/reentrancy, 30/31/32 escrow errors
 #[no_mangle]
 pub extern "C" fn create_stream_with_cliff(
     sender_ptr: *const u8,
@@ -579,7 +747,12 @@ pub extern "C" fn create_stream_with_cliff(
     end_slot: u64,
     cliff_slot: u64,
 ) -> u32 {
+    if !reentrancy_enter() {
+        return 20;
+    }
+
     if is_paused() {
+        reentrancy_exit();
         return 20;
     }
 
@@ -591,26 +764,57 @@ pub extern "C" fn create_stream_with_cliff(
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
     if real_caller.0 != sender {
+        reentrancy_exit();
         return 200;
     }
 
     if total_amount == 0 || start_slot >= end_slot {
+        reentrancy_exit();
         return 1;
     }
     if cliff_slot < start_slot {
+        reentrancy_exit();
         return 2;
     }
     if cliff_slot > end_slot {
+        reentrancy_exit();
         return 3;
     }
 
     // Identity gate
     if !check_identity_gate(&sender) {
+        reentrancy_exit();
         return 10;
     }
     if !check_identity_gate(&recipient) {
+        reentrancy_exit();
         return 11;
     }
+
+    // ── ESCROW: Lock tokens from sender into contract custody ───────────
+    let token_addr = match get_token_address() {
+        Some(addr) => addr,
+        None => {
+            log_info("Token address not configured — cannot escrow");
+            reentrancy_exit();
+            return 30;
+        }
+    };
+    let self_addr = match get_self_address() {
+        Some(addr) => addr,
+        None => {
+            log_info("Contract self-address not configured");
+            reentrancy_exit();
+            return 31;
+        }
+    };
+
+    if call_token_transfer(token_addr, Address(sender), self_addr, total_amount).is_err() {
+        log_info("Escrow transfer failed — sender lacks balance or approval");
+        reentrancy_exit();
+        return 32;
+    }
+    // ── END ESCROW ──────────────────────────────────────────────────────
 
     // Allocate stream ID
     let stream_id = storage_get(b"stream_count")
@@ -637,8 +841,13 @@ pub extern "C" fn create_stream_with_cliff(
     let ck = cliff_key(stream_id);
     storage_set(&ck, &u64_to_bytes(cliff_slot));
 
+    // Track total streamed volume
+    let total = storage_get(CP_TOTAL_STREAMED_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
+    storage_set(CP_TOTAL_STREAMED_KEY, &u64_to_bytes(total.saturating_add(total_amount)));
+
     moltchain_sdk::set_return_data(&u64_to_bytes(stream_id));
     log_info("Stream created with cliff");
+    reentrancy_exit();
     0
 }
 
@@ -728,6 +937,64 @@ pub extern "C" fn initialize_cp_admin(admin_ptr: *const u8) -> u32 {
     }
     storage_set(ADMIN_KEY, &admin);
     log_info("ClawPay admin initialized");
+    0
+}
+
+/// Set the payment token contract address for escrow operations.
+/// Only callable by admin. Cannot be set to the zero address.
+///
+/// Returns: 0 success, 1 not admin, 2 zero address, 200 caller spoof
+#[no_mangle]
+pub extern "C" fn set_token_address(caller_ptr: *const u8, token_addr_ptr: *const u8) -> u32 {
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    let mut token_addr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(token_addr_ptr, token_addr.as_mut_ptr(), 32); }
+
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
+    if !is_cp_admin(&caller) {
+        return 1;
+    }
+
+    if token_addr == [0u8; 32] {
+        return 2;
+    }
+
+    storage_set(CP_TOKEN_ADDR_KEY, &token_addr);
+    log_info("Token address configured");
+    0
+}
+
+/// Set the contract's own deployed address for escrow transfers.
+/// Only callable by admin. Cannot be set to the zero address.
+///
+/// Returns: 0 success, 1 not admin, 2 zero address, 200 caller spoof
+#[no_mangle]
+pub extern "C" fn set_self_address(caller_ptr: *const u8, self_addr_ptr: *const u8) -> u32 {
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    let mut self_addr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(self_addr_ptr, self_addr.as_mut_ptr(), 32); }
+
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
+    if !is_cp_admin(&caller) {
+        return 1;
+    }
+
+    if self_addr == [0u8; 32] {
+        return 2;
+    }
+
+    storage_set(CP_SELF_ADDR_KEY, &self_addr);
+    log_info("Contract self-address configured");
     0
 }
 
@@ -961,22 +1228,35 @@ mod tests {
         test_mock::reset();
     }
 
+    /// Configure escrow addresses in storage so stream creation succeeds.
+    /// Sets token address and contract self-address directly in storage.
+    fn configure_escrow() {
+        let token = [0xAAu8; 32];
+        let self_addr = [0xBBu8; 32];
+        storage_set(CP_TOKEN_ADDR_KEY, &token);
+        storage_set(CP_SELF_ADDR_KEY, &self_addr);
+    }
+
+    // ====================================================================
+    // CORE STREAM TESTS (with escrow)
+    // ====================================================================
+
     #[test]
     fn test_create_stream() {
         setup();
+        configure_escrow();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
 
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(sender);
         let result = create_stream(
             sender.as_ptr(),
             recipient.as_ptr(),
-            1_000_000, // 1M shells
-            100,       // start now
-            1100,      // end at slot 1100 (1000 slot duration)
+            1_000_000,
+            100,
+            1100,
         );
         assert_eq!(result, 0);
 
@@ -996,19 +1276,19 @@ mod tests {
     #[test]
     fn test_withdraw_from_stream() {
         setup();
+        configure_escrow();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
 
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(sender);
         create_stream(
             sender.as_ptr(),
             recipient.as_ptr(),
             1_000_000,
-            100,  // start
-            1100, // end (1000 slot duration)
+            100,
+            1100,
         );
 
         // Move to halfway point (slot 600 = 500 slots elapsed out of 1000)
@@ -1020,8 +1300,7 @@ mod tests {
         let ret = test_mock::get_return_data();
         assert_eq!(bytes_to_u64(&ret), 500_000);
 
-        // Withdraw 300,000
-        // AUDIT-FIX P2: Set caller for security check
+        // Withdraw 300,000 — triggers token transfer from contract to recipient
         test_mock::set_caller(recipient);
         let result = withdraw_from_stream(recipient.as_ptr(), 0, 300_000);
         assert_eq!(result, 0);
@@ -1040,12 +1319,12 @@ mod tests {
     #[test]
     fn test_cancel_stream() {
         setup();
+        configure_escrow();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
 
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(sender);
         create_stream(
             sender.as_ptr(),
@@ -1080,12 +1359,12 @@ mod tests {
     #[test]
     fn test_full_stream_withdrawal() {
         setup();
+        configure_escrow();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
 
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(sender);
         create_stream(sender.as_ptr(), recipient.as_ptr(), 500_000, 100, 600);
 
@@ -1095,9 +1374,8 @@ mod tests {
         let result = get_withdrawable(0);
         assert_eq!(result, 0);
         let ret = test_mock::get_return_data();
-        assert_eq!(bytes_to_u64(&ret), 500_000); // full amount
+        assert_eq!(bytes_to_u64(&ret), 500_000);
 
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(recipient);
         let result = withdraw_from_stream(recipient.as_ptr(), 0, 500_000);
         assert_eq!(result, 0);
@@ -1109,13 +1387,17 @@ mod tests {
         assert_eq!(bytes_to_u64(&ret), 0);
     }
 
+    // ====================================================================
+    // IDENTITY GATE TESTS
+    // ====================================================================
+
     #[test]
     fn test_identity_gate_blocks_create_stream_sender() {
         setup();
+        // No escrow needed — identity gate blocks before escrow check
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let admin = [5u8; 32];
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(admin);
         assert_eq!(set_identity_admin(admin.as_ptr()), 0);
         let moltyid_addr = [0x42u8; 32];
@@ -1124,7 +1406,6 @@ mod tests {
 
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(sender);
         let result = create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100);
         assert_eq!(result, 10); // sender blocked
@@ -1133,11 +1414,11 @@ mod tests {
     #[test]
     fn test_identity_gate_allows_when_disabled() {
         setup();
+        configure_escrow();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(sender);
         let result = create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100);
         assert_eq!(result, 0);
@@ -1148,41 +1429,37 @@ mod tests {
         setup();
 
         let admin = [1u8; 32];
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(admin);
         assert_eq!(set_identity_admin(admin.as_ptr()), 0);
 
         let other = [9u8; 32];
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(other);
         assert_eq!(set_identity_gate(other.as_ptr(), 100), 2);
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(admin);
         assert_eq!(set_identity_gate(admin.as_ptr(), 100), 0);
     }
 
     // ====================================================================
-    // V2 TESTS
+    // V2 TESTS — CLIFF STREAMS
     // ====================================================================
 
     #[test]
     fn test_create_stream_with_cliff() {
         setup();
+        configure_escrow();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
 
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(sender);
-        // cliff at slot 500 (400 slots into 1000-slot stream)
         let result = create_stream_with_cliff(
             sender.as_ptr(),
             recipient.as_ptr(),
             1_000_000,
-            100,  // start
-            1100, // end
-            500,  // cliff
+            100,
+            1100,
+            500,
         );
         assert_eq!(result, 0);
         let ret = test_mock::get_return_data();
@@ -1192,12 +1469,12 @@ mod tests {
     #[test]
     fn test_cliff_blocks_withdrawal_before_cliff() {
         setup();
+        configure_escrow();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
 
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(sender);
         create_stream_with_cliff(
             sender.as_ptr(),
@@ -1205,7 +1482,7 @@ mod tests {
             1_000_000,
             100,
             1100,
-            500, // cliff at 500
+            500,
         );
 
         // Before cliff (slot 300) — should get 0
@@ -1216,7 +1493,6 @@ mod tests {
         assert_eq!(bytes_to_u64(&ret), 0);
 
         // Try to withdraw — should fail
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(recipient);
         let result = withdraw_from_stream(recipient.as_ptr(), 0, 1);
         assert_eq!(result, 6); // exceeds withdrawable (0)
@@ -1225,12 +1501,12 @@ mod tests {
     #[test]
     fn test_cliff_allows_withdrawal_after_cliff() {
         setup();
+        configure_escrow();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
 
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(sender);
         create_stream_with_cliff(
             sender.as_ptr(),
@@ -1238,7 +1514,7 @@ mod tests {
             1_000_000,
             100,
             1100,
-            500, // cliff at 500
+            500,
         );
 
         // After cliff (slot 600) — 500 elapsed out of 1000 = 50%
@@ -1249,7 +1525,6 @@ mod tests {
         assert_eq!(bytes_to_u64(&ret), 500_000);
 
         // Withdraw works after cliff
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(recipient);
         let result = withdraw_from_stream(recipient.as_ptr(), 0, 500_000);
         assert_eq!(result, 0);
@@ -1258,12 +1533,12 @@ mod tests {
     #[test]
     fn test_cliff_invalid_params() {
         setup();
+        // No escrow needed — param validation fails before escrow check
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
 
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(sender);
         // cliff before start
         let result = create_stream_with_cliff(
@@ -1278,16 +1553,20 @@ mod tests {
         assert_eq!(result, 3);
     }
 
+    // ====================================================================
+    // TRANSFER, PAUSE, ADMIN TESTS
+    // ====================================================================
+
     #[test]
     fn test_transfer_stream() {
         setup();
+        configure_escrow();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
         let new_recipient = [3u8; 32];
 
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(sender);
         create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100);
 
@@ -1296,20 +1575,17 @@ mod tests {
         assert_eq!(result, 2);
 
         // Recipient can transfer
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(recipient);
         let result = transfer_stream(recipient.as_ptr(), new_recipient.as_ptr(), 0);
         assert_eq!(result, 0);
 
         // New recipient can now withdraw
         test_mock::SLOT.with(|s| *s.borrow_mut() = 600);
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(new_recipient);
         let result = withdraw_from_stream(new_recipient.as_ptr(), 0, 100_000);
         assert_eq!(result, 0);
 
         // Old recipient cannot withdraw
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(recipient);
         let result = withdraw_from_stream(recipient.as_ptr(), 0, 100_000);
         assert_eq!(result, 4); // not recipient
@@ -1318,18 +1594,17 @@ mod tests {
     #[test]
     fn test_transfer_cancelled_stream_fails() {
         setup();
+        configure_escrow();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
         let new_recip = [3u8; 32];
 
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(sender);
         create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100);
         cancel_stream(sender.as_ptr(), 0);
 
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(recipient);
         let result = transfer_stream(recipient.as_ptr(), new_recip.as_ptr(), 0);
         assert_eq!(result, 3); // cancelled
@@ -1338,6 +1613,7 @@ mod tests {
     #[test]
     fn test_pause_unpause() {
         setup();
+        configure_escrow();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let admin = [10u8; 32];
@@ -1345,12 +1621,8 @@ mod tests {
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
 
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(admin);
-        // Init admin
         assert_eq!(initialize_cp_admin(admin.as_ptr()), 0);
-        // Cannot init twice
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(non_admin);
         assert_eq!(initialize_cp_admin(non_admin.as_ptr()), 1);
 
@@ -1358,14 +1630,11 @@ mod tests {
         assert_eq!(pause(non_admin.as_ptr()), 1);
 
         // Admin pauses
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(admin);
         assert_eq!(pause(admin.as_ptr()), 0);
-        // Cannot pause again
-        assert_eq!(pause(admin.as_ptr()), 2);
+        assert_eq!(pause(admin.as_ptr()), 2); // already paused
 
         // create_stream blocked when paused
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(sender);
         let result = create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100);
         assert_eq!(result, 20);
@@ -1377,18 +1646,14 @@ mod tests {
         assert_eq!(result, 20);
 
         // Non-admin cannot unpause
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(non_admin);
         assert_eq!(unpause(non_admin.as_ptr()), 1);
         // Unpause
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(admin);
         assert_eq!(unpause(admin.as_ptr()), 0);
-        // Cannot unpause again
-        assert_eq!(unpause(admin.as_ptr()), 2);
+        assert_eq!(unpause(admin.as_ptr()), 2); // already unpaused
 
-        // Now create_stream works again
-        // AUDIT-FIX P2: Set caller for security check
+        // Now create_stream works again (escrow configured)
         test_mock::set_caller(sender);
         let result = create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100);
         assert_eq!(result, 0);
@@ -1397,12 +1662,12 @@ mod tests {
     #[test]
     fn test_get_stream_info_with_cliff() {
         setup();
+        configure_escrow();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let sender = [1u8; 32];
         let recipient = [2u8; 32];
 
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(sender);
         create_stream_with_cliff(
             sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100, 500,
@@ -1411,7 +1676,6 @@ mod tests {
         let result = get_stream_info(0);
         assert_eq!(result, 0);
         let ret = test_mock::get_return_data();
-        // STREAM_SIZE (105) + cliff (8) = 113
         assert_eq!(ret.len(), STREAM_SIZE + 8);
         assert_eq!(bytes_to_u64(&ret[STREAM_SIZE..STREAM_SIZE + 8]), 500);
     }
@@ -1427,6 +1691,7 @@ mod tests {
     fn test_withdraw_blocked_when_paused_still_works() {
         // Withdrawal/cancel should NOT be blocked by pause (safety valve)
         setup();
+        configure_escrow();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let admin = [10u8; 32];
@@ -1434,27 +1699,345 @@ mod tests {
         let recipient = [2u8; 32];
 
         // Create before pause
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(sender);
         create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100);
 
         // Pause
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(admin);
         initialize_cp_admin(admin.as_ptr());
         pause(admin.as_ptr());
 
         // Withdraw still works (safety valve)
         test_mock::SLOT.with(|s| *s.borrow_mut() = 600);
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(recipient);
         let result = withdraw_from_stream(recipient.as_ptr(), 0, 100_000);
         assert_eq!(result, 0);
 
         // Cancel still works
-        // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(sender);
         let result = cancel_stream(sender.as_ptr(), 0);
         assert_eq!(result, 0);
+    }
+
+    // ====================================================================
+    // ESCROW-SPECIFIC TESTS
+    // ====================================================================
+
+    #[test]
+    fn test_create_stream_fails_without_token_address() {
+        setup();
+        // Only set self-address, NOT token address
+        storage_set(CP_SELF_ADDR_KEY, &[0xBBu8; 32]);
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let sender = [1u8; 32];
+        let recipient = [2u8; 32];
+        test_mock::set_caller(sender);
+        let result = create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100);
+        assert_eq!(result, 30); // token address not configured
+    }
+
+    #[test]
+    fn test_create_stream_fails_without_self_address() {
+        setup();
+        // Only set token address, NOT self address
+        storage_set(CP_TOKEN_ADDR_KEY, &[0xAAu8; 32]);
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let sender = [1u8; 32];
+        let recipient = [2u8; 32];
+        test_mock::set_caller(sender);
+        let result = create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100);
+        assert_eq!(result, 31); // self address not configured
+    }
+
+    #[test]
+    fn test_create_stream_with_cliff_fails_without_escrow() {
+        setup();
+        // No escrow configured
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let sender = [1u8; 32];
+        let recipient = [2u8; 32];
+        test_mock::set_caller(sender);
+        let result = create_stream_with_cliff(
+            sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100, 500,
+        );
+        assert_eq!(result, 30); // token address not configured
+    }
+
+    #[test]
+    fn test_set_token_address_admin_only() {
+        setup();
+        let admin = [10u8; 32];
+        let non_admin = [11u8; 32];
+        let token = [0xAAu8; 32];
+
+        // Init admin
+        test_mock::set_caller(admin);
+        assert_eq!(initialize_cp_admin(admin.as_ptr()), 0);
+
+        // Non-admin cannot set token address
+        test_mock::set_caller(non_admin);
+        let result = set_token_address(non_admin.as_ptr(), token.as_ptr());
+        assert_eq!(result, 1); // not admin
+
+        // Admin can set
+        test_mock::set_caller(admin);
+        let result = set_token_address(admin.as_ptr(), token.as_ptr());
+        assert_eq!(result, 0);
+
+        // Verify stored correctly
+        let stored = test_mock::get_storage(CP_TOKEN_ADDR_KEY).unwrap();
+        assert_eq!(stored.as_slice(), &token);
+    }
+
+    #[test]
+    fn test_set_token_address_rejects_zero() {
+        setup();
+        let admin = [10u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(initialize_cp_admin(admin.as_ptr()), 0);
+
+        let zero = [0u8; 32];
+        let result = set_token_address(admin.as_ptr(), zero.as_ptr());
+        assert_eq!(result, 2); // zero address rejected
+    }
+
+    #[test]
+    fn test_set_self_address_admin_only() {
+        setup();
+        let admin = [10u8; 32];
+        let non_admin = [11u8; 32];
+        let self_addr = [0xBBu8; 32];
+
+        test_mock::set_caller(admin);
+        assert_eq!(initialize_cp_admin(admin.as_ptr()), 0);
+
+        // Non-admin cannot set
+        test_mock::set_caller(non_admin);
+        let result = set_self_address(non_admin.as_ptr(), self_addr.as_ptr());
+        assert_eq!(result, 1);
+
+        // Admin can set
+        test_mock::set_caller(admin);
+        let result = set_self_address(admin.as_ptr(), self_addr.as_ptr());
+        assert_eq!(result, 0);
+
+        let stored = test_mock::get_storage(CP_SELF_ADDR_KEY).unwrap();
+        assert_eq!(stored.as_slice(), &self_addr);
+    }
+
+    #[test]
+    fn test_set_self_address_rejects_zero() {
+        setup();
+        let admin = [10u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(initialize_cp_admin(admin.as_ptr()), 0);
+
+        let zero = [0u8; 32];
+        let result = set_self_address(admin.as_ptr(), zero.as_ptr());
+        assert_eq!(result, 2);
+    }
+
+    #[test]
+    fn test_cancel_legacy_stream_without_escrow() {
+        // Streams created before escrow was configured can still be cancelled
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        // Manually create a stream record in storage without escrow
+        let sender = [1u8; 32];
+        let recipient = [2u8; 32];
+        let data = encode_stream(&sender, &recipient, 1_000_000, 0, 100, 1100, false, 100);
+        let sk = stream_key(0);
+        storage_set(&sk, &data);
+        storage_set(b"stream_count", &u64_to_bytes(1));
+
+        // Cancel without token/self configured — should still mark cancelled (legacy path)
+        test_mock::set_caller(sender);
+        let result = cancel_stream(sender.as_ptr(), 0);
+        assert_eq!(result, 0);
+
+        let stream = test_mock::get_storage(&sk).unwrap();
+        assert_eq!(stream[96], 1); // marked cancelled
+    }
+
+    #[test]
+    fn test_escrow_full_lifecycle_create_withdraw_complete() {
+        // Full lifecycle: create → withdraw partial → withdraw rest
+        setup();
+        configure_escrow();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let sender = [1u8; 32];
+        let recipient = [2u8; 32];
+
+        test_mock::set_caller(sender);
+        assert_eq!(create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100), 0);
+
+        // Withdraw 250k at 25%
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 350);
+        test_mock::set_caller(recipient);
+        assert_eq!(withdraw_from_stream(recipient.as_ptr(), 0, 250_000), 0);
+
+        // Verify stream state
+        let sk = stream_key(0);
+        let stream = test_mock::get_storage(&sk).unwrap();
+        assert_eq!(bytes_to_u64(&stream[72..80]), 250_000); // withdrawn = 250k
+
+        // Withdraw remaining at end
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 1200);
+        let result = get_withdrawable(0);
+        assert_eq!(result, 0);
+        let ret = test_mock::get_return_data();
+        assert_eq!(bytes_to_u64(&ret), 750_000); // 1M - 250k already withdrawn
+
+        assert_eq!(withdraw_from_stream(recipient.as_ptr(), 0, 750_000), 0);
+
+        // Nothing left
+        let result = get_withdrawable(0);
+        assert_eq!(result, 0);
+        let ret = test_mock::get_return_data();
+        assert_eq!(bytes_to_u64(&ret), 0);
+    }
+
+    #[test]
+    fn test_escrow_create_then_cancel_with_partial_withdrawal() {
+        // Create → withdraw partial → cancel → verify settlement
+        setup();
+        configure_escrow();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let sender = [1u8; 32];
+        let recipient = [2u8; 32];
+
+        test_mock::set_caller(sender);
+        assert_eq!(create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100), 0);
+
+        // Withdraw at 50%
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 600);
+        test_mock::set_caller(recipient);
+        assert_eq!(withdraw_from_stream(recipient.as_ptr(), 0, 200_000), 0);
+
+        // Cancel at 50% — refund = 500k, recipient_due = 500k - 200k = 300k
+        test_mock::set_caller(sender);
+        assert_eq!(cancel_stream(sender.as_ptr(), 0), 0);
+
+        let ret = test_mock::get_return_data();
+        assert_eq!(bytes_to_u64(&ret), 500_000); // refund = 50% unstreamed
+
+        // Verify cancelled
+        let sk = stream_key(0);
+        let stream = test_mock::get_storage(&sk).unwrap();
+        assert_eq!(stream[96], 1);
+    }
+
+    #[test]
+    fn test_cancel_already_cancelled_fails() {
+        setup();
+        configure_escrow();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let sender = [1u8; 32];
+        let recipient = [2u8; 32];
+        test_mock::set_caller(sender);
+        assert_eq!(create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100), 0);
+        assert_eq!(cancel_stream(sender.as_ptr(), 0), 0);
+        // Second cancel fails
+        assert_eq!(cancel_stream(sender.as_ptr(), 0), 4);
+    }
+
+    #[test]
+    fn test_get_platform_stats_with_escrow() {
+        setup();
+        configure_escrow();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let sender = [1u8; 32];
+        let recipient = [2u8; 32];
+
+        // Create two streams
+        test_mock::set_caller(sender);
+        assert_eq!(create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100), 0);
+        assert_eq!(create_stream(sender.as_ptr(), recipient.as_ptr(), 500_000, 100, 600), 0);
+
+        // Withdraw from stream 0
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 600);
+        test_mock::set_caller(recipient);
+        assert_eq!(withdraw_from_stream(recipient.as_ptr(), 0, 100_000), 0);
+
+        // Cancel stream 1
+        test_mock::set_caller(sender);
+        assert_eq!(cancel_stream(sender.as_ptr(), 1), 0);
+
+        // Check platform stats
+        let result = get_platform_stats();
+        assert_eq!(result, 0);
+        let ret = test_mock::get_return_data();
+        assert_eq!(ret.len(), 32);
+        assert_eq!(bytes_to_u64(&ret[0..8]), 2);         // stream_count = 2
+        assert_eq!(bytes_to_u64(&ret[8..16]), 1_500_000); // total_streamed = 1.5M
+        assert_eq!(bytes_to_u64(&ret[16..24]), 100_000);  // total_withdrawn = 100k
+        assert_eq!(bytes_to_u64(&ret[24..32]), 1);        // cancel_count = 1
+    }
+
+    #[test]
+    fn test_escrow_addresses_stored_correctly() {
+        setup();
+        let admin = [10u8; 32];
+        let token = [0xAAu8; 32];
+        let self_addr = [0xBBu8; 32];
+
+        test_mock::set_caller(admin);
+        assert_eq!(initialize_cp_admin(admin.as_ptr()), 0);
+        assert_eq!(set_token_address(admin.as_ptr(), token.as_ptr()), 0);
+        assert_eq!(set_self_address(admin.as_ptr(), self_addr.as_ptr()), 0);
+
+        // Verify via helper functions
+        let t = get_token_address().unwrap();
+        assert_eq!(t.0, token);
+        let s = get_self_address().unwrap();
+        assert_eq!(s.0, self_addr);
+    }
+
+    #[test]
+    fn test_withdraw_from_cancelled_stream_fails() {
+        setup();
+        configure_escrow();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let sender = [1u8; 32];
+        let recipient = [2u8; 32];
+
+        test_mock::set_caller(sender);
+        assert_eq!(create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100), 0);
+
+        // Cancel
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 600);
+        assert_eq!(cancel_stream(sender.as_ptr(), 0), 0);
+
+        // Try to withdraw — stream is cancelled
+        test_mock::set_caller(recipient);
+        let result = withdraw_from_stream(recipient.as_ptr(), 0, 1);
+        assert_eq!(result, 5); // cancelled
+    }
+
+    #[test]
+    fn test_non_sender_cannot_cancel() {
+        setup();
+        configure_escrow();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let sender = [1u8; 32];
+        let recipient = [2u8; 32];
+
+        test_mock::set_caller(sender);
+        assert_eq!(create_stream(sender.as_ptr(), recipient.as_ptr(), 1_000_000, 100, 1100), 0);
+
+        // Recipient cannot cancel
+        test_mock::set_caller(recipient);
+        let result = cancel_stream(recipient.as_ptr(), 0);
+        assert_eq!(result, 3); // only sender can cancel
     }
 }

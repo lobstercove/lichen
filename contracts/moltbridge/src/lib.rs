@@ -565,6 +565,11 @@ pub extern "C" fn submit_mint(
     source_chain_ptr: *const u8,
     source_tx_ptr: *const u8,
 ) -> u32 {
+    // AUDIT-FIX: Pause must block validator operations (emergency circuit breaker)
+    if is_mb_paused() {
+        log_info("Bridge is paused");
+        return 20;
+    }
     log_info("Submitting mint request...");
 
     let mut caller_arr = [0u8; 32];
@@ -663,6 +668,11 @@ pub extern "C" fn confirm_mint(
     caller_ptr: *const u8,
     nonce: u64,
 ) -> u32 {
+    // AUDIT-FIX: Pause must block validator operations (emergency circuit breaker)
+    if is_mb_paused() {
+        log_info("Bridge is paused");
+        return 20;
+    }
     log_info("Confirming mint request...");
 
     let mut caller_arr = [0u8; 32];
@@ -756,6 +766,11 @@ pub extern "C" fn submit_unlock(
     amount: u64,
     burn_proof_ptr: *const u8,
 ) -> u32 {
+    // AUDIT-FIX: Pause must block validator operations (emergency circuit breaker)
+    if is_mb_paused() {
+        log_info("Bridge is paused");
+        return 20;
+    }
     log_info("Submitting unlock request...");
 
     let mut caller_arr = [0u8; 32];
@@ -866,6 +881,11 @@ pub extern "C" fn confirm_unlock(
     caller_ptr: *const u8,
     nonce: u64,
 ) -> u32 {
+    // AUDIT-FIX: Pause must block validator operations (emergency circuit breaker)
+    if is_mb_paused() {
+        log_info("Bridge is paused");
+        return 20;
+    }
     log_info("Confirming unlock request...");
 
     let mut caller_arr = [0u8; 32];
@@ -2074,5 +2094,153 @@ mod tests {
         assert_eq!(confirm_unlock(val2.as_ptr(), 1), 7);
         let locked = bytes_to_u64(&test_mock::get_storage(b"bridge_locked_amount").unwrap());
         assert_eq!(locked, 1_000_000);
+    }
+
+    // ====================================================================
+    // PAUSE ENFORCEMENT TESTS — All 4 validator functions blocked during pause
+    // ====================================================================
+
+    /// Helper: Initialize bridge + add validators with correct set_caller calls
+    fn setup_bridge_with_validators(owner: [u8; 32], validators: &[[u8; 32]]) {
+        test_mock::set_caller(owner);
+        assert_eq!(initialize(owner.as_ptr()), 0);
+        for v in validators {
+            test_mock::set_caller(owner);
+            assert_eq!(add_bridge_validator(owner.as_ptr(), v.as_ptr()), 0);
+        }
+    }
+
+    #[test]
+    fn test_submit_mint_blocked_when_paused() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let owner = [1u8; 32];
+        let val = [2u8; 32];
+        setup_bridge_with_validators(owner, &[val]);
+
+        // Pause bridge
+        test_mock::set_caller(owner);
+        assert_eq!(mb_pause(owner.as_ptr()), 0);
+
+        // submit_mint must be blocked
+        test_mock::set_caller(val);
+        let result = submit_mint(
+            val.as_ptr(),
+            [3u8; 32].as_ptr(),
+            1_000_000,
+            [0xAA; 32].as_ptr(),
+            [0xBB; 32].as_ptr(),
+        );
+        assert_eq!(result, 20); // paused
+    }
+
+    #[test]
+    fn test_confirm_mint_blocked_when_paused() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let owner = [1u8; 32];
+        let val1 = [2u8; 32];
+        let val2 = [3u8; 32];
+        setup_bridge_with_validators(owner, &[val1, val2]);
+
+        // Submit a mint request before pause
+        test_mock::set_caller(val1);
+        assert_eq!(submit_mint(
+            val1.as_ptr(), [4u8; 32].as_ptr(), 500_000,
+            [0xCC; 32].as_ptr(), [0xDD; 32].as_ptr(),
+        ), 0);
+
+        // Pause bridge
+        test_mock::set_caller(owner);
+        assert_eq!(mb_pause(owner.as_ptr()), 0);
+
+        // confirm_mint must be blocked
+        test_mock::set_caller(val2);
+        let result = confirm_mint(val2.as_ptr(), 0);
+        assert_eq!(result, 20); // paused
+    }
+
+    #[test]
+    fn test_submit_unlock_blocked_when_paused() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let owner = [1u8; 32];
+        let val = [2u8; 32];
+        setup_bridge_with_validators(owner, &[val]);
+
+        // Lock some tokens first
+        let locker = [5u8; 32];
+        test_mock::set_caller(locker);
+        lock_tokens(locker.as_ptr(), 1_000_000, [0xAA; 32].as_ptr(), [0xBB; 32].as_ptr());
+
+        // Pause bridge
+        test_mock::set_caller(owner);
+        assert_eq!(mb_pause(owner.as_ptr()), 0);
+
+        // submit_unlock must be blocked
+        test_mock::set_caller(val);
+        let result = submit_unlock(
+            val.as_ptr(), [6u8; 32].as_ptr(), 500_000, [0xEE; 32].as_ptr(),
+        );
+        assert_eq!(result, 20); // paused
+    }
+
+    #[test]
+    fn test_confirm_unlock_blocked_when_paused() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let owner = [1u8; 32];
+        let val1 = [2u8; 32];
+        let val2 = [3u8; 32];
+        setup_bridge_with_validators(owner, &[val1, val2]);
+
+        // Lock + submit unlock before pause
+        let locker = [5u8; 32];
+        test_mock::set_caller(locker);
+        lock_tokens(locker.as_ptr(), 1_000_000, [0xAA; 32].as_ptr(), [0xBB; 32].as_ptr());
+
+        test_mock::set_caller(val1);
+        assert_eq!(submit_unlock(
+            val1.as_ptr(), [6u8; 32].as_ptr(), 500_000, [0xEE; 32].as_ptr(),
+        ), 0);
+
+        // Pause bridge
+        test_mock::set_caller(owner);
+        assert_eq!(mb_pause(owner.as_ptr()), 0);
+
+        // confirm_unlock must be blocked
+        test_mock::set_caller(val2);
+        let result = confirm_unlock(val2.as_ptr(), 1);
+        assert_eq!(result, 20); // paused
+    }
+
+    #[test]
+    fn test_validator_ops_resume_after_unpause() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let owner = [1u8; 32];
+        let val = [2u8; 32];
+        setup_bridge_with_validators(owner, &[val]);
+
+        // Pause, then unpause
+        test_mock::set_caller(owner);
+        assert_eq!(mb_pause(owner.as_ptr()), 0);
+        assert_eq!(mb_unpause(owner.as_ptr()), 0);
+
+        // submit_mint should work again
+        test_mock::set_caller(val);
+        let result = submit_mint(
+            val.as_ptr(),
+            [3u8; 32].as_ptr(),
+            1_000_000,
+            [0xAA; 32].as_ptr(),
+            [0xBB; 32].as_ptr(),
+        );
+        assert_eq!(result, 0);
     }
 }

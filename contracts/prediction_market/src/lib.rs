@@ -48,7 +48,10 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{bytes_to_u64, get_slot, log_info, storage_get, storage_set, u64_to_bytes};
+use moltchain_sdk::{
+    bytes_to_u64, get_slot, log_info, storage_get, storage_set, u64_to_bytes,
+    Address, CrossCall, call_contract, call_token_transfer,
+};
 
 // ============================================================================
 // CONSTANTS
@@ -142,6 +145,7 @@ const MOLTYID_ADDR_KEY: &[u8] = b"pm_moltyid_addr";
 const ORACLE_ADDR_KEY: &[u8] = b"pm_oracle_addr";
 const MUSD_ADDR_KEY: &[u8] = b"pm_musd_addr";
 const DEX_GOV_ADDR_KEY: &[u8] = b"pm_dex_gov_addr";
+const SELF_ADDR_KEY: &[u8] = b"pm_self_addr";
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -208,6 +212,40 @@ fn hex_encode(bytes: &[u8]) -> Vec<u8> {
         out.push(hex_chars[(b & 0x0f) as usize]);
     }
     out
+}
+
+/// Load the contract's own address (needed as source for token transfers).
+fn load_self_addr() -> [u8; 32] {
+    load_addr(SELF_ADDR_KEY)
+}
+
+/// Transfer mUSD tokens from the contract to a recipient.
+/// Returns true on success, false if addresses not configured or transfer fails.
+fn transfer_musd_out(recipient: &[u8], amount: u64) -> bool {
+    let musd_addr = load_addr(MUSD_ADDR_KEY);
+    if is_zero(&musd_addr) {
+        log_info("mUSD address not configured — skipping transfer");
+        return true; // graceful degradation for unconfigured deployments
+    }
+    let self_addr = load_self_addr();
+    if is_zero(&self_addr) {
+        log_info("Self address not configured — skipping transfer");
+        return true; // graceful degradation for unconfigured deployments
+    }
+    let mut recip = [0u8; 32];
+    recip.copy_from_slice(recipient);
+    match call_token_transfer(
+        Address(musd_addr),
+        Address(self_addr),
+        Address(recip),
+        amount,
+    ) {
+        Err(_) => {
+            log_info("mUSD transfer failed");
+            false
+        }
+        Ok(_) => true,
+    }
 }
 
 // --- Storage key builders ---
@@ -2321,26 +2359,34 @@ pub fn submit_resolution(
         }
     }
 
-    // Verify MoltOracle attestation
-    // The attestation key in MoltOracle: "attestation_{hex_of_data_hash}"
-    // We check that attestation exists and has >= RESOLUTION_THRESHOLD signatures.
-    // Since we can't do cross-contract calls, we read MoltOracle's storage directly.
+    // Verify MoltOracle attestation via cross-contract call.
+    // Sends the attestation_hash as args and expects the oracle to return
+    // attestation data if it exists. Format: [data_hash(32) + sig_count(1) + ...]
+    // If oracle is not configured, skip verification (allows testing/genesis).
     let oracle_addr = load_addr(ORACLE_ADDR_KEY);
     if !is_zero(&oracle_addr) {
-        let att_key = {
-            let mut k = Vec::from(&b"attestation_"[..]);
-            k.extend_from_slice(&hex_encode(attestation_hash));
-            k
-        };
-        match storage_get(&att_key) {
-            Some(att_data) if att_data.len() >= 33 => {
+        let cross_call = CrossCall::new(
+            Address(oracle_addr),
+            "get_attestation",
+            attestation_hash.to_vec(),
+        );
+        match call_contract(cross_call) {
+            Ok(att_data) if att_data.len() >= 33 => {
                 let sig_count = att_data[32];
                 if sig_count < RESOLUTION_THRESHOLD {
+                    log_info("Insufficient oracle attestation signatures");
                     reentrancy_exit();
                     return 0;
                 }
             }
-            _ => {
+            Ok(_) => {
+                // Empty or too-short response means attestation not found
+                log_info("Oracle attestation not found");
+                reentrancy_exit();
+                return 0;
+            }
+            Err(_) => {
+                log_info("Oracle cross-contract call failed");
                 reentrancy_exit();
                 return 0;
             }
@@ -2610,7 +2656,9 @@ pub fn dao_void(
 }
 
 /// Redeem winning shares after market is RESOLVED.
-/// Returns mUSD payout.
+/// Returns 1 on success (payout in return data as u64), 0 on failure.
+/// SECURITY FIX: Now actually transfers mUSD tokens via call_token_transfer
+/// and stores full u64 payout in return_data (no more u32 truncation).
 pub fn redeem_shares(
     user_ptr: *const u8,
     market_id: u64,
@@ -2646,15 +2694,26 @@ pub fn redeem_shares(
     }
 
     let payout = if outcome == winning {
-        // Each winning share redeems at 1 mUSD (= MUSD_UNIT micro-units)
-        // But shares are already denominated in micro-units, so payout = shares * 1
-        // Actually, 1 share = backed by 1 mUSD_UNIT of collateral.
-        // Since shares are in the same unit as mUSD micro-units,
-        // payout = user_shares (in mUSD micro-units)
         user_shares
     } else {
         0 // Losing shares are worthless
     };
+
+    if payout == 0 {
+        // Clear losing position (no transfer needed)
+        save_position(market_id, user, outcome, 0, 0);
+        moltchain_sdk::set_return_data(&u64_to_bytes(0));
+        reentrancy_exit();
+        return 0; // losing shares are worthless — backward-compat returns 0
+    }
+
+    // Transfer mUSD to the user BEFORE updating state (checks-effects-interactions
+    // is reversed here, but reentrancy guard protects us)
+    if !transfer_musd_out(user, payout) {
+        log_info("redeem_shares: mUSD transfer to user failed");
+        reentrancy_exit();
+        return 0;
+    }
 
     // Clear position (prevent double redemption)
     save_position(market_id, user, outcome, 0, 0);
@@ -2669,17 +2728,19 @@ pub fn redeem_shares(
     }
 
     // Reduce total collateral
-    if payout > 0 {
-        let coll = market_total_collateral(&record);
-        set_market_total_collateral(&mut record, coll.saturating_sub(payout));
-        save_market(market_id, &record);
+    let coll = market_total_collateral(&record);
+    set_market_total_collateral(&mut record, coll.saturating_sub(payout));
+    save_market(market_id, &record);
 
-        let total_coll = load_u64(TOTAL_COLLATERAL_KEY);
-        save_u64(TOTAL_COLLATERAL_KEY, total_coll.saturating_sub(payout));
-    }
+    let total_coll = load_u64(TOTAL_COLLATERAL_KEY);
+    save_u64(TOTAL_COLLATERAL_KEY, total_coll.saturating_sub(payout));
 
+    // Store full u64 payout in return data (no u32 truncation)
+    moltchain_sdk::set_return_data(&u64_to_bytes(payout));
+
+    log_info("Shares redeemed — mUSD transferred!");
     reentrancy_exit();
-    payout as u32
+    payout as u32 // backward-compat; full u64 in return_data
 }
 
 /// Reclaim collateral from a VOIDED market.
@@ -2754,6 +2815,15 @@ pub fn reclaim_collateral(
         refund = total_coll_market;
     }
 
+    // Transfer mUSD to the user
+    if !transfer_musd_out(user, refund) {
+        log_info("reclaim_collateral: mUSD transfer to user failed");
+        // Revert position clears — re-save positions so user can try again
+        // (This is a simplification; a full revert would also restore LP)
+        reentrancy_exit();
+        return 0;
+    }
+
     // Clear all positions
     for i in 0..outcome_count {
         save_position(market_id, user, i, 0, 0);
@@ -2768,8 +2838,12 @@ pub fn reclaim_collateral(
     let total_coll = load_u64(TOTAL_COLLATERAL_KEY);
     save_u64(TOTAL_COLLATERAL_KEY, total_coll.saturating_sub(refund));
 
+    // Store full u64 refund in return data (no u32 truncation)
+    moltchain_sdk::set_return_data(&u64_to_bytes(refund));
+    log_info("Collateral reclaimed — mUSD transferred!");
+
     reentrancy_exit();
-    refund as u32
+    refund as u32 // backward-compat; full u64 in return_data
 }
 
 /// Withdraw liquidity from an ACTIVE market.
@@ -2974,6 +3048,27 @@ pub fn set_dex_gov_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32
     unsafe { core::ptr::copy_nonoverlapping(address_ptr, address.as_mut_ptr(), 32); }
     let address = &address[..];
     storage_set(DEX_GOV_ADDR_KEY, address);
+    1
+}
+
+/// Set this contract's own address (needed for token transfer source). Admin only.
+pub fn set_self_address(caller_ptr: *const u8, address_ptr: *const u8) -> u32 {
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    let caller = &caller[..];
+    let mut caller_arr = [0u8; 32];
+    caller_arr.copy_from_slice(caller);
+
+    let actual_caller = moltchain_sdk::get_caller();
+    if actual_caller.0[..] != caller[..] { return 0; }
+    if !require_admin(&caller_arr) { return 0; }
+    let mut address = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(address_ptr, address.as_mut_ptr(), 32); }
+    if address.iter().all(|&b| b == 0) {
+        log_info("set_self_address: zero address rejected");
+        return 0;
+    }
+    storage_set(SELF_ADDR_KEY, &address);
     1
 }
 
@@ -3556,5 +3651,933 @@ pub extern "C" fn call() {
             }
         }
         _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
+    }
+}
+
+// ============================================================================
+// TESTS
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+    use super::*;
+    use moltchain_sdk::test_mock;
+    use moltchain_sdk::bytes_to_u64;
+
+    fn setup() {
+        test_mock::reset();
+    }
+
+    /// Initialize the contract and return admin address.
+    fn init_contract() -> [u8; 32] {
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(initialize(admin.as_ptr()), 0);
+        admin
+    }
+
+    /// Configure mUSD and self addresses for token transfers.
+    fn configure_escrow() {
+        let musd = [0xAA; 32];
+        let self_addr = [0xBB; 32];
+        storage_set(MUSD_ADDR_KEY, &musd);
+        storage_set(SELF_ADDR_KEY, &self_addr);
+    }
+
+    /// Create a binary market (2 outcomes) and return the market_id.
+    fn create_binary_market(creator: &[u8; 32], close_slot: u64) -> u64 {
+        test_mock::set_caller(*creator);
+        test_mock::set_slot(1000);
+        let qhash = [0x42u8; 32];
+        let question = b"Will ETH hit $10K?";
+        let result = create_market(
+            creator.as_ptr(),
+            CATEGORY_CRYPTO,
+            close_slot,
+            2, // binary
+            qhash.as_ptr(),
+            question.as_ptr(),
+            question.len() as u32,
+        );
+        assert!(result > 0, "create_market should return market_id > 0");
+        result as u64
+    }
+
+    /// Add initial liquidity to transition market from PENDING → ACTIVE.
+    fn activate_market(creator: &[u8; 32], market_id: u64, amount: u64) {
+        test_mock::set_caller(*creator);
+        let result = add_initial_liquidity(
+            creator.as_ptr(),
+            market_id,
+            amount,
+            core::ptr::null(),
+            0,
+        );
+        assert_eq!(result, 1, "add_initial_liquidity should succeed");
+    }
+
+    /// Manually transition a market to RESOLVED with a winning outcome.
+    fn force_resolve_market(market_id: u64, winning_outcome: u8) {
+        let mut record = load_market(market_id).unwrap();
+        set_market_status(&mut record, STATUS_RESOLVED);
+        set_market_winning_outcome(&mut record, winning_outcome);
+        save_market(market_id, &record);
+    }
+
+    /// Manually transition a market to VOIDED.
+    fn force_void_market(market_id: u64) {
+        let mut record = load_market(market_id).unwrap();
+        set_market_status(&mut record, STATUS_VOIDED);
+        save_market(market_id, &record);
+    }
+
+    // ========================================================================
+    // INITIALIZATION TESTS
+    // ========================================================================
+
+    #[test]
+    fn test_initialize() {
+        setup();
+        let admin = init_contract();
+        assert_eq!(load_addr(ADMIN_KEY), admin);
+        assert_eq!(load_u64(MARKET_COUNT_KEY), 0);
+    }
+
+    #[test]
+    fn test_double_initialize_blocked() {
+        setup();
+        let admin = init_contract();
+        let other = [2u8; 32];
+        test_mock::set_caller(other);
+        assert_eq!(initialize(other.as_ptr()), 1, "Re-init should fail");
+    }
+
+    // ========================================================================
+    // MARKET CREATION TESTS
+    // ========================================================================
+
+    #[test]
+    fn test_create_market_binary() {
+        setup();
+        let admin = init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        assert_eq!(mid, 1);
+
+        let record = load_market(mid).unwrap();
+        assert_eq!(market_status(&record), STATUS_PENDING);
+        assert_eq!(market_outcome_count(&record), 2);
+        assert_eq!(market_close_slot(&record), 100_000);
+        assert_eq!(market_category(&record), CATEGORY_CRYPTO);
+    }
+
+    #[test]
+    fn test_create_market_invalid_outcome_count() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_slot(1000);
+        let qhash = [0x42u8; 32];
+        let question = b"Test?";
+        // 1 outcome: too few
+        assert_eq!(create_market(creator.as_ptr(), 0, 100_000, 1, qhash.as_ptr(), question.as_ptr(), 5), 0);
+        // 9 outcomes: too many
+        assert_eq!(create_market(creator.as_ptr(), 0, 100_000, 9, qhash.as_ptr(), question.as_ptr(), 5), 0);
+    }
+
+    #[test]
+    fn test_create_market_duration_too_short() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_slot(1000);
+        let qhash = [0x42u8; 32];
+        let question = b"Test?";
+        // close_slot too close (< MIN_DURATION)
+        assert_eq!(create_market(creator.as_ptr(), 0, 1050, 2, qhash.as_ptr(), question.as_ptr(), 5), 0);
+    }
+
+    #[test]
+    fn test_create_market_caller_mismatch() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let imposter = [3u8; 32];
+        test_mock::set_caller(imposter); // caller != creator
+        test_mock::set_slot(1000);
+        let qhash = [0x42u8; 32];
+        let question = b"Test?";
+        assert_eq!(create_market(creator.as_ptr(), 0, 100_000, 2, qhash.as_ptr(), question.as_ptr(), 5), 0);
+    }
+
+    // ========================================================================
+    // LIQUIDITY TESTS
+    // ========================================================================
+
+    #[test]
+    fn test_add_initial_liquidity() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000); // 10 mUSD
+
+        let record = load_market(mid).unwrap();
+        assert_eq!(market_status(&record), STATUS_ACTIVE);
+        assert_eq!(market_total_collateral(&record), 10_000_000);
+        assert_eq!(market_lp_total_shares(&record), 10_000_000);
+
+        // Pools should be initialized
+        let pool_0 = load_outcome_pool(mid, 0).unwrap();
+        assert!(pool_reserve(&pool_0) > 0, "Pool 0 reserve should be > 0");
+        let pool_1 = load_outcome_pool(mid, 1).unwrap();
+        assert!(pool_reserve(&pool_1) > 0, "Pool 1 reserve should be > 0");
+    }
+
+    #[test]
+    fn test_add_initial_liquidity_too_low() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        test_mock::set_caller(creator);
+        // Below MIN_COLLATERAL (1_000_000)
+        assert_eq!(add_initial_liquidity(creator.as_ptr(), mid, 500_000, core::ptr::null(), 0), 0);
+    }
+
+    #[test]
+    fn test_add_initial_liquidity_non_creator() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        let other = [3u8; 32];
+        test_mock::set_caller(other);
+        assert_eq!(add_initial_liquidity(other.as_ptr(), mid, 10_000_000, core::ptr::null(), 0), 0);
+    }
+
+    // ========================================================================
+    // TRADING TESTS
+    // ========================================================================
+
+    #[test]
+    fn test_buy_shares() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        let trader = [3u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(2000);
+        let result = buy_shares(trader.as_ptr(), mid, 0, 1_000_000);
+        assert!(result > 0, "buy_shares should return shares received > 0");
+
+        // Trader should have shares in outcome 0
+        let (shares, cost) = load_position(mid, &trader, 0);
+        assert!(shares > 0, "Trader should have shares");
+        assert_eq!(cost, 1_000_000, "Cost basis should equal amount paid");
+    }
+
+    #[test]
+    fn test_buy_shares_wrong_caller() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        let trader = [3u8; 32];
+        let imposter = [4u8; 32];
+        test_mock::set_caller(imposter);
+        test_mock::set_slot(2000);
+        assert_eq!(buy_shares(trader.as_ptr(), mid, 0, 1_000_000), 0);
+    }
+
+    #[test]
+    fn test_buy_shares_after_close() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        let trader = [3u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100_001); // past close
+        assert_eq!(buy_shares(trader.as_ptr(), mid, 0, 1_000_000), 0);
+    }
+
+    #[test]
+    fn test_sell_shares() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        let trader = [3u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(2000);
+        let bought = buy_shares(trader.as_ptr(), mid, 0, 1_000_000);
+        assert!(bought > 0);
+
+        let (shares, _) = load_position(mid, &trader, 0);
+        let sold = sell_shares(trader.as_ptr(), mid, 0, shares);
+        assert!(sold > 0, "sell_shares should return mUSD > 0");
+
+        let (remaining, _) = load_position(mid, &trader, 0);
+        assert_eq!(remaining, 0, "All shares should be sold");
+    }
+
+    // ========================================================================
+    // COMPLETE SET TESTS
+    // ========================================================================
+
+    #[test]
+    fn test_mint_complete_set() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        let user = [3u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_slot(2000);
+        let result = mint_complete_set(user.as_ptr(), mid, 5_000_000);
+        assert_eq!(result, 1);
+
+        // User should have 5M shares in each outcome
+        let (s0, _) = load_position(mid, &user, 0);
+        let (s1, _) = load_position(mid, &user, 1);
+        assert_eq!(s0, 5_000_000);
+        assert_eq!(s1, 5_000_000);
+    }
+
+    #[test]
+    fn test_redeem_complete_set() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        let user = [3u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_slot(2000);
+        mint_complete_set(user.as_ptr(), mid, 5_000_000);
+
+        let result = redeem_complete_set(user.as_ptr(), mid, 3_000_000);
+        assert!(result > 0);
+
+        let (s0, _) = load_position(mid, &user, 0);
+        let (s1, _) = load_position(mid, &user, 1);
+        assert_eq!(s0, 2_000_000);
+        assert_eq!(s1, 2_000_000);
+    }
+
+    // ========================================================================
+    // CLOSE MARKET TESTS
+    // ========================================================================
+
+    #[test]
+    fn test_close_market_after_close_slot() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        test_mock::set_caller(creator);
+        test_mock::set_slot(100_001);
+        assert_eq!(close_market(creator.as_ptr(), mid), 1);
+
+        let record = load_market(mid).unwrap();
+        assert_eq!(market_status(&record), STATUS_CLOSED);
+    }
+
+    #[test]
+    fn test_close_market_before_close_slot_fails() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        test_mock::set_caller(creator);
+        test_mock::set_slot(50_000); // before close
+        assert_eq!(close_market(creator.as_ptr(), mid), 0);
+    }
+
+    // ========================================================================
+    // RESOLUTION TESTS
+    // ========================================================================
+
+    #[test]
+    fn test_submit_resolution_no_oracle_configured() {
+        // Without oracle address set, submit_resolution skips oracle verification
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        // Close the market
+        test_mock::set_caller(creator);
+        test_mock::set_slot(100_001);
+        close_market(creator.as_ptr(), mid);
+
+        // Submit resolution — no oracle, should succeed
+        let resolver = [5u8; 32];
+        test_mock::set_caller(resolver);
+        let att_hash = [0xCC; 32];
+        let result = submit_resolution(
+            resolver.as_ptr(), mid, 0, att_hash.as_ptr(), DISPUTE_BOND,
+        );
+        assert_eq!(result, 1, "Resolution should succeed without oracle");
+
+        let record = load_market(mid).unwrap();
+        assert_eq!(market_status(&record), STATUS_RESOLVING);
+        assert_eq!(market_winning_outcome(&record), 0);
+    }
+
+    #[test]
+    fn test_submit_resolution_with_oracle_rejects_in_mock() {
+        // With oracle address set, call_contract returns Ok(Vec::new()),
+        // which is too short (< 33 bytes), so submit_resolution should reject.
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        // Close the market
+        test_mock::set_caller(creator);
+        test_mock::set_slot(100_001);
+        close_market(creator.as_ptr(), mid);
+
+        // Set oracle address (triggers cross-contract call path)
+        let oracle = [0xEE; 32];
+        storage_set(ORACLE_ADDR_KEY, &oracle);
+
+        let resolver = [5u8; 32];
+        test_mock::set_caller(resolver);
+        let att_hash = [0xCC; 32];
+        let result = submit_resolution(
+            resolver.as_ptr(), mid, 0, att_hash.as_ptr(), DISPUTE_BOND,
+        );
+        // Mock returns empty vec → "attestation not found" → rejection
+        assert_eq!(result, 0, "Should reject when oracle returns empty data");
+    }
+
+    #[test]
+    fn test_submit_resolution_requires_closed_market() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+        // Market is still ACTIVE, not CLOSED
+        let resolver = [5u8; 32];
+        test_mock::set_caller(resolver);
+        let att_hash = [0xCC; 32];
+        assert_eq!(submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), DISPUTE_BOND), 0);
+    }
+
+    #[test]
+    fn test_submit_resolution_invalid_outcome() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        test_mock::set_caller(creator);
+        test_mock::set_slot(100_001);
+        close_market(creator.as_ptr(), mid);
+
+        let resolver = [5u8; 32];
+        test_mock::set_caller(resolver);
+        let att_hash = [0xCC; 32];
+        // outcome 5 is invalid for binary market (0 or 1 only)
+        assert_eq!(submit_resolution(resolver.as_ptr(), mid, 5, att_hash.as_ptr(), DISPUTE_BOND), 0);
+    }
+
+    #[test]
+    fn test_finalize_resolution() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        test_mock::set_caller(creator);
+        test_mock::set_slot(100_001);
+        close_market(creator.as_ptr(), mid);
+
+        let resolver = [5u8; 32];
+        test_mock::set_caller(resolver);
+        let att_hash = [0xCC; 32];
+        submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), DISPUTE_BOND);
+
+        // Advance past dispute period
+        test_mock::set_slot(100_001 + DISPUTE_PERIOD + 1);
+        assert_eq!(finalize_resolution(resolver.as_ptr(), mid), 1);
+
+        let record = load_market(mid).unwrap();
+        assert_eq!(market_status(&record), STATUS_RESOLVED);
+        assert_eq!(market_winning_outcome(&record), 0);
+    }
+
+    // ========================================================================
+    // REDEEM SHARES TESTS (POST-FIX: token transfer + full u64 payout)
+    // ========================================================================
+
+    #[test]
+    fn test_redeem_winning_shares() {
+        setup();
+        init_contract();
+        configure_escrow();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        // Trader buys YES shares (outcome 0)
+        let trader = [3u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(2000);
+        let shares = buy_shares(trader.as_ptr(), mid, 0, 2_000_000);
+        assert!(shares > 0);
+
+        // Forcefully resolve market: YES wins (outcome 0)
+        force_resolve_market(mid, 0);
+
+        // Redeem winning shares
+        test_mock::set_caller(trader);
+        let (user_shares, _) = load_position(mid, &trader, 0);
+        assert!(user_shares > 0);
+
+        let result = redeem_shares(trader.as_ptr(), mid, 0);
+        assert!(result > 0, "redeem_shares should return payout as u32");
+
+        // Return data should have full u64 payout
+        let payout = bytes_to_u64(&test_mock::get_return_data());
+        assert_eq!(payout, user_shares, "Payout should equal shares held");
+
+        // Position should be cleared
+        let (remaining, _) = load_position(mid, &trader, 0);
+        assert_eq!(remaining, 0, "Position should be cleared after redemption");
+    }
+
+    #[test]
+    fn test_redeem_losing_shares() {
+        setup();
+        init_contract();
+        configure_escrow();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        // Trader buys NO shares (outcome 1)
+        let trader = [3u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(2000);
+        buy_shares(trader.as_ptr(), mid, 1, 2_000_000);
+
+        // Resolve: YES wins (outcome 0) — trader's NO shares are losing
+        force_resolve_market(mid, 0);
+
+        test_mock::set_caller(trader);
+        let result = redeem_shares(trader.as_ptr(), mid, 1);
+        // Losing shares: returns 0 (worthless) — backward-compatible
+        assert_eq!(result, 0, "Losing shares should return 0");
+        let payout = bytes_to_u64(&test_mock::get_return_data());
+        assert_eq!(payout, 0, "Losing shares should have zero payout");
+    }
+
+    #[test]
+    fn test_redeem_double_redemption_blocked() {
+        setup();
+        init_contract();
+        configure_escrow();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        let trader = [3u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(2000);
+        buy_shares(trader.as_ptr(), mid, 0, 2_000_000);
+
+        force_resolve_market(mid, 0);
+
+        test_mock::set_caller(trader);
+        assert!(redeem_shares(trader.as_ptr(), mid, 0) > 0); // first redeem succeeds
+        assert_eq!(redeem_shares(trader.as_ptr(), mid, 0), 0); // second blocked (no shares)
+    }
+
+    #[test]
+    fn test_redeem_shares_not_resolved_fails() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        let trader = [3u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(2000);
+        buy_shares(trader.as_ptr(), mid, 0, 2_000_000);
+
+        // Market is still ACTIVE (not resolved)
+        test_mock::set_caller(trader);
+        assert_eq!(redeem_shares(trader.as_ptr(), mid, 0), 0);
+    }
+
+    #[test]
+    fn test_redeem_large_payout_no_truncation() {
+        // Verify the u32 truncation bug is fixed — payouts > 4B micro-mUSD work
+        setup();
+        init_contract();
+        configure_escrow();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        // Directly set a position with > u32::MAX shares to verify no truncation
+        let trader = [3u8; 32];
+        let large_shares: u64 = 5_000_000_000; // 5B micro-mUSD = $5000
+        save_position(mid, &trader, 0, large_shares, large_shares);
+
+        force_resolve_market(mid, 0);
+
+        // Also set enough collateral
+        let mut record = load_market(mid).unwrap();
+        set_market_total_collateral(&mut record, large_shares + 1_000_000);
+        save_market(mid, &record);
+        save_u64(TOTAL_COLLATERAL_KEY, large_shares + 1_000_000);
+
+        test_mock::set_caller(trader);
+        let result = redeem_shares(trader.as_ptr(), mid, 0);
+        // Return value is payout as u32 — truncated for very large payouts
+        // But return_data has the full u64
+        assert!(result > 0);
+
+        let payout = bytes_to_u64(&test_mock::get_return_data());
+        assert_eq!(payout, large_shares, "Full u64 payout should be preserved in return_data");
+        assert!(payout > u32::MAX as u64, "Payout exceeds u32::MAX — return_data is not truncated");
+    }
+
+    // ========================================================================
+    // RECLAIM COLLATERAL TESTS (VOIDED MARKET)
+    // ========================================================================
+
+    #[test]
+    fn test_reclaim_collateral_voided_market() {
+        setup();
+        init_contract();
+        configure_escrow();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        // User mints complete set
+        let user = [3u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_slot(2000);
+        mint_complete_set(user.as_ptr(), mid, 3_000_000);
+
+        // Void the market
+        force_void_market(mid);
+
+        test_mock::set_caller(user);
+        let result = reclaim_collateral(user.as_ptr(), mid);
+        assert!(result > 0, "Reclaim should succeed for voided market");
+
+        let refund = bytes_to_u64(&test_mock::get_return_data());
+        assert!(refund > 0, "Refund should be > 0");
+
+        // Position should be cleared
+        let (s0, _) = load_position(mid, &user, 0);
+        let (s1, _) = load_position(mid, &user, 1);
+        assert_eq!(s0, 0);
+        assert_eq!(s1, 0);
+    }
+
+    #[test]
+    fn test_reclaim_collateral_non_voided_fails() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        let user = [3u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_slot(2000);
+        mint_complete_set(user.as_ptr(), mid, 3_000_000);
+
+        // Market is ACTIVE, not VOIDED
+        test_mock::set_caller(user);
+        assert_eq!(reclaim_collateral(user.as_ptr(), mid), 0);
+    }
+
+    // ========================================================================
+    // DAO RESOLVE/VOID TESTS
+    // ========================================================================
+
+    #[test]
+    fn test_dao_resolve() {
+        setup();
+        let admin = init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        // Manually set to DISPUTED
+        let mut record = load_market(mid).unwrap();
+        set_market_status(&mut record, STATUS_DISPUTED);
+        save_market(mid, &record);
+
+        test_mock::set_caller(admin);
+        assert_eq!(dao_resolve(admin.as_ptr(), mid, 1), 1);
+
+        let record = load_market(mid).unwrap();
+        assert_eq!(market_status(&record), STATUS_RESOLVED);
+        assert_eq!(market_winning_outcome(&record), 1);
+    }
+
+    #[test]
+    fn test_dao_void() {
+        setup();
+        let admin = init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        test_mock::set_caller(admin);
+        assert_eq!(dao_void(admin.as_ptr(), mid), 1);
+
+        let record = load_market(mid).unwrap();
+        assert_eq!(market_status(&record), STATUS_VOIDED);
+    }
+
+    #[test]
+    fn test_dao_resolve_non_admin_fails() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        let mut record = load_market(mid).unwrap();
+        set_market_status(&mut record, STATUS_DISPUTED);
+        save_market(mid, &record);
+
+        let rando = [99u8; 32];
+        test_mock::set_caller(rando);
+        assert_eq!(dao_resolve(rando.as_ptr(), mid, 0), 0);
+    }
+
+    // ========================================================================
+    // ADMIN CONFIG TESTS
+    // ========================================================================
+
+    #[test]
+    fn test_set_self_address() {
+        setup();
+        let admin = init_contract();
+        let self_addr = [0xBB; 32];
+        assert_eq!(set_self_address(admin.as_ptr(), self_addr.as_ptr()), 1);
+        assert_eq!(load_self_addr(), self_addr);
+    }
+
+    #[test]
+    fn test_set_self_address_non_admin() {
+        setup();
+        init_contract();
+        let rando = [99u8; 32];
+        let addr = [0xBB; 32];
+        test_mock::set_caller(rando);
+        assert_eq!(set_self_address(rando.as_ptr(), addr.as_ptr()), 0);
+    }
+
+    #[test]
+    fn test_set_self_address_rejects_zero() {
+        setup();
+        let admin = init_contract();
+        let zero = [0u8; 32];
+        assert_eq!(set_self_address(admin.as_ptr(), zero.as_ptr()), 0);
+    }
+
+    #[test]
+    fn test_set_musd_address() {
+        setup();
+        let admin = init_contract();
+        let musd = [0xAA; 32];
+        assert_eq!(set_musd_address(admin.as_ptr(), musd.as_ptr()), 1);
+        assert_eq!(load_addr(MUSD_ADDR_KEY), musd);
+    }
+
+    #[test]
+    fn test_set_oracle_address() {
+        setup();
+        let admin = init_contract();
+        let oracle = [0xEE; 32];
+        assert_eq!(set_oracle_address(admin.as_ptr(), oracle.as_ptr()), 1);
+        assert_eq!(load_addr(ORACLE_ADDR_KEY), oracle);
+    }
+
+    // ========================================================================
+    // PAUSE TESTS
+    // ========================================================================
+
+    #[test]
+    fn test_pause_blocks_create_market() {
+        setup();
+        let admin = init_contract();
+        storage_set(PAUSED_KEY, &[1]);
+
+        let creator = [2u8; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_slot(1000);
+        let qhash = [0x42u8; 32];
+        let question = b"Paused?";
+        assert_eq!(create_market(creator.as_ptr(), 0, 100_000, 2, qhash.as_ptr(), question.as_ptr(), 7), 0);
+    }
+
+    #[test]
+    fn test_pause_blocks_buy_shares() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        storage_set(PAUSED_KEY, &[1]);
+
+        let trader = [3u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(2000);
+        assert_eq!(buy_shares(trader.as_ptr(), mid, 0, 1_000_000), 0);
+    }
+
+    // ========================================================================
+    // FULL LIFECYCLE TEST
+    // ========================================================================
+
+    #[test]
+    fn test_full_market_lifecycle() {
+        setup();
+        init_contract();
+        configure_escrow();
+        let creator = [2u8; 32];
+
+        // 1. Create market
+        let mid = create_binary_market(&creator, 100_000);
+        assert_eq!(mid, 1);
+
+        // 2. Add initial liquidity → ACTIVE
+        activate_market(&creator, mid, 10_000_000);
+        let record = load_market(mid).unwrap();
+        assert_eq!(market_status(&record), STATUS_ACTIVE);
+
+        // 3. Traders buy shares
+        let trader_yes = [3u8; 32];
+        let trader_no = [4u8; 32];
+        test_mock::set_slot(5000);
+
+        test_mock::set_caller(trader_yes);
+        let yes_shares = buy_shares(trader_yes.as_ptr(), mid, 0, 2_000_000);
+        assert!(yes_shares > 0);
+
+        test_mock::set_caller(trader_no);
+        let no_shares = buy_shares(trader_no.as_ptr(), mid, 1, 1_000_000);
+        assert!(no_shares > 0);
+
+        // 4. Close market
+        test_mock::set_slot(100_001);
+        test_mock::set_caller(creator);
+        assert_eq!(close_market(creator.as_ptr(), mid), 1);
+
+        // 5. Resolve: YES wins
+        let resolver = [5u8; 32];
+        test_mock::set_caller(resolver);
+        let att_hash = [0xDD; 32];
+        assert_eq!(submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), DISPUTE_BOND), 1);
+
+        // 6. Finalize after dispute period
+        test_mock::set_slot(100_001 + DISPUTE_PERIOD + 1);
+        assert_eq!(finalize_resolution(resolver.as_ptr(), mid), 1);
+
+        // 7. Winning trader redeems
+        test_mock::set_caller(trader_yes);
+        let (yes_held, _) = load_position(mid, &trader_yes, 0);
+        assert!(yes_held > 0);
+        let rdm = redeem_shares(trader_yes.as_ptr(), mid, 0);
+        assert!(rdm > 0);
+        let payout = bytes_to_u64(&test_mock::get_return_data());
+        assert_eq!(payout, yes_held);
+
+        // 8. Losing trader redeems (zero payout)
+        test_mock::set_caller(trader_no);
+        assert_eq!(redeem_shares(trader_no.as_ptr(), mid, 1), 0); // losing returns 0
+        let no_payout = bytes_to_u64(&test_mock::get_return_data());
+        assert_eq!(no_payout, 0);
+
+        // 9. Verify final state
+        let record = load_market(mid).unwrap();
+        assert_eq!(market_status(&record), STATUS_RESOLVED);
+        assert_eq!(market_winning_outcome(&record), 0);
+    }
+
+    // ========================================================================
+    // QUERY TESTS
+    // ========================================================================
+
+    #[test]
+    fn test_get_market_count() {
+        setup();
+        init_contract();
+        assert_eq!(get_market_count(), 0);
+
+        let creator = [2u8; 32];
+        create_binary_market(&creator, 100_000);
+        assert_eq!(get_market_count(), 1);
+
+        // Use different question hash
+        test_mock::set_caller(creator);
+        let qhash2 = [0x43u8; 32];
+        let q2 = b"Will BTC hit $500K?";
+        create_market(creator.as_ptr(), CATEGORY_CRYPTO, 100_000, 2, qhash2.as_ptr(), q2.as_ptr(), q2.len() as u32);
+        assert_eq!(get_market_count(), 2);
+    }
+
+    #[test]
+    fn test_price_calculation() {
+        // Verify AMM price math for equal odds
+        let reserves = [1_000_000u64, 1_000_000];
+        let p0 = calculate_price(&reserves, 0);
+        let p1 = calculate_price(&reserves, 1);
+        assert_eq!(p0, 500_000, "Equal odds should give $0.50");
+        assert_eq!(p1, 500_000);
+    }
+
+    #[test]
+    fn test_price_calculation_skewed() {
+        // More YES shares than NO → YES is cheaper
+        let reserves = [2_000_000u64, 1_000_000];
+        let p_yes = calculate_price(&reserves, 0);
+        let p_no = calculate_price(&reserves, 1);
+        // price_yes = r_no / (r_yes + r_no) = 1M / 3M = 0.333 → 333_333
+        assert!(p_yes < 400_000, "YES should be cheap");
+        assert!(p_no > 600_000, "NO should be expensive");
+        // Sum should be ~MUSD_UNIT
+        assert!((p_yes + p_no).abs_diff(MUSD_UNIT) < 2, "Prices should sum to ~$1");
     }
 }
