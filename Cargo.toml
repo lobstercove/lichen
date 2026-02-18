@@ -11,6 +11,7 @@ members = [
 exclude = [
     "contracts/*",
     "sdk",
+    "compiler",
 ]
 
 resolver = "2"
