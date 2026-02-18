@@ -483,9 +483,24 @@ async function loadAssets() {
 
   try {
     const result = await rpc.getBalance(wallet.address);
-    const raw = Number(result?.shells || result?.spendable || 0);
-    const molt = raw / 1_000_000_000;
+    const spendableRaw = Number(result?.spendable ?? result?.shells ?? 0);
+    const totalRaw = Number(result?.shells ?? spendableRaw);
+    const stakedRaw = Number(result?.staked ?? 0);
+    const reefRaw = Number(result?.reef_staked ?? 0);
+    const lockedRaw = Number(result?.locked ?? 0);
+    const div = 1_000_000_000;
     const decimals = displayDecimals();
+    const fmt = v => v.toLocaleString(undefined, { maximumFractionDigits: decimals });
+
+    let breakdownHtml = '';
+    if (stakedRaw > 0 || reefRaw > 0 || lockedRaw > 0) {
+      const parts = [];
+      parts.push(`Spendable: ${fmt(spendableRaw / div)}`);
+      if (stakedRaw > 0) parts.push(`Staked: ${fmt(stakedRaw / div)}`);
+      if (reefRaw > 0) parts.push(`ReefStake: ${fmt(reefRaw / div)}`);
+      if (lockedRaw > 0) parts.push(`Locked: ${fmt(lockedRaw / div)}`);
+      breakdownHtml = `<span style="font-size:10px;color:#888;margin-top:2px">${parts.join(' · ')}</span>`;
+    }
 
     assetsList.innerHTML = `
       <div class="popup-activity-item">
@@ -494,9 +509,10 @@ async function loadAssets() {
           <strong>MOLT</strong>
           <span>Native token</span>
         </div>
-        <div class="popup-asset-amount">
-          <strong>${molt.toLocaleString(undefined, { maximumFractionDigits: decimals })}</strong>
+        <div class="popup-asset-amount" style="display:flex;flex-direction:column;align-items:flex-end">
+          <strong>${fmt(totalRaw / div)}</strong>
           <span>MOLT</span>
+          ${breakdownHtml}
         </div>
       </div>
     `;
@@ -532,19 +548,29 @@ async function loadActivity() {
       const shortSig = `${String(sig).slice(0, 8)}...${String(sig).slice(-4)}`;
       const isSent = (tx.from === wallet.address);
 
-      // 14 type mappings — aligned with wallet website
+      // 22 type mappings — aligned with wallet website
       const typeMap = {
         'Transfer': isSent ? 'Sent' : 'Received',
         'Airdrop': 'Airdrop',
         'Stake': 'Staked',
         'Unstake': 'Unstaked',
         'ClaimUnstake': 'Claimed Unstake',
+        'ReefStakeDeposit': 'Staked (ReefStake)',
+        'ReefStakeUnstake': 'Unstaked (ReefStake)',
+        'ReefStakeClaim': 'Claimed (ReefStake)',
+        'ReefStakeTransfer': 'Transfer (stMOLT)',
         'RegisterEvmAddress': 'EVM Registration',
         'Contract': 'Contract Call',
+        'DeployContract': 'Deploy Contract',
+        'SetContractABI': 'Set Contract ABI',
+        'FaucetAirdrop': 'Faucet Airdrop',
+        'RegisterSymbol': 'Register Symbol',
+        'CreateAccount': 'Create Account',
         'CreateCollection': 'Created Collection',
         'MintNFT': 'Minted NFT',
         'TransferNFT': isSent ? 'Sent NFT' : 'Received NFT',
         'Reward': 'Reward',
+        'GrantRepay': 'Grant Repay',
         'GenesisTransfer': 'Genesis Transfer',
         'GenesisMint': 'Genesis Mint',
       };
@@ -558,15 +584,18 @@ async function loadActivity() {
       let color = isSent ? '#ff6b35' : '#4ade80';
       let sign = isSent ? '-' : '+';
 
-      if (tx.type === 'Stake' || tx.type === 'Unstake' || tx.type === 'ClaimUnstake') {
+      if (tx.type === 'Stake' || tx.type === 'Unstake' || tx.type === 'ClaimUnstake'
+          || tx.type === 'ReefStakeDeposit' || tx.type === 'ReefStakeUnstake'
+          || tx.type === 'ReefStakeClaim' || tx.type === 'ReefStakeTransfer') {
         icon = 'fa-coins'; color = '#a78bfa';
+        if (tx.type === 'ReefStakeDeposit' || tx.type === 'Stake') sign = '-';
       } else if (tx.type === 'RegisterEvmAddress') {
         icon = 'fa-link'; color = '#94a3b8';
-      } else if (tx.type === 'Contract') {
+      } else if (tx.type === 'Contract' || tx.type === 'DeployContract' || tx.type === 'SetContractABI') {
         icon = 'fa-file-code'; color = '#f59e0b';
-      } else if (tx.type === 'Reward' || tx.type === 'GenesisTransfer' || tx.type === 'GenesisMint') {
+      } else if (tx.type === 'Reward' || tx.type === 'GenesisTransfer' || tx.type === 'GenesisMint' || tx.type === 'GrantRepay') {
         icon = 'fa-gift'; color = '#4ade80'; sign = '+';
-      } else if (tx.type === 'Airdrop') {
+      } else if (tx.type === 'Airdrop' || tx.type === 'FaucetAirdrop') {
         icon = 'fa-parachute-box'; color = '#60a5fa';
       }
 
@@ -575,7 +604,9 @@ async function loadActivity() {
 
       // Fee display: show actual fee amount for 0-amount contract calls / EVM registration
       const isZeroAmount = Number(amountVal) === 0;
-      const isFeeOnly = tx.type === 'RegisterEvmAddress' || (tx.type === 'Contract' && isZeroAmount);
+      const isFeeOnly = tx.type === 'RegisterEvmAddress' || tx.type === 'CreateAccount'
+          || tx.type === 'DeployContract' || tx.type === 'SetContractABI' || tx.type === 'RegisterSymbol'
+          || (tx.type === 'Contract' && isZeroAmount);
       const feeShells = tx.fee_shells || tx.fee || 0;
       const feeAmt = (feeShells / 1_000_000_000).toLocaleString(undefined, { maximumFractionDigits: 4 });
       const amountStr = isFeeOnly ? `${feeAmt} MOLT` : `${sign}${amt} MOLT`;

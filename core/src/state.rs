@@ -432,6 +432,7 @@ impl MetricsStore {
     }
 
     /// Decrement account counter
+    #[allow(dead_code)]
     pub fn decrement_accounts(&self) {
         let mut count = self
             .total_accounts
@@ -1497,6 +1498,7 @@ impl StateStore {
     }
 
     /// Fast state root check: returns cached root if no accounts modified since last computation
+    #[allow(dead_code)]
     pub fn compute_state_root_cached(&self) -> Hash {
         if let Some(cf) = self.db.cf_handle(CF_STATS) {
             // Check dirty counter
@@ -1547,6 +1549,7 @@ impl StateStore {
 
     /// Legacy mark_account_dirty (no pubkey) — sets dirty flag only.
     /// Prefer mark_account_dirty_with_key() for incremental Merkle support.
+    #[allow(dead_code)]
     pub fn mark_account_dirty(&self) {
         if let Some(cf) = self.db.cf_handle(CF_STATS) {
             // PERF-OPT 9: Just write non-zero instead of read-modify-write
@@ -1639,6 +1642,7 @@ impl StateStore {
 
     /// Reconcile account counter with actual database count
     /// Use this to fix discrepancies between counter and reality
+    #[allow(dead_code)]
     pub fn reconcile_account_count(&self) -> Result<(), String> {
         let actual_count = self.count_accounts()?;
         let mut counter = self
@@ -5012,6 +5016,7 @@ impl StateStore {
     // ─── Transaction-by-Slot Index ───────────────────────────────────────────
 
     /// Index a transaction by slot. Key: slot(BE 8) + seq(BE 8), Value: tx hash
+    #[allow(dead_code)]
     pub fn index_tx_by_slot(&self, slot: u64, tx_hash: &Hash) -> Result<(), String> {
         let cf = self
             .db
@@ -5080,6 +5085,7 @@ impl StateStore {
     }
 
     /// Index a transaction signature → slot for O(1) reverse lookup.
+    #[allow(dead_code)]
     pub fn index_tx_to_slot(&self, sig: &Hash, slot: u64) -> Result<(), String> {
         let cf = self
             .db
@@ -5152,6 +5158,7 @@ impl StateStore {
     }
 
     /// Reconcile active account count with actual database
+    #[allow(dead_code)]
     pub fn reconcile_active_account_count(&self) -> Result<(), String> {
         let actual_count = self.count_active_accounts()?;
         let mut counter = self

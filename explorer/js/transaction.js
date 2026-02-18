@@ -284,6 +284,7 @@ async function displayTransaction(tx) {
         'FaucetAirdrop':    'Faucet Airdrop',
         'RegisterSymbol':   'Register Symbol',
         'RegisterEvmAddress': 'EVM Registration',
+        'CreateAccount':    'Create Account',
         'CreateCollection': 'Create Collection',
         'MintNFT':          'Mint NFT',
         'TransferNFT':      'Transfer NFT',
