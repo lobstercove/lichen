@@ -4929,8 +4929,22 @@ async fn handle_get_all_contracts(state: &RpcState) -> Result<serde_json::Value,
     let contracts: Vec<serde_json::Value> = programs
         .iter()
         .map(|(pk, metadata)| {
+            // Enrich with symbol/name from the registry when available
+            let (symbol, name, owner) =
+                if let Ok(Some(entry)) = state.state.get_symbol_registry_by_program(pk) {
+                    (
+                        Some(entry.symbol.clone()),
+                        Some(entry.name.clone()),
+                        Some(entry.owner.to_base58()),
+                    )
+                } else {
+                    (None, None, None)
+                };
             serde_json::json!({
                 "program_id": pk.to_base58(),
+                "symbol": symbol,
+                "name": name,
+                "owner": owner,
                 "metadata": metadata,
             })
         })
