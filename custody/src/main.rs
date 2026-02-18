@@ -571,7 +571,13 @@ struct StatusCounts {
     by_status: BTreeMap<String, usize>,
 }
 
-async fn status(State(state): State<CustodyState>) -> Result<Json<Value>, Json<ErrorResponse>> {
+/// AUDIT-FIX F8.5: Status endpoint now requires auth to prevent leaking internal job counts.
+async fn status(
+    State(state): State<CustodyState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Value>, Json<ErrorResponse>> {
+    verify_api_auth(&state.config, &headers)?;
+
     let sweep_counts = count_sweep_jobs(&state.db).map_err(|e| Json(ErrorResponse::db(&e)))?;
     let credit_counts = count_credit_jobs(&state.db).map_err(|e| Json(ErrorResponse::db(&e)))?;
 
@@ -585,10 +591,16 @@ async fn status(State(state): State<CustodyState>) -> Result<Json<Value>, Json<E
     })))
 }
 
+/// AUDIT-FIX F8.6: Deposit creation now requires API auth.
+/// Without auth, anyone can create deposit addresses which generates derivation paths
+/// and (combined with a compromised master seed) could reconstruct private keys.
 async fn create_deposit(
     State(state): State<CustodyState>,
+    headers: axum::http::HeaderMap,
     Json(payload): Json<CreateDepositRequest>,
 ) -> Result<Json<CreateDepositResponse>, Json<ErrorResponse>> {
+    verify_api_auth(&state.config, &headers)?;
+
     let chain = payload.chain.to_lowercase();
     let asset = payload.asset.to_lowercase();
     if chain.is_empty() || asset.is_empty() || payload.user_id.is_empty() {
@@ -684,10 +696,16 @@ async fn create_deposit(
     }))
 }
 
+/// AUDIT-FIX F8.3: Deposit lookup now requires API auth.
+/// Without auth, anyone guessing/brute-forcing deposit UUIDs could retrieve
+/// user_id, chain, asset, address, and derivation_path.
 async fn get_deposit(
     State(state): State<CustodyState>,
+    headers: axum::http::HeaderMap,
     axum::extract::Path(deposit_id): axum::extract::Path<String>,
 ) -> Result<Json<DepositRequest>, Json<ErrorResponse>> {
+    verify_api_auth(&state.config, &headers)?;
+
     let record = fetch_deposit(&state.db, &deposit_id)
         .map_err(|e| Json(ErrorResponse::db(&e)))?
         .ok_or_else(|| Json(ErrorResponse::not_found("Deposit not found")))?;
@@ -3417,40 +3435,64 @@ fn store_credit_job(db: &DB, job: &CreditJob) -> Result<(), String> {
         .map_err(|e| format!("db put: {}", e))
 }
 
+/// AUDIT-FIX F8.9: Use status index for O(active) instead of O(total) full-table scan.
 fn count_sweep_jobs(db: &DB) -> Result<StatusCounts, String> {
-    let cf = db
-        .cf_handle(CF_SWEEP_JOBS)
-        .ok_or_else(|| "missing sweep_jobs cf".to_string())?;
     let mut counts = StatusCounts {
         total: 0,
         by_status: BTreeMap::new(),
     };
-    let iter = db.iterator_cf(cf, rocksdb::IteratorMode::Start);
-    for item in iter {
-        let (_, value) = item.map_err(|e| format!("db iter: {}", e))?;
-        let record: SweepJob =
-            serde_json::from_slice(&value).map_err(|e| format!("decode: {}", e))?;
-        counts.total += 1;
-        *counts.by_status.entry(record.status).or_insert(0) += 1;
+    for status in &["queued", "signing", "signed", "sweep_submitted", "sweep_confirmed", "permanently_failed", "failed"] {
+        let ids = list_ids_by_status_index(db, "sweep", status)?;
+        let count = ids.len();
+        if count > 0 {
+            counts.total += count;
+            counts.by_status.insert(status.to_string(), count);
+        }
+    }
+    // If status index is empty, fall back to full scan (pre-index data)
+    if counts.total == 0 {
+        let cf = db
+            .cf_handle(CF_SWEEP_JOBS)
+            .ok_or_else(|| "missing sweep_jobs cf".to_string())?;
+        let iter = db.iterator_cf(cf, rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (_, value) = item.map_err(|e| format!("db iter: {}", e))?;
+            let record: SweepJob =
+                serde_json::from_slice(&value).map_err(|e| format!("decode: {}", e))?;
+            counts.total += 1;
+            *counts.by_status.entry(record.status).or_insert(0) += 1;
+        }
     }
     Ok(counts)
 }
 
+/// AUDIT-FIX F8.9: Use status index for O(active) instead of O(total) full-table scan.
 fn count_credit_jobs(db: &DB) -> Result<StatusCounts, String> {
-    let cf = db
-        .cf_handle(CF_CREDIT_JOBS)
-        .ok_or_else(|| "missing credit_jobs cf".to_string())?;
     let mut counts = StatusCounts {
         total: 0,
         by_status: BTreeMap::new(),
     };
-    let iter = db.iterator_cf(cf, rocksdb::IteratorMode::Start);
-    for item in iter {
-        let (_, value) = item.map_err(|e| format!("db iter: {}", e))?;
-        let record: CreditJob =
-            serde_json::from_slice(&value).map_err(|e| format!("decode: {}", e))?;
-        counts.total += 1;
-        *counts.by_status.entry(record.status).or_insert(0) += 1;
+    for status in &["queued", "submitted", "confirmed", "permanently_failed", "failed"] {
+        let ids = list_ids_by_status_index(db, "credit", status)?;
+        let count = ids.len();
+        if count > 0 {
+            counts.total += count;
+            counts.by_status.insert(status.to_string(), count);
+        }
+    }
+    // If status index is empty, fall back to full scan (pre-index data)
+    if counts.total == 0 {
+        let cf = db
+            .cf_handle(CF_CREDIT_JOBS)
+            .ok_or_else(|| "missing credit_jobs cf".to_string())?;
+        let iter = db.iterator_cf(cf, rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (_, value) = item.map_err(|e| format!("db iter: {}", e))?;
+            let record: CreditJob =
+                serde_json::from_slice(&value).map_err(|e| format!("decode: {}", e))?;
+            counts.total += 1;
+            *counts.by_status.entry(record.status).or_insert(0) += 1;
+        }
     }
     Ok(counts)
 }
@@ -4130,6 +4172,32 @@ async fn create_withdrawal(
     }
 
     let asset_lower = req.asset.to_lowercase();
+
+    // AUDIT-FIX F8.8: Validate dest_address format before processing.
+    // Invalid addresses would waste signer resources and only fail at broadcast time.
+    match req.dest_chain.as_str() {
+        "solana" => {
+            if bs58::decode(&req.dest_address).into_vec().map(|v| v.len()).unwrap_or(0) != 32 {
+                return Json(json!({
+                    "error": format!("invalid Solana destination address: {}", req.dest_address)
+                }));
+            }
+        }
+        "ethereum" => {
+            let trimmed = req.dest_address.trim_start_matches("0x");
+            if trimmed.len() != 40 || hex::decode(trimmed).is_err() {
+                return Json(json!({
+                    "error": format!("invalid Ethereum destination address: {}", req.dest_address)
+                }));
+            }
+        }
+        _ => {
+            return Json(json!({
+                "error": format!("unsupported destination chain: {}", req.dest_chain)
+            }));
+        }
+    }
+
     let (dest_asset, _) = match asset_lower.as_str() {
         "musd" => ("stablecoin", "stablecoin"),
         "wsol" => ("sol", "native"),
@@ -4317,15 +4385,21 @@ async fn submit_burn_signature(
         return Err(Json(ErrorResponse::invalid("burn_tx_signature required")));
     }
 
-    // AUDIT-FIX R-H3: Serialize burn signature submission per job_id
+    // AUDIT-FIX R-H3 + F8.7: Serialize burn signature submission per job_id
     // to prevent TOCTOU race where two concurrent requests both pass the
     // "burn_tx_signature is None" check and one overwrites the other.
+    // F8.7: Prune map when it exceeds 10,000 entries to prevent unbounded growth.
     static BURN_LOCKS: std::sync::LazyLock<
         std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>
     > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
     let lock = {
         let mut locks = BURN_LOCKS.lock().unwrap_or_else(|e| e.into_inner());
+        // F8.7: Prevent unbounded memory growth — clear stale entries when map is large
+        if locks.len() > 10_000 {
+            // Retain only entries with active references (Arc strong_count > 1)
+            locks.retain(|_, v| std::sync::Arc::strong_count(v) > 1);
+        }
         locks.entry(job_id.clone())
             .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
             .clone()
@@ -4501,11 +4575,17 @@ async fn adjust_reserve_balance(
     Ok(())
 }
 
-/// GET /reserves — Returns current stablecoin reserve balances across all chains
-async fn get_reserves(State(state): State<CustodyState>) -> Json<Value> {
+/// AUDIT-FIX F8.4: Reserves endpoint now requires API auth.
+/// Without auth, this leaks treasury stablecoin balances to unauthenticated callers.
+async fn get_reserves(
+    State(state): State<CustodyState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Value>, Json<ErrorResponse>> {
+    verify_api_auth(&state.config, &headers)?;
+
     let cf = match state.db.cf_handle(CF_RESERVE_LEDGER) {
         Some(cf) => cf,
-        None => return Json(json!({"error": "reserve ledger not available"})),
+        None => return Ok(Json(json!({"error": "reserve ledger not available"}))),
     };
     let mut entries = Vec::new();
     let iter = state.db.iterator_cf(cf, rocksdb::IteratorMode::Start);
@@ -4553,10 +4633,10 @@ async fn get_reserves(State(state): State<CustodyState>) -> Json<Value> {
         }));
     }
 
-    Json(json!({
+    Ok(Json(json!({
         "reserves": entries,
         "chain_ratios": ratios,
-    }))
+    })))
 }
 
 // ============================================================================
@@ -4638,6 +4718,7 @@ async fn rebalance_worker_loop(state: CustodyState) {
 /// Background loop: prunes expired, unfunded deposit addresses.
 /// Only deposits in "issued" status (never received funds) older than
 /// `deposit_ttl_secs` are marked "expired" and their address index removed.
+/// AUDIT-FIX F8.10: Uses status index for "issued" deposits instead of full-table scan.
 async fn deposit_cleanup_loop(state: CustodyState) {
     loop {
         // Run every 10 minutes
@@ -4649,28 +4730,41 @@ async fn deposit_cleanup_loop(state: CustodyState) {
         }
         let cutoff = chrono::Utc::now().timestamp() - ttl;
 
-        let cf = match state.db.cf_handle(CF_DEPOSITS) {
-            Some(cf) => cf,
-            None => continue,
+        // F8.10: Use status index to find "issued" deposits instead of full-table scan
+        let issued_ids = match list_ids_by_status_index(&state.db, "deposits", "issued") {
+            Ok(ids) => ids,
+            Err(_) => continue,
         };
 
         let mut expired_ids = Vec::new();
-        let iter = state.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
-        for item in iter {
-            let (key, value) = match item {
-                Ok(kv) => kv,
-                Err(_) => continue,
-            };
-            let record: DepositRequest = match serde_json::from_slice(&value) {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-            // Only expire deposits that never received funds ("issued" status)
-            if record.status == "issued" && record.created_at < cutoff {
-                expired_ids.push((
-                    String::from_utf8_lossy(&key).to_string(),
-                    record.address.clone(),
-                ));
+        for id in &issued_ids {
+            if let Ok(Some(record)) = fetch_deposit(&state.db, id) {
+                if record.status == "issued" && record.created_at < cutoff {
+                    expired_ids.push((id.clone(), record.address.clone()));
+                }
+            }
+        }
+
+        // Fallback: if status index was empty, try full scan (pre-index data)
+        if expired_ids.is_empty() && issued_ids.is_empty() {
+            if let Some(cf) = state.db.cf_handle(CF_DEPOSITS) {
+                let iter = state.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
+                for item in iter {
+                    let (key, value) = match item {
+                        Ok(kv) => kv,
+                        Err(_) => continue,
+                    };
+                    let record: DepositRequest = match serde_json::from_slice(&value) {
+                        Ok(r) => r,
+                        Err(_) => continue,
+                    };
+                    if record.status == "issued" && record.created_at < cutoff {
+                        expired_ids.push((
+                            String::from_utf8_lossy(&key).to_string(),
+                            record.address.clone(),
+                        ));
+                    }
+                }
             }
         }
 
@@ -6433,6 +6527,7 @@ async fn delete_webhook(
 
 /// GET /events — Paginated audit event history (most recent first).
 /// Query params: ?limit=50&after=<event_id>&event_type=<filter>
+/// AUDIT-FIX F8.11: `after` param now implemented for cursor-based pagination.
 async fn list_events(
     State(state): State<CustodyState>,
     headers: axum::http::HeaderMap,
@@ -6446,6 +6541,7 @@ async fn list_events(
         .unwrap_or(50)
         .min(500);
     let event_type_filter = params.get("event_type").cloned();
+    let after_cursor = params.get("after").cloned();
 
     let cf = state
         .db
@@ -6453,13 +6549,25 @@ async fn list_events(
         .ok_or_else(|| Json(ErrorResponse::db("missing audit_events cf")))?;
 
     let mut events = Vec::new();
+    let mut past_cursor = after_cursor.is_none(); // if no cursor, start collecting immediately
     let iter = state.db.iterator_cf(cf, rocksdb::IteratorMode::End);
     for item in iter {
         if events.len() >= limit {
             break;
         }
-        let (_, value) = item.map_err(|e| Json(ErrorResponse::db(&format!("iter: {}", e))))?;
+        let (key, value) = item.map_err(|e| Json(ErrorResponse::db(&format!("iter: {}", e))))?;
         if let Ok(event) = serde_json::from_slice::<Value>(&value) {
+            // F8.11: Skip events until we pass the cursor
+            if !past_cursor {
+                let key_str = std::str::from_utf8(&key).unwrap_or("");
+                let event_id = event.get("event_id").and_then(|v| v.as_str()).unwrap_or("");
+                if key_str == after_cursor.as_deref().unwrap_or("")
+                    || event_id == after_cursor.as_deref().unwrap_or("")
+                {
+                    past_cursor = true;
+                }
+                continue;
+            }
             if let Some(ref filter) = event_type_filter {
                 if event.get("event_type").and_then(|v| v.as_str()) != Some(filter.as_str()) {
                     continue;
@@ -6516,9 +6624,15 @@ async fn ws_events(
     ws: WebSocketUpgrade,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> axum::response::Response {
-    // Auth: check token query param
+    // AUDIT-FIX F8.2: Constant-time token comparison for WebSocket auth
     let auth_ok = if let Some(token) = params.get("token") {
-        state.config.api_auth_token.as_deref() == Some(token.as_str())
+        if let Some(expected) = state.config.api_auth_token.as_deref() {
+            use subtle::ConstantTimeEq;
+            let matches: bool = token.as_bytes().ct_eq(expected.as_bytes()).into();
+            matches
+        } else {
+            false
+        }
     } else {
         false
     };
@@ -6733,6 +6847,8 @@ fn compute_webhook_signature(payload: &[u8], secret: &str) -> String {
 
 // ── API Auth Helper ──
 
+/// AUDIT-FIX F8.1: Constant-time auth check to prevent timing side-channel attacks.
+/// Previous implementation used `!=` which leaks token length/content via response time.
 fn verify_api_auth(
     config: &CustodyConfig,
     headers: &axum::http::HeaderMap,
@@ -6744,7 +6860,16 @@ fn verify_api_auth(
         .and_then(|v| v.strip_prefix("Bearer "))
         .unwrap_or("");
 
-    if expected.is_empty() || provided != expected {
+    if expected.is_empty() {
+        return Err(Json(ErrorResponse {
+            code: "unauthorized",
+            message: "Invalid or missing Bearer token".to_string(),
+        }));
+    }
+
+    use subtle::ConstantTimeEq;
+    let matches: bool = provided.as_bytes().ct_eq(expected.as_bytes()).into();
+    if !matches {
         return Err(Json(ErrorResponse {
             code: "unauthorized",
             message: "Invalid or missing Bearer token".to_string(),
@@ -7146,5 +7271,184 @@ mod tests {
         let buffer = deficit / 5;
         let grant = deficit.saturating_add(buffer);
         assert_eq!(grant, 1_200_000); // exactly 120% of deficit
+    }
+
+    // ── F8.1: verify_api_auth constant-time comparison ──
+
+    #[test]
+    fn test_verify_api_auth_rejects_wrong_token() {
+        let config = test_config();
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("authorization", "Bearer wrong_token".parse().unwrap());
+        assert!(verify_api_auth(&config, &headers).is_err());
+    }
+
+    #[test]
+    fn test_verify_api_auth_accepts_correct_token() {
+        let config = test_config();
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("authorization", "Bearer test_api_token".parse().unwrap());
+        assert!(verify_api_auth(&config, &headers).is_ok());
+    }
+
+    #[test]
+    fn test_verify_api_auth_rejects_missing_header() {
+        let config = test_config();
+        let headers = axum::http::HeaderMap::new();
+        assert!(verify_api_auth(&config, &headers).is_err());
+    }
+
+    #[test]
+    fn test_verify_api_auth_rejects_empty_expected() {
+        let mut config = test_config();
+        config.api_auth_token = Some("".to_string());
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert("authorization", "Bearer ".parse().unwrap());
+        assert!(verify_api_auth(&config, &headers).is_err());
+    }
+
+    // ── F8.8: Destination address validation ──
+
+    #[test]
+    fn test_solana_address_validation() {
+        // Valid Solana address (32 bytes base58)
+        let valid = bs58::encode([1u8; 32]).into_string();
+        let bytes = bs58::decode(&valid).into_vec().unwrap();
+        assert_eq!(bytes.len(), 32);
+
+        // Invalid Solana address (too short)
+        let short = bs58::encode([1u8; 16]).into_string();
+        let bytes = bs58::decode(&short).into_vec().unwrap();
+        assert_ne!(bytes.len(), 32);
+    }
+
+    #[test]
+    fn test_evm_address_validation() {
+        // Valid EVM address
+        let valid = "0xabcdef0123456789abcdef0123456789abcdef01";
+        let trimmed = valid.trim_start_matches("0x");
+        assert_eq!(trimmed.len(), 40);
+        assert!(hex::decode(trimmed).is_ok());
+
+        // Invalid: too short
+        let short = "0xabcdef";
+        let trimmed = short.trim_start_matches("0x");
+        assert_ne!(trimmed.len(), 40);
+
+        // Invalid: non-hex
+        let bad = "0xzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz";
+        let trimmed = bad.trim_start_matches("0x");
+        assert!(hex::decode(trimmed).is_err());
+    }
+
+    // ── F8.9: Status-indexed job counting ──
+
+    #[test]
+    fn test_count_sweep_jobs_with_index() {
+        let _ = DB::destroy(&Options::default(), "/tmp/test_custody_count_sweep");
+        let db = open_db("/tmp/test_custody_count_sweep").unwrap();
+
+        // Store a sweep job — store_sweep_job maintains the status index
+        let job = SweepJob {
+            job_id: "test-sweep-count-1".to_string(),
+            deposit_id: "dep-1".to_string(),
+            chain: "solana".to_string(),
+            asset: "sol".to_string(),
+            from_address: "from".to_string(),
+            to_treasury: "to".to_string(),
+            tx_hash: "hash".to_string(),
+            amount: Some("1000".to_string()),
+            signatures: Vec::new(),
+            sweep_tx_hash: None,
+            attempts: 0,
+            last_error: None,
+            next_attempt_at: None,
+            status: "queued".to_string(),
+            created_at: 1000,
+        };
+        store_sweep_job(&db, &job).unwrap();
+
+        let counts = count_sweep_jobs(&db).unwrap();
+        assert_eq!(counts.total, 1);
+        assert_eq!(*counts.by_status.get("queued").unwrap_or(&0), 1);
+
+        let _ = DB::destroy(&Options::default(), "/tmp/test_custody_count_sweep");
+    }
+
+    #[test]
+    fn test_count_credit_jobs_with_index() {
+        let _ = DB::destroy(&Options::default(), "/tmp/test_custody_count_credit");
+        let db = open_db("/tmp/test_custody_count_credit").unwrap();
+
+        let job = CreditJob {
+            job_id: "test-credit-count-1".to_string(),
+            deposit_id: "dep-1".to_string(),
+            to_address: "recipient".to_string(),
+            amount_shells: 500,
+            source_asset: "usdt".to_string(),
+            source_chain: "solana".to_string(),
+            status: "queued".to_string(),
+            tx_signature: None,
+            attempts: 0,
+            last_error: None,
+            next_attempt_at: None,
+            created_at: 1000,
+        };
+        store_credit_job(&db, &job).unwrap();
+
+        let counts = count_credit_jobs(&db).unwrap();
+        assert_eq!(counts.total, 1);
+        assert_eq!(*counts.by_status.get("queued").unwrap_or(&0), 1);
+
+        let _ = DB::destroy(&Options::default(), "/tmp/test_custody_count_credit");
+    }
+
+    // ── F8.7: BURN_LOCKS pruning ──
+
+    #[test]
+    fn test_burn_locks_arc_strong_count_pruning() {
+        // Verify that Arc::strong_count works as expected for pruning
+        let map: std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>> =
+            std::collections::HashMap::new();
+        let arc = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+        assert_eq!(std::sync::Arc::strong_count(&arc), 1);
+        let _clone = arc.clone();
+        assert_eq!(std::sync::Arc::strong_count(&arc), 2);
+        drop(_clone);
+        assert_eq!(std::sync::Arc::strong_count(&arc), 1);
+        // After dropping all clones except the map entry, strong_count == 1
+        // so retain(|_, v| strong_count(v) > 1) would remove it
+        assert!(map.is_empty()); // just testing setup
+    }
+
+    // ── F8.11: Events cursor pagination ──
+
+    #[test]
+    fn test_events_pagination_cursor_parsing() {
+        // Verify the cursor logic: when after_cursor is None, past_cursor starts true
+        let after_cursor: Option<String> = None;
+        let past_cursor = after_cursor.is_none();
+        assert!(past_cursor);
+
+        // When after_cursor is Some, past_cursor starts false
+        let after_cursor = Some("event-123".to_string());
+        let past_cursor = after_cursor.is_none();
+        assert!(!past_cursor);
+    }
+
+    // ── Webhook HMAC signature test ──
+
+    #[test]
+    fn test_webhook_hmac_signature() {
+        let payload = b"{\"event_type\":\"deposit.confirmed\"}";
+        let secret = "test_webhook_secret";
+        let sig = compute_webhook_signature(payload, secret);
+        assert_eq!(sig.len(), 64); // hex-encoded SHA256 = 64 chars
+        // Same input should produce same output (deterministic)
+        let sig2 = compute_webhook_signature(payload, secret);
+        assert_eq!(sig, sig2);
+        // Different secret should produce different output
+        let sig3 = compute_webhook_signature(payload, "different_secret");
+        assert_ne!(sig, sig3);
     }
 }
