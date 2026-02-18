@@ -625,9 +625,11 @@ impl StateStore {
         let mut db_opts = Options::default();
         db_opts.create_if_missing(true);
         db_opts.create_missing_column_families(true);
-        db_opts.set_max_open_files(512);
+        db_opts.set_max_open_files(4096);
         db_opts.set_keep_log_file_num(5);
         db_opts.set_max_total_wal_size(256 * 1024 * 1024); // 256MB WAL limit
+        db_opts.set_wal_recovery_mode(rocksdb::DBRecoveryMode::PointInTime);
+        db_opts.set_wal_bytes_per_sync(1024 * 1024);
         db_opts.set_bytes_per_sync(1024 * 1024); // 1MB sync granularity
         db_opts.increase_parallelism(num_cpus());
         db_opts.set_max_background_jobs(4);

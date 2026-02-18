@@ -245,7 +245,14 @@ pub extern "C" fn add_liquidity(
         let mut provider_addr = [0u8; 32];
         core::ptr::copy_nonoverlapping(provider_ptr, provider_addr.as_mut_ptr(), 32);
         let provider = Address(provider_addr);
-        
+
+        // AUDIT-FIX: verify caller matches provider
+        let real_caller = get_caller();
+        if real_caller.0 != provider_addr {
+            reentrancy_exit();
+            return 0;
+        }
+
         let mut pool = load_pool();
         match pool.add_liquidity(provider, amount_a, amount_b, min_liquidity) {
             Ok(liquidity) => {
@@ -280,7 +287,14 @@ pub extern "C" fn remove_liquidity(
         let mut provider_addr = [0u8; 32];
         core::ptr::copy_nonoverlapping(provider_ptr, provider_addr.as_mut_ptr(), 32);
         let provider = Address(provider_addr);
-        
+
+        // AUDIT-FIX: verify caller matches provider
+        let real_caller = get_caller();
+        if real_caller.0 != provider_addr {
+            reentrancy_exit();
+            return 0;
+        }
+
         let mut pool = load_pool();
         match pool.remove_liquidity(provider, liquidity, min_amount_a, min_amount_b) {
             Ok((amount_a, amount_b)) => {
@@ -894,6 +908,11 @@ fn get_reputation_bonus(amount_out: u64) -> u64 {
 pub extern "C" fn ms_pause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 2;
+    }
     if !is_ms_admin(&caller) {
         return 1;
     }
@@ -907,6 +926,11 @@ pub extern "C" fn ms_pause(caller_ptr: *const u8) -> u32 {
 pub extern "C" fn ms_unpause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 2;
+    }
     if !is_ms_admin(&caller) {
         return 1;
     }
@@ -1044,6 +1068,7 @@ mod tests {
         let amount_b: u64 = 20_000_000;
         let min_liquidity: u64 = 0;
 
+        test_mock::set_caller(provider);
         let liquidity = add_liquidity(
             provider.as_ptr(),
             amount_a,
@@ -1069,6 +1094,7 @@ mod tests {
 
         // Add liquidity first
         let provider = [3u8; 32];
+        test_mock::set_caller(provider);
         add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
 
         // Swap A for B
@@ -1096,6 +1122,7 @@ mod tests {
         initialize(token_a.as_ptr(), token_b.as_ptr());
 
         let provider = [3u8; 32];
+        test_mock::set_caller(provider);
         add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
 
         let amount_in: u64 = 10_000;
@@ -1113,6 +1140,7 @@ mod tests {
         initialize(token_a.as_ptr(), token_b.as_ptr());
 
         let provider = [3u8; 32];
+        test_mock::set_caller(provider);
         add_liquidity(provider.as_ptr(), 1_000_000, 2_000_000, 0);
 
         // Quote for swapping A->B
@@ -1148,6 +1176,7 @@ mod tests {
         assert_eq!(get_total_liquidity(), 0);
 
         let provider = [3u8; 32];
+        test_mock::set_caller(provider);
         add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
 
         assert!(get_total_liquidity() > 0);
@@ -1161,6 +1190,7 @@ mod tests {
         initialize(token_a.as_ptr(), token_b.as_ptr());
 
         let provider = [3u8; 32];
+        test_mock::set_caller(provider);
         add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
 
         // Without discount config, swap works as normal
@@ -1211,6 +1241,7 @@ mod tests {
         initialize(token_a.as_ptr(), token_b.as_ptr());
 
         let provider = [3u8; 32];
+        test_mock::set_caller(provider);
         add_liquidity(provider.as_ptr(), 1_000_000, 2_000_000, 0);
 
         test_mock::set_timestamp(1000);
@@ -1230,6 +1261,7 @@ mod tests {
         initialize(token_a.as_ptr(), token_b.as_ptr());
 
         let provider = [3u8; 32];
+        test_mock::set_caller(provider);
         add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
 
         test_mock::set_timestamp(1000);
@@ -1258,6 +1290,7 @@ mod tests {
         let token_a = [1u8; 32];
         let token_b = [2u8; 32];
         initialize(token_a.as_ptr(), token_b.as_ptr());
+        test_mock::set_caller([3u8; 32]);
         add_liquidity([3u8; 32].as_ptr(), 1_000_000, 1_000_000, 0);
 
         test_mock::set_timestamp(100);
@@ -1271,6 +1304,7 @@ mod tests {
         let token_a = [1u8; 32];
         let token_b = [2u8; 32];
         initialize(token_a.as_ptr(), token_b.as_ptr());
+        test_mock::set_caller([3u8; 32]);
         add_liquidity([3u8; 32].as_ptr(), 1_000_000, 1_000_000, 0);
 
         test_mock::set_timestamp(300);
@@ -1284,6 +1318,7 @@ mod tests {
         let token_a = [1u8; 32];
         let token_b = [2u8; 32];
         initialize(token_a.as_ptr(), token_b.as_ptr());
+        test_mock::set_caller([3u8; 32]);
         add_liquidity([3u8; 32].as_ptr(), 1_000_000, 1_000_000, 0);
 
         test_mock::set_timestamp(300);
@@ -1301,6 +1336,7 @@ mod tests {
         let token_a = [1u8; 32];
         let token_b = [2u8; 32];
         initialize(token_a.as_ptr(), token_b.as_ptr());
+        test_mock::set_caller([3u8; 32]);
         add_liquidity([3u8; 32].as_ptr(), 1_000_000, 1_000_000, 0);
 
         // Try to swap 10% of reserves (>5% impact) — should be rejected
@@ -1314,6 +1350,7 @@ mod tests {
         let token_a = [1u8; 32];
         let token_b = [2u8; 32];
         initialize(token_a.as_ptr(), token_b.as_ptr());
+        test_mock::set_caller([3u8; 32]);
         add_liquidity([3u8; 32].as_ptr(), 1_000_000, 1_000_000, 0);
 
         // Swap 1% of reserves (<5% impact) — should succeed
@@ -1331,6 +1368,7 @@ mod tests {
         let token_a = [1u8; 32];
         let token_b = [2u8; 32];
         initialize(token_a.as_ptr(), token_b.as_ptr());
+        test_mock::set_caller([3u8; 32]);
         add_liquidity([3u8; 32].as_ptr(), 1_000_000, 1_000_000, 0);
 
         // Try to flash loan 95% of reserves

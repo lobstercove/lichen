@@ -597,6 +597,16 @@ pub extern "C" fn submit_attestation(
         }
     };
     
+    // Deduplication: check if this attester already attested for this hash
+    let hash_hex = hex_encode(&data_hash);
+    let attester_hex = attester.iter().map(|b| alloc::format!("{:02x}", b)).collect::<alloc::string::String>();
+    let dedup_key = alloc::format!("attestation_{}_{}", hash_hex, attester_hex);
+    if storage_get(dedup_key.as_bytes()).is_some() {
+        log_info("Attester already submitted attestation for this hash");
+        return 0;
+    }
+    storage_set(dedup_key.as_bytes(), &[1u8]);
+
     // Increment signature count
     let sig_count = attestation[32] + 1;
     attestation[32] = sig_count;
@@ -860,6 +870,9 @@ pub extern "C" fn add_reporter(caller_ptr: *const u8, reporter_ptr: *const u8) -
     // Delegates to add_price_feeder with a synthetic asset name
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller { return 2; }
     let owner = storage_get(b"oracle_owner").unwrap_or_default();
     if caller[..] != owner[..] { return 1; }
     let mut reporter = [0u8; 32];
@@ -875,6 +888,9 @@ pub extern "C" fn add_reporter(caller_ptr: *const u8, reporter_ptr: *const u8) -
 pub extern "C" fn remove_reporter(caller_ptr: *const u8, reporter_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller { return 2; }
     let owner = storage_get(b"oracle_owner").unwrap_or_default();
     if caller[..] != owner[..] { return 1; }
     let mut reporter = [0u8; 32];
@@ -890,6 +906,9 @@ pub extern "C" fn remove_reporter(caller_ptr: *const u8, reporter_ptr: *const u8
 pub extern "C" fn set_update_interval(caller_ptr: *const u8, interval: u64) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller { return 2; }
     let owner = storage_get(b"oracle_owner").unwrap_or_default();
     if caller[..] != owner[..] { return 1; }
     storage_set(b"update_interval", &u64_to_bytes(interval));
@@ -902,6 +921,9 @@ pub extern "C" fn set_update_interval(caller_ptr: *const u8, interval: u64) -> u
 pub extern "C" fn mo_pause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller { return 2; }
     let owner = storage_get(b"oracle_owner").unwrap_or_default();
     if caller[..] != owner[..] { return 1; }
     storage_set(b"oracle_paused", &[1u8]);
@@ -914,6 +936,9 @@ pub extern "C" fn mo_pause(caller_ptr: *const u8) -> u32 {
 pub extern "C" fn mo_unpause(caller_ptr: *const u8) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller { return 2; }
     let owner = storage_get(b"oracle_owner").unwrap_or_default();
     if caller[..] != owner[..] { return 1; }
     storage_set(b"oracle_paused", &[0u8]);
@@ -977,6 +1002,7 @@ mod tests {
         let feeder = [2u8; 32];
         let asset = b"MOLT/USD";
         add_price_feeder(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32);
+        test_mock::set_caller(feeder);
         assert_eq!(submit_price(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32, 42_000_000, 6), 1);
     }
 
@@ -990,6 +1016,7 @@ mod tests {
         let asset = b"MOLT/USD";
         add_price_feeder(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32);
         let wrong = [3u8; 32];
+        test_mock::set_caller(wrong);
         assert_eq!(submit_price(wrong.as_ptr(), asset.as_ptr(), asset.len() as u32, 42_000_000, 6), 0);
     }
 
@@ -1010,6 +1037,7 @@ mod tests {
         let feeder = [2u8; 32];
         let asset = b"MOLT/USD";
         add_price_feeder(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32);
+        test_mock::set_caller(feeder);
         submit_price(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32, 42_000_000, 6);
         let mut result = [0u8; 17];
         assert_eq!(get_price(asset.as_ptr(), asset.len() as u32, result.as_mut_ptr()), 1);
@@ -1026,6 +1054,7 @@ mod tests {
         let feeder = [2u8; 32];
         let asset = b"MOLT/USD";
         add_price_feeder(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32);
+        test_mock::set_caller(feeder);
         submit_price(feeder.as_ptr(), asset.as_ptr(), asset.len() as u32, 42_000_000, 6);
         test_mock::set_timestamp(1000 + 3601); // stale
         let mut result = [0u8; 17];

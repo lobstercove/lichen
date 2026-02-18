@@ -10,6 +10,7 @@ fn setup() -> [u8; 32] {
     let admin = [0u8; 32].map(|_| 0u8);
     let mut a = [0u8; 32];
     a[0] = 1;
+    moltchain_sdk::test_mock::set_caller(a);
     assert_eq!(initialize(a.as_ptr()), 0);
     a
 }
@@ -162,6 +163,7 @@ fn test_transfer_self_transfer() {
     assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 1_000_000), 0);
 
     // Self-transfer should be rejected
+    moltchain_sdk::test_mock::set_caller(user);
     assert_eq!(transfer(user.as_ptr(), user.as_ptr(), 100), 6);
 }
 
@@ -172,6 +174,7 @@ fn test_transfer_to_zero_address() {
     let zero = [0u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
     assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 1_000_000), 0);
+    moltchain_sdk::test_mock::set_caller(user);
     assert_eq!(
         transfer(user.as_ptr(), zero.as_ptr(), 100),
         3,
@@ -186,6 +189,7 @@ fn test_transfer_zero_amount() {
     let user2 = addr(3);
     moltchain_sdk::test_mock::set_slot(100);
     assert_eq!(mint(admin.as_ptr(), user1.as_ptr(), 1_000_000), 0);
+    moltchain_sdk::test_mock::set_caller(user1);
     assert_eq!(
         transfer(user1.as_ptr(), user2.as_ptr(), 0),
         4,
@@ -200,6 +204,7 @@ fn test_transfer_insufficient_balance() {
     let user2 = addr(3);
     moltchain_sdk::test_mock::set_slot(100);
     assert_eq!(mint(admin.as_ptr(), user1.as_ptr(), 100), 0);
+    moltchain_sdk::test_mock::set_caller(user1);
     assert_eq!(
         transfer(user1.as_ptr(), user2.as_ptr(), 101),
         5,
@@ -215,6 +220,7 @@ fn test_transfer_preserves_total_supply() {
     moltchain_sdk::test_mock::set_slot(100);
     assert_eq!(mint(admin.as_ptr(), user1.as_ptr(), 1_000_000), 0);
     let supply_before = total_supply();
+    moltchain_sdk::test_mock::set_caller(user1);
     assert_eq!(transfer(user1.as_ptr(), user2.as_ptr(), 500_000), 0);
     assert_eq!(
         total_supply(),
@@ -236,9 +242,11 @@ fn test_approve_and_transfer_from() {
     moltchain_sdk::test_mock::set_slot(100);
 
     assert_eq!(mint(admin.as_ptr(), owner.as_ptr(), 10_000), 0);
+    moltchain_sdk::test_mock::set_caller(owner);
     assert_eq!(approve(owner.as_ptr(), spender.as_ptr(), 5000), 0);
     assert_eq!(allowance(owner.as_ptr(), spender.as_ptr()), 5000);
 
+    moltchain_sdk::test_mock::set_caller(spender);
     assert_eq!(
         transfer_from(spender.as_ptr(), owner.as_ptr(), recipient.as_ptr(), 3000),
         0
@@ -257,7 +265,9 @@ fn test_transfer_from_exceeds_allowance() {
     moltchain_sdk::test_mock::set_slot(100);
 
     assert_eq!(mint(admin.as_ptr(), owner.as_ptr(), 10_000), 0);
+    moltchain_sdk::test_mock::set_caller(owner);
     assert_eq!(approve(owner.as_ptr(), spender.as_ptr(), 100), 0);
+    moltchain_sdk::test_mock::set_caller(spender);
     assert_eq!(
         transfer_from(spender.as_ptr(), owner.as_ptr(), recipient.as_ptr(), 101),
         7,
@@ -274,8 +284,10 @@ fn test_transfer_from_exceeds_balance() {
     moltchain_sdk::test_mock::set_slot(100);
 
     assert_eq!(mint(admin.as_ptr(), owner.as_ptr(), 100), 0);
+    moltchain_sdk::test_mock::set_caller(owner);
     assert_eq!(approve(owner.as_ptr(), spender.as_ptr(), 1000), 0);
     // Allowance is 1000 but balance is only 100
+    moltchain_sdk::test_mock::set_caller(spender);
     assert_eq!(
         transfer_from(spender.as_ptr(), owner.as_ptr(), recipient.as_ptr(), 200),
         5,
@@ -289,6 +301,7 @@ fn test_approval_overwrite() {
     let owner = addr(2);
     let spender = addr(3);
 
+    moltchain_sdk::test_mock::set_caller(owner);
     assert_eq!(approve(owner.as_ptr(), spender.as_ptr(), 1000), 0);
     assert_eq!(allowance(owner.as_ptr(), spender.as_ptr()), 1000);
 
@@ -328,6 +341,7 @@ fn test_burn_more_than_balance() {
     let user = addr(2);
     moltchain_sdk::test_mock::set_slot(100);
     assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 1000), 0);
+    moltchain_sdk::test_mock::set_caller(user);
     assert_eq!(burn(user.as_ptr(), 1001), 5, "should reject burn > balance");
 }
 
@@ -337,6 +351,7 @@ fn test_burn_zero() {
     let user = addr(2);
     moltchain_sdk::test_mock::set_slot(100);
     assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 1000), 0);
+    moltchain_sdk::test_mock::set_caller(user);
     assert_eq!(burn(user.as_ptr(), 0), 4, "zero burn should be rejected");
 }
 
@@ -346,6 +361,7 @@ fn test_burn_updates_accounting() {
     let user = addr(2);
     moltchain_sdk::test_mock::set_slot(100);
     assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 1_000_000), 0);
+    moltchain_sdk::test_mock::set_caller(user);
     assert_eq!(burn(user.as_ptr(), 400_000), 0);
 
     assert_eq!(balance_of(user.as_ptr()), 600_000);
@@ -368,6 +384,7 @@ fn test_mint_non_admin() {
     let attacker = addr(99);
     let user = addr(2);
     moltchain_sdk::test_mock::set_slot(100);
+    moltchain_sdk::test_mock::set_caller(attacker);
     assert_eq!(
         mint(attacker.as_ptr(), user.as_ptr(), 1_000_000),
         2,
@@ -388,6 +405,7 @@ fn test_transfer_admin() {
     assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 1000), 2);
 
     // New admin can mint
+    moltchain_sdk::test_mock::set_caller(new_admin);
     assert_eq!(mint(new_admin.as_ptr(), user.as_ptr(), 1000), 0);
 }
 
@@ -407,6 +425,7 @@ fn test_transfer_admin_non_admin() {
     let _admin = setup();
     let attacker = addr(99);
     let new_admin = addr(50);
+    moltchain_sdk::test_mock::set_caller(attacker);
     assert_eq!(transfer_admin(attacker.as_ptr(), new_admin.as_ptr()), 2);
 }
 
@@ -435,6 +454,7 @@ fn test_transfer_while_paused() {
     moltchain_sdk::test_mock::set_slot(100);
     assert_eq!(mint(admin.as_ptr(), user1.as_ptr(), 1000), 0);
     assert_eq!(emergency_pause(admin.as_ptr()), 0);
+    moltchain_sdk::test_mock::set_caller(user1);
     assert_eq!(
         transfer(user1.as_ptr(), user2.as_ptr(), 100),
         1,
@@ -449,6 +469,7 @@ fn test_burn_while_paused() {
     moltchain_sdk::test_mock::set_slot(100);
     assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 1000), 0);
     assert_eq!(emergency_pause(admin.as_ptr()), 0);
+    moltchain_sdk::test_mock::set_caller(user);
     assert_eq!(burn(user.as_ptr(), 100), 1, "burn should fail when paused");
 }
 
@@ -456,6 +477,7 @@ fn test_burn_while_paused() {
 fn test_pause_non_admin() {
     let _admin = setup();
     let rando = addr(99);
+    moltchain_sdk::test_mock::set_caller(rando);
     assert_eq!(emergency_pause(rando.as_ptr()), 2);
 }
 
@@ -531,6 +553,7 @@ fn test_attest_non_admin() {
     let _admin = setup();
     let rando = addr(99);
     let proof = [42u8; 32];
+    moltchain_sdk::test_mock::set_caller(rando);
     assert_eq!(
         attest_reserves(rando.as_ptr(), 1_000_000, proof.as_ptr()),
         2

@@ -176,6 +176,11 @@ pub extern "C" fn initialize(admin: *const u8) -> u32 {
     if !is_zero(&existing) { return 1; }
     let mut addr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(admin, addr.as_mut_ptr(), 32); }
+    // AUDIT-FIX: verify caller matches claimed admin address
+    let real_caller = get_caller();
+    if real_caller.0 != addr {
+        return 200;
+    }
     storage_set(ADMIN_KEY, &addr);
     save_u64(TOTAL_DISTRIBUTED_KEY, 0);
     save_u64(REWARD_EPOCH_KEY, 0);
@@ -673,6 +678,7 @@ mod tests {
     fn setup() -> [u8; 32] {
         test_mock::reset();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(initialize(admin.as_ptr()), 0);
         // Set caller to admin for admin operations
         test_mock::set_caller(admin);
@@ -687,6 +693,7 @@ mod tests {
     fn test_initialize() {
         test_mock::reset();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(initialize(admin.as_ptr()), 0);
     }
 
@@ -694,6 +701,7 @@ mod tests {
     fn test_initialize_twice() {
         test_mock::reset();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(initialize(admin.as_ptr()), 0);
         assert_eq!(initialize(admin.as_ptr()), 1);
     }

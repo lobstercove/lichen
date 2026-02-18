@@ -10,6 +10,20 @@
 
 use moltchain_sdk::{Token, Address, log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_caller};
 
+// AUDIT-FIX: Reentrancy guard
+const REENTRANCY_KEY: &[u8] = b"molt_reentrancy";
+
+fn reentrancy_enter() -> bool {
+    if storage_get(REENTRANCY_KEY).map(|v| v.first().copied() == Some(1)).unwrap_or(false) {
+        return false;
+    }
+    storage_set(REENTRANCY_KEY, &[1u8]);
+    true
+}
+fn reentrancy_exit() {
+    storage_set(REENTRANCY_KEY, &[0u8]);
+}
+
 /// Read the contract owner from persistent storage.
 fn get_owner() -> Address {
     match storage_get(b"owner") {
@@ -18,7 +32,7 @@ fn get_owner() -> Address {
             arr.copy_from_slice(&bytes);
             Address::new(arr)
         }
-        _ => panic!(),
+        _ => Address::new([0u8; 32]),
     }
 }
 
@@ -71,6 +85,7 @@ pub extern "C" fn balance_of(account_ptr: *const u8) -> u64 {
 /// AUDIT-FIX 1.8a: verify caller == from to prevent unauthorized transfers
 #[no_mangle]
 pub extern "C" fn transfer(from_ptr: *const u8, to_ptr: *const u8, amount: u64) -> u32 {
+    if !reentrancy_enter() { return 0; }
     let mut from_array = [0u8; 32];
     let mut to_array = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(from_ptr, from_array.as_mut_ptr(), 32); }
@@ -80,13 +95,14 @@ pub extern "C" fn transfer(from_ptr: *const u8, to_ptr: *const u8, amount: u64) 
     let caller = get_caller();
     if caller.0 != from_array {
         log_info("Transfer rejected: caller is not the sender");
+        reentrancy_exit();
         return 0;
     }
 
     let from = Address::new(from_array);
     let to = Address::new(to_array);
 
-    match make_token().transfer(from, to, amount) {
+    let result = match make_token().transfer(from, to, amount) {
         Ok(_) => {
             log_info("Transfer successful");
             1
@@ -95,12 +111,15 @@ pub extern "C" fn transfer(from_ptr: *const u8, to_ptr: *const u8, amount: u64) 
             log_info("Transfer failed");
             0
         }
-    }
+    };
+    reentrancy_exit();
+    result
 }
 
 /// Mint new tokens (owner only)
 #[no_mangle]
 pub extern "C" fn mint(caller_ptr: *const u8, to_ptr: *const u8, amount: u64) -> u32 {
+    if !reentrancy_enter() { return 0; }
     let mut caller_array = [0u8; 32];
     let mut to_array = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller_array.as_mut_ptr(), 32); }
@@ -110,6 +129,7 @@ pub extern "C" fn mint(caller_ptr: *const u8, to_ptr: *const u8, amount: u64) ->
     let real_caller = get_caller();
     if real_caller.0 != caller_array {
         log_info("Mint rejected: caller mismatch");
+        reentrancy_exit();
         return 0;
     }
 
@@ -118,7 +138,7 @@ pub extern "C" fn mint(caller_ptr: *const u8, to_ptr: *const u8, amount: u64) ->
     let owner = get_owner();
 
     let mut token = make_token();
-    match token.mint(to, amount, caller, owner) {
+    let result = match token.mint(to, amount, caller, owner) {
         Ok(_) => {
             log_info("Mint successful");
             1
@@ -127,13 +147,16 @@ pub extern "C" fn mint(caller_ptr: *const u8, to_ptr: *const u8, amount: u64) ->
             log_info("Mint failed - unauthorized");
             0
         }
-    }
+    };
+    reentrancy_exit();
+    result
 }
 
 /// Burn tokens
 /// AUDIT-FIX 1.8b: verify caller == from to prevent unauthorized burns
 #[no_mangle]
 pub extern "C" fn burn(from_ptr: *const u8, amount: u64) -> u32 {
+    if !reentrancy_enter() { return 0; }
     let mut from_array = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(from_ptr, from_array.as_mut_ptr(), 32); }
 
@@ -141,13 +164,14 @@ pub extern "C" fn burn(from_ptr: *const u8, amount: u64) -> u32 {
     let caller = get_caller();
     if caller.0 != from_array {
         log_info("Burn rejected: caller is not the token owner");
+        reentrancy_exit();
         return 0;
     }
 
     let from = Address::new(from_array);
 
     let mut token = make_token();
-    match token.burn(from, amount) {
+    let result = match token.burn(from, amount) {
         Ok(_) => {
             log_info("Burn successful");
             1
@@ -156,12 +180,15 @@ pub extern "C" fn burn(from_ptr: *const u8, amount: u64) -> u32 {
             log_info("Burn failed");
             0
         }
-    }
+    };
+    reentrancy_exit();
+    result
 }
 
 /// Approve spender
 #[no_mangle]
 pub extern "C" fn approve(owner_ptr: *const u8, spender_ptr: *const u8, amount: u64) -> u32 {
+    if !reentrancy_enter() { return 0; }
     let mut owner_array = [0u8; 32];
     let mut spender_array = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner_array.as_mut_ptr(), 32); }
@@ -171,19 +198,22 @@ pub extern "C" fn approve(owner_ptr: *const u8, spender_ptr: *const u8, amount: 
     let real_caller = get_caller();
     if real_caller.0 != owner_array {
         log_info("Approve rejected: caller is not the owner");
+        reentrancy_exit();
         return 0;
     }
 
     let owner = Address::new(owner_array);
     let spender = Address::new(spender_array);
 
-    match make_token().approve(owner, spender, amount) {
+    let result = match make_token().approve(owner, spender, amount) {
         Ok(_) => {
             log_info("Approval successful");
             1
         }
         Err(_) => 0,
-    }
+    };
+    reentrancy_exit();
+    result
 }
 
 /// Get total supply (read from persistent storage)
@@ -279,6 +309,7 @@ mod tests {
         let recipient = [3u8; 32];
         initialize(owner.as_ptr());
 
+        test_mock::set_caller(owner);
         let mint_amount: u64 = 1_000_000_000;
         let result = mint(owner.as_ptr(), recipient.as_ptr(), mint_amount);
         assert_eq!(result, 1); // success
@@ -342,6 +373,7 @@ mod tests {
         let spender = [2u8; 32];
         initialize(owner.as_ptr());
 
+        test_mock::set_caller(owner);
         let result = approve(owner.as_ptr(), spender.as_ptr(), 5000);
         assert_eq!(result, 1);
     }

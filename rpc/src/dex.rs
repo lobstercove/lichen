@@ -15,7 +15,8 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use crate::RpcState;
 
@@ -78,6 +79,16 @@ fn api_not_found(msg: &str) -> Response {
         slot: 0,
     };
     (StatusCode::NOT_FOUND, Json(body)).into_response()
+}
+
+fn api_method_not_allowed(msg: &str) -> Response {
+    let body = ApiResponse::<()> {
+        success: false,
+        data: None,
+        error: Some(msg.to_string()),
+        slot: 0,
+    };
+    (StatusCode::METHOD_NOT_ALLOWED, Json(body)).into_response()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -304,6 +315,11 @@ pub struct ProposalJson {
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
+pub struct PairsQuery {
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
 pub struct DepthQuery {
     depth: Option<usize>,
 }
@@ -442,12 +458,24 @@ fn current_slot(state: &crate::RpcState) -> u64 {
     state.state.get_last_slot().unwrap_or(0)
 }
 
+/// Symbol map cache: (last_refresh, cached_map). Refreshes every 30 seconds.
+static SYMBOL_MAP_CACHE: Mutex<Option<(Instant, HashMap<String, String>)>> = Mutex::new(None);
+const SYMBOL_CACHE_TTL_SECS: u64 = 30;
+
 /// Build a hex-address→display-symbol map for known token contracts.
 /// Uses the symbol registry to resolve contract names to pubkey addresses,
 /// then maps to human-readable token symbols.
+/// Results are cached for 30 seconds to avoid redundant storage queries.
 fn build_token_symbol_map(state: &crate::RpcState) -> HashMap<String, String> {
-    // Map: registry_symbol → display_symbol
-    // Registry stores by uppercase symbol (e.g., "MOLT", "MUSD")
+    let mut cache = SYMBOL_MAP_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+
+    if let Some((ref ts, ref map)) = *cache {
+        if ts.elapsed().as_secs() < SYMBOL_CACHE_TTL_SECS {
+            return map.clone();
+        }
+    }
+
+    // Cache miss or expired — rebuild
     let known_tokens: &[(&str, &str)] = &[
         ("MOLT", "MOLT"),
         ("MUSD", "mUSD"),
@@ -464,6 +492,8 @@ fn build_token_symbol_map(state: &crate::RpcState) -> HashMap<String, String> {
             map.insert(hex::encode(entry.program.0), display_symbol.to_string());
         }
     }
+
+    *cache = Some((Instant::now(), map.clone()));
     map
 }
 
@@ -822,15 +852,20 @@ fn decode_proposal(data: &[u8]) -> Option<ProposalJson> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// GET /api/v1/pairs — All trading pairs (enriched with symbols + last price)
-async fn get_pairs(State(state): State<Arc<RpcState>>) -> Response {
+async fn get_pairs(
+    State(state): State<Arc<RpcState>>,
+    Query(q): Query<PairsQuery>,
+) -> Response {
     let count = read_u64(&state, DEX_CORE_PROGRAM, "dex_pair_count");
+    let limit = q.limit.unwrap_or(100).min(500) as u64;
+    let effective_count = count.min(limit);
     let slot = current_slot(&state);
     let mut pairs = Vec::new();
 
     // Build reverse address→symbol map using known token contracts
     let symbol_map = build_token_symbol_map(&state);
 
-    for i in 1..=count {
+    for i in 1..=effective_count {
         let key = format!("dex_pair_{}", i);
         if let Some(data) = read_bytes(&state, DEX_CORE_PROGRAM, &key) {
             if let Some(mut pair) = decode_pair(&data) {
@@ -1191,81 +1226,14 @@ async fn get_all_tickers(State(state): State<Arc<RpcState>>) -> Response {
     ApiResponse::ok(tickers, slot).into_response()
 }
 
-/// POST /api/v1/orders — Place order
-async fn post_order(
-    State(state): State<Arc<RpcState>>,
-    Json(body): Json<PlaceOrderBody>,
-) -> Response {
-    let slot = current_slot(&state);
-
-    // Validate
-    if body.quantity == 0 {
-        return api_err("quantity must be > 0");
-    }
-    if body.side != "buy" && body.side != "sell" {
-        return api_err("side must be 'buy' or 'sell'");
-    }
-
-    // Build contract calldata: opcode 0x03 = place_order
-    let pair_id = match &body.pair {
-        serde_json::Value::Number(n) => n.as_u64().unwrap_or(0),
-        serde_json::Value::String(s) => {
-            // TODO: resolve symbol → pair_id from a registry
-            s.parse::<u64>().unwrap_or(0)
-        }
-        _ => 0,
-    };
-
-    // Return the order as it would be created (actual execution via sendTransaction)
-    let price_raw = (body.price * PRICE_SCALE as f64) as u64;
-    let order_count = read_u64(&state, DEX_CORE_PROGRAM, "dex_order_count");
-
-    let order = OrderJson {
-        order_id: order_count,
-        trader: String::new(), // Filled from tx signer
-        pair_id,
-        side: if body.side == "buy" { "buy" } else { "sell" },
-        order_type: match body.order_type.as_str() {
-            "market" => "market",
-            "stop-limit" => "stop-limit",
-            "post-only" => "post-only",
-            _ => "limit",
-        },
-        price: body.price,
-        price_raw,
-        quantity: body.quantity,
-        filled: 0,
-        status: "open",
-        created_slot: slot,
-        expiry_slot: body.expiry.unwrap_or(0),
-    };
-
-    // Emit WS events for real-time subscribers
-    state.dex_broadcaster.emit_order_update(
-        order.order_id, "", "open", 0, order.quantity, slot,
-    );
-    state.dex_broadcaster.emit_orderbook(pair_id, vec![], vec![], slot);
-
-    (StatusCode::CREATED, ApiResponse::ok(order, slot)).into_response()
+/// POST /api/v1/orders — Place order (must use sendTransaction)
+async fn post_order() -> Response {
+    api_method_not_allowed("Orders must be submitted via sendTransaction RPC method")
 }
 
-/// DELETE /api/v1/orders/:id — Cancel order
-async fn delete_order(State(state): State<Arc<RpcState>>, Path(order_id): Path<u64>) -> Response {
-    let slot = current_slot(&state);
-    let key = format!("dex_order_{}", order_id);
-
-    match read_bytes(&state, DEX_CORE_PROGRAM, &key) {
-        Some(_data) => {
-            // Actual cancellation would go through sendTransaction
-            state.dex_broadcaster.emit_order_update(
-                order_id, "", "cancelled", 0, 0, slot,
-            );
-
-            let body = serde_json::json!({ "cancelled": true, "order_id": order_id });
-            ApiResponse::ok(body, slot).into_response()
-        }
-        None => api_not_found(&format!("order {} not found", order_id)),
-    }
+/// DELETE /api/v1/orders/:id — Cancel order (must use sendTransaction)
+async fn delete_order(Path(_order_id): Path<u64>) -> Response {
+    api_method_not_allowed("Order cancellations must be submitted via sendTransaction RPC method")
 }
 
 /// GET /api/v1/orders?trader=<addr> — List orders
@@ -1657,76 +1625,14 @@ async fn get_routes(State(state): State<Arc<RpcState>>) -> Response {
 
 // ─── MARGIN ─────────────────────────────────────────────────────────────────
 
-/// POST /api/v1/margin/open — Open margin position
-async fn post_margin_open(
-    State(state): State<Arc<RpcState>>,
-    Json(body): Json<OpenPositionBody>,
-) -> Response {
-    let slot = current_slot(&state);
-
-    if body.leverage == 0 || body.leverage > 5 {
-        return api_err("leverage must be 1-5");
-    }
-    if body.margin == 0 {
-        return api_err("margin must be > 0");
-    }
-
-    let pair_id = match &body.pair {
-        serde_json::Value::Number(n) => n.as_u64().unwrap_or(0),
-        serde_json::Value::String(s) => s.parse::<u64>().unwrap_or(0),
-        _ => 0,
-    };
-
-    let pos_count = read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_pos_count");
-
-    let position = MarginPositionJson {
-        position_id: pos_count,
-        trader: String::new(),
-        pair_id,
-        side: if body.side == "short" {
-            "short"
-        } else {
-            "long"
-        },
-        status: "open",
-        size: body.margin * body.leverage,
-        margin: body.margin,
-        entry_price: 0.0, // Filled from mark price
-        entry_price_raw: 0,
-        leverage: body.leverage,
-        created_slot: slot,
-        realized_pnl: 0,
-        accumulated_funding: 0,
-    };
-
-    // Emit position update WS event
-    state.dex_broadcaster.emit_position_update(
-        position.position_id, "", "open", 0, 0.0, slot,
-    );
-
-    (StatusCode::CREATED, ApiResponse::ok(position, slot)).into_response()
+/// POST /api/v1/margin/open — Open margin position (must use sendTransaction)
+async fn post_margin_open() -> Response {
+    api_method_not_allowed("Margin positions must be opened via sendTransaction RPC method")
 }
 
-/// POST /api/v1/margin/close — Close margin position
-async fn post_margin_close(
-    State(state): State<Arc<RpcState>>,
-    Json(body): Json<ClosePositionBody>,
-) -> Response {
-    let slot = current_slot(&state);
-    let key = format!("mrg_pos_{}", body.position_id);
-
-    match read_bytes(&state, DEX_MARGIN_PROGRAM, &key) {
-        Some(data) => match decode_margin_position(&data) {
-            Some(pos) => {
-                state.dex_broadcaster.emit_position_update(
-                    body.position_id, "", "closed", 0, 0.0, slot,
-                );
-                ApiResponse::ok(pos, slot).into_response()
-            }
-            None => api_err("invalid position data"),
-        },
-        None => api_not_found(&format!("position {} not found", body.position_id)),
-    }
+/// POST /api/v1/margin/close — Close margin position (must use sendTransaction)
+async fn post_margin_close() -> Response {
+    api_method_not_allowed("Margin positions must be closed via sendTransaction RPC method")
 }
 
 /// GET /api/v1/margin/positions?trader=<addr> — Margin positions
@@ -1996,44 +1902,9 @@ async fn post_create_proposal(
     ApiResponse::ok(proposal, slot).into_response()
 }
 
-/// POST /api/v1/governance/proposals/:id/vote — Vote on a proposal
-async fn post_vote(
-    State(state): State<Arc<RpcState>>,
-    Path(proposal_id): Path<u64>,
-    Json(body): Json<VoteBody>,
-) -> Response {
-    let slot = current_slot(&state);
-    let key = format!("gov_prop_{}", proposal_id);
-
-    match read_bytes(&state, DEX_GOVERNANCE_PROGRAM, &key) {
-        Some(_) => {
-            // Note: actual vote recording goes via sendTransaction.
-            // This REST endpoint returns a confirmation for UI feedback.
-            ApiResponse::ok(
-                serde_json::json!({
-                    "proposal_id": proposal_id,
-                    "support": body.support,
-                    "votes": body.amount,
-                    "status": "recorded"
-                }),
-                slot,
-            )
-            .into_response()
-        }
-        None => {
-            // Proposal may not exist in storage yet (mock mode) — still accept
-            ApiResponse::ok(
-                serde_json::json!({
-                    "proposal_id": proposal_id,
-                    "support": body.support,
-                    "votes": body.amount,
-                    "status": "recorded"
-                }),
-                slot,
-            )
-            .into_response()
-        }
-    }
+/// POST /api/v1/governance/proposals/:id/vote — Vote on a proposal (must use sendTransaction)
+async fn post_vote(Path(_proposal_id): Path<u64>) -> Response {
+    api_method_not_allowed("Votes must be submitted via sendTransaction RPC method")
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════

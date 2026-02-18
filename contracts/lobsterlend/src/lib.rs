@@ -199,7 +199,7 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u32 {
     // Check deposit cap
     let cap = get_deposit_cap();
     let total = load_u64(b"ll_total_deposits");
-    if cap > 0 && total + amount > cap {
+    if cap > 0 && total.saturating_add(amount) > cap {
         reentrancy_exit();
         log_info("Would exceed deposit cap");
         return 4;
@@ -208,10 +208,10 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u32 {
     // Update user deposit
     let dep_key = make_key(b"dep:", &hex);
     let prev_deposit = load_u64(&dep_key);
-    store_u64(&dep_key, prev_deposit + amount);
+    store_u64(&dep_key, prev_deposit.saturating_add(amount));
 
     // Update total deposits
-    store_u64(b"ll_total_deposits", total + amount);
+    store_u64(b"ll_total_deposits", total.saturating_add(amount));
 
     // Track deposit count
     store_u64(DEPOSIT_COUNT_KEY, load_u64(DEPOSIT_COUNT_KEY) + 1);
@@ -314,7 +314,14 @@ pub extern "C" fn borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
     let current_borrow = load_u64(&borrow_key);
 
     let max_borrow = deposit_val * COLLATERAL_FACTOR_PERCENT / 100;
-    let new_borrow = current_borrow + amount;
+    let new_borrow = match current_borrow.checked_add(amount) {
+        Some(v) => v,
+        None => {
+            reentrancy_exit();
+            log_info("Borrow amount overflow");
+            return 5;
+        }
+    };
 
     if new_borrow > max_borrow {
         reentrancy_exit();
@@ -333,7 +340,15 @@ pub extern "C" fn borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
     }
 
     store_u64(&borrow_key, new_borrow);
-    store_u64(b"ll_total_borrows", total_borrows + amount);
+    let new_total_borrows = match total_borrows.checked_add(amount) {
+        Some(v) => v,
+        None => {
+            reentrancy_exit();
+            log_info("Total borrows overflow");
+            return 5;
+        }
+    };
+    store_u64(b"ll_total_borrows", new_total_borrows);
 
     // Track borrow count
     store_u64(BORROW_COUNT_KEY, load_u64(BORROW_COUNT_KEY) + 1);
@@ -529,9 +544,9 @@ fn accrue_interest() {
         let depositor_interest = interest - reserve_amount;
 
         // Increase total borrows by interest (borrowers owe more)
-        store_u64(b"ll_total_borrows", total_borrows + interest);
+        store_u64(b"ll_total_borrows", total_borrows.saturating_add(interest));
         // Increase total deposits by depositor's share (depositors earn)
-        store_u64(b"ll_total_deposits", total_deposits + depositor_interest);
+        store_u64(b"ll_total_deposits", total_deposits.saturating_add(depositor_interest));
         // Track protocol reserves
         let reserves = load_u64(b"ll_reserves");
         store_u64(b"ll_reserves", reserves + reserve_amount);

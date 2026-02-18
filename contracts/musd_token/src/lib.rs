@@ -596,6 +596,12 @@ pub extern "C" fn attest_reserves(
         core::ptr::copy_nonoverlapping(proof_hash, hash.as_mut_ptr(), 32);
     }
 
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller_addr {
+        return 200;
+    }
+
     if !require_admin(&caller_addr) {
         return 2;
     }
@@ -682,7 +688,7 @@ pub extern "C" fn get_reserve_ratio() -> u64 {
     if attested == 0 {
         return 0;
     } // No attestation yet
-    (attested * 10_000) / supply // bps — 10000 = 100%, 10500 = 105%
+    ((attested as u128) * 10_000 / (supply as u128)) as u64 // bps — 10000 = 100%, 10500 = 105%
 }
 
 /// Get slot of last reserve attestation.
@@ -725,6 +731,11 @@ pub extern "C" fn emergency_pause(caller: *const u8) -> u32 {
     unsafe {
         core::ptr::copy_nonoverlapping(caller, addr.as_mut_ptr(), 32);
     }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != addr {
+        return 200;
+    }
     if !require_admin(&addr) {
         return 2;
     }
@@ -738,6 +749,11 @@ pub extern "C" fn emergency_unpause(caller: *const u8) -> u32 {
     let mut addr = [0u8; 32];
     unsafe {
         core::ptr::copy_nonoverlapping(caller, addr.as_mut_ptr(), 32);
+    }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != addr {
+        return 200;
     }
     if !require_admin(&addr) {
         return 2;
@@ -755,6 +771,11 @@ pub extern "C" fn transfer_admin(caller: *const u8, new_admin: *const u8) -> u32
     unsafe {
         core::ptr::copy_nonoverlapping(caller, caller_addr.as_mut_ptr(), 32);
         core::ptr::copy_nonoverlapping(new_admin, new_addr.as_mut_ptr(), 32);
+    }
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller_addr {
+        return 200;
     }
     if !require_admin(&caller_addr) {
         return 2;
@@ -824,6 +845,7 @@ mod tests {
         let admin = addr(1);
         let user = addr(2);
         initialize(admin.as_ptr());
+        test_mock::set_caller(admin);
         let result = mint(admin.as_ptr(), user.as_ptr(), 1_000_000);
         assert_eq!(result, 0);
         assert_eq!(balance_of(user.as_ptr()), 1_000_000);
@@ -837,6 +859,7 @@ mod tests {
         let admin = addr(1);
         let user = addr(2);
         initialize(admin.as_ptr());
+        test_mock::set_caller(user);
         assert_eq!(mint(user.as_ptr(), user.as_ptr(), 1_000_000), 2);
     }
 
@@ -846,6 +869,7 @@ mod tests {
         let admin = addr(1);
         let user = addr(2);
         initialize(admin.as_ptr());
+        test_mock::set_caller(admin);
         assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 0), 4);
     }
 
@@ -855,6 +879,7 @@ mod tests {
         let admin = addr(1);
         let zero = [0u8; 32];
         initialize(admin.as_ptr());
+        test_mock::set_caller(admin);
         assert_eq!(mint(admin.as_ptr(), zero.as_ptr(), 1_000_000), 3);
     }
 
@@ -864,6 +889,7 @@ mod tests {
         let admin = addr(1);
         let user = addr(2);
         initialize(admin.as_ptr());
+        test_mock::set_caller(admin);
         // Mint up to cap
         assert_eq!(mint(admin.as_ptr(), user.as_ptr(), MINT_CAP_PER_EPOCH), 0);
         // Next mint should fail
@@ -878,7 +904,9 @@ mod tests {
         let admin = addr(1);
         let user = addr(2);
         initialize(admin.as_ptr());
+        test_mock::set_caller(admin);
         mint(admin.as_ptr(), user.as_ptr(), 5_000_000);
+        test_mock::set_caller(user);
         let result = burn(user.as_ptr(), 2_000_000);
         assert_eq!(result, 0);
         assert_eq!(balance_of(user.as_ptr()), 3_000_000);
@@ -892,7 +920,9 @@ mod tests {
         let admin = addr(1);
         let user = addr(2);
         initialize(admin.as_ptr());
+        test_mock::set_caller(admin);
         mint(admin.as_ptr(), user.as_ptr(), 1_000_000);
+        test_mock::set_caller(user);
         assert_eq!(burn(user.as_ptr(), 2_000_000), 5);
     }
 
@@ -905,7 +935,9 @@ mod tests {
         let alice = addr(2);
         let bob = addr(3);
         initialize(admin.as_ptr());
+        test_mock::set_caller(admin);
         mint(admin.as_ptr(), alice.as_ptr(), 10_000_000);
+        test_mock::set_caller(alice);
         let result = transfer(alice.as_ptr(), bob.as_ptr(), 3_000_000);
         assert_eq!(result, 0);
         assert_eq!(balance_of(alice.as_ptr()), 7_000_000);
@@ -919,7 +951,9 @@ mod tests {
         let alice = addr(2);
         let bob = addr(3);
         initialize(admin.as_ptr());
+        test_mock::set_caller(admin);
         mint(admin.as_ptr(), alice.as_ptr(), 1_000_000);
+        test_mock::set_caller(alice);
         assert_eq!(transfer(alice.as_ptr(), bob.as_ptr(), 5_000_000), 5);
     }
 
@@ -929,7 +963,9 @@ mod tests {
         let admin = addr(1);
         let alice = addr(2);
         initialize(admin.as_ptr());
+        test_mock::set_caller(admin);
         mint(admin.as_ptr(), alice.as_ptr(), 1_000_000);
+        test_mock::set_caller(alice);
         assert_eq!(transfer(alice.as_ptr(), alice.as_ptr(), 500_000), 6);
     }
 
@@ -943,13 +979,16 @@ mod tests {
         let bob = addr(3);
         let dex = addr(4); // DEX contract
         initialize(admin.as_ptr());
+        test_mock::set_caller(admin);
         mint(admin.as_ptr(), alice.as_ptr(), 10_000_000);
 
         // Alice approves DEX to spend 5M
+        test_mock::set_caller(alice);
         assert_eq!(approve(alice.as_ptr(), dex.as_ptr(), 5_000_000), 0);
         assert_eq!(allowance(alice.as_ptr(), dex.as_ptr()), 5_000_000);
 
         // DEX moves 3M from Alice to Bob
+        test_mock::set_caller(dex);
         assert_eq!(
             transfer_from(dex.as_ptr(), alice.as_ptr(), bob.as_ptr(), 3_000_000),
             0
@@ -967,8 +1006,11 @@ mod tests {
         let bob = addr(3);
         let dex = addr(4);
         initialize(admin.as_ptr());
+        test_mock::set_caller(admin);
         mint(admin.as_ptr(), alice.as_ptr(), 10_000_000);
+        test_mock::set_caller(alice);
         approve(alice.as_ptr(), dex.as_ptr(), 1_000_000);
+        test_mock::set_caller(dex);
         assert_eq!(
             transfer_from(dex.as_ptr(), alice.as_ptr(), bob.as_ptr(), 5_000_000),
             7
@@ -983,6 +1025,7 @@ mod tests {
         let admin = addr(1);
         let proof = [0xABu8; 32];
         initialize(admin.as_ptr());
+        test_mock::set_caller(admin);
         let result = attest_reserves(admin.as_ptr(), 50_000_000_000, proof.as_ptr());
         assert_eq!(result, 0);
         assert_eq!(get_attestation_count(), 1);
@@ -995,6 +1038,7 @@ mod tests {
         let user = addr(2);
         let proof = [0xABu8; 32];
         initialize(admin.as_ptr());
+        test_mock::set_caller(admin);
         // Mint 10M
         mint(admin.as_ptr(), user.as_ptr(), 10_000_000);
         // Attest 10M reserves
@@ -1012,6 +1056,7 @@ mod tests {
         let user = addr(2);
         let proof = [0xABu8; 32];
         initialize(admin.as_ptr());
+        test_mock::set_caller(admin);
         // Attest 5M reserves
         attest_reserves(admin.as_ptr(), 5_000_000, proof.as_ptr());
         // Mint 5M — should work (exactly at limit)
@@ -1028,14 +1073,20 @@ mod tests {
         let admin = addr(1);
         let user = addr(2);
         initialize(admin.as_ptr());
+        test_mock::set_caller(admin);
         mint(admin.as_ptr(), user.as_ptr(), 1_000_000);
 
         emergency_pause(admin.as_ptr());
+        test_mock::set_caller(user);
         assert_eq!(transfer(user.as_ptr(), admin.as_ptr(), 100_000), 1); // Blocked
+        test_mock::set_caller(admin);
         assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 100_000), 1); // Blocked
+        test_mock::set_caller(user);
         assert_eq!(burn(user.as_ptr(), 100_000), 1); // Blocked
 
+        test_mock::set_caller(admin);
         emergency_unpause(admin.as_ptr());
+        test_mock::set_caller(user);
         assert_eq!(transfer(user.as_ptr(), admin.as_ptr(), 100_000), 0); // Works again
     }
 
@@ -1049,10 +1100,12 @@ mod tests {
         let user = addr(2);
         initialize(admin.as_ptr());
 
+        test_mock::set_caller(admin);
         assert_eq!(transfer_admin(admin.as_ptr(), new_admin.as_ptr()), 0);
         // Old admin can no longer mint
         assert_eq!(mint(admin.as_ptr(), user.as_ptr(), 1_000_000), 2);
         // New admin can mint
+        test_mock::set_caller(new_admin);
         assert_eq!(mint(new_admin.as_ptr(), user.as_ptr(), 1_000_000), 0);
     }
 
@@ -1064,7 +1117,9 @@ mod tests {
         let admin = addr(1);
         let user = addr(2);
         initialize(admin.as_ptr());
+        test_mock::set_caller(admin);
         mint(admin.as_ptr(), user.as_ptr(), 1_000_000);
+        test_mock::set_caller(user);
         assert_eq!(burn(user.as_ptr(), 0), 4);
     }
 
@@ -1075,7 +1130,9 @@ mod tests {
         let user = addr(2);
         let zero = [0u8; 32];
         initialize(admin.as_ptr());
+        test_mock::set_caller(admin);
         mint(admin.as_ptr(), user.as_ptr(), 1_000_000);
+        test_mock::set_caller(user);
         assert_eq!(transfer(user.as_ptr(), zero.as_ptr(), 500_000), 3);
     }
 
@@ -1085,6 +1142,7 @@ mod tests {
         let admin = addr(1);
         let user = addr(2);
         initialize(admin.as_ptr());
+        test_mock::set_caller(admin);
 
         // Mint up to cap
         assert_eq!(mint(admin.as_ptr(), user.as_ptr(), MINT_CAP_PER_EPOCH), 0);
@@ -1102,9 +1160,13 @@ mod tests {
         let user = addr(2);
         initialize(admin.as_ptr());
 
+        test_mock::set_caller(admin);
         mint(admin.as_ptr(), user.as_ptr(), 10_000_000);
+        test_mock::set_caller(user);
         burn(user.as_ptr(), 3_000_000);
+        test_mock::set_caller(admin);
         mint(admin.as_ptr(), user.as_ptr(), 5_000_000);
+        test_mock::set_caller(user);
         burn(user.as_ptr(), 2_000_000);
 
         // supply = 10M - 3M + 5M - 2M = 10M

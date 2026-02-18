@@ -3,6 +3,7 @@
 
 use axum::{
     extract::{
+        connect_info::ConnectInfo,
         ws::{Message, WebSocket, WebSocketUpgrade},
         State,
     },
@@ -124,10 +125,17 @@ impl PredictionEventBroadcaster {
     }
 }
 use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{error, info, warn};
+
+/// Per-IP connection limit
+const MAX_CONNECTIONS_PER_IP: u32 = 10;
+
+static IP_CONNECTIONS: std::sync::LazyLock<Mutex<HashMap<IpAddr, u32>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// T8.5: Maximum subscriptions allowed per WebSocket connection
 const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 100;
@@ -376,7 +384,7 @@ pub async fn start_ws_server(
     info!("🦞 WebSocket server listening on {}", addr);
 
     let handle = tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app).await {
+        if let Err(e) = axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await {
             error!("WebSocket server error: {}", e);
         }
     });
@@ -385,8 +393,12 @@ pub async fn start_ws_server(
 }
 
 /// WebSocket handler with connection limit enforcement
-async fn ws_handler(ws: WebSocketUpgrade, State(state): State<WsState>) -> Response {
-    let current = state.active_connections.load(Ordering::Relaxed);
+async fn ws_handler(
+    ws: WebSocketUpgrade,
+    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+    State(state): State<WsState>,
+) -> Response {
+    let current = state.active_connections.load(Ordering::SeqCst);
     if current >= MAX_WS_CONNECTIONS {
         warn!(
             "WebSocket connection limit reached ({}/{}), rejecting",
@@ -397,13 +409,34 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<WsState>) -> Respo
             .body(axum::body::Body::from("Too many WebSocket connections"))
             .unwrap();
     }
-    ws.on_upgrade(|socket| handle_socket(socket, state))
+
+    // Per-IP connection limit
+    let ip = addr.ip();
+    {
+        let conns = IP_CONNECTIONS.lock().unwrap();
+        let count = conns.get(&ip).copied().unwrap_or(0);
+        if count >= MAX_CONNECTIONS_PER_IP {
+            warn!("Per-IP connection limit reached for {}: {}", ip, count);
+            return Response::builder()
+                .status(429)
+                .body(axum::body::Body::from("Too many connections from this IP"))
+                .unwrap();
+        }
+    }
+
+    ws.on_upgrade(move |socket| handle_socket(socket, state, ip))
 }
 
 /// Handle WebSocket connection
-async fn handle_socket(socket: WebSocket, state: WsState) {
-    state.active_connections.fetch_add(1, Ordering::Relaxed);
+async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
+    state.active_connections.fetch_add(1, Ordering::SeqCst);
     let conn_guard = state.active_connections.clone();
+
+    // Track per-IP connections
+    {
+        let mut conns = IP_CONNECTIONS.lock().unwrap();
+        *conns.entry(ip).or_insert(0) += 1;
+    }
 
     let (mut sender, mut receiver) = socket.split();
     let (tx, mut rx) = mpsc::channel::<String>(100);
@@ -606,7 +639,18 @@ async fn handle_socket(socket: WebSocket, state: WsState) {
     dex_event_task.abort();
     prediction_event_task.abort();
     // DDoS protection: decrement active connection counter
-    conn_guard.fetch_sub(1, Ordering::Relaxed);
+    conn_guard.fetch_sub(1, Ordering::SeqCst);
+
+    // Decrement per-IP connection count
+    {
+        let mut conns = IP_CONNECTIONS.lock().unwrap();
+        if let Some(count) = conns.get_mut(&ip) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                conns.remove(&ip);
+            }
+        }
+    }
 }
 
 /// Handle subscription request
