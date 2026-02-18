@@ -1113,12 +1113,16 @@ async fn get_pair_ticker(State(state): State<Arc<RpcState>>, Path(pair_id): Path
         _ => (0, 0.0, 0.0, 0.0, 0),
     };
 
+    // Clamp sentinel values: u64::MAX means "no bid/ask on book"
+    let bid = if best_bid_raw == u64::MAX { 0.0 } else { best_bid_raw as f64 / PRICE_SCALE as f64 };
+    let ask = if best_ask_raw == u64::MAX || best_ask_raw == 0 { 0.0 } else { best_ask_raw as f64 / PRICE_SCALE as f64 };
+
     ApiResponse::ok(
         TickerJson {
             pair_id,
             last_price,
-            bid: best_bid_raw as f64 / PRICE_SCALE as f64,
-            ask: best_ask_raw as f64 / PRICE_SCALE as f64,
+            bid,
+            ask,
             volume_24h,
             change_24h,
             high_24h,
@@ -1174,8 +1178,8 @@ async fn get_all_tickers(State(state): State<Arc<RpcState>>) -> Response {
         tickers.push(TickerJson {
             pair_id,
             last_price,
-            bid: best_bid_raw as f64 / PRICE_SCALE as f64,
-            ask: best_ask_raw as f64 / PRICE_SCALE as f64,
+            bid: if best_bid_raw == u64::MAX { 0.0 } else { best_bid_raw as f64 / PRICE_SCALE as f64 },
+            ask: if best_ask_raw == u64::MAX || best_ask_raw == 0 { 0.0 } else { best_ask_raw as f64 / PRICE_SCALE as f64 },
             volume_24h,
             change_24h,
             high_24h,
