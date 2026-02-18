@@ -367,6 +367,7 @@ pub async fn start_ws_server(
 
     let app = Router::new()
         .route("/", get(ws_handler))
+        .route("/ws", get(ws_handler))
         .with_state(ws_state);
 
     let addr = format!("0.0.0.0:{}", port);
