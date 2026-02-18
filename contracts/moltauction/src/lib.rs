@@ -112,6 +112,13 @@ pub extern "C" fn create_auction(
     unsafe { core::ptr::copy_nonoverlapping(nft_contract_ptr, nft_contract.as_mut_ptr(), 32); }
     let mut payment_token = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(payment_token_ptr, payment_token.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify transaction signer is the seller
+    let real_caller = get_caller();
+    if real_caller.0 != seller {
+        log_info("create_auction rejected: caller is not the seller");
+        return 0;
+    }
     
     // Verify seller owns the NFT
     match call_nft_owner(

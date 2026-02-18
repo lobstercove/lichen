@@ -106,6 +106,13 @@ pub extern "C" fn mint(caller_ptr: *const u8, to_ptr: *const u8, amount: u64) ->
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller_array.as_mut_ptr(), 32); }
     unsafe { core::ptr::copy_nonoverlapping(to_ptr, to_array.as_mut_ptr(), 32); }
 
+    // AUDIT-FIX: verify transaction signer matches claimed caller
+    let real_caller = get_caller();
+    if real_caller.0 != caller_array {
+        log_info("Mint rejected: caller mismatch");
+        return 0;
+    }
+
     let caller = Address::new(caller_array);
     let to = Address::new(to_array);
     let owner = get_owner();
@@ -159,6 +166,13 @@ pub extern "C" fn approve(owner_ptr: *const u8, spender_ptr: *const u8, amount: 
     let mut spender_array = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(owner_ptr, owner_array.as_mut_ptr(), 32); }
     unsafe { core::ptr::copy_nonoverlapping(spender_ptr, spender_array.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify transaction signer matches claimed owner
+    let real_caller = get_caller();
+    if real_caller.0 != owner_array {
+        log_info("Approve rejected: caller is not the owner");
+        return 0;
+    }
 
     let owner = Address::new(owner_array);
     let spender = Address::new(spender_array);

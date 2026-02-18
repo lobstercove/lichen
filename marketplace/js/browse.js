@@ -4,6 +4,16 @@
 (function () {
     'use strict';
 
+    // AUDIT-FIX MK-4: XSS prevention utility
+    function escapeHtml(str) {
+        return String(str ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
     const RPC_URL = (window.moltMarketConfig && window.moltMarketConfig.rpcUrl) || 'http://localhost:8899';
     const PAGE_SIZE = 20;
 
@@ -321,14 +331,14 @@
                     ? 'background: ' + nft.image
                     : 'background-image: url(' + nft.image + '); background-size: cover; background-position: center;';
 
-                return '<div class="nft-card" onclick="window._browseViewNFT(\'' + nft.id + '\')">' +
+                return '<div class="nft-card" onclick="window._browseViewNFT(\'' + escapeHtml(nft.id) + '\')">' +
                     '<div class="nft-image" style="' + imageStyle + '"></div>' +
                     '<div class="nft-info">' +
-                    '<div class="nft-collection">' + (nft.collection || 'Unknown') + '</div>' +
-                    '<div class="nft-name">' + (nft.name || 'Unnamed') + '</div>' +
+                    '<div class="nft-collection">' + escapeHtml(nft.collection || 'Unknown') + '</div>' +
+                    '<div class="nft-name">' + escapeHtml(nft.name || 'Unnamed') + '</div>' +
                     '<div class="nft-footer">' +
-                    '<div class="nft-price">Price <span class="nft-price-value">' + nft.price + ' MOLT</span></div>' +
-                    '<div class="nft-rarity nft-rarity-' + (nft.rarity || 'Common').toLowerCase() + '">' + (nft.rarity || 'Common') + '</div>' +
+                    '<div class="nft-price">Price <span class="nft-price-value">' + escapeHtml(nft.price) + ' MOLT</span></div>' +
+                    '<div class="nft-rarity nft-rarity-' + escapeHtml((nft.rarity || 'Common').toLowerCase()) + '">' + escapeHtml(nft.rarity || 'Common') + '</div>' +
                     '</div>' +
                     '</div>' +
                     '</div>';

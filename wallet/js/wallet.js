@@ -327,7 +327,11 @@ function serializeMessageBincode(message) {
     }
 
     // recent_blockhash: Hash([u8; 32]) — parse hex string to 32 bytes
+    // AUDIT-FIX FE-11: Validate blockhash to prevent zeroed replay-vulnerable transactions
     const hashHex = message.blockhash || message.recent_blockhash;
+    if (!hashHex || typeof hashHex !== 'string' || !/^[0-9a-fA-F]{64}$/.test(hashHex)) {
+        throw new Error('Invalid or missing blockhash: must be a 64-character hex string');
+    }
     const hashBytes = new Uint8Array(32);
     for (let i = 0; i < 32; i++) {
         hashBytes[i] = parseInt(hashHex.substr(i * 2, 2), 16);
@@ -624,7 +628,7 @@ async function createWalletStep2() {
     }
     
     // Generate mnemonic
-    createdMnemonic = MoltCrypto.generateMnemonic();
+    createdMnemonic = await MoltCrypto.generateMnemonic();
     createdKeypair = await MoltCrypto.mnemonicToKeypair(createdMnemonic);
     
     // Display seed phrase
@@ -1055,11 +1059,14 @@ function setupWalletSelector() {
     }
     
     // Populate dropdown with inline layout: "WalletName  address..." on one row
+    // AUDIT-FIX FE-1: Escape user-controlled wallet names to prevent XSS
     dropdown.innerHTML = walletState.wallets.map(w => {
-        const shortAddr = w.address.slice(0, 12) + '...';
+        const shortAddr = escapeHtml(w.address.slice(0, 12) + '...');
+        const safeName = escapeHtml(w.name);
+        const safeId = escapeHtml(w.id);
         return `
-        <div class="wallet-dropdown-item" onclick="switchWallet('${w.id}')" style="display: flex; align-items: center; gap: 0.5rem; white-space: nowrap;">
-            <strong style="flex-shrink: 0;">${w.name}</strong>
+        <div class="wallet-dropdown-item" onclick="switchWallet('${safeId}')" style="display: flex; align-items: center; gap: 0.5rem; white-space: nowrap;">
+            <strong style="flex-shrink: 0;">${safeName}</strong>
             <span style="font-family: 'JetBrains Mono', monospace; font-size: 0.78rem; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis;">${shortAddr}</span>
         </div>`;
     }).join('') + `

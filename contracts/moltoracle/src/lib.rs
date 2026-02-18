@@ -113,6 +113,14 @@ pub extern "C" fn submit_price(
 ) -> u32 {
     let mut feeder = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(feeder_ptr, feeder.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify transaction signer matches claimed feeder
+    let real_caller = get_caller();
+    if real_caller.0 != feeder {
+        log_info("submit_price rejected: caller is not the feeder");
+        return 0;
+    }
+
     let mut asset = alloc::vec![0u8; asset_len as usize];
     unsafe { core::ptr::copy_nonoverlapping(asset_ptr, asset.as_mut_ptr(), asset_len as usize); }
     

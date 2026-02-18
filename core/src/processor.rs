@@ -519,7 +519,7 @@ impl TxProcessor {
         let batch = self
             .batch
             .lock()
-            .unwrap()
+            .unwrap_or_else(|e| e.into_inner()) // AUDIT-FIX CP-3: handle poisoned mutex like rollback_batch
             .take()
             .ok_or_else(|| "No active batch to commit".to_string())?;
         self.state.commit_batch(batch)
@@ -2069,30 +2069,8 @@ impl TxProcessor {
             ));
         }
 
-        // Charge deploy fee
-        // AUDIT-FIX 3.8: Use fee_config from state instead of hardcoded constant
-        // so governance-updated fees take effect.
-        let deploy_fee_config = self
-            .state
-            .get_fee_config()
-            .unwrap_or_else(|_| FeeConfig::default_from_constants());
-        let deploy_fee = deploy_fee_config.contract_deploy_fee;
-        let mut deployer_account = self
-            .b_get_account(&deployer)?
-            .ok_or_else(|| "Deployer account not found".to_string())?;
-        deployer_account
-            .deduct_spendable(deploy_fee)
-            .map_err(|e| format!("Failed to deduct deploy fee: {}", e))?;
-        self.b_put_account(&deployer, &deployer_account)?;
-
-        // Credit fee to treasury
-        let mut treasury_account = self
-            .b_get_account(&treasury)?
-            .unwrap_or_else(|| crate::Account::new(0, treasury));
-        treasury_account
-            .add_spendable(deploy_fee)
-            .map_err(|e| format!("Treasury balance overflow: {}", e))?;
-        self.b_put_account(&treasury, &treasury_account)?;
+        // AUDIT-FIX CP-1: Deploy fee is already charged upfront in process_transaction()
+        // via compute_transaction_fee() + charge_fee_direct(). Removed duplicate charge here.
 
         // Create contract account
         let contract = crate::ContractAccount::new(code_bytes.to_vec(), deployer);
@@ -3161,8 +3139,8 @@ mod tests {
         let (processor, _state, alice_kp, alice, treasury, genesis_hash) = setup();
         let validator = Pubkey([42u8; 32]);
 
-        // Alice has 1000 MOLT but we drain her to 1 MOLT
-        let low_alice = Account::new(1, alice);
+        // Alice has 1000 MOLT but we drain her to 0 — below BASE_FEE (1M shells)
+        let low_alice = Account::new(0, alice);
         _state.put_account(&alice, &low_alice).unwrap();
 
         let code = vec![0x00; 100];

@@ -33,23 +33,29 @@ class Connection:
         self._next_id = 1
         self._ws_task: Optional[asyncio.Task] = None
         self._pending_responses: Dict[int, asyncio.Future] = {}
+        self._client: Optional[httpx.AsyncClient] = None
     
+    async def _get_client(self) -> httpx.AsyncClient:
+        """Get or create a persistent HTTP client with connection pooling"""
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=30.0)
+        return self._client
+
     async def _rpc(self, method: str, params: List[Any] = None) -> Any:
         """Make an RPC call"""
         if params is None:
             params = []
         
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                self.rpc_url,
-                json={
-                    "jsonrpc": "2.0",
-                    "id": self._next_id,
-                    "method": method,
-                    "params": params
-                },
-                timeout=30.0
-            )
+        client = await self._get_client()
+        response = await client.post(
+            self.rpc_url,
+            json={
+                "jsonrpc": "2.0",
+                "id": self._next_id,
+                "method": method,
+                "params": params
+            },
+        )
             self._next_id += 1
             
             data = response.json()
@@ -280,24 +286,35 @@ class Connection:
         """Handle incoming WebSocket messages"""
         try:
             async for message in self._ws:
-                data = json.loads(message)
+                try:
+                    data = json.loads(message)
+                except json.JSONDecodeError:
+                    continue
                 
-                # Check if this is a response to a pending request
-                if "id" in data and data["id"] in self._pending_responses:
-                    future = self._pending_responses.pop(data["id"])
-                    future.set_result(data)
-                # Check if this is a subscription notification
-                elif data.get("method") == "subscription":
-                    params = data["params"]
-                    sub_id = params["subscription"]
-                    result = params["result"]
-                    
-                    callback = self._subscriptions.get(sub_id)
-                    if callback:
-                        if asyncio.iscoroutinefunction(callback):
-                            await callback(result)
-                        else:
-                            callback(result)
+                try:
+                    # Check if this is a response to a pending request
+                    if "id" in data and data["id"] in self._pending_responses:
+                        future = self._pending_responses.pop(data["id"])
+                        future.set_result(data)
+                    # Check if this is a subscription notification
+                    elif data.get("method") == "subscription":
+                        params = data.get("params", {})
+                        sub_id = params.get("subscription")
+                        result = params.get("result")
+                        if sub_id is None:
+                            continue
+                        
+                        callback = self._subscriptions.get(sub_id)
+                        if callback:
+                            try:
+                                if asyncio.iscoroutinefunction(callback):
+                                    await callback(result)
+                                else:
+                                    callback(result)
+                            except Exception:
+                                pass  # Don't let callback errors crash the handler
+                except (KeyError, TypeError):
+                    continue
         except websockets.exceptions.ConnectionClosed:
             pass
     
@@ -479,5 +496,9 @@ class Connection:
         
         if self._ws:
             await self._ws.close()
+        
+        if self._client:
+            await self._client.aclose()
+            self._client = None
         
         self._subscriptions.clear()

@@ -573,6 +573,9 @@ pub struct StateStore {
     /// AUDIT-FIX H6: Mutex to serialize next_event_seq read-modify-write operations,
     /// preventing duplicate sequence numbers under concurrent access.
     event_seq_lock: Arc<std::sync::Mutex<()>>,
+    /// AUDIT-FIX CP-8: Mutex to serialize next_transfer_seq read-modify-write operations,
+    /// preventing duplicate transfer sequence numbers under concurrent access.
+    transfer_seq_lock: Arc<std::sync::Mutex<()>>,
 }
 
 /// Atomic write batch for transaction processing (T1.4/T3.1).
@@ -601,6 +604,8 @@ pub struct StateBatch {
     burned_delta: u64,
     /// AUDIT-FIX 1.15: Track NFT token_ids indexed within this batch for TOCTOU-safe uniqueness
     nft_token_id_overlay: std::collections::HashSet<Vec<u8>>,
+    /// AUDIT-FIX CP-7: Track symbols registered within this batch to catch duplicates
+    symbol_overlay: std::collections::HashSet<String>,
     /// Auto-incrementing sequence counter for event key uniqueness (T2.13)
     event_seq: u64,
     /// Reference to the DB (needed for cf_handle lookups during put)
@@ -783,6 +788,7 @@ impl StateStore {
             db: db_arc,
             metrics,
             event_seq_lock: Arc::new(std::sync::Mutex::new(())),
+            transfer_seq_lock: Arc::new(std::sync::Mutex::new(())),
         })
     }
 
@@ -1991,7 +1997,10 @@ impl StateStore {
                 continue;
             }
 
-            let slot = u64::from_be_bytes(key[0..8].try_into().unwrap());
+            let slot = u64::from_be_bytes(
+                key[0..8].try_into()
+                    .map_err(|_| "Corrupt slot key in block hashes".to_string())?
+            );
 
             if let Some(bs) = before_slot {
                 if slot >= bs {
@@ -2037,7 +2046,13 @@ impl StateStore {
                 let mut prog_bytes = [0u8; 32];
                 prog_bytes.copy_from_slice(&key[32..64]);
                 let program = Pubkey(prog_bytes);
-                let balance = u64::from_le_bytes((*value).try_into().unwrap());
+                // AUDIT-FIX CP-13: safe conversion with length guard above
+                let balance = u64::from_le_bytes(
+                    match (*value).try_into() {
+                        Ok(b) => b,
+                        Err(_) => continue,
+                    }
+                );
                 tokens.push((program, balance));
                 if tokens.len() >= limit {
                     break;
@@ -2685,6 +2700,7 @@ impl StateStore {
             active_account_delta: 0,
             burned_delta: 0,
             nft_token_id_overlay: std::collections::HashSet::new(),
+            symbol_overlay: std::collections::HashSet::new(),
             event_seq: 0,
             db: Arc::clone(&self.db),
         }
@@ -3307,11 +3323,17 @@ impl StateBatch {
         {
             return Err(format!("Symbol already registered: {}", normalized));
         }
+        // AUDIT-FIX CP-7: Also check the in-batch overlay for duplicate symbols
+        if self.symbol_overlay.contains(&normalized) {
+            return Err(format!("Symbol already registered in this batch: {}", normalized));
+        }
         let mut entry_copy = entry.clone();
         entry_copy.symbol = normalized.clone();
         let data = serde_json::to_vec(&entry_copy)
             .map_err(|e| format!("Failed to encode symbol registry: {}", e))?;
         self.batch.put_cf(&cf, normalized.as_bytes(), &data);
+        // AUDIT-FIX CP-7: Track this symbol in the batch overlay
+        self.symbol_overlay.insert(normalized.clone());
 
         // Write reverse index: program pubkey -> symbol (O(1) program→symbol lookup)
         if let Some(cf_rev) = self.db.cf_handle(CF_SYMBOL_BY_PROGRAM) {
@@ -4101,6 +4123,7 @@ impl StateStore {
         }
 
         // 6. Prune dirty_acct:* keys (already processed by compute_state_root)
+        // AUDIT-FIX CP-15: Only delete dirty_acct keys for slots before cutoff
         let iter = self.db.iterator_cf(
             &cf,
             rocksdb::IteratorMode::From(b"dirty_acct:", Direction::Forward),
@@ -4109,8 +4132,18 @@ impl StateStore {
             if !item.0.starts_with(b"dirty_acct:") {
                 break;
             }
-            batch.delete_cf(&cf, &item.0);
-            deleted += 1;
+            // dirty_acct keys have format: "dirty_acct:{slot_be_bytes}:{pubkey}"
+            // Extract slot from bytes after the prefix (11 bytes = "dirty_acct:")
+            let prefix_len = b"dirty_acct:".len();
+            if item.0.len() >= prefix_len + 8 {
+                if let Ok(slot_bytes) = item.0[prefix_len..prefix_len + 8].try_into() {
+                    let slot = u64::from_be_bytes(slot_bytes);
+                    if slot < cutoff {
+                        batch.delete_cf(&cf, &item.0);
+                        deleted += 1;
+                    }
+                }
+            }
         }
 
         // Apply batch delete atomically
@@ -4989,7 +5022,10 @@ impl StateStore {
     }
 
     /// Atomic transfer sequence counter per token+slot
+    /// AUDIT-FIX CP-8: Protected by Mutex to prevent read-modify-write race conditions
     fn next_transfer_seq(&self, token_program: &Pubkey, slot: u64) -> Result<u64, String> {
+        let _lock = self.transfer_seq_lock.lock().unwrap_or_else(|e| e.into_inner());
+        
         let cf = self
             .db
             .cf_handle(CF_STATS)

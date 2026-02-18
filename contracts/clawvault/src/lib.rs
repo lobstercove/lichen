@@ -598,7 +598,8 @@ pub extern "C" fn get_user_position(user_ptr: *const u8) -> u32 {
     let total_assets = load_u64(b"cv_total_assets");
 
     let estimated_value = if total_shares > 0 {
-        shares * total_assets / total_shares
+        // AUDIT-FIX: Use u128 to prevent overflow
+        ((shares as u128) * (total_assets as u128) / (total_shares as u128)) as u64
     } else {
         0
     };

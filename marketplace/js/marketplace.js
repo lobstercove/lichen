@@ -3,6 +3,16 @@
 
 console.log('🦞 Molt Market loading...');
 
+// AUDIT-FIX MK-2: XSS prevention utility
+function escapeHtml(str) {
+    return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 const RPC_URL = (window.moltMarketConfig && window.moltMarketConfig.rpcUrl) || 'http://localhost:8899';
 const dataSource = window.marketplaceDataSource;
 let currentWallet = null;
@@ -94,17 +104,17 @@ async function loadTrendingNFTs(period = '24h') {
     }
     
     container.innerHTML = nfts.map(nft => `
-        <div class="nft-card" onclick="viewNFT('${nft.id}')">
-            <div class="nft-image" style="background: ${nft.image}"></div>
+        <div class="nft-card" onclick="viewNFT('${escapeHtml(nft.id)}')">
+            <div class="nft-image" style="background: ${escapeHtml(nft.image)}"></div>
             <div class="nft-info">
-                <div class="nft-collection">${nft.collection}</div>
-                <div class="nft-name">${nft.name}</div>
+                <div class="nft-collection">${escapeHtml(nft.collection)}</div>
+                <div class="nft-name">${escapeHtml(nft.name)}</div>
                 <div class="nft-footer">
                     <div class="nft-price">
                         Price
-                        <span class="nft-price-value">${nft.price} MOLT</span>
+                        <span class="nft-price-value">${escapeHtml(nft.price)} MOLT</span>
                     </div>
-                    <button class="nft-action" onclick="event.stopPropagation(); buyNFT('${nft.id}')">
+                    <button class="nft-action" onclick="event.stopPropagation(); buyNFT('${escapeHtml(nft.id)}')">
                         Buy Now
                     </button>
                 </div>

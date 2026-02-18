@@ -464,10 +464,8 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, molt_amount: u64) -> 
     // Check graduation (use u128 to prevent overflow with large supplies)
     let market_cap = (current_price(new_supply) as u128 * new_supply as u128 / 1_000_000_000u128) as u64;
     if market_cap >= GRADUATION_MARKET_CAP {
-        data[64] = 1; // Mark graduated
-        storage_set(&token_key, &data);
-
         // --- DEX Migration: create pair, create pool, seed liquidity ---
+        // AUDIT-FIX: Only set graduated flag AFTER successful DEX migration
         let dex_core_bytes = storage_get(DEX_CORE_ADDRESS_KEY);
         let dex_amm_bytes = storage_get(DEX_AMM_ADDRESS_KEY);
 
@@ -529,8 +527,11 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, molt_amount: u64) -> 
 
             if pair_ok && pool_ok && seed_ok {
                 log_info("Token graduated! DEX pair created, pool seeded with liquidity");
+                data[64] = 1; // AUDIT-FIX: Only mark graduated on full success
+                storage_set(&token_key, &data);
             } else {
-                log_info("Token graduated! DEX migration partially failed — manual intervention needed");
+                log_info("DEX migration failed — graduation aborted, token remains on bonding curve");
+                // AUDIT-FIX: Do NOT set graduated flag on partial failure
             }
         } else {
             log_info("Token graduated! DEX addresses not configured — manual migration needed");

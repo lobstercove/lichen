@@ -2416,66 +2416,62 @@ impl SlashingTracker {
             return 0;
         }
 
-        let mut total_slashed = 0u64;
+        // AUDIT-FIX CP-9: Snapshot stake BEFORE the loop to prevent compound slashing.
+        // Without this, each iteration re-reads the (already-slashed) stake, causing
+        // e.g. DoubleBlock(50%) + DoubleVote(30%) = 65% instead of the intended 80%.
+        let original_stake = stake_pool
+            .get_stake(validator)
+            .map(|s| s.total_stake())
+            .unwrap_or(0);
+
+        if original_stake == 0 {
+            return 0;
+        }
+
+        let mut total_penalty = 0u64;
 
         if let Some(evidence_list) = self.evidence.get(validator) {
             for evidence in evidence_list {
-                // Calculate stake to slash based on severity
+                // Calculate stake to slash based on severity — all from original snapshot
                 let stake_penalty = match evidence.offense {
                     SlashingOffense::DoubleBlock { .. } => {
                         // Slash 50% of stake for double block production
-                        stake_pool
-                            .get_stake(validator)
-                            .map(|s| s.total_stake() / 2)
-                            .unwrap_or(0)
+                        original_stake / 2
                     }
                     SlashingOffense::DoubleVote { .. } => {
                         // Slash 30% of stake for double voting
-                        // AUDIT-FIX M8: u128 intermediate for overflow safety
-                        stake_pool
-                            .get_stake(validator)
-                            .map(|s| (s.total_stake() as u128 * 30 / 100) as u64)
-                            .unwrap_or(0)
+                        (original_stake as u128 * 30 / 100) as u64
                     }
                     SlashingOffense::Downtime { missed_slots, .. } => {
                         // Slash proportional to downtime (max 10%)
-                        let downtime_penalty = (missed_slots / 100).min(10); // 1% per 100 slots, max 10%
-                        // AUDIT-FIX M8: u128 intermediate for overflow safety
-                        stake_pool
-                            .get_stake(validator)
-                            .map(|s| (s.total_stake() as u128 * downtime_penalty as u128 / 100) as u64)
-                            .unwrap_or(0)
+                        let downtime_penalty = (missed_slots / 100).min(10);
+                        (original_stake as u128 * downtime_penalty as u128 / 100) as u64
                     }
                     SlashingOffense::InvalidStateTransition { .. } => {
-                        // Slash 100% of stake for invalid state transition (per whitepaper)
-                        stake_pool
-                            .get_stake(validator)
-                            .map(|s| s.total_stake())
-                            .unwrap_or(0)
+                        // Slash 100% of stake for invalid state transition
+                        original_stake
                     }
                     SlashingOffense::Censorship { .. } => {
-                        // Slash 25% of stake for censorship attack (per whitepaper)
-                        // AUDIT-FIX M8: u128 intermediate for overflow safety
-                        stake_pool
-                            .get_stake(validator)
-                            .map(|s| (s.total_stake() as u128 * 25 / 100) as u64)
-                            .unwrap_or(0)
+                        // Slash 25% of stake for censorship attack
+                        (original_stake as u128 * 25 / 100) as u64
                     }
                     SlashingOffense::Collusion { .. } => {
-                        // Slash 100% of stake + permanent ban (per whitepaper)
-                        stake_pool
-                            .get_stake(validator)
-                            .map(|s| s.total_stake())
-                            .unwrap_or(0)
+                        // Slash 100% of stake + permanent ban
+                        original_stake
                     }
                 };
 
-                if stake_penalty > 0 {
-                    let slashed = stake_pool.slash_validator(validator, stake_penalty);
-                    total_slashed += slashed;
-                }
+                total_penalty = total_penalty.saturating_add(stake_penalty);
             }
         }
+
+        // Cap total penalty at original stake (can't slash more than 100%)
+        let capped_penalty = total_penalty.min(original_stake);
+        let total_slashed = if capped_penalty > 0 {
+            stake_pool.slash_validator(validator, capped_penalty)
+        } else {
+            0
+        };
 
         if total_slashed > 0 {
             self.slash(validator);
