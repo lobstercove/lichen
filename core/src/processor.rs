@@ -129,16 +129,17 @@ impl TxProcessor {
     ///   750+ reputation → 20% discount
     ///   1000+ reputation → 30% discount
     pub fn compute_transaction_fee(tx: &Transaction, fee_config: &FeeConfig) -> u64 {
-        // Internal system transaction types 2-5 are fee-free:
+        // Internal system transaction types 2-5, 19 are fee-free:
         //   2 = Reward distribution (validator block rewards from treasury)
         //   3 = Grant/debt repayment (validator grant repayment to treasury)
         //   4 = Genesis transfer (initial treasury funding)
         //   5 = Genesis mint (initial supply creation)
+        //  19 = Faucet airdrop (treasury-funded, already debits treasury)
         // These are created by the validator itself and must not be charged fees.
         if let Some(first_ix) = tx.message.instructions.first() {
             if first_ix.program_id == SYSTEM_PROGRAM_ID {
                 if let Some(&kind) = first_ix.data.first() {
-                    if matches!(kind, 2..=5) {
+                    if matches!(kind, 2..=5 | 19) {
                         return 0;
                     }
                 }

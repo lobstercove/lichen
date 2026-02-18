@@ -1903,9 +1903,14 @@ function displayTransactions(transactions) {
             'FaucetAirdrop': 'Airdrop',
             'RegisterSymbol': 'Reg. Symbol',
             'RegisterEvmAddress': 'EVM Reg.',
+            'CreateAccount': 'Create Account',
             'CreateCollection': 'Collection',
+            'MintNFT': 'Mint NFT',
+            'TransferNFT': 'NFT Transfer',
             'ClaimUnstake': 'Claim Unstake',
             'GrantRepay': 'Grant Repay',
+            'GenesisTransfer': 'Genesis',
+            'GenesisMint': 'Mint',
         };
         const txTypeDisplay = txTypeDisplayMap[txType] || txType;
         const rawAmount = tx.amount ?? tx.value ?? (tx.amount_shells !== undefined ? Number(tx.amount_shells) / 1_000_000_000 : 0);

@@ -76,3 +76,26 @@ export async function unstakeStMolt({ wallet, password, amountMolt, network }) {
   const txHash = await rpc.sendTransaction(txBase64);
   return { txHash };
 }
+
+export async function claimReefStake({ wallet, password, network }) {
+  if (!wallet) throw new Error('No active wallet');
+  const rpc = new MoltChainRPC(await getConfiguredRpcEndpoint(network));
+
+  const latestBlock = await rpc.getLatestBlock();
+  const privateKeyHex = await decryptPrivateKey(wallet.encryptedKey, password);
+  // Instruction type 15 = ReefStakeClaim, no amount needed
+  const instructionData = new Uint8Array([15]);
+
+  const transaction = await buildSignedSingleInstructionTransaction({
+    privateKeyHex,
+    fromPublicKeyHex: wallet.publicKey,
+    blockhash: latestBlock.hash,
+    programIdBytes: new Uint8Array(32),
+    accountPubkeys: [],
+    instructionDataBytes: instructionData
+  });
+
+  const txBase64 = encodeTransactionBase64(transaction);
+  const txHash = await rpc.sendTransaction(txBase64);
+  return { txHash };
+}

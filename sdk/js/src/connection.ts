@@ -12,6 +12,16 @@ import { encodeTransaction } from './bincode';
 export interface Balance {
   shells: number;
   molt: number;
+  spendable?: number;
+  spendable_molt?: string;
+  staked?: number;
+  staked_molt?: string;
+  locked?: number;
+  locked_molt?: string;
+  reef_staked?: number;
+  reef_staked_molt?: string;
+  reef_value?: number;
+  reef_value_molt?: string;
 }
 
 /**

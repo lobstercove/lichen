@@ -1113,6 +1113,26 @@ async function refreshBalance() {
         
         document.getElementById('totalBalance').textContent = `${fmtUsd(totalUsd, sym)} ${currency}`;
         document.getElementById('balanceUsd').textContent = `${fmtToken(molt)} MOLT`;
+
+        // Balance breakdown — show spendable/staked/locked/reef split when non-trivial
+        const breakdownEl = document.getElementById('balanceBreakdown');
+        if (breakdownEl) {
+            const spendable = parseFloat(balance.spendable_molt) || 0;
+            const staked = parseFloat(balance.staked_molt) || 0;
+            const locked = parseFloat(balance.locked_molt) || 0;
+            const reefStaked = parseFloat(balance.reef_staked_molt) || 0;
+            const hasBreakdown = staked > 0 || locked > 0 || reefStaked > 0;
+            if (hasBreakdown) {
+                const parts = [`<i class="fas fa-wallet" style="opacity:0.5;"></i> Spendable: <strong>${fmtToken(spendable)}</strong>`];
+                if (staked > 0) parts.push(`<i class="fas fa-lock" style="opacity:0.5;"></i> Staked: <strong>${fmtToken(staked)}</strong>`);
+                if (reefStaked > 0) parts.push(`<i class="fas fa-coins" style="opacity:0.5;"></i> ReefStake: <strong>${fmtToken(reefStaked)}</strong>`);
+                if (locked > 0) parts.push(`<i class="fas fa-lock" style="opacity:0.5;"></i> Locked: <strong>${fmtToken(locked)}</strong>`);
+                breakdownEl.innerHTML = parts.join(' &nbsp;·&nbsp; ');
+                breakdownEl.style.display = 'block';
+            } else {
+                breakdownEl.style.display = 'none';
+            }
+        }
     } catch (error) {
         // Silently handle - new wallet with no on-chain account is expected
         const settings = walletState.settings || {};
@@ -1304,10 +1324,12 @@ async function loadActivity(reset = true) {
                     'SetContractABI': 'Set Contract ABI',
                     'FaucetAirdrop': 'Faucet Airdrop',
                     'RegisterSymbol': 'Register Symbol',
+                    'CreateAccount': 'Create Account',
                     'CreateCollection': 'Created Collection',
                     'MintNFT': 'Minted NFT',
                     'TransferNFT': isSent ? 'Sent NFT' : 'Received NFT',
                     'Reward': 'Reward',
+                    'GrantRepay': 'Grant Repay',
                     'GenesisTransfer': 'Genesis Transfer',
                     'GenesisMint': 'Genesis Mint',
                 };
@@ -1329,8 +1351,12 @@ async function loadActivity(reset = true) {
                     icon = 'fa-file-code'; color = '#f59e0b';
                 } else if (tx.type === 'Reward' || tx.type === 'GenesisTransfer' || tx.type === 'GenesisMint') {
                     icon = 'fa-gift'; color = '#4ade80'; sign = '+';
-                } else if (tx.type === 'Airdrop') {
+                } else if (tx.type === 'Airdrop' || tx.type === 'FaucetAirdrop') {
                     icon = 'fa-parachute-box'; color = '#60a5fa';
+                } else if (tx.type === 'GrantRepay') {
+                    icon = 'fa-hand-holding-usd'; color = '#94a3b8'; sign = isSent ? '-' : '+';
+                } else if (tx.type === 'CreateAccount') {
+                    icon = 'fa-user-plus'; color = '#94a3b8';
                 }
                 address = isSent ? (tx.to || '') : (tx.from || '');
                 const amountVal = tx.amount_shells ? tx.amount_shells : (tx.amount || 0);
@@ -1344,7 +1370,8 @@ async function loadActivity(reset = true) {
             const shortSig = sig ? sig.slice(0, 8) + '...' + sig.slice(-4) : '';
             const explorerLink = sig ? `../explorer/transaction.html?sig=${sig}` : '#';
             const isFeeOnly = amount === '0' && (tx.type === 'RegisterEvmAddress' || tx.type === 'Contract'
-                || tx.type === 'DeployContract' || tx.type === 'SetContractABI' || tx.type === 'RegisterSymbol');
+                || tx.type === 'DeployContract' || tx.type === 'SetContractABI' || tx.type === 'RegisterSymbol'
+                || tx.type === 'CreateAccount');
             const feeShells = tx.fee_shells || tx.fee || 0;
             const feeAmt = fmtToken(feeShells / 1_000_000_000);
             const amountStr = isFeeOnly ? `${feeAmt} MOLT` : `${sign}${amount} MOLT`;
@@ -1695,8 +1722,13 @@ async function loadReefStakePosition(address) {
                     <div style="padding: 1rem; background: var(--card-bg); border-radius: 8px; border: 1px solid var(--border); margin-bottom: 0.5rem;">
                         <div style="display: flex; justify-content: space-between; align-items: center;">
                             <span style="font-weight: 600;">${fmtToken(req.molt_to_receive / 1_000_000_000)} MOLT</span>
-                            <span style="color: ${isClaimable ? '#10b981' : 'var(--text-muted)'}; font-size: 0.85rem;">
-                                ${isClaimable ? '<i class="fas fa-check-circle"></i> Claimable now' : `<i class="fas fa-clock"></i> ~${remainDays} days`}
+                            <span style="display: flex; align-items: center; gap: 0.5rem;">
+                                ${isClaimable
+                                    ? `<button onclick="claimReefStake()" class="btn btn-small" style="padding:0.3rem 0.8rem;font-size:0.8rem;background:#10b981;border:none;border-radius:6px;color:#fff;cursor:pointer;font-weight:600;">
+                                        <i class="fas fa-check-circle"></i> Claim
+                                       </button>`
+                                    : `<span style="color:var(--text-muted);font-size:0.85rem;"><i class="fas fa-clock"></i> ~${remainDays} days</span>`
+                                }
                             </span>
                         </div>
                     </div>
@@ -1848,6 +1880,58 @@ async function showReefUnstakeModal() {
         setTimeout(() => loadReefStakePosition(wallet.address), 4000);
     } catch (error) {
         showToast('Unstake failed: ' + error.message);
+    }
+}
+
+// Claim matured ReefStake unstake (instruction type 15)
+async function claimReefStake() {
+    const wallet = getActiveWallet();
+    if (!wallet) { showToast('No active wallet'); return; }
+
+    const values = await showPasswordModal({
+        title: 'Claim Unstaked MOLT',
+        message: 'Enter your password to sign the claim transaction. Your matured MOLT will be returned to your spendable balance.',
+        icon: 'fas fa-check-circle',
+        confirmText: 'Claim',
+        fields: [
+            { id: 'password', label: 'Wallet Password', type: 'password', placeholder: 'Enter password to sign' }
+        ]
+    });
+
+    if (!values || !values.password) return;
+
+    try {
+        const latestBlock = await rpc.getLatestBlock();
+        const fromPubkey = MoltCrypto.hexToBytes(wallet.publicKey);
+
+        // Instruction type 15 = ReefStake claim (data: [15], accounts: [user])
+        const instructionData = new Uint8Array([15]);
+
+        const message = {
+            instructions: [{
+                program_id: Array.from(new Uint8Array(32)),
+                accounts: [Array.from(fromPubkey)],
+                data: Array.from(instructionData)
+            }],
+            blockhash: latestBlock.hash
+        };
+
+        const privateKey = await MoltCrypto.decryptPrivateKey(wallet.encryptedKey, values.password);
+        const messageBytes = serializeMessageBincode(message);
+        const signature = await MoltCrypto.signTransaction(privateKey, messageBytes);
+
+        const transaction = { signatures: [Array.from(signature)], message };
+        const txBytes = new TextEncoder().encode(JSON.stringify(transaction));
+        const txBase64 = btoa(String.fromCharCode(...txBytes));
+
+        showToast('Claiming unstaked MOLT...');
+        const txSig = await rpc.sendTransaction(txBase64);
+        showToast(`Claimed! Sig: ${String(txSig).slice(0, 16)}...`);
+        await refreshBalance();
+        setTimeout(() => loadReefStakePosition(wallet.address), 1500);
+        setTimeout(() => loadReefStakePosition(wallet.address), 4000);
+    } catch (error) {
+        showToast('Claim failed: ' + error.message);
     }
 }
 
