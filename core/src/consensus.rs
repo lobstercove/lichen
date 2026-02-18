@@ -1625,6 +1625,14 @@ pub struct ValidatorInfo {
     pub joined_slot: u64,
     /// Last slot validator was active
     pub last_active_slot: u64,
+    /// Commission rate in basis points (0-10000). Default = 500 (5%).
+    /// Backward-compatible: existing serialized data without this field defaults to 500.
+    #[serde(default = "default_commission_rate")]
+    pub commission_rate: u64,
+}
+
+fn default_commission_rate() -> u64 {
+    500
 }
 
 impl ValidatorInfo {
@@ -1639,6 +1647,7 @@ impl ValidatorInfo {
             stake: 0,
             joined_slot,
             last_active_slot: joined_slot,
+            commission_rate: 500, // 5% default (basis points)
         }
     }
 

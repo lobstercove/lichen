@@ -59,6 +59,16 @@ impl<T: Serialize> ApiResponse<T> {
             slot,
         })
     }
+
+    /// Return a pre-built JSON value wrapped in the standard API envelope.
+    fn ok_raw(data: T, slot: u64) -> Json<ApiResponse<T>> {
+        Json(ApiResponse {
+            success: true,
+            data: Some(data),
+            error: None,
+            slot,
+        })
+    }
 }
 
 fn api_err(msg: &str) -> Response {
@@ -931,6 +941,8 @@ async fn get_pair(State(state): State<Arc<RpcState>>, Path(pair_id): Path<u64>) 
 }
 
 /// GET /api/v1/pairs/:id/orderbook — L2 order book
+/// Uses per-pair time-based cache (1s TTL) to avoid O(total_orders) scans per request.
+/// The first request triggers a full scan; subsequent requests within 1 second return cached data.
 async fn get_orderbook(
     State(state): State<Arc<RpcState>>,
     Path(pair_id): Path<u64>,
@@ -939,14 +951,31 @@ async fn get_orderbook(
     let depth = q.depth.unwrap_or(20).min(100);
     let slot = current_slot(&state);
 
-    // Read best bid/ask and build aggregated levels
-    let mut bids: HashMap<u64, u64> = HashMap::new();
-    let mut asks: HashMap<u64, u64> = HashMap::new();
+    // Check orderbook cache — if fresh (< 1 second old), return immediately
+    {
+        let cache = state.orderbook_cache.read().await;
+        if let Some((cached_at, cached_json)) = cache.get(&pair_id) {
+            if cached_at.elapsed() < std::time::Duration::from_secs(1) {
+                // Re-apply depth limit from cached full book
+                let mut result = cached_json.clone();
+                if let Some(obj) = result.as_object_mut() {
+                    if let Some(bids) = obj.get_mut("bids").and_then(|b| b.as_array_mut()) {
+                        bids.truncate(depth);
+                    }
+                    if let Some(asks) = obj.get_mut("asks").and_then(|a| a.as_array_mut()) {
+                        asks.truncate(depth);
+                    }
+                    obj.insert("slot".to_string(), serde_json::json!(slot));
+                }
+                return ApiResponse::<serde_json::Value>::ok_raw(result, slot).into_response();
+            }
+        }
+    }
 
-    // Scan orders for this pair (up to reasonable limit)
-    // PERF F11: Linear scan up to 10,000 orders per request. At high volumes this becomes
-    // a bottleneck. TODO: Pre-aggregate order book levels or maintain sorted bid/ask indices
-    // in a dedicated CF to enable O(depth) reads instead of O(total_orders).
+    // Cache miss or stale: scan and rebuild
+    let mut bids: HashMap<u64, (u64, u32)> = HashMap::new(); // price → (total_qty, order_count)
+    let mut asks: HashMap<u64, (u64, u32)> = HashMap::new();
+
     let order_count = read_u64(&state, DEX_CORE_PROGRAM, "dex_order_count");
     let scan_limit = order_count.min(10_000);
 
@@ -965,23 +994,24 @@ async fn get_orderbook(
                     continue;
                 }
 
-                let price_entry = if order.side == "buy" {
-                    &mut bids
+                let entry = if order.side == "buy" {
+                    bids.entry(order.price_raw).or_insert((0, 0))
                 } else {
-                    &mut asks
+                    asks.entry(order.price_raw).or_insert((0, 0))
                 };
-                *price_entry.entry(order.price_raw).or_insert(0) += remaining;
+                entry.0 += remaining;
+                entry.1 += 1;
             }
         }
     }
 
-    // Sort and limit to depth
+    // Sort bids descending by price
     let mut bid_levels: Vec<OrderBookLevel> = bids
         .into_iter()
-        .map(|(p, q)| OrderBookLevel {
+        .map(|(p, (q, c))| OrderBookLevel {
             price: p as f64 / PRICE_SCALE as f64,
             quantity: q,
-            orders: 1,
+            orders: c,
         })
         .collect();
     bid_levels.sort_by(|a, b| {
@@ -989,14 +1019,14 @@ async fn get_orderbook(
             .partial_cmp(&a.price)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    bid_levels.truncate(depth);
 
+    // Sort asks ascending by price
     let mut ask_levels: Vec<OrderBookLevel> = asks
         .into_iter()
-        .map(|(p, q)| OrderBookLevel {
+        .map(|(p, (q, c))| OrderBookLevel {
             price: p as f64 / PRICE_SCALE as f64,
             quantity: q,
-            orders: 1,
+            orders: c,
         })
         .collect();
     ask_levels.sort_by(|a, b| {
@@ -1004,6 +1034,21 @@ async fn get_orderbook(
             .partial_cmp(&b.price)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+
+    // Cache the full book (before truncation)
+    let full_book_json = serde_json::json!({
+        "pair_id": pair_id,
+        "bids": bid_levels,
+        "asks": ask_levels,
+        "slot": slot,
+    });
+    {
+        let mut cache = state.orderbook_cache.write().await;
+        cache.insert(pair_id, (std::time::Instant::now(), full_book_json));
+    }
+
+    // Truncate to requested depth
+    bid_levels.truncate(depth);
     ask_levels.truncate(depth);
 
     ApiResponse::ok(
@@ -1459,6 +1504,122 @@ fn quote_amm_swap(
     Some((amount_out, price_impact))
 }
 
+/// Compute a swap quote through CLOB order book by matching against resting orders.
+/// For a "buy" swap (token_in is quote, token_out is base): walk asks ascending.
+/// For a "sell" swap (token_in is base, token_out is quote): walk bids descending.
+/// Returns (amount_out, price_impact_pct) or None if the pair has no liquidity.
+fn quote_clob_swap(
+    state: &crate::RpcState,
+    pair_id: u64,
+    token_in: &str,
+    amount_in: u64,
+) -> Option<(u64, f64)> {
+    // Load the pair to determine base/quote tokens
+    let pair_key = format!("dex_pair_{}", pair_id);
+    let pair_data = read_bytes(state, DEX_CORE_PROGRAM, &pair_key)?;
+    let pair = decode_pair(&pair_data)?;
+
+    let token_in_lower = token_in.to_lowercase();
+    let is_buying_base = token_in_lower != pair.base_token.to_lowercase();
+
+    // Collect open orders on the opposing side, sorted by best price
+    let order_count = read_u64(state, DEX_CORE_PROGRAM, "dex_order_count");
+    let scan_limit = order_count.min(10_000);
+
+    // (price_raw, remaining_qty, order_id) — sorted by best price
+    let mut opposing_orders: Vec<(u64, u64)> = Vec::new();
+
+    for i in 1..=scan_limit {
+        let key = format!("dex_order_{}", i);
+        if let Some(data) = read_bytes(state, DEX_CORE_PROGRAM, &key) {
+            if let Some(order) = decode_order(&data) {
+                if order.pair_id != pair_id {
+                    continue;
+                }
+                if order.status != "open" && order.status != "partial" {
+                    continue;
+                }
+                let remaining = order.quantity.saturating_sub(order.filled);
+                if remaining == 0 {
+                    continue;
+                }
+                // For buying base, we want sells (asks); for selling base, we want buys (bids)
+                let wanted_side = if is_buying_base { "sell" } else { "buy" };
+                if order.side != wanted_side {
+                    continue;
+                }
+                opposing_orders.push((order.price_raw, remaining));
+            }
+        }
+    }
+
+    if opposing_orders.is_empty() {
+        return None;
+    }
+
+    // Sort: for buying base → asks ascending (cheapest first)
+    //       for selling base → bids descending (highest first)
+    if is_buying_base {
+        opposing_orders.sort_by_key(|&(price, _)| price);
+    } else {
+        opposing_orders.sort_by_key(|&(price, _)| std::cmp::Reverse(price));
+    }
+
+    let best_price = opposing_orders[0].0;
+
+    // Walk the order book matching amount_in against resting orders
+    let mut remaining_in = amount_in;
+    let mut total_out: u64 = 0;
+    let mut last_fill_price: u64 = 0;
+
+    for (price_raw, qty_available) in &opposing_orders {
+        if remaining_in == 0 {
+            break;
+        }
+
+        if is_buying_base {
+            // Buying base with quote: at this price, each base unit costs price_raw (scaled)
+            // cost_per_base_unit = price_raw (in quote-currency scaled units)
+            // how many base units can we buy with remaining_in quote?
+            // base_qty = remaining_in * PRICE_SCALE / price_raw
+            let can_buy = if *price_raw > 0 {
+                (remaining_in as u128 * PRICE_SCALE as u128 / *price_raw as u128) as u64
+            } else {
+                continue;
+            };
+            let fill_qty = can_buy.min(*qty_available);
+            let fill_cost = (fill_qty as u128 * *price_raw as u128 / PRICE_SCALE as u128) as u64;
+
+            total_out += fill_qty;
+            remaining_in = remaining_in.saturating_sub(fill_cost);
+        } else {
+            // Selling base for quote: each base unit earns price_raw (scaled)
+            let fill_qty = remaining_in.min(*qty_available);
+            let fill_proceeds =
+                (fill_qty as u128 * *price_raw as u128 / PRICE_SCALE as u128) as u64;
+
+            total_out += fill_proceeds;
+            remaining_in = remaining_in.saturating_sub(fill_qty);
+        }
+
+        last_fill_price = *price_raw;
+    }
+
+    if total_out == 0 {
+        return None;
+    }
+
+    // Price impact = |1 - last_fill_price / best_price| * 100
+    let price_impact = if best_price > 0 && last_fill_price > 0 {
+        let ratio = last_fill_price as f64 / best_price as f64;
+        ((1.0 - ratio).abs() * 100.0 * 100.0).round() / 100.0
+    } else {
+        0.0
+    };
+
+    Some((total_out, price_impact))
+}
+
 // ─── ROUTER ─────────────────────────────────────────────────────────────────
 
 /// POST /api/v1/router/swap — Smart-routed swap using real AMM pricing
@@ -1512,9 +1673,17 @@ async fn post_router_swap(
                         }
                     }
                 } else {
-                    // NOTE F17: CLOB route fallback — uses 1:1 ratio when no AMM pool is found.
-                    // TODO: Implement actual CLOB order book quoting (match against resting orders).
-                    if best_route.is_none() {
+                    // CLOB route: quote against resting limit orders on the order book
+                    if let Some((amount_out, impact)) =
+                        quote_clob_swap(&state, route.pool_or_pair_id, &token_in, body.amount_in)
+                    {
+                        if amount_out > best_output {
+                            best_output = amount_out;
+                            best_impact = impact;
+                            best_route = Some(route);
+                        }
+                    } else if best_route.is_none() {
+                        // No CLOB liquidity, but record the route for fallback error messaging
                         best_route = Some(route);
                     }
                 }

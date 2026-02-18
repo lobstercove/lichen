@@ -113,6 +113,7 @@ fn test_validator_set() {
         correct_votes: 0,
         last_active_slot: 0,
         joined_slot: 0,
+        commission_rate: 500,
     });
 
     assert!(!set.validators().is_empty());

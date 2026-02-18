@@ -606,7 +606,11 @@ async fn post_create(
     let slot = current_slot(&state);
 
     // FIX F13: Require admin authentication for market creation
-    match &state.admin_token {
+    let guard = match state.admin_token.read() {
+        Ok(g) => g,
+        Err(_) => return api_err("Internal error: admin token lock poisoned"),
+    };
+    match guard.as_ref() {
         Some(required) => match &req.admin_token {
             Some(provided) => {
                 let a = provided.as_bytes();
@@ -619,6 +623,7 @@ async fn post_create(
         },
         None => return api_err("Admin endpoints disabled: no admin_token configured"),
     }
+    drop(guard);
 
     if req.question.is_empty() || req.question.len() > 512 {
         return api_err("Question must be 1-512 characters");

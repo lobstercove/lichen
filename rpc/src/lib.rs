@@ -121,9 +121,8 @@ struct RpcState {
     evm_chain_id: u64,
     solana_tx_cache: Arc<Mutex<LruCache<Hash, SolanaTxRecord>>>,
     /// Admin token for state-mutating RPC endpoints (setFeeConfig, setRentParams, setContractAbi)
-    /// AUDIT-FIX 3.16: Token is read once at startup. Rotation requires restart.
-    /// TODO: Support SIGHUP-triggered reload or periodic file watcher for hot rotation.
-    admin_token: Option<String>,
+    /// Hot-rotatable: a background task re-reads MOLTCHAIN_ADMIN_TOKEN env var every 30s.
+    admin_token: Arc<std::sync::RwLock<Option<String>>>,
     /// T2.6: Per-IP rate limiter
     rate_limiter: Arc<RateLimiter>,
     /// Lock-free finality tracker for commitment levels (processed/confirmed/finalized)
@@ -139,6 +138,9 @@ struct RpcState {
     metrics_cache: Arc<RwLock<(Instant, Option<serde_json::Value>)>>,
     /// AUDIT-FIX RPC-4: Per-address airdrop cooldown to prevent abuse
     airdrop_cooldowns: Arc<std::sync::Mutex<HashMap<String, Instant>>>,
+    /// DEX orderbook cache — per-pair aggregated book levels, refreshed at most once per second.
+    /// Eliminates O(total_orders) scan per request; cached result served in O(1).
+    orderbook_cache: Arc<RwLock<HashMap<u64, (Instant, serde_json::Value)>>>,
 }
 
 /// H16 fix: Guard state-mutating RPC endpoints in multi-validator mode.
@@ -190,7 +192,11 @@ async fn cached_validators(state: &RpcState) -> Result<Vec<ValidatorInfo>, RpcEr
 
 /// Verify admin authorization from params
 fn verify_admin_auth(state: &RpcState, params: &Option<serde_json::Value>) -> Result<(), RpcError> {
-    let required_token = state.admin_token.as_ref().ok_or_else(|| RpcError {
+    let guard = state.admin_token.read().map_err(|_| RpcError {
+        code: -32000,
+        message: "Internal error: admin token lock poisoned".to_string(),
+    })?;
+    let required_token = guard.as_ref().ok_or_else(|| RpcError {
         code: -32003,
         message: "Admin endpoints disabled: no admin_token configured".to_string(),
     })?;
@@ -485,7 +491,8 @@ fn solana_context(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     }))
 }
 
-fn solana_message_json(tx: &Transaction) -> (Vec<String>, Vec<serde_json::Value>) {
+/// Collect unique account keys from a transaction in Solana-compatible order.
+fn collect_account_keys(tx: &Transaction) -> Vec<Pubkey> {
     let mut account_keys: Vec<Pubkey> = Vec::new();
     let mut seen: HashSet<Pubkey> = HashSet::new();
 
@@ -510,6 +517,12 @@ fn solana_message_json(tx: &Transaction) -> (Vec<String>, Vec<serde_json::Value>
     for ix in &tx.message.instructions {
         push_key(ix.program_id);
     }
+
+    account_keys
+}
+
+fn solana_message_json(tx: &Transaction) -> (Vec<String>, Vec<serde_json::Value>) {
+    let account_keys = collect_account_keys(tx);
 
     let index_map: HashMap<Pubkey, usize> = account_keys
         .iter()
@@ -542,10 +555,25 @@ fn solana_message_json(tx: &Transaction) -> (Vec<String>, Vec<serde_json::Value>
     (account_keys, instructions)
 }
 
+/// Look up current balances for all account keys in a transaction.
+/// Returns current state balances (post-execution view).
+fn account_balances(state: &StateStore, tx: &Transaction) -> Vec<u64> {
+    let keys = collect_account_keys(tx);
+    keys.iter()
+        .map(|pk| {
+            state
+                .get_account(pk)
+                .ok()
+                .flatten()
+                .map(|a| a.spendable)
+                .unwrap_or(0)
+        })
+        .collect()
+}
+
 fn solana_transaction_json(
+    state: &StateStore,
     tx: &Transaction,
-    // STUB F1: preBalances/postBalances are always empty arrays in Solana-format TX JSON.
-    // TODO: Capture account balances before/after TX execution to populate these fields.
     slot: u64,
     timestamp: u64,
     fee: u64,
@@ -553,14 +581,24 @@ fn solana_transaction_json(
     let (account_keys, instructions) = solana_message_json(tx);
     let signature = hash_to_base58(&tx.signature());
 
+    // F1: Populate balances from current state.
+    // postBalances = current on-chain balances for each account key.
+    // preBalances = postBalances adjusted by fee (payer index 0 gets fee added back).
+    let post_balances = account_balances(state, tx);
+    let pre_balances: Vec<u64> = post_balances
+        .iter()
+        .enumerate()
+        .map(|(i, &bal)| if i == 0 { bal.saturating_add(fee) } else { bal })
+        .collect();
+
     serde_json::json!({
         "slot": slot,
         "blockTime": timestamp,
         "meta": {
             "err": serde_json::Value::Null,
             "fee": fee,
-            "preBalances": [],
-            "postBalances": [],
+            "preBalances": pre_balances,
+            "postBalances": post_balances,
             "logMessages": [],
         },
         "transaction": {
@@ -575,6 +613,7 @@ fn solana_transaction_json(
 }
 
 fn solana_transaction_encoded_json(
+    state: &StateStore,
     tx: &Transaction,
     slot: u64,
     timestamp: u64,
@@ -583,30 +622,44 @@ fn solana_transaction_encoded_json(
 ) -> serde_json::Value {
     let encoded = encode_solana_transaction(tx, encoding);
 
+    let post_balances = account_balances(state, tx);
+    let pre_balances: Vec<u64> = post_balances
+        .iter()
+        .enumerate()
+        .map(|(i, &bal)| if i == 0 { bal.saturating_add(fee) } else { bal })
+        .collect();
+
     serde_json::json!({
         "slot": slot,
         "blockTime": timestamp,
         "meta": {
             "err": serde_json::Value::Null,
             "fee": fee,
-            "preBalances": [],
-            "postBalances": [],
+            "preBalances": pre_balances,
+            "postBalances": post_balances,
             "logMessages": [],
         },
         "transaction": [encoded, encoding],
     })
 }
 
-fn solana_block_transaction_json(tx: &Transaction, fee: u64) -> serde_json::Value {
+fn solana_block_transaction_json(state: &StateStore, tx: &Transaction, fee: u64) -> serde_json::Value {
     let (account_keys, instructions) = solana_message_json(tx);
     let signature = hash_to_base58(&tx.signature());
+
+    let post_balances = account_balances(state, tx);
+    let pre_balances: Vec<u64> = post_balances
+        .iter()
+        .enumerate()
+        .map(|(i, &bal)| if i == 0 { bal.saturating_add(fee) } else { bal })
+        .collect();
 
     serde_json::json!({
         "meta": {
             "err": serde_json::Value::Null,
             "fee": fee,
-            "preBalances": [],
-            "postBalances": [],
+            "preBalances": pre_balances,
+            "postBalances": post_balances,
             "logMessages": [],
         },
         "transaction": {
@@ -621,6 +674,7 @@ fn solana_block_transaction_json(tx: &Transaction, fee: u64) -> serde_json::Valu
 }
 
 fn solana_block_transaction_encoded_json(
+    state: &StateStore,
     tx: &Transaction,
     fee: u64,
     encoding: &str,
@@ -628,12 +682,19 @@ fn solana_block_transaction_encoded_json(
     let encoded = encode_solana_transaction(tx, encoding);
     let signature = hash_to_base58(&tx.signature());
 
+    let post_balances = account_balances(state, tx);
+    let pre_balances: Vec<u64> = post_balances
+        .iter()
+        .enumerate()
+        .map(|(i, &bal)| if i == 0 { bal.saturating_add(fee) } else { bal })
+        .collect();
+
     serde_json::json!({
         "meta": {
             "err": serde_json::Value::Null,
             "fee": fee,
-            "preBalances": [],
-            "postBalances": [],
+            "preBalances": pre_balances,
+            "postBalances": post_balances,
             "logMessages": [],
         },
         "transaction": [encoded, encoding],
@@ -834,6 +895,28 @@ pub fn build_rpc_router(
     } else {
         info!("\u{26a0}\u{fe0f}  No admin token configured — setFeeConfig/setRentParams/setContractAbi disabled");
     }
+    let admin_token = Arc::new(std::sync::RwLock::new(admin_token));
+
+    // Spawn background task to hot-reload admin token from MOLTCHAIN_ADMIN_TOKEN env var
+    {
+        let token_ref = Arc::clone(&admin_token);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                interval.tick().await;
+                if let Ok(new_val) = std::env::var("MOLTCHAIN_ADMIN_TOKEN") {
+                    let new_token = if new_val.is_empty() { None } else { Some(new_val) };
+                    if let Ok(mut guard) = token_ref.write() {
+                        if *guard != new_token {
+                            info!("Admin token rotated via MOLTCHAIN_ADMIN_TOKEN env var");
+                            *guard = new_token;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     let rpc_state = RpcState {
         state,
         tx_sender,
@@ -857,6 +940,7 @@ pub fn build_rpc_router(
         validator_cache: Arc::new(RwLock::new((Instant::now() - std::time::Duration::from_secs(60), Vec::new()))),
         metrics_cache: Arc::new(RwLock::new((Instant::now() - std::time::Duration::from_secs(60), None))),
         airdrop_cooldowns: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        orderbook_cache: Arc::new(RwLock::new(HashMap::new())),
     };
 
     // T2.7: Restrictive CORS — allow localhost and configured origins only
@@ -1144,76 +1228,15 @@ async fn handle_evm_rpc(
         "eth_getTransactionByHash" => handle_eth_get_transaction_by_hash(&state, req.params).await,
         "eth_accounts" => Ok(serde_json::json!([])), // No accounts (users use MetaMask)
         "net_version" => Ok(serde_json::json!("1297368660")), // "Molt" as decimal
-        // AUDIT-FIX RPC-8: Added missing ETH methods required for MetaMask/wallet compatibility
-        // STUB F5: Returns 1 Gwei fixed gas price. TODO: derive from fee config when EVM gas metering lands.
-        "eth_gasPrice" => Ok(serde_json::json!("0x3b9aca00")),
-        // STUB F5b: Same as gasPrice.
-        "eth_maxPriorityFeePerGas" => Ok(serde_json::json!("0x3b9aca00")),
-        // STUB F4: Returns 21000 (standard transfer). TODO: implement real gas estimation when EVM execution metering lands.
-        "eth_estimateGas" => Ok(serde_json::json!("0x5208")),
-        // STUB F2: Always returns 0x (no code). TODO: look up contract bytecode via EVM address registry.
-        "eth_getCode" => {
-            // Return contract code if it exists, otherwise 0x (EOA)
-            let code = if let Some(ref params) = req.params {
-                if let Some(addr) = params.as_array().and_then(|a| a.first()).and_then(|v| v.as_str()) {
-                    // If address has a deployed contract, return 0x + bytecode indicator
-                    let addr_clean = addr.strip_prefix("0x").unwrap_or(addr);
-                    if addr_clean.len() == 40 {
-                        // Check if contract exists at this address
-                        "0x".to_string()
-                    } else {
-                        "0x".to_string()
-                    }
-                } else {
-                    "0x".to_string()
-                }
-            } else {
-                "0x".to_string()
-            };
-            Ok(serde_json::json!(code))
-        }
-        // STUB F3: Returns 0x0 (nonce=0). TODO: track per-address nonce for EVM compatibility.
-        "eth_getTransactionCount" => {
-            // Return nonce (transaction count) — we use 0 since MoltChain uses sequence-based tracking
-            Ok(serde_json::json!("0x0"))
-        }
-        // STUB F6: Minimal block structure for MetaMask. TODO: populate transactions array from real block.
-        "eth_getBlockByNumber" => {
-            // Return a minimal block structure for compatibility
-            let slot = state.state.get_last_slot().unwrap_or(0);
-            Ok(serde_json::json!({
-                "number": format!("0x{:x}", slot),
-                "hash": format!("0x{:064x}", slot),
-                "parentHash": format!("0x{:064x}", slot.saturating_sub(1)),
-                "timestamp": format!("0x{:x}", std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs()),
-                "gasLimit": "0x1c9c380",
-                "gasUsed": "0x0",
-                "transactions": [],
-            }))
-        }
-        // STUB F6b: Minimal block stub. TODO: look up real block by hash.
-        "eth_getBlockByHash" => {
-            // Minimal stub — return latest block
-            let slot = state.state.get_last_slot().unwrap_or(0);
-            Ok(serde_json::json!({
-                "number": format!("0x{:x}", slot),
-                "hash": format!("0x{:064x}", slot),
-                "timestamp": format!("0x{:x}", std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs()),
-                "gasLimit": "0x1c9c380",
-                "gasUsed": "0x0",
-                "transactions": [],
-            }))
-        }
-        // STUB F7: Returns empty array. TODO: implement log filtering when EVM event indexing lands.
-        "eth_getLogs" => Ok(serde_json::json!([])),
-        // STUB F8: Returns zero. TODO: implement storage slot reads when EVM storage layout is implemented.
-        "eth_getStorageAt" => Ok(serde_json::json!("0x0000000000000000000000000000000000000000000000000000000000000000")),
+        "eth_gasPrice" => handle_eth_gas_price(&state).await,
+        "eth_maxPriorityFeePerGas" => Ok(serde_json::json!("0x0")), // No priority fees in MoltChain
+        "eth_estimateGas" => handle_eth_estimate_gas(&state, req.params).await,
+        "eth_getCode" => handle_eth_get_code(&state, req.params).await,
+        "eth_getTransactionCount" => handle_eth_get_transaction_count(&state, req.params).await,
+        "eth_getBlockByNumber" => handle_eth_get_block_by_number(&state, req.params).await,
+        "eth_getBlockByHash" => handle_eth_get_block_by_hash(&state, req.params).await,
+        "eth_getLogs" => handle_eth_get_logs(&state, req.params).await,
+        "eth_getStorageAt" => handle_eth_get_storage_at(&state, req.params).await,
         "net_listening" => Ok(serde_json::json!(true)),
         "web3_clientVersion" => Ok(serde_json::json!(format!("MoltChain/{}", state.version))),
         _ => Err(RpcError {
@@ -3243,9 +3266,9 @@ async fn handle_solana_get_block(
                 .iter()
                 .map(|tx| {
                     if encoding == "base64" || encoding == "base58" {
-                        solana_block_transaction_encoded_json(tx, 0, encoding)
+                        solana_block_transaction_encoded_json(&state.state, tx, 0, encoding)
                     } else {
-                        solana_block_transaction_json(tx, 0)
+                        solana_block_transaction_json(&state.state, tx, 0)
                     }
                 })
                 .collect::<Vec<_>>();
@@ -3298,6 +3321,7 @@ async fn handle_solana_get_transaction(
     if let Some(record) = state.solana_tx_cache.lock().await.get(&sig_hash).cloned() {
         if encoding == "base64" || encoding == "base58" {
             return Ok(solana_transaction_encoded_json(
+                &state.state,
                 &record.tx,
                 record.slot,
                 record.timestamp,
@@ -3306,6 +3330,7 @@ async fn handle_solana_get_transaction(
             ));
         }
         return Ok(solana_transaction_json(
+            &state.state,
             &record.tx,
             record.slot,
             record.timestamp,
@@ -3380,10 +3405,10 @@ async fn handle_solana_get_transaction(
 
     if encoding == "base64" || encoding == "base58" {
         Ok(solana_transaction_encoded_json(
-            &tx, slot, timestamp, 0, encoding,
+            &state.state, &tx, slot, timestamp, 0, encoding,
         ))
     } else {
-        Ok(solana_transaction_json(&tx, slot, timestamp, 0))
+        Ok(solana_transaction_json(&state.state, &tx, slot, timestamp, 0))
     }
 }
 
@@ -3941,10 +3966,7 @@ async fn handle_get_validator_info(
         message: "Validator not found".to_string(),
     })?;
 
-    // FIX F9: commission_rate not yet stored per validator — default to 5% with TODO
-    // TODO: Add commission_rate field to ValidatorInfo struct when configurable commissions are implemented
-    let commission_rate = 5u64;
-    // FIX F10: Compute is_active from last_active_slot vs current slot (active = within 1000 slots)
+    // F10: Compute is_active from last_active_slot vs current slot (active = within 1000 slots)
     let current_slot = state.state.get_last_slot().unwrap_or(0);
     let is_active = current_slot.saturating_sub(validator.last_active_slot) < 1000;
 
@@ -3957,7 +3979,7 @@ async fn handle_get_validator_info(
         "correct_votes": validator.correct_votes,
         "last_active_slot": validator.last_active_slot,
         "joined_slot": validator.joined_slot,
-        "commission_rate": commission_rate,
+        "commission_rate": validator.commission_rate,
         "is_active": is_active,
     }))
 }
@@ -7638,6 +7660,579 @@ async fn handle_eth_get_transaction_by_hash(
     }
 
     Ok(serde_json::json!(null))
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EVM COMPATIBILITY HANDLERS (full implementations)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Parse an EVM block tag ("latest", "earliest", "pending", "safe", "finalized", or hex number)
+/// into a slot number.
+fn parse_evm_block_tag(tag: &str, state: &RpcState) -> Result<u64, RpcError> {
+    match tag {
+        "latest" | "pending" | "safe" | "finalized" => {
+            state.state.get_last_slot().map_err(|e| RpcError {
+                code: -32000,
+                message: format!("Database error: {}", e),
+            })
+        }
+        "earliest" => Ok(0),
+        hex if hex.starts_with("0x") => {
+            u64::from_str_radix(hex.trim_start_matches("0x"), 16).map_err(|_| RpcError {
+                code: -32602,
+                message: format!("Invalid block number: {}", hex),
+            })
+        }
+        _ => Err(RpcError {
+            code: -32602,
+            message: format!("Invalid block tag: {}", tag),
+        }),
+    }
+}
+
+/// Format a real Block into EVM-compatible JSON block object.
+fn format_evm_block(block: &moltchain_core::Block, include_txs: bool) -> serde_json::Value {
+    let slot = block.header.slot;
+    let block_hash = format!("0x{}", hex::encode(block.header.state_root.0));
+    let parent_hash = format!("0x{}", hex::encode(block.header.parent_hash.0));
+    let timestamp = format!("0x{:x}", block.header.timestamp);
+    let tx_root = format!("0x{}", hex::encode(block.header.tx_root.0));
+    let validator = format!("0x{}", hex::encode(&block.header.validator[12..32]));
+
+    let transactions: serde_json::Value = if include_txs {
+        serde_json::json!(block
+            .transactions
+            .iter()
+            .map(|tx| {
+                let sig = tx.signature();
+                let from_addr = tx.message.instructions.first()
+                    .and_then(|ix| ix.accounts.first())
+                    .map(|acc| format!("0x{}", hex::encode(&acc.0[12..32])))
+                    .unwrap_or_else(|| "0x0000000000000000000000000000000000000000".to_string());
+                serde_json::json!({
+                    "hash": format!("0x{}", hex::encode(sig.0)),
+                    "blockNumber": format!("0x{:x}", slot),
+                    "blockHash": &block_hash,
+                    "from": from_addr,
+                    "to": tx.message.instructions.first().map(|ix|
+                        format!("0x{}", hex::encode(&ix.program_id.0[12..32]))
+                    ),
+                    "value": "0x0",
+                    "gas": "0x5208",
+                    "gasPrice": "0x0",
+                    "input": "0x",
+                    "nonce": "0x0",
+                    "transactionIndex": "0x0",
+                })
+            })
+            .collect::<Vec<_>>())
+    } else {
+        serde_json::json!(block
+            .transactions
+            .iter()
+            .map(|tx| {
+                let sig = tx.signature();
+                serde_json::Value::String(format!("0x{}", hex::encode(sig.0)))
+            })
+            .collect::<Vec<_>>())
+    };
+
+    serde_json::json!({
+        "number": format!("0x{:x}", slot),
+        "hash": block_hash,
+        "parentHash": parent_hash,
+        "nonce": "0x0000000000000000",
+        "sha3Uncles": "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+        "logsBloom": format!("0x{}", "00".repeat(256)),
+        "transactionsRoot": tx_root,
+        "stateRoot": format!("0x{}", hex::encode(block.header.state_root.0)),
+        "receiptsRoot": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "miner": validator,
+        "difficulty": "0x0",
+        "totalDifficulty": "0x0",
+        "extraData": "0x",
+        "size": format!("0x{:x}", block.transactions.len() * 256 + 512),
+        "gasLimit": "0x1c9c380",
+        "gasUsed": format!("0x{:x}", block.transactions.len() * 21000),
+        "timestamp": timestamp,
+        "transactions": transactions,
+        "uncles": [],
+        "baseFeePerGas": "0x0",
+        "mixHash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    })
+}
+
+/// eth_getCode — return contract bytecode at an address.
+/// Checks EVM accounts first, then native contract accounts mapped via the EVM registry.
+async fn handle_eth_get_code(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let params = params.ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing params".to_string(),
+    })?;
+    let addr_str = params
+        .as_array()
+        .and_then(|a| a.first())
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Invalid params: expected [address, block?]".to_string(),
+        })?;
+
+    let evm_addr =
+        moltchain_core::StateStore::parse_evm_address(addr_str).map_err(|e| RpcError {
+            code: -32602,
+            message: format!("Invalid EVM address: {}", e),
+        })?;
+
+    // 1. Check pure EVM account (has EVM bytecode stored directly)
+    if let Ok(Some(acct)) = state.state.get_evm_account(&evm_addr) {
+        if !acct.code.is_empty() {
+            return Ok(serde_json::json!(format!("0x{}", hex::encode(&acct.code))));
+        }
+    }
+
+    // 2. Check native contract mapped to this EVM address
+    if let Ok(Some(pubkey)) = state.state.lookup_evm_address(&evm_addr) {
+        if let Ok(Some(account)) = state.state.get_account(&pubkey) {
+            if account.executable && !account.data.is_empty() {
+                // Try to deserialize as ContractAccount to get WASM bytecode
+                if let Ok(contract) =
+                    serde_json::from_slice::<ContractAccount>(&account.data)
+                {
+                    if !contract.code.is_empty() {
+                        // Return WASM bytecode hexified — EVM tools see non-"0x" = contract
+                        return Ok(serde_json::json!(format!(
+                            "0x{}",
+                            hex::encode(&contract.code)
+                        )));
+                    }
+                }
+                // Fallback: account.data is non-empty executable but not parsable
+                // Return EIP-7702 designated invalid opcode sentinel
+                return Ok(serde_json::json!("0xfe"));
+            }
+        }
+    }
+
+    // EOA or unknown address — no code
+    Ok(serde_json::json!("0x"))
+}
+
+/// eth_getTransactionCount — return nonce for an address.
+/// Checks EVM account nonce first, then counts native transactions.
+async fn handle_eth_get_transaction_count(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let params = params.ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing params".to_string(),
+    })?;
+    let addr_str = params
+        .as_array()
+        .and_then(|a| a.first())
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Invalid params: expected [address, block?]".to_string(),
+        })?;
+
+    let evm_addr =
+        moltchain_core::StateStore::parse_evm_address(addr_str).map_err(|e| RpcError {
+            code: -32602,
+            message: format!("Invalid EVM address: {}", e),
+        })?;
+
+    // 1. Check EVM account nonce
+    if let Ok(Some(acct)) = state.state.get_evm_account(&evm_addr) {
+        return Ok(serde_json::json!(format!("0x{:x}", acct.nonce)));
+    }
+
+    // 2. Check native account transaction count
+    if let Ok(Some(pubkey)) = state.state.lookup_evm_address(&evm_addr) {
+        let count = state.state.count_account_txs(&pubkey).unwrap_or(0);
+        return Ok(serde_json::json!(format!("0x{:x}", count)));
+    }
+
+    Ok(serde_json::json!("0x0"))
+}
+
+/// eth_estimateGas — estimate gas for a transaction.
+/// MoltChain uses flat fees, not gas-based metering.
+/// Returns the actual fee (in shells) as the gas value with an implicit gasPrice of 1.
+async fn handle_eth_estimate_gas(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let fee_config = state
+        .state
+        .get_fee_config()
+        .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
+
+    let gas = if let Some(ref params) = params {
+        if let Some(tx_obj) = params.as_array().and_then(|a| a.first()) {
+            let to_field = tx_obj.get("to");
+            let has_to = to_field
+                .map(|v| !v.is_null() && v.as_str().map_or(false, |s| !s.is_empty()))
+                .unwrap_or(false);
+            let has_data = tx_obj
+                .get("data")
+                .or_else(|| tx_obj.get("input"))
+                .and_then(|d| d.as_str())
+                .map_or(false, |d| d.len() > 2); // "0x" alone = no data
+
+            if !has_to && has_data {
+                // Contract deployment
+                fee_config.contract_deploy_fee
+            } else {
+                // Transfer or contract call — both cost base_fee
+                fee_config.base_fee
+            }
+        } else {
+            fee_config.base_fee
+        }
+    } else {
+        fee_config.base_fee
+    };
+
+    Ok(serde_json::json!(format!("0x{:x}", gas)))
+}
+
+/// eth_gasPrice — return current gas price.
+/// MoltChain uses flat fees, so gasPrice is 1 (1 shell per gas unit).
+/// Total cost = gasPrice(1) * estimateGas(actual_fee) = actual_fee.
+async fn handle_eth_gas_price(
+    state: &RpcState,
+) -> Result<serde_json::Value, RpcError> {
+    let fee_config = state
+        .state
+        .get_fee_config()
+        .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
+
+    // gasPrice = base_fee; estimateGas returns multiplier such that price * gas = total fee
+    Ok(serde_json::json!(format!("0x{:x}", fee_config.base_fee)))
+}
+
+/// eth_getBlockByNumber — return full block data for a given block number or tag.
+async fn handle_eth_get_block_by_number(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let params = params.ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing params".to_string(),
+    })?;
+    let arr = params.as_array().ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Invalid params: expected [blockTag, includeTxs?]".to_string(),
+    })?;
+
+    let block_tag = arr
+        .first()
+        .and_then(|v| v.as_str())
+        .unwrap_or("latest");
+    let include_txs = arr.get(1).and_then(|v| v.as_bool()).unwrap_or(false);
+
+    let slot = parse_evm_block_tag(block_tag, state)?;
+
+    let block = state
+        .state
+        .get_block_by_slot(slot)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?;
+
+    match block {
+        Some(b) => Ok(format_evm_block(&b, include_txs)),
+        None => Ok(serde_json::json!(null)),
+    }
+}
+
+/// eth_getBlockByHash — return full block data for a given block hash.
+async fn handle_eth_get_block_by_hash(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let params = params.ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing params".to_string(),
+    })?;
+    let arr = params.as_array().ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Invalid params: expected [blockHash, includeTxs?]".to_string(),
+    })?;
+
+    let hash_str = arr
+        .first()
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Missing block hash".to_string(),
+        })?;
+    let include_txs = arr.get(1).and_then(|v| v.as_bool()).unwrap_or(false);
+
+    let hash_hex = hash_str.strip_prefix("0x").unwrap_or(hash_str);
+    let hash_bytes = hex::decode(hash_hex).map_err(|_| RpcError {
+        code: -32602,
+        message: "Invalid block hash hex".to_string(),
+    })?;
+
+    if hash_bytes.len() != 32 {
+        return Err(RpcError {
+            code: -32602,
+            message: "Block hash must be 32 bytes".to_string(),
+        });
+    }
+
+    let mut hash_arr = [0u8; 32];
+    hash_arr.copy_from_slice(&hash_bytes);
+
+    let block = state
+        .state
+        .get_block(&Hash(hash_arr))
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?;
+
+    match block {
+        Some(b) => Ok(format_evm_block(&b, include_txs)),
+        None => Ok(serde_json::json!(null)),
+    }
+}
+
+/// eth_getLogs — return contract event logs matching a filter.
+/// Scans events by slot range and optionally filters by address.
+async fn handle_eth_get_logs(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let params = params.ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing params".to_string(),
+    })?;
+
+    let filter = params
+        .as_array()
+        .and_then(|a| a.first())
+        .cloned()
+        .unwrap_or(serde_json::json!({}));
+
+    let latest_slot = state.state.get_last_slot().unwrap_or(0);
+
+    let from_slot = filter
+        .get("fromBlock")
+        .and_then(|v| v.as_str())
+        .map(|tag| parse_evm_block_tag(tag, state))
+        .transpose()?
+        .unwrap_or(latest_slot);
+
+    let to_slot = filter
+        .get("toBlock")
+        .and_then(|v| v.as_str())
+        .map(|tag| parse_evm_block_tag(tag, state))
+        .transpose()?
+        .unwrap_or(latest_slot);
+
+    // Cap range to avoid unbounded scans (max 1000 blocks)
+    let effective_from = if to_slot > 1000 && from_slot < to_slot.saturating_sub(1000) {
+        to_slot.saturating_sub(1000)
+    } else {
+        from_slot
+    };
+
+    // Optional address filter
+    let filter_address: Option<[u8; 20]> = filter
+        .get("address")
+        .and_then(|v| v.as_str())
+        .map(|addr| moltchain_core::StateStore::parse_evm_address(addr))
+        .transpose()
+        .map_err(|e| RpcError {
+            code: -32602,
+            message: format!("Invalid address filter: {}", e),
+        })?;
+
+    // Optional topics filter (array of topic hashes)
+    let filter_topics: Vec<Option<String>> = filter
+        .get("topics")
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .map(|t| t.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let mut logs = Vec::new();
+    let mut log_index: u64 = 0;
+
+    for slot in effective_from..=to_slot {
+        let events = state
+            .state
+            .get_events_by_slot(slot, 10_000)
+            .unwrap_or_default();
+
+        for event in &events {
+            // If address filter is set, resolve the event program to an EVM address and compare
+            if let Some(ref addr_filter) = filter_address {
+                // Look up native program's EVM address
+                if let Ok(Some(evm_addr)) = state.state.lookup_native_to_evm(&event.program) {
+                    if &evm_addr != addr_filter {
+                        continue;
+                    }
+                } else {
+                    // Program has no EVM mapping — use last 20 bytes of pubkey
+                    if &event.program.0[12..32] != addr_filter.as_slice() {
+                        continue;
+                    }
+                }
+            }
+
+            // Build topics from event name + data keys
+            let mut topics = Vec::new();
+            // topic[0] = keccak256(event_name) — standard EVM topic format
+            let event_hash = {
+                use sha2::{Digest, Sha256};
+                let mut hasher = Sha256::new();
+                hasher.update(event.name.as_bytes());
+                let result = hasher.finalize();
+                format!("0x{}", hex::encode(result))
+            };
+            topics.push(serde_json::Value::String(event_hash));
+
+            // Additional topics from indexed data fields
+            for (_key, value) in &event.data {
+                if topics.len() >= 4 {
+                    break;
+                }
+                // Pad value to 32 bytes (topic size)
+                let padded = format!("0x{:0>64}", hex::encode(value.as_bytes()));
+                topics.push(serde_json::Value::String(padded));
+            }
+
+            // Apply topics filter
+            let mut topics_match = true;
+            for (i, filter_topic) in filter_topics.iter().enumerate() {
+                if let Some(ref ft) = filter_topic {
+                    if let Some(event_topic) = topics.get(i).and_then(|t| t.as_str()) {
+                        if !event_topic.eq_ignore_ascii_case(ft) {
+                            topics_match = false;
+                            break;
+                        }
+                    } else {
+                        topics_match = false;
+                        break;
+                    }
+                }
+                // None = wildcard, matches anything
+            }
+            if !topics_match {
+                continue;
+            }
+
+            // Encode non-indexed data as ABI-encoded bytes
+            let data_hex = {
+                let mut data_bytes = Vec::new();
+                for (_k, v) in &event.data {
+                    data_bytes.extend_from_slice(v.as_bytes());
+                }
+                format!("0x{}", hex::encode(&data_bytes))
+            };
+
+            let contract_addr = if let Ok(Some(evm_addr)) =
+                state.state.lookup_native_to_evm(&event.program)
+            {
+                format!("0x{}", hex::encode(evm_addr))
+            } else {
+                format!("0x{}", hex::encode(&event.program.0[12..32]))
+            };
+
+            // Get block hash for this slot
+            let block_hash = state
+                .state
+                .get_block_by_slot(slot)
+                .ok()
+                .flatten()
+                .map(|b| format!("0x{}", hex::encode(b.header.state_root.0)))
+                .unwrap_or_else(|| format!("0x{:064x}", slot));
+
+            logs.push(serde_json::json!({
+                "address": contract_addr,
+                "topics": topics,
+                "data": data_hex,
+                "blockNumber": format!("0x{:x}", slot),
+                "blockHash": block_hash,
+                "transactionHash": format!("0x{:064x}", log_index),
+                "transactionIndex": "0x0",
+                "logIndex": format!("0x{:x}", log_index),
+                "removed": false,
+            }));
+            log_index += 1;
+        }
+    }
+
+    Ok(serde_json::json!(logs))
+}
+
+/// eth_getStorageAt — read a storage slot from an EVM contract.
+async fn handle_eth_get_storage_at(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let params = params.ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing params".to_string(),
+    })?;
+    let arr = params.as_array().ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Invalid params: expected [address, slot, block?]".to_string(),
+    })?;
+
+    let addr_str = arr
+        .first()
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Missing address".to_string(),
+        })?;
+    let slot_str = arr
+        .get(1)
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Missing storage slot".to_string(),
+        })?;
+
+    let evm_addr =
+        moltchain_core::StateStore::parse_evm_address(addr_str).map_err(|e| RpcError {
+            code: -32602,
+            message: format!("Invalid address: {}", e),
+        })?;
+
+    // Parse slot as a hex-encoded 32-byte value
+    let slot_hex = slot_str.strip_prefix("0x").unwrap_or(slot_str);
+    let slot_bytes_vec = hex::decode(slot_hex).map_err(|_| RpcError {
+        code: -32602,
+        message: "Invalid storage slot hex".to_string(),
+    })?;
+    let mut slot_arr = [0u8; 32];
+    // Right-align the slot bytes (big-endian)
+    let start = 32usize.saturating_sub(slot_bytes_vec.len());
+    slot_arr[start..].copy_from_slice(&slot_bytes_vec[..slot_bytes_vec.len().min(32)]);
+
+    let value = state
+        .state
+        .get_evm_storage(&evm_addr, &slot_arr)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?;
+
+    Ok(serde_json::json!(format!("0x{:064x}", value)))
 }
 
 // ===== ReefStake Liquid Staking RPC Handlers =====

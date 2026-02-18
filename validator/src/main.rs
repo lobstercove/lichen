@@ -1303,6 +1303,7 @@ async fn apply_block_effects(
                     correct_votes: 0,
                     joined_slot: slot,
                     last_active_slot: slot,
+                    commission_rate: 500,
                 };
                 vs.add_validator(new_validator);
             }
@@ -3971,6 +3972,7 @@ async fn run_validator() {
                     correct_votes: 0,
                     last_active_slot: 0,
                     joined_slot: 0,
+                    commission_rate: 500,
                 };
 
                 set.add_validator(validator);
@@ -3996,6 +3998,7 @@ async fn run_validator() {
                         correct_votes: 0,
                         last_active_slot: 0,
                         joined_slot: 0,
+                        commission_rate: 500,
                     });
                 }
             } else {
@@ -4016,6 +4019,7 @@ async fn run_validator() {
                 correct_votes: 0,
                 last_active_slot: 0,
                 joined_slot: 0,
+                commission_rate: 500,
             });
         }
 
@@ -5468,6 +5472,7 @@ async fn run_validator() {
                         },
                         joined_slot: announcement.current_slot,
                         last_active_slot: announcement.current_slot,
+                        commission_rate: 500,
                     };
                     vs.add_validator(new_validator);
 
@@ -6224,6 +6229,7 @@ async fn run_validator() {
                                                 stake: remote_val.stake,
                                                 joined_slot: remote_val.joined_slot,
                                                 last_active_slot: remote_val.last_active_slot,
+                                                commission_rate: 500,
                                             };
                                             vs.add_validator(new_val);
                                             merged_count += 1;
