@@ -488,24 +488,24 @@ Each contract must be validated for: correct opcode dispatch, proper authority c
 ## PHASE 6: CLI (`cli/src/` — 4,171 lines)
 
 ### 6.1 Command Coverage
-- [ ] Verify all commands: balance, transfer, airdrop, deploy, call
-- [ ] Verify keypair generation and management
-- [ ] Verify transaction signing
-- [ ] Verify RPC client connectivity
-- [ ] Verify contract deployment via CLI
-- [ ] Verify contract call via CLI
-- [ ] Verify output formatting (JSON, human-readable)
-- [ ] **Findings:**
+- [x] Verify all commands: balance, transfer, airdrop, deploy, call
+- [x] Verify keypair generation and management
+- [x] Verify transaction signing
+- [x] Verify RPC client connectivity
+- [x] Verify contract deployment via CLI
+- [x] Verify contract call via CLI
+- [x] Verify output formatting (JSON, human-readable)
+- [x] **Findings:** F6.1 (M) float-to-shells precision loss → molt_to_shells(); F6.2-3 (L) div-by-zero in perf/metrics → zero guards; F6.7 (L) UTF-8 slice panic → chars().take(80); F6.10-11 stub messages replaced with contract calls
 
 ### 6.2 Client (`client.rs` — 783 lines)
-- [ ] Verify RPC call construction
-- [ ] Verify error handling from RPC
-- [ ] **Findings:**
+- [x] Verify RPC call construction
+- [x] Verify error handling from RPC
+- [x] **Findings:** F6.4 (M) base64_encode used unwrap() → Engine::encode()
 
 ### 6.3 Wallet (`wallet.rs` — 287 lines)
-- [ ] Verify wallet create / import / export
-- [ ] Verify private key handling (secure, not logged)
-- [ ] **Findings:**
+- [x] Verify wallet create / import / export
+- [x] Verify private key handling (secure, not logged)
+- [x] **Findings:** F6.5 (M) create_wallet stored plaintext hex without encryption/perms → now uses KeypairFile::save(); F6.6 (L) encrypt_aes_gcm panicked → Result; F6.8-9 (L) query.rs slice/unused binding
 
 ---
 
