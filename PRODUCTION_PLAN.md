@@ -443,45 +443,45 @@ Each contract must be validated for: correct opcode dispatch, proper authority c
 
 ---
 
-## PHASE 5: VALIDATOR (`validator/src/` — 9,132 lines)
+## PHASE 5: VALIDATOR (`validator/src/` — 9,138 lines) ✅ COMPLETE (commit 428d218)
 
-### 5.1 Main Loop (`main.rs` — 7,517 lines)
-- [ ] Verify block production cycle
-- [ ] Verify transaction processing pipeline
-- [ ] Verify leader rotation
-- [ ] Verify RocksDB initialization and column families
-- [ ] Verify genesis creation on first boot
-- [ ] Verify state persistence across restarts
-- [ ] Verify graceful shutdown
-- [ ] Verify dev-mode flag behavior
-- [ ] Verify CLI argument parsing
-- [ ] Check for any hardcoded genesis data that should be configurable
-- [ ] Verify contract deployment at genesis
-- [ ] Verify DEX pair / pool / oracle seeding at genesis
-- [ ] **Findings:**
+### 5.1 Main Loop (`main.rs` — 7,524 lines)
+- [x] Verify block production cycle
+- [x] Verify transaction processing pipeline
+- [x] Verify leader rotation
+- [x] Verify RocksDB initialization and column families
+- [x] Verify genesis creation on first boot
+- [x] Verify state persistence across restarts
+- [x] Verify graceful shutdown
+- [x] Verify dev-mode flag behavior
+- [x] Verify CLI argument parsing
+- [x] Check for any hardcoded genesis data that should be configurable
+- [x] Verify contract deployment at genesis
+- [x] Verify DEX pair / pool / oracle seeding at genesis
+- [x] **Findings:** V5.1 (HIGH) RPC port derivation in genesis accounts fetch used wrong formula — V2/V3 validators connected to wrong port, breaking join flow. Fixed. V5.2 (MEDIUM) TODO stub in RPC mempool add — implemented MoltyID reputation lookup for express-lane priority. V5.3 (MEDIUM) P2P transaction handler also skipped reputation lookup — fixed. V5.4 (LOW) unwrap() on distribution_wallets replaced with safe pattern match.
 
 ### 5.2 Sync (`sync.rs` — 412 lines)
-- [ ] Verify block sync from peers
-- [ ] Verify chain catch-up logic
-- [ ] Verify sync doesn't accept invalid blocks
-- [ ] **Findings:**
+- [x] Verify block sync from peers
+- [x] Verify chain catch-up logic
+- [x] Verify sync doesn't accept invalid blocks
+- [x] **Findings:** Clean. Bounded slot tracking (note_seen_bounded) correctly caps malicious values. Added test.
 
 ### 5.3 Keypair Loader (`keypair_loader.rs` — 141 lines)
-- [ ] Verify keypair generation and persistence
-- [ ] Verify keypair file format
-- [ ] Verify machine migration support
-- [ ] **Findings:**
+- [x] Verify keypair generation and persistence
+- [x] Verify keypair file format
+- [x] Verify machine migration support
+- [x] **Findings:** Clean. Proper 0o600 permissions on Unix. MOLTCHAIN_VALIDATOR_KEYPAIR env var supported.
 
 ### 5.4 Threshold Signer (`threshold_signer.rs` — 303 lines)
-- [ ] Verify threshold signature scheme
-- [ ] Verify key share generation and reconstruction
-- [ ] **Findings:**
+- [x] Verify threshold signature scheme
+- [x] Verify key share generation and reconstruction
+- [x] **Findings:** Clean. T2.2 auth token required for signing — rejects unauthenticated requests.
 
 ### 5.5 Updater (`updater.rs` — 759 lines)
-- [ ] Verify update mechanism (auto-update binary)
-- [ ] Verify signature verification on updates
-- [ ] Verify rollback capability
-- [ ] **Findings:**
+- [x] Verify update mechanism (auto-update binary)
+- [x] Verify signature verification on updates
+- [x] Verify rollback capability
+- [x] **Findings:** V5.5 (LOW) Release signing public key was all-zeros placeholder — replaced with real Ed25519 key. V5.6 (LOW) unix import not gated behind cfg(unix) — fixed.
 
 ---
 
