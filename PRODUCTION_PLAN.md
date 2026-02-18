@@ -604,103 +604,126 @@ Each contract must be validated for: correct opcode dispatch, proper authority c
 ## PHASE 10: DEX FRONTEND (`dex/` — 5,341 lines)
 
 ### 10.1 Trading View
-- [ ] Verify pair selector loads real pairs from API
-- [ ] Verify orderbook renders real data
-- [ ] Verify chart/TradingView integration
-- [ ] Verify trade history loads real trades
-- [ ] Verify order form submits via sendTransaction (not REST POST)
-- [ ] Verify open orders tab shows user's real orders
-- [ ] Verify order cancellation works
-- [ ] Verify ticker updates reflect real state
-- [ ] **Findings:**
+- [x] Verify pair selector loads real pairs from API
+- [x] Verify orderbook renders real data
+- [x] Verify chart/TradingView integration
+- [x] Verify trade history loads real trades
+- [x] Verify order form submits via sendTransaction (not REST POST)
+- [x] Verify open orders tab shows user's real orders
+- [x] Verify order cancellation works
+- [x] Verify ticker updates reflect real state
+- **Findings:**
+  - **F10.1 (CRITICAL):** Order submission used unsigned `api.post('/orders')` — anyone could spoof orders for any address. Fixed → `wallet.sendTransaction()` via `contracts.dex_core` with `op: 'place_order'`.
+  - **F10.2 (HIGH):** Order cancellation used unsigned `api.del('/orders/${id}')` — no ownership proof. Fixed → `wallet.sendTransaction()` via `contracts.dex_core` with `op: 'cancel_order'`.
+  - **F10.9 (CRITICAL):** `encodeTransactionMessage()` used custom byte concat that didn't match validator's `bincode::serialize(Message)`. Blockhash was UTF-8 encoded instead of hex-decoded. Wire format used camelCase `programId` but validator expects snake_case `program_id`. Fixed → complete rewrite: bincode u64 LE length prefixes, bs58-decoded program_id/accounts, hex-decoded blockhash, snake_case field names, data as byte array.
 
 ### 10.2 Pool / Liquidity
-- [ ] Verify pool list loads from API
-- [ ] Verify add/remove liquidity forms work
-- [ ] Verify LP position display
-- [ ] **Findings:**
+- [x] Verify pool list loads from API
+- [x] Verify add/remove liquidity forms work
+- [x] Verify LP position display
+- **Findings:**
+  - **F10.10 (MEDIUM):** `addLiquidity` handler hardcoded `programId: '0000...0002'` — stale placeholder hex address. Fixed → `contracts.dex_amm` loaded from symbol registry.
 
 ### 10.3 Margin Trading
-- [ ] Verify margin position display
-- [ ] Verify position open/close flow
-- [ ] Verify liquidation warnings
-- [ ] **Findings:**
+- [x] Verify margin position display
+- [x] Verify position open/close flow
+- [x] Verify liquidation warnings
+- **Findings:**
+  - **F10.3 (HIGH):** Margin open used unsigned `api.post('/margin/open')`, close used unsigned `api.post('/margin/close')`. Fixed → `wallet.sendTransaction()` via `contracts.dex_margin` with `op: 'open_position'` / `op: 'close_position'`.
 
 ### 10.4 Prediction Markets
-- [ ] Verify market list loads from API
-- [ ] Verify binary market creation works end-to-end
-- [ ] Verify multi-outcome market creation (2-8 outcomes)
-- [ ] Verify trading on markets works
-- [ ] Verify position display
-- [ ] Verify resolution and claim flow
-- [ ] **Findings:**
+- [x] Verify market list loads from API
+- [x] Verify binary market creation works end-to-end
+- [x] Verify multi-outcome market creation (2-8 outcomes)
+- [x] Verify trading on markets works
+- [x] Verify position display
+- [x] Verify resolution and claim flow
+- **Findings:**
+  - **F10.4 (HIGH):** Prediction trade used unsigned `api.post('/prediction-market/trade')`, market creation used unsigned `api.post('/prediction-market/create')`. Fixed → `wallet.sendTransaction()` via `contracts.prediction_market` with `op: 'buy_shares'` / `op: 'create_market'`.
+  - **F10.5 (MEDIUM):** No UI for resolving markets or claiming winnings. Fixed → added "Resolve" button (creator-only, active markets) and "Claim Winnings" button (resolved markets + positions), both via `sendTransaction` with `op: 'resolve_market'` / `op: 'claim_winnings'`.
 
 ### 10.5 Governance
-- [ ] Verify proposal list loads from API
-- [ ] Verify proposal creation flow
-- [ ] Verify voting mechanism
-- [ ] Verify proposal state display (active/passed/executed)
-- [ ] Verify governance parameters display in detail panel
-- [ ] **Findings:**
+- [x] Verify proposal list loads from API
+- [x] Verify proposal creation flow
+- [x] Verify voting mechanism
+- [x] Verify proposal state display (active/passed/executed)
+- [x] Verify governance parameters display in detail panel
+- **Findings:**
+  - **F10.6 (HIGH):** Governance voting used unsigned REST POST with hardcoded `amount: 1000`. Proposal submission also unsigned. Fixed → `wallet.sendTransaction()` via `contracts.dex_governance` with real MOLT token balance as vote weight, `op: 'vote'` / `op: 'create_proposal'`.
 
 ### 10.6 Rewards
-- [ ] Verify reward stats load from API
-- [ ] Verify pending/claimed amounts display
-- [ ] Verify tier display
-- [ ] Verify claim button works
-- [ ] **Findings:**
+- [x] Verify reward stats load from API
+- [x] Verify pending/claimed amounts display
+- [x] Verify tier display
+- [x] Verify claim button works
+- **Findings:**
+  - **F10.7 (HIGH):** Reward claim was a no-op — called `api.get('/rewards/${address}')` to read data but never submitted a claim transaction. Fixed → `wallet.sendTransaction()` via `contracts.dex_rewards` with `op: 'claim_rewards'`.
 
 ### 10.7 Wallet Integration
-- [ ] Verify connect wallet flow
-- [ ] Verify import via private key
-- [ ] Verify wallet create generates real keypair
-- [ ] Verify balance display after connect
-- [ ] Verify all wallet-gated sections hide when disconnected
-- [ ] Verify wallet-gated sections show when connected
-- [ ] Verify no stale wallet data after disconnect
-- [ ] **Findings:**
+- [x] Verify connect wallet flow
+- [x] Verify import via private key
+- [x] Verify wallet create generates real keypair
+- [x] Verify balance display after connect
+- [x] Verify all wallet-gated sections hide when disconnected
+- [x] Verify wallet-gated sections show when connected
+- [x] Verify no stale wallet data after disconnect
+- **Findings:**
+  - **F10.11 (MEDIUM):** Auto-reconnect set `state.connected = true` without storing keypair. User appeared fully connected but couldn't sign. Fixed → shows "(view only)" indicator on connect button + sets `wallet.address` for read-only operations. All signing handlers now check `wallet.keypair` and prompt to re-import.
 
 ### 10.8 General UI
-- [ ] Verify all icons are valid Font Awesome 6
-- [ ] Verify responsive/mobile layout
-- [ ] Verify dark theme consistency
-- [ ] Verify no console errors on load
-- [ ] Verify shared-config.js integration
-- [ ] Verify WebSocket connection and real-time updates
-- [ ] **Findings:**
+- [x] Verify all icons are valid Font Awesome 6
+- [x] Verify responsive/mobile layout
+- [x] Verify dark theme consistency
+- [x] Verify no console errors on load
+- [x] Verify shared-config.js integration
+- [x] Verify WebSocket connection and real-time updates
+- **Findings:**
+  - **F10.8 (HIGH):** XSS — all API/user data injected into innerHTML unsanitized. Market questions, outcome names, proposal titles/descriptions, pair names, token symbols could carry script injection. Fixed → added `escapeHtml()` utility, applied across 39 injection points (pair selects, pair list, open orders, balances, pool names, margin positions, trade history, proposals titles/descriptions/types, prediction market questions/outcomes/categories/creators).
+  - **F10.10 (MEDIUM):** Contract addresses previously undefined/stale. Fixed → `loadContractAddresses()` fetches from `getAllSymbolRegistry` RPC at init, with deploy-manifest.json fallback addresses hardcoded for offline resilience.
 
 ---
 
-## PHASE 11: WALLET APP (`wallet/` — 9,340 lines)
+## PHASE 11: WALLET APP (`wallet/` — 11,031 lines) ✅ COMPLETE
 
-### 11.1 Core Wallet (`wallet/js/wallet.js` — 3,716 lines)
-- [ ] Verify wallet creation (keypair generation)
-- [ ] Verify private key import (hex, base58)
-- [ ] Verify balance loading from RPC
-- [ ] Verify transaction history loading
-- [ ] Verify send transaction flow — sign + submit
-- [ ] Verify token balance display
-- [ ] Verify staking / delegation UI
-- [ ] Verify address display is always base58 (never 0x)
-- [ ] **Findings:**
+**Commit:** `e1ad162` — Phase 11: Wallet App audit — 9 findings, 41 tests
 
-### 11.2 Crypto Module (`wallet/js/crypto.js` — 470 lines)
-- [ ] Verify ed25519 key generation
-- [ ] Verify signing / verification
-- [ ] Verify base58 encoding/decoding
-- [ ] **Findings:**
+### 11.1 Core Wallet (`wallet/js/wallet.js` — 3,717 lines)
+- [x] Verify wallet creation (keypair generation)
+- [x] Verify private key import (hex, base58)
+- [x] Verify balance loading from RPC
+- [x] Verify transaction history loading
+- [x] Verify send transaction flow — sign + submit
+- [x] Verify token balance display
+- [x] Verify staking / delegation UI
+- [x] Verify address display is always base58 (never 0x)
+- **Findings:**
+  - **W-1 (HIGH):** XSS in `refreshNFTs()` — NFT name, collection, image, mint/id injected unsanitized into innerHTML. Fixed → all data escaped with `escapeHtml()`, image URLs validated for http/https protocol only.
+  - **W-2 (HIGH):** XSS in `exportPrivateKeyWithPassword()` and `exportMnemonicWithPassword()` — key material interpolated into inline `onclick="..."` attributes. Fixed → refactored to `addEventListener('click', ...)` pattern with button IDs.
+  - **W-3 (MED):** `importWalletPrivateKey()` only checked length, not hex format. Invalid chars would produce NaN bytes. Fixed → added `/^[0-9a-fA-F]{64}$/` regex validation.
+  - **W-4 (MED):** Auto-lock "Never" (timeout=0) caused `setTimeout(fn, 0)` on every mousemove, locking wallet immediately. Fixed → `resetLockTimer()` now guards `if (!walletState.isLocked && timeout > 0)`.
+  - **W-5 (MED):** Private keys not zeroed after use. Fixed → added `zeroBytes()` helper; `signTransaction()` now zeros seed and secretKey after computing signature.
+  - **W-9 (LOW):** `loadWalletState()` didn't validate parsed JSON structure. Fixed → wrapped in try-catch, validates `wallets` is an array, provides default `lockTimeout: 300000`.
 
-### 11.3 Identity Module (`wallet/js/identity.js` — 1,180 lines)
-- [ ] Verify MoltyID integration
-- [ ] Verify credential management
-- [ ] Verify agent registration
-- [ ] **Findings:**
+### 11.2 Crypto Module (`wallet/js/crypto.js` — 471 lines)
+- [x] Verify ed25519 key generation
+- [x] Verify signing / verification
+- [x] Verify base58 encoding/decoding
+- **Findings:**
+  - **W-7 (MED):** `isValidMnemonic()` only checked word count and wordlist membership, not BIP39 checksum. Fixed → added `isValidMnemonicAsync()` with full SHA-256 checksum verification (entropy → hash → compare first 4 bits).
+  - **W-8 (LOW):** `generateId()` used `Math.random()` for UUID generation. Fixed → replaced with `crypto.getRandomValues(new Uint8Array(16))` and proper UUIDv4 bit manipulation (version=4, variant=10xx per RFC 4122).
 
-### 11.4 UI / HTML (`wallet/index.html` — 926 lines)
-- [ ] Verify all sections render correctly
-- [ ] Verify responsive layout
-- [ ] Verify no broken links or icons
-- [ ] **Findings:**
+### 11.3 Identity Module (`wallet/js/identity.js` — 1,181 lines)
+- [x] Verify MoltyID integration
+- [x] Verify credential management
+- [x] Verify agent registration
+- **Findings:**
+  - **W-6 (MED):** `showTransferNameModal()` and `showVouchModal()` didn't validate recipient/vouchee address before building contract call. Fixed → added `MoltCrypto.isValidAddress()` check with user-facing error message.
+
+### 11.4 UI / HTML (`wallet/index.html` — 927 lines)
+- [x] Verify all sections render correctly
+- [x] Verify responsive layout
+- [x] Verify no broken links or icons
+- **Findings:** None — HTML structure is clean; all dynamic content handled in JS modules.
 
 ---
 
@@ -993,7 +1016,7 @@ Each contract must be validated for: correct opcode dispatch, proper authority c
 | 7 | Compiler | 5 | 0 | `[ ]` |
 | 8 | Custody | 5 | 0 | `[ ]` |
 | 9 | SDKs | 15 | 0 | `[ ]` |
-| 10 | DEX Frontend | 40 | 0 | `[ ]` |
+| 10 | DEX Frontend | 40 | 11 | `[x]` |
 | 11 | Wallet App | 15 | 0 | `[ ]` |
 | 12 | Wallet Extension | 12 | 0 | `[ ]` |
 | 13 | Explorer | 14 | 0 | `[ ]` |
