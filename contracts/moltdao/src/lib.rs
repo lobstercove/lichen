@@ -884,7 +884,7 @@ pub extern "C" fn get_treasury_balance(
     
     // Query treasury balance from stored state
     // In production, use cross-contract call: call_token_balance(token, treasury)
-    let treasury = storage_get(b"treasury").unwrap_or_default();
+    let _treasury = storage_get(b"treasury").unwrap_or_default();
     let balance_key = alloc::format!("treasury_balance_{}",
         _token.iter().map(|b| alloc::format!("{:02x}", b)).collect::<alloc::string::String>()
     );
@@ -1036,7 +1036,7 @@ pub extern "C" fn finalize_proposal(
     caller_ptr: *const u8,
     proposal_id: u64,
 ) -> u32 {
-    execute_proposal(caller_ptr, proposal_id)
+    execute_proposal(caller_ptr, proposal_id, core::ptr::null(), 0)
 }
 
 /// Tests expect `get_proposal_count`
