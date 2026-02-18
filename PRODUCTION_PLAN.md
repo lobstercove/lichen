@@ -522,12 +522,34 @@ Each contract must be validated for: correct opcode dispatch, proper authority c
 
 ## PHASE 8: CUSTODY SERVICE (`custody/src/` — 7,150 lines)
 
-- [ ] Verify key management — HSM integration or secure storage
-- [ ] Verify signing flow — approval, threshold, audit trail
-- [ ] Verify API surface — no unauthorized signing
-- [ ] Verify rate limits on signing operations
-- [ ] Verify audit logging
-- [ ] **Findings:**
+- [x] Verify key management — HSM integration or secure storage
+- [x] Verify signing flow — approval, threshold, audit trail
+- [x] Verify API surface — no unauthorized signing
+- [x] Verify rate limits on signing operations
+- [x] Verify audit logging
+- [x] **Findings:**
+
+**F8.1 (HIGH → FIXED):** `verify_api_auth` used standard `!=` string comparison — timing side-channel leak. Replaced with `subtle::ConstantTimeEq` for constant-time token validation.
+
+**F8.2 (MEDIUM → FIXED):** WebSocket auth (`?token=`) used `==` comparison — timing side-channel. Replaced with `subtle::ConstantTimeEq`.
+
+**F8.3 (HIGH → FIXED):** `GET /deposits/:id` had NO auth — leaked user_id, chain, asset, derivation_path. Added `verify_api_auth` gate.
+
+**F8.4 (HIGH → FIXED):** `GET /reserves` had NO auth — leaked treasury balances. Added `verify_api_auth` gate + fixed return type to `Result<Json<Value>, Json<ErrorResponse>>`.
+
+**F8.5 (MEDIUM → FIXED):** `GET /status` had NO auth — leaked internal job counts. Added `verify_api_auth` gate.
+
+**F8.6 (HIGH → FIXED):** `POST /deposits` had NO auth — anyone could create deposit addresses with arbitrary user_ids. Added `verify_api_auth` gate.
+
+**F8.7 (MEDIUM → FIXED):** `BURN_LOCKS` static `HashMap<String, Arc<Mutex<()>>>` grew unboundedly — memory leak. Added cleanup when map exceeds 10,000 entries: retains only entries with `strong_count > 1` (still in use).
+
+**F8.8 (MEDIUM → FIXED):** `create_withdrawal` did not validate `dest_address` format. Added Solana validation (base58 decode → 32 bytes) and Ethereum validation (`0x` prefix + 40 hex chars).
+
+**F8.9 (MEDIUM → FIXED):** `count_sweep_jobs` / `count_credit_jobs` did O(N) full-table scans on every `/status` call. Replaced with status-index prefix iteration for known statuses, with full-scan fallback for pre-index data.
+
+**F8.10 (LOW → FIXED):** `deposit_cleanup_loop` scanned entire deposits CF every 10 min. Now uses `list_ids_by_status_index("deposits", "issued")` with full-scan fallback.
+
+**F8.11 (LOW → FIXED):** `list_events` accepted `after` query param but never consumed it — cursor pagination was broken. Implemented cursor-based skip logic that fast-forwards past the cursor event before collecting results.
 
 ---
 
