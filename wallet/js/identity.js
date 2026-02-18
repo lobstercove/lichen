@@ -92,6 +92,159 @@ function getNameCostPerYear(nameLen) {
     return 20;
 }
 
+// ── Binary Arg Encoding Helpers (WASM ABI Layout Descriptor) ──
+// The MoltyID contract uses raw WASM function params (pointers + values).
+// The runtime's "layout descriptor" mode (0xAB prefix) lets us specify
+// which I32 params are pointers (stride >= 32) vs raw values (stride < 32).
+
+function buildLayoutArgs(layout, dataChunks) {
+    const header = new Uint8Array(1 + layout.length);
+    header[0] = 0xAB;
+    for (let i = 0; i < layout.length; i++) header[1 + i] = layout[i];
+    let totalData = 0;
+    for (const c of dataChunks) totalData += c.length;
+    const result = new Uint8Array(header.length + totalData);
+    result.set(header, 0);
+    let off = header.length;
+    for (const c of dataChunks) { result.set(c, off); off += c.length; }
+    return result;
+}
+
+function padBytes(data, targetLen) {
+    if (data.length >= targetLen) return data.subarray(0, targetLen);
+    const r = new Uint8Array(targetLen);
+    r.set(data, 0);
+    return r;
+}
+
+function u32LE(val) {
+    const b = new Uint8Array(4);
+    b[0] = val & 0xFF; b[1] = (val >> 8) & 0xFF;
+    b[2] = (val >> 16) & 0xFF; b[3] = (val >> 24) & 0xFF;
+    return b;
+}
+
+function u64LE(val) {
+    const b = new Uint8Array(8);
+    const big = BigInt(val);
+    for (let i = 0; i < 8; i++) b[i] = Number((big >> BigInt(i * 8)) & 0xFFn);
+    return b;
+}
+
+/**
+ * Encode args for a MoltyID contract call using the WASM ABI layout descriptor.
+ * callerPubkey: Uint8Array (32 bytes) — the transaction signer's public key
+ * functionName: string — the contract function to call
+ * params: object — the high-level params from the modal (same keys as before)
+ */
+function encodeMoltyIdArgs(callerPubkey, functionName, params) {
+    const te = new TextEncoder();
+    switch (functionName) {
+        case 'register_identity': {
+            // register_identity(owner_ptr:I32, agent_type:I32(u8), name_ptr:I32, name_len:I32(u32))
+            const nameBytes = te.encode(params.name || '');
+            return buildLayoutArgs([0x20, 0x01, 0x40, 0x04], [
+                callerPubkey,                          // 32 B — owner
+                new Uint8Array([params.agent_type & 0xFF]), // 1 B
+                padBytes(nameBytes, 64),                // 64 B — name (padded)
+                u32LE(nameBytes.length),                // 4 B — name_len
+            ]);
+        }
+        case 'update_agent_type': {
+            // update_agent_type(caller_ptr:I32, new_agent_type:I32(u8))
+            return buildLayoutArgs([0x20, 0x01], [
+                callerPubkey,
+                new Uint8Array([params.agent_type & 0xFF]),
+            ]);
+        }
+        case 'register_name': {
+            // register_name(caller_ptr:I32, name_ptr:I32, name_len:I32(u32), duration_years:I32(u8))
+            const nameBytes = te.encode(params.name || '');
+            return buildLayoutArgs([0x20, 0x20, 0x04, 0x01], [
+                callerPubkey,
+                padBytes(nameBytes, 32),
+                u32LE(nameBytes.length),
+                new Uint8Array([(params.duration_years || 1) & 0xFF]),
+            ]);
+        }
+        case 'renew_name': {
+            // renew_name(caller_ptr:I32, name_ptr:I32, name_len:I32(u32), additional_years:I32(u8))
+            const nameBytes = te.encode(params.name || '');
+            return buildLayoutArgs([0x20, 0x20, 0x04, 0x01], [
+                callerPubkey,
+                padBytes(nameBytes, 32),
+                u32LE(nameBytes.length),
+                new Uint8Array([(params.additional_years || 1) & 0xFF]),
+            ]);
+        }
+        case 'transfer_name': {
+            // transfer_name(caller_ptr:I32, name_ptr:I32, name_len:I32(u32), new_owner_ptr:I32)
+            const nameBytes = te.encode(params.name || '');
+            const newOwnerBytes = bs58.decode(params.new_owner);
+            return buildLayoutArgs([0x20, 0x20, 0x04, 0x20], [
+                callerPubkey,
+                padBytes(nameBytes, 32),
+                u32LE(nameBytes.length),
+                newOwnerBytes,
+            ]);
+        }
+        case 'release_name': {
+            // release_name(caller_ptr:I32, name_ptr:I32, name_len:I32(u32))
+            const nameBytes = te.encode(params.name || '');
+            return buildLayoutArgs([0x20, 0x20, 0x04], [
+                callerPubkey,
+                padBytes(nameBytes, 32),
+                u32LE(nameBytes.length),
+            ]);
+        }
+        case 'add_skill': {
+            // add_skill(caller_ptr:I32, skill_name_ptr:I32, skill_name_len:I32(u32), proficiency:I32(u8))
+            const nameBytes = te.encode(params.name || '');
+            return buildLayoutArgs([0x20, 0x20, 0x04, 0x01], [
+                callerPubkey,
+                padBytes(nameBytes, 32),
+                u32LE(nameBytes.length),
+                new Uint8Array([(params.proficiency || 50) & 0xFF]),
+            ]);
+        }
+        case 'vouch': {
+            // vouch(voucher_ptr:I32, vouchee_ptr:I32) — both 32-byte pointers
+            const voucheeBytes = bs58.decode(params.vouchee);
+            return buildLayoutArgs([0x20, 0x20], [
+                callerPubkey,
+                voucheeBytes,
+            ]);
+        }
+        case 'set_endpoint': {
+            // set_endpoint(caller_ptr:I32, url_ptr:I32, url_len:I32(u32))
+            const urlBytes = te.encode(params.url || '');
+            const urlStride = Math.max(32, Math.min(255, urlBytes.length));
+            return buildLayoutArgs([0x20, urlStride, 0x04], [
+                callerPubkey,
+                padBytes(urlBytes, urlStride),
+                u32LE(urlBytes.length),
+            ]);
+        }
+        case 'set_rate': {
+            // set_rate(caller_ptr:I32, molt_per_unit:I64) — default mode works
+            const data = new Uint8Array(32 + 8);
+            data.set(callerPubkey, 0);
+            data.set(u64LE(params.molt_per_unit || 0), 32);
+            return data; // no layout prefix — default handles I32 ptr + I64 val
+        }
+        case 'set_availability': {
+            // set_availability(caller_ptr:I32, status:I32(u8))
+            return buildLayoutArgs([0x20, 0x01], [
+                callerPubkey,
+                new Uint8Array([(params.status || 0) & 0xFF]),
+            ]);
+        }
+        default:
+            // Fallback: JSON-encode (legacy — will likely fail for ptr-param functions)
+            return new TextEncoder().encode(JSON.stringify(params));
+    }
+}
+
 // ── MoltyID Program Address Resolution ──
 async function getMoltyIdProgramAddress() {
     if (_moltyidAddress) return _moltyidAddress;
@@ -143,10 +296,13 @@ async function buildContractCall(functionName, args, password, valueMolt = 0) {
     const contractProgramId = new Uint8Array(32).fill(0xFF);
     const moltyidPubkey = bs58.decode(moltyidAddr);
     
+    // Encode args as proper binary with WASM ABI layout descriptor
+    const argsBytes = encodeMoltyIdArgs(fromPubkey, functionName, args);
+    
     const callPayload = JSON.stringify({
         Call: {
             function: functionName,
-            args: Array.from(new TextEncoder().encode(JSON.stringify(args))),
+            args: Array.from(argsBytes),
             value: Math.floor(valueMolt * 1_000_000_000)
         }
     });
@@ -175,10 +331,12 @@ async function loadIdentityData() {
     if (!wallet) return null;
     
     try {
-        const [profile, moltName] = await Promise.all([
+        const [profile, moltNameResult] = await Promise.all([
             rpc.call('getMoltyIdProfile', [wallet.address]).catch(() => null),
             rpc.call('reverseMoltName', [wallet.address]).catch(() => null),
         ]);
+        // reverseMoltName returns {"name": "alice.molt"} or null — extract the string
+        const moltName = moltNameResult?.name || null;
         
         let nameDetails = null;
         if (moltName) {
@@ -603,11 +761,15 @@ async function showRegisterIdentityModal() {
             agent_type: agentType,
             name: displayName
         }, values.password);
-        await rpc.sendTransaction(tx);
+        const result = await rpc.sendTransaction(tx);
+        if (result?.error) {
+            showToast('Contract error: ' + (result.error || 'unknown'));
+            return;
+        }
         showToast('Identity registered! Loading profile...');
         _identityCache = null;
-        // Retry loading identity — the tx may take 1-2 blocks to be indexed
-        await retryLoadIdentity(5, 1200);
+        // Retry loading identity — the tx may take 1-3 blocks to be indexed
+        await retryLoadIdentity(8, 2000);
     } catch (e) {
         showToast('Registration failed: ' + e.message);
     }

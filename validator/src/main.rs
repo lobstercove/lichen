@@ -1443,6 +1443,50 @@ async fn apply_block_effects(
                         liquid as f64 / 1_000_000_000.0,
                         debt_payment as f64 / 1_000_000_000.0,
                     );
+
+                    // ── ReefStake liquid staking reward distribution ──
+                    // Allocate REEFSTAKE_BLOCK_SHARE_BPS (10%) of each block
+                    // reward to the ReefStake pool, funding stMOLT yield.
+                    let reef_share = (reward_total as u128
+                        * moltchain_core::REEFSTAKE_BLOCK_SHARE_BPS as u128
+                        / 10_000) as u64;
+                    if reef_share > 0 {
+                        match state.get_reefstake_pool() {
+                            Ok(mut reef_pool) => {
+                                if reef_pool.st_molt_token.total_supply > 0 {
+                                    // Fund reef_share from treasury
+                                    if let Some(ref tpk) = treasury_pubkey {
+                                        let mut t_acct = state
+                                            .get_account(tpk)
+                                            .ok()
+                                            .flatten()
+                                            .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
+                                        if t_acct.shells >= reef_share {
+                                            t_acct.shells = t_acct.shells.saturating_sub(reef_share);
+                                            t_acct.spendable = t_acct.spendable.saturating_sub(reef_share);
+                                            if let Err(e) = state.put_account(tpk, &t_acct) {
+                                                warn!("⚠️  Failed to debit treasury for ReefStake: {}", e);
+                                            } else {
+                                                reef_pool.distribute_rewards(reef_share);
+                                                if let Err(e) = state.put_reefstake_pool(&reef_pool) {
+                                                    warn!("⚠️  Failed to persist ReefStake pool: {}", e);
+                                                } else {
+                                                    debug!(
+                                                        "🌊 ReefStake: distributed {:.6} MOLT to {} stakers",
+                                                        reef_share as f64 / 1_000_000_000.0,
+                                                        reef_pool.positions.len(),
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                warn!("⚠️  Failed to load ReefStake pool: {}", e);
+                            }
+                        }
+                    }
                 }
             }
 

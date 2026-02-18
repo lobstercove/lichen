@@ -648,7 +648,8 @@ async function loadIdentityPanel() {
 
   try {
     const profile = await rpcClient.call('getMoltyIdProfile', [wallet.address]).catch(() => null);
-    if (!profile || !profile.name) {
+    const identity = profile?.identity;
+    if (!profile || !identity?.name) {
       container.innerHTML = `
         <div class="popup-empty-state" style="text-align:center;padding:1rem 0;">
           <div style="font-size:1.5rem;margin-bottom:0.5rem;"><i class="fas fa-fingerprint" style="color:var(--primary);"></i></div>
@@ -671,12 +672,12 @@ async function loadIdentityPanel() {
     const vouchesReceived = Array.isArray(profile.vouches?.received) ? profile.vouches.received : [];
     const achievements = Array.isArray(profile.achievements) ? profile.achievements : [];
     const repPct = Math.min(100, (rep / 10000) * 100);
-    const isActive = profile.is_active !== false && profile.is_active !== 0;
+    const isActive = identity.is_active !== false && identity.is_active !== 0;
     container.innerHTML = `
       <div style="text-align:center;padding:0.75rem 0;">
         <div style="font-size:1.5rem;"><i class="fas fa-fingerprint" style="color:var(--primary);"></i></div>
-        <h4 style="margin:0.5rem 0 0.25rem;">${profile.name}${moltName ? ' <span style="color:var(--primary);">' + moltName + (moltName.endsWith('.molt') ? '' : '.molt') + '</span>' : ''}</h4>
-        <div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.25rem;">${tierName} · ${profile.agent_type_name || 'General'}${isActive ? ' · <span style="color:#4ade80;">Active</span>' : ''}</div>
+        <h4 style="margin:0.5rem 0 0.25rem;">${identity.name}${moltName ? ' <span style="color:var(--primary);">' + moltName + (moltName.endsWith('.molt') ? '' : '.molt') + '</span>' : ''}</h4>
+        <div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.25rem;">${tierName} · ${identity.agent_type_name || 'General'}${isActive ? ' · <span style="color:#4ade80;">Active</span>' : ''}</div>
         <div style="font-size:0.82rem;color:var(--text-muted);">Reputation: ${rep.toLocaleString()} / 10,000</div>
         <div style="margin-top:0.5rem;height:4px;background:var(--bg-tertiary);border-radius:2px;overflow:hidden;">
           <div style="height:100%;width:${repPct}%;background:var(--primary);border-radius:2px;"></div>
@@ -712,15 +713,15 @@ async function loadExtensionStaking() {
   if (!statsEl) return;
 
   try {
-    const position = await rpc.call('getReefStakePosition', [wallet.address]).catch(() => null);
+    const position = await rpc.call('getStakingPosition', [wallet.address]).catch(() => null);
     const poolInfo = await rpc.call('getReefStakePoolInfo', []).catch(() => null);
 
-    const stMolt = Number(position?.st_molt_balance || 0) / 1e9;
-    const stakeValue = Number(position?.stake_value || 0) / 1e9;
+    const stMolt = Number(position?.st_molt_amount || 0) / 1e9;
+    const stakeValue = Number(position?.current_value_molt || 0) / 1e9;
     const rewards = Number(position?.rewards_earned || 0) / 1e9;
-    const tierName = position?.lock_tier || 'Flexible';
+    const tierName = position?.lock_tier_name || 'Flexible';
     const multiplier = Number(position?.reward_multiplier || 1);
-    const totalPool = Number(poolInfo?.total_staked || 0) / 1e9;
+    const totalPool = Number(poolInfo?.total_molt_staked || 0) / 1e9;
     const fmt = v => v.toLocaleString(undefined, { maximumFractionDigits: 4 });
 
     const cards = [
@@ -743,12 +744,17 @@ async function loadExtensionStaking() {
     const tierNames = ['Flexible', '30-Day', '90-Day', '365-Day'];
     const tierMultipliers = ['1.0x', '1.5x', '2.0x', '3.0x'];
     const tierColors = ['#94a3b8', '#60a5fa', '#a78bfa', '#f59e0b'];
+    const poolTiers = poolInfo?.tiers || [];
     tiersEl.innerHTML = tierNames.map((name, i) => {
       const isActive = tierName === name || (i === 0 && tierName === 'Flexible');
+      const apyVal = poolTiers[i]?.apy_percent;
+      const apyLabel = apyVal != null && apyVal > 0
+        ? apyVal.toFixed(1) + '% APY'
+        : tierMultipliers[i] + ' rewards';
       return `
         <div style="background:var(--card-bg);padding:0.5rem;border-radius:8px;border:2px solid ${isActive ? tierColors[i] : 'var(--border)'};text-align:center;">
           <div style="font-size:0.7rem;font-weight:600;color:${tierColors[i]};">${name}</div>
-          <div style="font-size:0.65rem;color:var(--text-muted);">${tierMultipliers[i]} APY</div>
+          <div style="font-size:0.65rem;color:var(--text-muted);">${apyLabel}</div>
         </div>`;
     }).join('');
 

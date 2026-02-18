@@ -64,7 +64,7 @@ pub use processor::{
     CONTRACT_DEPLOY_FEE, CONTRACT_PROGRAM_ID, CONTRACT_UPGRADE_FEE, NFT_COLLECTION_FEE,
     NFT_MINT_FEE, SYSTEM_PROGRAM_ID,
 };
-pub use reefstake::{ReefStakePool, StMoltToken, StakingPosition, UnstakeRequest};
+pub use reefstake::{ReefStakePool, StMoltToken, StakingPosition, UnstakeRequest, REEFSTAKE_BLOCK_SHARE_BPS};
 pub use state::CheckpointMeta;
 pub use state::StateBatch;
 pub use state::StateStore;
