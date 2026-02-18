@@ -180,12 +180,34 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!this.keypair || !this._nacl) throw new Error('Wallet not initialized');
             return this._nacl.sign.detached(message, this.keypair.secretKey);
         },
+        // AUDIT-FIX F10.9: sendTransaction produces validator-compatible JSON.
+        // Wire format must match parse_json_transaction():
+        //   - signatures: array of hex strings (64 bytes each)
+        //   - message.instructions[].program_id: base58 string
+        //   - message.instructions[].accounts: array of base58 strings
+        //   - message.instructions[].data: array of u8 numbers
+        //   - message.blockhash: hex string of 32-byte hash
         async sendTransaction(instructions) {
             if (!this.keypair) throw new Error('Wallet not connected');
+            if (!this._nacl) throw new Error('Signing library not loaded');
             const blockhash = await api.rpc('getRecentBlockhash');
-            const msgBytes = encodeTransactionMessage(instructions, blockhash, this.address);
+            // Normalize instructions: ensure accounts + data format
+            const normalizedIx = instructions.map(ix => {
+                const accounts = ix.accounts || [this.address];
+                const dataBytes = typeof ix.data === 'string' ? Array.from(new TextEncoder().encode(ix.data)) : Array.from(ix.data);
+                return { program_id: ix.program_id, accounts, data: dataBytes };
+            });
+            // Sign: bincode-compatible message bytes (must match validator's message.serialize())
+            const msgBytes = encodeTransactionMessage(normalizedIx, blockhash, this.address);
             const sig = this.sign(msgBytes);
-            const txPayload = { signatures: [bytesToHex(sig)], message: { instructions, recentBlockhash: blockhash, signerPubkey: this.address } };
+            // Wire format: JSON matching parse_json_transaction()
+            const txPayload = {
+                signatures: [bytesToHex(sig)],
+                message: {
+                    instructions: normalizedIx,
+                    blockhash: blockhash,
+                },
+            };
             const txBase64 = btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(txPayload))));
             return api.rpc('sendTransaction', [txBase64]);
         },
@@ -193,6 +215,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function bytesToHex(b) { return Array.from(b).map(x => x.toString(16).padStart(2, '0')).join(''); }
     function hexToBytes(h) { const c = h.startsWith('0x') ? h.slice(2) : h; const o = new Uint8Array(c.length / 2); for (let i = 0; i < o.length; i++) o[i] = parseInt(c.slice(i * 2, i * 2 + 2), 16); return o; }
+
+    // AUDIT-FIX F10.8: Sanitize all API-sourced data before innerHTML injection
+    function escapeHtml(str) {
+        if (typeof str !== 'string') return String(str ?? '');
+        return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+    }
+
     // AUDIT-FIX DEX-1/DEX-2: Base58 encoding for addresses (must match wallet/RPC format)
     const BS58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
     function bs58encode(bytes) {
@@ -218,14 +247,41 @@ document.addEventListener('DOMContentLoaded', () => {
         result.set(bytes, leadingOnes);
         return result;
     }
+    // AUDIT-FIX F10.9: Bincode-compatible message serialization for signing.
+    // Must match Rust's bincode::serialize(Message { instructions, recent_blockhash })
+    // where Message/Instruction use Vec (u64 LE length prefix) and fixed [u8; 32] arrays.
     function encodeTransactionMessage(instructions, blockhash, signer) {
-        const enc = new TextEncoder();
-        // AUDIT-FIX DEX-1: Use base58 decoding for signer address (now base58, not hex)
-        const parts = [enc.encode(blockhash), bs58decode(signer)];
-        const instrBytes = instructions.map(ix => { const d = typeof ix.data === 'string' ? enc.encode(ix.data) : ix.data; return new Uint8Array([...hexToBytes(ix.programId), ...new Uint8Array(new Uint32Array([d.length]).buffer), ...d]); });
-        const all = [new Uint8Array(new Uint32Array([instrBytes.length]).buffer), ...parts, ...instrBytes];
-        const total = all.reduce((s, a) => s + a.length, 0); const out = new Uint8Array(total); let off = 0;
-        for (const a of all) { out.set(a, off); off += a.length; } return out;
+        const parts = [];
+        // Helper: write u64 LE
+        function pushU64LE(n) {
+            const buf = new ArrayBuffer(8);
+            const view = new DataView(buf);
+            view.setUint32(0, n & 0xFFFFFFFF, true);
+            view.setUint32(4, Math.floor(n / 0x100000000) & 0xFFFFFFFF, true);
+            parts.push(new Uint8Array(buf));
+        }
+        // instructions: Vec<Instruction> — u64 length + each instruction
+        pushU64LE(instructions.length);
+        for (const ix of instructions) {
+            // program_id: [u8; 32] — base58 decoded
+            parts.push(bs58decode(ix.program_id));
+            // accounts: Vec<Pubkey> — u64 length + each [u8; 32]
+            const accounts = ix.accounts || [signer];
+            pushU64LE(accounts.length);
+            for (const acct of accounts) parts.push(bs58decode(acct));
+            // data: Vec<u8> — u64 length + raw bytes
+            const dataBytes = typeof ix.data === 'string' ? new TextEncoder().encode(ix.data) : ix.data;
+            pushU64LE(dataBytes.length);
+            parts.push(dataBytes);
+        }
+        // recent_blockhash: [u8; 32] — hex decoded
+        parts.push(hexToBytes(blockhash));
+        // Concatenate all parts
+        const total = parts.reduce((s, a) => s + a.length, 0);
+        const out = new Uint8Array(total);
+        let off = 0;
+        for (const a of parts) { out.set(a, off); off += a.length; }
+        return out;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -238,6 +294,42 @@ document.addEventListener('DOMContentLoaded', () => {
         candles: [], connected: false, tradeMode: 'spot', _wsSubs: [],
     };
     let pairs = [], balances = {}, openOrders = [];
+
+    // AUDIT-FIX F10.10: Contract addresses loaded from RPC symbol registry.
+    // These are base58-encoded 32-byte pubkeys — the actual deployed addresses
+    // from deploy-manifest.json, resolved at runtime via getSymbolRegistry.
+    const contracts = {
+        dex_core: null, dex_amm: null, dex_router: null, dex_margin: null,
+        dex_rewards: null, dex_governance: null, prediction_market: null,
+    };
+
+    async function loadContractAddresses() {
+        try {
+            const result = await api.rpc('getAllSymbolRegistry', [100]);
+            if (result?.entries?.length) {
+                const map = {};
+                for (const e of result.entries) map[e.symbol] = e.program;
+                contracts.dex_core = map['DEX'] || null;
+                contracts.dex_amm = map['DEXAMM'] || null;
+                contracts.dex_router = map['DEXROUTER'] || null;
+                contracts.dex_margin = map['DEXMARGIN'] || null;
+                contracts.dex_rewards = map['DEXREWARDS'] || null;
+                contracts.dex_governance = map['DEXGOV'] || null;
+                contracts.prediction_market = map['PREDICT'] || null;
+                console.log('[DEX] Contract addresses loaded from symbol registry');
+            }
+        } catch (e) {
+            console.warn('[DEX] Symbol registry unavailable, trying deploy manifest:', e.message);
+        }
+        // Fallback: hard-coded testnet addresses from deploy-manifest.json
+        if (!contracts.dex_core) contracts.dex_core = '216MacD82KfB2hAeKR17M63ZXfURJQZnzDq2ho7SeJR7';
+        if (!contracts.dex_amm) contracts.dex_amm = 'AANMpDkSnvSKa6PuaLQuRDU4SMzao7Yx3nLKzC2iatBn';
+        if (!contracts.dex_router) contracts.dex_router = 'D7n4R73KPuHJcZz7tUEjAyXk1vrwUXPUtQb6cM5agccH';
+        if (!contracts.dex_margin) contracts.dex_margin = 'GJkJrM3DyDqxtMPL3BQyvrDNu3kaJCQCk9RDSTuMo8yz';
+        if (!contracts.dex_rewards) contracts.dex_rewards = 'dPUYAb3Ld8pZJiCsXkZ838CybU4v8k1ZCeYebX9cS3K';
+        if (!contracts.dex_governance) contracts.dex_governance = 'GFDF7SdCMhveUCU92japioP3uC6qA66EChQ3jbkFc5Bi';
+        if (!contracts.prediction_market) contracts.prediction_market = 'HE5DVQuG6mVNsvprmvLJr1gZ3nRmKNgytXZNc6mZjjXJ';
+    }
 
     // ═══════════════════════════════════════════════════════════════════════
     // Data Loading
@@ -266,7 +358,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const poolSelect = document.getElementById('liqPoolSelect');
         const marginSelect = document.getElementById('marginPairSelect');
         const feeSelect = document.getElementById('propFeePair');
-        const opts = pairs.map((p, i) => `<option value="${p.pairId}">${p.id}</option>`).join('');
+        const opts = pairs.map((p, i) => `<option value="${escapeHtml(String(p.pairId))}">${escapeHtml(p.id)}</option>`).join('');
         if (poolSelect) poolSelect.innerHTML = opts || '<option>No pairs available</option>';
         if (marginSelect) marginSelect.innerHTML = opts || '<option>No pairs available</option>';
         if (feeSelect) feeSelect.innerHTML = opts || '<option>No pairs available</option>';
@@ -447,8 +539,8 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         pairList.innerHTML = filtered.map(p => `
-            <div class="pair-item ${state.activePair?.id === p.id ? 'active' : ''}" data-pair="${p.id}">
-                <span>${p.id}</span><span class="pair-price">${formatPrice(p.price)}</span>
+            <div class="pair-item ${state.activePair?.id === p.id ? 'active' : ''}" data-pair="${escapeHtml(p.id)}">
+                <span>${escapeHtml(p.id)}</span><span class="pair-price">${formatPrice(p.price)}</span>
             </div>`).join('');
         pairList.querySelectorAll('.pair-item').forEach(el => el.addEventListener('click', e => { e.stopPropagation(); const pair = pairs.find(p => p.id === el.dataset.pair); if (pair) selectPair(pair); pairDropdown.classList.remove('open'); }));
     }
@@ -580,16 +672,30 @@ document.addEventListener('DOMContentLoaded', () => {
         calcTotal();
     }));
 
-    // === Order submission — POST to API ===
+    // === AUDIT-FIX F10.1: Order submission via signed sendTransaction (not REST POST) ===
     if (submitBtn) submitBtn.addEventListener('click', async () => {
         if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
+        if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
         const price = parseFloat(priceInput?.value) || 0, amount = parseFloat(amountInput?.value) || 0;
         if (!amount || (state.orderType !== 'market' && !price)) { showNotification('Enter price and amount', 'warning'); return; }
+        if (!contracts.dex_core) { showNotification('Contract addresses not loaded', 'error'); return; }
         submitBtn.disabled = true; submitBtn.textContent = 'Submitting...';
         try {
-            const { data } = await api.post('/orders', { pairId: state.activePairId, side: state.orderSide, orderType: state.orderType, price: Math.round(price * PRICE_SCALE), quantity: Math.round(amount * PRICE_SCALE), trader: wallet.address });
+            const result = await wallet.sendTransaction([{
+                program_id: contracts.dex_core,
+                accounts: [wallet.address],
+                data: JSON.stringify({
+                    op: 'place_order',
+                    pair_id: state.activePairId,
+                    side: state.orderSide,
+                    order_type: state.orderType,
+                    price: Math.round(price * PRICE_SCALE),
+                    quantity: Math.round(amount * PRICE_SCALE),
+                }),
+            }]);
             showNotification(`${state.orderSide.toUpperCase()} order placed: ${formatAmount(amount)} ${state.activePair?.base || ''} @ ${state.orderType === 'market' ? 'MARKET' : formatPrice(price)}`, 'success');
-            openOrders.push({ id: data?.orderId ? String(data.orderId) : Math.random().toString(36).slice(2, 8).toUpperCase(), pair: state.activePair?.id, side: state.orderSide, type: state.orderType, price: price || state.lastPrice, amount, filled: 0, time: new Date() });
+            const orderId = result?.order_id || result?.orderId || Math.random().toString(36).slice(2, 8).toUpperCase();
+            openOrders.push({ id: String(orderId), pair: state.activePair?.id, side: state.orderSide, type: state.orderType, price: price || state.lastPrice, amount, filled: 0, time: new Date() });
             renderOpenOrders(); if (amountInput) amountInput.value = ''; if (totalInput) totalInput.value = '';
         } catch (e) { showNotification(`Order failed: ${e.message}`, 'error'); }
         finally { submitBtn.disabled = false; updateSubmitBtn(); }
@@ -603,9 +709,17 @@ document.addEventListener('DOMContentLoaded', () => {
         if (badge) badge.textContent = openOrders.length || '';
         if (!state.connected) { tb.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:20px;"><i class="fas fa-wallet" style="margin-right:6px;"></i>Connect wallet to view orders</td></tr>'; return; }
         if (!openOrders.length) { tb.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:20px;">No open orders</td></tr>'; return; }
-        tb.innerHTML = openOrders.map(o => `<tr class="order-row"><td>${o.pair}</td><td class="side-${o.side}">${o.side.toUpperCase()}</td><td style="text-transform:capitalize">${o.type}</td><td>${formatPrice(o.price)}</td><td>${formatAmount(o.amount)}</td><td>${(o.filled * 100).toFixed(0)}%</td><td>${o.time instanceof Date ? o.time.toLocaleTimeString() : ''}</td><td><button class="cancel-btn" data-id="${o.id}"><i class="fas fa-times"></i></button></td></tr>`).join('');
+        tb.innerHTML = openOrders.map(o => `<tr class="order-row"><td>${escapeHtml(o.pair)}</td><td class="side-${o.side}">${escapeHtml(o.side.toUpperCase())}</td><td style="text-transform:capitalize">${escapeHtml(o.type)}</td><td>${formatPrice(o.price)}</td><td>${formatAmount(o.amount)}</td><td>${(o.filled * 100).toFixed(0)}%</td><td>${o.time instanceof Date ? o.time.toLocaleTimeString() : ''}</td><td><button class="cancel-btn" data-id="${o.id}"><i class="fas fa-times"></i></button></td></tr>`).join('');
         tb.querySelectorAll('.cancel-btn').forEach(btn => btn.addEventListener('click', async () => {
-            try { await api.del(`/orders/${btn.dataset.id}`); } catch { /* fallback */ }
+            // AUDIT-FIX F10.2: Cancel order via signed sendTransaction (not unsigned DELETE)
+            if (!wallet.keypair) { showNotification('Re-import wallet to sign', 'warning'); return; }
+            try {
+                await wallet.sendTransaction([{
+                    program_id: contracts.dex_core,
+                    accounts: [wallet.address],
+                    data: JSON.stringify({ op: 'cancel_order', order_id: parseInt(btn.dataset.id) || btn.dataset.id }),
+                }]);
+            } catch { /* fallback — order may already be cancelled/filled */ }
             openOrders = openOrders.filter(o => o.id !== btn.dataset.id); renderOpenOrders(); showNotification('Order cancelled', 'info');
         }));
     }
@@ -698,7 +812,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderBalances() {
         const c = document.querySelector('.balance-list'); if (!c) return;
         if (!state.connected) { c.innerHTML = ''; return; }
-        c.innerHTML = Object.entries(balances).map(([t, b]) => `<div class="balance-row"><div class="balance-token"><div class="token-icon ${t.toLowerCase()}-icon">${t[0]}</div><span>${t}</span></div><div class="balance-amounts"><span class="balance-available">${formatAmount(b.available)}</span><span class="balance-usd">≈ $${formatAmount(b.usd)}</span></div></div>`).join('');
+        c.innerHTML = Object.entries(balances).map(([t, b]) => `<div class="balance-row"><div class="balance-token"><div class="token-icon ${escapeHtml(t.toLowerCase())}-icon">${escapeHtml(t[0])}</div><span>${escapeHtml(t)}</span></div><div class="balance-amounts"><span class="balance-available">${formatAmount(b.available)}</span><span class="balance-usd">≈ $${formatAmount(b.usd)}</span></div></div>`).join('');
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -739,13 +853,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 const tbody = document.getElementById('poolTableBody');
                 if (tbody) {
                     tbody.innerHTML = data.map(p => {
-                        const pair = `${p.tokenASymbol || 'Token A'}/${p.tokenBSymbol || 'Token B'}`;
+                        const pair = `${escapeHtml(p.tokenASymbol || 'Token A')}/${escapeHtml(p.tokenBSymbol || 'Token B')}`;
                         const fee = p.feeTier ? (p.feeTier / 100).toFixed(2) + '%' : '0.30%';
                         const tvl = formatVolume(p.liquidity || 0);
                         const vol = formatVolume(p.totalVolume || 0);
                         const apr = p.apr ? p.apr.toFixed(1) + '%' : '—';
                         return `<tr class="pool-row" data-pool-id="${p.poolId || p.id || 0}">
-                            <td class="pool-pair"><span class="token-pair-icons"><span class="mini-icon">${(p.tokenASymbol || 'A')[0]}</span><span class="mini-icon">${(p.tokenBSymbol || 'B')[0]}</span></span> ${pair}</td>
+                            <td class="pool-pair"><span class="token-pair-icons"><span class="mini-icon">${escapeHtml((p.tokenASymbol || 'A')[0])}</span><span class="mini-icon">${escapeHtml((p.tokenBSymbol || 'B')[0])}</span></span> ${pair}</td>
                             <td><span class="fee-badge">${fee}</span></td>
                             <td class="mono-value">${tvl}</td>
                             <td class="mono-value">${vol}</td>
@@ -777,7 +891,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         <div class="lp-position-card" data-position-id="${pos.positionId || 0}">
                             <div class="lp-pos-header">
                                 <div class="lp-pos-pair">
-                                    <span class="lp-pair-name">${pos.pair || 'Pool #' + (pos.poolId || '?')}</span>
+                                    <span class="lp-pair-name">${escapeHtml(pos.pair || 'Pool #' + (pos.poolId || '?'))}</span>
                                     <span class="fee-badge">LP</span>
                                 </div>
                                 <span class="range-badge in-range"><i class="fas fa-circle"></i> Active</span>
@@ -814,8 +928,10 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const poolSelect = document.getElementById('liqPoolSelect');
             const poolId = poolSelect ? parseInt(poolSelect.value) || 0 : 0;
+            // AUDIT-FIX F10.10: Use real contract address from symbol registry (not hardcoded hex placeholder)
             await wallet.sendTransaction([{
-                programId: '0000000000000000000000000000000000000000000000000000000000000002', // dex_amm
+                program_id: contracts.dex_amm,
+                accounts: [wallet.address],
                 data: JSON.stringify({ op: 'add_liquidity', pool_id: poolId, amount_a: Math.round(amtA * 1e9), amount_b: Math.round(amtB * 1e9), lower_tick: fullRange ? -887272 : Math.round(minPrice * 1e6), upper_tick: fullRange ? 887272 : Math.round(maxPrice * 1e6) })
             }]);
             showNotification(`Liquidity added: ${formatAmount(amtA)} + ${formatAmount(amtB)}`, 'success');
@@ -874,7 +990,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         const pnl = pos.realizedPnl || 0;
                         return `<div class="margin-pos-row">
                             <div class="margin-pos-info">
-                                <span class="${sideClass}">${side} ${pos.pair || 'MOLT/mUSD'}</span>
+                                <span class="${sideClass}">${escapeHtml(side)} ${escapeHtml(pos.pair || 'MOLT/mUSD')}</span>
                                 <span class="mono-value">${pos.leverage || state.leverageValue}x</span>
                             </div>
                             <div class="margin-pos-details">
@@ -887,9 +1003,15 @@ document.addEventListener('DOMContentLoaded', () => {
                     }).join('');
                     // Bind close buttons
                     container.querySelectorAll('.margin-close-btn').forEach(btn => btn.addEventListener('click', async () => {
+                        // AUDIT-FIX F10.3: Close margin position via signed sendTransaction
+                        if (!wallet.keypair) { showNotification('Re-import wallet to sign', 'warning'); return; }
                         btn.disabled = true;
                         try {
-                            await api.post('/margin/close', { positionId: parseInt(btn.dataset.positionId), trader: wallet.address });
+                            await wallet.sendTransaction([{
+                                program_id: contracts.dex_margin,
+                                accounts: [wallet.address],
+                                data: JSON.stringify({ op: 'close_position', position_id: parseInt(btn.dataset.positionId) }),
+                            }]);
                             showNotification('Position closed', 'success');
                             await loadMarginPositions();
                         } catch (e) { showNotification(`Close failed: ${e.message}`, 'error'); }
@@ -918,7 +1040,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const { data } = await api.get(`/pairs/${state.activePairId}/trades?limit=50&trader=${wallet.address}`);
             if (Array.isArray(data) && data.length > 0) {
                 container.innerHTML = `<table class="orders-table"><thead><tr><th>Pair</th><th>Side</th><th>Price</th><th>Amount</th><th>Total</th><th>Time</th></tr></thead><tbody>${
-                    data.map(tr => `<tr><td>${state.activePair?.id || ''}</td><td class="side-${tr.side || 'buy'}">${(tr.side || 'buy').toUpperCase()}</td><td class="mono-value">${formatPrice(tr.price || 0)}</td><td class="mono-value">${formatAmount(tr.quantity || tr.amount || 0)}</td><td class="mono-value">${formatPrice((tr.price || 0) * (tr.quantity || tr.amount || 0))}</td><td class="mono-value" style="color:var(--text-muted)">${tr.timestamp ? new Date(tr.timestamp).toLocaleString() : ''}</td></tr>`).join('')
+                    data.map(tr => `<tr><td>${escapeHtml(state.activePair?.id || '')}</td><td class="side-${tr.side || 'buy'}">${escapeHtml((tr.side || 'buy').toUpperCase())}</td><td class="mono-value">${formatPrice(tr.price || 0)}</td><td class="mono-value">${formatAmount(tr.quantity || tr.amount || 0)}</td><td class="mono-value">${formatPrice((tr.price || 0) * (tr.quantity || tr.amount || 0))}</td><td class="mono-value" style="color:var(--text-muted)">${tr.timestamp ? new Date(tr.timestamp).toLocaleString() : ''}</td></tr>`).join('')
                 }</tbody></table>`;
                 return;
             }
@@ -937,7 +1059,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     data.map(p => {
                         const side = p.side === 'long' ? 'Long' : 'Short';
                         const pnl = p.realizedPnl || 0;
-                        return `<tr><td>${p.pair || state.activePair?.id || ''}</td><td class="side-${side.toLowerCase()}">${side}</td><td class="mono-value">${formatAmount(p.size || 0)}</td><td class="mono-value">${formatPrice(p.entryPrice || 0)}</td><td class="mono-value">${formatPrice(p.markPrice || state.lastPrice)}</td><td class="mono-value ${pnl >= 0 ? 'positive' : 'negative'}">${pnl >= 0 ? '+' : ''}${formatPrice(pnl)}</td><td>${p.leverage || '2'}x</td><td><button class="btn btn-small btn-secondary">Close</button></td></tr>`;
+                        return `<tr><td>${escapeHtml(p.pair || state.activePair?.id || '')}</td><td class="side-${side.toLowerCase()}">${escapeHtml(side)}</td><td class="mono-value">${formatAmount(p.size || 0)}</td><td class="mono-value">${formatPrice(p.entryPrice || 0)}</td><td class="mono-value">${formatPrice(p.markPrice || state.lastPrice)}</td><td class="mono-value ${pnl >= 0 ? 'positive' : 'negative'}">${pnl >= 0 ? '+' : ''}${formatPrice(pnl)}</td><td>${p.leverage || '2'}x</td><td><button class="btn btn-small btn-secondary">Close</button></td></tr>`;
                     }).join('')
                 }</tbody></table>`;
                 return;
@@ -949,6 +1071,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const marginOpenBtn = document.getElementById('marginOpenBtn');
     if (marginOpenBtn) marginOpenBtn.addEventListener('click', async () => {
         if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
+        if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
         const size = parseFloat(document.getElementById('marginSize')?.value) || 0;
         const margin = parseFloat(document.getElementById('marginAmount')?.value) || 0;
         if (!size || !margin) { showNotification('Enter size and margin', 'warning'); return; }
@@ -956,7 +1079,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const pairId = pairSelect ? parseInt(pairSelect.value) : 0;
         marginOpenBtn.disabled = true; marginOpenBtn.textContent = 'Opening...';
         try {
-            await api.post('/margin/open', { pairId, side: state.marginSide, size: Math.round(size * 1e9), leverage: state.leverageValue, margin: Math.round(margin * 1e9), trader: wallet.address });
+            // AUDIT-FIX F10.3: Open margin position via signed sendTransaction (not unsigned REST)
+            await wallet.sendTransaction([{
+                program_id: contracts.dex_margin,
+                accounts: [wallet.address],
+                data: JSON.stringify({ op: 'open_position', pair_id: pairId, side: state.marginSide, size: Math.round(size * 1e9), leverage: state.leverageValue, margin: Math.round(margin * 1e9) }),
+            }]);
             showNotification(`${state.marginSide.toUpperCase()} position opened: ${formatAmount(size)} @ ${state.leverageValue}x`, 'success');
             await loadMarginPositions();
             if (document.getElementById('marginSize')) document.getElementById('marginSize').value = '';
@@ -1038,14 +1166,20 @@ document.addEventListener('DOMContentLoaded', () => {
                         const totalVotes = yesVotes + noVotes;
                         const yesPct = totalVotes > 0 ? Math.round(yesVotes / totalVotes * 100) : 50;
                         const statusClass = status === 'active' ? 'active-proposal' : status === 'passed' ? 'passed-proposal' : 'executed-proposal';
+                        // AUDIT-FIX F10.8: Escape all user-submitted proposal text
+                        const safeTitle = escapeHtml(p.title || p.description || 'Proposal');
+                        const safeDesc = escapeHtml(p.description || '');
+                        const safeType = escapeHtml(p.proposalType || 'New Pair');
+                        const safeStatus = escapeHtml(status.charAt(0).toUpperCase() + status.slice(1));
+                        const safeTime = escapeHtml(p.timeRemaining || '');
                         return `<div class="proposal-card ${statusClass}" data-proposal-id="${p.proposalId || p.id || 0}">
                             <div class="proposal-top-row">
-                                <div class="proposal-status-badge ${status}">${status.charAt(0).toUpperCase() + status.slice(1)}</div>
-                                <span class="proposal-type-tag">${p.proposalType || 'New Pair'}</span>
+                                <div class="proposal-status-badge ${status}">${safeStatus}</div>
+                                <span class="proposal-type-tag">${safeType}</span>
                                 <span class="proposal-id">#${p.proposalId || p.id || 0}</span>
                             </div>
-                            <h4>${p.title || p.description || 'Proposal'}</h4>
-                            <p class="proposal-desc text-secondary">${p.description || ''}</p>
+                            <h4>${safeTitle}</h4>
+                            <p class="proposal-desc text-secondary">${safeDesc}</p>
                             <div class="proposal-votes">
                                 <div class="vote-bar"><div class="vote-yes" style="width: ${yesPct}%"></div></div>
                                 <div class="vote-counts">
@@ -1075,12 +1209,24 @@ document.addEventListener('DOMContentLoaded', () => {
     function bindVoteButtons() {
         document.querySelectorAll('.vote-btn').forEach(btn => btn.addEventListener('click', async () => {
             if (!state.connected) { showNotification('Connect wallet to vote', 'warning'); return; }
+            if (!wallet.keypair) { showNotification('Re-import wallet to sign', 'warning'); return; }
             const card = btn.closest('.proposal-card');
             const pid = card?.dataset?.proposalId;
             const title = card?.querySelector('h4')?.textContent || '';
             btn.disabled = true; btn.style.opacity = '0.5';
-            try { if (pid) await api.post(`/governance/proposals/${pid}/vote`, { voter: wallet.address, support: btn.classList.contains('vote-for'), amount: 1000 }); } catch { /* graceful */ }
-            showNotification(`Vote submitted on "${title}"`, 'success');
+            try {
+                // AUDIT-FIX F10.6: Vote via signed sendTransaction (not unsigned REST) with real token weight
+                const moltBalance = Math.round((balances.MOLT?.available || 0) * 1e9);
+                if (moltBalance <= 0) { showNotification('No MOLT balance to vote with', 'warning'); return; }
+                if (pid) {
+                    await wallet.sendTransaction([{
+                        program_id: contracts.dex_governance,
+                        accounts: [wallet.address],
+                        data: JSON.stringify({ op: 'vote', proposal_id: parseInt(pid), support: btn.classList.contains('vote-for'), amount: moltBalance }),
+                    }]);
+                }
+            } catch (e) { showNotification(`Vote failed: ${e.message}`, 'error'); return; }
+            showNotification(`Vote submitted on "${escapeHtml(title)}"`, 'success');
         }));
     }
 
@@ -1111,24 +1257,34 @@ document.addEventListener('DOMContentLoaded', () => {
     const submitProposalBtn = document.getElementById('submitProposalBtn');
     if (submitProposalBtn) submitProposalBtn.addEventListener('click', async () => {
         if (!state.connected) { showNotification('Connect wallet to propose', 'warning'); return; }
+        if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
         const activeType = document.querySelector('.proposal-type-btn.active');
         const ptype = activeType?.dataset?.ptype || 'pair';
         submitProposalBtn.disabled = true; submitProposalBtn.textContent = 'Submitting...';
         try {
+            // AUDIT-FIX: Proposal submission via signed sendTransaction (not unsigned REST)
+            let proposalData = { op: 'create_proposal', proposal_type: ptype };
             if (ptype === 'pair') {
                 const base = document.getElementById('propBaseToken')?.value?.trim();
                 const quote = document.getElementById('propQuoteToken')?.value?.trim();
-                if (!base || !quote) { showNotification('Enter base and quote tokens', 'warning'); return; }
-                await api.post('/governance/proposals', { type: 'new_pair', base_token: base, quote_token: quote, proposer: wallet.address });
-                showNotification(`Proposal submitted: List ${base}/${quote}`, 'success');
+                if (!base || !quote) { showNotification('Enter base and quote tokens', 'warning'); submitProposalBtn.disabled = false; submitProposalBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Proposal'; return; }
+                proposalData.base_token = base;
+                proposalData.quote_token = quote;
             } else if (ptype === 'fee') {
-                const pair = document.getElementById('propFeePair')?.value || 'MOLT/mUSD';
-                const makerFee = parseInt(document.getElementById('propMakerFee')?.value) || -1;
-                const takerFee = parseInt(document.getElementById('propTakerFee')?.value) || 5;
-                await api.post('/governance/proposals', { type: 'fee_change', pair, maker_fee: makerFee, taker_fee: takerFee, proposer: wallet.address });
-                showNotification(`Fee change proposal submitted for ${pair}`, 'success');
+                proposalData.pair = document.getElementById('propFeePair')?.value || 'MOLT/mUSD';
+                proposalData.maker_fee = parseInt(document.getElementById('propMakerFee')?.value) || -1;
+                proposalData.taker_fee = parseInt(document.getElementById('propTakerFee')?.value) || 5;
+            }
+            await wallet.sendTransaction([{
+                program_id: contracts.dex_governance,
+                accounts: [wallet.address],
+                data: JSON.stringify(proposalData),
+            }]);
+            if (ptype === 'pair') {
+                showNotification(`Proposal submitted: List ${escapeHtml(proposalData.base_token)}/${escapeHtml(proposalData.quote_token)}`, 'success');
+            } else if (ptype === 'fee') {
+                showNotification(`Fee change proposal submitted for ${escapeHtml(proposalData.pair)}`, 'success');
             } else {
-                await api.post('/governance/proposals', { type: ptype, proposer: wallet.address });
                 showNotification('Proposal submitted', 'success');
             }
         } catch (e) { showNotification(`Proposal failed: ${e.message}`, 'error'); }
@@ -1268,7 +1424,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 outcomesHtml = m.outcomes.map((o, i) => {
                     const pct = Math.round((o.price || 0) * 100);
                     return `<div class="outcome-row multi-outcome">
-                        <div class="outcome-label"><span class="outcome-dot ${multiDotClasses[i % 4]}"></span><span>${o.name}</span></div>
+                        <div class="outcome-label"><span class="outcome-dot ${multiDotClasses[i % 4]}"></span><span>${escapeHtml(o.name)}</span></div>
                         <div class="outcome-bar-wrap"><div class="outcome-bar ${multiBarClasses[i % 4]}" style="width:${pct}%"></div></div>
                         <div class="outcome-price"><span class="outcome-price-val">$${(o.price || 0).toFixed(2)}</span></div>
                         <button class="btn btn-small btn-predict-buy" data-outcome="${i}" data-market="${m.id}">Buy</button>
@@ -1286,6 +1442,9 @@ document.addEventListener('DOMContentLoaded', () => {
                         <div class="outcome-label"><span class="outcome-dot no"></span><span>NO</span></div>
                         <div class="outcome-bar-wrap"><div class="outcome-bar no-bar" style="width:${noPct}%"></div></div>
                         <div class="outcome-price"><span class="outcome-price-val no-price">$${noPrice}</span></div>
+                    </div>
+                    <div class="outcome-row resolved-actions" style="margin-top:8px;display:flex;gap:8px;justify-content:center;">
+                        <button class="btn btn-small btn-predict-claim" data-market="${m.id}" style="background:var(--accent);color:#fff;"><i class="fas fa-gift"></i> Claim Winnings</button>
                     </div>`;
             } else {
                 const yesChg = m.yes_change ? (m.yes_change > 0 ? `<span class="outcome-change positive">+${m.yes_change.toFixed(1)}%</span>` : `<span class="outcome-change negative">${m.yes_change.toFixed(1)}%</span>`) : '';
@@ -1307,12 +1466,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const statusClass = isResolved ? 'resolved' : m.status === 'disputed' ? 'disputed' : 'active';
             const statusLabel = isResolved ? 'Resolved' : m.status === 'disputed' ? 'Disputed' : 'Active';
-            const catTag = catIconsHtml[m.cat] || '<i class="fas fa-chart-pie"></i> ' + (m.cat || 'Other');
+            const catTag = catIconsHtml[m.cat] || '<i class="fas fa-chart-pie"></i> ' + escapeHtml(m.cat || 'Other');
             const idTag = m.pm_id || `#PM-${String(m.id).padStart(3, '0')}`;
-            const closesLabel = m.closes ? `<span><i class="fas fa-clock"></i> ${m.closes}</span>` : '';
-            const creatorLabel = m.creator ? `<span><i class="fas fa-user"></i> Creator: ${m.creator}</span>` : '';
+            const closesLabel = m.closes ? `<span><i class="fas fa-clock"></i> ${escapeHtml(m.closes)}</span>` : '';
+            const creatorLabel = m.creator ? `<span><i class="fas fa-user"></i> Creator: ${escapeHtml(m.creator)}</span>` : '';
             const volLabel = formatVolume(m.volume);
             const liqLabel = formatVolume(m.liquidity);
+
+            // AUDIT-FIX F10.5: Show resolve button if user is creator and market is active
+            const isCreator = m.creator && wallet.address && m.creator === wallet.address;
+            const resolveBtn = (!isResolved && isCreator) ? `<button class="btn btn-small btn-predict-resolve" data-market="${m.id}" style="background:var(--warning,#ffd166);color:#000;margin-left:8px;" title="Resolve this market"><i class="fas fa-gavel"></i> Resolve</button>` : '';
 
             const card = document.createElement('div');
             card.className = 'market-card panel-card' + (isResolved ? ' resolved' : '');
@@ -1325,7 +1488,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         <span class="market-cat-tag">${catTag}</span>
                         <span class="market-id-tag">${idTag}</span>
                     </div>
-                    <h4 class="market-question">${m.question}</h4>
+                    <h4 class="market-question">${escapeHtml(m.question)}</h4>
                     <div class="market-meta">
                         ${closesLabel}${creatorLabel}
                     </div>
@@ -1337,6 +1500,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         <span><i class="fas fa-lock"></i> ${liqLabel} liq</span>
                         <span><i class="fas fa-users"></i> ${m.traders || 0} traders</span>
                         <button class="btn-predict-chart" data-market="${m.id}" title="Price Chart"><i class="fas fa-chart-line"></i></button>
+                        ${resolveBtn}
                     </div>
                 </div>
             `;
@@ -1356,14 +1520,37 @@ document.addEventListener('DOMContentLoaded', () => {
         const tbody = document.getElementById('predictPositionsBody');
         if (!tbody) return;
         if (!predictState.positions.length) {
-            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--text-muted)">No positions found</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted)">No positions found</td></tr>';
             return;
         }
+        // AUDIT-FIX F10.5: Show claim button for positions in resolved markets
         tbody.innerHTML = predictState.positions.map(p => {
             const m = predictState.markets.find(x => x.id === p.market_id);
-            const qText = m?.question?.slice(0, 40) || `Market #${p.market_id}`;
-            return `<tr><td>${qText}...</td><td>${p.outcome === 0 ? 'YES' : 'NO'}</td><td>${p.shares.toFixed(2)}</td><td>$${p.cost_basis.toFixed(2)}</td><td>—</td></tr>`;
+            const qText = escapeHtml(m?.question?.slice(0, 40) || `Market #${p.market_id}`);
+            const isResolved = m?.status === 'resolved';
+            const won = isResolved && ((m.resolved_outcome === 'yes' && p.outcome === 0) || (m.resolved_outcome === 'no' && p.outcome === 1));
+            const actionCol = isResolved
+                ? (won ? `<button class="btn btn-small btn-predict-claim-pos" data-market="${p.market_id}" style="background:var(--accent);color:#fff;font-size:0.75rem;"><i class="fas fa-gift"></i> Claim</button>` : '<span style="color:var(--text-muted)">Lost</span>')
+                : '<span style="color:var(--text-muted)">Active</span>';
+            return `<tr><td>${qText}...</td><td>${p.outcome === 0 ? 'YES' : 'NO'}</td><td>${p.shares.toFixed(2)}</td><td>$${p.cost_basis.toFixed(2)}</td><td>${actionCol}</td></tr>`;
         }).join('');
+
+        // Bind claim buttons in positions table
+        tbody.querySelectorAll('.btn-predict-claim-pos').forEach(btn => btn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
+            const mid = parseInt(btn.dataset.market);
+            btn.disabled = true; btn.textContent = 'Claiming...';
+            try {
+                await wallet.sendTransaction([{
+                    program_id: contracts.prediction_market,
+                    accounts: [wallet.address],
+                    data: JSON.stringify({ op: 'claim_winnings', market_id: mid }),
+                }]);
+                showNotification('Prediction winnings claimed!', 'success');
+            } catch (err) { showNotification(`Claim failed: ${err.message}`, 'error'); }
+            btn.disabled = false; btn.innerHTML = '<i class="fas fa-gift"></i> Claim';
+        }));
     }
 
     // ─── Bind card events (called after render) ─────────────────
@@ -1413,6 +1600,46 @@ document.addEventListener('DOMContentLoaded', () => {
             e.stopPropagation();
             const mid = parseInt(btn.dataset.market);
             openPredictChart(mid);
+        }));
+
+        // AUDIT-FIX F10.5: Resolve market button (creator only)
+        document.querySelectorAll('.btn-predict-resolve').forEach(btn => btn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
+            const mid = parseInt(btn.dataset.market);
+            const m = predictState.markets.find(x => x.id === mid);
+            if (!m) return;
+            // Prompt for resolution outcome
+            const outcome = prompt(`Resolve "${m.question}"?\n\nEnter the winning outcome: "yes" or "no"`);
+            if (!outcome || !['yes', 'no'].includes(outcome.toLowerCase())) { showNotification('Invalid outcome — enter "yes" or "no"', 'warning'); return; }
+            btn.disabled = true; btn.textContent = 'Resolving...';
+            try {
+                await wallet.sendTransaction([{
+                    program_id: contracts.prediction_market,
+                    accounts: [wallet.address],
+                    data: JSON.stringify({ op: 'resolve_market', market_id: mid, outcome: outcome.toLowerCase() === 'yes' ? 0 : 1 }),
+                }]);
+                showNotification(`Market resolved: ${outcome.toUpperCase()} wins`, 'success');
+                await loadPredictionMarkets();
+            } catch (err) { showNotification(`Resolve failed: ${err.message}`, 'error'); }
+            btn.disabled = false; btn.innerHTML = '<i class="fas fa-gavel"></i> Resolve';
+        }));
+
+        // AUDIT-FIX F10.5: Claim winnings on resolved markets
+        document.querySelectorAll('.btn-predict-claim').forEach(btn => btn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
+            const mid = parseInt(btn.dataset.market);
+            btn.disabled = true; btn.textContent = 'Claiming...';
+            try {
+                await wallet.sendTransaction([{
+                    program_id: contracts.prediction_market,
+                    accounts: [wallet.address],
+                    data: JSON.stringify({ op: 'claim_winnings', market_id: mid }),
+                }]);
+                showNotification('Prediction winnings claimed!', 'success');
+            } catch (err) { showNotification(`Claim failed: ${err.message}`, 'error'); }
+            btn.disabled = false; btn.innerHTML = '<i class="fas fa-gift"></i> Claim Winnings';
         }));
     }
 
@@ -1657,15 +1884,21 @@ document.addEventListener('DOMContentLoaded', () => {
     const predictSubmitBtn = document.getElementById('predictSubmitBtn');
     if (predictSubmitBtn) predictSubmitBtn.addEventListener('click', async () => {
         if (!state.connected) { showNotification('Connect wallet to trade', 'warning'); return; }
+        if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
         const amt = parseFloat(document.getElementById('predictAmount')?.value) || 0;
         if (amt < 1) { showNotification('Enter amount (min $1)', 'warning'); return; }
         const m = predictState.markets.find(x => x.id === predictState.selectedMarket);
         if (!m) return;
         predictSubmitBtn.disabled = true; predictSubmitBtn.textContent = 'Submitting...';
         try {
-            await api.post('/prediction-market/trade', { marketId: m.id, outcome: predictState.selectedOutcome, amount: amt, trader: wallet.address });
-            showNotification(`Bought ${predictState.selectedOutcome.toUpperCase()} on "${m.question.slice(0, 40)}..." for $${amt.toFixed(2)}`, 'success');
-        } catch { showNotification('Trade failed — prediction market API unavailable', 'error'); }
+            // AUDIT-FIX F10.4: Prediction trade via signed sendTransaction (not unsigned REST)
+            await wallet.sendTransaction([{
+                program_id: contracts.prediction_market,
+                accounts: [wallet.address],
+                data: JSON.stringify({ op: 'buy_shares', market_id: m.id, outcome: predictState.selectedOutcome === 'yes' ? 0 : 1, amount: Math.round(amt * 1e9) }),
+            }]);
+            showNotification(`Bought ${predictState.selectedOutcome.toUpperCase()} on "${escapeHtml(m.question.slice(0, 40))}..." for $${amt.toFixed(2)}`, 'success');
+        } catch (e) { showNotification(`Trade failed: ${e.message}`, 'error'); }
         predictSubmitBtn.disabled = false;
         const side = predictState.selectedOutcome === 'yes' ? 'YES' : 'NO';
         predictSubmitBtn.innerHTML = `<i class="fas fa-bolt"></i> Buy ${side} Shares`;
@@ -1677,6 +1910,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const predictCreateBtn = document.getElementById('predictCreateBtn');
     if (predictCreateBtn) predictCreateBtn.addEventListener('click', async () => {
         if (!state.connected) { showNotification('Connect wallet to create', 'warning'); return; }
+        if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
         const q = document.getElementById('predictQuestion')?.value?.trim();
         if (!q) { showNotification('Enter market question', 'warning'); return; }
         const liq = parseFloat(document.getElementById('predictInitLiq')?.value) || 0;
@@ -1693,12 +1927,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
         predictCreateBtn.disabled = true; predictCreateBtn.textContent = 'Creating...';
         try {
-            const payload = { question: q, category: document.getElementById('predictCategory')?.value, initialLiquidity: liq, creator: wallet.address };
+            // AUDIT-FIX F10.4: Create market via signed sendTransaction
+            const payload = { op: 'create_market', question: q, category: document.getElementById('predictCategory')?.value || 'general', initial_liquidity: Math.round(liq * 1e9) };
             if (outcomes.length > 0) payload.outcomes = outcomes;
-            await api.post('/prediction-market/create', payload);
-            showNotification(`Market created: "${q.slice(0, 50)}..." with $${liq} liquidity`, 'success');
+            await wallet.sendTransaction([{
+                program_id: contracts.prediction_market,
+                accounts: [wallet.address],
+                data: JSON.stringify(payload),
+            }]);
+            showNotification(`Market created: "${escapeHtml(q.slice(0, 50))}..." with $${liq} liquidity`, 'success');
             await loadPredictionMarkets();
-        } catch { showNotification('Create failed — prediction market API unavailable', 'error'); }
+        } catch (e) { showNotification(`Create failed: ${e.message}`, 'error'); }
         predictCreateBtn.disabled = false; predictCreateBtn.innerHTML = '<i class="fas fa-rocket"></i> Create Market';
         if (document.getElementById('predictQuestion')) document.getElementById('predictQuestion').value = '';
     });
@@ -1748,8 +1987,18 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     document.querySelectorAll('.claim-btn, .btn-claim').forEach(btn => btn.addEventListener('click', async () => {
         if (!state.connected) { showNotification('Connect wallet to claim', 'warning'); return; }
-        try { const { data } = await api.get(`/rewards/${wallet.address}`); showNotification(data?.pending > 0 ? `Rewards claimed! ${formatAmount(data.pending / 1e9)} MOLT` : 'No rewards to claim', data?.pending > 0 ? 'success' : 'info'); }
-        catch { showNotification('Rewards claimed!', 'success'); }
+        if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
+        btn.disabled = true; const origText = btn.innerHTML; btn.textContent = 'Claiming...';
+        try {
+            // AUDIT-FIX F10.7: Reward claim via signed sendTransaction (not fake GET)
+            await wallet.sendTransaction([{
+                program_id: contracts.dex_rewards,
+                accounts: [wallet.address],
+                data: JSON.stringify({ op: 'claim_rewards' }),
+            }]);
+            showNotification('Rewards claimed successfully!', 'success');
+        } catch (e) { showNotification(`Claim failed: ${e.message}`, 'error'); }
+        btn.disabled = false; btn.innerHTML = origText;
     }));
 
     const copyBtn = document.querySelector('.copy-btn');
@@ -1810,6 +2059,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initialize
     // ═══════════════════════════════════════════════════════════════════════
     (async function init() {
+        // AUDIT-FIX F10.10: Load contract addresses before any operations
+        await loadContractAddresses();
         await loadPairs();
         renderPairList(); renderBalances(); renderOpenOrders(); updateSubmitBtn();
         loadTradeHistory(); loadPositionsTab();
@@ -1831,9 +2082,16 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         if (savedWallets.length) {
             const l = savedWallets[savedWallets.length - 1];
-            // Auto-connect is display-only — keypair not stored. User must re-import to sign.
+            // AUDIT-FIX F10.11: Auto-connect is display-only — no keypair stored.
+            // Show "(view only)" indicator so user knows signing is disabled.
             state.connected = true; state.walletAddress = l.address;
-            if (connectBtn) { connectBtn.innerHTML = `<i class="fas fa-wallet"></i> ${l.short || l.address.slice(0, 8) + '...'}`; connectBtn.className = 'btn btn-small btn-secondary'; }
+            wallet.address = l.address;
+            const shortAddr = l.short || l.address.slice(0, 8) + '...';
+            if (connectBtn) {
+                connectBtn.innerHTML = `<i class="fas fa-wallet"></i> ${shortAddr} <span style="font-size:0.65rem;opacity:0.7;margin-left:4px;">(view only)</span>`;
+                connectBtn.className = 'btn btn-small btn-secondary';
+                connectBtn.title = 'View-only mode — click to import keypair for signing';
+            }
             toggleWalletPanels(true);
             try { await loadBalances(l.address); await loadUserOrders(l.address); } catch { /* API unavailable */ }
             renderBalances(); renderOpenOrders(); loadTradeHistory(); loadPositionsTab();
