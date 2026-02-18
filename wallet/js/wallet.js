@@ -1443,7 +1443,7 @@ async function loadStaking() {
                         <p style="margin: 0; font-size: 0.9rem; color: var(--text-muted);">Stake MOLT, receive stMOLT. Earn rewards while keeping liquidity. Choose a lock tier for boosted APY.</p>
                     </div>
 
-                    <div class="reefstake-stats" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 1rem; margin-bottom: 1.5rem;">
+                    <div class="reefstake-stats" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-bottom: 1.5rem;">
                         <div class="stat-card" style="background: var(--card-bg); padding: 1.25rem; border-radius: 12px; border: 1px solid var(--border);">
                             <div style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 0.5rem;">Your stMOLT</div>
                             <div id="userStMolt" style="font-size: 1.5rem; font-weight: 600; color: var(--text);">0</div>
@@ -1474,7 +1474,7 @@ async function loadStaking() {
                         <h4 style="margin-bottom: 0.75rem; color: var(--text);">
                             <i class="fas fa-layer-group" style="color: #a78bfa;"></i> Staking Tiers & APY
                         </h4>
-                        <div id="tiersGrid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem;"></div>
+                        <div id="tiersGrid" style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.75rem;"></div>
                     </div>
 
                     <div style="background: var(--card-bg); padding: 1rem; border-radius: 10px; border: 1px solid var(--border); margin-bottom: 1.5rem; font-size: 0.85rem; color: var(--text-muted);">

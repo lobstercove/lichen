@@ -4,6 +4,7 @@ import { clearAutoLockAlarm, scheduleAutoLock } from '../core/lock-service.js';
 import {
   decryptPrivateKey,
   encryptPrivateKey,
+  generateEVMAddress,
   generateId,
   generateMnemonic,
   isValidAddress,
@@ -698,6 +699,79 @@ async function loadIdentityPanel() {
   }
 }
 
+async function loadExtensionStaking() {
+  const wallet = getActiveWallet();
+  if (!wallet) return;
+
+  const endpoint = resolveRpcEndpoint(state.network?.selected || 'local-testnet');
+  const rpc = new MoltChainRPC(endpoint);
+  const statsEl = document.getElementById('reefStakeStats');
+  const tiersEl = document.getElementById('reefTiersGrid');
+  const pendingEl = document.getElementById('extPendingUnstakes');
+
+  if (!statsEl) return;
+
+  try {
+    const position = await rpc.call('getReefStakePosition', [wallet.address]).catch(() => null);
+    const poolInfo = await rpc.call('getReefStakePoolInfo', []).catch(() => null);
+
+    const stMolt = Number(position?.st_molt_balance || 0) / 1e9;
+    const stakeValue = Number(position?.stake_value || 0) / 1e9;
+    const rewards = Number(position?.rewards_earned || 0) / 1e9;
+    const tierName = position?.lock_tier || 'Flexible';
+    const multiplier = Number(position?.reward_multiplier || 1);
+    const totalPool = Number(poolInfo?.total_staked || 0) / 1e9;
+    const fmt = v => v.toLocaleString(undefined, { maximumFractionDigits: 4 });
+
+    const cards = [
+      { label: 'Your stMOLT', value: fmt(stMolt), color: 'var(--text)' },
+      { label: 'Current Value', value: fmt(stakeValue) + ' MOLT', color: '#10b981' },
+      { label: 'Rewards Earned', value: fmt(rewards) + ' MOLT', color: '#f59e0b' },
+      { label: 'Your Tier', value: tierName, color: '#a78bfa' },
+      { label: 'Multiplier', value: multiplier.toFixed(1) + 'x', color: 'var(--text)' },
+      { label: 'Pool Total', value: fmt(totalPool) + ' MOLT', color: 'var(--text)' },
+    ];
+
+    statsEl.innerHTML = cards.map(c => `
+      <div style="background:var(--card-bg);padding:0.6rem;border-radius:8px;border:1px solid var(--border);">
+        <div style="color:var(--text-muted);font-size:0.65rem;margin-bottom:0.25rem;">${c.label}</div>
+        <div style="font-size:0.9rem;font-weight:600;color:${c.color};">${c.value}</div>
+      </div>
+    `).join('');
+
+    // Tier cards
+    const tierNames = ['Flexible', '30-Day', '90-Day', '365-Day'];
+    const tierMultipliers = ['1.0x', '1.5x', '2.0x', '3.0x'];
+    const tierColors = ['#94a3b8', '#60a5fa', '#a78bfa', '#f59e0b'];
+    tiersEl.innerHTML = tierNames.map((name, i) => {
+      const isActive = tierName === name || (i === 0 && tierName === 'Flexible');
+      return `
+        <div style="background:var(--card-bg);padding:0.5rem;border-radius:8px;border:2px solid ${isActive ? tierColors[i] : 'var(--border)'};text-align:center;">
+          <div style="font-size:0.7rem;font-weight:600;color:${tierColors[i]};">${name}</div>
+          <div style="font-size:0.65rem;color:var(--text-muted);">${tierMultipliers[i]} APY</div>
+        </div>`;
+    }).join('');
+
+    // Pending unstakes
+    const unstakes = position?.pending_unstakes || [];
+    if (unstakes.length > 0) {
+      pendingEl.style.display = 'block';
+      pendingEl.innerHTML = `
+        <div style="font-size:0.75rem;font-weight:600;margin-bottom:0.4rem;color:var(--text);"><i class="fas fa-clock"></i> Pending Unstakes</div>
+        ${unstakes.map(u => {
+          const amt = (Number(u.amount || 0) / 1e9).toLocaleString(undefined, { maximumFractionDigits: 4 });
+          const ready = u.ready ? '<span style="color:#4ade80">Ready</span>' : '<span style="color:#f59e0b">Cooldown</span>';
+          return `<div style="font-size:0.72rem;color:var(--text-muted);padding:0.25rem 0;border-bottom:1px solid var(--border);">${amt} MOLT — ${ready}</div>`;
+        }).join('')}
+      `;
+    } else {
+      pendingEl.style.display = 'none';
+    }
+  } catch {
+    statsEl.innerHTML = '<div style="font-size:0.75rem;color:var(--text-muted);grid-column:1/-1;text-align:center;">Failed to load staking data</div>';
+  }
+}
+
 async function refreshBalance() {
   const wallet = getActiveWallet();
   if (!wallet) {
@@ -713,10 +787,15 @@ async function refreshBalance() {
   try {
     const result = await rpc.getBalance(wallet.address);
     const raw = Number(result?.shells || result?.spendable || 0);
+    const spendableRaw = Number(result?.spendable ?? result?.shells ?? 0);
     const balanceMolt = raw / 1_000_000_000;
+    const spendableMolt = spendableRaw / 1_000_000_000;
+    window._cachedSpendableMolt = spendableMolt;
     document.getElementById('walletBalance').textContent = `${balanceMolt.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 9 })} MOLT`;
     const usdEl = document.getElementById('balanceUsd');
     if (usdEl) usdEl.textContent = `$${(balanceMolt * 0.10).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 6 })} USD`;
+    const avail = document.getElementById('sendAvailableBalance');
+    if (avail) avail.textContent = `Available: ${spendableMolt.toLocaleString(undefined, { maximumFractionDigits: 9 })} MOLT`;
     setStatus(`Connected: ${state.network?.selected || 'local-testnet'}`);
   } catch (error) {
     document.getElementById('walletBalance').textContent = '0.00 MOLT';
@@ -733,15 +812,15 @@ async function handleSendNow() {
   const password = document.getElementById('sendPassword').value;
 
   if (!isValidAddress(to)) {
-    alert('Recipient must be a valid base58 wallet address.');
+    alert('Invalid recipient address');
     return;
   }
   if (!amount || amount <= 0) {
-    alert('Enter a valid amount.');
+    alert('Invalid amount');
     return;
   }
   if (!password) {
-    alert('Password is required to sign.');
+    alert('Password is required to sign');
     return;
   }
 
@@ -1002,12 +1081,12 @@ async function handleCreateStep1Continue() {
   const confirmPassword = document.getElementById('createPasswordConfirm').value.trim();
 
   if (password.length < 8) {
-    alert('Password must be at least 8 characters.');
+    alert('Password must be at least 8 characters');
     return;
   }
 
   if (password !== confirmPassword) {
-    alert('Passwords do not match.');
+    alert('Passwords do not match');
     return;
   }
 
@@ -1060,7 +1139,7 @@ async function handleImportSave() {
   const password = document.getElementById('importPassword').value.trim();
 
   if (password.length < 8) {
-    alert('Password must be at least 8 characters.');
+    alert('Password must be at least 8 characters');
     return;
   }
 
@@ -1068,7 +1147,7 @@ async function handleImportSave() {
 
   if (importType === 'mnemonic') {
     if (!isValidMnemonic(mnemonic)) {
-      alert('Invalid recovery phrase. Enter 12 valid words.');
+      alert('Invalid seed phrase');
       return;
     }
     await createWalletFromMnemonic(mnemonic, password, `Imported ${walletNumber}`);
@@ -1130,7 +1209,7 @@ async function handleUnlock() {
     await scheduleAutoLock(state.settings?.lockTimeout || 300000);
     document.getElementById('unlockPassword').value = '';
   } catch (error) {
-    alert('Invalid password.');
+    alert('Incorrect password');
   }
 }
 
@@ -1181,6 +1260,9 @@ async function renderDashboard() {
   document.getElementById('settingsLockTimeout').value = lockTimeoutMinutesFromMs(state.settings?.lockTimeout || 300000);
   document.getElementById('walletAddress').value = wallet.address;
   document.getElementById('receiveAddress').value = wallet.address;
+  const evmAddr = generateEVMAddress(wallet.address);
+  const evmEl = document.getElementById('receiveEvmAddress');
+  if (evmEl) evmEl.value = evmAddr || '';
   setDashboardPanel('assets');
   showScreen('dashboard');
   await refreshBalance();
@@ -1253,6 +1335,7 @@ function wireEvents() {
       if (tabName === 'assets') await loadAssets();
       if (tabName === 'activity') await loadActivity();
       if (tabName === 'identity') await loadIdentityPanel();
+      if (tabName === 'staking') await loadExtensionStaking();
     });
   });
 
@@ -1269,6 +1352,29 @@ function wireEvents() {
     if (!wallet) return;
     await navigator.clipboard.writeText(wallet.address);
     setStatus('Address copied');
+  });
+
+  document.getElementById('copyEvmAddress')?.addEventListener('click', async () => {
+    const wallet = getActiveWallet();
+    if (!wallet) return;
+    const evmEl = document.getElementById('receiveEvmAddress');
+    if (evmEl && evmEl.value) {
+      await navigator.clipboard.writeText(evmEl.value);
+      setStatus('EVM address copied');
+    }
+  });
+
+  document.getElementById('sendMaxBtn')?.addEventListener('click', () => {
+    const max = Math.max(0, (window._cachedSpendableMolt || 0) - 0.001);
+    const amountEl = document.getElementById('sendAmount');
+    if (amountEl) amountEl.value = max > 0 ? max.toFixed(9) : '';
+  });
+
+  document.getElementById('extStakeBtn')?.addEventListener('click', () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL('src/pages/full.html') + '#staking' });
+  });
+  document.getElementById('extUnstakeBtn')?.addEventListener('click', () => {
+    chrome.tabs.create({ url: chrome.runtime.getURL('src/pages/full.html') + '#staking' });
   });
 
   document.getElementById('sendNow').addEventListener('click', handleSendNow);

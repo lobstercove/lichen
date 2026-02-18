@@ -40,37 +40,37 @@
           <div class="carousel-track">
             <div class="carousel-slide active">
               <div class="carousel-card">
-                <div class="carousel-icon">🛡️</div>
+                <div class="carousel-icon"><i class="fas fa-shield-alt"></i></div>
                 <h3>Secure &amp; Open Source</h3>
                 <p>AES-256-GCM encrypted keys, Ed25519 signatures, fully auditable code</p>
               </div>
             </div>
             <div class="carousel-slide">
               <div class="carousel-card">
-                <div class="carousel-icon">⚡</div>
+                <div class="carousel-icon"><i class="fas fa-bolt"></i></div>
                 <h3>Ultra-Fast Transactions</h3>
-                <p>400ms finality, low fees, and high-throughput block production.</p>
+                <p>400ms finality, $0.0001 per transaction, 10,000 tx per block</p>
               </div>
             </div>
             <div class="carousel-slide">
               <div class="carousel-card">
-                <div class="carousel-icon">🤖</div>
+                <div class="carousel-icon"><i class="fas fa-robot"></i></div>
                 <h3>Agent-Native</h3>
-                <p>Built for autonomous agents with on-chain identity and reputation.</p>
+                <p>Built for autonomous agents with on-chain identity and reputation</p>
               </div>
             </div>
             <div class="carousel-slide">
               <div class="carousel-card">
-                <div class="carousel-icon">🆔</div>
+                <div class="carousel-icon"><i class="fas fa-fingerprint"></i></div>
                 <h3>MoltyID Identity</h3>
-                <p>.molt naming, skill attestations, and 0-10K on-chain reputation.</p>
+                <p>.molt naming, skill attestations, 0–100K reputation score</p>
               </div>
             </div>
             <div class="carousel-slide">
               <div class="carousel-card">
-                <div class="carousel-icon">🙈</div>
+                <div class="carousel-icon"><i class="fas fa-eye-slash"></i></div>
                 <h3>Privacy Layer</h3>
-                <p>Shielded transaction support with privacy-preserving proofs.</p>
+                <p>Shielded transactions with ZK proofs, Pedersen commitments, nullifiers</p>
               </div>
             </div>
           </div>
@@ -84,8 +84,8 @@
         </div>
 
         <div class="welcome-actions">
-          <button data-action="goCreate" class="btn btn-primary btn-large">+ Create New Wallet</button>
-          <button data-action="goImport" class="btn btn-secondary btn-large">Import Existing Wallet</button>
+          <button data-action="goCreate" class="btn btn-primary btn-large"><i class="fas fa-plus"></i> Create New Wallet</button>
+          <button data-action="goImport" class="btn btn-secondary btn-large"><i class="fas fa-download"></i> Import Existing Wallet</button>
         </div>
       </div>
     </section>
@@ -124,7 +124,7 @@
 
       <div class="create-step" data-create-step-content="2">
         <h3 style="margin-bottom: 0.35rem;">Your Recovery Phrase</h3>
-        <p class="step-description" style="margin-bottom: 1rem;">Write down these 12 words in order. Keep them safe and secret.</p>
+        <p class="step-description" style="margin-bottom: 1rem;">Write down these 12 words in order. Keep them safe and secret!</p>
         <div class="form-group" style="margin-top: 0.75rem;">
           <label>Recovery Phrase (save this safely)</label>
           <textarea id="createMnemonic" class="form-textarea" rows="3" readonly></textarea>
@@ -169,8 +169,8 @@
         <textarea id="importJson" class="form-textarea" rows="4" placeholder='{"name":"...","secretKey":[...],"privateKey":"..."}'></textarea>
       </div>
       <div class="form-group">
-        <label>Password</label>
-        <input id="importPassword" type="password" class="form-input" placeholder="Encrypt wallet" />
+        <label>Set Password</label>
+        <input id="importPassword" type="password" class="form-input" placeholder="Min 8 characters" />
       </div>
       <button id="importSave" class="btn btn-primary popup-btn-block">Import Wallet</button>
       <a href="#" id="backFromImport" class="popup-back-link">← Back</a>
@@ -178,12 +178,13 @@
 
     <section id="unlockScreen" class="wallet-content popup-card screen">
       <h3 style="margin-bottom: 0.5rem;">Unlock Wallet</h3>
+      <p class="step-description" style="margin-bottom: 0.25rem;">Welcome back!</p>
       <p id="unlockWalletName" class="step-description" style="margin-bottom: 1rem;"></p>
       <div class="form-group">
         <label>Password</label>
-        <input id="unlockPassword" type="password" class="form-input" placeholder="Enter password" />
+        <input id="unlockPassword" type="password" class="form-input" placeholder="Password" />
       </div>
-      <button id="unlockSubmit" class="btn btn-primary popup-btn-block">Unlock</button>
+      <button id="unlockSubmit" class="btn btn-primary popup-btn-block"><i class="fas fa-unlock"></i> Unlock Wallet</button>
       <div class="unlock-logout" style="margin-top: 1.2rem; text-align: center;">
         <button id="unlockLogoutBtn" class="btn btn-danger btn-small" style="opacity:0.75;font-size:0.78rem;">
           <i class="fas fa-sign-out-alt"></i> Logout
@@ -249,19 +250,24 @@
         </div>
         <div class="form-group">
           <label>Amount (MOLT)</label>
-          <input id="sendAmount" type="number" class="form-input" placeholder="0.00" />
+          <div style="position:relative">
+            <input id="sendAmount" type="number" class="form-input" placeholder="0.00" style="padding-right:3.5rem" />
+            <button id="sendMaxBtn" type="button" style="position:absolute;right:6px;top:50%;transform:translateY(-50%);background:var(--accent);color:#fff;border:none;border-radius:4px;padding:2px 8px;font-size:0.72rem;font-weight:600;cursor:pointer;">MAX</button>
+          </div>
+          <div id="sendAvailableBalance" style="font-size:0.75rem;color:var(--text-muted);margin-top:0.25rem;"></div>
         </div>
+        <div style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.5rem;"><i class="fas fa-info-circle"></i> Network Fee: 0.001 MOLT</div>
         <div class="form-group">
           <label>Password</label>
           <input id="sendPassword" type="password" class="form-input" placeholder="Unlock to sign" />
         </div>
-        <button id="sendNow" class="btn btn-primary popup-btn-block">Send Transaction</button>
+        <button id="sendNow" class="btn btn-primary popup-btn-block"><i class="fas fa-paper-plane"></i> Send</button>
       </div>
 
       <!-- Tab Content: Receive -->
       <div class="popup-tab-content" data-tab="receive" id="receivePanel">
         <p style="text-align:center;color:var(--text-secondary);font-size:0.82rem;margin-bottom:0.75rem;">
-          Share your address to receive MOLT and MoltChain tokens
+          Receive MOLT and all MoltChain tokens
         </p>
         <div class="form-group">
           <label><i class="fas fa-fingerprint"></i> Native Address (Base58)</label>
@@ -270,9 +276,16 @@
             <button id="copyAddress" class="btn btn-secondary btn-small"><i class="fas fa-copy"></i></button>
           </div>
         </div>
+        <div class="form-group">
+          <label><i class="fas fa-ethereum"></i> EVM Address (MetaMask Compatible)</label>
+          <div class="popup-address-row">
+            <input id="receiveEvmAddress" class="form-input" readonly />
+            <button id="copyEvmAddress" class="btn btn-secondary btn-small"><i class="fas fa-copy"></i></button>
+          </div>
+        </div>
         <div class="popup-receive-info">
           <i class="fas fa-info-circle" style="color:#4ade80;"></i>
-          Send MOLT from any MoltChain wallet to this address.
+          Both addresses work! Use Base58 for MoltChain/Solana wallets, 0x for MetaMask/Ethereum wallets
         </div>
       </div>
 
@@ -298,9 +311,22 @@
       <!-- Tab Content: Staking -->
       <div class="popup-tab-content" data-tab="staking" id="stakingPanel">
         <div id="stakingValidatorInfo"></div>
-        <div class="popup-empty-state">
-          <i class="fas fa-layer-group"></i>
-          <p>Staking info will appear here if your wallet is a validator.</p>
+        <div id="reefStakePanel">
+          <div style="display:flex;align-items:center;gap:0.5rem;margin-bottom:0.75rem;">
+            <i class="fas fa-water" style="color:#3b82f6;"></i>
+            <strong style="font-size:0.9rem;">ReefStake — Liquid Staking</strong>
+          </div>
+          <div id="reefStakeStats" style="display:grid;grid-template-columns:repeat(3,1fr);gap:0.5rem;margin-bottom:0.75rem;"></div>
+          <div id="reefTiersGrid" style="display:grid;grid-template-columns:repeat(2,1fr);gap:0.5rem;margin-bottom:0.75rem;"></div>
+          <div style="font-size:0.72rem;color:var(--text-muted);margin-bottom:0.75rem;padding:0.5rem;background:var(--card-bg);border-radius:8px;border:1px solid var(--border);">
+            <i class="fas fa-info-circle" style="color:#3b82f6;"></i>
+            Stake MOLT → receive stMOLT. Rewards auto-compound. Flexible tier: 7-day cooldown. Locked tiers: boosted APY.
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.5rem;">
+            <button id="extStakeBtn" class="btn btn-primary btn-small"><i class="fas fa-arrow-down"></i> Stake MOLT</button>
+            <button id="extUnstakeBtn" class="btn btn-secondary btn-small"><i class="fas fa-arrow-up"></i> Unstake stMOLT</button>
+          </div>
+          <div id="extPendingUnstakes" style="margin-top:0.75rem;display:none;"></div>
         </div>
       </div>
 
@@ -349,7 +375,7 @@
             <select id="settingsCurrency" class="form-input"><option value="USD">USD</option><option value="EUR">EUR</option><option value="GBP">GBP</option><option value="JPY">JPY</option></select>
           </div>
           <div class="form-group"><label>Decimal Precision</label>
-            <select id="settingsDecimals" class="form-input"><option value="2">2</option><option value="4">4</option><option value="6">6</option><option value="8">8</option></select>
+            <select id="settingsDecimals" class="form-input"><option value="2">2</option><option value="4">4</option><option value="6">6</option><option value="9">9</option></select>
           </div>
           <button id="saveDisplaySettings" class="btn btn-secondary btn-small popup-btn-block">Save Display</button>
         </div>
