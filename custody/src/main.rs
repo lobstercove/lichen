@@ -1,4 +1,5 @@
-use axum::{extract::State, routing::get, routing::post, routing::put, Json, Router};
+use axum::{extract::State, routing::get, routing::post, routing::put, routing::delete, Json, Router};
+use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use base64::Engine;
 use ed25519_dalek::{Signer, VerifyingKey};
 use frost_ed25519 as frost;
@@ -10,7 +11,7 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::{broadcast, Mutex};
 use tokio::time::{sleep, Duration};
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -34,6 +35,8 @@ struct CustodyState {
     withdrawal_rate: Arc<Mutex<WithdrawalRateState>>,
     /// AUDIT-FIX W-H4: Deposit rate limiter
     deposit_rate: Arc<Mutex<DepositRateState>>,
+    /// Broadcast channel for webhook/WebSocket events
+    event_tx: broadcast::Sender<CustodyWebhookEvent>,
 }
 
 /// AUDIT-FIX 1.20: Withdrawal rate limiting state
@@ -77,6 +80,63 @@ impl DepositRateState {
             per_user: std::collections::HashMap::new(),
         }
     }
+}
+
+// ── Webhook & Event System ──
+
+/// Custody event payload — sent to registered webhooks and WebSocket subscribers.
+/// Covers every state transition in deposit, sweep, credit, withdrawal, and rebalance flows.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct CustodyWebhookEvent {
+    /// Unique event ID
+    event_id: String,
+    /// Event type identifier (matches audit event types)
+    event_type: String,
+    /// Primary entity ID (job_id, deposit_id, etc.)
+    entity_id: String,
+    /// Associated deposit ID (if applicable)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    deposit_id: Option<String>,
+    /// Transaction hash (on-chain tx, if applicable)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tx_hash: Option<String>,
+    /// Additional structured data about the event
+    #[serde(skip_serializing_if = "Option::is_none")]
+    data: Option<Value>,
+    /// Unix timestamp (seconds)
+    timestamp: i64,
+}
+
+/// Registered webhook endpoint
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct WebhookRegistration {
+    /// Unique webhook ID
+    id: String,
+    /// HTTPS URL to POST events to
+    url: String,
+    /// HMAC-SHA256 secret for signing payloads (provided by the registrant)
+    secret: String,
+    /// Optional filter: only send events matching these types.
+    /// Empty = all events. Example: ["deposit.confirmed", "withdrawal.confirmed"]
+    #[serde(default)]
+    event_filter: Vec<String>,
+    /// Whether this webhook is active
+    active: bool,
+    /// Creation timestamp
+    created_at: i64,
+    /// Description/label
+    #[serde(default)]
+    description: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateWebhookRequest {
+    url: String,
+    secret: String,
+    #[serde(default)]
+    event_filter: Vec<String>,
+    #[serde(default)]
+    description: String,
 }
 
 #[derive(Clone, Debug)]
@@ -323,6 +383,9 @@ const CF_STATUS_INDEX: &str = "status_index";
 /// On startup, stale intents are reconciled against chain state.
 /// Keys: "intent:{type}:{job_id}" → JSON {chain, tx_type, created_at}
 const CF_TX_INTENTS: &str = "tx_intents";
+/// Webhook registrations — stores registered webhook endpoints.
+/// Keys: webhook_id → JSON WebhookRegistration
+const CF_WEBHOOKS: &str = "webhooks";
 
 /// MoltChain contract runtime program address (all 0xFF bytes)
 const MOLT_CONTRACT_PROGRAM: [u8; 32] = [0xFF; 32];
@@ -395,6 +458,9 @@ async fn main() {
     // AUDIT-FIX M4: On startup, check for stale TX intents from a previous crash
     recover_stale_intents(&db);
 
+    // Webhook/WebSocket event broadcast channel (1024-event buffer)
+    let (event_tx, _event_rx) = broadcast::channel::<CustodyWebhookEvent>(1024);
+
     let state = CustodyState {
         db: Arc::new(db),
         next_index_lock: Arc::new(Mutex::new(())),
@@ -409,7 +475,17 @@ async fn main() {
         withdrawal_rate: Arc::new(Mutex::new(WithdrawalRateState::new())),
         // AUDIT-FIX W-H4: Deposit rate limiter
         deposit_rate: Arc::new(Mutex::new(DepositRateState::new())),
+        event_tx: event_tx.clone(),
     };
+
+    // Spawn webhook dispatcher (delivers events to registered HTTP endpoints)
+    {
+        let dispatcher_state = state.clone();
+        let mut dispatcher_rx = event_tx.subscribe();
+        tokio::spawn(async move {
+            webhook_dispatcher_loop(dispatcher_state, &mut dispatcher_rx).await;
+        });
+    }
 
     if let Some(url) = config.solana_rpc_url.clone() {
         let watcher_state = state.clone();
@@ -464,6 +540,14 @@ async fn main() {
         // burn_tx_signature starts as None and nothing ever populates it.
         .route("/withdrawals/:job_id/burn", put(submit_burn_signature))
         .route("/reserves", get(get_reserves))
+        // ── Webhook management endpoints ──
+        .route("/webhooks", post(create_webhook))
+        .route("/webhooks", get(list_webhooks))
+        .route("/webhooks/:webhook_id", delete(delete_webhook))
+        // ── Real-time WebSocket event stream ──
+        .route("/ws/events", get(ws_events))
+        // ── Audit event history endpoint ──
+        .route("/events", get(list_events))
         .with_state(state);
 
     let addr: SocketAddr = "0.0.0.0:9105".parse().expect("valid bind addr");
@@ -580,6 +664,20 @@ async fn create_deposit(
     // AUDIT-FIX M1: index initial deposit status
     let _ = set_status_index(&state.db, "deposits", "issued", &record.deposit_id);
 
+    emit_custody_event(
+        &state,
+        "deposit.created",
+        &deposit_id,
+        Some(&deposit_id),
+        None,
+        Some(&serde_json::json!({
+            "user_id": record.user_id,
+            "chain": record.chain,
+            "asset": record.asset,
+            "address": record.address
+        })),
+    );
+
     Ok(Json(CreateDepositResponse {
         deposit_id,
         address,
@@ -646,6 +744,7 @@ fn open_db<P: AsRef<Path>>(path: P) -> Result<DB, String> {
         ColumnFamilyDescriptor::new(CF_REBALANCE_JOBS, Options::default()),
         ColumnFamilyDescriptor::new(CF_STATUS_INDEX, Options::default()),
         ColumnFamilyDescriptor::new(CF_TX_INTENTS, Options::default()),
+        ColumnFamilyDescriptor::new(CF_WEBHOOKS, Options::default()),
     ];
 
     DB::open_cf_descriptors(&opts, path, cfs).map_err(|e| format!("db open: {}", e))
@@ -1267,6 +1366,19 @@ async fn process_solana_deposits(state: &CustodyState, url: &str) -> Result<(), 
             )?;
 
             update_deposit_status(&state.db, &deposit.deposit_id, "confirmed")?;
+            emit_custody_event(
+                state,
+                "deposit.confirmed",
+                &deposit.deposit_id,
+                Some(&deposit.deposit_id),
+                Some(sig),
+                Some(&serde_json::json!({
+                    "chain": deposit.chain,
+                    "asset": deposit.asset,
+                    "address": deposit.address,
+                    "user_id": deposit.user_id
+                })),
+            );
 
             if let Some(treasury) = state.config.treasury_solana_address.clone() {
                 let balance = solana_get_balance(&state.http, url, &deposit.address).await?;
@@ -1344,6 +1456,20 @@ async fn process_solana_token_deposit(
     )?;
 
     update_deposit_status(&state.db, &deposit.deposit_id, "confirmed")?;
+    emit_custody_event(
+        state,
+        "deposit.confirmed",
+        &deposit.deposit_id,
+        Some(&deposit.deposit_id),
+        Some(&synthetic_tx_hash),
+        Some(&serde_json::json!({
+            "chain": deposit.chain,
+            "asset": deposit.asset,
+            "address": deposit.address,
+            "user_id": deposit.user_id,
+            "amount": balance
+        })),
+    );
 
     if let Some(treasury) = state.config.solana_treasury_owner.clone() {
         let mint = solana_mint_for_asset(&state.config, &deposit.asset)?;
@@ -1410,6 +1536,20 @@ async fn process_evm_deposits(state: &CustodyState, url: &str) -> Result<(), Str
         )?;
 
         update_deposit_status(&state.db, &deposit.deposit_id, "confirmed")?;
+        emit_custody_event(
+            state,
+            "deposit.confirmed",
+            &deposit.deposit_id,
+            Some(&deposit.deposit_id),
+            None,
+            Some(&serde_json::json!({
+                "chain": deposit.chain,
+                "asset": deposit.asset,
+                "address": deposit.address,
+                "user_id": deposit.user_id,
+                "amount": balance
+            })),
+        );
 
         if let Some(treasury) = state.config.treasury_evm_address.clone() {
             enqueue_sweep_job(
@@ -1485,6 +1625,20 @@ async fn process_evm_erc20_deposits(
                         },
                     )?;
                     update_deposit_status(&state.db, &deposit.deposit_id, "confirmed")?;
+                    emit_custody_event(
+                        state,
+                        "deposit.confirmed",
+                        &deposit.deposit_id,
+                        Some(&deposit.deposit_id),
+                        Some(&tx_hash),
+                        Some(&serde_json::json!({
+                            "chain": deposit.chain,
+                            "asset": deposit.asset,
+                            "address": deposit.address,
+                            "user_id": deposit.user_id,
+                            "amount": amount
+                        })),
+                    );
 
                     if let Some(treasury) = state.config.treasury_evm_address.clone() {
                         enqueue_sweep_job(
@@ -2002,13 +2156,7 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
     for mut job in queued_jobs {
         job.status = "signing".to_string();
         store_sweep_job(&state.db, &job)?;
-        record_audit_event(
-            &state.db,
-            "sweep_signing",
-            &job.job_id,
-            Some(&job.deposit_id),
-            None,
-        )?;
+        emit_custody_event(state, "sweep.signing", &job.job_id, Some(&job.deposit_id), None, None);
     }
 
     if state.config.signer_endpoints.is_empty() || state.config.signer_threshold == 0 {
@@ -2039,13 +2187,7 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
                 job.last_error = None;
                 job.next_attempt_at = None;
                 store_sweep_job(&state.db, job)?;
-                record_audit_event(
-                    &state.db,
-                    "sweep_submitted",
-                    &job.job_id,
-                    Some(&job.deposit_id),
-                    job.sweep_tx_hash.as_deref(),
-                )?;
+                emit_custody_event(state, "sweep.submitted", &job.job_id, Some(&job.deposit_id), job.sweep_tx_hash.as_deref(), None);
 
                 // AUDIT-FIX C2: Credit job (wrapped token mint) is now created AFTER
                 // sweep confirmation, not here. Minting before sweep is confirmed risks
@@ -2055,13 +2197,7 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
                 let _ = clear_tx_intent(&state.db, "sweep", &job.job_id);
                 mark_sweep_failed(job, "broadcast returned empty".to_string());
                 store_sweep_job(&state.db, job)?;
-                record_audit_event(
-                    &state.db,
-                    "sweep_failed",
-                    &job.job_id,
-                    Some(&job.deposit_id),
-                    job.sweep_tx_hash.as_deref(),
-                )?;
+                emit_custody_event(state, "sweep.failed", &job.job_id, Some(&job.deposit_id), job.sweep_tx_hash.as_deref(), None);
             }
             Err(err) => {
                 let _ = clear_tx_intent(&state.db, "sweep", &job.job_id);
@@ -2086,13 +2222,8 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
                 let _ = update_deposit_status(&state.db, &job.deposit_id, "swept");
                 let _ = update_status_index(&state.db, "deposits", "sweep_queued", "swept", &job.deposit_id);
 
-                record_audit_event(
-                    &state.db,
-                    "sweep_confirmed",
-                    &job.job_id,
-                    Some(&job.deposit_id),
-                    job.sweep_tx_hash.as_deref(),
-                )?;
+                emit_custody_event(state, "sweep.confirmed", &job.job_id, Some(&job.deposit_id), job.sweep_tx_hash.as_deref(),
+                    Some(&json!({ "chain": job.chain, "asset": job.asset, "amount": job.amount })));
 
                 // Track stablecoin reserves: when a sweep is confirmed, the treasury
                 // now holds the deposited asset. Update the reserve ledger.
@@ -2119,13 +2250,8 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
                 match build_credit_job(state, job)? {
                     Some(credit_job) => {
                         store_credit_job(&state.db, &credit_job)?;
-                        record_audit_event(
-                            &state.db,
-                            "credit_queued",
-                            &credit_job.job_id,
-                            Some(&credit_job.deposit_id),
-                            None,
-                        )?;
+                        emit_custody_event(state, "credit.queued", &credit_job.job_id, Some(&credit_job.deposit_id), None,
+                            Some(&json!({ "amount_shells": credit_job.amount_shells, "to_address": credit_job.to_address })));
                     }
                     None => {
                         // AUDIT-FIX R-H1: Log when credit job cannot be built
@@ -2137,13 +2263,7 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
                              Manual operator intervention required to credit the user.",
                             job.job_id, job.deposit_id
                         );
-                        record_audit_event(
-                            &state.db,
-                            "credit_build_failed",
-                            &job.job_id,
-                            Some(&job.deposit_id),
-                            None,
-                        )?;
+                        emit_custody_event(state, "credit.build_failed", &job.job_id, Some(&job.deposit_id), None, None);
                     }
                 }
             }
@@ -2182,13 +2302,7 @@ async fn process_credit_jobs(state: &CustodyState) -> Result<(), String> {
                 job.last_error = None;
                 job.next_attempt_at = None;
                 store_credit_job(&state.db, &job)?;
-                record_audit_event(
-                    &state.db,
-                    "credit_submitted",
-                    &job.job_id,
-                    Some(&job.deposit_id),
-                    job.tx_signature.as_deref(),
-                )?;
+                emit_custody_event(state, "credit.submitted", &job.job_id, Some(&job.deposit_id), job.tx_signature.as_deref(), None);
             }
             Err(err) => {
                 let _ = clear_tx_intent(&state.db, "credit", &job.job_id);
@@ -2212,13 +2326,8 @@ async fn process_credit_jobs(state: &CustodyState) -> Result<(), String> {
                 let _ = update_deposit_status(&state.db, &job.deposit_id, "credited");
                 let _ = update_status_index(&state.db, "deposits", "swept", "credited", &job.deposit_id);
 
-                record_audit_event(
-                    &state.db,
-                    "credit_confirmed",
-                    &job.job_id,
-                    Some(&job.deposit_id),
-                    job.tx_signature.as_deref(),
-                )?;
+                emit_custody_event(state, "credit.confirmed", &job.job_id, Some(&job.deposit_id), job.tx_signature.as_deref(),
+                    Some(&json!({ "amount_shells": job.amount_shells, "to_address": job.to_address })));
             }
         }
     }
@@ -3353,24 +3462,80 @@ fn record_audit_event(
     deposit_id: Option<&str>,
     tx_hash: Option<&str>,
 ) -> Result<(), String> {
+    record_audit_event_ext(db, event_type, entity_id, deposit_id, tx_hash, None, None)
+}
+
+/// Extended audit event recorder — also emits to webhook/WS broadcast channel.
+/// Call this variant from code paths that have access to `CustodyState`.
+fn record_audit_event_ext(
+    db: &DB,
+    event_type: &str,
+    entity_id: &str,
+    deposit_id: Option<&str>,
+    tx_hash: Option<&str>,
+    data: Option<&Value>,
+    event_tx: Option<&broadcast::Sender<CustodyWebhookEvent>>,
+) -> Result<(), String> {
+    let event_id = Uuid::new_v4().to_string();
+    let timestamp = chrono::Utc::now().timestamp();
     let cf = db
         .cf_handle(CF_AUDIT_EVENTS)
         .ok_or_else(|| "missing audit_events cf".to_string())?;
     let payload = serde_json::json!({
-        "event_id": Uuid::new_v4().to_string(),
+        "event_id": &event_id,
         "event_type": event_type,
         "entity_id": entity_id,
         "deposit_id": deposit_id,
         "tx_hash": tx_hash,
-        "timestamp": chrono::Utc::now().timestamp(),
+        "data": data,
+        "timestamp": timestamp,
     });
     let bytes = serde_json::to_vec(&payload).map_err(|e| format!("encode: {}", e))?;
     db.put_cf(
         cf,
-        payload["event_id"].as_str().unwrap_or_default().as_bytes(),
+        event_id.as_bytes(),
         bytes,
     )
-    .map_err(|e| format!("db put: {}", e))
+    .map_err(|e| format!("db put: {}", e))?;
+
+    // Emit to broadcast channel for webhooks + WebSocket subscribers
+    if let Some(tx) = event_tx {
+        let event = CustodyWebhookEvent {
+            event_id,
+            event_type: event_type.to_string(),
+            entity_id: entity_id.to_string(),
+            deposit_id: deposit_id.map(|s| s.to_string()),
+            tx_hash: tx_hash.map(|s| s.to_string()),
+            data: data.cloned(),
+            timestamp,
+        };
+        // Best-effort: if no receivers are listening, that's fine
+        let _ = tx.send(event);
+    }
+
+    Ok(())
+}
+
+/// Convenience: emit a custody event with full state context (DB + broadcast channel).
+fn emit_custody_event(
+    state: &CustodyState,
+    event_type: &str,
+    entity_id: &str,
+    deposit_id: Option<&str>,
+    tx_hash: Option<&str>,
+    data: Option<&Value>,
+) {
+    if let Err(e) = record_audit_event_ext(
+        &state.db,
+        event_type,
+        entity_id,
+        deposit_id,
+        tx_hash,
+        data,
+        Some(&state.event_tx),
+    ) {
+        tracing::warn!("audit event failed: {}", e);
+    }
 }
 
 fn list_credit_jobs_by_status(db: &DB, status: &str) -> Result<Vec<CreditJob>, String> {
@@ -4070,9 +4235,8 @@ async fn create_withdrawal(
         return Json(json!({"error": format!("failed to store withdrawal: {}", e)}));
     }
 
-    if let Err(e) = record_audit_event(&state.db, "withdrawal_requested", &job.job_id, None, None) {
-        tracing::warn!("audit event failed: {}", e);
-    }
+    emit_custody_event(&state, "withdrawal.requested", &job.job_id, None, None,
+        Some(&json!({ "user_id": job.user_id, "asset": job.asset, "amount": job.amount, "dest_chain": job.dest_chain, "dest_address": job.dest_address })));
 
     info!(
         "withdrawal requested: {} {} → {} on {} (preferred_stablecoin={}, job={})",
@@ -4195,6 +4359,8 @@ async fn submit_burn_signature(
         Some(&payload.burn_tx_signature),
     )
     .ok();
+    // Also emit to webhooks/WS
+    emit_custody_event(&state, "withdrawal.burn_submitted", &job.job_id, None, Some(&payload.burn_tx_signature), None);
 
     info!(
         "burn signature submitted for withdrawal {}: {}",
@@ -4577,6 +4743,20 @@ async fn deposit_cleanup_loop(state: CustodyState) {
         }
 
         if count > 0 {
+            // Emit events for expired deposits
+            for (deposit_id, address) in &expired_ids {
+                emit_custody_event(
+                    &state,
+                    "deposit.expired",
+                    deposit_id,
+                    Some(deposit_id),
+                    None,
+                    Some(&serde_json::json!({
+                        "address": address,
+                        "ttl_secs": ttl
+                    })),
+                );
+            }
             info!(
                 "deposit cleanup: expired {} unfunded deposits older than {}s",
                 count, ttl
@@ -4827,13 +5007,19 @@ async fn process_rebalance_jobs(state: &CustodyState) -> Result<(), String> {
                 job.status = "submitted".to_string();
                 job.last_error = None;
                 store_rebalance_job(&state.db, &job)?;
-                record_audit_event(
-                    &state.db,
-                    "rebalance_submitted",
+                emit_custody_event(
+                    state,
+                    "rebalance.submitted",
                     &job.job_id,
                     None,
                     Some(&tx_hash),
-                )?;
+                    Some(&serde_json::json!({
+                        "chain": job.chain,
+                        "from_asset": job.from_asset,
+                        "to_asset": job.to_asset,
+                        "amount": job.amount
+                    })),
+                );
                 info!(
                     "rebalance swap submitted: {} {} → {} on {} (tx={})",
                     job.amount, job.from_asset, job.to_asset, job.chain, tx_hash
@@ -4948,13 +5134,19 @@ async fn process_rebalance_jobs(state: &CustodyState) -> Result<(), String> {
                             );
                             job.status = "slippage_exceeded".to_string();
                             store_rebalance_job(&state.db, &job)?;
-                            record_audit_event(
-                                &state.db,
-                                "rebalance_slippage_exceeded",
+                            emit_custody_event(
+                                state,
+                                "rebalance.slippage_exceeded",
                                 &job.job_id,
                                 None,
                                 job.swap_tx_hash.as_deref(),
-                            )?;
+                                Some(&serde_json::json!({
+                                    "slippage_bps": slippage_bps,
+                                    "max_slippage_bps": state.config.rebalance_max_slippage_bps,
+                                    "input": job.amount,
+                                    "output": output
+                                })),
+                            );
                             continue;
                         }
                     }
@@ -4974,13 +5166,17 @@ async fn process_rebalance_jobs(state: &CustodyState) -> Result<(), String> {
                     );
                     job.status = "unverified".to_string();
                     store_rebalance_job(&state.db, &job)?;
-                    record_audit_event(
-                        &state.db,
-                        "rebalance_output_unverified",
+                    emit_custody_event(
+                        state,
+                        "rebalance.output_unverified",
                         &job.job_id,
                         None,
                         job.swap_tx_hash.as_deref(),
-                    )?;
+                        Some(&serde_json::json!({
+                            "amount": job.amount,
+                            "chain": job.chain
+                        })),
+                    );
                     continue;
                 }
             };
@@ -4991,13 +5187,20 @@ async fn process_rebalance_jobs(state: &CustodyState) -> Result<(), String> {
             adjust_reserve_balance(&state.db, &job.chain, &job.from_asset, job.amount, false).await?;
             adjust_reserve_balance(&state.db, &job.chain, &job.to_asset, credit_amount, true).await?;
 
-            record_audit_event(
-                &state.db,
-                "rebalance_confirmed",
+            emit_custody_event(
+                state,
+                "rebalance.confirmed",
                 &job.job_id,
                 None,
                 job.swap_tx_hash.as_deref(),
-            )?;
+                Some(&serde_json::json!({
+                    "chain": job.chain,
+                    "from_asset": job.from_asset,
+                    "to_asset": job.to_asset,
+                    "amount": job.amount,
+                    "credit_amount": credit_amount
+                })),
+            );
             info!(
                 "rebalance confirmed: {} {} → {} on {} (job={})",
                 job.amount, job.from_asset, job.to_asset, job.chain, job.job_id
@@ -5417,13 +5620,18 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
 
                             job.status = "burned".to_string();
                             store_withdrawal_job(&state.db, &job)?;
-                            record_audit_event(
-                                &state.db,
-                                "withdrawal_burn_confirmed",
+                            emit_custody_event(
+                                state,
+                                "withdrawal.burn_confirmed",
                                 &job.job_id,
                                 None,
                                 job.burn_tx_signature.as_deref(),
-                            )?;
+                                Some(&serde_json::json!({
+                                    "user_id": job.user_id,
+                                    "asset": job.asset,
+                                    "amount": job.amount
+                                })),
+                            );
                             info!("withdrawal burn confirmed: {}", job.job_id);
                         }
                     }
@@ -5517,13 +5725,17 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
         if sig_count >= state.config.signer_threshold && state.config.signer_threshold > 0 {
             job.status = "signing".to_string();
             store_withdrawal_job(&state.db, &job)?;
-            record_audit_event(
-                &state.db,
-                "withdrawal_signatures_collected",
+            emit_custody_event(
+                state,
+                "withdrawal.signatures_collected",
                 &job.job_id,
                 None,
                 None,
-            )?;
+                Some(&serde_json::json!({
+                    "sig_count": sig_count,
+                    "threshold": state.config.signer_threshold
+                })),
+            );
             info!(
                 "withdrawal threshold met: {} ({}/{} signatures)",
                 job.job_id, sig_count, state.config.signer_threshold
@@ -5546,13 +5758,19 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                 job.status = "broadcasting".to_string();
                 job.last_error = None;
                 store_withdrawal_job(&state.db, &job)?;
-                record_audit_event(
-                    &state.db,
-                    "withdrawal_broadcast",
+                emit_custody_event(
+                    state,
+                    "withdrawal.broadcast",
                     &job.job_id,
                     None,
                     Some(&tx_hash),
-                )?;
+                    Some(&serde_json::json!({
+                        "dest_chain": job.dest_chain,
+                        "dest_address": job.dest_address,
+                        "asset": job.asset,
+                        "amount": job.amount
+                    })),
+                );
                 info!("withdrawal broadcast: {} → tx={}", job.job_id, tx_hash);
             }
             Err(e) => {
@@ -5567,13 +5785,19 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                         "🚨 withdrawal {} permanently failed after {} attempts: {}",
                         job.job_id, MAX_JOB_ATTEMPTS, e
                     );
-                    record_audit_event(
-                        &state.db,
-                        "withdrawal_permanently_failed",
+                    emit_custody_event(
+                        state,
+                        "withdrawal.permanently_failed",
                         &job.job_id,
                         None,
                         None,
-                    )?;
+                        Some(&serde_json::json!({
+                            "attempts": job.attempts,
+                            "last_error": e,
+                            "asset": job.asset,
+                            "amount": job.amount
+                        })),
+                    );
                 } else {
                     job.next_attempt_at = Some(next_retry_timestamp(job.attempts));
                     store_withdrawal_job(&state.db, &job)?;
@@ -5626,13 +5850,20 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
             job.status = "confirmed".to_string();
             job.last_error = None;
             store_withdrawal_job(&state.db, &job)?;
-            record_audit_event(
-                &state.db,
-                "withdrawal_confirmed",
+            emit_custody_event(
+                state,
+                "withdrawal.confirmed",
                 &job.job_id,
                 None,
                 job.outbound_tx_hash.as_deref(),
-            )?;
+                Some(&serde_json::json!({
+                    "dest_chain": job.dest_chain,
+                    "dest_address": job.dest_address,
+                    "asset": job.asset,
+                    "amount": job.amount,
+                    "user_id": job.user_id
+                })),
+            );
 
             // Decrement reserve ledger for stablecoin withdrawals
             let asset_lower = job.asset.to_lowercase();
@@ -6112,6 +6343,414 @@ async fn check_evm_tx_confirmed(
         .unwrap_or(0);
 
     Ok(current.saturating_sub(block_number) >= required_confirmations)
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Webhook & WebSocket Event System
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── Webhook CRUD Endpoints ──
+
+/// POST /webhooks — Register a new webhook endpoint.
+/// Requires Bearer auth (same CUSTODY_API_AUTH_TOKEN as withdrawals).
+async fn create_webhook(
+    State(state): State<CustodyState>,
+    headers: axum::http::HeaderMap,
+    Json(payload): Json<CreateWebhookRequest>,
+) -> Result<Json<Value>, Json<ErrorResponse>> {
+    verify_api_auth(&state.config, &headers)?;
+
+    if payload.url.is_empty() {
+        return Err(Json(ErrorResponse::invalid("url is required")));
+    }
+    if payload.secret.is_empty() {
+        return Err(Json(ErrorResponse::invalid("secret is required (used for HMAC-SHA256 signatures)")));
+    }
+    if !payload.url.starts_with("https://") && !payload.url.starts_with("http://localhost") {
+        return Err(Json(ErrorResponse::invalid("webhook url must use HTTPS (http://localhost allowed for dev)")));
+    }
+
+    let webhook = WebhookRegistration {
+        id: Uuid::new_v4().to_string(),
+        url: payload.url,
+        secret: payload.secret,
+        event_filter: payload.event_filter,
+        active: true,
+        created_at: chrono::Utc::now().timestamp(),
+        description: payload.description,
+    };
+
+    store_webhook(&state.db, &webhook).map_err(|e| Json(ErrorResponse::db(&e)))?;
+    info!("webhook registered: {} → {}", webhook.id, webhook.url);
+
+    Ok(Json(json!({
+        "id": webhook.id,
+        "url": webhook.url,
+        "event_filter": webhook.event_filter,
+        "active": webhook.active,
+        "created_at": webhook.created_at,
+    })))
+}
+
+/// GET /webhooks — List all registered webhooks (secrets redacted).
+async fn list_webhooks(
+    State(state): State<CustodyState>,
+    headers: axum::http::HeaderMap,
+) -> Result<Json<Value>, Json<ErrorResponse>> {
+    verify_api_auth(&state.config, &headers)?;
+
+    let webhooks = list_all_webhooks(&state.db).map_err(|e| Json(ErrorResponse::db(&e)))?;
+    let redacted: Vec<Value> = webhooks
+        .iter()
+        .map(|w| {
+            json!({
+                "id": w.id,
+                "url": w.url,
+                "event_filter": w.event_filter,
+                "active": w.active,
+                "created_at": w.created_at,
+                "description": w.description,
+            })
+        })
+        .collect();
+
+    Ok(Json(json!({ "webhooks": redacted })))
+}
+
+/// DELETE /webhooks/:webhook_id — Remove a registered webhook.
+async fn delete_webhook(
+    State(state): State<CustodyState>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Path(webhook_id): axum::extract::Path<String>,
+) -> Result<Json<Value>, Json<ErrorResponse>> {
+    verify_api_auth(&state.config, &headers)?;
+
+    remove_webhook(&state.db, &webhook_id).map_err(|e| Json(ErrorResponse::db(&e)))?;
+    info!("webhook removed: {}", webhook_id);
+
+    Ok(Json(json!({ "deleted": webhook_id })))
+}
+
+/// GET /events — Paginated audit event history (most recent first).
+/// Query params: ?limit=50&after=<event_id>&event_type=<filter>
+async fn list_events(
+    State(state): State<CustodyState>,
+    headers: axum::http::HeaderMap,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<Value>, Json<ErrorResponse>> {
+    verify_api_auth(&state.config, &headers)?;
+
+    let limit: usize = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50)
+        .min(500);
+    let event_type_filter = params.get("event_type").cloned();
+
+    let cf = state
+        .db
+        .cf_handle(CF_AUDIT_EVENTS)
+        .ok_or_else(|| Json(ErrorResponse::db("missing audit_events cf")))?;
+
+    let mut events = Vec::new();
+    let iter = state.db.iterator_cf(cf, rocksdb::IteratorMode::End);
+    for item in iter {
+        if events.len() >= limit {
+            break;
+        }
+        let (_, value) = item.map_err(|e| Json(ErrorResponse::db(&format!("iter: {}", e))))?;
+        if let Ok(event) = serde_json::from_slice::<Value>(&value) {
+            if let Some(ref filter) = event_type_filter {
+                if event.get("event_type").and_then(|v| v.as_str()) != Some(filter.as_str()) {
+                    continue;
+                }
+            }
+            events.push(event);
+        }
+    }
+
+    Ok(Json(json!({ "events": events, "count": events.len() })))
+}
+
+// ── Webhook DB Helpers ──
+
+fn store_webhook(db: &DB, webhook: &WebhookRegistration) -> Result<(), String> {
+    let cf = db
+        .cf_handle(CF_WEBHOOKS)
+        .ok_or_else(|| "missing webhooks cf".to_string())?;
+    let bytes = serde_json::to_vec(webhook).map_err(|e| format!("encode: {}", e))?;
+    db.put_cf(cf, webhook.id.as_bytes(), bytes)
+        .map_err(|e| format!("db put: {}", e))
+}
+
+fn list_all_webhooks(db: &DB) -> Result<Vec<WebhookRegistration>, String> {
+    let cf = db
+        .cf_handle(CF_WEBHOOKS)
+        .ok_or_else(|| "missing webhooks cf".to_string())?;
+    let mut webhooks = Vec::new();
+    let iter = db.iterator_cf(cf, rocksdb::IteratorMode::Start);
+    for item in iter {
+        let (_, value) = item.map_err(|e| format!("db iter: {}", e))?;
+        if let Ok(webhook) = serde_json::from_slice::<WebhookRegistration>(&value) {
+            webhooks.push(webhook);
+        }
+    }
+    Ok(webhooks)
+}
+
+fn remove_webhook(db: &DB, webhook_id: &str) -> Result<(), String> {
+    let cf = db
+        .cf_handle(CF_WEBHOOKS)
+        .ok_or_else(|| "missing webhooks cf".to_string())?;
+    db.delete_cf(cf, webhook_id.as_bytes())
+        .map_err(|e| format!("db delete: {}", e))
+}
+
+// ── WebSocket Event Stream ──
+
+/// GET /ws/events — Upgrade to WebSocket for real-time custody event streaming.
+/// Optional query param: ?filter=deposit.confirmed,withdrawal.confirmed
+/// Requires Bearer auth token in Sec-WebSocket-Protocol header or ?token= query param.
+async fn ws_events(
+    State(state): State<CustodyState>,
+    ws: WebSocketUpgrade,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> axum::response::Response {
+    // Auth: check token query param
+    let auth_ok = if let Some(token) = params.get("token") {
+        state.config.api_auth_token.as_deref() == Some(token.as_str())
+    } else {
+        false
+    };
+
+    if !auth_ok {
+        return axum::response::Response::builder()
+            .status(401)
+            .body(axum::body::Body::from("Unauthorized: provide ?token=<api_auth_token>"))
+            .unwrap_or_default();
+    }
+
+    let event_filter: Vec<String> = params
+        .get("filter")
+        .map(|f| f.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+        .unwrap_or_default();
+
+    let event_rx = state.event_tx.subscribe();
+
+    ws.on_upgrade(move |socket| handle_ws_events(socket, event_rx, event_filter))
+}
+
+async fn handle_ws_events(
+    mut socket: WebSocket,
+    mut event_rx: broadcast::Receiver<CustodyWebhookEvent>,
+    event_filter: Vec<String>,
+) {
+    info!("WebSocket event subscriber connected (filter: {:?})", event_filter);
+
+    loop {
+        tokio::select! {
+            // Forward custody events to the WebSocket client
+            result = event_rx.recv() => {
+                match result {
+                    Ok(event) => {
+                        // Apply event type filter
+                        if !event_filter.is_empty() && !event_filter.contains(&event.event_type) {
+                            continue;
+                        }
+                        let payload = match serde_json::to_string(&event) {
+                            Ok(p) => p,
+                            Err(_) => continue,
+                        };
+                        if socket.send(WsMessage::Text(payload)).await.is_err() {
+                            break; // Client disconnected
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        tracing::warn!("WebSocket subscriber lagged, dropped {} events", n);
+                        let warning = json!({
+                            "warning": "lagged",
+                            "dropped_events": n,
+                        });
+                        let _ = socket.send(WsMessage::Text(warning.to_string())).await;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            // Handle incoming messages from the client (ping/pong, close)
+            msg = socket.recv() => {
+                match msg {
+                    Some(Ok(WsMessage::Close(_))) | None => break,
+                    Some(Ok(WsMessage::Ping(data))) => {
+                        let _ = socket.send(WsMessage::Pong(data)).await;
+                    }
+                    _ => {} // Ignore text/binary from client
+                }
+            }
+        }
+    }
+
+    info!("WebSocket event subscriber disconnected");
+}
+
+// ── Webhook Dispatcher (Background Worker) ──
+
+/// Background loop that receives events from the broadcast channel and
+/// delivers them to all registered webhook endpoints with HMAC-SHA256 signatures.
+async fn webhook_dispatcher_loop(
+    state: CustodyState,
+    event_rx: &mut broadcast::Receiver<CustodyWebhookEvent>,
+) {
+    info!("🔔 Webhook dispatcher started");
+
+    loop {
+        match event_rx.recv().await {
+            Ok(event) => {
+                let webhooks = match list_all_webhooks(&state.db) {
+                    Ok(w) => w,
+                    Err(e) => {
+                        tracing::warn!("failed to list webhooks: {}", e);
+                        continue;
+                    }
+                };
+
+                for webhook in webhooks {
+                    if !webhook.active {
+                        continue;
+                    }
+                    // Apply event filter
+                    if !webhook.event_filter.is_empty()
+                        && !webhook.event_filter.contains(&event.event_type)
+                    {
+                        continue;
+                    }
+
+                    let client = state.http.clone();
+                    let event_clone = event.clone();
+                    let webhook_clone = webhook.clone();
+
+                    // Fire-and-forget with retry (spawn per delivery to not block others)
+                    tokio::spawn(async move {
+                        deliver_webhook(&client, &webhook_clone, &event_clone).await;
+                    });
+                }
+            }
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                tracing::warn!("webhook dispatcher lagged, dropped {} events", n);
+            }
+            Err(broadcast::error::RecvError::Closed) => {
+                tracing::warn!("webhook dispatcher channel closed");
+                break;
+            }
+        }
+    }
+}
+
+/// Deliver a single event to a webhook endpoint with HMAC-SHA256 signature + retry.
+async fn deliver_webhook(
+    client: &reqwest::Client,
+    webhook: &WebhookRegistration,
+    event: &CustodyWebhookEvent,
+) {
+    let payload = match serde_json::to_vec(event) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("webhook payload encode failed: {}", e);
+            return;
+        }
+    };
+
+    // Compute HMAC-SHA256 signature
+    let signature = compute_webhook_signature(&payload, &webhook.secret);
+
+    // Retry up to 3 times with exponential backoff (1s, 2s, 4s)
+    for attempt in 0..3u32 {
+        if attempt > 0 {
+            sleep(Duration::from_secs(1 << attempt)).await;
+        }
+
+        let result = client
+            .post(&webhook.url)
+            .header("Content-Type", "application/json")
+            .header("X-Custody-Signature", &signature)
+            .header("X-Custody-Event", &event.event_type)
+            .header("X-Custody-Delivery", &event.event_id)
+            .header("X-Custody-Timestamp", event.timestamp.to_string())
+            .body(payload.clone())
+            .send()
+            .await;
+
+        match result {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() || status == reqwest::StatusCode::NO_CONTENT {
+                    tracing::debug!(
+                        "webhook delivered: {} → {} (event={})",
+                        event.event_type,
+                        webhook.url,
+                        event.event_id
+                    );
+                    return;
+                }
+                tracing::warn!(
+                    "webhook {} returned HTTP {} (attempt {}/3, event={})",
+                    webhook.url,
+                    status,
+                    attempt + 1,
+                    event.event_type
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "webhook {} delivery failed (attempt {}/3): {}",
+                    webhook.url,
+                    attempt + 1,
+                    e
+                );
+            }
+        }
+    }
+
+    tracing::error!(
+        "webhook delivery exhausted all retries: {} → {} (event={}, entity={})",
+        event.event_type,
+        webhook.url,
+        event.event_id,
+        event.entity_id,
+    );
+}
+
+/// Compute HMAC-SHA256 hex signature for webhook payload verification.
+fn compute_webhook_signature(payload: &[u8], secret: &str) -> String {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
+        .expect("HMAC accepts any key length");
+    mac.update(payload);
+    let result = mac.finalize().into_bytes();
+    hex::encode(result)
+}
+
+// ── API Auth Helper ──
+
+fn verify_api_auth(
+    config: &CustodyConfig,
+    headers: &axum::http::HeaderMap,
+) -> Result<(), Json<ErrorResponse>> {
+    let expected = config.api_auth_token.as_deref().unwrap_or("");
+    let provided = headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .unwrap_or("");
+
+    if expected.is_empty() || provided != expected {
+        return Err(Json(ErrorResponse {
+            code: "unauthorized",
+            message: "Invalid or missing Bearer token".to_string(),
+        }));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
