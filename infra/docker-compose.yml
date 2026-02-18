@@ -10,8 +10,8 @@ services:
       context: ..
       dockerfile: infra/Dockerfile.moltchain
     ports:
-      - "8000:8000"    # JSON-RPC + REST API
-      - "8001:8001"    # WebSocket
+      - "8899:8899"    # JSON-RPC + REST API
+      - "8900:8900"    # WebSocket
       - "9100:9100"    # Metrics (Prometheus)
     volumes:
       - chain-data:/data/state
@@ -19,12 +19,12 @@ services:
     environment:
       - RUST_LOG=info
       - MOLTCHAIN_DATA_DIR=/data/state
-      - MOLTCHAIN_RPC_PORT=8000
-      - MOLTCHAIN_WS_PORT=8001
+      - MOLTCHAIN_RPC_PORT=8899
+      - MOLTCHAIN_WS_PORT=8900
       - MOLTCHAIN_METRICS_PORT=9100
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-sf", "http://localhost:8000/", "-X", "POST", "-H", "Content-Type: application/json", "-d", '{"jsonrpc":"2.0","id":1,"method":"health"}']
+      test: ["CMD", "curl", "-sf", "http://localhost:8899/", "-X", "POST", "-H", "Content-Type: application/json", "-d", '{"jsonrpc":"2.0","id":1,"method":"health"}']
       interval: 10s
       timeout: 5s
       retries: 3

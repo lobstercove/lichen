@@ -438,8 +438,8 @@ All 7 contracts are Rust → WASM compiled. They store state in `CF_CONTRACT_STO
   - **Governance**: `getProposals()`, `getProposal()`, `createProposal()`, `vote()`
   - **WebSocket**: `subscribeTrades()`, `subscribeOrderBook()`, `subscribeTicker()`, `subscribeCandles()`, `subscribeMyOrders()`, `subscribeMyPositions()`, `disconnect()`
 
-- Default endpoint: `http://localhost:8000` (different from dex.js which uses `:8899`)
-- Default WS endpoint: `ws://localhost:8001` (different from dex.js which uses `:8900/ws`)
+- Default endpoint: `http://localhost:8899` (**FIXED** — matches dex.js)
+- Default WS endpoint: `ws://localhost:8900` (**FIXED** — matches dex.js)
 
 **`DexWebSocket` Class** (websocket.ts):
 
@@ -572,8 +572,8 @@ dex_analytics  → set_core_contract(dex_core)
 
 **Config** (`config.ts`, 97 lines):
 - Environment-variable–driven configuration
-- Default endpoint: `http://localhost:8000`
-- Default WS: `ws://localhost:8000/ws`
+- Default endpoint: `http://localhost:8899`
+- Default WS: `ws://localhost:8900/ws`
 - Default pair: 0 (MOLT/mUSD)
 - Default strategy: spread
 
@@ -721,13 +721,10 @@ Fresh chain boot:
 | Component | REST Port | WS Port |
 |-----------|-----------|---------|
 | `dex.js` | 8899 | 8900/ws |
-| SDK default | 8000 | 8001 |
-| Market-Maker config | 8000 | 8000/ws |
+| SDK default | 8899 | 8900 |
+| Market-Maker config | 8899 | 8900/ws |
 
-These should be unified. The canonical RPC port appears to be 8899 (matching `first-boot-deploy.sh` default).
-
-### 11c. Analytics Pipeline Gap
-
+All ports are now unified on the canonical RPC port 8899 (REST) and 8900 (WS).
 The `dex_analytics.record_trade()` function must be called after each trade to populate candles and 24h stats. Verify that `dex_core` cross-calls `dex_analytics.record_trade()` on each trade execution, or run an indexer that does so.
 
 ### 11d. ABI Conformance

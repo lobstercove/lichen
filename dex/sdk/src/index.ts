@@ -120,7 +120,7 @@ export type {
 export const VERSION = '1.0.0';
 
 /** Default API endpoint */
-export const DEFAULT_ENDPOINT = 'http://localhost:8000';
+export const DEFAULT_ENDPOINT = 'http://localhost:8899';
 
 /** Default WebSocket endpoint */
-export const DEFAULT_WS_ENDPOINT = 'ws://localhost:8001';
+export const DEFAULT_WS_ENDPOINT = 'ws://localhost:8900';

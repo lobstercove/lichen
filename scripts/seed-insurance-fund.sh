@@ -8,7 +8,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-RPC_URL="${MOLTCHAIN_RPC_URL:-http://localhost:8000}"
+RPC_URL="${MOLTCHAIN_RPC_URL:-http://localhost:8899}"
 AMOUNT=100000  # 100K MOLT default
 
 while [[ $# -gt 0 ]]; do

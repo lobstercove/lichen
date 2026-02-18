@@ -17,7 +17,7 @@ interface ScenarioResult {
   errors: string[];
 }
 
-const ENDPOINT = process.env.DEX_ENDPOINT || 'http://localhost:8000';
+const ENDPOINT = process.env.DEX_ENDPOINT || 'http://localhost:8899';
 const PAIR_ID = 0; // MOLT/mUSD
 
 async function measureLatency(fn: () => Promise<any>): Promise<{ ok: boolean; ms: number; error?: string }> {

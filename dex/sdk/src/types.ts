@@ -385,9 +385,9 @@ export interface WSPositionEvent {
 // ---------------------------------------------------------------------------
 
 export interface MoltDEXConfig {
-  /** REST API endpoint (default: http://localhost:8000) */
+  /** REST API endpoint (default: http://localhost:8899) */
   endpoint?: string;
-  /** WebSocket endpoint (default: ws://localhost:8001) */
+  /** WebSocket endpoint (default: ws://localhost:8900) */
   wsEndpoint?: string;
   /** Wallet keypair for signing transactions */
   wallet?: any; // Keypair from @moltchain/sdk

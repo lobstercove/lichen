@@ -67,9 +67,11 @@ USER moltchain
 WORKDIR /home/moltchain
 
 # P2P port
-EXPOSE 8000
+EXPOSE 7001
 # RPC port
-EXPOSE 9000
+EXPOSE 8899
+# WebSocket port
+EXPOSE 8900
 # Metrics port
 EXPOSE 9100
 
