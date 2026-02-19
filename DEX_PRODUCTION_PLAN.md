@@ -79,7 +79,7 @@
 | 8 | Pool View — Add/Remove/Collect | 14/14 | 7 | `[x]` |
 | 9 | Smart Order Router | 12/12 | 8 | `[x]` |
 | 10 | Margin Trading (Inline) | 16/16 | 11 | `[x]` |
-| 11 | Prediction Market — Markets & Cards | 0/14 | 0 | `[ ]` |
+| 11 | Prediction Market — Markets & Cards | 14/14 | 9 | `[x]` |
 | 12 | Prediction Market — Trade & Create | 0/16 | 0 | `[ ]` |
 | 13 | Rewards & Fee Mining | 0/14 | 0 | `[ ]` |
 | 14 | Governance — Proposals & Voting | 0/16 | 0 | `[ ]` |
@@ -93,7 +93,7 @@
 | 22 | Security & Input Validation | 0/14 | 0 | `[ ]` |
 | 23 | Mobile / Responsive Layout | 0/8 | 0 | `[ ]` |
 | 24 | End-to-End Integration Tests | 0/12 | 0 | `[ ]` |
-| — | **TOTAL** | **136/314** | **90** | **43%** |
+| — | **TOTAL** | **150/314** | **99** | **48%** |
 
 ---
 
@@ -451,23 +451,31 @@
 
 | # | Task | Status |
 |---|---|---|
-| 11.1 | Read `prediction_market` contract: `create_market` instruction — storage layout for markets | `[ ]` |
-| 11.2 | Read RPC `get_markets` handler (prediction.rs) — verify it reads contract storage, decodes correctly | `[ ]` |
-| 11.3 | Read `loadPredictionStats()` — verify stats endpoint returns real aggregated data | `[ ]` |
-| 11.4 | Verify market card rendering: question, category, YES/NO prices, volume, trader count, time remaining | `[ ]` |
-| 11.5 | Verify category filter buttons actually filter market cards (client-side vs server-side) | `[ ]` |
-| 11.6 | Verify sort dropdown (Volume, Newest, Ending Soon, Traders) sorts correctly | `[ ]` |
-| 11.7 | Read `openPredictChart()` — verify price history loads from `/markets/:id/price-history` | `[ ]` |
-| 11.8 | Verify canvas price chart renders with correct time-based X axis and 0-100% Y axis | `[ ]` |
-| 11.9 | Verify chart time range tabs (1H, 6H, 24H, 7D, 30D, ALL) filter data correctly | `[ ]` |
-| 11.10 | Test: create market via contract, confirm it appears in market grid | `[ ]` |
-| 11.11 | Verify market card click selects market in Quick Trade panel | `[ ]` |
-| 11.12 | Verify expired/resolved markets display correct status badges | `[ ]` |
-| 11.13 | Verify no-markets empty state renders correctly | `[ ]` |
-| 11.14 | Verify per-market analytics (unique traders, volume) — N+1 query performance concern | `[ ]` |
+| 11.1 | Read `prediction_market` contract: `create_market` instruction — storage layout for markets | `[x]` |
+| 11.2 | Read RPC `get_markets` handler (prediction.rs) — verify it reads contract storage, decodes correctly | `[x]` |
+| 11.3 | Read `loadPredictionStats()` — verify stats endpoint returns real aggregated data | `[x]` |
+| 11.4 | Verify market card rendering: question, category, YES/NO prices, volume, trader count, time remaining | `[x]` |
+| 11.5 | Verify category filter buttons actually filter market cards (client-side vs server-side) | `[x]` |
+| 11.6 | Verify sort dropdown (Volume, Newest, Ending Soon, Traders) sorts correctly | `[x]` |
+| 11.7 | Read `openPredictChart()` — verify price history loads from `/markets/:id/price-history` | `[x]` |
+| 11.8 | Verify canvas price chart renders with correct time-based X axis and 0-100% Y axis | `[x]` |
+| 11.9 | Verify chart time range tabs (1H, 6H, 24H, 7D, 30D, ALL) filter data correctly | `[x]` |
+| 11.10 | Test: create market via contract, confirm it appears in market grid | `[x]` |
+| 11.11 | Verify market card click selects market in Quick Trade panel | `[x]` |
+| 11.12 | Verify expired/resolved markets display correct status badges | `[x]` |
+| 11.13 | Verify no-markets empty state renders correctly | `[x]` |
+| 11.14 | Verify per-market analytics (unique traders, volume) — N+1 query performance concern | `[x]` |
 
 **Findings:**
-- (none yet)
+- **F11.1** CRITICAL: Category map mismatch between JS and contract. JS had `{general:0, crypto:1, sports:2, politics:3}` but contract uses `{politics:0, sports:1, crypto:2, science:3, entertainment:4, economics:5, tech:6, custom:7}`. **FIXED**: JS catMap now matches contract constants exactly.
+- **F11.2** CRITICAL: `buildCreateMarketArgs` hardcoded `close_slot=0`. Contract validates `close_slot > current_slot` and rejects 0. **FIXED**: Added closeSlot parameter; JS fetches current_slot from stats API and computes from predictCloseDate input (default 7 days).
+- **F11.3** CRITICAL: RPC computed outcome prices from `reserve` vs `total_shares` of a single outcome instead of cross-outcome reserves. **FIXED**: First collect all reserves, then compute CPMM price using `reserve_other / (reserve_self + reserve_other)` for binary and reciprocal formula for multi-outcome.
+- **F11.4** HIGH: Volume/collateral double-converted — `m.total_volume * 1e9` when RPC already divides by PRICE_SCALE. **FIXED**: Removed `* 1e9`.
+- **F11.5** HIGH: "Ending Soon" and "Traders" sort options had no handlers. **FIXED**: Added `ending` sort (ascending close_slot) and `traders` sort (descending trader count).
+- **F11.6** MEDIUM: Chart time range tabs showed identical data — range was stored but never used to filter. **FIXED**: Added `filterByRange()` helper that filters cached data by time window (1h/6h/1d/1w/30d/all).
+- **F11.7** MEDIUM: `close_slot` and `creator` not mapped from API response. **FIXED**: Added `closes: m.close_slot` and `creator: m.creator` to market object mapping.
+- **F11.8** MEDIUM: Only 'resolved' and 'disputed' had badges; all others showed 'Active'. **FIXED**: Added full statusMap for all 7 statuses (pending, active, closed, resolving, resolved, disputed, voided).
+- **F11.9** HIGH: N+1 per-market analytics queries (N HTTP calls per refresh). **FIXED**: Added `unique_traders` to MarketJson struct in RPC, populated from `pm_mtc_{id}` storage. Removed client-side N+1 fetch. Added `current_slot` to PlatformStatsJson.
 
 ---
 
