@@ -635,20 +635,15 @@ fn build_market_activity(
 fn emit_dex_events(
     state: &StateStore,
     dex_broadcaster: &moltchain_rpc::dex_ws::DexEventBroadcaster,
-    last_trade_count: &mut u64,
+    from_trade: u64,
+    to_trade: u64,
     slot: u64,
 ) {
     const PRICE_SCALE: f64 = 1_000_000_000.0;
 
-    // Read current trade count from dex_core storage
-    let trade_count = state.get_program_storage_u64("DEX", b"dex_trade_count");
-    if trade_count <= *last_trade_count {
-        return; // No new trades
-    }
-
     // Emit events for each new trade
     let mut affected_pairs = std::collections::HashSet::new();
-    for trade_id in (*last_trade_count + 1)..=trade_count {
+    for trade_id in (from_trade + 1)..=to_trade {
         let key = format!("dex_trade_{}", trade_id);
         if let Some(data) = state.get_program_storage("DEX", key.as_bytes()) {
             if data.len() >= 80 {
@@ -682,7 +677,7 @@ fn emit_dex_events(
         // Read best bid/ask from orderbook (simplified: last trade price as approximation)
         // Full orderbook reconstruction is expensive; emit a lightweight update
         // that tells subscribers to re-fetch
-        let trade_key = format!("dex_trade_{}", trade_count);
+        let trade_key = format!("dex_trade_{}", to_trade);
         if let Some(data) = state.get_program_storage("DEX", trade_key.as_bytes()) {
             if data.len() >= 32 {
                 let price_raw = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
@@ -705,7 +700,6 @@ fn emit_dex_events(
         }
     }
 
-    *last_trade_count = trade_count;
 }
 
 // ========================================================================
@@ -716,6 +710,7 @@ fn emit_dex_events(
 //  contract storage:
 //    • ana_lp_{pair_id}           — last trade price (overrides oracle)
 //    • ana_24h_{pair_id}          — 24h volume, OHLC, trade count
+//    • ana_24h_ts_{pair_id}       — unix timestamp of last 24h window reset
 //    • ana_c_{pair_id}_{iv}_{idx} — candles for all 9 intervals
 //    • ana_last_trade_ts_{pair_id}— unix timestamp of last real trade
 //                                   (used by oracle feeder to skip writes)
@@ -725,9 +720,89 @@ fn emit_dex_events(
 //  indicative prices when no real trade occurred within 60 seconds.
 // ========================================================================
 
+/// Rolling 24h window reset — called every block.
+/// Checks each trading pair's 24h stats window. If >86400 seconds have elapsed
+/// since the last reset, sets open=current close, zeroes volume/trades,
+/// resets high/low to current price.  This gives the user a true rolling 24h view.
+fn reset_24h_stats_if_expired(state: &StateStore) {
+    let analytics_pk = match state.get_symbol_registry("ANALYTICS") {
+        Ok(Some(entry)) => entry.program,
+        _ => return,
+    };
+
+    let now_ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    let pair_count = state.get_program_storage_u64("DEX", b"dex_pair_count");
+    for pair_id in 1..=pair_count {
+        let ts_key = format!("ana_24h_ts_{}", pair_id);
+        let last_reset = match state.get_contract_storage(&analytics_pk, ts_key.as_bytes()) {
+            Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
+            _ => 0,
+        };
+
+        // If never reset, seed the timestamp but don't clear stats (first boot)
+        if last_reset == 0 {
+            let _ = state.put_contract_storage(
+                &analytics_pk,
+                ts_key.as_bytes(),
+                &now_ts.to_le_bytes(),
+            );
+            continue;
+        }
+
+        // Check if 24 hours have elapsed
+        if now_ts.saturating_sub(last_reset) < 86400 {
+            continue;
+        }
+
+        // Window expired — read current close price, then reset
+        let stats_key = format!("ana_24h_{}", pair_id);
+        let current_close = match state.get_contract_storage(&analytics_pk, stats_key.as_bytes()) {
+            Ok(Some(d)) if d.len() >= 48 => {
+                u64::from_le_bytes(d[32..40].try_into().unwrap_or([0; 8]))
+            }
+            _ => {
+                // Fallback: try ana_lp_ (last traded price)
+                let lp_key = format!("ana_lp_{}", pair_id);
+                match state.get_contract_storage(&analytics_pk, lp_key.as_bytes()) {
+                    Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
+                    _ => 0,
+                }
+            }
+        };
+
+        // Reset: open = current close, volume = 0, trades = 0, high = close, low = close
+        let mut stats = Vec::with_capacity(48);
+        stats.extend_from_slice(&0u64.to_le_bytes());              // volume = 0
+        stats.extend_from_slice(&current_close.to_le_bytes());     // high = close
+        stats.extend_from_slice(&current_close.to_le_bytes());     // low = close
+        stats.extend_from_slice(&current_close.to_le_bytes());     // open = close
+        stats.extend_from_slice(&current_close.to_le_bytes());     // close = close
+        stats.extend_from_slice(&0u64.to_le_bytes());              // trades = 0
+        let _ = state.put_contract_storage(
+            &analytics_pk,
+            stats_key.as_bytes(),
+            &stats,
+        );
+
+        // Update reset timestamp
+        let _ = state.put_contract_storage(
+            &analytics_pk,
+            ts_key.as_bytes(),
+            &now_ts.to_le_bytes(),
+        );
+
+        debug!("📊 24h stats reset for pair {} (window expired)", pair_id);
+    }
+}
+
 fn bridge_dex_trades_to_analytics(
     state: &StateStore,
-    last_bridge_count: &mut u64,
+    from_trade: u64,
+    to_trade: u64,
     slot: u64,
 ) {
     const PRICE_SCALE: f64 = 1_000_000_000.0;
@@ -737,12 +812,6 @@ fn bridge_dex_trades_to_analytics(
         Ok(Some(entry)) => entry.program,
         _ => return, // no analytics contract deployed
     };
-
-    // Read current trade count from dex_core storage
-    let trade_count = state.get_program_storage_u64("DEX", b"dex_trade_count");
-    if trade_count <= *last_bridge_count {
-        return; // no new trades
-    }
 
     let now_ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -757,7 +826,7 @@ fn bridge_dex_trades_to_analytics(
     let mut pair_trades: std::collections::HashMap<u64, (u64, u64, u64, u64, u64)> =
         std::collections::HashMap::new();
 
-    for trade_id in (*last_bridge_count + 1)..=trade_count {
+    for trade_id in (from_trade + 1)..=to_trade {
         let key = format!("dex_trade_{}", trade_id);
         if let Some(data) = state.get_program_storage("DEX", key.as_bytes()) {
             if data.len() >= 80 {
@@ -854,8 +923,6 @@ fn bridge_dex_trades_to_analytics(
             pair_id, display_price, volume, new_trades
         );
     }
-
-    *last_bridge_count = trade_count;
 }
 
 /// Update a candle for trade-bridged data.
@@ -8538,11 +8605,40 @@ async fn run_validator() {
 
         emit_program_and_nft_events(&state, &ws_event_tx, &block);
 
-        // F6.2: Emit DEX WebSocket events for new trades/orders
-        emit_dex_events(&state, &ws_dex_broadcaster, &mut last_dex_trade_count, slot);
+        // PERF-OPT: Fire-and-forget DEX event emission + analytics bridge.
+        // Read the trade counter once (cheap), update tracking counters
+        // synchronously, then spawn the heavy I/O work (trade reads, WS
+        // broadcasts, analytics writes) on the blocking thread pool so the
+        // block production loop is not stalled.
+        {
+            let current_trade_count = state.get_program_storage_u64("DEX", b"dex_trade_count");
 
-        // Trade bridge: write real trade data to dex_analytics (prices, volume, candles)
-        bridge_dex_trades_to_analytics(&state, &mut last_bridge_trade_count, slot);
+            // F6.2: Emit DEX WebSocket events for new trades/orders
+            if current_trade_count > last_dex_trade_count {
+                let prev = last_dex_trade_count;
+                last_dex_trade_count = current_trade_count;
+                let state_c = state.clone();
+                let bc_c = ws_dex_broadcaster.clone();
+                let slot_c = slot;
+                tokio::task::spawn_blocking(move || {
+                    emit_dex_events(&state_c, &bc_c, prev, current_trade_count, slot_c);
+                });
+            }
+
+            // Trade bridge: write real trade data to dex_analytics
+            if current_trade_count > last_bridge_trade_count {
+                let prev = last_bridge_trade_count;
+                last_bridge_trade_count = current_trade_count;
+                let state_c = state.clone();
+                let slot_c = slot;
+                tokio::task::spawn_blocking(move || {
+                    bridge_dex_trades_to_analytics(&state_c, prev, current_trade_count, slot_c);
+                });
+            }
+        }
+
+        // Rolling 24h window reset: check if any pair's 24h stats need to roll over
+        reset_24h_stats_if_expired(&state);
 
         // Broadcast block event to WebSocket subscribers
         let _ = ws_event_tx.send(moltchain_rpc::ws::Event::Block(block.clone()));

@@ -265,7 +265,7 @@ pub struct Stats24hJson {
     pub change_percent: f64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct TickerJson {
     pub pair_id: u64,
@@ -483,6 +483,11 @@ fn current_slot(state: &crate::RpcState) -> u64 {
 /// Symbol map cache: (last_refresh, cached_map). Refreshes every 30 seconds.
 static SYMBOL_MAP_CACHE: Mutex<Option<(Instant, HashMap<String, String>)>> = Mutex::new(None);
 const SYMBOL_CACHE_TTL_SECS: u64 = 30;
+
+/// Ticker cache: avoids 4+ DB reads per pair on every /tickers request.
+/// TTL 2 seconds — fast enough for live trading, avoids O(pairs × 4) reads.
+static TICKERS_CACHE: Mutex<Option<(Instant, Vec<TickerJson>, u64)>> = Mutex::new(None);
+const TICKERS_CACHE_TTL_SECS: u64 = 2;
 
 /// Build a hex-address→display-symbol map for known token contracts.
 /// Uses the symbol registry to resolve contract names to pubkey addresses,
@@ -1388,6 +1393,16 @@ async fn get_pair_ticker(State(state): State<Arc<RpcState>>, Path(pair_id): Path
 
 /// GET /api/v1/tickers — All tickers
 async fn get_all_tickers(State(state): State<Arc<RpcState>>) -> Response {
+    // PERF-OPT: Check ticker cache (2s TTL)
+    {
+        let cache = TICKERS_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((ref ts, ref cached, cached_slot)) = *cache {
+            if ts.elapsed().as_secs() < TICKERS_CACHE_TTL_SECS {
+                return ApiResponse::ok(cached.clone(), cached_slot).into_response();
+            }
+        }
+    }
+
     let count = read_u64(&state, DEX_CORE_PROGRAM, "dex_pair_count");
     let slot = current_slot(&state);
     let mut tickers = Vec::new();
@@ -1439,6 +1454,12 @@ async fn get_all_tickers(State(state): State<Arc<RpcState>>) -> Response {
             low_24h,
             trades_24h,
         });
+    }
+
+    // Update cache
+    {
+        let mut cache = TICKERS_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        *cache = Some((Instant::now(), tickers.clone(), slot));
     }
 
     ApiResponse::ok(tickers, slot).into_response()

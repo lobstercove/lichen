@@ -622,7 +622,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (Array.isArray(data) && data.length > 0) {
                 pairs = data.map(p => ({
                     id: p.symbol || `Pair#${p.pairId}`, pairId: p.pairId, base: p.baseSymbol || p.baseToken, quote: p.quoteSymbol || p.quoteToken,
-                    price: p.lastPrice || 0, change: p.change24h || 0, tickSize: p.tickSize, lotSize: p.lotSize, symbol: p.symbol,
+                    price: p.lastPrice || 0, change: p.change24h ?? 0, tickSize: p.tickSize, lotSize: p.lotSize, symbol: p.symbol,
                 }));
             }
         } catch (e) { console.warn('[DEX] Pairs API unavailable:', e.message); }
@@ -781,7 +781,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (d.lastPrice) {
                 state.lastPrice = d.lastPrice;
                 const pair = pairs.find(p => p.pairId === pairId);
-                if (pair) { pair.price = d.lastPrice; pair.change = d.change24h || pair.change; }
+                if (pair) { pair.price = d.lastPrice; pair.change = d.change24h ?? pair.change; }
                 updateTickerDisplay();
                 renderPairList(); // F1 fix: refresh dropdown prices on every ticker update
             }
@@ -867,9 +867,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function updatePairStats(pair) {
         const stats = document.querySelectorAll('.pair-stats .stat-item .stat-value');
-        if (stats.length >= 4) loadTicker(pair.pairId).then(t => {
-            if (t) { stats[0].textContent = formatPrice(t.high24h || 0); stats[1].textContent = formatPrice(t.low24h || 0); stats[2].textContent = formatVolume((t.volume24h || 0) / 1e9); stats[3].textContent = String(t.trades24h || '0'); }
-            else { stats[0].textContent = '--'; stats[1].textContent = '--'; stats[2].textContent = '--'; stats[3].textContent = '0'; }
+        if (stats.length >= 5) loadTicker(pair.pairId).then(t => {
+            if (t) {
+                const ch = t.change24h ?? 0;
+                const chEl = stats[0];
+                chEl.textContent = `${ch >= 0 ? '+' : ''}${ch.toFixed(2)}%`;
+                chEl.className = `stat-value ${ch >= 0 ? 'positive' : 'negative'}`;
+                stats[1].textContent = formatPrice(t.high24h || 0);
+                stats[2].textContent = formatPrice(t.low24h || 0);
+                stats[3].textContent = formatVolume((t.volume24h || 0) / 1e9);
+                stats[4].textContent = String(t.trades24h || '0');
+            } else {
+                stats[0].textContent = '--'; stats[0].className = 'stat-value';
+                stats[1].textContent = '--'; stats[2].textContent = '--';
+                stats[3].textContent = '--'; stats[4].textContent = '0';
+            }
         });
     }
 
@@ -894,7 +906,20 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         const ma = Math.max(...state.orderBook.asks.map(a => a.total), 1), mb = Math.max(...state.orderBook.bids.map(b => b.total), 1);
         ac.innerHTML = [...state.orderBook.asks].reverse().map(a => `<div class="book-row ask"><span class="price">${formatPrice(a.price)}</span><span>${formatAmount(a.amount)}</span><span>${formatAmount(a.total)}</span><div class="depth-bar" style="width:${(a.total/ma*100).toFixed(1)}%"></div></div>`).join('');
-        if (sp) { const tb = state.orderBook.bids[0]?.price || 0, ba = state.orderBook.asks[0]?.price || 0; sp.textContent = formatPrice((tb + ba) / 2); if (sv) { const s = ba - tb; sv.textContent = `Spread: ${formatPrice(Math.abs(s))} (${ba > 0 ? (s/ba*100).toFixed(3) : '0.000'}%)`; } }
+        if (sp) {
+            // Show last traded price in the spread bar (like Binance), not mid-price
+            const marketPrice = state.lastPrice || 0;
+            sp.textContent = formatPrice(marketPrice);
+            // Color the market price: green if >= previous, red if below
+            const prevDir = state._prevSpreadPrice || 0;
+            sp.className = `spread-price ${marketPrice >= prevDir ? 'positive' : 'negative'}`;
+            state._prevSpreadPrice = marketPrice;
+            if (sv) {
+                const tb = state.orderBook.bids[0]?.price || 0, ba = state.orderBook.asks[0]?.price || 0;
+                const s = ba - tb;
+                sv.textContent = `Spread: ${formatPrice(Math.abs(s))} (${ba > 0 ? (s/ba*100).toFixed(3) : '0.000'}%)`;
+            }
+        }
         bc.innerHTML = state.orderBook.bids.map(b => `<div class="book-row bid"><span class="price">${formatPrice(b.price)}</span><span>${formatAmount(b.amount)}</span><span>${formatAmount(b.total)}</span><div class="depth-bar" style="width:${(b.total/mb*100).toFixed(1)}%"></div></div>`).join('');
     }
 
@@ -3123,7 +3148,7 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 await loadOrderBook();
                 const t = await loadTicker(state.activePairId);
-                if (t?.lastPrice) { state.lastPrice = t.lastPrice; const p = pairs.find(x => x.pairId === state.activePairId); if (p) { p.price = t.lastPrice; p.change = t.change24h || p.change; } updateTickerDisplay(); streamBarUpdate(t.lastPrice, 0); }
+                if (t?.lastPrice) { state.lastPrice = t.lastPrice; const p = pairs.find(x => x.pairId === state.activePairId); if (p) { p.price = t.lastPrice; p.change = t.change24h ?? p.change; } updateTickerDisplay(); updatePairStats(state.activePair); streamBarUpdate(t.lastPrice, 0); }
             } catch { /* API unavailable */ }
         }
         if (state.currentView === 'predict') {
@@ -3160,7 +3185,7 @@ document.addEventListener('DOMContentLoaded', () => {
         for (const p of pairs) {
             try {
                 const t = await loadTicker(p.pairId);
-                if (t?.lastPrice) { p.price = t.lastPrice; p.change = t.change24h || p.change; }
+                if (t?.lastPrice) { p.price = t.lastPrice; p.change = t.change24h ?? p.change; }
             } catch { /* API unavailable for this pair */ }
         }
         renderPairList();
