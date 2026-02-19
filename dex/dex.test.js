@@ -2915,6 +2915,143 @@ assert(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Phase 15: Wallet Gating & UX States
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n── Phase 15: Wallet Gating & UX States ──');
+
+// P15.1: applyWalletGateAll gates at least 10 different elements
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const fnStart = dexJs.indexOf('function applyWalletGateAll()');
+    assert(fnStart > 0, 'P15.1: applyWalletGateAll function exists');
+    const fnSection = dexJs.substring(fnStart, fnStart + 5000);
+    // Count distinct querySelector/getElementById calls
+    const selectors = fnSection.match(/querySelector\(|getElementById\(|querySelectorAll\(/g) || [];
+    assert(selectors.length >= 10, 'P15.1: applyWalletGateAll gates at least 10 element selectors');
+}
+
+// P15.2: Trade view gates .order-form-panel (not just .order-form)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const fnStart = dexJs.indexOf('function applyWalletGateAll()');
+    const fnSection = dexJs.substring(fnStart, fnStart + 500);
+    assert(fnSection.includes("'.order-form-panel'"), 'P15.2: Gates .order-form-panel for trade tabs/type/mode coverage');
+}
+
+// P15.3: Submit button shows "Connect Wallet to Trade" when disconnected
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const fnStart = dexJs.indexOf('function applyWalletGateAll()');
+    const fnSection = dexJs.substring(fnStart, fnStart + 800);
+    assert(fnSection.includes('Connect Wallet to Trade'), 'P15.3: Submit button shows "Connect Wallet to Trade"');
+}
+
+// P15.4: Predict trade panel wallet-gated
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const fnStart = dexJs.indexOf('function applyWalletGateAll()');
+    const fnSection = dexJs.substring(fnStart, fnStart + 1500);
+    assert(fnSection.includes("'.predict-trade-panel'"), 'P15.4: predict-trade-panel is wallet-gated');
+}
+
+// P15.5: Predict create panel wallet-gated
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const fnStart = dexJs.indexOf('function applyWalletGateAll()');
+    const fnSection = dexJs.substring(fnStart, fnStart + 1500);
+    assert(fnSection.includes("'.predict-create-panel'"), 'P15.5: predict-create-panel is wallet-gated');
+}
+
+// P15.6: Pool add liquidity form wallet-gated
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const fnStart = dexJs.indexOf('function applyWalletGateAll()');
+    const fnSection = dexJs.substring(fnStart, fnStart + 5000);
+    assert(fnSection.includes("'addLiqForm'"), 'P15.6: addLiqForm is wallet-gated');
+}
+
+// P15.7: Pool per-row Add buttons dynamically gated
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const fnStart = dexJs.indexOf('function applyWalletGateAll()');
+    const fnSection = dexJs.substring(fnStart, fnStart + 7000);
+    assert(fnSection.includes("'.pool-add-btn'"), 'P15.7: pool-add-btn buttons are dynamically gated in applyWalletGateAll');
+}
+
+// P15.8: Margin form card wallet-gated
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const fnStart = dexJs.indexOf('function applyWalletGateAll()');
+    const fnSection = dexJs.substring(fnStart, fnStart + 5000);
+    assert(fnSection.includes("'.margin-form-card'"), 'P15.8: margin-form-card is wallet-gated');
+}
+
+// P15.9: Per-source Claim buttons have claim-btn class and are gated
+{
+    const html = fs.readFileSync(indexHtmlPath, 'utf8');
+    const tradingClaim = html.indexOf('Trading Rewards');
+    const lpClaim = html.indexOf('LP Mining');
+    assert(tradingClaim > 0 && lpClaim > 0, 'P15.9: Trading Rewards and LP Mining sections exist');
+    const tradingSection = html.substring(tradingClaim, tradingClaim + 200);
+    const lpSection = html.substring(lpClaim, lpClaim + 200);
+    assert(tradingSection.includes('claim-btn'), 'P15.9: Trading Rewards Claim button has claim-btn class');
+    assert(lpSection.includes('claim-btn'), 'P15.9: LP Mining Claim button has claim-btn class');
+    // Also verify applyWalletGateAll disables them
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const fnStart = dexJs.indexOf('function applyWalletGateAll()');
+    const fnSection = dexJs.substring(fnStart, fnStart + 3000);
+    const dexJs2 = fs.readFileSync(dexJsPath, 'utf8');
+    const fnStart2 = dexJs2.indexOf('function applyWalletGateAll()');
+    const fnSection2 = dexJs2.substring(fnStart2, fnStart2 + 7000);
+    assert(fnSection2.includes('.rewards-sources .claim-btn'), 'P15.9: Per-source claim buttons gated in applyWalletGateAll');
+}
+
+// P15.10: Governance vote buttons dynamically gated
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const fnStart = dexJs.indexOf('function applyWalletGateAll()');
+    const fnSection = dexJs.substring(fnStart, fnStart + 7000);
+    assert(fnSection.includes("'.vote-btn'"), 'P15.10: vote-btn buttons are dynamically gated in applyWalletGateAll');
+}
+
+// P15.11: Bottom panels hidden via toggleWalletPanels
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const fnStart = dexJs.indexOf('function toggleWalletPanels');
+    assert(fnStart > 0, 'P15.11: toggleWalletPanels function exists');
+    const fnSection = dexJs.substring(fnStart, fnStart + 1000);
+    assert(fnSection.includes('tradeBottomPanel'), 'P15.11: tradeBottomPanel hidden when disconnected');
+    assert(fnSection.includes('predictBottomPanel'), 'P15.11: predictBottomPanel hidden when disconnected');
+}
+
+// P15.12: Wallet balance panel hidden via toggleWalletPanels
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const fnStart = dexJs.indexOf('function toggleWalletPanels');
+    const fnSection = dexJs.substring(fnStart, fnStart + 1000);
+    assert(fnSection.includes('walletBalancePanel'), 'P15.12: walletBalancePanel hidden when disconnected');
+}
+
+// P15.13: disconnectWallet calls applyWalletGateAll
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const disconnectStart = dexJs.indexOf('function disconnectWallet');
+    assert(disconnectStart > 0, 'P15.13: disconnectWallet function exists');
+    const fnSection = dexJs.substring(disconnectStart, disconnectStart + 500);
+    assert(fnSection.includes('applyWalletGateAll'), 'P15.13: disconnectWallet calls applyWalletGateAll');
+}
+
+// P15.14: connectWalletTo calls applyWalletGateAll
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const connectStart = dexJs.indexOf('async function connectWalletTo');
+    assert(connectStart > 0, 'P15.14: connectWalletTo function exists');
+    const fnSection = dexJs.substring(connectStart, connectStart + 1000);
+    assert(fnSection.includes('applyWalletGateAll'), 'P15.14: connectWalletTo calls applyWalletGateAll');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Summary
 // ═══════════════════════════════════════════════════════════════════════════
 console.log(`\n${'═'.repeat(60)}`);

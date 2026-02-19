@@ -83,7 +83,7 @@
 | 12 | Prediction Market — Trade & Create | 16/16 | 12 | `[x]` |
 | 13 | Rewards & Fee Mining | 14/14 | 14 | `[x]` |
 | 14 | Governance — Proposals & Voting | 16/16 | 16 | `[x]` |
-| 15 | Wallet Gating & UX States | 0/14 | 0 | `[ ]` |
+| 15 | Wallet Gating & UX States | 14/14 | 5 | `[x]` |
 | 16 | Data Format Consistency | 0/16 | 0 | `[ ]` |
 | 17 | Real-Time Updates & Polling | 0/10 | 0 | `[ ]` |
 | 18 | Analytics Contract Wiring | 0/10 | 0 | `[ ]` |
@@ -93,7 +93,7 @@
 | 22 | Security & Input Validation | 0/14 | 0 | `[ ]` |
 | 23 | Mobile / Responsive Layout | 0/8 | 0 | `[ ]` |
 | 24 | End-to-End Integration Tests | 0/12 | 0 | `[ ]` |
-| — | **TOTAL** | **196/314** | **141** | **62%** |
+| — | **TOTAL** | **210/314** | **146** | **67%** |
 
 ---
 
@@ -606,23 +606,27 @@
 
 | # | Task | Status |
 |---|---|---|
-| 15.1 | Read `applyWalletGateAll()` (dex.js) — map every element it touches | `[ ]` |
-| 15.2 | Verify Trade view: order form inputs, presets, tabs all disabled when disconnected | `[ ]` |
-| 15.3 | Verify Trade view: submit button shows "Connect Wallet to Trade" when disconnected | `[ ]` |
-| 15.4 | Verify Predict view: Quick Trade panel fully disabled (inputs + YES/NO toggles) when disconnected | `[ ]` |
-| 15.5 | Verify Predict view: Create Market panel fully disabled when disconnected | `[ ]` |
-| 15.6 | Verify Pool view: Add Liquidity form fully disabled when disconnected | `[ ]` |
-| 15.7 | **Verify Pool view: per-row "Add" buttons in pool table disabled when disconnected** | `[ ]` |
-| 15.8 | Verify Margin view: position form fully disabled when disconnected | `[ ]` |
-| 15.9 | Verify Rewards view: all Claim buttons disabled when disconnected | `[ ]` |
-| 15.10 | Verify Governance view: proposal form and vote buttons disabled when disconnected | `[ ]` |
-| 15.11 | Verify bottom panels (Open Orders, Positions, My Markets, etc.) hidden when disconnected | `[ ]` |
-| 15.12 | Verify wallet balance panel hidden when disconnected | `[ ]` |
-| 15.13 | Test wallet disconnect: all gated elements revert to disabled state | `[ ]` |
-| 15.14 | Test wallet reconnect: all gated elements re-enable correctly | `[ ]` |
+| 15.1 | Read `applyWalletGateAll()` (dex.js) — map every element it touches | `[x]` |
+| 15.2 | Verify Trade view: order form inputs, presets, tabs all disabled when disconnected | `[x]` |
+| 15.3 | Verify Trade view: submit button shows "Connect Wallet to Trade" when disconnected | `[x]` |
+| 15.4 | Verify Predict view: Quick Trade panel fully disabled (inputs + YES/NO toggles) when disconnected | `[x]` |
+| 15.5 | Verify Predict view: Create Market panel fully disabled when disconnected | `[x]` |
+| 15.6 | Verify Pool view: Add Liquidity form fully disabled when disconnected | `[x]` |
+| 15.7 | **Verify Pool view: per-row "Add" buttons in pool table disabled when disconnected** | `[x]` |
+| 15.8 | Verify Margin view: position form fully disabled when disconnected | `[x]` |
+| 15.9 | Verify Rewards view: all Claim buttons disabled when disconnected | `[x]` |
+| 15.10 | Verify Governance view: proposal form and vote buttons disabled when disconnected | `[x]` |
+| 15.11 | Verify bottom panels (Open Orders, Positions, My Markets, etc.) hidden when disconnected | `[x]` |
+| 15.12 | Verify wallet balance panel hidden when disconnected | `[x]` |
+| 15.13 | Test wallet disconnect: all gated elements revert to disabled state | `[x]` |
+| 15.14 | Test wallet reconnect: all gated elements re-enable correctly | `[x]` |
 
 **Findings:**
-- (none yet)
+- F15.2: `.order-form` too narrow — tabs/type-selector/mode-toggle are siblings outside `#orderForm`. Changed gate target to `.order-form-panel`.
+- F15.7: `.pool-add-btn` only gated at render time, not by `applyWalletGateAll()`. Added dynamic toggle.
+- F15.9: Per-source Claim buttons lacked `claim-btn` class and were not gated. Added class to HTML + explicit disable in `applyWalletGateAll()`.
+- F15.10: `.vote-btn` not addressed by `applyWalletGateAll()`. Added dynamic toggle.
+- F15.13/14: Gaps from 15.2/7/9/10 left elements un-reverted on disconnect/reconnect. Fixed by above additions.
 
 ---
 
