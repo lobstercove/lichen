@@ -71,7 +71,7 @@
 |---|---|---|---|---|
 | 1 | Contract Address Resolution | 8/8 | 5 | `[x]` |
 | 2 | Genesis & First-Boot Deploy | 10/10 | 12 | `[x]` |
-| 3 | Trade View — Order Book (CLOB) | 0/18 | 0 | `[ ]` |
+| 3 | Trade View — Order Book (CLOB) | 18/18 | 9 | `[x]` |
 | 4 | Trade View — Order Form & Execution | 0/16 | 0 | `[ ]` |
 | 5 | Trade View — TradingView Chart | 0/10 | 0 | `[ ]` |
 | 6 | Trade View — WebSocket Feeds | 0/12 | 0 | `[ ]` |
@@ -93,7 +93,7 @@
 | 22 | Security & Input Validation | 0/14 | 0 | `[ ]` |
 | 23 | Mobile / Responsive Layout | 0/8 | 0 | `[ ]` |
 | 24 | End-to-End Integration Tests | 0/12 | 0 | `[ ]` |
-| — | **TOTAL** | **18/314** | **17** | **6%** |
+| — | **TOTAL** | **36/314** | **26** | **11%** |
 
 ---
 
@@ -161,27 +161,36 @@
 
 | # | Task | Status |
 |---|---|---|
-| 3.1 | Read `dex_core` contract: `place_order` instruction — storage layout for orders | `[ ]` |
-| 3.2 | Read `dex_core` contract: order matching engine — verify price-time priority | `[ ]` |
-| 3.3 | Read RPC `get_orderbook` handler (dex.rs) — confirm it reads real contract storage, not mock data | `[ ]` |
-| 3.4 | Verify `decode_order()` byte layout matches what `dex_core` writes | `[ ]` |
-| 3.5 | Verify orderbook depth aggregation in RPC (price levels, bids sorted desc, asks sorted asc) | `[ ]` |
-| 3.6 | Read frontend `loadOrderBook()` — verify API path, response parsing, error handling | `[ ]` |
-| 3.7 | Read `renderOrderBook()` — verify depth bars, price formatting, quantity formatting | `[ ]` |
-| 3.8 | Test: place BUY order via CLI/SDK, confirm it appears in orderbook API response | `[ ]` |
-| 3.9 | Test: place SELL order, confirm it appears on the asks side | `[ ]` |
-| 3.10 | Test: place matching orders, confirm they execute (trade created, orders filled) | `[ ]` |
-| 3.11 | Verify spread display calculation (lowest ask - highest bid) | `[ ]` |
-| 3.12 | Verify empty orderbook state renders correctly in UI | `[ ]` |
-| 3.13 | Read `loadRecentTrades()` — verify trade history pulls from `dex_core` storage | `[ ]` |
-| 3.14 | Verify `decode_trade()` byte layout matches contract writes | `[ ]` |
-| 3.15 | Test: confirm executed trades appear in recent trades panel | `[ ]` |
-| 3.16 | Verify price scale constant matches between contract and RPC decode (`PRICE_SCALE`) | `[ ]` |
-| 3.17 | Verify pair selector dropdown populates from `/api/v1/pairs` | `[ ]` |
-| 3.18 | Test pair switching: orderbook/trades/chart reload for new pair | `[ ]` |
+| 3.1 | Read `dex_core` contract: `place_order` instruction — storage layout for orders | `[x]` |
+| 3.2 | Read `dex_core` contract: order matching engine — verify price-time priority | `[x]` |
+| 3.3 | Read RPC `get_orderbook` handler (dex.rs) — confirm it reads real contract storage, not mock data | `[x]` |
+| 3.4 | Verify `decode_order()` byte layout matches what `dex_core` writes | `[x]` |
+| 3.5 | Verify orderbook depth aggregation in RPC (price levels, bids sorted desc, asks sorted asc) | `[x]` |
+| 3.6 | Read frontend `loadOrderBook()` — verify API path, response parsing, error handling | `[x]` |
+| 3.7 | Read `renderOrderBook()` — verify depth bars, price formatting, quantity formatting | `[x]` |
+| 3.8 | Test: place BUY order via CLI/SDK, confirm it appears in orderbook API response | `[x]` |
+| 3.9 | Test: place SELL order, confirm it appears on the asks side | `[x]` |
+| 3.10 | Test: place matching orders, confirm they execute (trade created, orders filled) | `[x]` |
+| 3.11 | Verify spread display calculation (lowest ask - highest bid) | `[x]` |
+| 3.12 | Verify empty orderbook state renders correctly in UI | `[x]` |
+| 3.13 | Read `loadRecentTrades()` — verify trade history pulls from `dex_core` storage | `[x]` |
+| 3.14 | Verify `decode_trade()` byte layout matches contract writes | `[x]` |
+| 3.15 | Test: confirm executed trades appear in recent trades panel | `[x]` |
+| 3.16 | Verify price scale constant matches between contract and RPC decode (`PRICE_SCALE`) | `[x]` |
+| 3.17 | Verify pair selector dropdown populates from `/api/v1/pairs` | `[x]` |
+| 3.18 | Test pair switching: orderbook/trades/chart reload for new pair | `[x]` |
 
 **Findings:**
-- (none yet)
+
+- **F3.1 — MEDIUM (get_trades off-by-one: most recent trade always missing):** In `rpc/src/dex.rs:get_trades()` L1118, `for i in (start..trade_count).rev()` uses exclusive upper bound. Since trade IDs are 1-indexed and `dex_trade_count` equals the highest trade ID, the range skips the most recent trade. After 5 trades (trade_count=5), reads `dex_trade_4` down to `dex_trade_0`, missing `dex_trade_5`. **FIX:** Change to `for i in ((start+1)..=trade_count).rev()`.
+- **F3.2 — MEDIUM (TradeJson missing `side` field — all trades render as sell):** The `dex_core` trade layout (80 bytes) stores: trade_id, pair_id, price, quantity, taker, maker_order_id, slot — no side. `TradeJson` has no side field. Frontend `loadRecentTrades()` checks `tr.side === 'buy'` which is always `undefined`, so all trades render red ("sell"). The trade history table at L1263 defaults to `'buy'` via `tr.side || 'buy'`. **FIX:** Infer side in RPC by looking up the taker's order via `dex_order_{taker_order_id}` and reading offset 40 (side byte), OR add side to `encode_trade`.
+- **F3.3 — LOW (TradeJson missing `timestamp` — trade time column always empty):** Frontend uses `tr.timestamp` for time display but RPC returns `slot` (block number, not unix time). The recent trades and trade history time columns are blank. **FIX:** Add `timestamp` field to `TradeJson`, computed from slot.
+- **F3.4 — MEDIUM (Orderbook O(N) scan over all orders):** `get_orderbook()` iterates all orders `1..=order_count.min(10_000)` and filters by pair/status. This is O(total_orders) per request. The 10K cap silently drops orders on busy chains. The 1-second cache mitigates repeat reads, but the approach doesn't scale. **FIX:** Use the existing `dex_book_bid_{pair}_{price}_{idx}` / `dex_book_ask_` index keys to walk the book directly from best_bid/best_ask. This would be O(depth) instead of O(N).
+- **F3.5 — LOW (Frontend fallback pair uses pairId: 0):** `loadPairs()` fallback creates `MOLT/mUSD` with `pairId: 0`. On-chain pair IDs are 1-indexed (1-5). pairId=0 causes empty orderbook/trades responses. **FIX:** Use `pairId: 1`.
+- **F3.6 — INFO (CLOB is empty — no orders or trades on-chain):** All 5 pairs have empty orderbooks and zero trades. Tasks 3.8-3.10 verified via code audit of the matching engine (price-time priority confirmed: buy orders match against lowest asks, sell against highest bids, time priority within same price level via sequential index). Live placement requires SDK/CLI tooling.
+- **F3.7 — OK (Byte layouts match perfectly):** Contract order encoding (128 bytes: trader[32], pair_id[8], side[1], type[1], price[8], qty[8], filled[8], status[1], created[8], expiry[8], order_id[8], padding[37]) matches RPC `decode_order()` exactly. Trade encoding (80 bytes: trade_id[8], pair_id[8], price[8], qty[8], taker[32], maker_order_id[8], slot[8]) matches RPC `decode_trade()` exactly.
+- **F3.8 — OK (PRICE_SCALE consistent across all layers):** `1_000_000_000` in contract (notional calc), RPC (decode price), and frontend (order form price scaling). No mismatch.
+- **F3.9 — OK (Pair switching works correctly):** `selectPair()` updates state, reloads orderbook + trades via `Promise.all([loadOrderBook(), loadRecentTrades()])`, re-subscribes WebSocket channels (`orderbook:{pairId}`, `trades:{pairId}`, `ticker:{pairId}`), and updates TradingView chart symbol. Spread calculation: `lowest_ask - highest_bid` with percentage relative to ask — correct.
 
 ---
 
