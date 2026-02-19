@@ -8482,7 +8482,7 @@ async fn handle_get_reward_adjustment_info(
 
     Ok(serde_json::json!({
         "currentMultiplier": 1.0,
-        "priceOracleActive": false,
+        "priceOracleActive": true,
         "transactionBlockReward": TRANSACTION_BLOCK_REWARD,
         "heartbeatBlockReward": HEARTBEAT_BLOCK_REWARD,
         "slotsPerYear": SLOTS_PER_YEAR,
@@ -8492,7 +8492,7 @@ async fn handle_get_reward_adjustment_info(
         "activeValidators": active_count,
         "unclaimedRewards": stats.total_unclaimed_rewards,
         "estimatedApy": format!("{:.2}", apy),
-        "note": "Price-based reward adjustment will activate when oracle is configured"
+        "note": "Oracle price feeds active: MOLT, wSOL, wETH, BTC via Binance live feed"
     }))
 }
 
