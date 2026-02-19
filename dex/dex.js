@@ -424,15 +424,20 @@ document.addEventListener('DOMContentLoaded', () => {
         return arr;
     }
 
-    // Opcode 11: dao_resolve(caller, market_id, winning_outcome)
+    // F12.3 FIX: Use opcode 8 (submit_resolution) — proper resolution path
+    // dao_resolve (opcode 11) requires admin/DAO; submit_resolution works for any resolver with reputation
+    // Layout: op[0]=8, resolver[1:33], market_id[33:41], winning_outcome[41], attestation_hash[42:74], bond[74:82] = 82 bytes
     function buildResolveMarketArgs(caller, marketId, winningOutcome) {
-        const buf = new ArrayBuffer(42);
+        const buf = new ArrayBuffer(82);
         const view = new DataView(buf);
         const arr = new Uint8Array(buf);
-        writeU8(arr, 0, 11); // opcode
+        writeU8(arr, 0, 8); // opcode 8 = submit_resolution
         writePubkey(arr, 1, caller);
         writeU64LE(view, 33, marketId);
         writeU8(arr, 41, winningOutcome);
+        // attestation_hash: 32 zero bytes (oracle verification skipped when not configured)
+        // bond: DISPUTE_BOND = 100_000_000 (100 mUSD)
+        writeU64LE(view, 74, 100_000_000);
         return arr;
     }
 
@@ -458,6 +463,19 @@ document.addEventListener('DOMContentLoaded', () => {
         arr.set(hashBytes, 43);
         view.setUint32(75, qBytes.length, true); // question_len
         arr.set(qBytes, 79);
+        return arr;
+    }
+
+    // F12.8 FIX: Opcode 2: add_initial_liquidity(provider, market_id, amount_musd)
+    // Layout: op[0]=2, provider[1:33], market_id[33:41], amount_musd[41:49] = 49 bytes min
+    function buildAddInitialLiquidityArgs(provider, marketId, amountMusd) {
+        const buf = new ArrayBuffer(49);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 2); // opcode
+        writePubkey(arr, 1, provider);
+        writeU64LE(view, 33, marketId);
+        writeU64LE(view, 41, amountMusd);
         return arr;
     }
 
@@ -760,7 +778,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     const navLinks = document.querySelectorAll('.nav-menu a[data-view]');
     const views = document.querySelectorAll('.dex-main');
-    function switchView(v) { state.currentView = v; views.forEach(el => el.classList.toggle('hidden', el.id !== `view-${v}`)); navLinks.forEach(l => l.classList.toggle('active', l.dataset.view === v)); if (v === 'trade') { drawChart(); loadTradeHistory(); loadPositionsTab(); } if (v === 'predict') { loadPredictionStats(); loadPredictionMarkets(); loadPredictionPositions(); } if (v === 'pool') { loadPoolStats(); loadPools(); loadLPPositions(); } if (v === 'margin') { loadMarginStats(); loadMarginPositions(); } if (v === 'rewards') { loadRewardsStats(); } if (v === 'governance') { loadGovernanceStats(); loadProposals(); } }
+    function switchView(v) { state.currentView = v; views.forEach(el => el.classList.toggle('hidden', el.id !== `view-${v}`)); navLinks.forEach(l => l.classList.toggle('active', l.dataset.view === v)); if (v === 'trade') { drawChart(); loadTradeHistory(); loadPositionsTab(); } if (v === 'predict') { loadPredictionStats(); loadPredictionMarkets(); loadPredictionPositions(); loadCreatedMarkets(); } if (v === 'pool') { loadPoolStats(); loadPools(); loadLPPositions(); } if (v === 'margin') { loadMarginStats(); loadMarginPositions(); } if (v === 'rewards') { loadRewardsStats(); } if (v === 'governance') { loadGovernanceStats(); loadProposals(); } }
     navLinks.forEach(l => l.addEventListener('click', e => { e.preventDefault(); switchView(l.dataset.view); }));
 
     // Mobile nav toggle
@@ -1106,7 +1124,7 @@ document.addEventListener('DOMContentLoaded', () => {
         applyWalletGateAll();
         renderBalances(); renderOpenOrders();
         // Clear wallet-gated sections
-        loadTradeHistory(); loadPositionsTab(); loadLPPositions(); loadPredictionPositions();
+        loadTradeHistory(); loadPositionsTab(); loadLPPositions(); loadPredictionPositions(); loadCreatedMarkets();
     }
 
     function toggleWalletPanels(show) {
@@ -2205,6 +2223,35 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch { /* API unavailable */ }
     }
 
+    // F12.5 FIX: Load and render "My Markets" tab — markets created by connected wallet
+    async function loadCreatedMarkets() {
+        const tbody = document.getElementById('predictCreatedBody');
+        if (!tbody) return;
+        if (!state.connected) {
+            tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px;"><i class="fas fa-wallet" style="margin-right:6px;"></i>Connect wallet to view your markets</td></tr>';
+            return;
+        }
+        try {
+            const resp = await api.get(`/prediction-market/markets?creator=${encodeURIComponent(wallet.address)}`);
+            const markets = resp?.data?.markets || [];
+            if (!markets.length) {
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px;"><i class="fas fa-chart-pie" style="margin-right:6px;"></i>No markets created yet</td></tr>';
+                return;
+            }
+            tbody.innerHTML = markets.map(m => {
+                const closeDate = m.close_slot ? new Date(Date.now() + (m.close_slot - (m.created_slot || 0)) * 500).toLocaleDateString() : '—';
+                return `<tr>
+                    <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(m.question)}">${escapeHtml(m.question.slice(0, 60))}</td>
+                    <td>${m.category || '—'}</td>
+                    <td><span class="status-badge status-${m.status || 'active'}">${m.status || 'Active'}</span></td>
+                    <td>$${(m.total_volume || 0).toFixed(2)}</td>
+                    <td>${m.unique_traders || 0}</td>
+                    <td>${closeDate}</td>
+                </tr>`;
+            }).join('');
+        } catch { tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px;">Failed to load markets</td></tr>'; }
+    }
+
     // ─── Render market cards dynamically ────────────────────────
     function renderPredictionMarkets() {
         const grid = document.querySelector('.predict-markets-section');
@@ -2458,6 +2505,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }));
 
         // AUDIT-FIX F10.5: Claim winnings on resolved markets
+        // F12.7 FIX: Use position's actual outcome, not default 0
         document.querySelectorAll('.btn-predict-claim').forEach(btn => btn.addEventListener('click', async (e) => {
             e.stopPropagation();
             if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
@@ -2465,8 +2513,12 @@ document.addEventListener('DOMContentLoaded', () => {
             btn.disabled = true; btn.textContent = 'Claiming...';
             try {
                 const cardPos = predictState.positions?.find(p => p.market_id === mid);
-                const cardOutcome = cardPos ? cardPos.outcome : 0;
-                await wallet.sendTransaction([contractIx(contracts.prediction_market, buildRedeemSharesArgs(wallet.address, mid, cardOutcome))]);
+                if (!cardPos) {
+                    showNotification('No position found for this market', 'warning');
+                    btn.disabled = false; btn.innerHTML = '<i class="fas fa-gift"></i> Claim Winnings';
+                    return;
+                }
+                await wallet.sendTransaction([contractIx(contracts.prediction_market, buildRedeemSharesArgs(wallet.address, mid, cardPos.outcome))]);
                 showNotification('Prediction winnings claimed!', 'success');
             } catch (err) { showNotification(`Claim failed: ${err.message}`, 'error'); }
             btn.disabled = false; btn.innerHTML = '<i class="fas fa-gift"></i> Claim Winnings';
@@ -2704,19 +2756,44 @@ document.addEventListener('DOMContentLoaded', () => {
     const predictAmountInput = document.getElementById('predictAmount');
     if (predictAmountInput) predictAmountInput.addEventListener('input', updatePredictCalc);
 
+    // F12.2 FIX: CPMM pricing formula matching contract's calculate_buy
     function updatePredictCalc() {
         const amt = parseFloat(document.getElementById('predictAmount')?.value) || 0;
         const m = predictState.markets.find(x => x.id === predictState.selectedMarket);
         if (!m) return;
-        const price = predictState.selectedOutcome === 'yes' ? m.yes : (1 - m.yes);
-        const fee = amt * 0.02;
-        const net = amt - fee;
-        const shares = price > 0 ? net / price : 0;
+        const outcomeIdx = predictState.selectedOutcome === 'yes' ? 0 : 1;
+
+        // Contract CPMM: mint complete sets (1:1) + swap non-desired shares into pool
+        // For binary: shares_per_set = amount, a_received = reserve_a * b_sold / (reserve_b + b_sold)
+        // Fee applied to swap portion only (2% = 200 bps)
+        let shares = 0, fee = 0;
+        if (m.outcomes && m.outcomes.length === 2) {
+            const selfReserve = m.outcomes[outcomeIdx]?.pool_yes || 0;
+            const otherReserve = m.outcomes[1 - outcomeIdx]?.pool_yes || 0;
+            if (selfReserve > 0 && otherReserve > 0) {
+                const bSold = amt; // shares minted = amount (1:1)
+                const aFromSwap = (selfReserve * bSold) / (otherReserve + bSold);
+                const totalShares = amt + aFromSwap;
+                const feeShares = aFromSwap * 0.02; // 2% on swap portion
+                shares = totalShares - feeShares;
+                fee = feeShares;
+            } else {
+                // No liquidity — estimate linearly
+                const price = predictState.selectedOutcome === 'yes' ? m.yes : (1 - m.yes);
+                fee = amt * 0.02;
+                shares = price > 0 ? (amt - fee) / price : 0;
+            }
+        } else {
+            // Multi-outcome fallback — simple linear
+            const price = m.outcomes?.[outcomeIdx]?.price || 0.5;
+            fee = amt * 0.02;
+            shares = price > 0 ? (amt - fee) / price : 0;
+        }
         const payout = shares; // each share worth $1.00 if winner
 
         const se = document.getElementById('predictShares'), ae = document.getElementById('predictAvgPrice'), pe = document.getElementById('predictPayout'), fe = document.getElementById('predictFee');
         if (se) se.textContent = shares.toFixed(2);
-        if (ae) ae.textContent = `$${price.toFixed(2)}`;
+        if (ae) ae.textContent = shares > 0 ? `$${(amt / shares).toFixed(4)}` : '$0.00';
         if (pe) pe.textContent = `$${payout.toFixed(2)}`;
         if (fe) fe.textContent = `$${fee.toFixed(2)}`;
     }
@@ -2734,7 +2811,8 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             // AUDIT-FIX F10.4: Prediction trade via signed sendTransaction (not unsigned REST)
             const outcomeVal = predictState.selectedOutcome === 'yes' ? 0 : 1;
-            await wallet.sendTransaction([contractIx(contracts.prediction_market, buildBuySharesArgs(wallet.address, m.id, outcomeVal, Math.round(amt * 1e9)))]);
+            // F12.1 FIX: Contract uses MUSD_UNIT (1e6), not PRICE_SCALE (1e9)
+            await wallet.sendTransaction([contractIx(contracts.prediction_market, buildBuySharesArgs(wallet.address, m.id, outcomeVal, Math.round(amt * 1e6)))]);
             showNotification(`Bought ${predictState.selectedOutcome.toUpperCase()} on "${escapeHtml(m.question.slice(0, 40))}..." for $${amt.toFixed(2)}`, 'success');
         } catch (e) { showNotification(`Trade failed: ${e.message}`, 'error'); }
         predictSubmitBtn.disabled = false;
@@ -2743,6 +2821,13 @@ document.addEventListener('DOMContentLoaded', () => {
         if (document.getElementById('predictAmount')) document.getElementById('predictAmount').value = '';
         updatePredictCalc();
     });
+
+    // F12.6 FIX: Set close date min to today to prevent past dates
+    const closeDateEl = document.getElementById('predictCloseDate');
+    if (closeDateEl) {
+        const today = new Date().toISOString().split('T')[0];
+        closeDateEl.setAttribute('min', today);
+    }
 
     // Create market
     const predictCreateBtn = document.getElementById('predictCreateBtn');
@@ -2769,14 +2854,18 @@ document.addEventListener('DOMContentLoaded', () => {
             const catVal = document.getElementById('predictCategory')?.value || 'crypto';
             const ocCount = outcomes.length > 0 ? outcomes.length : 2;
             // F11.2 FIX: Compute close_slot from date input or default 7 days
+            // F12.6 FIX: Validate close date is in the future
             const closeDateInput = document.getElementById('predictCloseDate')?.value;
             let durationSlots = 7 * 24 * 60 * 60 * 2; // default 7 days at 0.5s/slot = 1_209_600
             if (closeDateInput) {
                 const closeMs = new Date(closeDateInput).getTime();
                 const nowMs = Date.now();
-                if (closeMs > nowMs) {
-                    durationSlots = Math.round((closeMs - nowMs) / 500); // 0.5s per slot
+                if (closeMs <= nowMs) {
+                    showNotification('Close date must be in the future', 'warning');
+                    predictCreateBtn.disabled = false; predictCreateBtn.textContent = 'Create Market';
+                    return;
                 }
+                durationSlots = Math.round((closeMs - nowMs) / 500); // 0.5s per slot
             }
             // Fetch current slot from stats to compute absolute close_slot
             let currentSlot = 0;
@@ -2787,8 +2876,17 @@ document.addEventListener('DOMContentLoaded', () => {
             // If we couldn't get current slot, use a large estimate
             if (!currentSlot) currentSlot = Math.round(Date.now() / 500);
             const closeSlot = currentSlot + durationSlots;
-            await wallet.sendTransaction([contractIx(contracts.prediction_market, buildCreateMarketArgs(wallet.address, q, catVal, ocCount, closeSlot))]);
-            showNotification(`Market created: "${escapeHtml(q.slice(0, 50))}..." with $${liq} liquidity`, 'success');
+            // F12.8 FIX: Create market, then add initial liquidity
+            // Market ID is next pm_count value, obtained from stats
+            let nextMarketId = 1;
+            try {
+                const statsResp2 = await api.get('/prediction-market/stats');
+                nextMarketId = (statsResp2?.data?.total_markets || 0) + 1;
+            } catch { /* fallback to 1 */ }
+            const createIx = contractIx(contracts.prediction_market, buildCreateMarketArgs(wallet.address, q, catVal, ocCount, closeSlot));
+            const liqIx = contractIx(contracts.prediction_market, buildAddInitialLiquidityArgs(wallet.address, nextMarketId, Math.round(liq * 1e6)));
+            await wallet.sendTransaction([createIx, liqIx]);
+            showNotification(`Market created: "${escapeHtml(q.slice(0, 50))}..." with ${liq} mUSD liquidity`, 'success');
             await loadPredictionMarkets();
         } catch (e) { showNotification(`Create failed: ${e.message}`, 'error'); }
         predictCreateBtn.disabled = false; predictCreateBtn.innerHTML = '<i class="fas fa-rocket"></i> Create Market';
@@ -2904,7 +3002,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Prediction market refresh (slower interval for full market list)
     setInterval(async () => {
         if (state.currentView === 'predict') {
-            try { await loadPredictionMarkets(); loadPredictionPositions(); } catch { /* API unavailable */ }
+            try { await loadPredictionMarkets(); loadPredictionPositions(); loadCreatedMarkets(); } catch { /* API unavailable */ }
         }
     }, 15000);
 

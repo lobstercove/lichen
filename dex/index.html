@@ -515,7 +515,14 @@
                         </div>
                     </div>
                     <div class="positions-content hidden" id="predict-created">
-                        <div class="empty-state"><i class="fas fa-chart-pie"></i><p>Create a market to see it here</p></div>
+                        <table class="predict-created-table" style="width:100%;border-collapse:collapse;">
+                            <thead><tr>
+                                <th>Market</th><th>Category</th><th>Status</th><th>Volume</th><th>Traders</th><th>Close Date</th>
+                            </tr></thead>
+                            <tbody id="predictCreatedBody">
+                                <tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:20px;"><i class="fas fa-wallet" style="margin-right:6px;"></i>Connect wallet to view your markets</td></tr>
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </div>

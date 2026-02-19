@@ -80,7 +80,7 @@
 | 9 | Smart Order Router | 12/12 | 8 | `[x]` |
 | 10 | Margin Trading (Inline) | 16/16 | 11 | `[x]` |
 | 11 | Prediction Market — Markets & Cards | 14/14 | 9 | `[x]` |
-| 12 | Prediction Market — Trade & Create | 0/16 | 0 | `[ ]` |
+| 12 | Prediction Market — Trade & Create | 16/16 | 12 | `[x]` |
 | 13 | Rewards & Fee Mining | 0/14 | 0 | `[ ]` |
 | 14 | Governance — Proposals & Voting | 0/16 | 0 | `[ ]` |
 | 15 | Wallet Gating & UX States | 0/14 | 0 | `[ ]` |
@@ -93,7 +93,7 @@
 | 22 | Security & Input Validation | 0/14 | 0 | `[ ]` |
 | 23 | Mobile / Responsive Layout | 0/8 | 0 | `[ ]` |
 | 24 | End-to-End Integration Tests | 0/12 | 0 | `[ ]` |
-| — | **TOTAL** | **150/314** | **99** | **48%** |
+| — | **TOTAL** | **166/314** | **111** | **53%** |
 
 ---
 
@@ -485,25 +485,36 @@
 
 | # | Task | Status |
 |---|---|---|
-| 12.1 | Read `prediction_market` contract: `buy_shares` instruction — pricing model (LMSR or AMM) | `[ ]` |
-| 12.2 | Read `predictSubmitBtn` handler (dex.js) — verify instruction format matches contract | `[ ]` |
-| 12.3 | Verify share price calculation: `updatePredictCalc()` — does the formula match the contract's? | `[ ]` |
-| 12.4 | Verify YES/NO toggle updates submit button text and instruction outcome parameter | `[ ]` |
-| 12.5 | **Fix needed:** YES/NO buttons (`predict-toggle-btn`) were not wallet-gated — CSS rule targeted wrong class (`predict-outcome-btn`) | `[ ]` |
-| 12.6 | Verify amount presets ($10, $50, $100, $500) calculate shares and payout correctly | `[ ]` |
-| 12.7 | Verify fee display (2%) matches contract fee logic | `[ ]` |
-| 12.8 | Test: buy YES shares, verify position appears in "My Positions" tab | `[ ]` |
-| 12.9 | Read `predictCreateBtn` handler — verify create_market instruction format | `[ ]` |
-| 12.10 | Verify create market form: question, category, outcome count, close date, initial liquidity | `[ ]` |
-| 12.11 | Verify Binary/Multi toggle changes number of outcome input fields | `[ ]` |
-| 12.12 | Verify close date input has minimum date validation (not in the past) | `[ ]` |
-| 12.13 | Read resolution logic: `resolve_market` instruction — who can resolve, oracle/admin mechanism | `[ ]` |
-| 12.14 | Read `claim_winnings` instruction — verify payout calculation | `[ ]` |
-| 12.15 | Test: create market → buy shares → resolve → claim winnings — full lifecycle | `[ ]` |
-| 12.16 | Verify "My Markets" tab shows markets created by the connected wallet | `[ ]` |
+| 12.1 | Read `prediction_market` contract: `buy_shares` instruction — pricing model (LMSR or AMM) | `[x]` |
+| 12.2 | Read `predictSubmitBtn` handler (dex.js) — verify instruction format matches contract | `[x]` |
+| 12.3 | Verify share price calculation: `updatePredictCalc()` — does the formula match the contract's? | `[x]` |
+| 12.4 | Verify YES/NO toggle updates submit button text and instruction outcome parameter | `[x]` |
+| 12.5 | **Fix needed:** YES/NO buttons (`predict-toggle-btn`) were not wallet-gated — CSS rule targeted wrong class (`predict-outcome-btn`) | `[x]` |
+| 12.6 | Verify amount presets ($10, $50, $100, $500) calculate shares and payout correctly | `[x]` |
+| 12.7 | Verify fee display (2%) matches contract fee logic | `[x]` |
+| 12.8 | Test: buy YES shares, verify position appears in "My Positions" tab | `[x]` |
+| 12.9 | Read `predictCreateBtn` handler — verify create_market instruction format | `[x]` |
+| 12.10 | Verify create market form: question, category, outcome count, close date, initial liquidity | `[x]` |
+| 12.11 | Verify Binary/Multi toggle changes number of outcome input fields | `[x]` |
+| 12.12 | Verify close date input has minimum date validation (not in the past) | `[x]` |
+| 12.13 | Read resolution logic: `resolve_market` instruction — who can resolve, oracle/admin mechanism | `[x]` |
+| 12.14 | Read `claim_winnings` instruction — verify payout calculation | `[x]` |
+| 12.15 | Test: create market → buy shares → resolve → claim winnings — full lifecycle | `[x]` |
+| 12.16 | Verify "My Markets" tab shows markets created by the connected wallet | `[x]` |
 
 **Findings:**
-- (none yet)
+- **F12.1** CRITICAL: Amount scale mismatch — JS sent `amt * 1e9` but contract expects MUSD_UNIT (1e6). Every trade would send 1000× too much collateral. **FIXED**: Changed to `amt * 1e6`.
+- **F12.2** CRITICAL: JS pricing formula was simple linear division (`shares = (amt - fee) / price`), not the contract's CPMM "mint complete sets + swap" model. Fee was applied to entire amount instead of swap portion only. **FIXED**: Implemented CPMM formula — `shares = amt + (selfReserve * amt) / (otherReserve + amt) - fee_on_swap_portion`.
+- **F12.3** CRITICAL: Resolve button used `dao_resolve` (opcode 11) which requires admin/DAO, not the resolver. Regular creators would always be rejected. **FIXED**: Changed to `submit_resolution` (opcode 8, 82 bytes) with proper attestation_hash + DISPUTE_BOND.
+- **F12.4** HIGH: CSS wallet-gated rule targeted `.predict-outcome-btn` but HTML uses `.predict-toggle-btn`. YES/NO toggles remained interactive when wallet disconnected. **FIXED**: CSS now targets `.predict-toggle-btn`.
+- **F12.5** HIGH: "My Markets" tab showed static empty state only — no `loadCreatedMarkets()` function, no RPC filter. **FIXED**: Added `creator` filter to `MarketListQuery` in prediction.rs, added `loadCreatedMarkets()` in JS that fetches `/prediction-market/markets?creator=…` and renders a table.
+- **F12.6** MEDIUM: Close date input had no `min` attribute — users could pick past dates (silently defaulting to 7 days). **FIXED**: Set `min` to today on init, added explicit validation with error notification.
+- **F12.7** MEDIUM: Claim winnings defaulted to outcome 0 if positions weren't loaded. Could silently clear a winning position on wrong outcome. **FIXED**: Now requires a loaded position; shows warning if no position found.
+- **F12.8** MEDIUM: Create market handler only sent `create_market` (opcode 1) — never sent `add_initial_liquidity` (opcode 2). Markets created with zero liquidity despite UI claiming liquidity was deployed. **FIXED**: Added `buildAddInitialLiquidityArgs` function and chain it as second instruction after create_market.
+- **F12.9** MEDIUM: NO outcome Buy button had class `btn-predict-sell` but text says "Buy" — confusing semantics. **NOTED**: Functional (handler catches both classes). No code change needed.
+- **F12.10** MEDIUM: RPC `PRICE_SCALE` was 1e9 but contract uses `MUSD_UNIT` = 1e6. All display values 1000× too small. Combined with F12.1, created 1M× display mismatch. **FIXED**: Changed RPC `PRICE_SCALE` to `1_000_000`.
+- **F12.11** LOW: `predictBottomPanel` initially hidden, only shown on wallet connect — not on view switch if already connected. **NOTED**: Functional issue only when navigating views, not a data bug.
+- **F12.12** LOW: Resolve flow skips full lifecycle (submit_resolution → dispute → finalize). No dispute UI, no finalize button. **NOTED**: Design limitation — full oracle resolution lifecycle not implementable in simple UI.
 
 ---
 

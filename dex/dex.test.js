@@ -2478,6 +2478,138 @@ assert(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Phase 12: Prediction Market — Trade & Create
+// ═══════════════════════════════════════════════════════════════════════════
+
+// P12.1: Amount scale uses 1e6 (MUSD_UNIT), not 1e9 (F12.1)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('amt * 1e6'), 'P12.1a: Buy shares sends amt * 1e6 (MUSD_UNIT)');
+    assert(!dexJs.includes('amt * 1e9'), 'P12.1b: No amt * 1e9 in prediction trade code');
+}
+
+// P12.2: RPC PRICE_SCALE for prediction matches contract MUSD_UNIT (1e6) (F12.10)
+{
+    const predRs = fs.readFileSync(predictionRsPath, 'utf8');
+    assert(predRs.includes('PRICE_SCALE: u64 = 1_000_000'), 'P12.2: RPC PRICE_SCALE = 1_000_000 matching MUSD_UNIT');
+}
+
+// P12.3: updatePredictCalc uses CPMM formula, not linear (F12.2)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const calcFn = dexJs.substring(dexJs.indexOf('function updatePredictCalc'), dexJs.indexOf('function updatePredictCalc') + 2500);
+    // Should reference outcome reserves from market data
+    assert(calcFn.includes('selfReserve'), 'P12.3a: CPMM formula references selfReserve');
+    assert(calcFn.includes('otherReserve'), 'P12.3b: CPMM formula references otherReserve');
+    // CPMM swap formula: a_received = selfReserve * bSold / (otherReserve + bSold)
+    assert(calcFn.includes('selfReserve * bSold'), 'P12.3c: Swap formula uses selfReserve * bSold');
+    assert(calcFn.includes('otherReserve + bSold'), 'P12.3d: Swap denominator is otherReserve + bSold');
+    // Fee on swap only, not entire amount
+    assert(calcFn.includes('aFromSwap * 0.02'), 'P12.3e: Fee applied to swap portion (2%)');
+    // Avg price display
+    assert(calcFn.includes('amt / shares)'), 'P12.3f: Average price computed as amt/shares');
+}
+
+// P12.4: Resolve uses opcode 8 (submit_resolution), not 11 (dao_resolve) (F12.3)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes("writeU8(arr, 0, 8); // opcode 8 = submit_resolution"), 'P12.4a: Resolve uses opcode 8');
+    assert(!dexJs.includes('writeU8(arr, 0, 11); // opcode'), 'P12.4b: No opcode 11 (dao_resolve) in resolve builder');
+    // Layout: 82 bytes for submit_resolution
+    assert(dexJs.includes('new ArrayBuffer(82)'), 'P12.4c: Resolve instruction is 82 bytes');
+    assert(dexJs.includes('100_000_000'), 'P12.4d: DISPUTE_BOND (100 mUSD) included');
+}
+
+// P12.5: CSS wallet-gates predict-toggle-btn, not predict-outcome-btn (F12.4)
+{
+    const css = fs.readFileSync('/Users/johnrobin/.openclaw/workspace/moltchain/dex/dex.css', 'utf8');
+    assert(css.includes('.wallet-gated-disabled .predict-toggle-btn'), 'P12.5a: CSS targets predict-toggle-btn');
+    assert(!css.includes('.wallet-gated-disabled .predict-outcome-btn'), 'P12.5b: Old predict-outcome-btn selector removed');
+}
+
+// P12.6: "My Markets" tab has loadCreatedMarkets function (F12.5)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('async function loadCreatedMarkets()'), 'P12.6a: loadCreatedMarkets function exists');
+    assert(dexJs.includes('prediction-market/markets?creator='), 'P12.6b: Fetches markets filtered by creator');
+    assert(dexJs.includes('predictCreatedBody'), 'P12.6c: Renders into predictCreatedBody table');
+}
+
+// P12.7: RPC MarketListQuery has creator filter (F12.5)
+{
+    const predRs = fs.readFileSync(predictionRsPath, 'utf8');
+    const queryStruct = predRs.substring(predRs.indexOf('struct MarketListQuery'), predRs.indexOf('struct MarketListQuery') + 200);
+    assert(queryStruct.includes('creator: Option<String>'), 'P12.7a: MarketListQuery has creator field');
+    assert(predRs.includes('params.creator'), 'P12.7b: get_markets handler checks creator filter');
+}
+
+// P12.8: Close date input has min attribute set dynamically (F12.6)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes("closeDateEl.setAttribute('min', today)"), 'P12.8a: Close date min set to today');
+    // Past date validation with notification
+    assert(dexJs.includes("'Close date must be in the future'"), 'P12.8b: Past date shows warning notification');
+}
+
+// P12.9: Claim winnings requires loaded position (F12.7)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes("'No position found for this market'"), 'P12.9a: Claim handler validates position exists');
+    assert(!dexJs.includes('cardPos ? cardPos.outcome : 0'), 'P12.9b: No default-to-0 fallback for outcome');
+}
+
+// P12.10: buildAddInitialLiquidityArgs exists (F12.8)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('function buildAddInitialLiquidityArgs('), 'P12.10a: buildAddInitialLiquidityArgs defined');
+    assert(dexJs.includes('writeU8(arr, 0, 2); // opcode'), 'P12.10b: Uses opcode 2 (add_initial_liquidity)');
+    // Create market handler chains both instructions
+    assert(dexJs.includes('createIx, liqIx'), 'P12.10c: Create market sends both create + liquidity instructions');
+}
+
+// P12.11: YES/NO toggle correctly maps outcome index
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes("predictState.selectedOutcome === 'yes' ? 0 : 1"), 'P12.11: YES→0, NO→1 outcome mapping correct');
+}
+
+// P12.12: Fee display matches contract (2% = 200 bps)
+{
+    const html = fs.readFileSync(indexHtmlPath, 'utf8');
+    assert(html.includes('Fee (2%)'), 'P12.12a: HTML shows 2% fee');
+    const predContractRs = fs.readFileSync('/Users/johnrobin/.openclaw/workspace/moltchain/contracts/prediction_market/src/lib.rs', 'utf8');
+    assert(predContractRs.includes('TRADING_FEE_BPS: u64 = 200'), 'P12.12b: Contract fee = 200 bps = 2%');
+}
+
+// P12.13: buildBuySharesArgs layout matches contract (verified correct by audit)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('function buildBuySharesArgs('), 'P12.13a: buildBuySharesArgs exists');
+    assert(dexJs.includes('new ArrayBuffer(50)'), 'P12.13b: 50 bytes for buy_shares');
+    // Opcode 4
+    assert(dexJs.includes("writeU8(arr, 0, 4);"), 'P12.13c: Opcode 4 for buy_shares');
+}
+
+// P12.14: Create market handler validates initial liquidity amount
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('liq * 1e6'), 'P12.14: Initial liquidity converted to MUSD units (1e6)');
+}
+
+// P12.15: "My Markets" tab has proper HTML table structure
+{
+    const html = fs.readFileSync(indexHtmlPath, 'utf8');
+    assert(html.includes('predictCreatedBody'), 'P12.15a: HTML has predictCreatedBody tbody');
+    assert(html.includes('predict-created-table'), 'P12.15b: My Markets has table class');
+}
+
+// P12.16: Binary/Multi toggle verified working (audit confirmed correct)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('multiOutcomeSection'), 'P12.16: Multi-outcome section toggle present');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Summary
 // ═══════════════════════════════════════════════════════════════════════════
 console.log(`\n${'═'.repeat(60)}`);

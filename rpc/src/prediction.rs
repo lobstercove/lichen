@@ -23,7 +23,8 @@ use crate::RpcState;
 // ─────────────────────────────────────────────────────────────────────────────
 
 const PREDICT_PROGRAM: &str = "PREDICT";
-const PRICE_SCALE: u64 = 1_000_000_000;
+// F12.10 FIX: Prediction market uses MUSD_UNIT (1e6), not DEX PRICE_SCALE (1e9)
+const PRICE_SCALE: u64 = 1_000_000;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // JSON Response Types
@@ -153,6 +154,7 @@ struct PositionJson {
 struct MarketListQuery {
     category: Option<String>,
     status: Option<String>,
+    creator: Option<String>, // F12.5: Filter by creator address
     limit: Option<usize>,
     offset: Option<usize>,
 }
@@ -398,6 +400,12 @@ async fn get_markets(
             // status filter
             if let Some(ref st) = params.status {
                 if mkt.status != st.as_str() {
+                    continue;
+                }
+            }
+            // F12.5 FIX: creator filter for "My Markets" tab
+            if let Some(ref cr) = params.creator {
+                if mkt.creator != cr.as_str() {
                     continue;
                 }
             }

@@ -2006,7 +2006,8 @@
 .wallet-gated-disabled .margin-type,
 .wallet-gated-disabled .side-btn,
 .wallet-gated-disabled .margin-inline-type,
-.wallet-gated-disabled .predict-outcome-btn { opacity: 0.4; pointer-events: none; }
+/* F12.4 FIX: HTML uses predict-toggle-btn, not predict-outcome-btn */
+.wallet-gated-disabled .predict-toggle-btn { opacity: 0.4; pointer-events: none; }
 .wallet-gated-disabled .leverage-slider { opacity: 0.4; pointer-events: none; }
 
 /* Parameter / Delist proposal info boxes */
