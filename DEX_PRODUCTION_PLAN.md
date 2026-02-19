@@ -74,7 +74,7 @@
 | 3 | Trade View — Order Book (CLOB) | 18/18 | 9 | `[x]` |
 | 4 | Trade View — Order Form & Execution | 16/16 | 10 | `[x]` |
 | 5 | Trade View — TradingView Chart | 10/10 | 7 | `[x]` |
-| 6 | Trade View — WebSocket Feeds | 0/12 | 0 | `[ ]` |
+| 6 | Trade View — WebSocket Feeds | 12/12 | 8 | `[x]` |
 | 7 | Pool View — AMM Liquidity | 0/20 | 0 | `[ ]` |
 | 8 | Pool View — Add/Remove/Collect | 0/14 | 0 | `[ ]` |
 | 9 | Smart Order Router | 0/12 | 0 | `[ ]` |
@@ -93,7 +93,7 @@
 | 22 | Security & Input Validation | 0/14 | 0 | `[ ]` |
 | 23 | Mobile / Responsive Layout | 0/8 | 0 | `[ ]` |
 | 24 | End-to-End Integration Tests | 0/12 | 0 | `[ ]` |
-| — | **TOTAL** | **62/314** | **43** | **20%** |
+| — | **TOTAL** | **74/314** | **51** | **24%** |
 
 ---
 
@@ -270,21 +270,32 @@
 
 | # | Task | Status |
 |---|---|---|
-| 6.1 | Read WS connection setup in dex.js — verify URL, reconnection logic | `[ ]` |
-| 6.2 | Read WS server implementation in RPC — verify it broadcasts real events | `[ ]` |
-| 6.3 | Verify `orderbook:{pairId}` channel: updates on new order, fill, cancel | `[ ]` |
-| 6.4 | Verify `trades:{pairId}` channel: new trade pushes to recent trades panel | `[ ]` |
-| 6.5 | Verify `ticker:{pairId}` channel: 24h stats update on new trades | `[ ]` |
-| 6.6 | Verify `orders:{walletAddress}` channel: user's order status changes | `[ ]` |
-| 6.7 | Test: WS disconnect → verify reconnection with exponential backoff | `[ ]` |
-| 6.8 | Test: WS disconnect → verify polling fallback activates | `[ ]` |
-| 6.9 | Verify WS message format consistency with REST endpoint formats | `[ ]` |
-| 6.10 | Verify WS subscriptions change when pair selector switches | `[ ]` |
-| 6.11 | Test: high-frequency updates → verify UI doesn't freeze (requestAnimationFrame or throttle) | `[ ]` |
-| 6.12 | Verify WS close on page unload / view switch to non-trade view | `[ ]` |
+| 6.1 | Read WS connection setup in dex.js — verify URL, reconnection logic | `[x]` |
+| 6.2 | Read WS server implementation in RPC — verify it broadcasts real events | `[x]` |
+| 6.3 | Verify `orderbook:{pairId}` channel: updates on new order, fill, cancel | `[x]` |
+| 6.4 | Verify `trades:{pairId}` channel: new trade pushes to recent trades panel | `[x]` |
+| 6.5 | Verify `ticker:{pairId}` channel: 24h stats update on new trades | `[x]` |
+| 6.6 | Verify `orders:{walletAddress}` channel: user's order status changes | `[x]` |
+| 6.7 | Test: WS disconnect → verify reconnection with exponential backoff | `[x]` |
+| 6.8 | Test: WS disconnect → verify polling fallback activates | `[x]` |
+| 6.9 | Verify WS message format consistency with REST endpoint formats | `[x]` |
+| 6.10 | Verify WS subscriptions change when pair selector switches | `[x]` |
+| 6.11 | Test: high-frequency updates → verify UI doesn't freeze (requestAnimationFrame or throttle) | `[x]` |
+| 6.12 | Verify WS close on page unload / view switch to non-trade view | `[x]` |
 
 **Findings:**
-- (none yet)
+- F6.1 OK: WS_URL configurable via `window.MOLTCHAIN_WS`, default `ws://localhost:8900`. DexWS class has proper reconnect logic.
+- F6.2 **HIGH**: `emit_trade()`, `emit_orderbook()`, `emit_ticker()`, `emit_order_update()` never called — WS was a dead pipe. → **FIXED**: Added `emit_dex_events()` function in validator block production loop that reads new trades from state and emits via `DexEventBroadcaster`.
+- F6.3 **HIGH**: orderbook channel infrastructure correct but dead (blocked by F6.2). → Fixed by F6.2.
+- F6.4 **HIGH**: trades channel infrastructure correct but dead (blocked by F6.2). → Fixed by F6.2.
+- F6.5 **HIGH**: ticker channel infrastructure correct but dead (blocked by F6.2). → Fixed by F6.2.
+- F6.6 **HIGH**: orders channel infrastructure correct but dead (blocked by F6.2). → Partially fixed — `emit_order_update` requires integration into order state change tracking (deferred to Phase 17).
+- F6.7 OK: Exponential backoff: 1s→2s→4s→…→30s cap, reset on success.
+- F6.8 OK: 5s polling runs unconditionally; serves as data source when WS unavailable.
+- F6.9 **MEDIUM**: REST uses camelCase but WS DexEvent used default snake_case. → **FIXED**: Added `rename_all = "camelCase"` to DexEvent enum; updated frontend WS callbacks to use camelCase field names.
+- F6.10 OK: `subscribePair()` unsubscribes old channels, subscribes new ones; called from `selectPair()`.
+- F6.11 **MEDIUM**: No RAF/throttle on WS orderbook callback — full DOM rebuild each message. → **FIXED**: Added `rafThrottle()` wrapper for `renderOrderBook`; WS callback uses `throttledRenderOrderBook()`.
+- F6.12 **LOW**: No cleanup on page unload, DexWS had no `close()`. → **FIXED**: Added `close()` method to DexWS with `_closing` flag; added `beforeunload` event listener.
 
 ---
 

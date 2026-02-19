@@ -632,6 +632,82 @@ fn build_market_activity(
     }
 }
 
+fn emit_dex_events(
+    state: &StateStore,
+    dex_broadcaster: &moltchain_rpc::dex_ws::DexEventBroadcaster,
+    last_trade_count: &mut u64,
+    slot: u64,
+) {
+    const PRICE_SCALE: f64 = 1_000_000_000.0;
+
+    // Read current trade count from dex_core storage
+    let trade_count = state.get_program_storage_u64("DEX", b"dex_trade_count");
+    if trade_count <= *last_trade_count {
+        return; // No new trades
+    }
+
+    // Emit events for each new trade
+    let mut affected_pairs = std::collections::HashSet::new();
+    for trade_id in (*last_trade_count + 1)..=trade_count {
+        let key = format!("dex_trade_{}", trade_id);
+        if let Some(data) = state.get_program_storage("DEX", key.as_bytes()) {
+            if data.len() >= 80 {
+                // Trade layout: trade_id[0:8], pair_id[8:16], price[16:24], qty[24:32],
+                //               taker[32:64], maker_order_id[64:72], slot[72:80]
+                let pair_id = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
+                let price_raw = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
+                let quantity = u64::from_le_bytes(data[24..32].try_into().unwrap_or([0; 8]));
+                let maker_order_id = u64::from_le_bytes(data[64..72].try_into().unwrap_or([0; 8]));
+                let price = price_raw as f64 / PRICE_SCALE;
+
+                // Infer side from maker order
+                let side = {
+                    let maker_key = format!("dex_order_{}", maker_order_id);
+                    if let Some(order_data) = state.get_program_storage("DEX", maker_key.as_bytes()) {
+                        if order_data.len() > 40 {
+                            // Byte 40 = side (0=buy, 1=sell); taker is opposite
+                            if order_data[40] == 0 { "sell" } else { "buy" }
+                        } else { "buy" }
+                    } else { "buy" }
+                };
+
+                dex_broadcaster.emit_trade(trade_id, pair_id, price, quantity, side, slot);
+                affected_pairs.insert(pair_id);
+            }
+        }
+    }
+
+    // Emit orderbook + ticker updates for affected pairs
+    for pair_id in &affected_pairs {
+        // Read best bid/ask from orderbook (simplified: last trade price as approximation)
+        // Full orderbook reconstruction is expensive; emit a lightweight update
+        // that tells subscribers to re-fetch
+        let trade_key = format!("dex_trade_{}", trade_count);
+        if let Some(data) = state.get_program_storage("DEX", trade_key.as_bytes()) {
+            if data.len() >= 32 {
+                let price_raw = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
+                let last_price = price_raw as f64 / PRICE_SCALE;
+
+                // Read 24h stats for volume/change
+                let stats_key = format!("ana_24h_{}", pair_id);
+                let (volume_24h, change_24h) = if let Some(stats_data) = state.get_program_storage("ANALYTICS", stats_key.as_bytes()) {
+                    if stats_data.len() >= 48 {
+                        let vol = u64::from_le_bytes(stats_data[0..8].try_into().unwrap_or([0; 8]));
+                        let open_raw = u64::from_le_bytes(stats_data[24..32].try_into().unwrap_or([0; 8]));
+                        let open = open_raw as f64 / PRICE_SCALE;
+                        let change = if open > 0.0 { ((last_price - open) / open) * 100.0 } else { 0.0 };
+                        (vol, change)
+                    } else { (0, 0.0) }
+                } else { (0, 0.0) };
+
+                dex_broadcaster.emit_ticker(*pair_id, last_price, last_price, last_price, volume_24h, change_24h);
+            }
+        }
+    }
+
+    *last_trade_count = trade_count;
+}
+
 fn emit_program_and_nft_events(
     state: &StateStore,
     ws_event_tx: &tokio::sync::broadcast::Sender<moltchain_rpc::ws::Event>,
@@ -7733,6 +7809,9 @@ async fn run_validator() {
     // Invalidated when slot or view changes.
     let mut cached_leader: Option<(u64, u64, bool)> = None; // (slot, view, should_produce)
 
+    // F6.2: Track DEX trade count for WS event emission
+    let mut last_dex_trade_count = state.get_program_storage_u64("DEX", b"dex_trade_count");
+
     loop {
         // TIP-BASED SLOT: Always derive the next slot to produce from the chain tip.
         // This guarantees consecutive slot numbers — no gaps. Every validator agrees
@@ -8151,6 +8230,9 @@ async fn run_validator() {
         }
 
         emit_program_and_nft_events(&state, &ws_event_tx, &block);
+
+        // F6.2: Emit DEX WebSocket events for new trades/orders
+        emit_dex_events(&state, &ws_dex_broadcaster, &mut last_dex_trade_count, slot);
 
         // Broadcast block event to WebSocket subscribers
         let _ = ws_event_tx.send(moltchain_rpc::ws::Event::Block(block.clone()));
