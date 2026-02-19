@@ -8,6 +8,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link rel="stylesheet" href="css/developers.css">
     <style>
         :root {
             --bg-primary: #0a0e1a;
@@ -108,6 +109,43 @@
     </style>
 </head>
 <body>
+    <nav class="nav">
+        <div class="nav-container">
+            <div class="nav-logo">
+                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="MoltChain Dev">
+                <span class="logo-text">MoltChain Dev</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="index.html">Hub</a></li>
+                <li><a href="getting-started.html">Get Started</a></li>
+                <li><a href="rpc-reference.html">API</a></li>
+                <li><a href="sdk-js.html">SDK</a></li>
+                <li><a href="contracts.html">Contracts</a></li>
+                <li><a href="cli-reference.html">CLI</a></li>
+                <li><a href="moltyid.html">MoltyID</a></li>
+            </ul>
+            <div class="nav-actions">
+                <div class="search-container">
+                    <input type="text" id="searchInput" class="search-input" placeholder="Search docs... (⌘K)">
+                    <i class="fas fa-search search-icon"></i>
+                </div>
+                <select id="devNetworkSelect" class="network-select">
+                    <option value="mainnet">Mainnet</option>
+                    <option value="testnet">Testnet</option>
+                    <option value="local-testnet" selected>Local Testnet</option>
+                    <option value="local-mainnet">Local Mainnet</option>
+                </select>
+            </div>
+            <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu"><span></span><span></span><span></span></button>
+        </div>
+    </nav>
+    <div class="search-overlay" id="searchOverlay">
+        <div class="search-modal">
+            <input type="text" class="search-modal-input" id="searchModalInput" placeholder="Search documentation...">
+            <div class="search-results" id="searchResults"></div>
+        </div>
+    </div>
+
 <div class="container">
 
     <!-- Header -->
@@ -956,5 +994,6 @@
     </div>
 
 </div>
+    <script src="js/developers.js"></script>
 </body>
 </html>

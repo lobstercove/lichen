@@ -11,24 +11,6 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
-    <style>
-        .nav-menu a.active { color: var(--primary); }
-        .search-input { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; color: #fff; padding: 0.5rem 0.75rem 0.5rem 2rem; font-size: 0.85rem; width: 180px; font-family: inherit; }
-        .search-input:focus { outline: none; border-color: var(--primary); }
-        .search-container { position: relative; }
-        .search-icon { position: absolute; left: 0.65rem; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 0.8rem; pointer-events: none; }
-        .network-select { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); padding: 0.5rem 0.75rem; font-size: 0.85rem; font-weight: 600; cursor: pointer; }
-        .network-select:focus { outline: none; border-color: var(--primary); }
-        .nav-actions { display: flex; align-items: center; gap: 1rem; }
-        .flags-table { width: 100%; border-collapse: collapse; margin: 1rem 0 1.5rem; font-size: 0.9rem; }
-        .flags-table th { text-align: left; padding: 0.6rem 0.75rem; border-bottom: 2px solid var(--border); color: var(--text-muted); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
-        .flags-table td { padding: 0.55rem 0.75rem; border-bottom: 1px solid var(--border); }
-        .flags-table td code { background: rgba(255,255,255,0.06); padding: 0.15em 0.4em; border-radius: 4px; font-size: 0.85em; }
-        .flags-table tr:last-child td { border-bottom: none; }
-        .cmd-section { margin-bottom: 3rem; padding-bottom: 2rem; border-bottom: 1px solid var(--border); }
-        .cmd-section:last-child { border-bottom: none; }
-        .global-flag { color: var(--text-muted); font-style: italic; }
-    </style>
 </head>
 <body>
     <nav class="nav">
@@ -58,7 +40,7 @@
                     <option value="local-mainnet">Local Mainnet</option>
                 </select>
             </div>
-            <button class="nav-toggle" id="navToggle">
+            <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu">
                 <span></span><span></span><span></span>
             </button>
         </div>
@@ -73,7 +55,7 @@
     </div>
 
     <!-- SIDEBAR TOGGLE (mobile) -->
-    <button class="sidebar-toggle" id="sidebarToggle"><i class="fas fa-bars"></i></button>
+    <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar"><i class="fas fa-bars"></i></button>
     <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
     <div class="docs-layout">
