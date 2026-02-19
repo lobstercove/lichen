@@ -783,6 +783,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const pair = pairs.find(p => p.pairId === pairId);
                 if (pair) { pair.price = d.lastPrice; pair.change = d.change24h || pair.change; }
                 updateTickerDisplay();
+                renderPairList(); // F1 fix: refresh dropdown prices on every ticker update
             }
         }).then(id => state._wsSubs.push(id)).catch(() => {});
 
@@ -3152,6 +3153,18 @@ document.addEventListener('DOMContentLoaded', () => {
             try { await loadPredictionMarkets(); loadPredictionPositions(); loadCreatedMarkets(); } catch { /* API unavailable */ }
         }
     }, 15000);
+
+    // F1 fix: Refresh ALL pair prices every 10s so dropdown stays current
+    // Each pair gets its own ticker fetch to update price + change
+    setInterval(async () => {
+        for (const p of pairs) {
+            try {
+                const t = await loadTicker(p.pairId);
+                if (t?.lastPrice) { p.price = t.lastPrice; p.change = t.change24h || p.change; }
+            } catch { /* API unavailable for this pair */ }
+        }
+        renderPairList();
+    }, 10000);
 
     // ═══════════════════════════════════════════════════════════════════════
     // Initialize

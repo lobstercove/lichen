@@ -3481,8 +3481,9 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
                     &stats,
                 );
 
-                // Update candles for each interval
+                // Update candles for each interval (skip 1-minute — only real trades should write 1m candles)
                 for &ci in &candle_intervals {
+                    if ci == 60 { continue; } // F4 fix: oracle prices overwrite 1m candles
                     oracle_update_candle(
                         &state, &analytics_pk,
                         *pair_id, ci, price_scaled, current_slot,
