@@ -1989,6 +1989,31 @@
 .btn-full.btn-buy { background: var(--green-success); color: white; }
 .btn-full.btn-sell { background: #ef4444; color: white; }
 
+/* F10E.8: Disabled button + wallet-gated form styles */
+.btn-full:disabled, .btn:disabled { opacity: 0.4; cursor: not-allowed; pointer-events: none; }
+.btn-full.btn-wallet-gate { background: var(--bg-surface); color: var(--text-muted); border: 1px solid rgba(255,255,255,0.08); }
+.btn-full.btn-wallet-gate:hover { box-shadow: none; }
+.wallet-gated-disabled input,
+.wallet-gated-disabled select,
+.wallet-gated-disabled textarea { opacity: 0.4; pointer-events: none; }
+.wallet-gated-disabled .preset-btn,
+.wallet-gated-disabled .fee-tier-btn,
+.wallet-gated-disabled .order-tab,
+.wallet-gated-disabled .order-type-btn,
+.wallet-gated-disabled .predict-type-btn,
+.wallet-gated-disabled .proposal-type-btn,
+.wallet-gated-disabled .trade-mode,
+.wallet-gated-disabled .margin-type,
+.wallet-gated-disabled .side-btn,
+.wallet-gated-disabled .margin-inline-type,
+.wallet-gated-disabled .predict-outcome-btn { opacity: 0.4; pointer-events: none; }
+.wallet-gated-disabled .leverage-slider { opacity: 0.4; pointer-events: none; }
+
+/* Parameter / Delist proposal info boxes */
+.delist-info-box ul { margin: 0; padding-left: 16px; line-height: 1.6; }
+.param-info-box p { margin: 0; line-height: 1.5; }
+.param-current-value { display: flex; justify-content: space-between; align-items: center; background: var(--bg-surface); padding: 10px 14px; border-radius: var(--radius-sm); margin-bottom: 12px; }
+
 .mnemonic-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);

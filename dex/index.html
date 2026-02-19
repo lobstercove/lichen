@@ -491,7 +491,7 @@
             </div>
 
             <!-- BOTTOM: My Positions -->
-            <div class="predict-bottom-panel">
+            <div class="predict-bottom-panel hidden" id="predictBottomPanel">
                 <div class="panel-card">
                     <div class="positions-tabs">
                         <button class="pos-tab active" data-target="predict-positions">My Positions</button>
@@ -658,7 +658,7 @@
             </div>
 
             <!-- BOTTOM: My Positions -->
-            <div class="pool-bottom-panel">
+            <div class="pool-bottom-panel hidden" id="poolBottomPanel">
                 <div class="panel-card">
                     <div class="positions-tabs">
                         <button class="pos-tab active" data-target="pool-positions">My Positions</button>
@@ -955,7 +955,7 @@
             </div>
 
             <!-- BOTTOM: Reward History -->
-            <div class="rewards-bottom-panel">
+            <div class="rewards-bottom-panel hidden" id="rewardsBottomPanel">
                 <div class="panel-card">
                     <div class="positions-tabs">
                         <button class="pos-tab active" data-target="reward-claims">Claim History</button>
@@ -1095,6 +1095,64 @@
                                     <input type="number" id="propTakerFee" placeholder="5" min="0" max="100">
                                     <span class="input-unit">BPS</span>
                                 </div>
+                            </div>
+                        </div>
+
+                        <!-- Delist Fields (hidden by default) — F10E.5 -->
+                        <div class="proposal-fields hidden" id="delistFields">
+                            <div class="form-group">
+                                <label>Pair to Delist</label>
+                                <select class="form-select" id="propDelistPair">
+                                    <!-- Populated dynamically from pairs[] -->
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Reason</label>
+                                <textarea id="propDelistReason" class="form-textarea" placeholder="Describe why this pair should be delisted (e.g. low liquidity, rug pull risk, abandoned project)" rows="3"></textarea>
+                            </div>
+                            <div class="delist-info-box" style="background:rgba(239,68,68,0.08);border:1px solid rgba(239,68,68,0.2);border-radius:var(--radius-sm);padding:12px;margin-top:8px;font-size:0.82rem;color:var(--text-muted);">
+                                <h4 style="color:#ef4444;margin:0 0 6px;font-size:0.85rem;"><i class="fas fa-exclamation-triangle"></i> Delist Impact</h4>
+                                <ul style="margin:0;padding-left:16px;line-height:1.6;">
+                                    <li>All open orders on this pair will be cancelled</li>
+                                    <li>LP positions will be auto-withdrawn at current price</li>
+                                    <li>Margin positions will be force-closed at mark price</li>
+                                    <li>Requires 66% supermajority to pass</li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <!-- Parameter Change Fields (hidden by default) — F10E.5 -->
+                        <div class="proposal-fields hidden" id="paramFields">
+                            <div class="form-group">
+                                <label>Protocol Parameter</label>
+                                <select class="form-select" id="propParamName">
+                                    <option value="max_leverage" data-current="5" data-unit="x" data-desc="Maximum leverage multiplier for margin trading positions.">Max Leverage</option>
+                                    <option value="min_liquidity" data-current="10000" data-unit="MOLT" data-desc="Minimum initial liquidity required when listing a new trading pair.">Min Listing Liquidity</option>
+                                    <option value="fee_split_treasury" data-current="60" data-unit="%" data-desc="Percentage of trading fees allocated to the protocol treasury.">Fee Split — Treasury</option>
+                                    <option value="fee_split_lps" data-current="20" data-unit="%" data-desc="Percentage of trading fees distributed to liquidity providers.">Fee Split — LPs</option>
+                                    <option value="fee_split_stakers" data-current="20" data-unit="%" data-desc="Percentage of trading fees distributed to MOLT stakers.">Fee Split — Stakers</option>
+                                    <option value="max_pools" data-current="100" data-unit="pools" data-desc="Maximum number of active liquidity pools allowed on the DEX.">Max Pools</option>
+                                    <option value="voting_period" data-current="48" data-unit="hours" data-desc="Duration of the governance voting window for proposals.">Voting Period</option>
+                                    <option value="approval_threshold" data-current="66" data-unit="%" data-desc="Supermajority percentage required for a proposal to pass.">Approval Threshold</option>
+                                    <option value="execution_timelock" data-current="1" data-unit="hours" data-desc="Delay between proposal approval and on-chain execution.">Execution Timelock</option>
+                                    <option value="prediction_fee" data-current="2" data-unit="%" data-desc="Fee charged on prediction market share purchases.">Prediction Market Fee</option>
+                                    <option value="margin_maintenance" data-current="10" data-unit="%" data-desc="Minimum margin maintenance ratio before liquidation.">Margin Maintenance Ratio</option>
+                                </select>
+                            </div>
+                            <div class="param-current-value">
+                                <span style="color:var(--text-muted);font-size:0.82rem;">Current Value</span>
+                                <span class="mono-value" id="propParamCurrent">5x</span>
+                            </div>
+                            <div class="form-group">
+                                <label>Proposed Value</label>
+                                <div class="input-with-unit">
+                                    <input type="number" id="propParamValue" placeholder="Enter new value" step="any">
+                                    <span class="input-unit" id="propParamUnit">x</span>
+                                </div>
+                            </div>
+                            <div class="param-info-box" style="background:rgba(78,168,222,0.08);border:1px solid rgba(78,168,222,0.2);border-radius:var(--radius-sm);padding:12px;margin-top:8px;font-size:0.82rem;color:var(--text-muted);">
+                                <h4 style="color:var(--accent);margin:0 0 6px;font-size:0.85rem;"><i class="fas fa-info-circle"></i> Parameter Info</h4>
+                                <p id="propParamDesc" style="margin:0;line-height:1.5;">Maximum leverage multiplier for margin trading positions.</p>
                             </div>
                         </div>
 
