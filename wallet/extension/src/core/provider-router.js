@@ -284,17 +284,22 @@ async function finalizeSignMessage(request, context, approvalInput) {
     return { ok: false, error: 'Missing message string' };
   }
 
-  const privateKeyHex = await decryptPrivateKey(activeWallet.encryptedKey, password);
-  const messageBytes = new TextEncoder().encode(message);
-  const signature = await signTransaction(privateKeyHex, messageBytes);
+  let privateKeyHex;
+  try {
+    privateKeyHex = await decryptPrivateKey(activeWallet.encryptedKey, password);
+    const messageBytes = new TextEncoder().encode(message);
+    const signature = await signTransaction(privateKeyHex, messageBytes);
 
-  return {
-    ok: true,
-    result: {
-      signature: bytesToHex(signature),
-      address: activeWallet.address
-    }
-  };
+    return {
+      ok: true,
+      result: {
+        signature: bytesToHex(signature),
+        address: activeWallet.address
+      }
+    };
+  } finally {
+    if (typeof privateKeyHex === 'string') privateKeyHex = '0'.repeat(privateKeyHex.length);
+  }
 }
 
 async function finalizeSignTransaction(request, context, approvalInput) {
@@ -317,26 +322,31 @@ async function finalizeSignTransaction(request, context, approvalInput) {
   const txObject = typeof incomingTx === 'string' ? decodeBase64Object(incomingTx) : incomingTx;
   const signTarget = txObject?.message || txObject;
 
-  const privateKeyHex = await decryptPrivateKey(activeWallet.encryptedKey, password);
-  const messageBytes = new TextEncoder().encode(JSON.stringify(signTarget));
-  const signatureBytes = await signTransaction(privateKeyHex, messageBytes);
-  const signatureArray = Array.from(signatureBytes);
+  let privateKeyHex;
+  try {
+    privateKeyHex = await decryptPrivateKey(activeWallet.encryptedKey, password);
+    const messageBytes = new TextEncoder().encode(JSON.stringify(signTarget));
+    const signatureBytes = await signTransaction(privateKeyHex, messageBytes);
+    const signatureArray = Array.from(signatureBytes);
 
-  const signedTx = {
-    ...txObject,
-    signatures: Array.isArray(txObject.signatures)
-      ? [...txObject.signatures, signatureArray]
-      : [signatureArray]
-  };
+    const signedTx = {
+      ...txObject,
+      signatures: Array.isArray(txObject.signatures)
+        ? [...txObject.signatures, signatureArray]
+        : [signatureArray]
+    };
 
-  return {
-    ok: true,
-    result: {
-      signedTransaction: signedTx,
-      signedTransactionBase64: encodeBase64Object(signedTx),
-      signature: bytesToHex(signatureBytes)
-    }
-  };
+    return {
+      ok: true,
+      result: {
+        signedTransaction: signedTx,
+        signedTransactionBase64: encodeBase64Object(signedTx),
+        signature: bytesToHex(signatureBytes)
+      }
+    };
+  } finally {
+    if (typeof privateKeyHex === 'string') privateKeyHex = '0'.repeat(privateKeyHex.length);
+  }
 }
 
 async function finalizeSendTransaction(request, context, approvalInput) {
@@ -359,31 +369,36 @@ async function finalizeSendTransaction(request, context, approvalInput) {
   const txObject = typeof incomingTx === 'string' ? decodeBase64Object(incomingTx) : incomingTx;
   const signTarget = txObject?.message || txObject;
 
-  const privateKeyHex = await decryptPrivateKey(activeWallet.encryptedKey, password);
-  const messageBytes = new TextEncoder().encode(JSON.stringify(signTarget));
-  const signatureBytes = await signTransaction(privateKeyHex, messageBytes);
-  const signatureArray = Array.from(signatureBytes);
+  let privateKeyHex;
+  try {
+    privateKeyHex = await decryptPrivateKey(activeWallet.encryptedKey, password);
+    const messageBytes = new TextEncoder().encode(JSON.stringify(signTarget));
+    const signatureBytes = await signTransaction(privateKeyHex, messageBytes);
+    const signatureArray = Array.from(signatureBytes);
 
-  const signedTx = {
-    ...txObject,
-    signatures: Array.isArray(txObject.signatures)
-      ? [...txObject.signatures, signatureArray]
-      : [signatureArray]
-  };
+    const signedTx = {
+      ...txObject,
+      signatures: Array.isArray(txObject.signatures)
+        ? [...txObject.signatures, signatureArray]
+        : [signatureArray]
+    };
 
-  const txBase64 = encodeBase64Object(signedTx);
-  const rpc = await getRpcForContext(context);
-  const txHash = await rpc.sendTransaction(txBase64);
+    const txBase64 = encodeBase64Object(signedTx);
+    const rpc = await getRpcForContext(context);
+    const txHash = await rpc.sendTransaction(txBase64);
 
-  return {
-    ok: true,
-    result: {
-      txHash,
-      signature: bytesToHex(signatureBytes),
-      signedTransaction: signedTx,
-      signedTransactionBase64: txBase64
-    }
-  };
+    return {
+      ok: true,
+      result: {
+        txHash,
+        signature: bytesToHex(signatureBytes),
+        signedTransaction: signedTx,
+        signedTransactionBase64: txBase64
+      }
+    };
+  } finally {
+    if (typeof privateKeyHex === 'string') privateKeyHex = '0'.repeat(privateKeyHex.length);
+  }
 }
 
 async function finalizePendingRequest(requestId, approved, context = {}, approvalInput = {}) {

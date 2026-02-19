@@ -19,6 +19,12 @@ import { notify } from '../core/notification-service.js';
 let state = null;
 let pendingGeneratedMnemonic = '';
 let fullCarouselTimer = null;
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#x27;');
+}
+
 let createWizardState = {
   step: 1,
   mnemonicWords: [],
@@ -676,13 +682,13 @@ async function loadIdentityPanel() {
     container.innerHTML = `
       <div style="text-align:center;padding:0.75rem 0;">
         <div style="font-size:1.5rem;"><i class="fas fa-fingerprint" style="color:var(--primary);"></i></div>
-        <h4 style="margin:0.5rem 0 0.25rem;">${identity.name}${moltName ? ' <span style="color:var(--primary);">' + moltName + (moltName.endsWith('.molt') ? '' : '.molt') + '</span>' : ''}</h4>
-        <div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.25rem;">${tierName} · ${identity.agent_type_name || 'General'}${isActive ? ' · <span style="color:#4ade80;">Active</span>' : ''}</div>
+        <h4 style="margin:0.5rem 0 0.25rem;">${escapeHtml(identity.name)}${moltName ? ' <span style="color:var(--primary);">' + escapeHtml(moltName + (moltName.endsWith('.molt') ? '' : '.molt')) + '</span>' : ''}</h4>
+        <div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.25rem;">${escapeHtml(tierName)} · ${escapeHtml(identity.agent_type_name || 'General')}${isActive ? ' · <span style="color:#4ade80;">Active</span>' : ''}</div>
         <div style="font-size:0.82rem;color:var(--text-muted);">Reputation: ${rep.toLocaleString()} / 10,000</div>
         <div style="margin-top:0.5rem;height:4px;background:var(--bg-tertiary);border-radius:2px;overflow:hidden;">
           <div style="height:100%;width:${repPct}%;background:var(--primary);border-radius:2px;"></div>
         </div>
-        ${skills.length > 0 ? `<div style="font-size:0.75rem;color:var(--text-muted);margin-top:0.5rem;">Skills: ${skills.map(s => s.name).join(', ')}</div>` : ''}
+        ${skills.length > 0 ? `<div style="font-size:0.75rem;color:var(--text-muted);margin-top:0.5rem;">Skills: ${skills.map(s => escapeHtml(s.name)).join(', ')}</div>` : ''}
         <div style="display:flex;justify-content:center;gap:1rem;margin-top:0.5rem;font-size:0.75rem;color:var(--text-muted);">
           <span><i class="fas fa-handshake"></i> ${vouchesReceived.length} vouches</span>
           <span><i class="fas fa-award"></i> ${achievements.length} achievements</span>

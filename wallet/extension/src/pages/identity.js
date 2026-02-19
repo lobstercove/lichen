@@ -17,6 +17,11 @@ import { isValidAddress } from '../core/crypto-service.js';
 
 let latestState = null;
 
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#x27;');
+}
+
 function setStatus(message) {
   const node = document.getElementById('identityActionStatus');
   if (node) node.textContent = message;
@@ -98,18 +103,18 @@ async function loadIdentityPage() {
 
   setHtml('identityProfile', `
     <div class="id-list">
-      <div class="id-row"><strong>Name:</strong> ${details.name || 'Unregistered'}</div>
+      <div class="id-row"><strong>Name:</strong> ${escapeHtml(details.name) || 'Unregistered'}</div>
       <div class="id-row"><strong>Reputation:</strong> ${details.reputation.toLocaleString()}</div>
       <div class="id-row"><strong>Agent Type:</strong> ${details.agentType ?? '—'}</div>
       <div class="id-row"><strong>Status:</strong> ${details.active ? 'Active' : 'Inactive'}</div>
-      <div class="id-row"><strong>Endpoint:</strong> ${details.endpoint || '—'}</div>
-      <div class="id-row"><strong>Availability:</strong> ${details.availability}</div>
+      <div class="id-row"><strong>Endpoint:</strong> ${escapeHtml(details.endpoint) || '—'}</div>
+      <div class="id-row"><strong>Availability:</strong> ${escapeHtml(details.availability)}</div>
       <div class="id-row"><strong>Rate:</strong> ${details.rate.toFixed(6)} MOLT</div>
     </div>
   `);
 
   const skills = details.skills.length
-    ? details.skills.map((s) => `<div class="id-row">${s.name || 'Skill'} — ${s.proficiency || 0}</div>`).join('')
+    ? details.skills.map((s) => `<div class="id-row">${escapeHtml(s.name) || 'Skill'} — ${s.proficiency || 0}</div>`).join('')
     : '<div class="id-row">No skills yet</div>';
   setHtml('identitySkills', `<div class="id-list">${skills}</div>`);
 
@@ -120,7 +125,7 @@ async function loadIdentityPage() {
   setHtml('identityVouches', `<div class="id-list">${vouches}</div>`);
 
   const achievements = details.achievements.length
-    ? details.achievements.map((a) => `<div class="id-row">${a.name || a.id || 'Achievement'}</div>`).join('')
+    ? details.achievements.map((a) => `<div class="id-row">${escapeHtml(a.name || a.id) || 'Achievement'}</div>`).join('')
     : '<div class="id-row">No achievements yet</div>';
   setHtml('identityAchievements', `<div class="id-list">${achievements}</div>`);
 }
