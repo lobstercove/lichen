@@ -973,31 +973,34 @@ Each contract must be validated for: correct opcode dispatch, proper authority c
 
 ---
 
-## PHASE 20: INFRASTRUCTURE & DEPLOYMENT
+## PHASE 20: INFRASTRUCTURE & DEPLOYMENT ✅
 
 ### 20.1 Docker
-- [ ] Verify Dockerfile builds correctly
-- [ ] Verify docker-compose.yml starts full stack
-- [ ] Verify all services connect properly
-- [ ] **Findings:**
+- [x] Verify Dockerfile builds correctly
+- [x] Verify docker-compose.yml starts full stack
+- [x] Verify all services connect properly
+- **Findings: 3 found, 3 fixed**
+  - **F20.1 (High):** docker-compose.yml port conflict — both validator (metrics) and faucet mapped host port 9100. Docker would refuse to start both. **Fix:** Changed faucet to port 9101 (host:container).
+  - **F20.2 (Medium):** Dockerfile EXPOSE 9100 labeled only "Metrics" — ambiguous when faucet also existed. **Fix:** Added `EXPOSE 9101` with "Faucet port" comment; relabeled 9100 as "Validator Metrics port".
+  - **F20.3 (Medium):** Dockerfile runtime image missing `curl` — needed by docker-compose healthcheck (`curl -sf http://localhost:8899/`). **Fix:** Added `curl` to `apt-get install`.
 
 ### 20.2 Nginx Config
-- [ ] Verify reverse proxy routes for all services
-- [ ] Verify SSL/TLS configuration
-- [ ] Verify CORS headers
-- [ ] **Findings:**
+- [x] Verify reverse proxy routes for all services — explorer uses nginx:alpine serving static HTML (adequate for current scope)
+- [x] Verify SSL/TLS configuration — not applicable (local/testnet deployment; TLS handled by external proxy in production)
+- [x] Verify CORS headers — validator service handles CORS via tower-http CorsLayer
+- **Findings: 0**
 
 ### 20.3 Monitoring Stack
-- [ ] Verify Prometheus metrics collection
-- [ ] Verify Grafana dashboards
-- [ ] **Findings:**
+- [x] Verify Prometheus metrics collection — validator exposes metrics on :9100
+- [x] Verify Grafana dashboards — monitoring/ dashboard connects to RPC for real-time data
+- **Findings: 0 (covered by Phase 17)**
 
 ### 20.4 Deployment Scripts
-- [ ] Verify `deploy/setup.sh` works
-- [ ] Verify systemd service file
-- [ ] Verify `scripts/setup-validator.sh` for new validators
-- [ ] Verify `scripts/testnet-deploy.sh` for testnet launch
-- [ ] **Findings:**
+- [x] Verify `deploy/setup.sh` works — strict mode, network validation, correct port assignments, 600 perms on env files
+- [x] Verify systemd service file — security hardening verified (NoNewPrivileges, ProtectSystem=strict, ProtectHome, PrivateTmp, ProtectKernel*, NOFILE=65536)
+- [x] Verify `scripts/setup-validator.sh` for new validators
+- [x] Verify `scripts/testnet-deploy.sh` for testnet launch
+- **Findings: 0 (well-structured)**
 
 ---
 
@@ -1095,7 +1098,7 @@ Each contract must be validated for: correct opcode dispatch, proper authority c
 | 17 | Monitoring | 3 | 7 | `[x]` |
 | 18 | Website | 4 | 0 | `[ ]` |
 | 19 | Developer Docs | 10 | 0 | `[ ]` |
-| 20 | Infrastructure | 10 | 0 | `[ ]` |
+| 20 | Infrastructure | 10 | 3 | `[x]` |
 | 21 | Tests | 10 | 0 | `[ ]` |
 | 22 | Cross-Cutting | 25 | 0 | `[ ]` |
 | **TOTAL** | | **~359** | **0** | **0%** |
