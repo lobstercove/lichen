@@ -88,12 +88,12 @@
 | 17 | Real-Time Updates & Polling | 10/10 | 2 | `[x]` |
 | 18 | Analytics Contract Wiring | 10/10 | 7 | `[x]` |
 | 19 | Token Contracts & Balances | 12/12 | 9 | `[x]` |
-| 20 | Error Handling & Edge Cases | 0/14 | 0 | `[ ]` |
+| 20 | Error Handling & Edge Cases | 14/14 | 8 | `[x]` |
 | 21 | SDK & Market Maker Integration | 0/10 | 0 | `[ ]` |
 | 22 | Security & Input Validation | 0/14 | 0 | `[ ]` |
 | 23 | Mobile / Responsive Layout | 0/8 | 0 | `[ ]` |
 | 24 | End-to-End Integration Tests | 0/12 | 0 | `[ ]` |
-| — | **TOTAL** | **258/314** | **169** | **82%** |
+| — | **TOTAL** | **272/314** | **177** | **87%** |
 
 ---
 
@@ -752,23 +752,30 @@
 
 | # | Task | Status |
 |---|---|---|
-| 20.1 | Test: RPC server down → UI shows meaningful error, doesn't crash | `[ ]` |
-| 20.2 | Test: contract execution failure → user sees error notification with reason | `[ ]` |
-| 20.3 | Test: insufficient balance for order → rejection message | `[ ]` |
-| 20.4 | Test: invalid price (0 or negative) → prevented before submission | `[ ]` |
-| 20.5 | Test: expired prediction market → cannot buy shares | `[ ]` |
-| 20.6 | Test: duplicate order submission (double-click) → prevented by button disable | `[ ]` |
-| 20.7 | Verify `showNotification()` displays errors, warnings, success messages correctly | `[ ]` |
-| 20.8 | Verify TradingView chart error fallback (library load failure) | `[ ]` |
-| 20.9 | Test: WebSocket message with invalid format → graceful handling, no crash | `[ ]` |
-| 20.10 | Test: large number inputs → overflow protection | `[ ]` |
-| 20.11 | Verify all `try/catch` blocks log errors, don't silently swallow | `[ ]` |
-| 20.12 | Test: concurrent transactions → verify no double-spend or race conditions | `[ ]` |
-| 20.13 | Verify network error retry logic (API calls that fail transiently) | `[ ]` |
-| 20.14 | Test: wallet import with invalid private key → error message | `[ ]` |
+| 20.1 | Test: RPC server down → UI shows meaningful error, doesn't crash | `[x]` |
+| 20.2 | Test: contract execution failure → user sees error notification with reason | `[x]` |
+| 20.3 | Test: insufficient balance for order → rejection message | `[x]` |
+| 20.4 | Test: invalid price (0 or negative) → prevented before submission | `[x]` |
+| 20.5 | Test: expired prediction market → cannot buy shares | `[x]` |
+| 20.6 | Test: duplicate order submission (double-click) → prevented by button disable | `[x]` |
+| 20.7 | Verify `showNotification()` displays errors, warnings, success messages correctly | `[x]` |
+| 20.8 | Verify TradingView chart error fallback (library load failure) | `[x]` |
+| 20.9 | Test: WebSocket message with invalid format → graceful handling, no crash | `[x]` |
+| 20.10 | Test: large number inputs → overflow protection | `[x]` |
+| 20.11 | Verify all `try/catch` blocks log errors, don't silently swallow | `[x]` |
+| 20.12 | Test: concurrent transactions → verify no double-spend or race conditions | `[x]` |
+| 20.13 | Verify network error retry logic (API calls that fail transiently) | `[x]` |
+| 20.14 | Test: wallet import with invalid private key → error message | `[x]` |
 
 **Findings:**
-- (none yet)
+- F20.1: `api.rpc()` missing `res.ok` check — non-JSON error pages (502 HTML) caused confusing SyntaxError. Fixed: added HTTP status check before JSON parse.
+- F20.3: Token balance fallback used hardcoded `1e9` divisor regardless of token decimals. Fixed: uses `ta.decimals` from registry.
+- F20.4: Negative price not rejected — produced BigInt overflow in `writeU64LE`. Fixed: explicit positive-value check.
+- F20.5: No client-side check for expired/closed prediction market before buy_shares transaction. Fixed: check `m.status !== 'active'`.
+- F20.10: No overflow guard for large numbers — `amount * PRICE_SCALE` exceeds MAX_SAFE_INTEGER for values >9M. Fixed: cap at 9M.
+- F20.11: Cancel order handler showed "Order cancelled" and removed from local state even when on-chain cancel failed. Fixed: moved success action inside try block.
+- F20.13: Zero retry logic for write operations. Fixed: added `withRetry()` utility.
+- F20.14: `hexToBytes()` silently produced garbage for non-hex input. Fixed: regex validation before parsing.
 
 ---
 

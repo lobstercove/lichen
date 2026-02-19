@@ -58,6 +58,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params }),
             });
+            // F20.1: Check HTTP status before parsing JSON (avoids confusing SyntaxError on HTML error pages)
+            if (!res.ok) throw new Error(`RPC HTTP ${res.status}: ${await res.text().catch(() => 'Unknown error')}`);
             const json = await res.json();
             if (json.error) throw new Error(`RPC: ${json.error.message}`);
             return json.result;
@@ -219,7 +221,21 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     function bytesToHex(b) { return Array.from(b).map(x => x.toString(16).padStart(2, '0')).join(''); }
-    function hexToBytes(h) { const c = h.startsWith('0x') ? h.slice(2) : h; const o = new Uint8Array(c.length / 2); for (let i = 0; i < o.length; i++) o[i] = parseInt(c.slice(i * 2, i * 2 + 2), 16); return o; }
+    function hexToBytes(h) {
+        const c = h.startsWith('0x') ? h.slice(2) : h;
+        // F20.14: Validate hex format before parsing
+        if (!/^[0-9a-fA-F]*$/.test(c)) throw new Error('Key must be hexadecimal');
+        if (c.length % 2 !== 0) throw new Error('Key has odd number of hex characters');
+        const o = new Uint8Array(c.length / 2); for (let i = 0; i < o.length; i++) o[i] = parseInt(c.slice(i * 2, i * 2 + 2), 16); return o;
+    }
+
+    // F20.13: Retry utility for transient network errors on write operations
+    async function withRetry(fn, maxRetries = 2, delay = 1000) {
+        for (let i = 0; i <= maxRetries; i++) {
+            try { return await fn(); }
+            catch (e) { if (i === maxRetries) throw e; await new Promise(r => setTimeout(r, delay * (i + 1))); }
+        }
+    }
 
     // AUDIT-FIX F10.8: Sanitize all API-sourced data before innerHTML injection
     function escapeHtml(str) {
@@ -701,7 +717,8 @@ document.addEventListener('DOMContentLoaded', () => {
             if (tokenResult && tokenResult.accounts) {
                 for (const ta of tokenResult.accounts) {
                     if (ta.symbol && ta.symbol !== 'MOLT') {
-                        balances[ta.symbol] = { available: ta.ui_amount || (ta.balance / 1e9), usd: 0 };
+                        const decimals = ta.decimals ?? 9;
+                        balances[ta.symbol] = { available: ta.ui_amount || (ta.balance / Math.pow(10, decimals)), usd: 0 };
                     }
                 }
             }
@@ -1006,6 +1023,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
         const price = parseFloat(priceInput?.value) || 0, amount = parseFloat(amountInput?.value) || 0;
         if (!amount || (state.orderType !== 'market' && !price)) { showNotification('Enter price and amount', 'warning'); return; }
+        // F20.4: Reject negative values (would cause BigInt overflow in writeU64LE)
+        if (amount <= 0) { showNotification('Amount must be positive', 'warning'); return; }
+        if (state.orderType !== 'market' && price <= 0) { showNotification('Price must be positive', 'warning'); return; }
+        // F20.10: Reject values that would overflow MAX_SAFE_INTEGER when multiplied by PRICE_SCALE
+        if (amount > 9_000_000) { showNotification('Amount too large (max 9M)', 'warning'); return; }
+        if (price > 9_000_000) { showNotification('Price too large (max 9M)', 'warning'); return; }
         if (!contracts.dex_core) { showNotification('Contract addresses not loaded', 'error'); return; }
         // F4.3: Client-side balance check before submitting order
         {
@@ -1069,8 +1092,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     contracts.dex_core,
                     buildCancelOrderArgs(wallet.address, parseInt(btn.dataset.id) || 0)
                 )]);
-            } catch { /* fallback — order may already be cancelled/filled */ }
-            openOrders = openOrders.filter(o => o.id !== btn.dataset.id); renderOpenOrders(); showNotification('Order cancelled', 'info');
+                // F20.11: Only update local state and show success after confirmed cancel
+                openOrders = openOrders.filter(o => o.id !== btn.dataset.id); renderOpenOrders(); showNotification('Order cancelled', 'info');
+            } catch (e) { showNotification(`Cancel failed: ${e.message}`, 'error'); }
         }));
     }
 
@@ -2936,6 +2960,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (amt < 1) { showNotification('Enter amount (min $1)', 'warning'); return; }
         const m = predictState.markets.find(x => x.id === predictState.selectedMarket);
         if (!m) return;
+        // F20.5: Check market is still active before submitting buy transaction
+        if (m.status && m.status !== 'active') { showNotification('Market is no longer active', 'warning'); return; }
         predictSubmitBtn.disabled = true; predictSubmitBtn.textContent = 'Submitting...';
         try {
             // AUDIT-FIX F10.4: Prediction trade via signed sendTransaction (not unsigned REST)
