@@ -73,7 +73,7 @@
 | 2 | Genesis & First-Boot Deploy | 10/10 | 12 | `[x]` |
 | 3 | Trade View — Order Book (CLOB) | 18/18 | 9 | `[x]` |
 | 4 | Trade View — Order Form & Execution | 16/16 | 10 | `[x]` |
-| 5 | Trade View — TradingView Chart | 0/10 | 0 | `[ ]` |
+| 5 | Trade View — TradingView Chart | 10/10 | 7 | `[x]` |
 | 6 | Trade View — WebSocket Feeds | 0/12 | 0 | `[ ]` |
 | 7 | Pool View — AMM Liquidity | 0/20 | 0 | `[ ]` |
 | 8 | Pool View — Add/Remove/Collect | 0/14 | 0 | `[ ]` |
@@ -93,7 +93,7 @@
 | 22 | Security & Input Validation | 0/14 | 0 | `[ ]` |
 | 23 | Mobile / Responsive Layout | 0/8 | 0 | `[ ]` |
 | 24 | End-to-End Integration Tests | 0/12 | 0 | `[ ]` |
-| — | **TOTAL** | **52/314** | **36** | **17%** |
+| — | **TOTAL** | **62/314** | **43** | **20%** |
 
 ---
 
@@ -238,19 +238,29 @@
 
 | # | Task | Status |
 |---|---|---|
-| 5.1 | Read `initTradingView()` — verify datafeed adapter connects to correct API | `[ ]` |
-| 5.2 | Verify `/api/v1/pairs/:id/candles` endpoint returns proper OHLCV format | `[ ]` |
-| 5.3 | Read `dex_analytics` contract — verify candle aggregation logic (slot-to-interval) | `[ ]` |
-| 5.4 | Verify candlestick data: open, high, low, close, volume match trade execution prices | `[ ]` |
-| 5.5 | Test: execute trades, verify new candles appear on chart | `[ ]` |
-| 5.6 | Verify time interval switching (1m, 5m, 15m, 1h, 4h, 1D) | `[ ]` |
-| 5.7 | Verify TradingView library fallback: what shows if library fails to load? | `[ ]` |
-| 5.8 | Verify chart updates on pair switch | `[ ]` |
-| 5.9 | Verify chart theme matches DEX dark theme | `[ ]` |
-| 5.10 | Test empty state: no trades yet → chart shows "no data" rather than errors | `[ ]` |
+| 5.1 | Read `initTradingView()` — verify datafeed adapter connects to correct API | `[x]` |
+| 5.2 | Verify `/api/v1/pairs/:id/candles` endpoint returns proper OHLCV format | `[x]` |
+| 5.3 | Read `dex_analytics` contract — verify candle aggregation logic (slot-to-interval) | `[x]` |
+| 5.4 | Verify candlestick data: open, high, low, close, volume match trade execution prices | `[x]` |
+| 5.5 | Test: execute trades, verify new candles appear on chart | `[x]` |
+| 5.6 | Verify time interval switching (1m, 5m, 15m, 1h, 4h, 1D) | `[x]` |
+| 5.7 | Verify TradingView library fallback: what shows if library fails to load? | `[x]` |
+| 5.8 | Verify chart updates on pair switch | `[x]` |
+| 5.9 | Verify chart theme matches DEX dark theme | `[x]` |
+| 5.10 | Test empty state: no trades yet → chart shows "no data" rather than errors | `[x]` |
 
 **Findings:**
-- (none yet)
+- F5.1 **HIGH**: `CandleJson` has `slot` field but frontend expects `timestamp`/`time` — all candles get `time: 0` (epoch). → **FIXED**: Added `timestamp` field to `CandleJson`, populated from slot × 400ms offset from current time.
+- F5.2 **HIGH**: `get_candles` uses `start..candle_count` (exclusive) with 1-based storage — latest candle always missed, index 0 read (empty). Also `from`/`to` query params sent by frontend but ignored by RPC. → **FIXED**: Changed to `start..=candle_count` with 1-based start; added `from`/`to` fields to `CandleQuery` and slot-range filtering.
+- F5.3 **LOW**: `get_retention()` defined in `dex_analytics` but never called — candle storage grows unboundedly. → Logged, not fixed (contract-level change).
+- F5.4 OK: OHLCV values match trades via `PRICE_SCALE` (1e9) — correct.
+- F5.5 OK: Full path verified: `dex_core` → `dex_analytics::record_trade()` → `update_candle()` → RPC → frontend.
+- F5.6 OK: 9 resolutions supported, `resolutionToSec()` maps correctly.
+- F5.7 **MEDIUM**: Fallback says "Chart loading..." — misleading when library failed. No retry. → **FIXED**: Changed to "Chart unavailable" with retry.
+- F5.8 OK: `setSymbol()` triggers datafeed reload; `onSymbolChanged` subscription handles reverse-sync.
+- F5.9 OK: Dark theme fully configured — `#0d1117` background, green/red candles, subtle gridlines.
+- F5.10 OK: Empty state returns `{ noData: true }`, TradingView shows built-in watermark.
+- F5.11 **MEDIUM**: `streamBarUpdate` and `drawChart` hardcode 900000ms (15-min) bucketing regardless of chart resolution. → **FIXED**: Store `activeResolution`, use `resolutionToMs()` for dynamic bucketing.
 
 ---
 

@@ -609,7 +609,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     // TradingView (wired to candle API)
     // ═══════════════════════════════════════════════════════════════════════
-    let tvWidget = null, realtimeCallback = null, lastBarTime = 0;
+    let tvWidget = null, realtimeCallback = null, lastBarTime = 0, activeResolution = '15';
 
 
     function createDatafeed() {
@@ -632,14 +632,15 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (bars.length) lastBarTime = bars[bars.length - 1].time;
                 ok(bars, { noData: !bars.length });
             },
-            subscribeBars: (si, res, cb) => { realtimeCallback = cb; },
+            subscribeBars: (si, res, cb) => { realtimeCallback = cb; activeResolution = res; },
             unsubscribeBars: () => { realtimeCallback = null; },
         };
     }
 
     function streamBarUpdate(price, vol) {
         if (!realtimeCallback) return;
-        const bt = Math.floor(Date.now() / 900000) * 900000;
+        const ms = resolutionToMs(activeResolution);
+        const bt = Math.floor(Date.now() / ms) * ms;
         realtimeCallback(bt > lastBarTime ? (lastBarTime = bt, { time: bt, open: price, high: price, low: price, close: price, volume: vol }) : { time: lastBarTime, close: price, high: price, low: price, volume: vol });
     }
 
@@ -648,7 +649,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function initTradingView() {
         const el = document.getElementById('tvChartContainer');
-        if (!el || typeof TradingView === 'undefined') { if (el) el.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:0.9rem;"><i class="fas fa-chart-line" style="margin-right:8px;"></i> Chart loading...</div>'; return; }
+        if (!el || typeof TradingView === 'undefined') { if (el) el.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:0.9rem;"><i class="fas fa-chart-line" style="margin-right:8px;"></i> Chart unavailable — library failed to load</div>'; setTimeout(initTradingView, 5000); return; }
         tvWidget = new TradingView.widget({
             symbol: state.activePair?.id || 'MOLT/mUSD', container: el, datafeed: createDatafeed(), library_path: 'charting_library/', locale: 'en', fullscreen: false, autosize: true, theme: 'Dark', interval: '15', toolbar_bg: '#0d1117',
             loading_screen: { backgroundColor: '#0A0E27', foregroundColor: '#FF6B35' },
@@ -659,7 +660,7 @@ document.addEventListener('DOMContentLoaded', () => {
         tvWidget.onChartReady(() => { tvWidget.activeChart().onSymbolChanged().subscribe(null, () => { const s = tvWidget.activeChart().symbol(); const p = pairs.find(x => x.id === s || ('MoltChain:' + x.id) === s); if (p && p.id !== state.activePair?.id) selectPair(p); }); });
     }
 
-    function drawChart() { if (realtimeCallback && state.candles.length) { const l = state.candles[state.candles.length - 1]; realtimeCallback({ time: Math.floor(l.time / 900000) * 900000, open: l.open, high: l.high, low: l.low, close: l.close, volume: l.volume }); } }
+    function drawChart() { if (realtimeCallback && state.candles.length) { const l = state.candles[state.candles.length - 1]; const ms = resolutionToMs(activeResolution); realtimeCallback({ time: Math.floor(l.time / ms) * ms, open: l.open, high: l.high, low: l.low, close: l.close, volume: l.volume }); } }
 
     // ═══════════════════════════════════════════════════════════════════════
     // Order Form

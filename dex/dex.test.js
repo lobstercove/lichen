@@ -1104,6 +1104,124 @@ assert(
 );
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Phase 5: Trade View — TradingView Chart
+// ═══════════════════════════════════════════════════════════════════════════
+
+// P5.1: Datafeed adapter connects to candle API
+assert(
+    dexSource.includes('loadCandles(pp.from, pp.to, res)') &&
+    dexSource.includes('/candles?'),
+    'P5.1: Datafeed getBars calls loadCandles which fetches /candles API'
+);
+
+// P5.2: loadCandles maps OHLCV fields from response
+{
+    const lcMatch = dexSource.match(/data\.map\(c\s*=>\s*\(\{[\s\S]*?\}\)\)/);
+    assert(lcMatch, 'P5.2a: loadCandles maps candle data array');
+    const body = lcMatch[0];
+    assert(body.includes('c.timestamp') && body.includes('c.open') && body.includes('c.high') && body.includes('c.low') && body.includes('c.close') && body.includes('c.volume'),
+        'P5.2b: loadCandles extracts timestamp, open, high, low, close, volume');
+}
+
+// P5.3: CandleJson has timestamp field (F5.1 fix)
+assert(
+    rpcDexSource.includes('pub timestamp: u64') &&
+    rpcDexSource.includes('pub struct CandleJson'),
+    'P5.3: CandleJson struct includes timestamp field (F5.1 fix)'
+);
+
+// P5.4: get_candles uses 1-based inclusive range (F5.2 fix)
+assert(
+    rpcDexSource.includes('for i in start..=candle_count'),
+    'P5.4a: get_candles uses inclusive range start..=candle_count (F5.2 fix)'
+);
+assert(
+    rpcDexSource.includes('candle_count - limit as u64 + 1'),
+    'P5.4b: get_candles start is 1-based (F5.2 fix)'
+);
+
+// P5.5: CandleQuery has from/to fields (F5.2 fix)
+assert(
+    rpcDexSource.includes('pub struct CandleQuery') &&
+    rpcDexSource.includes('from: Option<u64>') &&
+    rpcDexSource.includes('to: Option<u64>'),
+    'P5.5: CandleQuery struct has from/to fields for slot range filtering (F5.2 fix)'
+);
+
+// P5.6: get_candles filters by from/to
+assert(
+    rpcDexSource.includes('if candle.timestamp < from') &&
+    rpcDexSource.includes('if candle.timestamp > to'),
+    'P5.6: get_candles filters candles by from/to timestamps (F5.2 fix)'
+);
+
+// P5.7: Candle aggregation — dex_analytics contract uses correct interval boundaries
+{
+    const analyticsPath = '/Users/johnrobin/.openclaw/workspace/moltchain/contracts/dex_analytics/src/lib.rs';
+    try {
+        const analyticsSource = fs.readFileSync(analyticsPath, 'utf8');
+        assert(
+            analyticsSource.includes('current_slot / interval') && analyticsSource.includes('* interval'),
+            'P5.7: dex_analytics calculates candle boundaries as (slot/interval)*interval'
+        );
+    } catch {
+        assert(false, 'P5.7: Could not read dex_analytics contract');
+    }
+}
+
+// P5.8: Time interval switching — resolutionToSec maps all standard intervals
+assert(
+    dexSource.includes("'1': 60") && dexSource.includes("'5': 300") &&
+    dexSource.includes("'60': 3600") && dexSource.includes("'240': 14400") &&
+    dexSource.includes("'1D': 86400"),
+    'P5.8: resolutionToSec() maps all standard intervals correctly'
+);
+
+// P5.9: TradingView fallback says "unavailable" (not "loading") and has retry (F5.7 fix)
+assert(
+    dexSource.includes('Chart unavailable') && dexSource.includes('setTimeout(initTradingView'),
+    'P5.9: TradingView fallback shows "unavailable" message with retry (F5.7 fix)'
+);
+
+// P5.10: Chart updates on pair switch via setSymbol
+assert(
+    dexSource.includes('setSymbol(pair.id'),
+    'P5.10: Chart updates on pair switch via setSymbol'
+);
+
+// P5.11: Dark theme config
+assert(
+    dexSource.includes("theme: 'Dark'") && dexSource.includes("'#0d1117'"),
+    'P5.11: Chart uses dark theme with #0d1117 background'
+);
+
+// P5.12: Empty state returns noData flag
+assert(
+    dexSource.includes('noData: !bars.length'),
+    'P5.12: getBars returns { noData: true } when no candles exist'
+);
+
+// P5.13: Dynamic resolution bucketing (F5.11 fix)
+assert(
+    dexSource.includes('activeResolution') && dexSource.includes('resolutionToMs(activeResolution)'),
+    'P5.13a: streamBarUpdate uses dynamic resolution via activeResolution (F5.11 fix)'
+);
+assert(
+    dexSource.includes("activeResolution = res"),
+    'P5.13b: subscribeBars stores resolution in activeResolution (F5.11 fix)'
+);
+assert(
+    !dexSource.includes('900000) * 900000'),
+    'P5.13c: No hardcoded 900000ms (15-min) bucketing remains (F5.11 fix)'
+);
+
+// P5.14: Supported resolutions include all standard intervals
+assert(
+    dexSource.includes("'1','5','15','30','60','240','1D','1W','1M'"),
+    'P5.14: supported_resolutions includes all 9 standard intervals'
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Summary
 // ═══════════════════════════════════════════════════════════════════════════
 console.log(`\n${'═'.repeat(60)}`);

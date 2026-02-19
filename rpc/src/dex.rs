@@ -247,6 +247,7 @@ pub struct CandleJson {
     pub close: f64,
     pub volume: u64,
     pub slot: u64,
+    pub timestamp: u64,
 }
 
 #[derive(Serialize, Clone)]
@@ -355,6 +356,8 @@ pub struct TraderQuery {
 pub struct CandleQuery {
     interval: Option<u64>,
     limit: Option<usize>,
+    from: Option<u64>,
+    to: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -755,6 +758,7 @@ fn decode_candle(data: &[u8]) -> Option<CandleJson> {
         close: close as f64 / PRICE_SCALE as f64,
         volume,
         slot,
+        timestamp: 0,
     })
 }
 
@@ -1182,13 +1186,35 @@ async fn get_candles(
     let count_key = format!("ana_cc_{}_{}", pair_id, interval);
     let candle_count = read_u64(&state, DEX_ANALYTICS_PROGRAM, &count_key);
 
-    let mut candles = Vec::new();
-    let start = candle_count.saturating_sub(limit as u64);
+    // F5.1+F5.2: Compute timestamps from slot and use 1-based inclusive range
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+    let now_sec = now_ms / 1000;
 
-    for i in start..candle_count {
+    let mut candles = Vec::new();
+    // Candle IDs are 1-based; candle_count is the highest stored ID
+    let start = if candle_count > limit as u64 {
+        candle_count - limit as u64 + 1
+    } else {
+        1
+    };
+
+    for i in start..=candle_count {
         let key = format!("ana_c_{}_{}_{}", pair_id, interval, i);
         if let Some(data) = read_bytes(&state, DEX_ANALYTICS_PROGRAM, &key) {
-            if let Some(candle) = decode_candle(&data) {
+            if let Some(mut candle) = decode_candle(&data) {
+                // Compute timestamp (seconds) from slot: approx now - (current_slot - candle_slot) * 0.4s
+                let slot_age_sec = slot.saturating_sub(candle.slot) * 400 / 1000;
+                candle.timestamp = now_sec.saturating_sub(slot_age_sec);
+                // F5.2: Filter by from/to (seconds) if provided
+                if let Some(from) = q.from {
+                    if candle.timestamp < from { continue; }
+                }
+                if let Some(to) = q.to {
+                    if candle.timestamp > to { continue; }
+                }
                 candles.push(candle);
             }
         }
