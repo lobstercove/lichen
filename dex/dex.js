@@ -579,6 +579,43 @@ document.addEventListener('DOMContentLoaded', () => {
         return arr;
     }
 
+    // Task 8.1: Opcode 9: challenge_resolution(challenger, market_id, evidence_hash, bond)
+    // Layout: op[0]=9, challenger[1:33], market_id[33:41], evidence_hash[41:73], bond[73:81] = 81 bytes
+    function buildChallengeResolutionArgs(challenger, marketId, evidenceHash) {
+        const buf = new ArrayBuffer(81);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 9); // opcode 9 = challenge_resolution
+        writePubkey(arr, 1, challenger);
+        writeU64LE(view, 33, marketId);
+        // evidence_hash: 32 bytes — hash of challenge evidence
+        if (evidenceHash && evidenceHash.length === 32) {
+            arr.set(evidenceHash, 41);
+        } else {
+            // If string evidence provided, hash it into 32 bytes
+            const encoder = new TextEncoder();
+            const evBytes = encoder.encode(evidenceHash || '');
+            const hashBytes = new Uint8Array(32);
+            for (let i = 0; i < evBytes.length; i++) hashBytes[i % 32] ^= evBytes[i];
+            arr.set(hashBytes, 41);
+        }
+        // bond: DISPUTE_BOND = 100_000_000 (100 mUSD)
+        writeU64LE(view, 73, 100_000_000);
+        return arr;
+    }
+
+    // Task 8.1: Opcode 10: finalize_resolution(caller, market_id)
+    // Layout: op[0]=10, caller[1:33], market_id[33:41] = 41 bytes
+    function buildFinalizeResolutionArgs(caller, marketId) {
+        const buf = new ArrayBuffer(41);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 10); // opcode 10 = finalize_resolution
+        writePubkey(arr, 1, caller);
+        writeU64LE(view, 33, marketId);
+        return arr;
+    }
+
     // ── Rewards instruction builders ──
     // Opcode 2: claim_trading_rewards(trader)
     function buildClaimRewardsArgs(trader) {
@@ -3111,6 +3148,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     // F11.7 FIX: Map close_slot and creator for time remaining and attribution
                     closes: m.close_slot || 0,
                     creator: m.creator || '',
+                    // Task 8.1: Fields for challenge/dispute lifecycle
+                    dispute_end_slot: m.dispute_end_slot || 0,
+                    current_slot: m.current_slot || data.current_slot || 0,
+                    resolver: m.resolver || '',
+                    winning_outcome: m.winning_outcome,
+                    resolved_outcome: m.resolved_outcome || '',
                 }));
                 predictState.live = true;
                 renderPredictionMarkets();
@@ -3277,6 +3320,39 @@ document.addEventListener('DOMContentLoaded', () => {
             const isCreator = m.creator && wallet.address && m.creator === wallet.address;
             const resolveBtn = (!isResolved && isCreator) ? `<button class="btn btn-small btn-predict-resolve" data-market="${m.id}" style="background:var(--warning,#ffd166);color:#000;margin-left:8px;" title="Resolve this market"><i class="fas fa-gavel"></i> Resolve</button>` : '';
 
+            // Task 8.1: Challenge/Finalize buttons for resolving/disputed markets
+            let disputeHtml = '';
+            if (m.status === 'resolving') {
+                // Dispute window countdown
+                const disputeEndSlot = m.dispute_end_slot || m.disputeEndSlot || 0;
+                const currentSlot = m.current_slot || m.currentSlot || 0;
+                const slotsRemaining = disputeEndSlot > currentSlot ? disputeEndSlot - currentSlot : 0;
+                const secondsRemaining = slotsRemaining * 0.5; // 0.5s per slot
+                const hoursRemaining = Math.floor(secondsRemaining / 3600);
+                const minutesRemaining = Math.floor((secondsRemaining % 3600) / 60);
+                const disputeExpired = slotsRemaining <= 0;
+                const resolverAddr = m.resolver ? escapeHtml(m.resolver.slice(0, 8) + '...' + m.resolver.slice(-6)) : 'Unknown';
+                const outcomeLabel = m.winning_outcome !== undefined ? (m.winning_outcome === 0 ? 'YES' : 'NO') : '—';
+                disputeHtml = `<div class="dispute-panel" data-market="${m.id}">
+                    <div class="dispute-info">
+                        <span class="dispute-label">Resolution: <strong>${outcomeLabel}</strong> by ${resolverAddr}</span>
+                        <span class="dispute-countdown ${disputeExpired ? 'expired' : ''}">${disputeExpired ? 'Dispute period ended' : `<i class="fas fa-hourglass-half"></i> ${hoursRemaining}h ${minutesRemaining}m remaining`}</span>
+                    </div>
+                    <div class="dispute-actions">
+                        ${disputeExpired
+                            ? `<button class="btn btn-small btn-predict-finalize" data-market="${m.id}" title="Finalize resolution"><i class="fas fa-check-circle"></i> Finalize</button>`
+                            : `<button class="btn btn-small btn-predict-challenge" data-market="${m.id}" title="Challenge this resolution"><i class="fas fa-exclamation-triangle"></i> Challenge</button>`
+                        }
+                    </div>
+                </div>`;
+            } else if (m.status === 'disputed') {
+                disputeHtml = `<div class="dispute-panel disputed-state" data-market="${m.id}">
+                    <div class="dispute-info">
+                        <span class="dispute-label"><i class="fas fa-exclamation-circle"></i> Market disputed — awaiting DAO resolution</span>
+                    </div>
+                </div>`;
+            }
+
             const card = document.createElement('div');
             card.className = 'market-card panel-card' + (isResolved ? ' resolved' : '');
             card.dataset.cat = m.cat;
@@ -3294,6 +3370,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     </div>
                 </div>
                 <div class="market-outcomes">${outcomesHtml}</div>
+                ${disputeHtml}
                 <div class="market-footer">
                     <div class="market-stats-mini">
                         <span><i class="fas fa-exchange-alt"></i> ${volLabel} vol</span>
@@ -3443,6 +3520,40 @@ document.addEventListener('DOMContentLoaded', () => {
                 showNotification('Prediction winnings claimed!', 'success');
             } catch (err) { showNotification(`Claim failed: ${err.message}`, 'error'); }
             btn.disabled = false; btn.innerHTML = '<i class="fas fa-gift"></i> Claim Winnings';
+        }));
+
+        // Task 8.1: Challenge resolution button handler
+        document.querySelectorAll('.btn-predict-challenge').forEach(btn => btn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
+            if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
+            const mid = parseInt(btn.dataset.market);
+            const m = predictState.markets.find(x => x.id === mid);
+            if (!m) return;
+            const evidence = prompt(`Challenge resolution of "${m.question}"?\n\nThis requires a bond of 100 mUSD.\n\nProvide evidence or reason for challenge:`);
+            if (!evidence) { showNotification('Challenge cancelled', 'info'); return; }
+            btn.disabled = true; btn.textContent = 'Challenging...';
+            try {
+                await wallet.sendTransaction([contractIx(contracts.prediction_market, buildChallengeResolutionArgs(wallet.address, mid, evidence))]);
+                showNotification('Resolution challenged! Awaiting DAO review.', 'success');
+                await loadPredictionMarkets();
+            } catch (err) { showNotification(`Challenge failed: ${err.message}`, 'error'); }
+            btn.disabled = false; btn.innerHTML = '<i class="fas fa-exclamation-triangle"></i> Challenge';
+        }));
+
+        // Task 8.1: Finalize resolution button handler
+        document.querySelectorAll('.btn-predict-finalize').forEach(btn => btn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
+            if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
+            const mid = parseInt(btn.dataset.market);
+            btn.disabled = true; btn.textContent = 'Finalizing...';
+            try {
+                await wallet.sendTransaction([contractIx(contracts.prediction_market, buildFinalizeResolutionArgs(wallet.address, mid))]);
+                showNotification('Market resolution finalized!', 'success');
+                await loadPredictionMarkets();
+            } catch (err) { showNotification(`Finalize failed: ${err.message}`, 'error'); }
+            btn.disabled = false; btn.innerHTML = '<i class="fas fa-check-circle"></i> Finalize';
         }));
     }
 

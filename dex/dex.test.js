@@ -4899,6 +4899,165 @@ console.log('\n── Phase 6: Governance Lifecycle ──');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Phase 8: Prediction Market Challenge/Dispute Tests
+// ═══════════════════════════════════════════════════════════════════════════
+
+// --- Task 8.1: Challenge/Dispute UI ---
+{
+    // P8.1a: buildChallengeResolutionArgs function exists
+    assert(dexJs.includes('function buildChallengeResolutionArgs'), 'P8.1a: buildChallengeResolutionArgs function exists');
+
+    // P8.1b: buildChallengeResolutionArgs uses opcode 9
+    {
+        const fnBody = dexJs.match(/function buildChallengeResolutionArgs[\s\S]*?return arr;\n    \}/);
+        assert(fnBody, 'P8.1b-pre: buildChallengeResolutionArgs function extracted');
+        if (fnBody) {
+            assert(fnBody[0].includes('writeU8(arr, 0, 9)'), 'P8.1b: buildChallengeResolutionArgs uses opcode 9');
+        }
+    }
+
+    // P8.1c: buildChallengeResolutionArgs produces 81-byte buffer
+    assert(dexJs.includes('new ArrayBuffer(81)'), 'P8.1c: buildChallengeResolutionArgs allocates 81-byte buffer');
+
+    // P8.1d: buildChallengeResolutionArgs includes dispute bond (100_000_000)
+    {
+        const fnBody = dexJs.match(/function buildChallengeResolutionArgs[\s\S]*?return arr;\n    \}/);
+        if (fnBody) {
+            assert(fnBody[0].includes('100_000_000') || fnBody[0].includes('100000000'), 'P8.1d: buildChallengeResolutionArgs includes dispute bond');
+        }
+    }
+
+    // P8.1e: buildChallengeResolutionArgs writes evidence hash at offset 41
+    {
+        const fnBody = dexJs.match(/function buildChallengeResolutionArgs[\s\S]*?return arr;\n    \}/);
+        if (fnBody) {
+            assert(fnBody[0].includes('arr.set(') && fnBody[0].includes(', 41)'), 'P8.1e: buildChallengeResolutionArgs writes evidence at offset 41');
+        }
+    }
+
+    // P8.1f: Functional test — buildChallengeResolutionArgs byte layout
+    {
+        const fnBody = dexJs.match(/function buildChallengeResolutionArgs\(challenger, marketId, evidenceHash\)\s*\{([\s\S]*?)return arr;\n    \}/);
+        assert(fnBody, 'P8.1f-pre: buildChallengeResolutionArgs body extracted');
+        if (fnBody) {
+            const testFn = new Function('challenger', 'marketId', 'evidenceHash',
+                'const writeU8 = (a,o,v) => a[o]=v; const writePubkey = (a,o,pk) => { for(let i=0;i<32;i++) a[o+i]=i; }; const writeU64LE = (v,o,val) => { v.setBigUint64(o, BigInt(val), true); }; const TextEncoder = globalThis.TextEncoder;' +
+                fnBody[1] + 'return arr;');
+            const result = testFn('TestPubkey123456789012345678901', 42, 'test evidence');
+            assert(result instanceof Uint8Array, 'P8.1f: buildChallengeResolutionArgs returns Uint8Array');
+            assert(result.length === 81, `P8.1f2: buildChallengeResolutionArgs length = ${result.length}, expected 81`);
+            assert(result[0] === 9, `P8.1f3: opcode byte = ${result[0]}, expected 9`);
+        }
+    }
+
+    // P8.1g: buildFinalizeResolutionArgs function exists
+    assert(dexJs.includes('function buildFinalizeResolutionArgs'), 'P8.1g: buildFinalizeResolutionArgs function exists');
+
+    // P8.1h: buildFinalizeResolutionArgs uses opcode 10
+    {
+        const fnBody = dexJs.match(/function buildFinalizeResolutionArgs[\s\S]*?return arr;\n    \}/);
+        assert(fnBody, 'P8.1h-pre: buildFinalizeResolutionArgs function extracted');
+        if (fnBody) {
+            assert(fnBody[0].includes('writeU8(arr, 0, 10)'), 'P8.1h: buildFinalizeResolutionArgs uses opcode 10');
+        }
+    }
+
+    // P8.1i: buildFinalizeResolutionArgs produces 41-byte buffer
+    {
+        const fnBody = dexJs.match(/function buildFinalizeResolutionArgs[\s\S]*?return arr;\n    \}/);
+        if (fnBody) {
+            assert(fnBody[0].includes('new ArrayBuffer(41)'), 'P8.1i: buildFinalizeResolutionArgs allocates 41-byte buffer');
+        }
+    }
+
+    // P8.1j: Functional test — buildFinalizeResolutionArgs byte layout
+    {
+        const fnBody = dexJs.match(/function buildFinalizeResolutionArgs\(caller, marketId\)\s*\{([\s\S]*?)return arr;\n    \}/);
+        assert(fnBody, 'P8.1j-pre: buildFinalizeResolutionArgs body extracted');
+        if (fnBody) {
+            const testFn = new Function('caller', 'marketId',
+                'const writeU8 = (a,o,v) => a[o]=v; const writePubkey = (a,o,pk) => { for(let i=0;i<32;i++) a[o+i]=i; }; const writeU64LE = (v,o,val) => { v.setBigUint64(o, BigInt(val), true); };' +
+                fnBody[1] + 'return arr;');
+            const result = testFn('TestPubkey123456789012345678901', 99);
+            assert(result instanceof Uint8Array, 'P8.1j: buildFinalizeResolutionArgs returns Uint8Array');
+            assert(result.length === 41, `P8.1j2: buildFinalizeResolutionArgs length = ${result.length}, expected 41`);
+            assert(result[0] === 10, `P8.1j3: opcode byte = ${result[0]}, expected 10`);
+        }
+    }
+
+    // P8.1k: Challenge button renders for resolving markets
+    assert(dexJs.includes('btn-predict-challenge'), 'P8.1k: Challenge button class exists in JS');
+
+    // P8.1l: Finalize button renders for resolving markets after dispute window
+    assert(dexJs.includes('btn-predict-finalize'), 'P8.1l: Finalize button class exists in JS');
+
+    // P8.1m: Dispute panel renders for resolving markets
+    assert(dexJs.includes('dispute-panel'), 'P8.1m: dispute-panel class in JS');
+
+    // P8.1n: Dispute countdown shows hours and minutes remaining
+    assert(dexJs.includes('hoursRemaining') && dexJs.includes('minutesRemaining'), 'P8.1n: Dispute countdown computes hours/minutes');
+
+    // P8.1o: Dispute countdown uses 0.5s per slot conversion
+    assert(dexJs.includes('slotsRemaining * 0.5') || dexJs.includes('* 0.5'), 'P8.1o: Slot-to-seconds conversion at 0.5s/slot');
+
+    // P8.1p: Disputed market shows "awaiting DAO resolution" message
+    assert(dexJs.includes('awaiting DAO resolution'), 'P8.1p: Disputed market shows DAO message');
+
+    // P8.1q: Challenge button handler prompts for evidence
+    {
+        const challengeHandler = dexJs.match(/btn-predict-challenge[\s\S]*?Challenge cancelled/);
+        assert(challengeHandler, 'P8.1q: Challenge handler includes evidence prompt');
+    }
+
+    // P8.1r: Challenge handler calls buildChallengeResolutionArgs
+    assert(dexJs.includes('buildChallengeResolutionArgs(wallet.address'), 'P8.1r: Challenge handler calls buildChallengeResolutionArgs');
+
+    // P8.1s: Finalize handler calls buildFinalizeResolutionArgs
+    assert(dexJs.includes('buildFinalizeResolutionArgs(wallet.address'), 'P8.1s: Finalize handler calls buildFinalizeResolutionArgs');
+
+    // P8.1t: Challenge success notification
+    assert(dexJs.includes('Resolution challenged'), 'P8.1t: Challenge success notification');
+
+    // P8.1u: Finalize success notification
+    assert(dexJs.includes('Market resolution finalized'), 'P8.1u: Finalize success notification');
+
+    // P8.1v: Market data mapping includes dispute_end_slot
+    assert(dexJs.includes('dispute_end_slot: m.dispute_end_slot'), 'P8.1v: Market data maps dispute_end_slot');
+
+    // P8.1w: Market data mapping includes resolver
+    assert(dexJs.includes('resolver: m.resolver'), 'P8.1w: Market data maps resolver');
+
+    // P8.1x: Market data mapping includes winning_outcome
+    assert(dexJs.includes('winning_outcome: m.winning_outcome'), 'P8.1x: Market data maps winning_outcome');
+
+    // P8.1y: Dispute expired state handled
+    assert(dexJs.includes('disputeExpired') || dexJs.includes("'expired'"), 'P8.1y: Dispute expired state handled');
+
+    // P8.1z: Dispute CSS exists
+    const cssSrc8 = fs.readFileSync(__dirname + '/dex.css', 'utf8');
+    assert(cssSrc8.includes('.dispute-panel'), 'P8.1z: dispute-panel CSS exists');
+    assert(cssSrc8.includes('.dispute-info'), 'P8.1z2: dispute-info CSS exists');
+    assert(cssSrc8.includes('.dispute-countdown'), 'P8.1z3: dispute-countdown CSS exists');
+    assert(cssSrc8.includes('.dispute-actions'), 'P8.1z4: dispute-actions CSS exists');
+    assert(cssSrc8.includes('.btn-predict-challenge'), 'P8.1z5: btn-predict-challenge CSS exists');
+    assert(cssSrc8.includes('.btn-predict-finalize'), 'P8.1z6: btn-predict-finalize CSS exists');
+    assert(cssSrc8.includes('.disputed-state'), 'P8.1z7: disputed-state CSS exists');
+    assert(cssSrc8.includes('.dispute-label'), 'P8.1z8: dispute-label CSS exists');
+
+    // P8.1aa: disputeHtml variable used in card rendering
+    assert(dexJs.includes('${disputeHtml}'), 'P8.1aa: disputeHtml inserted into market card');
+
+    // P8.1ab: Challenge requires 100 mUSD bond (user informed)
+    assert(dexJs.includes('100 mUSD'), 'P8.1ab: Challenge prompt mentions 100 mUSD bond');
+
+    // P8.1ac: Resolver address displayed in dispute panel  
+    assert(dexJs.includes('resolverAddr'), 'P8.1ac: Resolver address shown in dispute panel');
+
+    // P8.1ad: Outcome label displayed in dispute panel
+    assert(dexJs.includes('outcomeLabel'), 'P8.1ad: Winning outcome displayed in dispute panel');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Summary
 // ═══════════════════════════════════════════════════════════════════════════
 console.log(`\n${'═'.repeat(60)}`);

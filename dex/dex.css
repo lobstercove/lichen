@@ -2126,6 +2126,72 @@
 
 /* Market Footer */
 .market-footer { padding: 0 16px 14px; }
+
+/* ===== Task 8.1: Dispute Panel ===== */
+.dispute-panel {
+    margin: 0 16px 8px;
+    padding: 10px 12px;
+    background: rgba(255, 209, 102, 0.1);
+    border: 1px solid var(--warning, #ffd166);
+    border-radius: var(--radius-sm);
+}
+.dispute-panel.disputed-state {
+    background: rgba(239, 68, 68, 0.08);
+    border-color: var(--red);
+}
+.dispute-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+.dispute-label {
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+}
+.dispute-countdown {
+    font-size: 0.75rem;
+    font-family: 'JetBrains Mono', monospace;
+    color: var(--warning, #ffd166);
+    font-weight: 600;
+}
+.dispute-countdown.expired {
+    color: var(--green);
+}
+.dispute-countdown i {
+    margin-right: 4px;
+}
+.dispute-actions {
+    display: flex;
+    gap: 8px;
+}
+.btn-predict-challenge {
+    background: var(--warning, #ffd166);
+    color: #000;
+    font-weight: 600;
+    font-size: 0.75rem;
+}
+.btn-predict-challenge:hover {
+    opacity: 0.85;
+}
+.btn-predict-finalize {
+    background: var(--green);
+    color: #fff;
+    font-weight: 600;
+    font-size: 0.75rem;
+}
+.btn-predict-finalize:hover {
+    opacity: 0.85;
+}
+.disputed-state .dispute-label {
+    color: var(--red);
+    font-weight: 600;
+}
+.disputed-state .dispute-label i {
+    margin-right: 4px;
+}
 .market-stats-mini {
     display: flex;
     gap: 16px;
