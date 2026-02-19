@@ -677,6 +677,10 @@ document.addEventListener('DOMContentLoaded', () => {
         marginSide: 'long', marginType: 'isolated', chartInterval: '15m', chartType: 'candle',
         currentView: 'trade', leverageValue: 2, lastPrice: MOLT_GENESIS_PRICE, orderBook: { asks: [], bids: [] },
         candles: [], connected: false, tradeMode: 'spot', _wsSubs: [],
+        // Task 5.1: Slippage tolerance (loaded from localStorage)
+        slippagePct: parseFloat(localStorage.getItem('dexSlippage')) || 0.5,
+        // Task 5.2: Notification preferences
+        notifPrefs: (() => { try { return JSON.parse(localStorage.getItem('dexNotifPrefs')) || { fills: true, partials: true, liquidation: true }; } catch { return { fills: true, partials: true, liquidation: true }; } })(),
     };
     let pairs = [], balances = {}, openOrders = [];
 
@@ -741,8 +745,16 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         } catch (e) { console.warn('[DEX] Pairs API unavailable:', e.message); }
         if (pairs.length) {
-            state.activePair = pairs[0]; state.activePairId = pairs[0].pairId;
-            state.lastPrice = pairs[0].price || MOLT_GENESIS_PRICE;
+            // Task 5.4: Restore last selected pair from localStorage
+            const savedPairId = parseInt(localStorage.getItem('dexLastPair'));
+            const savedPair = savedPairId ? pairs.find(p => p.pairId === savedPairId) : null;
+            if (savedPair) {
+                state.activePair = savedPair; state.activePairId = savedPair.pairId;
+                state.lastPrice = savedPair.price || MOLT_GENESIS_PRICE;
+            } else {
+                state.activePair = pairs[0]; state.activePairId = pairs[0].pairId;
+                state.lastPrice = pairs[0].price || MOLT_GENESIS_PRICE;
+            }
             // F10E.6: Ensure pairs with zero price get genesis fallback
             pairs.forEach(p => { if (!p.price) p.price = (p.id === 'MOLT/mUSD' || p.base === 'MOLT') ? MOLT_GENESIS_PRICE : 0; });
         } else {
@@ -907,7 +919,16 @@ document.addEventListener('DOMContentLoaded', () => {
                     const o = openOrders.find(x => x.id === String(d.orderId));
                     if (o) { o.filled = d.filled / ((d.filled + d.remaining) || 1); }
                     if (d.status === 'filled' || d.status === 'cancelled') {
-                        showNotification(`Order ${d.status}: #${d.orderId}`, d.status === 'filled' ? 'success' : 'info');
+                        // Task 5.2: Respect notification preferences
+                        const isFill = d.status === 'filled';
+                        const isPartial = o && o.filled > 0 && o.filled < 1;
+                        if (isFill && state.notifPrefs.fills !== false) {
+                            showNotification(`Order ${d.status}: #${d.orderId}`, 'success');
+                        } else if (isPartial && state.notifPrefs.partials !== false) {
+                            showNotification(`Order partially filled: #${d.orderId}`, 'info');
+                        } else if (!isFill && !isPartial) {
+                            showNotification(`Order ${d.status}: #${d.orderId}`, 'info');
+                        }
                         openOrders = openOrders.filter(x => x.id !== String(d.orderId));
                     }
                     renderOpenOrders();
@@ -968,6 +989,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function selectPair(pair) {
         state.activePair = pair; state.activePairId = pair.pairId; state.lastPrice = pair.price;
+        // Task 5.4: Remember last selected pair
+        localStorage.setItem('dexLastPair', String(pair.pairId));
         if (pairActive) pairActive.querySelector('.pair-name').textContent = pair.id;
         updatePairStats(pair); updateTickerDisplay(); renderPairList();
         await Promise.all([loadOrderBook(), loadRecentTrades()]);
@@ -1040,7 +1063,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     // TradingView (wired to candle API)
     // ═══════════════════════════════════════════════════════════════════════
-    let tvWidget = null, realtimeCallback = null, lastBarTime = 0, activeResolution = '15', currentBarOpen = 0;
+    let tvWidget = null, realtimeCallback = null, lastBarTime = 0, activeResolution = localStorage.getItem('dexChartInterval') || '15', currentBarOpen = 0;
 
 
     function createDatafeed() {
@@ -1063,7 +1086,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (bars.length) lastBarTime = bars[bars.length - 1].time;
                 ok(bars, { noData: !bars.length });
             },
-            subscribeBars: (si, res, cb) => { realtimeCallback = cb; activeResolution = res; },
+            subscribeBars: (si, res, cb) => { realtimeCallback = cb; activeResolution = res; localStorage.setItem('dexChartInterval', res); },
             unsubscribeBars: () => { realtimeCallback = null; },
         };
     }
@@ -1083,7 +1106,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const el = document.getElementById('tvChartContainer');
         if (!el || typeof TradingView === 'undefined') { if (el) el.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:0.9rem;"><i class="fas fa-chart-line" style="margin-right:8px;"></i> Chart unavailable — library failed to load</div>'; if (++tvRetryCount < 5) setTimeout(initTradingView, 5000); return; }
         tvWidget = new TradingView.widget({
-            symbol: state.activePair?.id || 'MOLT/mUSD', container: el, datafeed: createDatafeed(), library_path: 'charting_library/', locale: 'en', fullscreen: false, autosize: true, theme: 'Dark', interval: '15', toolbar_bg: '#0d1117',
+            symbol: state.activePair?.id || 'MOLT/mUSD', container: el, datafeed: createDatafeed(), library_path: 'charting_library/', locale: 'en', fullscreen: false, autosize: true, theme: 'Dark', interval: localStorage.getItem('dexChartInterval') || '15', toolbar_bg: '#0d1117',
             loading_screen: { backgroundColor: '#0A0E27', foregroundColor: '#FF6B35' },
             overrides: { 'paneProperties.background': '#0d1117', 'paneProperties.backgroundType': 'solid', 'paneProperties.vertGridProperties.color': 'rgba(255,255,255,0.04)', 'paneProperties.horzGridProperties.color': 'rgba(255,255,255,0.04)', 'scalesProperties.textColor': 'rgba(255,255,255,0.5)', 'scalesProperties.lineColor': 'rgba(255,255,255,0.08)', 'mainSeriesProperties.candleStyle.upColor': '#06d6a0', 'mainSeriesProperties.candleStyle.downColor': '#ef4444', 'mainSeriesProperties.candleStyle.borderUpColor': '#06d6a0', 'mainSeriesProperties.candleStyle.borderDownColor': '#ef4444', 'mainSeriesProperties.candleStyle.wickUpColor': '#06d6a0', 'mainSeriesProperties.candleStyle.wickDownColor': '#ef4444' },
             disabled_features: ['header_compare','header_undo_redo','go_to_date','use_localstorage_for_settings'],
@@ -1130,7 +1153,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     const tokenIn = state.orderSide === 'buy' ? state.activePair.quote : state.activePair.base;
                     const tokenOut = state.orderSide === 'buy' ? state.activePair.base : state.activePair.quote;
                     const amountIn = Math.round(p * a * 1e9);
-                    const { data } = await api.post('/router/quote', { token_in: tokenIn, token_out: tokenOut, amount_in: amountIn, slippage: 0.5 });
+                    const { data } = await api.post('/router/quote', { token_in: tokenIn, token_out: tokenOut, amount_in: amountIn, slippage: state.slippagePct });
                     if (data && data.routeType) {
                         if (re) re.textContent = ROUTE_TYPE_LABELS[data.routeType] || data.routeType;
                         if (fe && data.feeRate !== undefined) {
@@ -1157,6 +1180,74 @@ document.addEventListener('DOMContentLoaded', () => {
         if (state.orderSide === 'buy') { amountInput.value = ((bal.available * pct) / (parseFloat(priceInput.value) || state.lastPrice)).toFixed(4); } else amountInput.value = (bal.available * pct).toFixed(4);
         calcTotal();
     }));
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Task 5.1/5.2: Settings Popover (slippage + notification prefs)
+    // ═══════════════════════════════════════════════════════════════════════
+    {
+        const gearBtn = document.getElementById('settingsGearBtn');
+        const popover = document.getElementById('settingsPopover');
+        const closeBtn = document.getElementById('settingsCloseBtn');
+        if (gearBtn && popover) {
+            gearBtn.addEventListener('click', () => popover.classList.toggle('hidden'));
+            if (closeBtn) closeBtn.addEventListener('click', () => popover.classList.add('hidden'));
+            // Close on outside click
+            document.addEventListener('click', (e) => {
+                if (!popover.classList.contains('hidden') && !popover.contains(e.target) && e.target !== gearBtn && !gearBtn.contains(e.target)) {
+                    popover.classList.add('hidden');
+                }
+            });
+        }
+
+        // Slippage preset buttons
+        const slippageBtns = document.querySelectorAll('.slippage-btn');
+        const slippageCustom = document.getElementById('slippageCustom');
+        function setSlippage(val) {
+            state.slippagePct = val;
+            localStorage.setItem('dexSlippage', String(val));
+            slippageBtns.forEach(b => b.classList.toggle('active', parseFloat(b.dataset.slip) === val));
+            if (slippageCustom && ![0.1, 0.5, 1.0].includes(val)) {
+                slippageCustom.value = val;
+            } else if (slippageCustom) {
+                slippageCustom.value = '';
+            }
+        }
+        slippageBtns.forEach(btn => btn.addEventListener('click', () => setSlippage(parseFloat(btn.dataset.slip))));
+        if (slippageCustom) {
+            slippageCustom.addEventListener('change', () => {
+                const v = parseFloat(slippageCustom.value);
+                if (v > 0 && v <= 50) {
+                    setSlippage(v);
+                    slippageBtns.forEach(b => b.classList.remove('active'));
+                }
+            });
+        }
+        // Restore saved slippage on load
+        const savedSlip = parseFloat(localStorage.getItem('dexSlippage'));
+        if (savedSlip > 0) {
+            setSlippage(savedSlip);
+        }
+
+        // Notification preference toggles
+        const notifFills = document.getElementById('notifFills');
+        const notifPartials = document.getElementById('notifPartials');
+        const notifLiquidation = document.getElementById('notifLiquidation');
+        function saveNotifPrefs() {
+            state.notifPrefs = {
+                fills: notifFills?.checked ?? true,
+                partials: notifPartials?.checked ?? true,
+                liquidation: notifLiquidation?.checked ?? true,
+            };
+            localStorage.setItem('dexNotifPrefs', JSON.stringify(state.notifPrefs));
+        }
+        // Restore saved prefs
+        if (notifFills) notifFills.checked = state.notifPrefs.fills !== false;
+        if (notifPartials) notifPartials.checked = state.notifPrefs.partials !== false;
+        if (notifLiquidation) notifLiquidation.checked = state.notifPrefs.liquidation !== false;
+        [notifFills, notifPartials, notifLiquidation].forEach(el => {
+            if (el) el.addEventListener('change', saveNotifPrefs);
+        });
+    }
 
     // === AUDIT-FIX F10.1: Order submission via signed sendTransaction (not REST POST) ===
     if (submitBtn) submitBtn.addEventListener('click', async () => {
@@ -2214,7 +2305,12 @@ document.addEventListener('DOMContentLoaded', () => {
                         const sizeHuman = sizeRaw / PRICE_SCALE || sizeRaw;
                         const liqPrice = computeLiquidationPrice(side, entryHuman, marginHuman, sizeHuman, leverage);
                         const posId = pos.positionId || pos.id || 0;
-                        return `<div class="margin-pos-row" data-position-id="${posId}">
+                        // Task 5.2: Liquidation proximity — margin ratio < 120%
+                        const notionalValue = sizeHuman * (mark > 0 ? mark / PRICE_SCALE : entryHuman);
+                        const marginRatioPct = notionalValue > 0 ? ((marginHuman + pnl) / notionalValue) * 100 : 999;
+                        const isLiqWarning = marginRatioPct < 120 && pos.status !== 'closed' && pos.status !== 'liquidated';
+                        const rowClass = isLiqWarning ? 'margin-pos-row liq-warning-flash' : 'margin-pos-row';
+                        return `<div class="${rowClass}" data-position-id="${posId}">
                             <div class="margin-pos-info">
                                 <span class="${sideClass}">${escapeHtml(side)} ${escapeHtml(pos.pair || 'MOLT/mUSD')}</span>
                                 <span class="mono-value">${leverage}x</span>
@@ -2239,6 +2335,13 @@ document.addEventListener('DOMContentLoaded', () => {
                             </div>
                         </div>`;
                     }).join('');
+                    // Task 5.2: Liquidation proximity notification
+                    if (state.notifPrefs.liquidation !== false) {
+                        const warningRows = container.querySelectorAll('.liq-warning-flash');
+                        if (warningRows.length > 0) {
+                            showNotification(`⚠ ${warningRows.length} position(s) near liquidation — margin ratio < 120%`, 'warning');
+                        }
+                    }
                     // Bind close buttons
                     container.querySelectorAll('.margin-close-btn').forEach(btn => btn.addEventListener('click', async () => {
                         if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }

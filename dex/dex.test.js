@@ -4540,6 +4540,84 @@ console.log('\n── Phase 3: Order Form Completeness ──');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Phase 5: Settings & Preferences Tests
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n── Phase 5: Settings & Preferences ──');
+{
+    const dexJs = fs.readFileSync(__dirname + '/dex.js', 'utf8');
+    const htmlSrc = fs.readFileSync(__dirname + '/index.html', 'utf8');
+    const cssSrc = fs.readFileSync(__dirname + '/dex.css', 'utf8');
+
+    // 5.1: Slippage tolerance
+    assert(dexJs.includes("localStorage.getItem('dexSlippage')"), 'P5.1a: Slippage loaded from localStorage');
+    assert(dexJs.includes("localStorage.setItem('dexSlippage'"), 'P5.1b: Slippage saved to localStorage');
+    assert(dexJs.includes('state.slippagePct'), 'P5.1c: slippagePct in state');
+    assert(dexJs.includes('slippage: state.slippagePct'), 'P5.1d: Router quote uses state.slippagePct');
+    // Slippage UI
+    assert(htmlSrc.includes('id="settingsGearBtn"'), 'P5.1e: Settings gear button in HTML');
+    assert(htmlSrc.includes('id="settingsPopover"'), 'P5.1f: Settings popover in HTML');
+    assert(htmlSrc.includes('id="slippageOptions"'), 'P5.1g: Slippage options container');
+    assert(htmlSrc.includes('data-slip="0.1"'), 'P5.1h: 0.1% slippage option');
+    assert(htmlSrc.includes('data-slip="0.5"'), 'P5.1i: 0.5% slippage option (default)');
+    assert(htmlSrc.includes('data-slip="1.0"'), 'P5.1j: 1.0% slippage option');
+    assert(htmlSrc.includes('id="slippageCustom"'), 'P5.1k: Custom slippage input');
+    // Slippage CSS
+    assert(cssSrc.includes('.settings-gear-btn'), 'P5.1l: Gear button CSS');
+    assert(cssSrc.includes('.settings-popover'), 'P5.1m: Settings popover CSS');
+    assert(cssSrc.includes('.slippage-btn'), 'P5.1n: Slippage button CSS');
+    assert(cssSrc.includes('.slippage-btn.active'), 'P5.1o: Active slippage button CSS');
+    assert(cssSrc.includes('.slippage-custom'), 'P5.1p: Custom slippage CSS');
+    // Settings gear wiring
+    assert(dexJs.includes("settingsGearBtn"), 'P5.1q: Gear button referenced in JS');
+    assert(dexJs.includes("settingsPopover"), 'P5.1r: Popover referenced in JS');
+    assert(dexJs.includes("setSlippage"), 'P5.1s: setSlippage function');
+    // Default 0.5%
+    assert(dexJs.includes("|| 0.5"), 'P5.1t: Default slippage fallback to 0.5');
+
+    // 5.2: Notification preferences
+    assert(dexJs.includes("state.notifPrefs"), 'P5.2a: notifPrefs in state');
+    assert(dexJs.includes("localStorage.setItem('dexNotifPrefs'"), 'P5.2b: Notif prefs saved to localStorage');
+    assert(dexJs.includes("localStorage.getItem('dexNotifPrefs')"), 'P5.2c: Notif prefs loaded from localStorage');
+    assert(dexJs.includes("notifPrefs.fills"), 'P5.2d: Fill notification preference used');
+    assert(dexJs.includes("notifPrefs.partials"), 'P5.2e: Partial fill preference used');
+    assert(dexJs.includes("notifPrefs.liquidation"), 'P5.2f: Liquidation proximity preference used');
+    // Notification UI
+    assert(htmlSrc.includes('id="notifFills"'), 'P5.2g: Fill toggle in HTML');
+    assert(htmlSrc.includes('id="notifPartials"'), 'P5.2h: Partial fill toggle in HTML');
+    assert(htmlSrc.includes('id="notifLiquidation"'), 'P5.2i: Liquidation toggle in HTML');
+    // Notification toggle CSS
+    assert(cssSrc.includes('.toggle-row'), 'P5.2j: Toggle row CSS');
+    assert(cssSrc.includes('.notif-toggles'), 'P5.2k: Notif toggles container CSS');
+    // Liquidation proximity flash
+    assert(dexJs.includes('liq-warning-flash'), 'P5.2l: Liquidation warning flash class');
+    assert(cssSrc.includes('.liq-warning-flash'), 'P5.2m: Liq warning flash CSS');
+    assert(cssSrc.includes('liqFlash'), 'P5.2n: Liq flash keyframes');
+    assert(dexJs.includes('near liquidation'), 'P5.2o: Liquidation proximity notification text');
+    assert(dexJs.includes('marginRatioPct < 120'), 'P5.2p: Margin ratio threshold at 120%');
+    // saveNotifPrefs function
+    assert(dexJs.includes('function saveNotifPrefs'), 'P5.2q: saveNotifPrefs function defined');
+
+    // 5.3: Chart interval memory
+    assert(dexJs.includes("localStorage.getItem('dexChartInterval')"), 'P5.3a: Chart interval loaded from localStorage');
+    assert(dexJs.includes("localStorage.setItem('dexChartInterval'"), 'P5.3b: Chart interval saved to localStorage');
+    // activeResolution initialized from localStorage
+    assert(dexJs.includes("activeResolution = localStorage.getItem('dexChartInterval') || '15'"), 'P5.3c: activeResolution uses localStorage');
+    // TradingView widget init uses localStorage
+    assert(dexJs.includes("interval: localStorage.getItem('dexChartInterval') || '15'"), 'P5.3d: TradingView widget uses saved interval');
+    // subscribeBars saves interval
+    assert(dexJs.includes("subscribeBars: (si, res, cb) => { realtimeCallback = cb; activeResolution = res; localStorage.setItem('dexChartInterval', res);"), 'P5.3e: subscribeBars persists interval');
+
+    // 5.4: Default pair memory
+    assert(dexJs.includes("localStorage.setItem('dexLastPair'"), 'P5.4a: Last pair saved to localStorage');
+    assert(dexJs.includes("localStorage.getItem('dexLastPair')"), 'P5.4b: Last pair loaded from localStorage');
+    // Restore pair from localStorage
+    assert(dexJs.includes('savedPairId'), 'P5.4c: savedPairId variable used');
+    assert(dexJs.includes('savedPair'), 'P5.4d: savedPair lookup from pairs array');
+    // selectPair saves pair
+    assert(dexJs.includes("localStorage.setItem('dexLastPair', String(pair.pairId))"), 'P5.4e: selectPair persists pairId');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Summary
 // ═══════════════════════════════════════════════════════════════════════════
 console.log(`\n${'═'.repeat(60)}`);

@@ -229,6 +229,44 @@
                             <label class="checkbox-label">
                                 <input type="checkbox" id="reduceOnly"> Reduce Only
                             </label>
+                            <button class="settings-gear-btn" id="settingsGearBtn" title="Order settings"><i class="fas fa-cog"></i></button>
+                        </div>
+
+                        <!-- Task 5.1/5.2: Settings Popover -->
+                        <div class="settings-popover hidden" id="settingsPopover">
+                            <div class="settings-popover-header">
+                                <span>Order Settings</span>
+                                <button class="settings-close-btn" id="settingsCloseBtn"><i class="fas fa-times"></i></button>
+                            </div>
+                            <div class="settings-section">
+                                <label class="settings-label">Slippage Tolerance</label>
+                                <div class="slippage-options" id="slippageOptions">
+                                    <button class="slippage-btn" data-slip="0.1">0.1%</button>
+                                    <button class="slippage-btn active" data-slip="0.5">0.5%</button>
+                                    <button class="slippage-btn" data-slip="1.0">1.0%</button>
+                                    <div class="slippage-custom">
+                                        <input type="number" id="slippageCustom" placeholder="Custom" step="0.01" min="0.01" max="50" class="form-input">
+                                        <span>%</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="settings-section">
+                                <label class="settings-label">Notifications</label>
+                                <div class="notif-toggles">
+                                    <label class="toggle-row">
+                                        <span>Trade fill alerts</span>
+                                        <input type="checkbox" id="notifFills" checked>
+                                    </label>
+                                    <label class="toggle-row">
+                                        <span>Partial fill alerts</span>
+                                        <input type="checkbox" id="notifPartials" checked>
+                                    </label>
+                                    <label class="toggle-row">
+                                        <span>Liquidation proximity</span>
+                                        <input type="checkbox" id="notifLiquidation" checked>
+                                    </label>
+                                </div>
+                            </div>
                         </div>
 
                         <div class="order-summary">
