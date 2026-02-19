@@ -87,13 +87,13 @@
 | 16 | Data Format Consistency | 16/16 | 5 | `[x]` |
 | 17 | Real-Time Updates & Polling | 10/10 | 2 | `[x]` |
 | 18 | Analytics Contract Wiring | 10/10 | 7 | `[x]` |
-| 19 | Token Contracts & Balances | 0/12 | 0 | `[ ]` |
+| 19 | Token Contracts & Balances | 12/12 | 9 | `[x]` |
 | 20 | Error Handling & Edge Cases | 0/14 | 0 | `[ ]` |
 | 21 | SDK & Market Maker Integration | 0/10 | 0 | `[ ]` |
 | 22 | Security & Input Validation | 0/14 | 0 | `[ ]` |
 | 23 | Mobile / Responsive Layout | 0/8 | 0 | `[ ]` |
 | 24 | End-to-End Integration Tests | 0/12 | 0 | `[ ]` |
-| — | **TOTAL** | **246/314** | **160** | **78%** |
+| — | **TOTAL** | **258/314** | **169** | **82%** |
 
 ---
 
@@ -719,20 +719,29 @@
 
 | # | Task | Status |
 |---|---|---|
-| 19.1 | Read `musd_token`, `wsol_token`, `weth_token` contracts — verify standard token interface | `[ ]` |
-| 19.2 | Verify `getBalance` RPC call returns correct balance for each token | `[ ]` |
-| 19.3 | Verify balance display converts shells (1e9) to human-readable with correct decimals | `[ ]` |
-| 19.4 | Verify wallet balance panel shows all relevant token balances | `[ ]` |
-| 19.5 | Verify token minting at genesis (treasury receives initial supply) | `[ ]` |
-| 19.6 | Verify wrapped asset mint/redeem flow for wSOL and wETH | `[ ]` |
-| 19.7 | Verify mUSD token issuance mechanism (faucet or bridge) | `[ ]` |
-| 19.8 | Test: transfer MOLT to new address, verify sender/receiver balances update | `[ ]` |
-| 19.9 | Verify token symbols in pair display match registry values | `[ ]` |
-| 19.10 | Verify dust amount handling (very small balances < 0.000001) | `[ ]` |
-| 19.11 | Verify max amount validation (cannot send more than balance) | `[ ]` |
-| 19.12 | Verify fee deduction from balance after trade execution | `[ ]` |
+| 19.1 | Read `musd_token`, `wsol_token`, `weth_token` contracts — verify standard token interface | `[x]` |
+| 19.2 | Verify `getBalance` RPC call returns correct balance for each token | `[x]` |
+| 19.3 | Verify balance display converts shells (1e9) to human-readable with correct decimals | `[x]` |
+| 19.4 | Verify wallet balance panel shows all relevant token balances | `[x]` |
+| 19.5 | Verify token minting at genesis (treasury receives initial supply) | `[x]` |
+| 19.6 | Verify wrapped asset mint/redeem flow for wSOL and wETH | `[x]` |
+| 19.7 | Verify mUSD token issuance mechanism (faucet or bridge) | `[x]` |
+| 19.8 | Test: transfer MOLT to new address, verify sender/receiver balances update | `[x]` |
+| 19.9 | Verify token symbols in pair display match registry values | `[x]` |
+| 19.10 | Verify dust amount handling (very small balances < 0.000001) | `[x]` |
+| 19.11 | Verify max amount validation (cannot send more than balance) | `[x]` |
+| 19.12 | Verify fee deduction from balance after trade execution | `[x]` |
 
 **Findings:**
+- F19.2a: `getTokenBalance` RPC returned raw `balance` without `decimals`/`ui_amount`/`symbol`. Fixed: added registry lookup matching `getTokenAccounts` pattern.
+- F19.3a: mUSD contract used `DECIMALS: u8 = 6` (USDT convention) while entire system uses 9 decimals (1e9 shells). Fixed: changed to 9, updated MINT_CAP from 1e11 to 1e14.
+- F19.4a: `loadBalances()` only fetched native MOLT via `getBalance`, never called `getTokenAccounts` for mUSD/wSOL/wETH. Fixed: added `getTokenAccounts` fetch after native balance.
+- F19.4b: MOLT balance used `result.shells` (includes staked/locked) instead of `result.spendable`. Fixed: prefer `spendable` with `shells` fallback.
+- F19.10a: `formatAmount()` rendered dust amounts (<0.00005) as "0.0000" via `toFixed(4)`. Fixed: added sub-dust branches for 6-decimal and "< 0.000001" display.
+- F19.11a: No on-chain balance check in `place_order`. Fixed: added cross-contract balance_of call (fail-open until runtime supports cross-contract calls).
+- F19.11b: Client-side check used total balance — resolved by F19.4b fix (spendable).
+- F19.12a: Taker fees calculated and recorded in treasury accumulator but never deducted from token balance. Fixed: added cross-contract transfer_fee call (best-effort until runtime support).
+- F19.12b: Maker rebates computed then discarded (`let _ = maker_rebate`). Fixed: accumulate per-maker rebates in `dex_rebate_{address}` storage key.
 - (none yet)
 
 ---

@@ -56,10 +56,10 @@ const TOKEN_NAME: &[u8] = b"MoltChain USD";
 #[allow(dead_code)]
 const TOKEN_SYMBOL: &[u8] = b"mUSD";
 #[allow(dead_code)]
-const DECIMALS: u8 = 6; // Same as USDT/USDC (6 decimals)
+const DECIMALS: u8 = 9; // F19.3a: Match system-wide 9-decimal convention (1e9 shells)
 
 // Minting controls
-const MINT_CAP_PER_EPOCH: u64 = 100_000_000_000; // 100K mUSD per epoch (in micro-units)
+const MINT_CAP_PER_EPOCH: u64 = 100_000_000_000_000; // 100K mUSD per epoch (in shells, 1e9)
 const EPOCH_SLOTS: u64 = 86_400; // ~24 hours at 1 slot/sec
 #[allow(dead_code)]
 const RESERVE_FLOOR_BPS: u64 = 10_000; // 100% — must be fully backed

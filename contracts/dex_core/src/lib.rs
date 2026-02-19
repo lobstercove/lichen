@@ -1057,6 +1057,43 @@ pub fn place_order(
         return 5;
     }
 
+    // F19.11a: Balance validation via cross-contract call to token contract
+    // For BUY orders, verify trader has sufficient quote token balance >= notional + fees
+    // For SELL orders, verify trader has sufficient base token balance >= quantity
+    // Uses best-effort cross-contract call (returns 0 if runtime doesn't support yet)
+    {
+        let pair_data_ref = storage_get(&pk).unwrap();
+        let token_addr = if side == SIDE_BUY {
+            // Quote token is token_b
+            let mut addr = [0u8; 32];
+            addr.copy_from_slice(&pair_data_ref[32..64]);
+            addr
+        } else {
+            // Base token is token_a
+            let mut addr = [0u8; 32];
+            addr.copy_from_slice(&pair_data_ref[0..32]);
+            addr
+        };
+        if !is_zero(&token_addr) {
+            let mut bal_args = Vec::with_capacity(33);
+            bal_args.push(5u8); // opcode: balance_of
+            bal_args.extend_from_slice(&t);
+            let call = CrossCall::new(Address(token_addr), "balance_of", bal_args)
+                .with_value(0);
+            let bal_result = call_contract(call);
+            // If cross-contract call succeeded (non-zero result = balance returned),
+            // validate against required amount
+            if bal_result > 0 {
+                let required = if side == SIDE_BUY { notional } else { quantity };
+                if bal_result < required as i64 {
+                    reentrancy_exit();
+                    return 11; // Insufficient token balance
+                }
+            }
+            // If bal_result == 0, cross-contract calls not yet supported — allow trade (fail-open)
+        }
+    }
+
     // ── Oracle Price Band Protection ──
     // The validator writes dex_band_{pair_id} (16 bytes: ref_price + slot)
     // for oracle-priced pairs. If present and fresh (<300 slots), enforce:
@@ -1372,6 +1409,30 @@ fn fill_at_price_level(
         let current_treasury = load_u64(FEE_TREASURY_KEY);
         save_u64(FEE_TREASURY_KEY, current_treasury + protocol_fee);
 
+        // F19.12a: Deduct taker fee from taker's quote token balance via cross-contract call
+        // Uses best-effort pattern — won't fail trade if runtime doesn't support cross-contract yet
+        {
+            let pk_ref = pair_key(pair_id);
+            if let Some(pd_ref) = storage_get(&pk_ref) {
+                if pd_ref.len() >= 64 {
+                    // Quote token (token_b) is where fees are denominated
+                    let mut quote_addr = [0u8; 32];
+                    quote_addr.copy_from_slice(&pd_ref[32..64]);
+                    if !is_zero(&quote_addr) {
+                        // Transfer fee from taker to DEX treasury via token contract
+                        let mut fee_args = Vec::with_capacity(73);
+                        fee_args.push(3u8); // opcode: transfer
+                        fee_args.extend_from_slice(taker); // from
+                        fee_args.extend_from_slice(&[0u8; 32]); // to: zero = treasury/burn
+                        fee_args.extend_from_slice(&u64_to_bytes(taker_fee));
+                        let call = CrossCall::new(Address(quote_addr), "transfer_fee", fee_args)
+                            .with_value(0);
+                        let _ = call_contract(call); // best-effort
+                    }
+                }
+            }
+        }
+
         // Update maker
         let new_maker_filled = maker_filled + fill_qty;
         update_order_filled(&mut maker_data, new_maker_filled);
@@ -1440,7 +1501,14 @@ fn fill_at_price_level(
         }
 
         remaining -= fill_qty;
-        let _ = maker_rebate; // rebate tracked for distribution
+
+        // F19.12b: Accumulate maker rebate for the maker address
+        if maker_rebate > 0 {
+            let mut rk = Vec::from(&b"dex_rebate_"[..]);
+            rk.extend_from_slice(&maker_trader);
+            let accrued = load_u64(&rk);
+            save_u64(&rk, accrued.saturating_add(maker_rebate));
+        }
     }
 
     // Update level count

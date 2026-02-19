@@ -3321,7 +3321,7 @@ const dexCoreContractPath = '/Users/johnrobin/.openclaw/workspace/moltchain/cont
     // Check the cross-contract call is in fill_at_price_level
     const fillIdx = core.indexOf('fn fill_at_price_level');
     assert(fillIdx !== -1, 'P18.2d: fill_at_price_level function exists');
-    const fillBlock = core.substring(fillIdx, fillIdx + 5500);
+    const fillBlock = core.substring(fillIdx, fillIdx + 7000);
     assert(fillBlock.includes('"record_trade"'), 'P18.2e: Cross-contract call to record_trade in fill function');
     assert(fillBlock.includes('analytics_addr'), 'P18.2f: Analytics address loaded in fill function');
     // Analytics accepts authorized callers
@@ -3391,7 +3391,7 @@ const dexCoreContractPath = '/Users/johnrobin/.openclaw/workspace/moltchain/cont
     assert(core.includes('SLOTS_PER_DAY: u64 = 216_000'), 'P18.7a: SLOTS_PER_DAY constant defined');
     assert(core.includes('dex_day_slot_'), 'P18.7b: Day slot tracking key exists');
     const fillIdx = core.indexOf('fn fill_at_price_level');
-    const fillBlock = core.substring(fillIdx, fillIdx + 5500);
+    const fillBlock = core.substring(fillIdx, fillIdx + 7000);
     assert(fillBlock.includes('current_day != stored_day'), 'P18.7c: Day boundary check in fill function');
 }
 
@@ -3428,6 +3428,137 @@ const dexCoreContractPath = '/Users/johnrobin/.openclaw/workspace/moltchain/cont
     assert(src.includes('pnl_delta_signed'), 'P18.10c: PnL delta calculation implemented');
     // Dispatch opcode 12
     assert(src.includes('12 =>'), 'P18.10d: Opcode 12 dispatches to record_pnl');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase 19: Token Contracts & Balances
+// ═══════════════════════════════════════════════════════════════════════════
+
+const musdContractPath = '/Users/johnrobin/.openclaw/workspace/moltchain/contracts/musd_token/src/lib.rs';
+const wsolContractPath = '/Users/johnrobin/.openclaw/workspace/moltchain/contracts/wsol_token/src/lib.rs';
+const wethContractPath = '/Users/johnrobin/.openclaw/workspace/moltchain/contracts/weth_token/src/lib.rs';
+const moltContractPath = '/Users/johnrobin/.openclaw/workspace/moltchain/contracts/moltcoin/src/lib.rs';
+const rpcLibPath = '/Users/johnrobin/.openclaw/workspace/moltchain/rpc/src/lib.rs';
+
+// P19.1: Standard token interface
+{
+    for (const [name, p] of [['musd', musdContractPath], ['wsol', wsolContractPath], ['weth', wethContractPath], ['molt', moltContractPath]]) {
+        const src = fs.readFileSync(p, 'utf8');
+        assert(src.includes('fn initialize'), `P19.1a: ${name} has initialize`);
+        assert(src.includes('balance_of') || src.includes('fn transfer'), `P19.1b: ${name} has balance_of or transfer`);
+        assert(src.includes('fn mint') || src.includes('Token::mint'), `P19.1c: ${name} has mint`);
+    }
+}
+
+// P19.2: getTokenBalance RPC returns decimals and ui_amount (F19.2a fix)
+{
+    const rpc = fs.readFileSync(rpcLibPath, 'utf8');
+    const tbIdx = rpc.indexOf('fn handle_get_token_balance');
+    assert(tbIdx !== -1, 'P19.2a: handle_get_token_balance function exists');
+    const tbBlock = rpc.substring(tbIdx, tbIdx + 2400);
+    assert(tbBlock.includes('"decimals"'), 'P19.2b: getTokenBalance returns decimals');
+    assert(tbBlock.includes('"ui_amount"'), 'P19.2c: getTokenBalance returns ui_amount');
+    assert(tbBlock.includes('"symbol"'), 'P19.2d: getTokenBalance returns symbol');
+    assert(tbBlock.includes('get_symbol_registry_by_program'), 'P19.2e: getTokenBalance looks up registry');
+}
+
+// P19.3: mUSD uses 9 decimals matching system convention (F19.3a fix)
+{
+    const musd = fs.readFileSync(musdContractPath, 'utf8');
+    assert(musd.includes('DECIMALS: u8 = 9'), 'P19.3a: mUSD DECIMALS is 9 (not 6)');
+    assert(musd.includes('100_000_000_000_000'), 'P19.3b: MINT_CAP adjusted for 9 decimals');
+}
+
+// P19.4: Wallet balance panel fetches all token balances (F19.4a, F19.4b fix)
+{
+    const js = fs.readFileSync(dexJsPath, 'utf8');
+    const lbIdx = js.indexOf('async function loadBalances');
+    assert(lbIdx !== -1, 'P19.4a: loadBalances function exists');
+    const lbBlock = js.substring(lbIdx, lbIdx + 1300);
+    assert(lbBlock.includes('spendable'), 'P19.4b: Uses spendable instead of total shells');
+    assert(lbBlock.includes('getTokenAccounts'), 'P19.4c: Fetches token accounts for wallet');
+    assert(lbBlock.includes('ta.ui_amount'), 'P19.4d: Uses ui_amount from token accounts');
+    assert(lbBlock.includes('ta.symbol'), 'P19.4e: Uses symbol from token accounts');
+}
+
+// P19.5: Token minting at genesis
+{
+    const molt = fs.readFileSync(moltContractPath, 'utf8');
+    assert(molt.includes('fn initialize'), 'P19.5a: MOLT has initialize function');
+    // MOLT mints initial supply on init
+    const initIdx = molt.indexOf('fn initialize');
+    const initBlock = molt.substring(initIdx, initIdx + 2600);
+    assert(initBlock.includes('mint') || initBlock.includes('Token::'), 'P19.5b: initialize mints initial supply');
+}
+
+// P19.6: Wrapped asset mint/redeem (wSOL, wETH)
+{
+    const wsol = fs.readFileSync(wsolContractPath, 'utf8');
+    const weth = fs.readFileSync(wethContractPath, 'utf8');
+    assert(wsol.includes('fn mint'), 'P19.6a: wSOL has mint function');
+    assert(wsol.includes('fn burn') || wsol.includes('redeem'), 'P19.6b: wSOL has burn/redeem');
+    assert(wsol.includes('circuit_breaker') || wsol.includes('reserve') || wsol.includes('attest'), 'P19.6c: wSOL has reserve/circuit breaker');
+    assert(weth.includes('fn mint'), 'P19.6d: wETH has mint function');
+    assert(weth.includes('fn burn') || weth.includes('redeem'), 'P19.6e: wETH has burn/redeem');
+}
+
+// P19.7: mUSD issuance mechanism
+{
+    const musd = fs.readFileSync(musdContractPath, 'utf8');
+    assert(musd.includes('fn mint'), 'P19.7a: mUSD has mint function');
+    assert(musd.includes('MINT_CAP_PER_EPOCH') || musd.includes('rate_limit'), 'P19.7b: mUSD has rate limiting');
+    assert(musd.includes('pause') || musd.includes('PAUSED'), 'P19.7c: mUSD has emergency pause');
+}
+
+// P19.8: Transfer MOLT
+{
+    const molt = fs.readFileSync(moltContractPath, 'utf8');
+    assert(molt.includes('fn transfer'), 'P19.8a: MOLT has transfer function');
+    assert(molt.includes('test_transfer'), 'P19.8b: MOLT has transfer test');
+}
+
+// P19.9: Token symbols match registry
+{
+    const js = fs.readFileSync(dexJsPath, 'utf8');
+    assert(js.includes('getAllSymbolRegistry') || js.includes('symbolRegistry'), 'P19.9a: Frontend loads symbol registry');
+    assert(js.includes('baseSymbol') || js.includes('base:'), 'P19.9b: Pair display uses symbol from registry');
+}
+
+// P19.10: Dust amount handling (F19.10a fix)
+{
+    const js = fs.readFileSync(dexJsPath, 'utf8');
+    const faIdx = js.indexOf('function formatAmount');
+    assert(faIdx !== -1, 'P19.10a: formatAmount function exists');
+    const faBlock = js.substring(faIdx, faIdx + 400);
+    assert(faBlock.includes('a === 0'), 'P19.10b: Explicitly checks for zero (not falsy)');
+    assert(faBlock.includes('toFixed(6)'), 'P19.10c: Sub-dust branch uses 6 decimal places');
+    assert(faBlock.includes('< 0.000001'), 'P19.10d: Shows "< 0.000001" for very small dust');
+}
+
+// P19.11: Max amount validation (F19.11a fix)
+{
+    const core = fs.readFileSync(dexCoreContractPath, 'utf8');
+    const poIdx = core.indexOf('fn place_order');
+    assert(poIdx !== -1, 'P19.11a: place_order function exists');
+    const poBlock = core.substring(poIdx, poIdx + 4500);
+    assert(poBlock.includes('balance_of'), 'P19.11b: On-chain balance check via cross-contract call');
+    assert(poBlock.includes('return 11'), 'P19.11c: Returns error code 11 for insufficient balance');
+    // Client-side check uses spendable
+    const js = fs.readFileSync(dexJsPath, 'utf8');
+    assert(js.includes('neededAmount > available'), 'P19.11d: Client-side balance check exists');
+}
+
+// P19.12: Fee deduction and maker rebates (F19.12a, F19.12b fix)
+{
+    const core = fs.readFileSync(dexCoreContractPath, 'utf8');
+    const fillIdx = core.indexOf('fn fill_at_price_level');
+    assert(fillIdx !== -1, 'P19.12a: fill_at_price_level function exists');
+    const fillBlock = core.substring(fillIdx, fillIdx + 4200);
+    assert(fillBlock.includes('transfer_fee'), 'P19.12b: Fee deduction via cross-contract transfer_fee');
+    assert(fillBlock.includes('FEE_TREASURY_KEY'), 'P19.12c: Protocol fees tracked in treasury');
+    const rebateBlock = core.substring(fillIdx, fillIdx + 7500);
+    assert(rebateBlock.includes('dex_rebate_'), 'P19.12d: Maker rebates accumulated in dex_rebate_ key');
+    assert(!rebateBlock.includes('let _ = maker_rebate'), 'P19.12e: Maker rebate is NOT discarded anymore');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

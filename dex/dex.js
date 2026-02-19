@@ -689,8 +689,21 @@ document.addEventListener('DOMContentLoaded', () => {
             const result = await api.rpc('getBalance', [address]);
             if (result && typeof result === 'object') {
                 balances = {};
-                if (result.shells !== undefined) balances['MOLT'] = { available: result.shells / 1e9, usd: (result.shells / 1e9) * state.lastPrice };
-                if (result.tokens) for (const [tok, amt] of Object.entries(result.tokens)) balances[tok] = { available: amt / 1e9, usd: 0 };
+                // F19.4b: Use spendable (excludes staked/locked) instead of total shells
+                if (result.spendable !== undefined) {
+                    balances['MOLT'] = { available: result.spendable / 1e9, usd: (result.spendable / 1e9) * state.lastPrice };
+                } else if (result.shells !== undefined) {
+                    balances['MOLT'] = { available: result.shells / 1e9, usd: (result.shells / 1e9) * state.lastPrice };
+                }
+            }
+            // F19.4a: Fetch token balances via getTokenAccounts
+            const tokenResult = await api.rpc('getTokenAccounts', [address]);
+            if (tokenResult && tokenResult.accounts) {
+                for (const ta of tokenResult.accounts) {
+                    if (ta.symbol && ta.symbol !== 'MOLT') {
+                        balances[ta.symbol] = { available: ta.ui_amount || (ta.balance / 1e9), usd: 0 };
+                    }
+                }
             }
         } catch { /* RPC unavailable */ }
         if (!Object.keys(balances).length) {
@@ -3084,7 +3097,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.head.appendChild(Object.assign(document.createElement('style'), { textContent: '@keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}' }));
 
     function formatPrice(p) { if (p == null || isNaN(p)) return '0.00'; if (p === 0) return '0.00'; const a = Math.abs(p), sign = p < 0 ? '-' : ''; if (a >= 1000) return sign + a.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); if (a >= 1) return sign + a.toFixed(4); if (a >= 0.001) return sign + a.toFixed(6); return sign + a.toFixed(8); }
-    function formatAmount(a) { if (!a || isNaN(a)) return '0'; if (a >= 1e6) return (a / 1e6).toFixed(2) + 'M'; if (a >= 1000) return a.toLocaleString('en-US', { maximumFractionDigits: 2 }); return a.toFixed(4); }
+    function formatAmount(a) { if (a == null || isNaN(a) || a === 0) return '0'; if (a >= 1e6) return (a / 1e6).toFixed(2) + 'M'; if (a >= 1000) return a.toLocaleString('en-US', { maximumFractionDigits: 2 }); if (a >= 0.0001) return a.toFixed(4); if (a >= 0.000001) return a.toFixed(6); return '< 0.000001'; }
     function formatVolume(v) { if (v == null || isNaN(v)) return '--'; if (v === 0) return '$0.00'; if (v >= 1e9) return '$' + (v / 1e9).toFixed(2) + 'B'; if (v >= 1e6) return '$' + (v / 1e6).toFixed(2) + 'M'; if (v >= 1e3) return '$' + (v / 1e3).toFixed(1) + 'K'; return '$' + v.toFixed(2); }
 
     // ═══════════════════════════════════════════════════════════════════════

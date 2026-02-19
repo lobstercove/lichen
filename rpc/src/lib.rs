@@ -8547,10 +8547,34 @@ async fn handle_get_token_balance(
             message: format!("Database error: {}", e),
         })?;
 
+    // F19.2a: Include decimals and ui_amount from symbol registry
+    let registry = state
+        .state
+        .get_symbol_registry_by_program(&token_program)
+        .ok()
+        .flatten();
+
+    let decimals = registry
+        .as_ref()
+        .and_then(|r| r.metadata.as_ref())
+        .and_then(|m| m.get("decimals"))
+        .and_then(|d| d.as_u64())
+        .unwrap_or(9);
+
+    let symbol = registry
+        .as_ref()
+        .map(|r| r.symbol.clone())
+        .unwrap_or_else(|| "Unknown".to_string());
+
+    let ui_amount = balance as f64 / 10_f64.powi(decimals as i32);
+
     Ok(serde_json::json!({
         "token_program": token_str,
         "holder": holder_str,
         "balance": balance,
+        "decimals": decimals,
+        "ui_amount": ui_amount,
+        "symbol": symbol,
     }))
 }
 
