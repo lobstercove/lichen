@@ -919,7 +919,42 @@ document.addEventListener('DOMContentLoaded', () => {
     if (inlineLeverage) inlineLeverage.addEventListener('input', () => { state.leverageValue = parseFloat(inlineLeverage.value); if (inlineLeverageTag) inlineLeverageTag.textContent = `${state.leverageValue}x`; updateSubmitBtn(); });
     document.querySelectorAll('.margin-inline-type').forEach(btn => btn.addEventListener('click', () => { document.querySelectorAll('.margin-inline-type').forEach(b => b.classList.remove('active')); btn.classList.add('active'); state.marginType = btn.dataset.mtype; if (inlineLeverage) inlineLeverage.max = state.marginType === 'isolated' ? '5' : '3'; }));
 
-    function calcTotal() { if (!priceInput || !amountInput || !totalInput) return; const p = parseFloat(priceInput.value) || 0, a = parseFloat(amountInput.value) || 0; totalInput.value = (p * a).toFixed(4); const fe = document.getElementById('feeEstimate'), re = document.getElementById('routeInfo'); if (fe) fe.textContent = `~${(p * a * 0.0005).toFixed(4)} ${state.activePair?.quote || ''}`; if (re) re.textContent = p * a > 50000 ? 'CLOB + AMM Split' : 'CLOB Direct'; }
+    // F9.5a/F9.5b/F9.12a: Route info and fee estimate from actual router quote API
+    let _routeQuoteTimer = null;
+    const ROUTE_TYPE_LABELS = { clob: 'CLOB Direct', amm: 'AMM Pool', split: 'CLOB + AMM Split', multi_hop: 'Multi-Hop', legacy_swap: 'Legacy Swap' };
+    function calcTotal() {
+        if (!priceInput || !amountInput || !totalInput) return;
+        const p = parseFloat(priceInput.value) || 0, a = parseFloat(amountInput.value) || 0;
+        totalInput.value = (p * a).toFixed(4);
+        const fe = document.getElementById('feeEstimate'), re = document.getElementById('routeInfo');
+        // Show inline estimate immediately, then refine via API
+        if (fe) fe.textContent = `~${(p * a * 0.0005).toFixed(4)} ${state.activePair?.quote || ''}`;
+        if (re) re.textContent = 'Routing...';
+        // Debounce router quote call
+        clearTimeout(_routeQuoteTimer);
+        if (p > 0 && a > 0 && state.activePair) {
+            _routeQuoteTimer = setTimeout(async () => {
+                try {
+                    const tokenIn = state.orderSide === 'buy' ? state.activePair.quote : state.activePair.base;
+                    const tokenOut = state.orderSide === 'buy' ? state.activePair.base : state.activePair.quote;
+                    const amountIn = Math.round(p * a * 1e9);
+                    const { data } = await api.post('/router/quote', { token_in: tokenIn, token_out: tokenOut, amount_in: amountIn, slippage: 0.5 });
+                    if (data && data.routeType) {
+                        if (re) re.textContent = ROUTE_TYPE_LABELS[data.routeType] || data.routeType;
+                        if (fe && data.feeRate !== undefined) {
+                            const feeRate = data.feeRate / 10000;
+                            fe.textContent = `~${(p * a * feeRate).toFixed(4)} ${state.activePair?.quote || ''} (${data.feeRate}bps)`;
+                        }
+                    }
+                } catch {
+                    // Fallback to heuristic if API unavailable
+                    if (re) re.textContent = p * a > 50000 ? 'CLOB + AMM Split' : 'CLOB Direct';
+                }
+            }, 300);
+        } else {
+            if (re) re.textContent = '—';
+        }
+    }
     if (priceInput) priceInput.addEventListener('input', calcTotal);
     if (amountInput) amountInput.addEventListener('input', calcTotal);
     if (totalInput) totalInput.addEventListener('input', () => { if (!priceInput || !amountInput) return; const p = parseFloat(priceInput.value) || 0, t = parseFloat(totalInput.value) || 0; if (p > 0) amountInput.value = (t / p).toFixed(4); });
