@@ -39,9 +39,9 @@ function switchNetwork(network) {
 function copyCode(button) {
     const codeBlock = button.closest('.code-example').querySelector('code');
     const text = codeBlock.textContent;
+    const originalHTML = button.innerHTML;
     
     navigator.clipboard.writeText(text).then(() => {
-        const originalHTML = button.innerHTML;
         button.innerHTML = '<i class="fas fa-check"></i>';
         button.style.color = '#06D6A0';
         
@@ -52,8 +52,10 @@ function copyCode(button) {
     }).catch(err => {
         console.error('Copy failed:', err);
         button.innerHTML = '<i class="fas fa-times"></i>';
+        button.style.color = '#FF6B6B';
         setTimeout(() => {
             button.innerHTML = originalHTML;
+            button.style.color = '';
         }, 2000);
     });
 }
@@ -119,6 +121,7 @@ async function updateStats() {
 
 // Format large numbers
 function formatNumber(num) {
+    if (typeof num !== 'number' || !isFinite(num)) return '—';
     if (num >= 1000000) {
         return (num / 1000000).toFixed(1) + 'M';
     } else if (num >= 1000) {
@@ -202,11 +205,13 @@ document.querySelectorAll('a[href^="#"]').forEach(anchor => {
 // Mobile nav toggle
 const navToggle = document.getElementById('navToggle');
 const navMenu = document.querySelector('.nav-menu');
+const navActions = document.querySelector('.nav-actions');
 
 if (navToggle && navMenu) {
     navToggle.addEventListener('click', () => {
         navMenu.classList.toggle('active');
         navToggle.classList.toggle('active');
+        if (navActions) navActions.classList.toggle('active');
     });
 }
 
@@ -402,6 +407,19 @@ style.textContent = `
     }
 `;
 document.head.appendChild(style);
+
+// Clean up WebSocket on page unload and pause in background tabs
+window.addEventListener('beforeunload', () => {
+    disconnectWebsiteWS();
+});
+
+document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+        disconnectWebsiteWS();
+    } else {
+        connectWebsiteWS();
+    }
+});
 
 // Console art
 console.log('%c🦞 MoltChain', 'font-size: 24px; font-weight: bold; color: #FF6B35;');
