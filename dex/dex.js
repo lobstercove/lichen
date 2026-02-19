@@ -811,6 +811,8 @@ document.addEventListener('DOMContentLoaded', () => {
         await Promise.all([loadOrderBook(), loadRecentTrades()]);
         subscribePair(pair.pairId);
         if (tvWidget?.activeChart) { try { tvWidget.activeChart().setSymbol(pair.id, () => {}); } catch { drawChart(); } } else drawChart();
+        // Update oracle reference line for new pair
+        updateOracleReferenceLine();
     }
 
     function updatePairStats(pair) {

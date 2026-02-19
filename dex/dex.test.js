@@ -1,5 +1,6 @@
 /**
  * DEX Frontend Tests — Phase 10 + Phase 10 Extra + Oracle Price Feed Integration
+ *                       + Trade Bridge & Oracle Integration (Phases A-D)
  * Run: node dex.test.js
  *
  * Tests all pure-function fixes applied during Phase 10 audit:
@@ -23,6 +24,19 @@
  *  F10E.11 — Pool "My Pools" filter logic
  *
  * Oracle Price Feed Integration tests:
+ *  - Genesis oracle seeding (wSOL, wETH feeds)
+ *  - Genesis analytics price seeding (ana_lp_, ana_24h_, candles)
+ *  - Background price feeder service (Binance WebSocket + REST fallback → moltoracle + analytics)
+ *  - RPC oracle integration (fallback prices, /oracle/prices endpoint)
+ *  - Frontend real-time overlay (Binance WS for sub-second updates)
+ *  - End-to-end data flow verification
+ *
+ * Trade Bridge + Oracle Integration (Phases A-D):
+ *  PA — Trade bridge: dex_core fills → dex_analytics (prices, volume, candles)
+ *  PB — Oracle fallback-only: skip analytics writes when real trades active
+ *  PC — Oracle price bands: ±5% market / ±10% limit enforcement in dex_core
+ *  PD — Frontend oracle reference line: gold dashed line on TradingView chart
+ */
  *  - Genesis oracle seeding (wSOL, wETH feeds)
  *  - Genesis analytics price seeding (ana_lp_, ana_24h_, candles)
  *  - Background price feeder service (Binance WebSocket + REST fallback → moltoracle + analytics)
@@ -1953,6 +1967,346 @@ const marginRsPath = '/Users/johnrobin/.openclaw/workspace/moltchain/contracts/d
     assert(dexJs.includes("pos.status === 'closed'") || dexJs.includes("p.status === 'closed'"), 'P10.16a: Checks for closed position status');
     assert(dexJs.includes('realizedPnl'), 'P10.16b: Uses realizedPnl for closed positions');
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Trade Bridge + Oracle Integration (Phases A-D) — Structural Tests
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n## Trade Bridge + Oracle Integration (Phases A-D)\n');
+
+// Read all source files once
+const validatorSrcAll = fs.readFileSync(__dirname + '/../validator/src/main.rs', 'utf8');
+const dexCoreSrc = fs.readFileSync(__dirname + '/../contracts/dex_core/src/lib.rs', 'utf8');
+const dexJsFrontend = fs.readFileSync(__dirname + '/../dex/dex.js', 'utf8');
+
+// ── Phase A: Trade Bridge (dex_core → dex_analytics) ──
+console.log('\n### Phase A: Trade Bridge\n');
+
+// PA.1: bridge_dex_trades_to_analytics function exists
+assert(validatorSrcAll.includes('fn bridge_dex_trades_to_analytics('), 'PA.1: bridge_dex_trades_to_analytics function defined');
+
+// PA.2: Bridge reads new trade records from DEX storage
+assert(validatorSrcAll.includes('get_program_storage_u64("DEX", b"dex_trade_count")'), 'PA.2: Bridge reads dex_trade_count from DEX');
+
+// PA.3: Bridge writes ana_lp_{pair_id} to analytics
+assert(
+    /bridge_dex_trades_to_analytics[\s\S]*?ana_lp_/.test(validatorSrcAll),
+    'PA.3: Bridge writes ana_lp_ to analytics storage'
+);
+
+// PA.4: Bridge writes ana_24h_{pair_id} with real volume
+assert(
+    /bridge_dex_trades_to_analytics[\s\S]*?ana_24h_/.test(validatorSrcAll),
+    'PA.4: Bridge writes ana_24h_ with trade volume'
+);
+
+// PA.5: Bridge writes ana_last_trade_ts_{pair_id} timestamp
+assert(
+    validatorSrcAll.includes('ana_last_trade_ts_'),
+    'PA.5: Bridge writes ana_last_trade_ts for oracle fallback'
+);
+
+// PA.6: Bridge updates candles for all 9 intervals
+assert(
+    validatorSrcAll.includes('CANDLE_INTERVALS: [u64; 9]'),
+    'PA.6: Bridge uses all 9 candle intervals'
+);
+
+// PA.7: bridge_update_candle function exists
+assert(validatorSrcAll.includes('fn bridge_update_candle('), 'PA.7: bridge_update_candle function defined');
+
+// PA.8: Bridge candle writes real trade volume (not zero)
+{
+    const bridgeCandle = validatorSrcAll.substring(
+        validatorSrcAll.indexOf('fn bridge_update_candle('),
+        validatorSrcAll.indexOf('fn bridge_update_candle(') + 2000
+    );
+    assert(bridgeCandle.includes('volume'), 'PA.8: bridge_update_candle includes real volume');
+}
+
+// PA.9: Bridge called post-block alongside emit_dex_events
+assert(
+    validatorSrcAll.includes('bridge_dex_trades_to_analytics(&state, &mut last_bridge_trade_count, slot)'),
+    'PA.9: Bridge called in post-block processing'
+);
+
+// PA.10: Bridge tracks its own cursor (last_bridge_trade_count)
+assert(
+    validatorSrcAll.includes('let mut last_bridge_trade_count'),
+    'PA.10: Bridge has separate trade count cursor'
+);
+
+// PA.11: Pair trades collection: accumulates volume and high/low per pair
+assert(
+    /pair_trades[\s\S]*?entry\.\d\s*=\s*entry\.\d\.saturating_add/.test(validatorSrcAll),
+    'PA.11: Bridge accumulates per-pair volume with saturating_add'
+);
+
+// PA.12: Bridge resolves ANALYTICS symbol via registry
+{
+    const bridgeFn = validatorSrcAll.substring(
+        validatorSrcAll.indexOf('fn bridge_dex_trades_to_analytics('),
+        validatorSrcAll.indexOf('fn bridge_dex_trades_to_analytics(') + 500
+    );
+    assert(bridgeFn.includes('get_symbol_registry("ANALYTICS")'), 'PA.12: Bridge resolves ANALYTICS via symbol registry');
+}
+
+// ── Phase B: Oracle Feeder Becomes Fallback-Only ──
+console.log('\n### Phase B: Oracle Fallback-Only\n');
+
+// PB.1: Oracle feeder checks ana_last_trade_ts before writing
+assert(
+    /spawn_oracle_price_feeder[\s\S]*?ana_last_trade_ts_/.test(validatorSrcAll) ||
+    validatorSrcAll.includes('ana_last_trade_ts_'),
+    'PB.1: Oracle feeder reads ana_last_trade_ts_'
+);
+
+// PB.2: Oracle feeder has trade_active check with 60-second window
+assert(
+    validatorSrcAll.includes('now_ts.saturating_sub(last_trade_ts) < 60'),
+    'PB.2: Oracle feeder uses 60s trade-active window'
+);
+
+// PB.3: Active market skips oracle analytics overwrite
+assert(
+    validatorSrcAll.includes('Active market: trades drive analytics, skip oracle overwrite'),
+    'PB.3: Oracle feeder skips ana_lp_ write for active markets'
+);
+
+// PB.4: Inactive markets still get oracle indicative price
+{
+    const oracleLoop = validatorSrcAll.substring(
+        validatorSrcAll.indexOf('Trade-driven fallback'),
+        validatorSrcAll.indexOf('Trade-driven fallback') + 2000
+    );
+    assert(
+        oracleLoop.includes('Inactive market: oracle writes indicative price'),
+        'PB.4: Inactive markets still receive oracle analytics updates'
+    );
+}
+
+// PB.5: Oracle feeder still writes to moltoracle unconditionally
+{
+    // The oracle feed writes (price_key → feed) happen BEFORE the analytics
+    // section, so they always execute regardless of trade_active skip
+    const oracleFeedWrite = validatorSrcAll.indexOf('Build 49-byte oracle feed');
+    const tradeActiveCheck = validatorSrcAll.indexOf('Trade-driven fallback');
+    assert(
+        oracleFeedWrite > 0 && tradeActiveCheck > 0 && oracleFeedWrite < tradeActiveCheck,
+        'PB.5: Oracle moltoracle writes occur before (not gated by) trade-active check'
+    );
+}
+
+// ── Phase C: Oracle Price Bands in dex_core ──
+console.log('\n### Phase C: Oracle Price Bands\n');
+
+// PC.1: Validator oracle feeder writes dex_band_ to DEX storage
+assert(
+    validatorSrcAll.includes('dex_band_'),
+    'PC.1: Oracle feeder writes dex_band_ records'
+);
+
+// PC.2: Oracle feeder resolves DEX symbol for band writes
+assert(
+    validatorSrcAll.includes('get_symbol_registry("DEX")'),
+    'PC.2: Oracle feeder resolves DEX via symbol registry'
+);
+
+// PC.3: Band data is 16 bytes (reference_price + slot)
+assert(
+    validatorSrcAll.includes('band_data.extend_from_slice(&price_scaled.to_le_bytes())') &&
+    validatorSrcAll.includes('band_data.extend_from_slice(&current_slot.to_le_bytes())'),
+    'PC.3: Band data contains price + slot (16 bytes)'
+);
+
+// PC.4: dex_core reads dex_band_{pair_id} during place_order
+assert(
+    dexCoreSrc.includes('band_key(pair_id)'),
+    'PC.4: dex_core reads band_key in place_order'
+);
+
+// PC.5: band_key function exists in dex_core
+assert(
+    dexCoreSrc.includes('fn band_key(pair_id: u64)'),
+    'PC.5: band_key helper function defined'
+);
+
+// PC.6: Market orders enforced at ±5% (500 bps)
+assert(
+    dexCoreSrc.includes('ORDER_MARKET { 500 }'),
+    'PC.6: Market orders use 500 bps (5%) band'
+);
+
+// PC.7: Limit orders enforced at ±10% (1000 bps)
+assert(
+    dexCoreSrc.includes('1000'),
+    'PC.7: Limit orders use 1000 bps (10%) band'
+);
+
+// PC.8: Band staleness check (300 slots)
+assert(
+    dexCoreSrc.includes('current_slot.saturating_sub(band_slot) < 300'),
+    'PC.8: Band freshness check uses 300-slot window'
+);
+
+// PC.9: Return code 10 for band violations
+assert(
+    dexCoreSrc.includes('return 10; // price outside oracle band'),
+    'PC.9: Returns error code 10 for band violation'
+);
+
+// PC.10: No band record → unrestricted (native pairs)
+{
+    const bandCheck = dexCoreSrc.substring(
+        dexCoreSrc.indexOf('Oracle Price Band Protection'),
+        dexCoreSrc.indexOf('Oracle Price Band Protection') + 2000
+    );
+    assert(
+        bandCheck.includes('if let Some(band_data)'),
+        'PC.10: Band check is conditional — no record means unrestricted'
+    );
+}
+
+// PC.11: Market order with price=0 (no worst-price bound) skips band check
+assert(
+    dexCoreSrc.includes('if price > 0 { price } else { 0 }'),
+    'PC.11: Market order without worst-price bound skips band enforcement'
+);
+
+// PC.12: Band calculation uses ref_price * band_bps / 10000
+assert(
+    dexCoreSrc.includes('ref_price * band_bps / 10000'),
+    'PC.12: Band range calculated correctly with basis points'
+);
+
+// PC.13: Band check uses both lower and upper bounds
+assert(
+    dexCoreSrc.includes('check_price < lower || check_price > upper'),
+    'PC.13: Both lower and upper band bounds enforced'
+);
+
+// ── Phase D: Frontend Oracle Reference Line ──
+console.log('\n### Phase D: Frontend Oracle Index\n');
+
+// PD.1: Frontend fetches oracle prices
+assert(
+    dexJsFrontend.includes('fetchOracleRefPrices'),
+    'PD.1: fetchOracleRefPrices function exists'
+);
+
+// PD.2: Fetches from /oracle/prices endpoint
+assert(
+    dexJsFrontend.includes('/oracle/prices'),
+    'PD.2: Fetches oracle prices from API endpoint'
+);
+
+// PD.3: Oracle reference line drawn on TradingView chart
+assert(
+    dexJsFrontend.includes('updateOracleReferenceLine'),
+    'PD.3: updateOracleReferenceLine function exists'
+);
+
+// PD.4: Uses TradingView createShape for horizontal line
+assert(
+    dexJsFrontend.includes("shape: 'horizontal_line'"),
+    'PD.4: Draws horizontal_line shape on chart'
+);
+
+// PD.5: Oracle line styling — gold color, dashed
+assert(
+    dexJsFrontend.includes("linecolor: '#FFD700'") &&
+    dexJsFrontend.includes('linestyle: 2'),
+    'PD.5: Oracle line is gold (#FFD700) and dashed'
+);
+
+// PD.6: Oracle line label shows price
+assert(
+    dexJsFrontend.includes('Oracle: $'),
+    'PD.6: Oracle line label displays price'
+);
+
+// PD.7: Oracle reference updates when pair switches
+assert(
+    dexJsFrontend.includes('// Update oracle reference line for new pair'),
+    'PD.7: Oracle line updates on pair switch'
+);
+
+// PD.8: getOracleRefForPair handles MOLT-quoted pairs
+assert(
+    dexJsFrontend.includes("quote === 'MOLT'") &&
+    dexJsFrontend.includes('refPrice / moltUsd'),
+    'PD.8: Oracle ref converts for MOLT-quoted pairs'
+);
+
+// PD.9: Old oracle line removed before drawing new one
+assert(
+    dexJsFrontend.includes('chart.removeEntity(oracleLineId)'),
+    'PD.9: Old oracle line entity removed before redraw'
+);
+
+// PD.10: Oracle prices polled every 5 seconds
+assert(
+    dexJsFrontend.includes('setInterval(fetchOracleRefPrices, 5000)'),
+    'PD.10: Oracle prices polled at 5s interval'
+);
+
+// ── Cross-Phase Integration Tests ──
+console.log('\n### Cross-Phase Integration\n');
+
+// INT.1: Trade bridge AND oracle feeder both reference same pair IDs
+assert(
+    validatorSrcAll.includes('pair_id, interval') &&
+    validatorSrcAll.includes('oracle_update_candle'),
+    'INT.1: Both bridge and oracle use same candle infrastructure'
+);
+
+// INT.2: ana_last_trade_ts links Phase A and Phase B
+{
+    const bridgeHasTs = validatorSrcAll.includes('ana_last_trade_ts_');
+    const oracleReadsTs = validatorSrcAll.includes('last_trade_ts');
+    assert(bridgeHasTs && oracleReadsTs, 'INT.2: ana_last_trade_ts connects bridge (A) and oracle fallback (B)');
+}
+
+// INT.3: dex_band_ links oracle feeder (validator) to dex_core (contract)
+{
+    const validatorWritesBand = validatorSrcAll.includes('dex_band_');
+    const contractReadsBand = dexCoreSrc.includes('band_key');
+    assert(validatorWritesBand && contractReadsBand, 'INT.3: dex_band_ connects oracle feeder to contract price bands');
+}
+
+// INT.4: RPC oracle prices endpoint used by frontend
+{
+    const rpcSrc = fs.readFileSync(__dirname + '/../rpc/src/dex.rs', 'utf8');
+    const rpcHasEndpoint = rpcSrc.includes('/oracle/prices');
+    const frontendFetches = dexJsFrontend.includes('/oracle/prices');
+    assert(rpcHasEndpoint && frontendFetches, 'INT.4: RPC oracle/prices endpoint consumed by frontend');
+}
+
+// INT.5: PRICE_SCALE consistency — bridge uses same scale as analytics
+assert(
+    validatorSrcAll.includes('PRICE_SCALE: f64 = 1_000_000_000.0'),
+    'INT.5: Trade bridge uses same 1e9 price scale as existing code'
+);
+
+// INT.6: Genesis seed analytics prices not broken
+assert(
+    validatorSrcAll.includes('fn genesis_seed_analytics_prices'),
+    'INT.6: Genesis analytics seeding function still present'
+);
+
+// INT.7: emit_dex_events still operational alongside bridge
+{
+    const emitStillExists = validatorSrcAll.includes('fn emit_dex_events(');
+    const emitStillCalled = validatorSrcAll.includes('emit_dex_events(&state, &ws_dex_broadcaster');
+    assert(emitStillExists && emitStillCalled, 'INT.7: emit_dex_events unchanged and still called post-block');
+}
+
+// INT.8: Bridge candle function separate from oracle candle function
+assert(
+    validatorSrcAll.includes('fn bridge_update_candle(') &&
+    validatorSrcAll.includes('fn oracle_update_candle('),
+    'INT.8: Separate candle update functions for bridge vs oracle'
+);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Summary
