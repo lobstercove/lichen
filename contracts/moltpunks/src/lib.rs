@@ -19,7 +19,7 @@ fn get_minter() -> Address {
             addr.copy_from_slice(&bytes);
             Address(addr)
         }
-        _ => panic!(),
+        _ => panic!("minter not set or invalid"),
     }
 }
 
