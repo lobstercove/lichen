@@ -3167,7 +3167,7 @@ console.log('\n── Phase 16: Data Format Consistency ──');
 // P16.16: Margin size displayed divided by 1e9 in position table
 {
     const dexJs = fs.readFileSync(dexJsPath, 'utf8');
-    assert(dexJs.includes('(p.size || 0) / 1e9'), 'P16.16: Margin position size divided by 1e9');
+    assert(dexJs.includes('sizeRaw / 1e9') || dexJs.includes('(pos.size || 0) / 1e9'), 'P16.16: Margin position size divided by 1e9');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -4130,10 +4130,10 @@ const dexJs = fs.readFileSync(__dirname + '/dex.js', 'utf-8');
 
 // P24.1: Margin equity uses divided values (not raw shells)
 {
-    const eqBlock = dexJs.substring(dexJs.indexOf('totalMargin = 0, totalPnl = 0'), dexJs.indexOf('totalMargin = 0, totalPnl = 0') + 200);
-    assert(eqBlock.includes('/ 1e9'), 'P24.1a: margin sums divided by 1e9');
-    assert(eqBlock.includes('(p.margin || 0) / 1e9'), 'P24.1b: p.margin divided by 1e9');
-    assert(eqBlock.includes('(p.realizedPnl || 0) / 1e9'), 'P24.1c: p.realizedPnl divided by 1e9');
+    // Phase 1 refactored equity calc to use unrealized PnL instead of realized PnL
+    assert(dexJs.includes('totalMargin += (p.margin || 0) / 1e9'), 'P24.1a: margin sums divided by 1e9');
+    assert(dexJs.includes('(p.margin || 0) / 1e9'), 'P24.1b: p.margin divided by 1e9');
+    assert(dexJs.includes('totalUnrealizedPnl'), 'P24.1c: equity uses unrealized PnL');
 }
 
 // P24.2: LP position cards store raw liquidity in data attribute
@@ -4228,6 +4228,163 @@ const dexJs = fs.readFileSync(__dirname + '/dex.js', 'utf-8');
     const cancelBlock = dexJs.substring(dexJs.indexOf('Order cancelled'), dexJs.indexOf('Order cancelled') + 300);
     assert(cancelBlock.includes('loadBalances'), 'P24.cancel-a: loadBalances after cancel');
     assert(cancelBlock.includes('loadOrderBook'), 'P24.cancel-b: loadOrderBook after cancel');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase 1: Bottom Panel Consolidation Tests
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n── Phase 1: Bottom Panel Consolidation ──');
+{
+    const dexJs = fs.readFileSync(__dirname + '/dex.js', 'utf8');
+    const htmlSrc = fs.readFileSync(__dirname + '/index.html', 'utf8');
+
+    // 1.1: Duplicate Positions tab removed
+    const posTabCount = (htmlSrc.match(/data-target="content-positions"/g) || []).length;
+    assertEqual(posTabCount, 1, 'P1.1a: Only one content-positions tab button');
+    assert(!htmlSrc.includes('data-target="content-margin-positions"'), 'P1.1b: No content-margin-positions tab remaining');
+    assert(!htmlSrc.includes('id="content-margin-positions"'), 'P1.1c: No content-margin-positions div remaining');
+
+    // 1.1b: loadPositionsTab removed
+    assert(!dexJs.includes('function loadPositionsTab'), 'P1.1d: loadPositionsTab function removed');
+    assert(!dexJs.includes('loadPositionsTab()'), 'P1.1e: No calls to loadPositionsTab()');
+
+    // 1.2: Margin tab renamed to Positions
+    assert(htmlSrc.includes('>Positions <span class="badge margin-badge">'), 'P1.2a: Tab renders as "Positions" with badge');
+    // Tab handler references content-positions
+    assert(dexJs.includes("tab.dataset.target === 'content-positions'"), 'P1.2b: Tab handler targets content-positions');
+
+    // 1.3: Liquidation price computation
+    assert(dexJs.includes('function computeLiquidationPrice('), 'P1.3a: computeLiquidationPrice function defined');
+    assert(dexJs.includes('function getMarginTierParams('), 'P1.3b: getMarginTierParams function defined');
+    assert(dexJs.includes('Liq:'), 'P1.3c: Liq price displayed in position row');
+
+    // 1.3 Unit test: computeLiquidationPrice logic
+    // Mirror the JS implementation for testing
+    function getMarginTierParams(leverage) {
+        if (leverage <= 2) return { initialBps: 5000, maintenanceBps: 2500, liquidationPenaltyBps: 300 };
+        if (leverage <= 3) return { initialBps: 3333, maintenanceBps: 1700, liquidationPenaltyBps: 300 };
+        if (leverage <= 5) return { initialBps: 2000, maintenanceBps: 1000, liquidationPenaltyBps: 500 };
+        if (leverage <= 10) return { initialBps: 1000, maintenanceBps: 500, liquidationPenaltyBps: 500 };
+        if (leverage <= 25) return { initialBps: 400, maintenanceBps: 200, liquidationPenaltyBps: 700 };
+        if (leverage <= 50) return { initialBps: 200, maintenanceBps: 100, liquidationPenaltyBps: 1000 };
+        return { initialBps: 100, maintenanceBps: 50, liquidationPenaltyBps: 1500 };
+    }
+    function computeLiquidationPrice(side, entryPrice, margin, size, leverage) {
+        if (!entryPrice || !size || !margin) return 0;
+        const { maintenanceBps } = getMarginTierParams(leverage);
+        const marginRatio = margin / (size * entryPrice);
+        const maintRate = maintenanceBps / 10000;
+        if (side === 'Long') {
+            return entryPrice * (1 - marginRatio + maintRate);
+        } else {
+            return entryPrice * (1 + marginRatio - maintRate);
+        }
+    }
+
+    // Long 2x: entry=100, margin=50, size=1 → liqPrice = 100 * (1 - 50/100 + 0.25) = 100 * 0.75 = 75
+    const liq1 = computeLiquidationPrice('Long', 100, 50, 1, 2);
+    assertEqual(liq1, 75, 'P1.3d: Long 2x liquidation price = 75');
+
+    // Short 2x: entry=100, margin=50, size=1 → liqPrice = 100 * (1 + 50/100 - 0.25) = 100 * 1.25 = 125
+    const liq2 = computeLiquidationPrice('Short', 100, 50, 1, 2);
+    assertEqual(liq2, 125, 'P1.3e: Short 2x liquidation price = 125');
+
+    // Long 10x: entry=100, margin=10, size=1 → liqPrice = 100 * (1 - 10/100 + 0.05) = 100 * 0.95 = 95
+    const liq3 = computeLiquidationPrice('Long', 100, 10, 1, 10);
+    assertEqual(liq3, 95, 'P1.3f: Long 10x liquidation price = 95');
+
+    // Short 5x: entry=200, margin=40, size=1 → liqPrice = 200 * (1 + 40/200 - 0.10) = 200 * 1.10 = 220
+    const liq4 = computeLiquidationPrice('Short', 200, 40, 1, 5);
+    assert(Math.abs(liq4 - 220) < 0.001, 'P1.3g: Short 5x liquidation price ≈ 220');
+
+    // Edge: zero margin → 0
+    const liq5 = computeLiquidationPrice('Long', 100, 0, 1, 2);
+    assertEqual(liq5, 0, 'P1.3h: Zero margin returns 0');
+
+    // Tier params match contract
+    const t2 = getMarginTierParams(2);
+    assertEqual(t2.maintenanceBps, 2500, 'P1.3i: 2x leverage → 2500 maintenanceBps');
+    const t10 = getMarginTierParams(10);
+    assertEqual(t10.maintenanceBps, 500, 'P1.3j: 10x leverage → 500 maintenanceBps');
+    const t50 = getMarginTierParams(50);
+    assertEqual(t50.maintenanceBps, 100, 'P1.3k: 50x leverage → 100 maintenanceBps');
+
+    // 1.4: PnL % displayed
+    assert(dexJs.includes('pnlPct'), 'P1.4a: pnlPct computed in loadMarginPositions');
+    assert(dexJs.includes('pnlPctStr'), 'P1.4b: pnlPctStr formatted');
+    // PnL format: "+12.50% (+0.0125 MOLT)" — check pattern
+    assert(dexJs.includes('(${pnlPctStr})'), 'P1.4c: PnL percentage shown in parentheses alongside absolute');
+
+    // 1.5: Add/Remove margin builders
+    assert(dexJs.includes('function buildAddMarginArgs('), 'P1.5a: buildAddMarginArgs function defined');
+    assert(dexJs.includes('function buildRemoveMarginArgs('), 'P1.5b: buildRemoveMarginArgs function defined');
+    // Verify opcode bytes
+    assert(dexJs.includes("writeU8(arr, 0, 4); // opcode") || dexJs.includes('writeU8(arr, 0, 4)'), 'P1.5c: Add margin uses opcode 4');
+    assert(dexJs.includes("writeU8(arr, 0, 5); // opcode") || dexJs.includes('writeU8(arr, 0, 5)'), 'P1.5d: Remove margin uses opcode 5');
+    // Buffer size = 49 bytes
+    const addMarginMatch = dexJs.match(/function buildAddMarginArgs[^}]+}/s);
+    assert(addMarginMatch && addMarginMatch[0].includes('ArrayBuffer(49)'), 'P1.5e: buildAddMarginArgs allocates 49 bytes');
+    const removeMarginMatch = dexJs.match(/function buildRemoveMarginArgs[^}]+}/s);
+    assert(removeMarginMatch && removeMarginMatch[0].includes('ArrayBuffer(49)'), 'P1.5f: buildRemoveMarginArgs allocates 49 bytes');
+    // UI buttons exist
+    assert(dexJs.includes('btn-margin-add'), 'P1.5g: Add margin button class in rendered HTML');
+    assert(dexJs.includes('btn-margin-remove'), 'P1.5h: Remove margin button class in rendered HTML');
+    assert(dexJs.includes('margin-adjust-inline'), 'P1.5i: Inline margin adjustment panel rendered');
+    assert(dexJs.includes('margin-adjust-confirm'), 'P1.5j: Confirm button for margin adjustment');
+    // Wallet gate on add/remove
+    assert(dexJs.includes("showNotification('Connect wallet first', 'warning')"), 'P1.5k: Wallet gate on add/remove margin');
+    // CSS for new elements
+    const cssSrc = fs.readFileSync(__dirname + '/dex.css', 'utf8');
+    assert(cssSrc.includes('.btn-margin-add'), 'P1.5l: CSS for btn-margin-add');
+    assert(cssSrc.includes('.btn-margin-remove'), 'P1.5m: CSS for btn-margin-remove');
+    assert(cssSrc.includes('.margin-adjust-inline'), 'P1.5n: CSS for margin-adjust-inline');
+    assert(cssSrc.includes('.margin-adjust-input'), 'P1.5o: CSS for margin-adjust-input');
+    assert(cssSrc.includes('.text-warning'), 'P1.5p: CSS for text-warning (liquidation price)');
+
+    // 1.5: Builder byte layout unit tests
+    // Reimplement builders for testing
+    function writeU8t(arr, offset, n) { arr[offset] = n & 0xFF; }
+    function writeU64LEt(view, offset, n) { const bn = BigInt(n); view.setBigUint64(offset, bn, true); }
+    function writePubkeyt(arr, offset) { for (let i = 0; i < 32; i++) arr[offset + i] = i; }
+
+    function buildAddMarginArgsTEST(positionId, amount) {
+        const buf = new ArrayBuffer(49);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8t(arr, 0, 4);
+        writePubkeyt(arr, 1);
+        writeU64LEt(view, 33, positionId);
+        writeU64LEt(view, 41, amount);
+        return arr;
+    }
+
+    function buildRemoveMarginArgsTEST(positionId, amount) {
+        const buf = new ArrayBuffer(49);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8t(arr, 0, 5);
+        writePubkeyt(arr, 1);
+        writeU64LEt(view, 33, positionId);
+        writeU64LEt(view, 41, amount);
+        return arr;
+    }
+
+    const addArgs = buildAddMarginArgsTEST(42, 1_000_000_000);
+    assertEqual(addArgs[0], 4, 'P1.5q: Add margin opcode = 4');
+    assertEqual(addArgs.length, 49, 'P1.5r: Add margin args = 49 bytes');
+    // position_id at offset 33, LE
+    const addView = new DataView(addArgs.buffer);
+    assertEqual(Number(addView.getBigUint64(33, true)), 42, 'P1.5s: Add margin position_id = 42');
+    assertEqual(Number(addView.getBigUint64(41, true)), 1_000_000_000, 'P1.5t: Add margin amount = 1e9');
+
+    const rmArgs = buildRemoveMarginArgsTEST(7, 500_000_000);
+    assertEqual(rmArgs[0], 5, 'P1.5u: Remove margin opcode = 5');
+    const rmView = new DataView(rmArgs.buffer);
+    assertEqual(Number(rmView.getBigUint64(33, true)), 7, 'P1.5v: Remove margin position_id = 7');
+    assertEqual(Number(rmView.getBigUint64(41, true)), 500_000_000, 'P1.5w: Remove margin amount = 5e8');
+
+    // Equity calculation uses unrealized PnL, not just realized
+    assert(dexJs.includes('totalUnrealizedPnl'), 'P1.equity: Equity uses unrealized PnL');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

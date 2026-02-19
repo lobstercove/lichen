@@ -291,6 +291,16 @@ document.addEventListener('DOMContentLoaded', () => {
         };
     }
 
+    // Build a named-export contract call (for ClawPump ABI which uses function names, not opcodes)
+    function namedCallIx(contractAddr, funcName, argsBytes, value = 0) {
+        const data = JSON.stringify({ Call: { function: funcName, args: Array.from(argsBytes), value } });
+        return {
+            program_id: CONTRACT_PROGRAM_ID,
+            accounts: [wallet.address, contractAddr],
+            data,
+        };
+    }
+
     // Binary encoding helpers
     function writeU64LE(view, offset, n) {
         const bn = BigInt(Math.round(n));
@@ -401,6 +411,30 @@ document.addEventListener('DOMContentLoaded', () => {
         return arr;
     }
 
+    // Opcode 4: add_margin(caller[32], position_id[8], amount[8])
+    function buildAddMarginArgs(caller, positionId, amount) {
+        const buf = new ArrayBuffer(49);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 4); // opcode
+        writePubkey(arr, 1, caller);
+        writeU64LE(view, 33, positionId);
+        writeU64LE(view, 41, amount);
+        return arr;
+    }
+
+    // Opcode 5: remove_margin(caller[32], position_id[8], amount[8])
+    function buildRemoveMarginArgs(caller, positionId, amount) {
+        const buf = new ArrayBuffer(49);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 5); // opcode
+        writePubkey(arr, 1, caller);
+        writeU64LE(view, 33, positionId);
+        writeU64LE(view, 41, amount);
+        return arr;
+    }
+
     // ── Governance instruction builders ──
     // Opcode 2: vote(voter, proposal_id, support)
     function buildVoteArgs(voter, proposalId, support) {
@@ -506,6 +540,53 @@ document.addEventListener('DOMContentLoaded', () => {
         return arr;
     }
 
+    // ── ClawPump (Launchpad) instruction builders ──
+    // Uses named-export ABI — function names instead of opcode bytes
+    // create_token(creator_ptr[32], fee_paid[8]) = 40 bytes
+    function buildCPCreateTokenArgs(creator) {
+        const buf = new ArrayBuffer(40);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writePubkey(arr, 0, creator);
+        writeU64LE(view, 32, 10_000_000_000); // 10 MOLT creation fee
+        return arr;
+    }
+    // buy(buyer_ptr[32], token_id[8], molt_amount[8]) = 48 bytes
+    function buildCPBuyArgs(buyer, tokenId, moltShells) {
+        const buf = new ArrayBuffer(48);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writePubkey(arr, 0, buyer);
+        writeU64LE(view, 32, tokenId);
+        writeU64LE(view, 40, moltShells);
+        return arr;
+    }
+    // sell(seller_ptr[32], token_id[8], token_amount[8]) = 48 bytes
+    function buildCPSellArgs(seller, tokenId, tokenShells) {
+        const buf = new ArrayBuffer(48);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writePubkey(arr, 0, seller);
+        writeU64LE(view, 32, tokenId);
+        writeU64LE(view, 40, tokenShells);
+        return arr;
+    }
+    // get_token_info(token_id[8]) = 8 bytes
+    function buildCPGetTokenInfoArgs(tokenId) {
+        const buf = new ArrayBuffer(8);
+        const view = new DataView(buf);
+        writeU64LE(view, 0, tokenId);
+        return new Uint8Array(buf);
+    }
+    // get_buy_quote(token_id[8], molt_amount[8]) = 16 bytes
+    function buildCPGetBuyQuoteArgs(tokenId, moltShells) {
+        const buf = new ArrayBuffer(16);
+        const view = new DataView(buf);
+        writeU64LE(view, 0, tokenId);
+        writeU64LE(view, 8, moltShells);
+        return new Uint8Array(buf);
+    }
+
     // ── Tick math for AMM (Uniswap V3 style) ──
     const MIN_TICK = -887272;
     const MAX_TICK = 887272;
@@ -575,6 +656,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const contracts = {
         dex_core: null, dex_amm: null, dex_router: null, dex_margin: null,
         dex_rewards: null, dex_governance: null, dex_analytics: null, prediction_market: null,
+        clawpump: null,
     };
 
     async function loadContractAddresses() {
@@ -591,6 +673,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 contracts.dex_governance = map['DEXGOV'] || null;
                 contracts.dex_analytics = map['ANALYTICS'] || null;
                 contracts.prediction_market = map['PREDICT'] || null;
+                contracts.clawpump = map['CLAWPUMP'] || null;
                 console.log('[DEX] Contract addresses loaded from symbol registry');
             }
         } catch (e) {
@@ -608,6 +691,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!contracts.dex_governance) contracts.dex_governance = '7BKw55h387pVAUs1dNApn2rfARBcGnnncXyb4WZDdGru';
         if (!contracts.dex_analytics) contracts.dex_analytics = 'FBE25S5yGHUa6q38P8SjVXviw6dkoqD7oCMUuxj1aRof';
         if (!contracts.prediction_market) contracts.prediction_market = 'J8sMvYFXW4ZCHc488KJ1zmZq1sQMTWyWfr8qnzUwwEyD';
+        if (!contracts.clawpump) contracts.clawpump = null; // No hardcoded fallback — must come from registry
         if (needsFallback) {
             console.warn('[DEX] Using fallback contract addresses — symbol registry was unavailable. Transactions may fail if contracts were recompiled.');
         }
@@ -807,7 +891,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     const navLinks = document.querySelectorAll('.nav-menu a[data-view]');
     const views = document.querySelectorAll('.dex-main');
-    function switchView(v) { state.currentView = v; views.forEach(el => el.classList.toggle('hidden', el.id !== `view-${v}`)); navLinks.forEach(l => l.classList.toggle('active', l.dataset.view === v)); if (v === 'trade') { drawChart(); loadTradeHistory(); loadPositionsTab(); if (state.tradeMode === 'margin') { loadMarginStats(); loadMarginPositions(); } } if (v === 'predict') { loadPredictionStats(); loadPredictionMarkets(); loadPredictionPositions(); loadCreatedMarkets(); } if (v === 'pool') { loadPoolStats(); loadPools(); loadLPPositions(); } if (v === 'rewards') { loadRewardsStats(); } if (v === 'governance') { loadGovernanceStats(); loadProposals(); } }
+    function switchView(v) { state.currentView = v; views.forEach(el => el.classList.toggle('hidden', el.id !== `view-${v}`)); navLinks.forEach(l => l.classList.toggle('active', l.dataset.view === v)); if (v === 'trade') { drawChart(); loadTradeHistory(); loadMarginStats(); loadMarginPositions(); } if (v === 'predict') { loadPredictionStats(); loadPredictionMarkets(); loadPredictionPositions(); loadCreatedMarkets(); } if (v === 'pool') { loadPoolStats(); loadPools(); loadLPPositions(); } if (v === 'rewards') { loadRewardsStats(); } if (v === 'governance') { loadGovernanceStats(); loadProposals(); } if (v === 'launchpad') { loadLaunchpadStats(); loadLaunchpadTokens(); } applyWalletGateAll(); }
     navLinks.forEach(l => l.addEventListener('click', e => { e.preventDefault(); switchView(l.dataset.view); }));
 
     // Mobile nav toggle
@@ -926,7 +1010,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     // TradingView (wired to candle API)
     // ═══════════════════════════════════════════════════════════════════════
-    let tvWidget = null, realtimeCallback = null, lastBarTime = 0, activeResolution = '15';
+    let tvWidget = null, realtimeCallback = null, lastBarTime = 0, activeResolution = '15', currentBarOpen = 0;
 
 
     function createDatafeed() {
@@ -958,15 +1042,16 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!realtimeCallback) return;
         const ms = resolutionToMs(activeResolution);
         const bt = Math.floor(Date.now() / ms) * ms;
-        realtimeCallback(bt > lastBarTime ? (lastBarTime = bt, { time: bt, open: price, high: price, low: price, close: price, volume: vol }) : { time: lastBarTime, close: price, high: price, low: price, volume: vol });
+        realtimeCallback(bt > lastBarTime ? (lastBarTime = bt, currentBarOpen = price, { time: bt, open: price, high: price, low: price, close: price, volume: vol }) : { time: lastBarTime, open: currentBarOpen, close: price, high: Math.max(currentBarOpen, price), low: Math.min(currentBarOpen, price), volume: vol });
     }
 
     function resolutionToMs(r) { return { '1': 60000, '5': 300000, '15': 900000, '30': 1800000, '60': 3600000, '240': 14400000, '1D': 86400000, '1W': 604800000, '1M': 2592000000 }[r] || 900000; }
     function resolutionToSec(r) { return { '1': 60, '5': 300, '15': 900, '30': 1800, '60': 3600, '240': 14400, '1D': 86400, '1W': 604800, '1M': 2592000 }[r] || 900; }
 
+    let tvRetryCount = 0;
     function initTradingView() {
         const el = document.getElementById('tvChartContainer');
-        if (!el || typeof TradingView === 'undefined') { if (el) el.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:0.9rem;"><i class="fas fa-chart-line" style="margin-right:8px;"></i> Chart unavailable — library failed to load</div>'; setTimeout(initTradingView, 5000); return; }
+        if (!el || typeof TradingView === 'undefined') { if (el) el.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:var(--text-muted);font-size:0.9rem;"><i class="fas fa-chart-line" style="margin-right:8px;"></i> Chart unavailable — library failed to load</div>'; if (++tvRetryCount < 5) setTimeout(initTradingView, 5000); return; }
         tvWidget = new TradingView.widget({
             symbol: state.activePair?.id || 'MOLT/mUSD', container: el, datafeed: createDatafeed(), library_path: 'charting_library/', locale: 'en', fullscreen: false, autosize: true, theme: 'Dark', interval: '15', toolbar_bg: '#0d1117',
             loading_screen: { backgroundColor: '#0A0E27', foregroundColor: '#FF6B35' },
@@ -1095,7 +1180,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 showNotification(`${state.orderSide.toUpperCase()} order placed: ${formatAmount(amount)} ${state.activePair?.base || ''} @ ${state.orderType === 'market' ? 'MARKET' : formatPrice(price)}`, 'success');
                 // F24.16: Refresh from API instead of pushing client-side stub (avoids stale/duplicate entries)
                 loadTradeHistory().catch(() => {});
-                loadUserOrders().catch(() => {});
+                loadUserOrders(wallet.address).catch(() => {});
             }
             if (amountInput) amountInput.value = ''; if (totalInput) totalInput.value = '';
             // F17.8: Immediate panel refresh after trade execution — update balances + orderbook
@@ -1116,6 +1201,7 @@ document.addEventListener('DOMContentLoaded', () => {
         tb.innerHTML = openOrders.map(o => `<tr class="order-row"><td>${escapeHtml(o.pair)}</td><td class="side-${escapeHtml(o.side)}">${escapeHtml(o.side.toUpperCase())}</td><td style="text-transform:capitalize">${escapeHtml(o.type)}</td><td>${formatPrice(o.price)}</td><td>${formatAmount(o.amount)}</td><td>${(o.filled * 100).toFixed(0)}%</td><td>${o.time instanceof Date ? o.time.toLocaleTimeString() : ''}</td><td><button class="cancel-btn" data-id="${escapeHtml(String(o.id))}"><i class="fas fa-times"></i></button></td></tr>`).join('');
         tb.querySelectorAll('.cancel-btn').forEach(btn => btn.addEventListener('click', async () => {
             // AUDIT-FIX F10.2: Cancel order via signed sendTransaction (not unsigned DELETE)
+            if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
             if (!wallet.keypair) { showNotification('Re-import wallet to sign', 'warning'); return; }
             try {
                 await wallet.sendTransaction([contractIx(
@@ -1131,7 +1217,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }));
     }
 
-    document.querySelectorAll('.pos-tab').forEach(tab => tab.addEventListener('click', () => { document.querySelectorAll('.pos-tab').forEach(t => t.classList.remove('active')); tab.classList.add('active'); document.querySelectorAll('.positions-content').forEach(c => c.classList.add('hidden')); const t = document.getElementById(tab.dataset.target); if (t) t.classList.remove('hidden'); if (tab.dataset.target === 'content-margin-positions') { loadMarginStats(); loadMarginPositions(); } }));
+    document.querySelectorAll('.pos-tab').forEach(tab => tab.addEventListener('click', () => { document.querySelectorAll('.pos-tab').forEach(t => t.classList.remove('active')); tab.classList.add('active'); document.querySelectorAll('.positions-content').forEach(c => c.classList.add('hidden')); const t = document.getElementById(tab.dataset.target); if (t) t.classList.remove('hidden'); if (tab.dataset.target === 'content-positions') { loadMarginStats(); loadMarginPositions(); } }));
 
     // ═══════════════════════════════════════════════════════════════════════
     // Wallet UI
@@ -1147,6 +1233,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (connectBtn) connectBtn.addEventListener('click', () => openWalletModal());
     if (closeModalBtn) closeModalBtn.addEventListener('click', closeWalletModalFn);
     if (walletModal) walletModal.addEventListener('click', e => { if (e.target === walletModal) closeWalletModalFn(); });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape' && walletModal && !walletModal.classList.contains('hidden')) closeWalletModalFn(); });
     wmTabs.forEach(t => t.addEventListener('click', () => switchWmTab(t.dataset.wmTab)));
 
     document.querySelectorAll('.wm-import-type').forEach(btn => btn.addEventListener('click', () => {
@@ -1183,11 +1270,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function connectWalletTo(address, shortAddr) {
         state.connected = true; state.walletAddress = address;
-        if (connectBtn) { connectBtn.innerHTML = `<i class="fas fa-wallet"></i> ${shortAddr}`; connectBtn.className = 'btn btn-small btn-secondary'; }
+        if (connectBtn) { connectBtn.innerHTML = `<i class="fas fa-wallet"></i> ${escapeHtml(shortAddr)}`; connectBtn.className = 'btn btn-small btn-secondary'; }
         toggleWalletPanels(true);
         applyWalletGateAll();
         await Promise.all([loadBalances(address), loadUserOrders(address)]);
-        renderBalances(); renderOpenOrders(); loadTradeHistory(); loadPositionsTab();
+        renderBalances(); renderOpenOrders(); loadTradeHistory(); loadMarginStats(); loadMarginPositions();
         if (dexWs && state.activePairId != null) subscribePair(state.activePairId);
     }
 
@@ -1199,7 +1286,7 @@ document.addEventListener('DOMContentLoaded', () => {
         applyWalletGateAll();
         renderBalances(); renderOpenOrders();
         // Clear wallet-gated sections
-        loadTradeHistory(); loadPositionsTab(); loadLPPositions(); loadPredictionPositions(); loadCreatedMarkets();
+        loadTradeHistory(); loadMarginPositions(); loadLPPositions(); loadPredictionPositions(); loadCreatedMarkets();
     }
 
     function toggleWalletPanels(show) {
@@ -1219,8 +1306,8 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderWalletList() {
         const list = document.getElementById('wmWalletsList'); if (!list) return;
         if (!savedWallets.length) { list.innerHTML = `<div class="wm-empty"><i class="fas fa-wallet"></i><p>No wallets connected</p><button class="btn btn-primary btn-small" id="wmEmptyImport">Import Wallet</button></div>`; const b = document.getElementById('wmEmptyImport'); if (b) b.addEventListener('click', () => switchWmTab('import')); return; }
-        list.innerHTML = savedWallets.map((w, i) => `<div class="wm-wallet-item ${state.walletAddress === w.address ? 'active-wallet' : ''}"><span class="wm-wallet-addr">${w.short || w.address.slice(0, 8) + '...' + w.address.slice(-6)}</span><div class="wm-wallet-actions">${state.walletAddress === w.address ? '<span class="btn btn-small btn-secondary" style="opacity:0.6;cursor:default;">Active</span>' : `<button class="btn btn-small btn-primary wm-switch-btn" data-idx="${i}">Switch</button>`}<button class="btn btn-small btn-secondary wm-remove-btn" data-idx="${i}"><i class="fas fa-times"></i></button></div></div>`).join('') + `<div class="wm-disconnect-all"><button class="btn btn-small btn-secondary" id="wmDisconnectAll">Disconnect All</button></div>`;
-        list.querySelectorAll('.wm-switch-btn').forEach(btn => btn.addEventListener('click', () => { const w = savedWallets[parseInt(btn.dataset.idx)]; if (w) { connectWalletTo(w.address, w.short); renderWalletList(); } }));
+        list.innerHTML = savedWallets.map((w, i) => `<div class="wm-wallet-item ${state.walletAddress === w.address ? 'active-wallet' : ''}"><span class="wm-wallet-addr">${escapeHtml(w.short || w.address.slice(0, 8) + '...' + w.address.slice(-6))}</span><div class="wm-wallet-actions">${state.walletAddress === w.address ? '<span class="btn btn-small btn-secondary" style="opacity:0.6;cursor:default;">Active</span>' : `<button class="btn btn-small btn-primary wm-switch-btn" data-idx="${i}">Switch</button>`}<button class="btn btn-small btn-secondary wm-remove-btn" data-idx="${i}"><i class="fas fa-times"></i></button></div></div>`).join('') + `<div class="wm-disconnect-all"><button class="btn btn-small btn-secondary" id="wmDisconnectAll">Disconnect All</button></div>`;
+        list.querySelectorAll('.wm-switch-btn').forEach(btn => btn.addEventListener('click', () => { const w = savedWallets[parseInt(btn.dataset.idx)]; if (w) { connectWalletTo(w.address, w.short || w.address.slice(0, 8) + '...'); renderWalletList(); } }));
         list.querySelectorAll('.wm-remove-btn').forEach(btn => btn.addEventListener('click', () => { const i = parseInt(btn.dataset.idx), r = savedWallets[i]; savedWallets.splice(i, 1); localStorage.setItem('dexWallets', JSON.stringify(savedWallets)); if (state.walletAddress === r?.address) disconnectWallet(); renderWalletList(); showNotification('Wallet removed', 'info'); }));
         const da = document.getElementById('wmDisconnectAll'); if (da) da.addEventListener('click', () => { savedWallets = []; localStorage.removeItem('dexWallets'); disconnectWallet(); renderWalletList(); showNotification('All wallets disconnected', 'info'); });
     }
@@ -1344,6 +1431,53 @@ document.addEventListener('DOMContentLoaded', () => {
             btn.disabled = !connected;
             btn.classList.toggle('btn-wallet-gate', !connected);
         });
+
+        // --- Prediction: Card action buttons (dynamically rendered) ---
+        document.querySelectorAll('.btn-predict-buy, .btn-predict-buy-no').forEach(btn => {
+            btn.disabled = !connected;
+            btn.classList.toggle('btn-wallet-gate', !connected);
+        });
+        document.querySelectorAll('.btn-predict-resolve, .btn-predict-claim, .btn-predict-claim-pos').forEach(btn => {
+            btn.disabled = !connected;
+            btn.classList.toggle('btn-wallet-gate', !connected);
+        });
+
+        // --- Trade: Margin close & cancel order buttons ---
+        document.querySelectorAll('.margin-close-btn, .cancel-btn').forEach(btn => {
+            btn.disabled = !connected;
+            btn.classList.toggle('btn-wallet-gate', !connected);
+        });
+
+        // --- Launchpad: Buy/Sell/Create buttons ---
+        document.querySelectorAll('.launch-quick-buy, .launch-quick-sell').forEach(btn => {
+            btn.disabled = !connected;
+            btn.classList.toggle('btn-wallet-gate', !connected);
+        });
+        const launchTradeGate = document.getElementById('launchTradeBtn');
+        if (launchTradeGate) {
+            if (connected) {
+                launchTradeGate.disabled = false;
+                launchTradeGate.classList.remove('btn-wallet-gate');
+            } else {
+                launchTradeGate.disabled = true;
+                launchTradeGate.className = 'btn btn-full btn-wallet-gate';
+                launchTradeGate.innerHTML = '<i class="fas fa-wallet"></i> Connect Wallet to Trade';
+            }
+        }
+        const launchCreateGate = document.getElementById('launchCreateBtn');
+        if (launchCreateGate) {
+            if (connected) {
+                launchCreateGate.disabled = false;
+                launchCreateGate.classList.remove('btn-wallet-gate');
+                launchCreateGate.innerHTML = '<i class="fas fa-rocket"></i> Launch Token (10 MOLT)';
+            } else {
+                launchCreateGate.disabled = true;
+                launchCreateGate.className = 'btn btn-full btn-wallet-gate';
+                launchCreateGate.innerHTML = '<i class="fas fa-wallet"></i> Connect Wallet to Launch';
+            }
+        }
+        const launchTradeForm = document.getElementById('launchTradeForm');
+        if (launchTradeForm) launchTradeForm.classList.toggle('wallet-gated-disabled', !connected);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -1355,7 +1489,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // for a responsive UI between API polls.
     // ═══════════════════════════════════════════════════════════════════════
     const externalPrices = { wSOL: 0, wETH: 0 };
-    let binanceWs = null;
+    let binanceWs = null, binanceReconnectDelay = 5000;
 
     function connectBinancePriceFeed() {
         // Streams: SOL/USDT, ETH/USDT mini tickers
@@ -1375,8 +1509,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     applyBinanceRealTimeOverlay();
                 } catch { /* malformed message */ }
             };
-            binanceWs.onclose = () => { setTimeout(connectBinancePriceFeed, 5000); };
+            binanceWs.onclose = () => { binanceReconnectDelay = Math.min((binanceReconnectDelay || 5000) * 2, 60000); setTimeout(connectBinancePriceFeed, binanceReconnectDelay); };
             binanceWs.onerror = () => { try { binanceWs.close(); } catch { /* already closed */ } };
+            binanceReconnectDelay = 5000; // reset on successful connect;
             console.log('[DEX] Binance price feed connected (real-time overlay)');
         } catch (e) {
             console.warn('[DEX] Binance price feed unavailable:', e.message);
@@ -1421,7 +1556,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function fetchOracleRefPrices() {
         try {
-            const resp = await fetch(`${API}/oracle/prices`);
+            const resp = await fetch(`${API_BASE}/oracle/prices`);
             if (!resp.ok) return;
             const data = await resp.json();
             if (data.feeds) {
@@ -1591,7 +1726,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 // F7.18: Store pools for price lookup on select change
                 state.poolsCache = data;
-                const selEvt = () => {
+                function poolSelectHandler() {
                     const sel = document.getElementById('liqPoolSelect');
                     const pool = state.poolsCache?.find(p => String(p.poolId || p.id) === sel?.value);
                     const priceEl = document.getElementById('liqCurrentPrice');
@@ -1600,9 +1735,9 @@ document.addEventListener('DOMContentLoaded', () => {
                         const price = sqrtP * sqrtP;
                         priceEl.textContent = price >= 0.01 ? price.toFixed(6) : price.toExponential(4);
                     } else if (priceEl) { priceEl.textContent = '—'; }
-                };
+                }
                 const liqSel = document.getElementById('liqPoolSelect');
-                if (liqSel) { liqSel.removeEventListener('change', selEvt); liqSel.addEventListener('change', selEvt); selEvt(); }
+                if (liqSel) { liqSel.onchange = poolSelectHandler; poolSelectHandler(); }
                 return;
             }
         } catch { /* API unavailable */ }
@@ -1620,7 +1755,6 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const { data } = await api.get(`/pools/positions?owner=${wallet.address}`);
             if (Array.isArray(data) && data.length > 0) {
-                const container = document.getElementById('pool-positions');
                 if (container) {
                     container.innerHTML = data.map(pos => `
                         <div class="lp-position-card" data-position-id="${pos.positionId || 0}" data-pool-id="${pos.poolId || 0}">
@@ -1808,6 +1942,34 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     // Margin — Open/Close Positions + Load from API
     // ═══════════════════════════════════════════════════════════════════════
+
+    // Leverage tier table — mirrors contract get_tier_params()
+    // Returns { initialBps, maintenanceBps, liquidationPenaltyBps }
+    function getMarginTierParams(leverage) {
+        if (leverage <= 2) return { initialBps: 5000, maintenanceBps: 2500, liquidationPenaltyBps: 300 };
+        if (leverage <= 3) return { initialBps: 3333, maintenanceBps: 1700, liquidationPenaltyBps: 300 };
+        if (leverage <= 5) return { initialBps: 2000, maintenanceBps: 1000, liquidationPenaltyBps: 500 };
+        if (leverage <= 10) return { initialBps: 1000, maintenanceBps: 500, liquidationPenaltyBps: 500 };
+        if (leverage <= 25) return { initialBps: 400, maintenanceBps: 200, liquidationPenaltyBps: 700 };
+        if (leverage <= 50) return { initialBps: 200, maintenanceBps: 100, liquidationPenaltyBps: 1000 };
+        return { initialBps: 100, maintenanceBps: 50, liquidationPenaltyBps: 1500 }; // ≤100x
+    }
+
+    // Compute liquidation price for a margin position
+    // Long:  liqPrice = entryPrice * (1 - margin / (size * entryPrice) + maintenanceBps / 10000)
+    // Short: liqPrice = entryPrice * (1 + margin / (size * entryPrice) - maintenanceBps / 10000)
+    function computeLiquidationPrice(side, entryPrice, margin, size, leverage) {
+        if (!entryPrice || !size || !margin) return 0;
+        const { maintenanceBps } = getMarginTierParams(leverage);
+        const marginRatio = margin / (size * entryPrice);
+        const maintRate = maintenanceBps / 10000;
+        if (side === 'Long') {
+            return entryPrice * (1 - marginRatio + maintRate);
+        } else {
+            return entryPrice * (1 + marginRatio - maintRate);
+        }
+    }
+
     async function loadMarginStats() {
         try {
             const { data } = await api.get('/stats/margin');
@@ -1828,49 +1990,76 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function loadMarginPositions() {
         const badge = document.querySelector('.margin-badge');
+        const container = document.getElementById('marginPositionsList');
         if (!state.connected) {
             const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
             el('marginEquity', '—'); el('marginUsed', '—'); el('marginAvailable', '—');
             if (badge) badge.textContent = '';
+            if (container) container.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:30px;font-size:0.85rem;"><i class="fas fa-wallet" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>Connect wallet to view positions</div>';
             return;
         }
         try {
             const { data } = await api.get(`/margin/positions?trader=${wallet.address}`);
             if (badge) badge.textContent = Array.isArray(data) && data.length > 0 ? data.length : '';
             if (Array.isArray(data) && data.length > 0) {
-                const container = document.getElementById('marginPositionsList');
                 if (container) {
                     container.className = 'margin-positions-list';
                     container.innerHTML = data.map(pos => {
                         const side = pos.side === 'long' ? 'Long' : 'Short';
                         const sideClass = side === 'Long' ? 'side-buy' : 'side-sell';
-                        // F10.12 FIX: Compute unrealized PnL for open positions
+                        const leverage = pos.leverage || state.leverageValue || 2;
+                        // Unrealized PnL computation
                         const mark = pos.markPrice || state.lastPrice;
                         const entry = pos.entryPrice || 0;
+                        const sizeRaw = pos.size || 0;
+                        const marginRaw = pos.margin || 0;
                         let pnl;
                         if (pos.status === 'closed' || pos.status === 'liquidated') {
                             pnl = pos.realizedPnl || 0;
                         } else if (entry > 0 && mark > 0) {
-                            pnl = side === 'Long' ? (mark - entry) * (pos.size || 0) / PRICE_SCALE : (entry - mark) * (pos.size || 0) / PRICE_SCALE;
+                            pnl = side === 'Long'
+                                ? (mark - entry) * sizeRaw / PRICE_SCALE
+                                : (entry - mark) * sizeRaw / PRICE_SCALE;
                         } else {
                             pnl = 0;
                         }
-                        return `<div class="margin-pos-row">
+                        // PnL % relative to margin deposited
+                        const marginHuman = marginRaw / PRICE_SCALE;
+                        const pnlPct = marginHuman > 0 ? (pnl / marginHuman) * 100 : 0;
+                        const pnlPctStr = `${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%`;
+                        // Liquidation price
+                        const entryHuman = entry / PRICE_SCALE || entry;
+                        const sizeHuman = sizeRaw / PRICE_SCALE || sizeRaw;
+                        const liqPrice = computeLiquidationPrice(side, entryHuman, marginHuman, sizeHuman, leverage);
+                        const posId = pos.positionId || pos.id || 0;
+                        return `<div class="margin-pos-row" data-position-id="${posId}">
                             <div class="margin-pos-info">
                                 <span class="${sideClass}">${escapeHtml(side)} ${escapeHtml(pos.pair || 'MOLT/mUSD')}</span>
-                                <span class="mono-value">${pos.leverage || state.leverageValue}x</span>
+                                <span class="mono-value">${leverage}x</span>
                             </div>
                             <div class="margin-pos-details">
-                                <span>Size: ${formatAmount((pos.size || 0) / 1e9)}</span>
+                                <span>Size: ${formatAmount(sizeRaw / 1e9)}</span>
                                 <span>Entry: ${formatPrice(pos.entryPrice || 0)}</span>
-                                <span class="${pnl >= 0 ? 'positive' : 'negative'}">P&L: ${pnl >= 0 ? '+' : ''}${formatPrice(pnl)}</span>
+                                <span>Mark: ${formatPrice(mark)}</span>
+                                <span>Liq: <span class="text-warning">${liqPrice > 0 ? formatPrice(liqPrice) : '—'}</span></span>
+                                <span class="${pnl >= 0 ? 'positive' : 'negative'}">P&L: ${pnl >= 0 ? '+' : ''}${formatPrice(pnl)} (${pnlPctStr})</span>
+                                <span>Margin: ${formatAmount(marginHuman)}</span>
                             </div>
-                            <button class="btn btn-small btn-secondary margin-close-btn" data-position-id="${pos.positionId || pos.id || 0}">Close</button>
+                            <div class="margin-pos-actions">
+                                <button class="btn btn-small btn-margin-add" data-position-id="${posId}" title="Add Margin">＋</button>
+                                <button class="btn btn-small btn-margin-remove" data-position-id="${posId}" title="Remove Margin">−</button>
+                                <button class="btn btn-small btn-secondary margin-close-btn" data-position-id="${posId}">Close</button>
+                            </div>
+                            <div class="margin-adjust-inline hidden" data-position-id="${posId}">
+                                <input type="number" class="margin-adjust-input" placeholder="Amount" step="0.001" min="0.001" />
+                                <button class="btn btn-small btn-primary margin-adjust-confirm" data-position-id="${posId}" data-action="">Confirm</button>
+                                <button class="btn btn-small btn-secondary margin-adjust-cancel" data-position-id="${posId}">Cancel</button>
+                            </div>
                         </div>`;
                     }).join('');
                     // Bind close buttons
                     container.querySelectorAll('.margin-close-btn').forEach(btn => btn.addEventListener('click', async () => {
-                        // AUDIT-FIX F10.3: Close margin position via signed sendTransaction
+                        if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
                         if (!wallet.keypair) { showNotification('Re-import wallet to sign', 'warning'); return; }
                         btn.disabled = true;
                         try {
@@ -1880,19 +2069,100 @@ document.addEventListener('DOMContentLoaded', () => {
                             )]);
                             showNotification('Position closed', 'success');
                             await loadMarginPositions();
+                            if (wallet.address) loadBalances(wallet.address).then(() => renderBalances()).catch(() => {});
                         } catch (e) { showNotification(`Close failed: ${e.message}`, 'error'); }
+                        btn.disabled = false;
+                    }));
+                    // Bind Add Margin buttons
+                    container.querySelectorAll('.btn-margin-add').forEach(btn => btn.addEventListener('click', () => {
+                        if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
+                        if (!wallet.keypair) { showNotification('Re-import wallet to sign', 'warning'); return; }
+                        const posId = btn.dataset.positionId;
+                        const row = container.querySelector(`.margin-adjust-inline[data-position-id="${posId}"]`);
+                        if (!row) return;
+                        row.classList.remove('hidden');
+                        row.querySelector('.margin-adjust-confirm').dataset.action = 'add';
+                        row.querySelector('.margin-adjust-input').value = '';
+                        row.querySelector('.margin-adjust-input').focus();
+                    }));
+                    // Bind Remove Margin buttons
+                    container.querySelectorAll('.btn-margin-remove').forEach(btn => btn.addEventListener('click', () => {
+                        if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
+                        if (!wallet.keypair) { showNotification('Re-import wallet to sign', 'warning'); return; }
+                        const posId = btn.dataset.positionId;
+                        const row = container.querySelector(`.margin-adjust-inline[data-position-id="${posId}"]`);
+                        if (!row) return;
+                        row.classList.remove('hidden');
+                        row.querySelector('.margin-adjust-confirm').dataset.action = 'remove';
+                        row.querySelector('.margin-adjust-input').value = '';
+                        row.querySelector('.margin-adjust-input').focus();
+                    }));
+                    // Bind cancel buttons
+                    container.querySelectorAll('.margin-adjust-cancel').forEach(btn => btn.addEventListener('click', () => {
+                        const posId = btn.dataset.positionId;
+                        const row = container.querySelector(`.margin-adjust-inline[data-position-id="${posId}"]`);
+                        if (row) row.classList.add('hidden');
+                    }));
+                    // Bind confirm buttons (add/remove margin)
+                    container.querySelectorAll('.margin-adjust-confirm').forEach(btn => btn.addEventListener('click', async () => {
+                        if (!state.connected || !wallet.keypair) { showNotification('Wallet not ready', 'warning'); return; }
+                        if (!contracts.dex_margin) { showNotification('Margin contract not loaded', 'error'); return; }
+                        const posId = parseInt(btn.dataset.positionId);
+                        const action = btn.dataset.action;
+                        const row = container.querySelector(`.margin-adjust-inline[data-position-id="${btn.dataset.positionId}"]`);
+                        const input = row?.querySelector('.margin-adjust-input');
+                        const amountHuman = parseFloat(input?.value);
+                        if (!amountHuman || amountHuman <= 0) { showNotification('Enter a valid amount', 'warning'); return; }
+                        if (amountHuman > 9_000_000) { showNotification('Amount too large', 'warning'); return; }
+                        const amountScaled = Math.round(amountHuman * PRICE_SCALE);
+                        btn.disabled = true;
+                        try {
+                            if (action === 'add') {
+                                await wallet.sendTransaction([contractIx(
+                                    contracts.dex_margin,
+                                    buildAddMarginArgs(wallet.address, posId, amountScaled)
+                                )]);
+                                showNotification(`Added ${formatAmount(amountHuman)} margin`, 'success');
+                            } else {
+                                await wallet.sendTransaction([contractIx(
+                                    contracts.dex_margin,
+                                    buildRemoveMarginArgs(wallet.address, posId, amountScaled)
+                                )]);
+                                showNotification(`Removed ${formatAmount(amountHuman)} margin`, 'success');
+                            }
+                            await loadMarginPositions();
+                            if (wallet.address) loadBalances(wallet.address).then(() => renderBalances()).catch(() => {});
+                        } catch (e) { showNotification(`${action === 'add' ? 'Add' : 'Remove'} margin failed: ${e.message}`, 'error'); }
                         btn.disabled = false;
                     }));
                 }
                 // Update equity stats
-                let totalMargin = 0, totalPnl = 0;
-                data.forEach(p => { totalMargin += (p.margin || 0) / 1e9; totalPnl += (p.realizedPnl || 0) / 1e9; });
-                const eq = (balances.mUSD?.available || 0) + totalPnl;
+                let totalMargin = 0, totalUnrealizedPnl = 0;
+                data.forEach(p => {
+                    totalMargin += (p.margin || 0) / 1e9;
+                    const mark = p.markPrice || state.lastPrice;
+                    const entry = p.entryPrice || 0;
+                    const size = p.size || 0;
+                    const side = p.side === 'long' ? 'Long' : 'Short';
+                    let uPnl = 0;
+                    if (p.status !== 'closed' && p.status !== 'liquidated' && entry > 0 && mark > 0) {
+                        uPnl = side === 'Long' ? (mark - entry) * size / PRICE_SCALE : (entry - mark) * size / PRICE_SCALE;
+                    }
+                    totalUnrealizedPnl += uPnl;
+                });
+                const eq = (balances.mUSD?.available || 0) + totalMargin + totalUnrealizedPnl;
                 const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
                 el('marginEquity', formatVolume(eq));
                 el('marginUsed', formatVolume(totalMargin));
                 el('marginAvailable', formatVolume(eq - totalMargin));
                 return;
+            } else {
+                // No positions — show empty state
+                if (container) container.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;"><i class="fas fa-chart-line" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>No open positions</div>';
+                const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+                el('marginEquity', formatVolume(balances.mUSD?.available || 0));
+                el('marginUsed', '$0.00');
+                el('marginAvailable', formatVolume(balances.mUSD?.available || 0));
             }
         } catch { /* keep empty state */ }
     }
@@ -1911,37 +2181,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
         } catch { /* no history from API */ }
-    }
-
-    // Margin positions tab (bottom panel of Trade view)
-    async function loadPositionsTab() {
-        const container = document.getElementById('content-positions');
-        if (!container) return;
-        if (!state.connected) { container.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:30px;font-size:0.85rem;"><i class="fas fa-wallet" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>Connect wallet to view positions</div>'; return; }
-        try {
-            const { data } = await api.get(`/margin/positions?trader=${wallet.address}`);
-            if (Array.isArray(data) && data.length > 0) {
-                container.innerHTML = `<table class="orders-table"><thead><tr><th>Pair</th><th>Side</th><th>Size</th><th>Entry</th><th>Mark</th><th>P&L</th><th>Lev</th><th></th></tr></thead><tbody>${
-                    data.map(p => {
-                        const side = p.side === 'long' ? 'Long' : 'Short';
-                        // F10.12 FIX: Compute unrealized PnL from entry vs mark price
-                        const mark = p.markPrice || state.lastPrice;
-                        const entry = p.entryPrice || 0;
-                        const size = p.size || 0;
-                        let pnl;
-                        if (p.status === 'closed' || p.status === 'liquidated') {
-                            pnl = p.realizedPnl || 0;
-                        } else if (entry > 0 && mark > 0) {
-                            pnl = side === 'Long' ? (mark - entry) * size / PRICE_SCALE : (entry - mark) * size / PRICE_SCALE;
-                        } else {
-                            pnl = 0;
-                        }
-                        return `<tr><td>${escapeHtml(p.pair || state.activePair?.id || '')}</td><td class="side-${side.toLowerCase()}">${escapeHtml(side)}</td><td class="mono-value">${formatAmount((p.size || 0) / 1e9)}</td><td class="mono-value">${formatPrice(p.entryPrice || 0)}</td><td class="mono-value">${formatPrice(mark)}</td><td class="mono-value ${pnl >= 0 ? 'positive' : 'negative'}">${pnl >= 0 ? '+' : ''}${formatPrice(pnl)}</td><td>${p.leverage || '2'}x</td><td><button class="btn btn-small btn-secondary">Close</button></td></tr>`;
-                    }).join('')
-                }</tbody></table>`;
-                return;
-            }
-        } catch { /* no positions from API */ }
     }
 
     // Margin open position is now handled inline in the Trade view submit handler
@@ -2118,12 +2357,15 @@ document.addEventListener('DOMContentLoaded', () => {
                     bindVoteButtons();
                     // F14.10: Re-apply filter after DOM rebuild
                     applyGovernanceFilter();
+                    // Re-apply wallet gating on dynamically rendered vote buttons
+                    applyWalletGateAll();
                 }
                 return;
             }
         } catch { /* API unavailable — keep empty state */ }
         // Bind vote buttons on static content
         bindVoteButtons();
+        applyWalletGateAll();
     }
 
     function bindVoteButtons() {
@@ -2554,6 +2796,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
         // Re-bind event handlers for new cards
         bindPredictionCardEvents();
+        // Re-apply wallet gating on dynamically rendered prediction buttons
+        applyWalletGateAll();
 
         // Apply default selection highlight
         const selCard = document.querySelector(`.market-card[data-market-id="${predictState.selectedMarket}"]`);
@@ -2583,6 +2827,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Bind claim buttons in positions table
         tbody.querySelectorAll('.btn-predict-claim-pos').forEach(btn => btn.addEventListener('click', async (e) => {
             e.stopPropagation();
+            if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
             if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
             const mid = parseInt(btn.dataset.market);
             btn.disabled = true; btn.textContent = 'Claiming...';
@@ -2648,6 +2893,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // AUDIT-FIX F10.5: Resolve market button (creator only)
         document.querySelectorAll('.btn-predict-resolve').forEach(btn => btn.addEventListener('click', async (e) => {
             e.stopPropagation();
+            if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
             if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
             const mid = parseInt(btn.dataset.market);
             const m = predictState.markets.find(x => x.id === mid);
@@ -2669,6 +2915,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // F12.7 FIX: Use position's actual outcome, not default 0
         document.querySelectorAll('.btn-predict-claim').forEach(btn => btn.addEventListener('click', async (e) => {
             e.stopPropagation();
+            if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
             if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
             const mid = parseInt(btn.dataset.market);
             btn.disabled = true; btn.textContent = 'Claiming...';
@@ -3124,6 +3371,429 @@ document.addEventListener('DOMContentLoaded', () => {
     if (copyBtn) copyBtn.addEventListener('click', () => { const c = document.querySelector('.referral-link-box code'); if (c) navigator.clipboard.writeText(c.textContent).then(() => showNotification('Referral link copied!', 'success')); });
 
     // ═══════════════════════════════════════════════════════════════════════
+    // ClawPump Launchpad — Full token launch + bonding curve UI
+    // ═══════════════════════════════════════════════════════════════════════
+
+    const launchState = { tokens: [], selectedToken: null, tradeMode: 'buy', quoteTimer: null };
+
+    async function loadLaunchpadStats() {
+        try {
+            const { data } = await api.get('/launchpad/stats');
+            if (data) {
+                const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+                el('launchTokenCount', data.token_count || 0);
+                el('launchTotalRaised', formatVolume(parseFloat(data.fees_collected || 0) * 0.10)); // rough USD estimate
+                el('launchGraduated', data.total_graduated || 0);
+                el('launchFees', formatAmount(data.fees_collected || 0) + ' MOLT');
+            }
+        } catch { /* API unavailable */ }
+    }
+
+    async function loadLaunchpadTokens() {
+        const grid = document.getElementById('launchTokenGrid');
+        if (!grid) return;
+        try {
+            const activeFilter = document.querySelector('.filter-pill[data-lfilter].active');
+            const filter = activeFilter?.dataset.lfilter || 'active';
+            const sort = document.getElementById('launchSortSelect')?.value || 'newest';
+            const { data } = await api.get(`/launchpad/tokens?filter=${filter}&sort=${sort}&limit=50`);
+            if (data?.tokens?.length) {
+                launchState.tokens = data.tokens;
+                renderLaunchpadTokens();
+                return;
+            }
+        } catch { /* API unavailable */ }
+        // Empty state
+        launchState.tokens = [];
+        grid.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:40px;font-size:0.9rem;"><i class="fas fa-rocket" style="font-size:2rem;margin-bottom:12px;display:block;opacity:0.4;"></i><p>No tokens launched yet</p><p style="font-size:0.8rem;margin-top:8px;">Be the first to launch a token!</p></div>';
+    }
+
+    function renderLaunchpadTokens() {
+        const grid = document.getElementById('launchTokenGrid');
+        if (!grid) return;
+        if (!launchState.tokens.length) {
+            grid.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:40px;font-size:0.9rem;"><i class="fas fa-rocket" style="font-size:2rem;margin-bottom:12px;display:block;opacity:0.4;"></i><p>No tokens found</p></div>';
+            return;
+        }
+
+        grid.innerHTML = launchState.tokens.map(t => {
+            const gradPct = (t.graduation_pct || 0).toFixed(1);
+            const isGrad = t.graduated;
+            const priceStr = formatPrice(t.current_price || 0);
+            const raisedStr = formatAmount(t.molt_raised || 0);
+            const mcapStr = formatAmount(t.market_cap || 0);
+            const creatorShort = t.creator ? (t.creator.slice(0, 6) + '...' + t.creator.slice(-4)) : '—';
+            const selectedClass = launchState.selectedToken === t.id ? 'selected' : '';
+            return `<div class="launch-token-card ${selectedClass}" data-token-id="${t.id}">
+                <div class="ltc-header">
+                    <span class="ltc-name"><i class="fas fa-coins"></i> Token #${t.id}</span>
+                    <span class="ltc-badge ${isGrad ? 'graduated' : 'active'}">${isGrad ? 'Graduated' : 'Active'}</span>
+                </div>
+                <div class="ltc-creator"><i class="fas fa-user"></i> ${escapeHtml(creatorShort)}</div>
+                <div class="ltc-stats">
+                    <div class="ltc-stat"><span class="ltc-stat-label">Price</span><span class="ltc-stat-value mono-value">${priceStr} MOLT</span></div>
+                    <div class="ltc-stat"><span class="ltc-stat-label">Raised</span><span class="ltc-stat-value mono-value">${raisedStr} MOLT</span></div>
+                    <div class="ltc-stat"><span class="ltc-stat-label">MktCap</span><span class="ltc-stat-value mono-value">${mcapStr} MOLT</span></div>
+                </div>
+                <div class="ltc-grad-bar">
+                    <div class="ltc-grad-track"><div class="ltc-grad-fill" style="width:${gradPct}%"></div></div>
+                    <span class="ltc-grad-label">${gradPct}% to graduation</span>
+                </div>
+                ${!isGrad ? `<div class="ltc-actions">
+                    <button class="btn btn-small btn-buy launch-quick-buy" data-token-id="${t.id}"><i class="fas fa-arrow-up"></i> Buy</button>
+                    <button class="btn btn-small btn-sell launch-quick-sell" data-token-id="${t.id}"><i class="fas fa-arrow-down"></i> Sell</button>
+                </div>` : '<div class="ltc-actions"><span style="color:var(--accent);font-size:0.8rem;"><i class="fas fa-exchange-alt"></i> Trade on DEX</span></div>'}
+            </div>`;
+        }).join('');
+
+        bindLaunchTokenEvents();
+        applyWalletGateAll();
+    }
+
+    function bindLaunchTokenEvents() {
+        // Card click → select token
+        document.querySelectorAll('.launch-token-card').forEach(card => {
+            card.addEventListener('click', e => {
+                if (e.target.closest('button')) return;
+                selectLaunchToken(parseInt(card.dataset.tokenId));
+            });
+        });
+        // Quick buy/sell buttons
+        document.querySelectorAll('.launch-quick-buy').forEach(btn => btn.addEventListener('click', () => {
+            if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
+            selectLaunchToken(parseInt(btn.dataset.tokenId));
+            setLaunchSide('buy');
+        }));
+        document.querySelectorAll('.launch-quick-sell').forEach(btn => btn.addEventListener('click', () => {
+            if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
+            selectLaunchToken(parseInt(btn.dataset.tokenId));
+            setLaunchSide('sell');
+        }));
+    }
+
+    function selectLaunchToken(id) {
+        launchState.selectedToken = id;
+        const t = launchState.tokens.find(x => x.id === id);
+        // Update selection highlight
+        document.querySelectorAll('.launch-token-card').forEach(c => c.classList.toggle('selected', parseInt(c.dataset.tokenId) === id));
+        // Update sidebar
+        const titleEl = document.getElementById('launchChartTitle');
+        if (titleEl) titleEl.textContent = t ? `Token #${t.id} — Bonding Curve` : 'Bonding Curve';
+        const labelEl = document.getElementById('launchSelectedLabel');
+        if (labelEl) labelEl.innerHTML = t ? `<i class="fas fa-coins"></i> Token #${t.id} selected` : '<i class="fas fa-info-circle"></i> Select a token from the list';
+        updateLaunchSidebar(t);
+        if (t) drawBondingCurve(t);
+        updateLaunchQuote();
+        loadLaunchHoldings();
+    }
+
+    function updateLaunchSidebar(t) {
+        const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+        if (!t) {
+            el('launchCurrentPrice', '—'); el('launchMarketCap', '—');
+            el('launchMoltRaised', '—'); el('launchSupplySold', '—');
+            el('launchGradPct', '0%');
+            const fill = document.getElementById('launchGradFill');
+            if (fill) fill.style.width = '0%';
+            return;
+        }
+        el('launchCurrentPrice', formatPrice(t.current_price) + ' MOLT');
+        el('launchMarketCap', formatAmount(t.market_cap) + ' MOLT');
+        el('launchMoltRaised', formatAmount(t.molt_raised) + ' MOLT');
+        el('launchSupplySold', formatAmount(t.supply_sold));
+        const gradPct = (t.graduation_pct || 0).toFixed(1);
+        el('launchGradPct', gradPct + '%');
+        const fill = document.getElementById('launchGradFill');
+        if (fill) fill.style.width = gradPct + '%';
+    }
+
+    function drawBondingCurve(token) {
+        const canvas = document.getElementById('bondingCurveCanvas');
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        const dpr = window.devicePixelRatio || 1;
+        const W = canvas.clientWidth || 400;
+        const H = canvas.clientHeight || 200;
+        canvas.width = W * dpr;
+        canvas.height = H * dpr;
+        ctx.scale(dpr, dpr);
+        ctx.clearRect(0, 0, W, H);
+
+        // Bonding curve: price(s) = BASE_PRICE + s * SLOPE / SLOPE_SCALE
+        // In MOLT: price(s) = (1000 + s / 1e6) / 1e9
+        const BASE = 1000;
+        const supplySoldRaw = (token.supply_sold || 0) * 1e9; // convert back to raw
+        // Plot from 0 to 2x current supply (or min 1M if zero)
+        const maxPlotSupply = Math.max(supplySoldRaw * 2, 1e6);
+        const points = 100;
+        const pad = { top: 15, right: 55, bottom: 30, left: 12 };
+        const cW = W - pad.left - pad.right;
+        const cH = H - pad.top - pad.bottom;
+
+        // Generate price points
+        const data = [];
+        for (let i = 0; i <= points; i++) {
+            const s = (i / points) * maxPlotSupply;
+            const p = (BASE + s / 1e6) / 1e9;
+            data.push({ s, p });
+        }
+
+        const maxP = data[data.length - 1].p;
+        const minP = data[0].p;
+        const rangeP = maxP - minP || 1e-9;
+
+        const xPos = (s) => pad.left + (s / maxPlotSupply) * cW;
+        const yPos = (p) => pad.top + (1 - (p - minP) / rangeP) * cH;
+
+        // Grid lines
+        ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+        ctx.lineWidth = 1;
+        for (let i = 0; i <= 4; i++) {
+            const y = pad.top + (i / 4) * cH;
+            ctx.beginPath(); ctx.moveTo(pad.left, y); ctx.lineTo(W - pad.right, y); ctx.stroke();
+        }
+
+        // Draw curve
+        ctx.beginPath();
+        ctx.strokeStyle = 'var(--accent, #4ea8de)';
+        ctx.lineWidth = 2;
+        data.forEach((d, i) => {
+            const x = xPos(d.s), y = yPos(d.p);
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+
+        // Fill area under curve
+        ctx.lineTo(xPos(maxPlotSupply), yPos(minP));
+        ctx.lineTo(xPos(0), yPos(minP));
+        ctx.closePath();
+        const grad = ctx.createLinearGradient(0, pad.top, 0, H - pad.bottom);
+        grad.addColorStop(0, 'rgba(78,168,222,0.15)');
+        grad.addColorStop(1, 'rgba(78,168,222,0.01)');
+        ctx.fillStyle = grad;
+        ctx.fill();
+
+        // Current position marker
+        if (supplySoldRaw > 0) {
+            const cx = xPos(supplySoldRaw);
+            const cy = yPos((BASE + supplySoldRaw / 1e6) / 1e9);
+            ctx.beginPath();
+            ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+            ctx.fillStyle = '#10b981';
+            ctx.fill();
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+            // Label
+            ctx.fillStyle = '#10b981';
+            ctx.font = '10px Inter, sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText('You are here', cx, cy - 10);
+        }
+
+        // Y-axis labels
+        ctx.fillStyle = 'rgba(255,255,255,0.4)';
+        ctx.font = '9px JetBrains Mono, monospace';
+        ctx.textAlign = 'left';
+        for (let i = 0; i <= 4; i++) {
+            const p = minP + (1 - i / 4) * rangeP;
+            ctx.fillText(formatPrice(p), W - pad.right + 4, pad.top + (i / 4) * cH + 3);
+        }
+
+        // X-axis labels
+        ctx.textAlign = 'center';
+        ctx.fillText('0', pad.left, H - 8);
+        ctx.fillText(formatAmount(maxPlotSupply / 1e9), W - pad.right, H - 8);
+        ctx.fillText('Supply', pad.left + cW / 2, H - 8);
+    }
+
+    function setLaunchSide(side) {
+        launchState.tradeMode = side;
+        document.querySelectorAll('.launch-side-btn').forEach(b => b.classList.toggle('active', b.dataset.lside === side));
+        const amtLabel = document.getElementById('launchAmountLabel');
+        const amtUnit = document.getElementById('launchAmountUnit');
+        const tradeBtn = document.getElementById('launchTradeBtn');
+        if (side === 'buy') {
+            if (amtLabel) amtLabel.textContent = 'Amount (MOLT)';
+            if (amtUnit) amtUnit.textContent = 'MOLT';
+            if (tradeBtn) { tradeBtn.innerHTML = '<i class="fas fa-bolt"></i> Buy Tokens'; tradeBtn.className = 'btn btn-full btn-buy'; }
+        } else {
+            if (amtLabel) amtLabel.textContent = 'Amount (Tokens)';
+            if (amtUnit) amtUnit.textContent = 'TOKENS';
+            if (tradeBtn) { tradeBtn.innerHTML = '<i class="fas fa-bolt"></i> Sell Tokens'; tradeBtn.className = 'btn btn-full btn-sell'; }
+        }
+        updateLaunchQuote();
+    }
+
+    function updateLaunchQuote() {
+        const amt = parseFloat(document.getElementById('launchAmountInput')?.value) || 0;
+        const t = launchState.tokens.find(x => x.id === launchState.selectedToken);
+        const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+        if (!t || !amt) {
+            el('launchQuoteTokens', '—'); el('launchQuoteImpact', '—'); el('launchQuoteFee', '—');
+            return;
+        }
+        if (launchState.tradeMode === 'buy') {
+            // Client-side bonding curve estimate
+            const moltShells = amt * 1e9;
+            const afterFee = moltShells * 0.99;
+            const supplyRaw = (t.supply_sold || 0) * 1e9;
+            // Quadratic solve for tokens out (same as REST API)
+            const aCoeff = 1 / (2 * 1e6);
+            const bCoeff = 1000 + supplyRaw / 1e6;
+            const disc = bCoeff * bCoeff + 4 * aCoeff * afterFee;
+            const tokensOut = disc > 0 ? (-bCoeff + Math.sqrt(disc)) / (2 * aCoeff) : 0;
+            const tokensF = tokensOut / 1e9;
+            const priceBefore = (1000 + supplyRaw / 1e6) / 1e9;
+            const priceAfter = (1000 + (supplyRaw + tokensOut) / 1e6) / 1e9;
+            const impact = priceBefore > 0 ? ((priceAfter - priceBefore) / priceBefore * 100) : 0;
+            el('launchQuoteTokens', formatAmount(tokensF) + ' tokens');
+            el('launchQuoteImpact', impact.toFixed(2) + '%');
+            el('launchQuoteFee', formatAmount(amt * 0.01) + ' MOLT');
+        } else {
+            // Sell estimate
+            const tokenShells = amt * 1e9;
+            const supplyRaw = (t.supply_sold || 0) * 1e9;
+            if (tokenShells > supplyRaw) { el('launchQuoteTokens', 'Exceeds supply'); el('launchQuoteImpact', '—'); el('launchQuoteFee', '—'); return; }
+            // Sell refund: (BASE_PRICE * a + SLOPE * a * (2*s - a) / (2 * SLOPE_SCALE)) / norm
+            const a = tokenShells, s = supplyRaw;
+            const refundRaw = (1000 * a + 1 * a * (2 * s - a) / (2 * 1e6)) / 1e9;
+            const refundAfterFee = refundRaw * 0.99;
+            const priceBefore = (1000 + s / 1e6) / 1e9;
+            const priceAfter = (1000 + (s - a) / 1e6) / 1e9;
+            const impact = priceBefore > 0 ? ((priceAfter - priceBefore) / priceBefore * 100) : 0;
+            el('launchQuoteTokens', formatAmount(refundAfterFee) + ' MOLT');
+            el('launchQuoteImpact', impact.toFixed(2) + '%');
+            el('launchQuoteFee', formatAmount(refundRaw * 0.01) + ' MOLT');
+        }
+    }
+
+    let launchHoldingsSeq = 0;
+    async function loadLaunchHoldings() {
+        const seq = ++launchHoldingsSeq;
+        const list = document.getElementById('launchHoldingsList');
+        if (!list) return;
+        if (!state.connected || !wallet.address) {
+            list.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;"><i class="fas fa-wallet" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>Connect wallet to view holdings</div>';
+            return;
+        }
+        // Load balance for selected token (or all tokens)
+        const tokensToCheck = launchState.selectedToken ? [launchState.selectedToken] : launchState.tokens.map(t => t.id);
+        const holdings = [];
+        for (const tid of tokensToCheck.slice(0, 20)) {
+            if (seq !== launchHoldingsSeq) return; // stale — newer call superseded
+            try {
+                const { data } = await api.get(`/launchpad/tokens/${tid}/holders?address=${wallet.address}`);
+                if (data && data.balance > 0) {
+                    holdings.push({ id: tid, balance: data.balance });
+                }
+            } catch { /* skip */ }
+        }
+        if (seq !== launchHoldingsSeq) return; // stale
+        if (!holdings.length) {
+            list.innerHTML = '<div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;">No holdings found</div>';
+            return;
+        }
+        list.innerHTML = holdings.map(h => `<div class="launch-holding-row">
+            <span><i class="fas fa-coins"></i> Token #${h.id}</span>
+            <span class="mono-value">${formatAmount(h.balance)}</span>
+        </div>`).join('');
+    }
+
+    // ── Launchpad event bindings ──
+    // Side toggle
+    document.querySelectorAll('.launch-side-btn').forEach(btn => btn.addEventListener('click', () => setLaunchSide(btn.dataset.lside)));
+
+    // Filter pills
+    document.querySelectorAll('.filter-pill[data-lfilter]').forEach(pill => pill.addEventListener('click', () => {
+        document.querySelectorAll('.filter-pill[data-lfilter]').forEach(p => p.classList.remove('active'));
+        pill.classList.add('active');
+        loadLaunchpadTokens();
+    }));
+
+    // Sort select
+    const launchSortSel = document.getElementById('launchSortSelect');
+    if (launchSortSel) launchSortSel.addEventListener('change', () => loadLaunchpadTokens());
+
+    // Amount input → live quote
+    const launchAmtInput = document.getElementById('launchAmountInput');
+    if (launchAmtInput) launchAmtInput.addEventListener('input', () => {
+        clearTimeout(launchState.quoteTimer);
+        launchState.quoteTimer = setTimeout(updateLaunchQuote, 150);
+    });
+
+    // Presets
+    document.querySelectorAll('.launch-preset').forEach(btn => btn.addEventListener('click', () => {
+        const inp = document.getElementById('launchAmountInput');
+        if (inp) { inp.value = btn.dataset.lamount; updateLaunchQuote(); }
+    }));
+
+    // Trade button (Buy / Sell)
+    const launchTradeBtn = document.getElementById('launchTradeBtn');
+    if (launchTradeBtn) launchTradeBtn.addEventListener('click', async () => {
+        if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
+        if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
+        if (!contracts.clawpump) { showNotification('ClawPump contract not found in registry', 'error'); return; }
+        const tid = launchState.selectedToken;
+        if (!tid) { showNotification('Select a token first', 'warning'); return; }
+        const amt = parseFloat(document.getElementById('launchAmountInput')?.value) || 0;
+        if (amt <= 0) { showNotification('Enter a positive amount', 'warning'); return; }
+        if (amt > 9_000_000) { showNotification('Amount too large (max 9M)', 'warning'); return; }
+
+        launchTradeBtn.disabled = true;
+        const origText = launchTradeBtn.innerHTML;
+        launchTradeBtn.textContent = 'Submitting...';
+
+        try {
+            if (launchState.tradeMode === 'buy') {
+                const moltShells = Math.round(amt * 1e9);
+                await wallet.sendTransaction([namedCallIx(contracts.clawpump, 'buy', buildCPBuyArgs(wallet.address, tid, moltShells), moltShells)]);
+                showNotification(`Bought tokens on Token #${tid}!`, 'success');
+            } else {
+                const tokenShells = Math.round(amt * 1e9);
+                await wallet.sendTransaction([namedCallIx(contracts.clawpump, 'sell', buildCPSellArgs(wallet.address, tid, tokenShells))]);
+                showNotification(`Sold tokens on Token #${tid}!`, 'success');
+            }
+            // Refresh
+            await loadLaunchpadTokens();
+            await loadLaunchpadStats();
+            selectLaunchToken(tid);
+        } catch (e) {
+            showNotification(`Trade failed: ${e.message}`, 'error');
+        }
+        launchTradeBtn.disabled = false;
+        launchTradeBtn.innerHTML = origText;
+    });
+
+    // Create token button
+    const launchCreateBtn = document.getElementById('launchCreateBtn');
+    if (launchCreateBtn) launchCreateBtn.addEventListener('click', async () => {
+        if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
+        if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
+        if (!contracts.clawpump) { showNotification('ClawPump contract not found in registry', 'error'); return; }
+
+        // Check balance
+        const moltBal = balances['MOLT']?.available || 0;
+        if (moltBal < 10) { showNotification(`Insufficient MOLT: need 10, have ${formatAmount(moltBal)}`, 'warning'); return; }
+
+        launchCreateBtn.disabled = true;
+        launchCreateBtn.textContent = 'Launching...';
+        try {
+            const creationFee = 10_000_000_000; // 10 MOLT in shells
+            await wallet.sendTransaction([namedCallIx(contracts.clawpump, 'create_token', buildCPCreateTokenArgs(wallet.address), creationFee)]);
+            showNotification('Token launched! 🚀', 'success');
+            // Refresh
+            await loadLaunchpadStats();
+            await loadLaunchpadTokens();
+        } catch (e) {
+            showNotification(`Launch failed: ${e.message}`, 'error');
+        }
+        launchCreateBtn.disabled = false;
+        launchCreateBtn.innerHTML = '<i class="fas fa-rocket"></i> Launch Token (10 MOLT)';
+    });
+
+    // ═══════════════════════════════════════════════════════════════════════
     // Notifications + Formatting
     // ═══════════════════════════════════════════════════════════════════════
     function showNotification(msg, type = 'info') {
@@ -3143,7 +3813,11 @@ document.addEventListener('DOMContentLoaded', () => {
     // Polling fallback (when WS unavailable)
     // F17.2: Split into fast (5s) for trade/pool/margin/predict and slow (30s) for governance/rewards
     // ═══════════════════════════════════════════════════════════════════════
+    let pollFastRunning = false, pollSlowRunning = false, pollPredictRunning = false, pollPairsRunning = false;
     setInterval(async () => {
+        if (pollFastRunning) return;
+        pollFastRunning = true;
+        try {
         if (state.currentView === 'trade' && state.activePairId != null) {
             try {
                 await loadOrderBook();
@@ -3160,28 +3834,43 @@ document.addEventListener('DOMContentLoaded', () => {
         if (state.currentView === 'margin') {
             try { await loadMarginStats(); await loadMarginPositions(); } catch { /* API unavailable */ }
         }
+        } finally { pollFastRunning = false; }
     }, 5000);
 
-    // F17.2: Slow polling for low-frequency data (governance + rewards) — 30s
+    // F17.2: Slow polling for low-frequency data (governance + rewards + launchpad) — 30s
     setInterval(async () => {
+        if (pollSlowRunning) return;
+        pollSlowRunning = true;
+        try {
         if (state.currentView === 'rewards') {
             try { await loadRewardsStats(); } catch { /* API unavailable */ }
         }
         if (state.currentView === 'governance') {
             try { await loadGovernanceStats(); } catch { /* API unavailable */ }
         }
+        if (state.currentView === 'launchpad') {
+            try { await loadLaunchpadStats(); await loadLaunchpadTokens(); } catch { /* API unavailable */ }
+        }
+        } finally { pollSlowRunning = false; }
     }, 30000);
 
     // Prediction market refresh (slower interval for full market list)
     setInterval(async () => {
+        if (pollPredictRunning) return;
+        pollPredictRunning = true;
+        try {
         if (state.currentView === 'predict') {
             try { await loadPredictionMarkets(); loadPredictionPositions(); loadCreatedMarkets(); } catch { /* API unavailable */ }
         }
+        } finally { pollPredictRunning = false; }
     }, 15000);
 
     // F1 fix: Refresh ALL pair prices every 10s so dropdown stays current
     // Each pair gets its own ticker fetch to update price + change
     setInterval(async () => {
+        if (pollPairsRunning) return;
+        pollPairsRunning = true;
+        try {
         for (const p of pairs) {
             try {
                 const t = await loadTicker(p.pairId);
@@ -3189,6 +3878,7 @@ document.addEventListener('DOMContentLoaded', () => {
             } catch { /* API unavailable for this pair */ }
         }
         renderPairList();
+        } finally { pollPairsRunning = false; }
     }, 10000);
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -3201,7 +3891,7 @@ document.addEventListener('DOMContentLoaded', () => {
         loadMarginEnabledPairs(); // async, non-blocking
         renderPairList(); renderBalances(); renderOpenOrders(); updateSubmitBtn();
         applyWalletGateAll(); // F10E.1: Apply wallet-gate to all forms on load
-        loadTradeHistory(); loadPositionsTab();
+        loadTradeHistory(); loadMarginStats(); loadMarginPositions();
         if (state.activePair) {
             if (pairActive) pairActive.querySelector('.pair-name').textContent = state.activePair.id;
             updatePairStats(state.activePair); updateTickerDisplay(); updateMarginInfo();
@@ -3228,14 +3918,14 @@ document.addEventListener('DOMContentLoaded', () => {
             wallet.address = l.address;
             const shortAddr = l.short || l.address.slice(0, 8) + '...';
             if (connectBtn) {
-                connectBtn.innerHTML = `<i class="fas fa-wallet"></i> ${shortAddr} <span style="font-size:0.65rem;opacity:0.7;margin-left:4px;">(view only)</span>`;
+                connectBtn.innerHTML = `<i class="fas fa-wallet"></i> ${escapeHtml(shortAddr)} <span style="font-size:0.65rem;opacity:0.7;margin-left:4px;">(view only)</span>`;
                 connectBtn.className = 'btn btn-small btn-secondary';
                 connectBtn.title = 'View-only mode — click to import keypair for signing';
             }
             toggleWalletPanels(true);
             applyWalletGateAll(); // F10E.1: Re-apply wallet-gate after auto-connect
             try { await loadBalances(l.address); await loadUserOrders(l.address); } catch { /* API unavailable */ }
-            renderBalances(); renderOpenOrders(); loadTradeHistory(); loadPositionsTab();
+            renderBalances(); renderOpenOrders(); loadTradeHistory(); loadMarginStats(); loadMarginPositions();
             if (dexWs && state.activePairId != null) subscribePair(state.activePairId);
         }
     })().catch(e => console.error('[DEX] Init error:', e));

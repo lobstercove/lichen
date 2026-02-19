@@ -28,6 +28,7 @@
                 <li><a href="#" class="nav-link active" data-view="trade">Trade</a></li>
                 <li><a href="#" class="nav-link" data-view="predict">Predict</a></li>
                 <li><a href="#" class="nav-link" data-view="pool">Pool</a></li>
+                <li><a href="#" class="nav-link" data-view="launchpad">Launch</a></li>
                 <li><a href="#" class="nav-link" data-view="rewards">Rewards</a></li>
                 <li><a href="#" class="nav-link" data-view="governance">Governance</a></li>
             </ul>
@@ -263,8 +264,7 @@
                 <div class="positions-tabs">
                     <button class="pos-tab active" data-target="content-orders">Open Orders <span class="badge orders-badge"></span></button>
                     <button class="pos-tab" data-target="content-history">Trade History</button>
-                    <button class="pos-tab" data-target="content-positions">Positions</button>
-                    <button class="pos-tab" data-target="content-margin-positions">Margin <span class="badge margin-badge"></span></button>
+                    <button class="pos-tab" data-target="content-positions">Positions <span class="badge margin-badge"></span></button>
                 </div>
                 <div class="positions-content" id="content-orders">
                     <table class="orders-table">
@@ -292,13 +292,7 @@
                     </div>
                 </div>
                 <div class="positions-content hidden" id="content-positions">
-                    <div style="text-align:center;color:var(--text-muted);padding:30px;font-size:0.85rem;">
-                        <i class="fas fa-wallet" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
-                        Connect wallet to view positions
-                    </div>
-                </div>
-                <div class="positions-content hidden" id="content-margin-positions">
-                    <div class="margin-positions-stats" id="marginStatsStrip" style="display:flex;gap:16px;padding:8px 12px;font-size:0.8rem;border-bottom:1px solid var(--border);margin-bottom:8px;">
+                    <div class="margin-positions-stats" id="marginStatsStrip" style="display:flex;gap:16px;padding:8px 12px;font-size:0.8rem;border-bottom:1px solid var(--border);margin-bottom:8px;flex-wrap:wrap;">
                         <span>Equity: <strong id="marginEquity">—</strong></span>
                         <span>Used: <strong id="marginUsed">—</strong></span>
                         <span>Available: <strong id="marginAvailable">—</strong></span>
@@ -306,7 +300,7 @@
                     </div>
                     <div id="marginPositionsList" style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;">
                         <i class="fas fa-chart-line" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
-                        No open margin positions
+                        No open positions
                     </div>
                 </div>
             </div>
@@ -1114,6 +1108,197 @@
                         </div>
 
                         <button class="btn btn-full btn-buy" id="submitProposalBtn"><i class="fas fa-paper-plane"></i> Submit Proposal</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- ═══════════════════ LAUNCHPAD VIEW ═══════════════════ -->
+    <main class="dex-main hidden" id="view-launchpad">
+        <div class="launch-layout">
+            <!-- Header Bar -->
+            <div class="page-top-bar">
+                <div class="page-header-bar">
+                    <div class="page-header-left">
+                        <h2><i class="fas fa-rocket"></i> ClawPump Launchpad</h2>
+                        <span class="page-subtitle">Bonding curve token launches · Auto-graduation to DEX · 1% platform fee</span>
+                    </div>
+                    <div class="page-header-pills">
+                        <span class="info-pill"><i class="fas fa-coins"></i> 10 MOLT to launch</span>
+                        <span class="info-pill"><i class="fas fa-chart-line"></i> Linear bonding curve</span>
+                        <span class="info-pill"><i class="fas fa-trophy"></i> Graduates at 1M MOLT mcap</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Stats Row -->
+            <div class="launch-stats-row">
+                <div class="pool-stat-card">
+                    <div class="stat-icon-wrap accent-icon"><i class="fas fa-rocket"></i></div>
+                    <div class="pool-stat-label">Tokens Launched</div>
+                    <div class="pool-stat-value" id="launchTokenCount">0</div>
+                </div>
+                <div class="pool-stat-card">
+                    <div class="stat-icon-wrap"><i class="fas fa-hand-holding-usd"></i></div>
+                    <div class="pool-stat-label">Total Raised</div>
+                    <div class="pool-stat-value" id="launchTotalRaised">$0</div>
+                </div>
+                <div class="pool-stat-card">
+                    <div class="stat-icon-wrap"><i class="fas fa-graduation-cap"></i></div>
+                    <div class="pool-stat-label">Graduated</div>
+                    <div class="pool-stat-value" id="launchGraduated">0</div>
+                    <div class="stat-sub">Migrated to DEX</div>
+                </div>
+                <div class="pool-stat-card">
+                    <div class="stat-icon-wrap"><i class="fas fa-percentage"></i></div>
+                    <div class="pool-stat-label">Platform Fees</div>
+                    <div class="pool-stat-value" id="launchFees">0 MOLT</div>
+                </div>
+            </div>
+
+            <!-- 2-Column Grid: Token List + Trade/Create Panel -->
+            <div class="launch-grid">
+                <!-- LEFT: Token List -->
+                <div class="launch-tokens-section">
+                    <div class="panel-card">
+                        <div class="panel-header">
+                            <h3>Launched Tokens</h3>
+                            <div class="panel-header-actions">
+                                <button class="filter-pill active" data-lfilter="active">Active</button>
+                                <button class="filter-pill" data-lfilter="graduated">Graduated</button>
+                                <button class="filter-pill" data-lfilter="all">All</button>
+                                <select class="sort-select" id="launchSortSelect">
+                                    <option value="newest">Newest</option>
+                                    <option value="raised">Most Raised</option>
+                                    <option value="graduation">Near Graduation</option>
+                                    <option value="price">Highest Price</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="launch-token-grid" id="launchTokenGrid">
+                            <div style="text-align:center;color:var(--text-muted);padding:40px;font-size:0.9rem;">
+                                <i class="fas fa-rocket" style="font-size:2rem;margin-bottom:12px;display:block;opacity:0.4;"></i>
+                                <p>No tokens launched yet</p>
+                                <p style="font-size:0.8rem;margin-top:8px;">Be the first to launch a token!</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- RIGHT: Trade + Create Panel -->
+                <div class="launch-sidebar">
+                    <!-- Bonding Curve Chart -->
+                    <div class="panel-card launch-chart-panel">
+                        <div class="panel-header">
+                            <h3 id="launchChartTitle">Bonding Curve</h3>
+                        </div>
+                        <div class="launch-chart-wrap">
+                            <canvas id="bondingCurveCanvas" width="400" height="200"></canvas>
+                        </div>
+                        <div class="launch-token-stats" id="launchTokenStats">
+                            <div class="launch-stat-row">
+                                <span>Current Price</span>
+                                <span class="mono-value" id="launchCurrentPrice">—</span>
+                            </div>
+                            <div class="launch-stat-row">
+                                <span>Market Cap</span>
+                                <span class="mono-value" id="launchMarketCap">—</span>
+                            </div>
+                            <div class="launch-stat-row">
+                                <span>MOLT Raised</span>
+                                <span class="mono-value" id="launchMoltRaised">—</span>
+                            </div>
+                            <div class="launch-stat-row">
+                                <span>Supply Sold</span>
+                                <span class="mono-value" id="launchSupplySold">—</span>
+                            </div>
+                            <div class="launch-graduation-bar">
+                                <div class="launch-grad-label">
+                                    <span>Graduation Progress</span>
+                                    <span class="mono-value" id="launchGradPct">0%</span>
+                                </div>
+                                <div class="launch-grad-track">
+                                    <div class="launch-grad-fill" id="launchGradFill" style="width:0%"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Buy / Sell Panel -->
+                    <div class="panel-card launch-trade-panel">
+                        <div class="panel-header">
+                            <h3>Trade</h3>
+                            <div class="launch-trade-toggle">
+                                <button class="launch-side-btn active" data-lside="buy">Buy</button>
+                                <button class="launch-side-btn" data-lside="sell">Sell</button>
+                            </div>
+                        </div>
+                        <div class="launch-trade-form" id="launchTradeForm">
+                            <div class="launch-selected-token" id="launchSelectedLabel">
+                                <i class="fas fa-info-circle"></i> Select a token from the list
+                            </div>
+                            <div class="form-group">
+                                <label id="launchAmountLabel">Amount (MOLT)</label>
+                                <div class="input-with-unit">
+                                    <input type="number" id="launchAmountInput" placeholder="0.00" min="0" step="any">
+                                    <span class="input-unit" id="launchAmountUnit">MOLT</span>
+                                </div>
+                                <div class="launch-presets">
+                                    <button class="btn btn-small launch-preset" data-lamount="1">1</button>
+                                    <button class="btn btn-small launch-preset" data-lamount="10">10</button>
+                                    <button class="btn btn-small launch-preset" data-lamount="100">100</button>
+                                    <button class="btn btn-small launch-preset" data-lamount="1000">1K</button>
+                                </div>
+                            </div>
+                            <div class="launch-quote-preview" id="launchQuotePreview">
+                                <div class="launch-stat-row">
+                                    <span>You receive</span>
+                                    <span class="mono-value" id="launchQuoteTokens">—</span>
+                                </div>
+                                <div class="launch-stat-row">
+                                    <span>Price impact</span>
+                                    <span class="mono-value" id="launchQuoteImpact">—</span>
+                                </div>
+                                <div class="launch-stat-row">
+                                    <span>Fee (1%)</span>
+                                    <span class="mono-value" id="launchQuoteFee">—</span>
+                                </div>
+                            </div>
+                            <button class="btn btn-full btn-buy" id="launchTradeBtn">
+                                <i class="fas fa-bolt"></i> Buy Tokens
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Create Token Panel -->
+                    <div class="panel-card launch-create-panel">
+                        <div class="panel-header">
+                            <h3><i class="fas fa-plus-circle"></i> Launch New Token</h3>
+                        </div>
+                        <div class="launch-create-info">
+                            <p>Create your own bonding-curve token on MoltChain. Price starts near zero and increases with each buy. At 1M MOLT market cap, the token automatically graduates to the DEX with full liquidity.</p>
+                            <div class="launch-create-cost">
+                                <span>Creation Fee</span>
+                                <span class="mono-value">10 MOLT</span>
+                            </div>
+                        </div>
+                        <button class="btn btn-full btn-primary" id="launchCreateBtn">
+                            <i class="fas fa-rocket"></i> Launch Token (10 MOLT)
+                        </button>
+                    </div>
+
+                    <!-- Your Holdings -->
+                    <div class="panel-card launch-holdings-panel">
+                        <div class="panel-header">
+                            <h3><i class="fas fa-wallet"></i> Your Holdings</h3>
+                        </div>
+                        <div class="launch-holdings-list" id="launchHoldingsList">
+                            <div style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;">
+                                <i class="fas fa-wallet" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
+                                Connect wallet to view holdings
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
