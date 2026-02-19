@@ -799,10 +799,6 @@ fn reset_24h_stats_if_expired(state: &StateStore) {
     }
 }
 
-        debug!("📊 24h stats reset for pair {} (window expired)", pair_id);
-    }
-}
-
 // ============================================================================
 // STOP-LOSS / TAKE-PROFIT TRIGGER ENGINE
 // ============================================================================
