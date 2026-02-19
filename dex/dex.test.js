@@ -3675,6 +3675,210 @@ const rpcLibPath = '/Users/johnrobin/.openclaw/workspace/moltchain/rpc/src/lib.r
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Phase 21: SDK & Market Maker Integration
+// ═══════════════════════════════════════════════════════════════════════════
+
+const orderbookTsPath = '/Users/johnrobin/.openclaw/workspace/moltchain/dex/sdk/src/orderbook.ts';
+const ammTsPath = '/Users/johnrobin/.openclaw/workspace/moltchain/dex/sdk/src/amm.ts';
+const sdkConnectionPath = '/Users/johnrobin/.openclaw/workspace/moltchain/sdk/js/src/connection.ts';
+const sdkClientPath = '/Users/johnrobin/.openclaw/workspace/moltchain/dex/sdk/src/client.ts';
+const mmIndexPath = '/Users/johnrobin/.openclaw/workspace/moltchain/dex/market-maker/src/index.ts';
+const mmSpreadPath = '/Users/johnrobin/.openclaw/workspace/moltchain/dex/market-maker/src/strategies/spread.ts';
+const mmConfigPath = '/Users/johnrobin/.openclaw/workspace/moltchain/dex/market-maker/src/config.ts';
+const sdkTypesPath = '/Users/johnrobin/.openclaw/workspace/moltchain/dex/sdk/src/types.ts';
+const sdkWebsocketPath = '/Users/johnrobin/.openclaw/workspace/moltchain/dex/sdk/src/websocket.ts';
+const sdkTransactionPath = '/Users/johnrobin/.openclaw/workspace/moltchain/sdk/js/src/transaction.ts';
+
+// P21.1: SDK connection.ts — res.ok check (F21.1b)
+{
+    const src = fs.readFileSync(sdkConnectionPath, 'utf8');
+    assert(src.includes('if (!response.ok)'), 'P21.1a: SDK connection rpc() checks res.ok');
+    assert(src.includes('RPC HTTP'), 'P21.1b: SDK connection rpc() includes status in error');
+    assert(src.includes('response.text()'), 'P21.1c: SDK connection rpc() reads status text on error');
+}
+
+// P21.2: SDK orderbook encodePlaceOrder — correct opcode & layout (F21.2a/b)
+{
+    const src = fs.readFileSync(orderbookTsPath, 'utf8');
+    assert(src.includes('buf[0] = 0x02; // place_order opcode'), 'P21.2a: encodePlaceOrder uses opcode 0x02');
+    assert(!src.includes('buf[0] = 0x03; // place_order'), 'P21.2b: encodePlaceOrder no longer uses wrong opcode 0x03');
+    assert(src.includes('new Uint8Array(67)'), 'P21.2c: encodePlaceOrder buffer is 67 bytes (includes trader pubkey)');
+    assert(src.includes('trader: Uint8Array'), 'P21.2d: encodePlaceOrder accepts trader parameter');
+    assert(src.includes('buf.set(trader.subarray(0, 32), 1)'), 'P21.2e: encodePlaceOrder writes trader pubkey at offset 1');
+    // Verify field offsets match frontend
+    assert(src.includes('view.setBigUint64(33, BigInt(pairId)'), 'P21.2f: pair_id at offset 33 (after opcode+trader)');
+    assert(src.includes('buf[41] = params.side'), 'P21.2g: side at offset 41');
+    assert(src.includes('buf[42] = params.orderType'), 'P21.2h: orderType at offset 42');
+    assert(src.includes('view.setBigUint64(43,'), 'P21.2i: price at offset 43');
+    assert(src.includes('view.setBigUint64(51,'), 'P21.2j: quantity at offset 51');
+    assert(src.includes('view.setBigUint64(59,'), 'P21.2k: expiry at offset 59');
+}
+
+// P21.2l: SDK orderbook encodeCancelOrder — correct opcode & layout (F21.2c)
+{
+    const src = fs.readFileSync(orderbookTsPath, 'utf8');
+    assert(src.includes('buf[0] = 0x03; // cancel_order opcode'), 'P21.2l: encodeCancelOrder uses opcode 0x03');
+    assert(!src.includes('buf[0] = 0x04; // cancel_order'), 'P21.2m: encodeCancelOrder no longer uses wrong opcode 0x04');
+    assert(src.includes('new Uint8Array(41)'), 'P21.2n: encodeCancelOrder buffer is 41 bytes (includes trader pubkey)');
+    assert(src.includes('trader: Uint8Array, orderId: number'), 'P21.2o: encodeCancelOrder accepts trader parameter');
+    assert(src.includes('view.setBigUint64(33, BigInt(orderId)'), 'P21.2p: order_id at offset 33 (after opcode+trader)');
+}
+
+// P21.3: SDK amm encodeAddLiquidity — correct layout with provider (F21.3a)
+{
+    const src = fs.readFileSync(ammTsPath, 'utf8');
+    assert(src.includes('provider: Uint8Array,'), 'P21.3a: encodeAddLiquidity accepts provider parameter');
+    assert(src.includes('new Uint8Array(65)'), 'P21.3b: encodeAddLiquidity buffer is 65 bytes');
+    assert(src.includes('buf.set(provider.subarray(0, 32), 1)'), 'P21.3c: encodeAddLiquidity writes provider at offset 1');
+    assert(src.includes('view.setBigUint64(33, BigInt(poolId)'), 'P21.3d: pool_id at offset 33');
+    assert(src.includes('view.setInt32(41, lowerTick'), 'P21.3e: lowerTick at offset 41');
+    assert(src.includes('view.setInt32(45, upperTick'), 'P21.3f: upperTick at offset 45');
+    assert(src.includes('view.setBigUint64(49, amountA'), 'P21.3g: amountA at offset 49');
+    assert(src.includes('view.setBigUint64(57, amountB'), 'P21.3h: amountB at offset 57');
+    assert(src.includes('amountA: bigint') && src.includes('amountB: bigint'), 'P21.3i: both amounts are bigint params');
+}
+
+// P21.3j: SDK amm encodeRemoveLiquidity — correct layout with provider (F21.3b)
+{
+    const src = fs.readFileSync(ammTsPath, 'utf8');
+    assert(src.includes('provider: Uint8Array, positionId: number, liquidityAmount: bigint'), 'P21.3j: encodeRemoveLiquidity has all params');
+    assert(src.includes('new Uint8Array(49)'), 'P21.3k: encodeRemoveLiquidity buffer is 49 bytes');
+    assert(src.includes('view.setBigUint64(33, BigInt(positionId)'), 'P21.3l: position_id at offset 33');
+    assert(src.includes('view.setBigUint64(41, liquidityAmount'), 'P21.3m: liquidityAmount at offset 41');
+}
+
+// P21.4: Market maker wallet configuration (F21.4b)
+{
+    const src = fs.readFileSync(mmIndexPath, 'utf8');
+    assert(src.includes('loadWallet'), 'P21.4a: market maker loads wallet from file');
+    assert(src.includes('walletPath'), 'P21.4b: market maker uses wallet path from config');
+    assert(src.includes('wallet,'), 'P21.4c: wallet passed to MoltDEX constructor');
+    assert(src.includes('MM_WALLET_PATH'), 'P21.4d: wallet path configurable via env var');
+}
+{
+    const src = fs.readFileSync(mmConfigPath, 'utf8');
+    assert(src.includes('walletPath: string'), 'P21.4e: BotConfig includes walletPath field');
+    assert(src.includes("walletPath: process.env.MM_WALLET_PATH || './mm-keypair.json'"), 'P21.4f: walletPath has default value');
+}
+
+// P21.5: Market maker connects to correct endpoints
+{
+    const src = fs.readFileSync(mmIndexPath, 'utf8');
+    assert(src.includes('config.endpoint'), 'P21.5a: MM uses config endpoint');
+    assert(src.includes('config.wsEndpoint'), 'P21.5b: MM uses config WS endpoint');
+}
+
+// P21.6: Market maker places orders via SDK client
+{
+    const src = fs.readFileSync(mmSpreadPath, 'utf8');
+    assert(src.includes('dex.placeLimitOrder'), 'P21.6a: spread strategy places limit orders via SDK');
+    assert(src.includes("side: 'buy'") && src.includes("side: 'sell'"), 'P21.6b: both buy and sell orders placed');
+}
+
+// P21.7: Market maker WS subscription fixed (F21.7a)
+{
+    const src = fs.readFileSync(mmSpreadPath, 'utf8');
+    assert(src.includes('`orders:${this.traderAddress}`'), 'P21.7a: WS subscribes to orders:<traderAddress> not orders:mm');
+    assert(!src.includes("orders:mm"), 'P21.7b: no reference to invalid orders:mm channel');
+    assert(src.includes('private traderAddress: string'), 'P21.7c: traderAddress field declared');
+    assert(src.includes('this.traderAddress = dex.getAddress()'), 'P21.7d: traderAddress set from wallet in constructor');
+}
+
+// P21.7e: Market maker handles fills and tracks net position
+{
+    const src = fs.readFileSync(mmSpreadPath, 'utf8');
+    assert(src.includes('this.netPosition +='), 'P21.7e: net position updated on fill');
+    assert(src.includes('calculateSkewAdjustment'), 'P21.7f: skew adjustment affects quotes');
+}
+
+// P21.8: WebSocket manager has proper channels documented
+{
+    const src = fs.readFileSync(sdkWebsocketPath, 'utf8');
+    assert(src.includes('orderbook:<pairId>'), 'P21.8a: WS docs list orderbook channel');
+    assert(src.includes('trades:<pairId>'), 'P21.8b: WS docs list trades channel');
+    assert(src.includes('orders:<traderAddr>'), 'P21.8c: WS docs list orders channel');
+    assert(src.includes('positions:<traderAddr>'), 'P21.8d: WS docs list positions channel');
+    assert(src.includes('scheduleReconnect'), 'P21.8e: WS has auto-reconnect logic');
+}
+
+// P21.9: SDK client error handling (F21.9c/F21.9d)
+{
+    const src = fs.readFileSync(sdkClientPath, 'utf8');
+    // F21.9c: rpc() no longer double-unwraps
+    assert(!src.includes("this.post<{ result?: any"), 'P21.9a: rpc() no longer uses this.post (double-unwrap fixed)');
+    assert(src.includes("const json = await res.json()"), 'P21.9b: rpc() parses JSON directly');
+    assert(src.includes("json.error"), 'P21.9c: rpc() checks json.error');
+    assert(src.includes("json.result"), 'P21.9d: rpc() returns json.result');
+    // F21.9d: input validation
+    assert(src.includes("price must be a positive number"), 'P21.9e: placeLimitOrder validates price > 0');
+    assert(src.includes("quantity must be a positive number"), 'P21.9f: placeLimitOrder validates quantity > 0');
+    assert(src.includes('side must be'), 'P21.9g: placeLimitOrder validates side');
+    // Timeout in rpc()
+    assert(src.includes('AbortController'), 'P21.9h: rpc() uses AbortController for timeout');
+    assert(src.includes('controller.abort()'), 'P21.9i: rpc() aborts on timeout');
+}
+
+// P21.9j: SDK client HTTP request has res.ok check
+{
+    const src = fs.readFileSync(sdkClientPath, 'utf8');
+    assert(src.includes('if (!res.ok)'), 'P21.9j: client request() checks res.ok');
+    assert(src.includes('HTTP ${res.status}'), 'P21.9k: client reports HTTP status code');
+}
+
+// P21.10: SDK types match RPC response formats
+{
+    const src = fs.readFileSync(sdkTypesPath, 'utf8');
+    assert(src.includes("type Side = 'buy' | 'sell'"), 'P21.10a: Side type matches contract convention');
+    assert(src.includes("type OrderType = 'limit' | 'market' | 'stop-limit' | 'post-only'"), 'P21.10b: OrderType matches contract');
+    assert(src.includes("type OrderStatus = 'open' | 'partial' | 'filled' | 'cancelled' | 'expired'"), 'P21.10c: OrderStatus matches contract');
+    assert(src.includes('pairId: number'), 'P21.10d: TradingPair has pairId');
+    assert(src.includes('orderId: number'), 'P21.10e: Order has orderId');
+    assert(src.includes('poolId: number'), 'P21.10f: Pool has poolId');
+    assert(src.includes("interface ApiResponse<T>"), 'P21.10g: ApiResponse envelope matches backend');
+    assert(src.includes("success: boolean"), 'P21.10h: ApiResponse has success field');
+}
+
+// P21.10i: SDK orderbook decodeOrder matches layout
+{
+    const src = fs.readFileSync(orderbookTsPath, 'utf8');
+    assert(src.includes('const ORDER_SIZE = 128'), 'P21.10i: ORDER_SIZE = 128 bytes');
+    assert(src.includes("buf.slice(0, 32)"), 'P21.10j: decodeOrder reads trader from bytes 0-32');
+    assert(src.includes("getBigUint64(32"), 'P21.10k: decodeOrder reads pairId from offset 32');
+    assert(src.includes("buf[40]"), 'P21.10l: decodeOrder reads side from byte 40');
+    assert(src.includes("buf[41]"), 'P21.10m: decodeOrder reads orderType from byte 41');
+    assert(src.includes("getBigUint64(83"), 'P21.10n: decodeOrder reads orderId from offset 83');
+}
+
+// P21.10o: SDK amm decodePool matches layout
+{
+    const src = fs.readFileSync(ammTsPath, 'utf8');
+    assert(src.includes('const POOL_SIZE = 96'), 'P21.10o: POOL_SIZE = 96 bytes');
+    assert(src.includes("getBigUint64(64"), 'P21.10p: decodePool reads poolId from offset 64');
+    assert(src.includes("getBigUint64(72"), 'P21.10q: decodePool reads sqrtPrice from offset 72');
+    assert(src.includes("getInt32(80"), 'P21.10r: decodePool reads tick from offset 80');
+    assert(src.includes("getBigUint64(84"), 'P21.10s: decodePool reads liquidity from offset 84');
+}
+
+// P21 cross-check: SDK opcodes match frontend opcodes exactly
+{
+    const feJs = fs.readFileSync(dexJsPath, 'utf8');
+    const sdkOb = fs.readFileSync(orderbookTsPath, 'utf8');
+    const sdkAmm = fs.readFileSync(ammTsPath, 'utf8');
+    // Frontend place_order opcode = 2
+    assert(feJs.includes('writeU8(arr, 0, 2); // opcode'), 'P21.Xa: frontend place_order opcode is 2');
+    assert(sdkOb.includes('buf[0] = 0x02; // place_order'), 'P21.Xb: SDK place_order opcode is 0x02');
+    // Frontend cancel_order opcode = 3
+    assert(feJs.includes('writeU8(arr, 0, 3); // opcode'), 'P21.Xc: frontend cancel_order opcode is 3');
+    assert(sdkOb.includes('buf[0] = 0x03; // cancel_order'), 'P21.Xd: SDK cancel_order opcode is 0x03');
+    // Frontend add_liquidity is 65 bytes; SDK add_liquidity is 65 bytes
+    assert(feJs.includes('new ArrayBuffer(65)'), 'P21.Xe: frontend addLiquidity buffer is 65 bytes');
+    assert(sdkAmm.includes('new Uint8Array(65)'), 'P21.Xf: SDK addLiquidity buffer is 65 bytes');
+    // Frontend remove_liquidity is 49 bytes; SDK remove_liquidity is 49 bytes
+    assert(feJs.includes('new ArrayBuffer(49)'), 'P21.Xg: frontend removeLiquidity buffer is 49 bytes');
+    assert(sdkAmm.includes('new Uint8Array(49)'), 'P21.Xh: SDK removeLiquidity buffer is 49 bytes');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Summary
 // ═══════════════════════════════════════════════════════════════════════════
 console.log(`\n${'═'.repeat(60)}`);

@@ -124,6 +124,11 @@ export class Connection {
       }),
     });
 
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      throw new Error(`RPC HTTP ${response.status}: ${text}`);
+    }
+
     const data: any = await response.json();
     
     if (data.error) {

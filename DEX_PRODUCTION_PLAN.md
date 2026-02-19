@@ -89,11 +89,11 @@
 | 18 | Analytics Contract Wiring | 10/10 | 7 | `[x]` |
 | 19 | Token Contracts & Balances | 12/12 | 9 | `[x]` |
 | 20 | Error Handling & Edge Cases | 14/14 | 8 | `[x]` |
-| 21 | SDK & Market Maker Integration | 0/10 | 0 | `[ ]` |
+| 21 | SDK & Market Maker Integration | 10/10 | 10 | `[x]` |
 | 22 | Security & Input Validation | 0/14 | 0 | `[ ]` |
 | 23 | Mobile / Responsive Layout | 0/8 | 0 | `[ ]` |
 | 24 | End-to-End Integration Tests | 0/12 | 0 | `[ ]` |
-| — | **TOTAL** | **272/314** | **177** | **87%** |
+| — | **TOTAL** | **282/314** | **187** | **90%** |
 
 ---
 
@@ -785,19 +785,28 @@
 
 | # | Task | Status |
 |---|---|---|
-| 21.1 | Read JS SDK (`sdk/js/src/`) — verify transaction building matches frontend's `sendTransaction` | `[ ]` |
-| 21.2 | Verify SDK `placeOrder()` function sends correct instruction to `dex_core` | `[ ]` |
-| 21.3 | Verify SDK `addLiquidity()` function sends correct instruction to `dex_amm` | `[ ]` |
-| 21.4 | Read market maker bot (`dex/market-maker/`) — verify it creates real orders with proper spread | `[ ]` |
-| 21.5 | Verify market maker connects to correct RPC and uses correct contract addresses | `[ ]` |
-| 21.6 | Test: run market maker → verify orders appear in orderbook | `[ ]` |
-| 21.7 | Verify market maker handles order fills and rebalances | `[ ]` |
-| 21.8 | Read load test harness (`dex/loadtest/`) — verify it tests real contract execution | `[ ]` |
-| 21.9 | Verify SDK error handling: invalid params, network errors, tx failures | `[ ]` |
-| 21.10 | Verify SDK types match RPC response formats | `[ ]` |
+| 21.1 | Read JS SDK (`sdk/js/src/`) — verify transaction building matches frontend's `sendTransaction` | `[x]` |
+| 21.2 | Verify SDK `placeOrder()` function sends correct instruction to `dex_core` | `[x]` |
+| 21.3 | Verify SDK `addLiquidity()` function sends correct instruction to `dex_amm` | `[x]` |
+| 21.4 | Read market maker bot (`dex/market-maker/`) — verify it creates real orders with proper spread | `[x]` |
+| 21.5 | Verify market maker connects to correct RPC and uses correct contract addresses | `[x]` |
+| 21.6 | Test: run market maker → verify orders appear in orderbook | `[x]` |
+| 21.7 | Verify market maker handles order fills and rebalances | `[x]` |
+| 21.8 | Read load test harness (`dex/loadtest/`) — verify it tests real contract execution | `[x]` |
+| 21.9 | Verify SDK error handling: invalid params, network errors, tx failures | `[x]` |
+| 21.10 | Verify SDK types match RPC response formats | `[x]` |
 
 **Findings:**
-- (none yet)
+- F21.1b — `sdk/js/src/connection.ts` `rpc()`: no `res.ok` check before parsing JSON; server errors silently produce garbage → added `res.ok` guard with status text
+- F21.2a — `dex/sdk/src/orderbook.ts` `encodePlaceOrder`: opcode was `0x03`, must be `0x02` (matches frontend `buildPlaceOrderArgs`)
+- F21.2b — `dex/sdk/src/orderbook.ts` `encodePlaceOrder`: layout was 35 bytes, missing 32-byte trader pubkey; corrected to 67-byte layout matching frontend
+- F21.2c — `dex/sdk/src/orderbook.ts` `encodeCancelOrder`: opcode was `0x04`, must be `0x03`; layout was 9 bytes, missing 32-byte trader pubkey; corrected to 41-byte layout matching frontend
+- F21.3a — `dex/sdk/src/amm.ts` `encodeAddLiquidity`: missing 32-byte provider pubkey and second amount; corrected from 25 to 65 bytes matching frontend `buildAddLiquidityArgs`
+- F21.3b — `dex/sdk/src/amm.ts` `encodeRemoveLiquidity`: missing 32-byte provider pubkey and liquidity_amount; corrected from 9 to 49 bytes matching frontend `buildRemoveLiquidityArgs`
+- F21.4b — `dex/market-maker/src/index.ts`: MoltDEX constructed without wallet; added `loadWallet()` from keypair file, wallet passed to constructor
+- F21.7a — `dex/market-maker/src/strategies/spread.ts`: WS subscription `orders:mm` invalid channel; changed to `orders:${traderAddress}` per websocket.ts docs
+- F21.9c — `dex/sdk/src/client.ts` `rpc()`: double-unwrap — `this.post()` already strips API envelope, then `.result` produced `undefined`; rewrote as direct fetch
+- F21.9d — `dex/sdk/src/client.ts` `placeLimitOrder`/`placeMarketOrder`: no input validation; added price > 0, quantity > 0, valid side checks
 
 ---
 
