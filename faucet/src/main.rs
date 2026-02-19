@@ -443,9 +443,13 @@ fn load_or_generate_keypair() -> Keypair {
                         return kp;
                     }
                 }
-                panic!("❌ Invalid keypair file format at {}", path);
+                eprintln!("❌ Invalid keypair file format at {}", path);
+                std::process::exit(1);
             }
-            Err(e) => panic!("❌ Cannot read FAUCET_KEYPAIR at {}: {}", path, e),
+            Err(e) => {
+                eprintln!("❌ Cannot read FAUCET_KEYPAIR at {}: {}", path, e);
+                std::process::exit(1);
+            }
         }
     }
 
