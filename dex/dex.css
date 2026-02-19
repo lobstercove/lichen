@@ -658,6 +658,107 @@
 .margin-adjust-input:focus { outline: none; border-color: var(--orange-primary); }
 .text-warning { color: var(--yellow-warning, #f59e0b); }
 
+/* ===== Phase 3: Order Confirmation Modal ===== */
+.order-confirm-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.65);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+    animation: fadeIn 0.15s ease;
+}
+.order-confirm-modal {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    padding: 24px;
+    min-width: 340px;
+    max-width: 420px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+.order-confirm-modal h3 {
+    margin: 0 0 16px;
+    font-size: 1.1rem;
+    color: var(--text-primary);
+    text-align: center;
+}
+.order-confirm-details {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 18px;
+}
+.confirm-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.85rem;
+    padding: 4px 0;
+}
+.confirm-row .label {
+    color: var(--text-muted);
+}
+.confirm-row .value {
+    color: var(--text-primary);
+    font-family: 'JetBrains Mono', monospace;
+    font-weight: 600;
+}
+.order-confirm-btns {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+    margin-top: 12px;
+}
+.order-confirm-btns button {
+    padding: 8px 20px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    border: none;
+    cursor: pointer;
+    transition: opacity 0.15s;
+}
+.order-confirm-btns button:hover { opacity: 0.85; }
+.order-confirm-btns .btn-confirm {
+    background: var(--orange-primary);
+    color: #fff;
+}
+.order-confirm-btns .btn-cancel-confirm {
+    background: var(--bg-tertiary, #2a2a30);
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+}
+.confirm-skip-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 10px;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+}
+.confirm-skip-row input[type="checkbox"] { accent-color: var(--orange-primary); }
+
+/* ===== Phase 3: Edit Order Button ===== */
+.edit-order-btn {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    padding: 3px 6px;
+    font-size: 0.78rem;
+    border-radius: 4px;
+    transition: color 0.15s, background 0.15s;
+}
+.edit-order-btn:hover {
+    color: var(--orange-primary);
+    background: rgba(255, 152, 0, 0.1);
+}
+.order-row.editing {
+    background: rgba(255, 152, 0, 0.05);
+}
+
 /* ===== Pool View ===== */
 .pool-layout, .rewards-layout, .gov-layout, .launch-layout {
     max-width: 1800px;

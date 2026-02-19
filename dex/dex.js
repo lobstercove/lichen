@@ -319,6 +319,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ── DEX Core instruction builders ──
     // Opcode 2: place_order(trader, pair_id, side, type, price, qty, expiry)
+    // Order types: 0=limit, 1=market, 2=stop-limit, 3=post-only
     function buildPlaceOrderArgs(trader, pairId, side, orderType, price, quantity) {
         const buf = new ArrayBuffer(67);
         const view = new DataView(buf);
@@ -327,7 +328,12 @@ document.addEventListener('DOMContentLoaded', () => {
         writePubkey(arr, 1, trader);
         writeU64LE(view, 33, pairId);
         writeU8(arr, 41, side === 'buy' ? 0 : 1);
-        writeU8(arr, 42, orderType === 'market' ? 1 : 0);
+        // Map order type string to contract constant
+        let typeByte = 0; // ORDER_LIMIT
+        if (orderType === 'market') typeByte = 1;      // ORDER_MARKET
+        else if (orderType === 'stop-limit') typeByte = 2;  // ORDER_STOP_LIMIT
+        else if (orderType === 'post-only') typeByte = 3;   // ORDER_POST_ONLY
+        writeU8(arr, 42, typeByte);
         writeU64LE(view, 43, price);
         writeU64LE(view, 51, quantity);
         writeU64LE(view, 59, 0); // expiry: 0 = no expiry
@@ -342,6 +348,30 @@ document.addEventListener('DOMContentLoaded', () => {
         writeU8(arr, 0, 3); // opcode
         writePubkey(arr, 1, trader);
         writeU64LE(view, 33, orderId);
+        return arr;
+    }
+
+    // Opcode 16: modify_order(caller[32], order_id[8], new_price[8], new_qty[8])
+    function buildModifyOrderArgs(trader, orderId, newPrice, newQty) {
+        const buf = new ArrayBuffer(57);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 16); // opcode
+        writePubkey(arr, 1, trader);
+        writeU64LE(view, 33, orderId);
+        writeU64LE(view, 41, newPrice);
+        writeU64LE(view, 49, newQty);
+        return arr;
+    }
+
+    // Opcode 17: cancel_all_orders(caller[32], pair_id[8])
+    function buildCancelAllOrdersArgs(trader, pairId) {
+        const buf = new ArrayBuffer(41);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 17); // opcode
+        writePubkey(arr, 1, trader);
+        writeU64LE(view, 33, pairId);
         return arr;
     }
 
@@ -1141,6 +1171,46 @@ document.addEventListener('DOMContentLoaded', () => {
         if (amount > 9_000_000) { showNotification('Amount too large (max 9M)', 'warning'); return; }
         if (price > 9_000_000) { showNotification('Price too large (max 9M)', 'warning'); return; }
         if (!contracts.dex_core) { showNotification('Contract addresses not loaded', 'error'); return; }
+
+        // Task 3.1: Post-Only checkbox — override order type to post-only (ORDER_POST_ONLY=3)
+        const postOnlyEl = document.getElementById('postOnly');
+        const reduceOnlyEl = document.getElementById('reduceOnly');
+        let effectiveOrderType = state.orderType;
+        if (postOnlyEl && postOnlyEl.checked && state.orderType === 'limit') {
+            effectiveOrderType = 'post-only';
+        }
+
+        // Task 3.2: Reduce-Only validation (client-side) — only for margin mode
+        if (reduceOnlyEl && reduceOnlyEl.checked && state.tradeMode === 'margin') {
+            try {
+                const { data } = await api.get(`/margin/positions?trader=${wallet.address}`);
+                if (Array.isArray(data) && data.length > 0) {
+                    const activePairPositions = data.filter(p =>
+                        (p.pairId === state.activePairId || p.pair === state.activePair?.id) &&
+                        p.status !== 'closed' && p.status !== 'liquidated'
+                    );
+                    // Selling reduces a Long, Buying reduces a Short
+                    const targetSide = state.orderSide === 'sell' ? 'long' : 'short';
+                    const matchingPos = activePairPositions.filter(p => p.side === targetSide);
+                    const totalSize = matchingPos.reduce((sum, p) => sum + ((p.size || 0) / PRICE_SCALE), 0);
+                    if (matchingPos.length === 0) {
+                        showNotification(`Reduce-only: No ${targetSide} position to reduce on this pair`, 'warning');
+                        return;
+                    }
+                    if (amount > totalSize) {
+                        showNotification(`Reduce-only: Amount ${formatAmount(amount)} exceeds position size ${formatAmount(totalSize)}`, 'warning');
+                        return;
+                    }
+                } else {
+                    showNotification('Reduce-only: No open positions to reduce', 'warning');
+                    return;
+                }
+            } catch {
+                showNotification('Reduce-only: Could not verify positions', 'warning');
+                return;
+            }
+        }
+
         // F4.3: Client-side balance check before submitting order
         {
             const pair = state.activePair;
@@ -1152,6 +1222,27 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
         }
+
+        // Task 3.5: Order confirmation dialog for margin trades or spot orders > $100 equivalent
+        const estTotal = price * amount;
+        const skipConfirm = localStorage.getItem('dexSkipOrderConfirm') === 'true';
+        const needsConfirm = !skipConfirm && (state.tradeMode === 'margin' || estTotal > 100);
+        if (needsConfirm) {
+            const confirmed = await showOrderConfirmation({
+                side: state.orderSide,
+                type: effectiveOrderType,
+                price: price,
+                amount: amount,
+                total: estTotal,
+                pair: state.activePair?.id || '',
+                base: state.activePair?.base || '',
+                quote: state.activePair?.quote || '',
+                leverage: state.tradeMode === 'margin' ? state.leverageValue : null,
+                isMargin: state.tradeMode === 'margin',
+            });
+            if (!confirmed) return;
+        }
+
         submitBtn.disabled = true; submitBtn.textContent = 'Submitting...';
         try {
             // F10.6 FIX: Route to margin contract when tradeMode is margin
@@ -1175,9 +1266,9 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 const result = await wallet.sendTransaction([contractIx(
                     contracts.dex_core,
-                    buildPlaceOrderArgs(wallet.address, state.activePairId, state.orderSide, state.orderType, Math.round(price * PRICE_SCALE), Math.round(amount * PRICE_SCALE))
+                    buildPlaceOrderArgs(wallet.address, state.activePairId, state.orderSide, effectiveOrderType, Math.round(price * PRICE_SCALE), Math.round(amount * PRICE_SCALE))
                 )]);
-                showNotification(`${state.orderSide.toUpperCase()} order placed: ${formatAmount(amount)} ${state.activePair?.base || ''} @ ${state.orderType === 'market' ? 'MARKET' : formatPrice(price)}`, 'success');
+                showNotification(`${state.orderSide.toUpperCase()} order placed: ${formatAmount(amount)} ${state.activePair?.base || ''} @ ${effectiveOrderType === 'market' ? 'MARKET' : formatPrice(price)}`, 'success');
                 // F24.16: Refresh from API instead of pushing client-side stub (avoids stale/duplicate entries)
                 loadTradeHistory().catch(() => {});
                 loadUserOrders(wallet.address).catch(() => {});
@@ -1196,9 +1287,68 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderOpenOrders() {
         const tb = document.getElementById('openOrdersBody'), badge = document.querySelector('.orders-badge'); if (!tb) return;
         if (badge) badge.textContent = openOrders.length || '';
-        if (!state.connected) { tb.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:20px;"><i class="fas fa-wallet" style="margin-right:6px;"></i>Connect wallet to view orders</td></tr>'; return; }
-        if (!openOrders.length) { tb.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:20px;">No open orders</td></tr>'; return; }
-        tb.innerHTML = openOrders.map(o => `<tr class="order-row"><td>${escapeHtml(o.pair)}</td><td class="side-${escapeHtml(o.side)}">${escapeHtml(o.side.toUpperCase())}</td><td style="text-transform:capitalize">${escapeHtml(o.type)}</td><td>${formatPrice(o.price)}</td><td>${formatAmount(o.amount)}</td><td>${(o.filled * 100).toFixed(0)}%</td><td>${o.time instanceof Date ? o.time.toLocaleTimeString() : ''}</td><td><button class="cancel-btn" data-id="${escapeHtml(String(o.id))}"><i class="fas fa-times"></i></button></td></tr>`).join('');
+        // Task 3.3: Cancel All button in tab header
+        const cancelAllBtn = document.getElementById('cancelAllOrdersBtn');
+        if (cancelAllBtn) cancelAllBtn.style.display = openOrders.length > 0 ? 'inline-flex' : 'none';
+        if (!state.connected) { tb.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:20px;"><i class="fas fa-wallet" style="margin-right:6px;"></i>Connect wallet to view orders</td></tr>'; return; }
+        if (!openOrders.length) { tb.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:20px;">No open orders</td></tr>'; return; }
+        tb.innerHTML = openOrders.map(o => `<tr class="order-row" data-order-id="${escapeHtml(String(o.id))}"><td>${escapeHtml(o.pair)}</td><td class="side-${escapeHtml(o.side)}">${escapeHtml(o.side.toUpperCase())}</td><td style="text-transform:capitalize">${escapeHtml(o.type)}</td><td class="order-price-cell">${formatPrice(o.price)}</td><td class="order-qty-cell">${formatAmount(o.amount)}</td><td>${(o.filled * 100).toFixed(0)}%</td><td>${o.time instanceof Date ? o.time.toLocaleTimeString() : ''}</td><td><button class="edit-order-btn" data-id="${escapeHtml(String(o.id))}" data-price="${o.price}" data-amount="${o.amount}" title="Edit order"><i class="fas fa-pencil-alt"></i></button></td><td><button class="cancel-btn" data-id="${escapeHtml(String(o.id))}"><i class="fas fa-times"></i></button></td></tr>`).join('');
+        // Task 3.4: Edit order buttons
+        tb.querySelectorAll('.edit-order-btn').forEach(btn => btn.addEventListener('click', () => {
+            if (!state.connected || !wallet.keypair) { showNotification('Re-import wallet to sign', 'warning'); return; }
+            const orderId = btn.dataset.id;
+            const row = btn.closest('tr');
+            if (!row) return;
+            const priceCell = row.querySelector('.order-price-cell');
+            const qtyCell = row.querySelector('.order-qty-cell');
+            if (!priceCell || !qtyCell) return;
+            // Toggle inline editing
+            if (row.classList.contains('editing')) {
+                row.classList.remove('editing');
+                const origOrder = openOrders.find(o => o.id === orderId);
+                priceCell.textContent = formatPrice(origOrder?.price || 0);
+                qtyCell.textContent = formatAmount(origOrder?.amount || 0);
+                return;
+            }
+            row.classList.add('editing');
+            const origPrice = parseFloat(btn.dataset.price) || 0;
+            const origAmount = parseFloat(btn.dataset.amount) || 0;
+            priceCell.innerHTML = `<input type="number" class="edit-price-input" value="${origPrice}" step="0.0001" style="width:80px;padding:2px 4px;font-size:0.78rem;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--orange-primary);border-radius:3px;font-family:'JetBrains Mono',monospace;">`;
+            qtyCell.innerHTML = `<input type="number" class="edit-qty-input" value="${origAmount}" step="0.01" style="width:70px;padding:2px 4px;font-size:0.78rem;background:var(--bg-input);color:var(--text-primary);border:1px solid var(--orange-primary);border-radius:3px;font-family:'JetBrains Mono',monospace;">`;
+            // Change pencil to save icon
+            btn.innerHTML = '<i class="fas fa-check" style="color:var(--green-success);"></i>';
+            btn.title = 'Save changes';
+            // Re-bind this button for save action
+            btn.replaceWith(btn.cloneNode(true));
+            const saveBtn = row.querySelector('.edit-order-btn');
+            saveBtn.addEventListener('click', async () => {
+                const newPrice = parseFloat(row.querySelector('.edit-price-input')?.value);
+                const newQty = parseFloat(row.querySelector('.edit-qty-input')?.value);
+                if (!newPrice || newPrice <= 0 || !newQty || newQty <= 0) {
+                    showNotification('Enter valid price and amount', 'warning');
+                    return;
+                }
+                if (newPrice > 9_000_000 || newQty > 9_000_000) {
+                    showNotification('Value too large', 'warning');
+                    return;
+                }
+                saveBtn.disabled = true;
+                try {
+                    await wallet.sendTransaction([contractIx(
+                        contracts.dex_core,
+                        buildModifyOrderArgs(wallet.address, parseInt(orderId), Math.round(newPrice * PRICE_SCALE), Math.round(newQty * PRICE_SCALE))
+                    )]);
+                    showNotification('Order modified', 'success');
+                    // Refresh orders from API
+                    await loadUserOrders(wallet.address);
+                    if (wallet.address) loadBalances(wallet.address).then(() => renderBalances()).catch(() => {});
+                    loadOrderBook().catch(() => {});
+                } catch (e) {
+                    showNotification(`Modify failed: ${e.message}`, 'error');
+                }
+                saveBtn.disabled = false;
+            });
+        }));
         tb.querySelectorAll('.cancel-btn').forEach(btn => btn.addEventListener('click', async () => {
             // AUDIT-FIX F10.2: Cancel order via signed sendTransaction (not unsigned DELETE)
             if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
@@ -1215,6 +1365,38 @@ document.addEventListener('DOMContentLoaded', () => {
                 loadOrderBook().catch(() => {});
             } catch (e) { showNotification(`Cancel failed: ${e.message}`, 'error'); }
         }));
+    }
+
+    // Task 3.3: Cancel All Orders button handler
+    const cancelAllOrdersBtn = document.getElementById('cancelAllOrdersBtn');
+    if (cancelAllOrdersBtn) {
+        cancelAllOrdersBtn.addEventListener('click', async () => {
+            if (!state.connected || !wallet.keypair) {
+                showNotification('Connect wallet first', 'warning');
+                return;
+            }
+            if (!openOrders.length) {
+                showNotification('No open orders to cancel', 'info');
+                return;
+            }
+            const pairLabel = state.activePair || `pair ${state.activePairId}`;
+            if (!confirm(`Cancel all ${openOrders.length} open order(s) on ${pairLabel}?`)) return;
+            cancelAllOrdersBtn.disabled = true;
+            try {
+                await wallet.sendTransaction([contractIx(
+                    contracts.dex_core,
+                    buildCancelAllOrdersArgs(wallet.address, state.activePairId)
+                )]);
+                openOrders = [];
+                renderOpenOrders();
+                showNotification('All orders cancelled', 'success');
+                if (wallet.address) loadBalances(wallet.address).then(() => renderBalances()).catch(() => {});
+                loadOrderBook().catch(() => {});
+            } catch (e) {
+                showNotification(`Cancel all failed: ${e.message}`, 'error');
+            }
+            cancelAllOrdersBtn.disabled = false;
+        });
     }
 
     document.querySelectorAll('.pos-tab').forEach(tab => tab.addEventListener('click', () => { document.querySelectorAll('.pos-tab').forEach(t => t.classList.remove('active')); tab.classList.add('active'); document.querySelectorAll('.positions-content').forEach(c => c.classList.add('hidden')); const t = document.getElementById(tab.dataset.target); if (t) t.classList.remove('hidden'); if (tab.dataset.target === 'content-positions') { loadMarginStats(); loadMarginPositions(); } }));
@@ -3808,6 +3990,50 @@ document.addEventListener('DOMContentLoaded', () => {
     function formatPrice(p) { if (p == null || isNaN(p)) return '0.00'; if (p === 0) return '0.00'; const a = Math.abs(p), sign = p < 0 ? '-' : ''; if (a >= 1000) return sign + a.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); if (a >= 1) return sign + a.toFixed(4); if (a >= 0.001) return sign + a.toFixed(6); return sign + a.toFixed(8); }
     function formatAmount(a) { if (a == null || isNaN(a) || a === 0) return '0'; if (a >= 1e6) return (a / 1e6).toFixed(2) + 'M'; if (a >= 1000) return a.toLocaleString('en-US', { maximumFractionDigits: 2 }); if (a >= 0.0001) return a.toFixed(4); if (a >= 0.000001) return a.toFixed(6); return '< 0.000001'; }
     function formatVolume(v) { if (v == null || isNaN(v)) return '--'; if (v === 0) return '$0.00'; if (v >= 1e9) return '$' + (v / 1e9).toFixed(2) + 'B'; if (v >= 1e6) return '$' + (v / 1e6).toFixed(2) + 'M'; if (v >= 1e3) return '$' + (v / 1e3).toFixed(1) + 'K'; return '$' + v.toFixed(2); }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Task 3.5: Order Confirmation Dialog
+    // ═══════════════════════════════════════════════════════════════════════
+    function showOrderConfirmation(order) {
+        return new Promise(resolve => {
+            const overlay = document.createElement('div');
+            overlay.className = 'order-confirm-overlay';
+            const sideColor = order.side === 'buy' ? 'var(--green-success, #06d6a0)' : '#ef4444';
+            const feeEst = order.total * 0.001; // ~10bps estimate
+            overlay.innerHTML = `
+                <div class="order-confirm-modal">
+                    <h3 style="margin:0 0 16px;font-size:1rem;color:var(--text-primary);">Confirm Order</h3>
+                    <div class="order-confirm-details">
+                        <div class="confirm-row"><span>Side</span><span style="color:${sideColor};font-weight:700;">${escapeHtml(order.side.toUpperCase())}</span></div>
+                        <div class="confirm-row"><span>Type</span><span>${escapeHtml(order.type)}</span></div>
+                        <div class="confirm-row"><span>Pair</span><span>${escapeHtml(order.pair)}</span></div>
+                        <div class="confirm-row"><span>Price</span><span class="mono-value">${order.type === 'market' ? 'MARKET' : formatPrice(order.price)} ${escapeHtml(order.quote)}</span></div>
+                        <div class="confirm-row"><span>Amount</span><span class="mono-value">${formatAmount(order.amount)} ${escapeHtml(order.base)}</span></div>
+                        <div class="confirm-row"><span>Total</span><span class="mono-value">${formatPrice(order.total)} ${escapeHtml(order.quote)}</span></div>
+                        <div class="confirm-row"><span>Est. Fee</span><span class="mono-value">~${formatPrice(feeEst)} ${escapeHtml(order.quote)}</span></div>
+                        ${order.isMargin ? `<div class="confirm-row"><span>Leverage</span><span class="mono-value">${order.leverage}x</span></div>` : ''}
+                    </div>
+                    <label class="checkbox-label" style="margin:12px 0 16px;font-size:0.78rem;color:var(--text-muted);">
+                        <input type="checkbox" id="orderConfirmSkip"> Don't show again for small orders
+                    </label>
+                    <div class="order-confirm-btns">
+                        <button class="btn btn-small btn-secondary order-confirm-cancel-btn">Cancel</button>
+                        <button class="btn btn-small ${order.side === 'buy' ? 'btn-buy' : 'btn-sell'} order-confirm-ok-btn">Confirm ${escapeHtml(order.side.toUpperCase())}</button>
+                    </div>
+                </div>`;
+            document.body.appendChild(overlay);
+            const cancel = () => { overlay.remove(); resolve(false); };
+            const confirm = () => {
+                const skipBox = overlay.querySelector('#orderConfirmSkip');
+                if (skipBox && skipBox.checked) localStorage.setItem('dexSkipOrderConfirm', 'true');
+                overlay.remove();
+                resolve(true);
+            };
+            overlay.querySelector('.order-confirm-cancel-btn').addEventListener('click', cancel);
+            overlay.querySelector('.order-confirm-ok-btn').addEventListener('click', confirm);
+            overlay.addEventListener('click', (e) => { if (e.target === overlay) cancel(); });
+        });
+    }
 
     // ═══════════════════════════════════════════════════════════════════════
     // Polling fallback (when WS unavailable)

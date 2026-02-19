@@ -4388,6 +4388,158 @@ console.log('\n── Phase 1: Bottom Panel Consolidation ──');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Phase 3: Order Form Completeness Tests
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n── Phase 3: Order Form Completeness ──');
+{
+    const dexJs = fs.readFileSync(__dirname + '/dex.js', 'utf8');
+    const htmlSrc = fs.readFileSync(__dirname + '/index.html', 'utf8');
+    const cssSrc = fs.readFileSync(__dirname + '/dex.css', 'utf8');
+
+    // 3.1a: Post-Only checkbox wiring — setting effectiveOrderType to 'post-only' when checked
+    assert(dexJs.includes("effectiveOrderType = 'post-only'"), 'P3.1a: Post-only overrides effectiveOrderType');
+    assert(dexJs.includes("postOnlyEl.checked"), 'P3.1b: Checks postOnly checkbox state');
+    // 3.1c: buildPlaceOrderArgs maps order type strings to byte constants
+    assert(dexJs.includes("orderType === 'post-only') typeByte = 3"), 'P3.1c: post-only maps to ORDER_POST_ONLY=3');
+    assert(dexJs.includes("orderType === 'market') typeByte = 1"), 'P3.1d: market maps to ORDER_MARKET=1');
+    assert(dexJs.includes("orderType === 'stop-limit') typeByte = 2"), 'P3.1e: stop-limit maps to ORDER_STOP_LIMIT=2');
+
+    // 3.1f: Post-only checkbox exists in HTML
+    assert(htmlSrc.includes('id="postOnly"'), 'P3.1f: Post-only checkbox present in HTML');
+
+    // 3.2: Reduce-Only validation
+    assert(dexJs.includes("reduceOnlyEl.checked"), 'P3.2a: Checks reduceOnly checkbox state');
+    assert(dexJs.includes("tradeMode === 'margin'"), 'P3.2b: Reduce-only only applies in margin mode');
+    assert(dexJs.includes("No open positions to reduce"), 'P3.2c: Warning when no positions exist');
+    assert(dexJs.includes("exceeds position size"), 'P3.2d: Warning when amount exceeds position size');
+    assert(dexJs.includes("No " + "targetSide" + "` position to reduce") 
+        || dexJs.includes(`No \${targetSide} position to reduce`), 'P3.2e: Warning references correct side');
+    // Reduce only checks: sell reduces long, buy reduces short
+    assert(dexJs.includes("state.orderSide === 'sell' ? 'long' : 'short'"), 'P3.2f: Correct side mapping for reduce-only');
+
+    // 3.2g: Reduce-only checkbox exists in HTML
+    assert(htmlSrc.includes('id="reduceOnly"'), 'P3.2g: Reduce-only checkbox present in HTML');
+
+    // 3.3: Cancel All Orders
+    assert(dexJs.includes('function buildCancelAllOrdersArgs('), 'P3.3a: buildCancelAllOrdersArgs defined');
+    assert(dexJs.includes("cancelAllOrdersBtn"), 'P3.3b: Cancel All button referenced');
+    assert(htmlSrc.includes('id="cancelAllOrdersBtn"'), 'P3.3c: Cancel All button in HTML');
+    // Cancel All sends opcode 17
+    assert(dexJs.includes('buildCancelAllOrdersArgs(wallet.address, state.activePairId)'), 'P3.3d: Cancel All wired to active pair');
+    assert(dexJs.includes("All orders cancelled"), 'P3.3e: Success notification shows');
+    // Cancel All confirmation prompt
+    assert(dexJs.includes('Cancel all'), 'P3.3f: Confirmation prompt before cancel all');
+
+    // 3.3g: buildCancelAllOrdersArgs byte layout — extracted and validated
+    // Pattern: extract the builder, verify opcode 17, length 41
+    {
+        // Extract builder like Phase 1 tests
+        const fnMatch = dexJs.match(/function buildCancelAllOrdersArgs\(trader, pairId\)\s*\{([\s\S]*?)\n\s{4}\}/);
+        assert(fnMatch, 'P3.3g: buildCancelAllOrdersArgs function body found');
+        // Verify opcode byte = 17 and buffer size = 41
+        assert(fnMatch[1].includes('ArrayBuffer(41)'), 'P3.3h: Cancel all args = 41 bytes');
+        assert(fnMatch[1].includes('writeU8(arr, 0, 17)'), 'P3.3i: Cancel all opcode = 17');
+    }
+
+    // 3.3j: Build and verify cancel-all args bytes (functional test)
+    {
+        const buildFnSrc = dexJs.match(/function buildCancelAllOrdersArgs[\s\S]*?return arr;\s*\}/);
+        assert(buildFnSrc, 'P3.3j: Cancel All builder extractable');
+
+        // Build the function using shared helper functions from dex.js
+        const helperSrc = dexJs.match(/function writeU64LE[\s\S]*?function writePubkey[\s\S]*?arr\.set\(bytes\.subarray\(0, 32\), offset\);\s*\}/);
+        const writeU8Src = dexJs.match(/function writeU8\(arr, offset, n\)[\s\S]*?\}/);
+        assert(helperSrc && writeU8Src, 'P3.3k: Helper functions found');
+
+        const bs58Stub = 'function bs58decode(s) { const b = Buffer.alloc(32); b.write(s.slice(0,32)); return b; }';
+        const fullSrc = bs58Stub + '\n' + helperSrc[0] + '\n' + writeU8Src[0] + '\n' + buildFnSrc[0];
+        const buildCancelAllArgsTEST = new Function(fullSrc + '\nreturn buildCancelAllOrdersArgs;')();
+
+        const args = buildCancelAllArgsTEST('TestTrader1234567890123456789012', 5);
+        assertEqual(args[0], 17, 'P3.3l: Cancel all opcode byte = 17');
+        assertEqual(args.length, 41, 'P3.3m: Cancel all total bytes = 41');
+        const dv = new DataView(args.buffer);
+        assertEqual(Number(dv.getBigUint64(33, true)), 5, 'P3.3n: Cancel all pair_id = 5');
+    }
+
+    // 3.4: Modify Order (Inline Edit)
+    assert(dexJs.includes('function buildModifyOrderArgs('), 'P3.4a: buildModifyOrderArgs defined');
+    assert(dexJs.includes('edit-order-btn'), 'P3.4b: Edit order button class in JS');
+
+    // 3.4c: buildModifyOrderArgs byte layout
+    {
+        const fnMatch = dexJs.match(/function buildModifyOrderArgs\(trader, orderId, newPrice, newQty\)\s*\{([\s\S]*?)\n\s{4}\}/);
+        assert(fnMatch, 'P3.4c: buildModifyOrderArgs function body found');
+        assert(fnMatch[1].includes('ArrayBuffer(57)'), 'P3.4d: Modify order args = 57 bytes');
+        assert(fnMatch[1].includes('writeU8(arr, 0, 16)'), 'P3.4e: Modify order opcode = 16');
+    }
+
+    // 3.4f: Build and verify modify args bytes (functional test)
+    {
+        const buildFnSrc = dexJs.match(/function buildModifyOrderArgs[\s\S]*?return arr;\s*\}/);
+        assert(buildFnSrc, 'P3.4f: Modify Order builder extractable');
+
+        const helperSrc = dexJs.match(/function writeU64LE[\s\S]*?function writePubkey[\s\S]*?arr\.set\(bytes\.subarray\(0, 32\), offset\);\s*\}/);
+        const writeU8Src = dexJs.match(/function writeU8\(arr, offset, n\)[\s\S]*?\}/);
+        const bs58Stub = 'function bs58decode(s) { const b = Buffer.alloc(32); b.write(s.slice(0,32)); return b; }';
+        const fullSrc = bs58Stub + '\n' + helperSrc[0] + '\n' + writeU8Src[0] + '\n' + buildFnSrc[0];
+        const buildModifyArgsTEST = new Function(fullSrc + '\nreturn buildModifyOrderArgs;')();
+
+        const mArgs = buildModifyArgsTEST('TestTrader1234567890123456789012', 42, 1_500_000_000, 2_000_000_000);
+        assertEqual(mArgs[0], 16, 'P3.4g: Modify order opcode byte = 16');
+        assertEqual(mArgs.length, 57, 'P3.4h: Modify order total bytes = 57');
+        const mdv = new DataView(mArgs.buffer);
+        assertEqual(Number(mdv.getBigUint64(33, true)), 42, 'P3.4i: Modify order_id = 42');
+        assertEqual(Number(mdv.getBigUint64(41, true)), 1_500_000_000, 'P3.4j: Modify new_price = 1.5e9');
+        assertEqual(Number(mdv.getBigUint64(49, true)), 2_000_000_000, 'P3.4k: Modify new_qty = 2e9');
+    }
+
+    // 3.4l: Edit button in renderOpenOrders HTML output
+    assert(dexJs.includes('edit-order-btn'), 'P3.4l: Edit order button class rendered');
+    assert(dexJs.includes('fa-pencil-alt'), 'P3.4m: Pencil icon for edit button');
+    assert(dexJs.includes('fa-check'), 'P3.4n: Check icon for save action');
+    assert(dexJs.includes('edit-price-input'), 'P3.4o: Inline price input for editing');
+    assert(dexJs.includes('edit-qty-input'), 'P3.4p: Inline quantity input for editing');
+    // The modify order sends to dex_core contract
+    assert(dexJs.includes('buildModifyOrderArgs(wallet.address'), 'P3.4q: Modify uses wallet.address');
+    assert(dexJs.includes("Order modified"), 'P3.4r: Modify success notification');
+    assert(dexJs.includes("Modify failed"), 'P3.4s: Modify failure notification');
+
+    // 3.4t: Open orders table has 9 columns (including edit + cancel)
+    assert(dexJs.includes('colspan="9"'), 'P3.4t: Open orders tbody uses 9-column span');
+    // HTML table header has 9 <th> elements
+    const orderTheads = htmlSrc.match(/<table class="orders-table">\s*<thead>\s*<tr>([\s\S]*?)<\/tr>/);
+    assert(orderTheads, 'P3.4u: Orders table thead found');
+    const thCount = (orderTheads[1].match(/<th/g) || []).length;
+    assertEqual(thCount, 9, 'P3.4v: Orders table has 9 <th> columns');
+
+    // 3.5: Order Confirmation Dialog
+    assert(dexJs.includes('function showOrderConfirmation('), 'P3.5a: showOrderConfirmation function defined');
+    assert(dexJs.includes('order-confirm-overlay'), 'P3.5b: Confirmation overlay class');
+    assert(dexJs.includes('order-confirm-modal'), 'P3.5c: Confirmation modal class');
+    assert(dexJs.includes('dexSkipOrderConfirm'), 'P3.5d: Skip confirmation stored in localStorage');
+    assert(dexJs.includes('orderConfirmSkip'), 'P3.5e: Skip checkbox element');
+    // Returns a Promise
+    assert(dexJs.includes('return new Promise'), 'P3.5f: showOrderConfirmation returns Promise');
+    // Confirm and cancel buttons
+    assert(dexJs.includes('order-confirm-cancel-btn'), 'P3.5g: Cancel button in confirmation modal');
+    assert(dexJs.includes('order-confirm-ok-btn'), 'P3.5h: Confirm button in confirmation modal');
+    // Shows order details
+    assert(dexJs.includes('Confirm Order'), 'P3.5i: Modal title');
+    assert(dexJs.includes('Est. Fee'), 'P3.5j: Estimated fee shown');
+    // Only shown for margin or > $100
+    assert(dexJs.includes("estTotal > 100") || dexJs.includes("estTotal>100"), 'P3.5k: Threshold for confirmation dialog');
+
+    // 3.5l: CSS for confirmation modal
+    assert(cssSrc.includes('.order-confirm-overlay'), 'P3.5l: Overlay CSS defined');
+    assert(cssSrc.includes('.order-confirm-modal'), 'P3.5m: Modal CSS defined');
+    assert(cssSrc.includes('.order-confirm-btns'), 'P3.5n: Button container CSS defined');
+    assert(cssSrc.includes('.edit-order-btn'), 'P3.5o: Edit button CSS defined');
+    assert(cssSrc.includes('.order-row.editing'), 'P3.5p: Editing row CSS defined');
+    assert(cssSrc.includes('.confirm-row'), 'P3.5q: Confirm row CSS defined');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Summary
 // ═══════════════════════════════════════════════════════════════════════════
 console.log(`\n${'═'.repeat(60)}`);
