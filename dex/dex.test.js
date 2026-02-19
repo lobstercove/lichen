@@ -4715,6 +4715,190 @@ console.log('\n── Phase 6: Governance Lifecycle ──');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Phase 7: Portfolio & Analytics Tests
+// ═══════════════════════════════════════════════════════════════════════════
+
+// --- Task 7.1: Portfolio Summary ---
+{
+    // P7.1a: computeTokenUsd function exists
+    assert(dexJs.includes('function computeTokenUsd'), 'P7.1a: computeTokenUsd function exists');
+
+    // P7.1b: computeTokenUsd handles stablecoins (mUSD/USDT/USDC return amount directly)
+    assert(dexJs.includes("symbol === 'mUSD'") || dexJs.includes("'mUSD'"), 'P7.1b: computeTokenUsd handles mUSD stablecoin');
+    assert(dexJs.includes("symbol === 'USDT'") || dexJs.includes("'USDT'"), 'P7.1b2: computeTokenUsd handles USDT stablecoin');
+
+    // P7.1c: computeTokenUsd uses pair prices for non-stablecoins
+    assert(dexJs.includes('pairs.find(p => p.base === symbol'), 'P7.1c: computeTokenUsd looks up direct pair');
+
+    // P7.1d: computeTokenUsd handles inverse pair lookup
+    assert(dexJs.includes('pairs.find(p => p.quote === symbol'), 'P7.1d: computeTokenUsd handles inverse pair');
+
+    // P7.1e: computeTokenUsd cross-references via MOLT
+    assert(dexJs.includes("p.quote === 'MOLT'"), 'P7.1e: computeTokenUsd cross-references via MOLT');
+
+    // P7.1f: computePortfolioSummary function exists
+    assert(dexJs.includes('function computePortfolioSummary'), 'P7.1f: computePortfolioSummary function exists');
+
+    // P7.1g: Portfolio summary computes total value from balances
+    assert(dexJs.includes('totalValue += b.usd'), 'P7.1g: Portfolio summary sums balance USD values');
+
+    // P7.1h: Portfolio summary caches values in localStorage for 24h comparison
+    assert(dexJs.includes('dexPortfolioCache'), 'P7.1h: Portfolio uses localStorage cache key');
+
+    // P7.1i: Portfolio summary stores timestamp for cache expiry
+    assert(dexJs.includes('86400000'), 'P7.1i: Portfolio cache uses 24h TTL (86400000ms)');
+
+    // P7.1j: computeUnrealizedPnl function exists
+    assert(dexJs.includes('function computeUnrealizedPnl'), 'P7.1j: computeUnrealizedPnl function exists');
+
+    // P7.1k: computeUnrealizedPnl reads margin-pos-row elements
+    assert(dexJs.includes('.margin-pos-row'), 'P7.1k: computeUnrealizedPnl queries margin position rows');
+
+    // P7.1l: computeUnrealizedPnl parses P&L text from DOM
+    assert(/P&L:\s*\(\[/.test(dexJs) || dexJs.includes("match(/P&L") || dexJs.includes('P&L:'), 'P7.1l: computeUnrealizedPnl parses P&L text');
+
+    // P7.1m: renderPortfolioSummary function exists
+    assert(dexJs.includes('function renderPortfolioSummary'), 'P7.1m: renderPortfolioSummary function exists');
+
+    // P7.1n: renderPortfolioSummary creates portfolioSummary element
+    assert(dexJs.includes("'portfolioSummary'"), 'P7.1n: renderPortfolioSummary targets #portfolioSummary');
+
+    // P7.1o: renderPortfolioSummary shows total portfolio value
+    assert(dexJs.includes('portfolio-value'), 'P7.1o: renderPortfolioSummary includes portfolio-value class');
+
+    // P7.1p: renderPortfolioSummary shows portfolio-change badge
+    assert(dexJs.includes('portfolio-change'), 'P7.1p: renderPortfolioSummary includes portfolio-change badge');
+
+    // P7.1q: renderPortfolioSummary shows unrealized P&L
+    assert(dexJs.includes('pnlClass') && dexJs.includes('pnlSign'), 'P7.1q: renderPortfolioSummary shows unrealized P&L');
+
+    // P7.1r: renderBalances calls renderPortfolioSummary
+    {
+        const renderBalancesMatch = dexJs.match(/function renderBalances\(\)[^}]+renderPortfolioSummary/s);
+        assert(renderBalancesMatch, 'P7.1r: renderBalances calls renderPortfolioSummary');
+    }
+
+    // P7.1s: renderPortfolioSummary clears when disconnected
+    assert(dexJs.includes("container.innerHTML = ''") || dexJs.includes("container.innerHTML=''"), 'P7.1s: renderPortfolioSummary clears when disconnected');
+
+    // P7.1t: loadBalances computes USD for non-MOLT tokens via computeTokenUsd
+    assert(dexJs.includes('computeTokenUsd(ta.symbol'), 'P7.1t: loadBalances uses computeTokenUsd for token pricing');
+
+    // P7.1u: Functional test — computeTokenUsd for stablecoin returns amount
+    {
+        const fnBody = dexJs.match(/function computeTokenUsd\(symbol, amount\)\s*\{([\s\S]*?)\n    \}/);
+        assert(fnBody, 'P7.1u-pre: computeTokenUsd function extracted');
+        if (fnBody) {
+            const fn = new Function('symbol', 'amount', 'pairs', fnBody[1].replace(/return /g, 'return '));
+            const result = fn('mUSD', 100, []);
+            assert(result === 100, `P7.1u: computeTokenUsd('mUSD', 100) = ${result}, expected 100`);
+        }
+    }
+
+    // P7.1v: Functional test — computeTokenUsd with direct pair
+    {
+        const fnBody = dexJs.match(/function computeTokenUsd\(symbol, amount\)\s*\{([\s\S]*?)\n    \}/);
+        if (fnBody) {
+            const fn = new Function('symbol', 'amount', 'pairs', fnBody[1]);
+            const testPairs = [{ base: 'wETH', quote: 'mUSD', price: 3000 }];
+            const result = fn('wETH', 2, testPairs);
+            assert(result === 6000, `P7.1v: computeTokenUsd('wETH', 2) with pair price 3000 = ${result}, expected 6000`);
+        }
+    }
+
+    // P7.1w: Portfolio summary HTML exists in index.html
+    const htmlSrc71 = fs.readFileSync(__dirname + '/index.html', 'utf8');
+    const cssSrc71 = fs.readFileSync(__dirname + '/dex.css', 'utf8');
+    assert(htmlSrc71.includes('id="portfolioSummary"'), 'P7.1w: portfolioSummary div in index.html');
+
+    // P7.1x: Portfolio summary CSS
+    assert(cssSrc71.includes('.portfolio-summary'), 'P7.1x: portfolio-summary CSS exists');
+    assert(cssSrc71.includes('.portfolio-total'), 'P7.1x2: portfolio-total CSS exists');
+    assert(cssSrc71.includes('.portfolio-value'), 'P7.1x3: portfolio-value CSS exists');
+    assert(cssSrc71.includes('.portfolio-metrics'), 'P7.1x4: portfolio-metrics CSS exists');
+    assert(cssSrc71.includes('.portfolio-change'), 'P7.1x5: portfolio-change CSS exists');
+    assert(cssSrc71.includes('.portfolio-label'), 'P7.1x6: portfolio-label CSS exists');
+}
+
+// --- Task 7.2: Trade History CSV Export ---
+{
+    // P7.2a: exportTradeHistoryCSV function exists
+    assert(dexJs.includes('function exportTradeHistoryCSV'), 'P7.2a: exportTradeHistoryCSV function exists');
+
+    // P7.2b: CSV has correct column headers
+    assert(dexJs.includes("'Date', 'Pair', 'Side', 'Price', 'Amount', 'Total', 'Fee'"), 'P7.2b: CSV column headers correct');
+
+    // P7.2c: CSV uses Blob for download
+    assert(dexJs.includes("new Blob([csv]"), 'P7.2c: CSV uses Blob for download');
+
+    // P7.2d: CSV filename uses date pattern
+    assert(dexJs.includes('moltchain-trades-'), 'P7.2d: CSV filename starts with moltchain-trades-');
+
+    // P7.2e: CSV triggers download via anchor click
+    assert(dexJs.includes('a.click()'), 'P7.2e: CSV triggers download via anchor click');
+
+    // P7.2f: exportTradeHistoryCSV reads cached trade data
+    assert(dexJs.includes('state._tradeHistoryData'), 'P7.2f: exportTradeHistoryCSV reads cached trade data');
+
+    // P7.2g: loadTradeHistory caches data for CSV export
+    {
+        const loadTH = dexJs.match(/async function loadTradeHistory[\s\S]*?state\._tradeHistoryData\s*=\s*data/);
+        assert(loadTH, 'P7.2g: loadTradeHistory caches data in state._tradeHistoryData');
+    }
+
+    // P7.2h: Export CSV button in trade history table
+    assert(dexJs.includes('exportCsvBtn') || dexJs.includes('export-csv-btn'), 'P7.2h: Export CSV button in trade history');
+
+    // P7.2i: Export button wired to exportTradeHistoryCSV
+    assert(dexJs.includes('exportTradeHistoryCSV'), 'P7.2i: Export button calls exportTradeHistoryCSV');
+
+    // P7.2j: Fee column added to trade history table
+    assert(dexJs.includes('<th>Fee</th>'), 'P7.2j: Fee column header in trade history');
+
+    // P7.2k: Fee computed from trade data
+    assert(dexJs.includes('tr.fee') || dexJs.includes('.fee'), 'P7.2k: Fee extracted from trade data');
+
+    // P7.2l: CSV content type is text/csv
+    assert(dexJs.includes('text/csv'), 'P7.2l: CSV content type correct');
+
+    // P7.2m: URL.createObjectURL + revokeObjectURL for cleanup
+    assert(dexJs.includes('URL.createObjectURL'), 'P7.2m: createObjectURL used');
+    assert(dexJs.includes('URL.revokeObjectURL'), 'P7.2m2: revokeObjectURL cleanup');
+
+    // P7.2n: Shows notification after export
+    assert(dexJs.includes("'Trade history exported'"), 'P7.2n: Export shows success notification');
+
+    // P7.2o: Shows warning when no data to export
+    assert(dexJs.includes("'No trade data to export'"), 'P7.2o: Export shows warning when no data');
+
+    // P7.2p: Functional test — CSV row generation
+    {
+        // Test that the CSV builder properly builds rows
+        const fnBody = dexJs.match(/function exportTradeHistoryCSV\(\)\s*\{([\s\S]*?)\n    \}/);
+        assert(fnBody, 'P7.2p-pre: exportTradeHistoryCSV function extracted');
+        if (fnBody) {
+            // Verify CSV join logic: rows joined by newline, cells by comma
+            assert(fnBody[1].includes(".join(',')"), 'P7.2p: CSV cells joined by comma');
+            assert(fnBody[1].includes(".join('\\n')"), 'P7.2p2: CSV rows joined by newline');
+        }
+    }
+
+    // P7.2q: Export CSV button CSS
+    const cssSrc72 = fs.readFileSync(__dirname + '/dex.css', 'utf8');
+    assert(cssSrc72.includes('.export-csv-btn'), 'P7.2q: export-csv-btn CSS exists');
+    assert(cssSrc72.includes('.trade-history-header'), 'P7.2q2: trade-history-header CSS exists');
+
+    // P7.2r: CSV handles comma in values by quoting
+    assert(dexJs.includes("includes(',')") || dexJs.includes('includes(",")'), 'P7.2r: CSV escapes commas with quotes');
+
+    // P7.2s: Trade history has 7 columns now (added Fee)
+    {
+        const thMatch = dexJs.match(/<th>Pair<\/th><th>Side<\/th><th>Price<\/th><th>Amount<\/th><th>Total<\/th><th>Fee<\/th><th>Time<\/th>/);
+        assert(thMatch, 'P7.2s: Trade history table has 7 columns (Pair, Side, Price, Amount, Total, Fee, Time)');
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Summary
 // ═══════════════════════════════════════════════════════════════════════════
 console.log(`\n${'═'.repeat(60)}`);

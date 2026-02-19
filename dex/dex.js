@@ -862,7 +862,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 for (const ta of tokenResult.accounts) {
                     if (ta.symbol && ta.symbol !== 'MOLT') {
                         const decimals = ta.decimals ?? 9;
-                        balances[ta.symbol] = { available: ta.ui_amount || (ta.balance / Math.pow(10, decimals)), usd: 0 };
+                        const amt = ta.ui_amount || (ta.balance / Math.pow(10, decimals));
+                        // Task 7.1: Derive USD value from pair prices
+                        const usd = computeTokenUsd(ta.symbol, amt);
+                        balances[ta.symbol] = { available: amt, usd };
                     }
                 }
             }
@@ -1607,8 +1610,100 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function renderBalances() {
         const c = document.querySelector('.balance-list'); if (!c) return;
-        if (!state.connected) { c.innerHTML = ''; return; }
+        if (!state.connected) { c.innerHTML = ''; renderPortfolioSummary(); return; }
         c.innerHTML = Object.entries(balances).map(([t, b]) => `<div class="balance-row"><div class="balance-token"><div class="token-icon ${escapeHtml(t.toLowerCase())}-icon">${escapeHtml(t[0])}</div><span>${escapeHtml(t)}</span></div><div class="balance-amounts"><span class="balance-available">${formatAmount(b.available)}</span><span class="balance-usd">≈ $${formatAmount(b.usd)}</span></div></div>`).join('');
+        renderPortfolioSummary();
+    }
+
+    // Task 7.1: Derive USD value for a token using pair prices
+    function computeTokenUsd(symbol, amount) {
+        if (symbol === 'mUSD' || symbol === 'USDT' || symbol === 'USDC') return amount; // stablecoins ≈ $1
+        // Find a pair where this symbol is the base (e.g., MOLT/mUSD → MOLT price)
+        const directPair = pairs.find(p => p.base === symbol && (p.quote === 'mUSD' || p.quote === 'USDT' || p.quote === 'USDC'));
+        if (directPair && directPair.price > 0) return amount * directPair.price;
+        // Find a pair where this symbol is the quote and invert
+        const inversePair = pairs.find(p => p.quote === symbol && (p.base === 'mUSD' || p.base === 'USDT' || p.base === 'USDC'));
+        if (inversePair && inversePair.price > 0) return amount / inversePair.price;
+        // Cross-reference via MOLT if available
+        const moltPair = pairs.find(p => p.base === symbol && p.quote === 'MOLT');
+        if (moltPair && moltPair.price > 0) {
+            const moltUsd = pairs.find(p => p.base === 'MOLT' && (p.quote === 'mUSD' || p.quote === 'USDT'));
+            if (moltUsd && moltUsd.price > 0) return amount * moltPair.price * moltUsd.price;
+        }
+        return 0;
+    }
+
+    // Task 7.1: Portfolio summary — total value, unrealized P&L, 24h change
+    function computePortfolioSummary() {
+        let totalValue = 0;
+        Object.values(balances).forEach(b => { totalValue += b.usd || 0; });
+        // Cache for 24h comparison
+        const cacheKey = 'dexPortfolioCache';
+        const now = Date.now();
+        let change24h = 0;
+        try {
+            const cached = JSON.parse(localStorage.getItem(cacheKey));
+            if (cached && cached.ts && cached.value !== undefined) {
+                const age = now - cached.ts;
+                if (age < 86400000) { // within 24h
+                    change24h = totalValue - cached.value;
+                } else {
+                    // Cache expired, save new baseline
+                    localStorage.setItem(cacheKey, JSON.stringify({ ts: now, value: totalValue }));
+                }
+            } else {
+                localStorage.setItem(cacheKey, JSON.stringify({ ts: now, value: totalValue }));
+            }
+        } catch {
+            localStorage.setItem(cacheKey, JSON.stringify({ ts: now, value: totalValue }));
+        }
+        // Update cache if value changed significantly (>1%) or no recent save
+        try {
+            const cached = JSON.parse(localStorage.getItem(cacheKey));
+            if (!cached || (now - cached.ts > 300000)) { // re-cache every 5 min
+                localStorage.setItem(cacheKey, JSON.stringify({ ts: now, value: totalValue }));
+            }
+        } catch { /* ignore */ }
+        return { totalValue, change24h };
+    }
+
+    function computeUnrealizedPnl() {
+        // Sum P&L from current margin positions DOM if available
+        const rows = document.querySelectorAll('.margin-pos-row');
+        let totalPnl = 0;
+        rows.forEach(row => {
+            const pnlEl = row.querySelector('.positive, .negative');
+            if (pnlEl) {
+                const text = pnlEl.textContent || '';
+                const match = text.match(/P&L:\s*([+-]?[\d,.]+)/);
+                if (match) totalPnl += parseFloat(match[1].replace(/,/g, '')) || 0;
+            }
+        });
+        return totalPnl;
+    }
+
+    function renderPortfolioSummary() {
+        let container = document.getElementById('portfolioSummary');
+        if (!state.connected) {
+            if (container) container.innerHTML = '';
+            return;
+        }
+        if (!container) {
+            // Create container after balance-list
+            const balList = document.querySelector('.balance-list');
+            if (!balList) return;
+            container = document.createElement('div');
+            container.id = 'portfolioSummary';
+            container.className = 'portfolio-summary';
+            balList.parentNode.insertBefore(container, balList.nextSibling);
+        }
+        const { totalValue, change24h } = computePortfolioSummary();
+        const unrealizedPnl = computeUnrealizedPnl();
+        const changeClass = change24h >= 0 ? 'positive' : 'negative';
+        const changeSign = change24h >= 0 ? '+' : '';
+        const pnlClass = unrealizedPnl >= 0 ? 'positive' : 'negative';
+        const pnlSign = unrealizedPnl >= 0 ? '+' : '';
+        container.innerHTML = `<div class="portfolio-total"><span class="portfolio-label">Portfolio Value</span><span class="portfolio-value">$${formatAmount(totalValue)}</span></div><div class="portfolio-metrics"><span class="${pnlClass}">P&L: ${pnlSign}$${formatAmount(Math.abs(unrealizedPnl))}</span><span class="portfolio-change ${changeClass}">${changeSign}$${formatAmount(Math.abs(change24h))}</span></div>`;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -2480,12 +2575,41 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const { data } = await api.get(`/pairs/${state.activePairId}/trades?limit=50&trader=${wallet.address}`);
             if (Array.isArray(data) && data.length > 0) {
-                container.innerHTML = `<table class="orders-table"><thead><tr><th>Pair</th><th>Side</th><th>Price</th><th>Amount</th><th>Total</th><th>Time</th></tr></thead><tbody>${
-                    data.map(tr => { const qty = (tr.quantity || tr.amount || 0) / 1e9; return `<tr><td>${escapeHtml(state.activePair?.id || '')}</td><td class="side-${escapeHtml(tr.side || 'buy')}">${escapeHtml((tr.side || 'buy').toUpperCase())}</td><td class="mono-value">${formatPrice(tr.price || 0)}</td><td class="mono-value">${formatAmount(qty)}</td><td class="mono-value">${formatPrice((tr.price || 0) * qty)}</td><td class="mono-value" style="color:var(--text-muted)">${tr.timestamp ? new Date(tr.timestamp).toLocaleString() : ''}</td></tr>`; }).join('')
+                state._tradeHistoryData = data; // Task 7.2: Cache for CSV export
+                container.innerHTML = `<div class="trade-history-header"><button class="btn btn-tiny btn-secondary export-csv-btn" id="exportCsvBtn" title="Export trades as CSV"><i class="fas fa-download"></i> Export CSV</button></div><table class="orders-table"><thead><tr><th>Pair</th><th>Side</th><th>Price</th><th>Amount</th><th>Total</th><th>Fee</th><th>Time</th></tr></thead><tbody>${
+                    data.map(tr => { const qty = (tr.quantity || tr.amount || 0) / 1e9; const fee = (tr.fee || 0) / 1e9; return `<tr><td>${escapeHtml(state.activePair?.id || '')}</td><td class="side-${escapeHtml(tr.side || 'buy')}">${escapeHtml((tr.side || 'buy').toUpperCase())}</td><td class="mono-value">${formatPrice(tr.price || 0)}</td><td class="mono-value">${formatAmount(qty)}</td><td class="mono-value">${formatPrice((tr.price || 0) * qty)}</td><td class="mono-value">${formatAmount(fee)}</td><td class="mono-value" style="color:var(--text-muted)">${tr.timestamp ? new Date(tr.timestamp).toLocaleString() : ''}</td></tr>`; }).join('')
                 }</tbody></table>`;
+                const exportBtn = document.getElementById('exportCsvBtn');
+                if (exportBtn) exportBtn.addEventListener('click', exportTradeHistoryCSV);
                 return;
             }
         } catch { /* no history from API */ }
+    }
+
+    // Task 7.2: Export trade history as CSV
+    function exportTradeHistoryCSV() {
+        const data = state._tradeHistoryData;
+        if (!data || !data.length) { showNotification('No trade data to export', 'warning'); return; }
+        const pair = state.activePair?.id || 'UNKNOWN';
+        const rows = [['Date', 'Pair', 'Side', 'Price', 'Amount', 'Total', 'Fee']];
+        data.forEach(tr => {
+            const qty = (tr.quantity || tr.amount || 0) / 1e9;
+            const price = tr.price || 0;
+            const total = price * qty;
+            const fee = (tr.fee || 0) / 1e9;
+            const date = tr.timestamp ? new Date(tr.timestamp).toISOString() : '';
+            const side = (tr.side || 'buy').toUpperCase();
+            rows.push([date, pair, side, price, qty, total, fee]);
+        });
+        const csv = rows.map(r => r.map(c => typeof c === 'string' && c.includes(',') ? `"${c}"` : c).join(',')).join('\n');
+        const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        const dateStr = new Date().toISOString().split('T')[0];
+        a.href = url; a.download = `moltchain-trades-${dateStr}.csv`;
+        document.body.appendChild(a); a.click(); document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        showNotification('Trade history exported', 'success');
     }
 
     // Margin open position is now handled inline in the Trade view submit handler

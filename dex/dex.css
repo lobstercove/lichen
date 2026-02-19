@@ -515,6 +515,42 @@
 .balance-available { display: block; font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; font-weight: 600; }
 .balance-usd { display: block; font-size: 0.7rem; color: var(--text-muted); }
 
+/* ===== Task 7.1: Portfolio Summary ===== */
+.portfolio-summary {
+    padding: 8px 12px;
+    border-top: 1px solid var(--border);
+    background: var(--bg-secondary);
+    border-radius: 0 0 var(--radius-md) var(--radius-md);
+}
+.portfolio-summary:empty { display: none; }
+.portfolio-total {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+}
+.portfolio-label { font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+.portfolio-value { font-family: 'JetBrains Mono', monospace; font-size: 1rem; font-weight: 700; color: var(--text-primary); }
+.portfolio-metrics {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.75rem;
+    font-family: 'JetBrains Mono', monospace;
+}
+.portfolio-change { padding: 1px 6px; border-radius: 4px; font-weight: 600; }
+.portfolio-change.positive { background: rgba(16, 185, 129, 0.15); color: var(--green); }
+.portfolio-change.negative { background: rgba(239, 68, 68, 0.15); color: var(--red); }
+
+/* ===== Task 7.2: Trade History Export ===== */
+.trade-history-header {
+    display: flex;
+    justify-content: flex-end;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--border);
+}
+.export-csv-btn { font-size: 0.7rem; gap: 4px; display: inline-flex; align-items: center; }
+.export-csv-btn i { font-size: 0.65rem; }
+
 /* ===== Positions Panel ===== */
 .positions-panel {
     background: var(--bg-card);
