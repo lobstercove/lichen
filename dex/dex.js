@@ -168,7 +168,7 @@ document.addEventListener('DOMContentLoaded', () => {
         },
         async generate() {
             const n = await this._ensureNacl();
-            this.keypair = n ? n.sign.keyPair() : { publicKey: crypto.getRandomValues(new Uint8Array(32)), secretKey: new Uint8Array(64) };
+            this.keypair = n ? n.sign.keyPair() : (() => { throw new Error('Crypto library unavailable — cannot generate keypair'); })();
             this.address = bs58encode(this.keypair.publicKey);
             this.shortAddr = this.address.slice(0, 8) + '...' + this.address.slice(-6);
             return this;
@@ -1083,7 +1083,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (badge) badge.textContent = openOrders.length || '';
         if (!state.connected) { tb.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:20px;"><i class="fas fa-wallet" style="margin-right:6px;"></i>Connect wallet to view orders</td></tr>'; return; }
         if (!openOrders.length) { tb.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:20px;">No open orders</td></tr>'; return; }
-        tb.innerHTML = openOrders.map(o => `<tr class="order-row"><td>${escapeHtml(o.pair)}</td><td class="side-${o.side}">${escapeHtml(o.side.toUpperCase())}</td><td style="text-transform:capitalize">${escapeHtml(o.type)}</td><td>${formatPrice(o.price)}</td><td>${formatAmount(o.amount)}</td><td>${(o.filled * 100).toFixed(0)}%</td><td>${o.time instanceof Date ? o.time.toLocaleTimeString() : ''}</td><td><button class="cancel-btn" data-id="${o.id}"><i class="fas fa-times"></i></button></td></tr>`).join('');
+        tb.innerHTML = openOrders.map(o => `<tr class="order-row"><td>${escapeHtml(o.pair)}</td><td class="side-${escapeHtml(o.side)}">${escapeHtml(o.side.toUpperCase())}</td><td style="text-transform:capitalize">${escapeHtml(o.type)}</td><td>${formatPrice(o.price)}</td><td>${formatAmount(o.amount)}</td><td>${(o.filled * 100).toFixed(0)}%</td><td>${o.time instanceof Date ? o.time.toLocaleTimeString() : ''}</td><td><button class="cancel-btn" data-id="${escapeHtml(String(o.id))}"><i class="fas fa-times"></i></button></td></tr>`).join('');
         tb.querySelectorAll('.cancel-btn').forEach(btn => btn.addEventListener('click', async () => {
             // AUDIT-FIX F10.2: Cancel order via signed sendTransaction (not unsigned DELETE)
             if (!wallet.keypair) { showNotification('Re-import wallet to sign', 'warning'); return; }
@@ -1690,6 +1690,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const amtA = parseFloat(document.getElementById('liqAmountA')?.value) || 0;
         const amtB = parseFloat(document.getElementById('liqAmountB')?.value) || 0;
         if (!amtA && !amtB) { showNotification('Enter deposit amounts', 'warning'); return; }
+        if (amtA < 0 || amtB < 0) { showNotification('Amounts must be positive', 'warning'); return; }
+        if (amtA > 9_000_000 || amtB > 9_000_000) { showNotification('Amount too large (max 9M)', 'warning'); return; }
         const minPrice = parseFloat(document.getElementById('liqMinPrice')?.value) || 0;
         const maxPrice = parseFloat(document.getElementById('liqMaxPrice')?.value) || 0;
         const fullRange = document.getElementById('fullRangeToggle')?.checked;
@@ -1877,7 +1879,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const { data } = await api.get(`/pairs/${state.activePairId}/trades?limit=50&trader=${wallet.address}`);
             if (Array.isArray(data) && data.length > 0) {
                 container.innerHTML = `<table class="orders-table"><thead><tr><th>Pair</th><th>Side</th><th>Price</th><th>Amount</th><th>Total</th><th>Time</th></tr></thead><tbody>${
-                    data.map(tr => { const qty = (tr.quantity || tr.amount || 0) / 1e9; return `<tr><td>${escapeHtml(state.activePair?.id || '')}</td><td class="side-${tr.side || 'buy'}">${escapeHtml((tr.side || 'buy').toUpperCase())}</td><td class="mono-value">${formatPrice(tr.price || 0)}</td><td class="mono-value">${formatAmount(qty)}</td><td class="mono-value">${formatPrice((tr.price || 0) * qty)}</td><td class="mono-value" style="color:var(--text-muted)">${tr.timestamp ? new Date(tr.timestamp).toLocaleString() : ''}</td></tr>`; }).join('')
+                    data.map(tr => { const qty = (tr.quantity || tr.amount || 0) / 1e9; return `<tr><td>${escapeHtml(state.activePair?.id || '')}</td><td class="side-${escapeHtml(tr.side || 'buy')}">${escapeHtml((tr.side || 'buy').toUpperCase())}</td><td class="mono-value">${formatPrice(tr.price || 0)}</td><td class="mono-value">${formatAmount(qty)}</td><td class="mono-value">${formatPrice((tr.price || 0) * qty)}</td><td class="mono-value" style="color:var(--text-muted)">${tr.timestamp ? new Date(tr.timestamp).toLocaleString() : ''}</td></tr>`; }).join('')
                 }</tbody></table>`;
                 return;
             }
@@ -1923,6 +1925,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const size = parseFloat(document.getElementById('marginSize')?.value) || 0;
         const margin = parseFloat(document.getElementById('marginAmount')?.value) || 0;
         if (!size || !margin) { showNotification('Enter size and margin', 'warning'); return; }
+        if (size <= 0 || margin <= 0) { showNotification('Values must be positive', 'warning'); return; }
+        if (size > 9_000_000 || margin > 9_000_000) { showNotification('Value too large (max 9M)', 'warning'); return; }
         const pairSelect = document.getElementById('marginPairSelect');
         const pairId = pairSelect ? parseInt(pairSelect.value) : 0;
         marginOpenBtn.disabled = true; marginOpenBtn.textContent = 'Opening...';
@@ -2395,8 +2399,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const closeDate = m.close_slot ? new Date(Date.now() + (m.close_slot - (m.created_slot || 0)) * 500).toLocaleDateString() : '—';
                 return `<tr>
                     <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(m.question)}">${escapeHtml(m.question.slice(0, 60))}</td>
-                    <td>${m.category || '—'}</td>
-                    <td><span class="status-badge status-${m.status || 'active'}">${m.status || 'Active'}</span></td>
+                    <td>${escapeHtml(m.category || '—')}</td>
+                    <td><span class="status-badge status-${escapeHtml(m.status || 'active')}">${escapeHtml(m.status || 'Active')}</span></td>
                     <td>$${(m.total_volume || 0).toFixed(2)}</td>
                     <td>${m.unique_traders || 0}</td>
                     <td>${closeDate}</td>
@@ -2501,10 +2505,10 @@ document.addEventListener('DOMContentLoaded', () => {
             };
             const statusInfo = statusMap[m.status] || { cls: 'active', label: m.status || 'Active' };
             if (isResolved) { statusInfo.cls = 'resolved'; statusInfo.label = 'Resolved'; }
-            const statusClass = statusInfo.cls;
-            const statusLabel = statusInfo.label;
+            const statusClass = escapeHtml(statusInfo.cls);
+            const statusLabel = escapeHtml(statusInfo.label);
             const catTag = catIconsHtml[m.cat] || '<i class="fas fa-chart-pie"></i> ' + escapeHtml(m.cat || 'Other');
-            const idTag = m.pm_id || `#PM-${String(m.id).padStart(3, '0')}`;
+            const idTag = escapeHtml(m.pm_id || `#PM-${String(m.id).padStart(3, '0')}`);
             const closesLabel = m.closes ? `<span><i class="fas fa-clock"></i> ${escapeHtml(m.closes)}</span>` : '';
             const creatorLabel = m.creator ? `<span><i class="fas fa-user"></i> Creator: ${escapeHtml(m.creator)}</span>` : '';
             const volLabel = formatVolume(m.volume);
@@ -2958,6 +2962,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
         const amt = parseFloat(document.getElementById('predictAmount')?.value) || 0;
         if (amt < 1) { showNotification('Enter amount (min $1)', 'warning'); return; }
+        if (amt > 9_000_000) { showNotification('Amount too large (max 9M)', 'warning'); return; }
         const m = predictState.markets.find(x => x.id === predictState.selectedMarket);
         if (!m) return;
         // F20.5: Check market is still active before submitting buy transaction
