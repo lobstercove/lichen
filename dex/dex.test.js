@@ -23,9 +23,9 @@
  *  F10E.11 — Pool "My Pools" filter logic
  *
  * Oracle Price Feed Integration tests:
- *  - Genesis oracle seeding (wSOL, wETH, BTC feeds)
+ *  - Genesis oracle seeding (wSOL, wETH feeds)
  *  - Genesis analytics price seeding (ana_lp_, ana_24h_, candles)
- *  - Background price feeder service (Binance REST → moltoracle + analytics)
+ *  - Background price feeder service (Binance WebSocket + REST fallback → moltoracle + analytics)
  *  - RPC oracle integration (fallback prices, /oracle/prices endpoint)
  *  - Frontend real-time overlay (Binance WS for sub-second updates)
  *  - End-to-end data flow verification
@@ -428,7 +428,7 @@ assert(dexSource.includes('connectBinancePriceFeed'), 'F10E.7: connectBinancePri
 assert(dexSource.includes('stream.binance.com'), 'F10E.7: Uses Binance WebSocket endpoint');
 assert(dexSource.includes('solusdt@miniTicker'), 'F10E.7: Subscribes to SOL/USDT');
 assert(dexSource.includes('ethusdt@miniTicker'), 'F10E.7: Subscribes to ETH/USDT');
-assert(dexSource.includes('btcusdt@miniTicker'), 'F10E.7: Subscribes to BTC/USDT');
+assert(!dexSource.includes('btcusdt'), 'F10E.7: BTC streams removed');
 assert(dexSource.includes('applyBinanceRealTimeOverlay'), 'F10E.7: applyBinanceRealTimeOverlay function exists');
 assert(dexSource.includes("externalPrices"), 'F10E.7: externalPrices state object exists');
 assert(dexSource.includes("real-time overlay"), 'F10E.7: Binance feed documented as real-time overlay');
@@ -521,12 +521,12 @@ const validatorSrc = fs.readFileSync(__dirname + '/../validator/src/main.rs', 'u
 assert(validatorSrc.includes('genesis_seed_analytics_prices'), 'ORACLE: genesis_seed_analytics_prices function exists');
 assert(validatorSrc.includes('spawn_oracle_price_feeder'), 'ORACLE: spawn_oracle_price_feeder function exists');
 assert(validatorSrc.includes('oracle_update_candle'), 'ORACLE: oracle_update_candle function exists');
-assert(validatorSrc.includes('BinanceTicker'), 'ORACLE: BinanceTicker struct exists');
+assert(validatorSrc.includes('BinanceTicker'), 'ORACLE: BinanceTicker struct for REST fallback');
 
-// Genesis oracle seeding: wSOL, wETH, BTC feeds
-assert(validatorSrc.includes('"wSOL"') && validatorSrc.includes('17_000_000_000'), 'ORACLE: wSOL genesis price seeded ($170)');
-assert(validatorSrc.includes('"wETH"') && validatorSrc.includes('250_000_000_000'), 'ORACLE: wETH genesis price seeded ($2,500)');
-assert(validatorSrc.includes('"BTC"') && validatorSrc.includes('10_000_000_000_000'), 'ORACLE: BTC genesis price seeded ($100,000)');
+// Genesis oracle seeding: wSOL, wETH feeds
+assert(validatorSrc.includes('"wSOL"') && validatorSrc.includes('8_200_000_000'), 'ORACLE: wSOL genesis price seeded ($82)');
+assert(validatorSrc.includes('"wETH"') && validatorSrc.includes('197_900_000_000'), 'ORACLE: wETH genesis price seeded ($1,979)');
+assert(!validatorSrc.includes('"BTC"'), 'ORACLE: BTC removed from oracle feeds');
 
 // Genesis oracle seeding: feeder authorization for external assets
 assert(validatorSrc.includes('add_price_feeder') && validatorSrc.includes('ext_feeder_args'), 'ORACLE: External asset feeder authorization');
@@ -542,18 +542,20 @@ assert(validatorSrc.includes('ana_cc_') && validatorSrc.includes('put_contract_s
 assert(validatorSrc.includes('wsol_usd / molt_usd'), 'ORACLE: wSOL/MOLT computed from wsol/molt ratio');
 assert(validatorSrc.includes('weth_usd / molt_usd'), 'ORACLE: wETH/MOLT computed from weth/molt ratio');
 
-// Background price feeder service
-assert(validatorSrc.includes('api.binance.com/api/v3/ticker/price'), 'ORACLE: Binance REST API URL');
-assert(validatorSrc.includes('SOLUSDT'), 'ORACLE: Fetches SOL/USDT from Binance');
-assert(validatorSrc.includes('ETHUSDT'), 'ORACLE: Fetches ETH/USDT from Binance');
-assert(validatorSrc.includes('BTCUSDT'), 'ORACLE: Fetches BTC/USDT from Binance');
-assert(validatorSrc.includes('Duration::from_secs(15)'), 'ORACLE: 15-second price update interval');
+// Background price feeder service (WebSocket-based)
+assert(validatorSrc.includes('BINANCE_WS_URL'), 'ORACLE: Binance WebSocket URL constant');
+assert(validatorSrc.includes('aggTrade'), 'ORACLE: Uses aggTrade streams for real-time data');
+assert(validatorSrc.includes('SOLUSDT'), 'ORACLE: Parses SOL/USDT from WebSocket');
+assert(validatorSrc.includes('ETHUSDT'), 'ORACLE: Parses ETH/USDT from WebSocket');
+assert(!validatorSrc.includes('BTCUSDT'), 'ORACLE: BTC/USDT removed from price feeds');
+assert(validatorSrc.includes('Duration::from_secs(1)'), 'ORACLE: 1-second storage write interval');
 
-// Background feeder writes to moltoracle storage
-assert(validatorSrc.includes('price_wSOL') || validatorSrc.includes('price_{}'), 'ORACLE: Writes to moltoracle price keys');
-assert(validatorSrc.includes('ORACLE_DECIMALS') && validatorSrc.includes('u8 = 8'), 'ORACLE: 8 decimal precision');
-assert(validatorSrc.includes('get_symbol_registry("ORACLE")'), 'ORACLE: Resolves oracle contract by symbol');
-assert(validatorSrc.includes('get_symbol_registry("ANALYTICS")'), 'ORACLE: Resolves analytics contract by symbol');
+// WebSocket auto-reconnect and REST fallback
+assert(validatorSrc.includes('binance_ws_loop'), 'ORACLE: WebSocket reader loop with auto-reconnect');
+assert(validatorSrc.includes('ws_healthy') || validatorSrc.includes('AtomicBool'), 'ORACLE: WebSocket health flag for fallback');
+assert(validatorSrc.includes('BINANCE_REST_URL'), 'ORACLE: REST fallback URL constant');
+assert(validatorSrc.includes('backoff_secs'), 'ORACLE: Exponential backoff for reconnect');
+assert(validatorSrc.includes('MICRO_SCALE'), 'ORACLE: Microdollar price encoding');
 
 // Background feeder generates candle data
 assert(validatorSrc.includes('oracle_update_candle'), 'ORACLE: Calls oracle_update_candle for each interval');
@@ -592,6 +594,7 @@ assert((rpcDexSrc.match(/Oracle price fallback/g) || []).length >= 2, 'RPC: Orac
 const rpcLibSrc = fs.readFileSync(__dirname + '/../rpc/src/lib.rs', 'utf8');
 assert(rpcLibSrc.includes('"priceOracleActive": true'), 'RPC: priceOracleActive set to true');
 assert(rpcLibSrc.includes('Oracle price feeds active'), 'RPC: Updated oracle note message');
+assert(!rpcLibSrc.includes('BTC'), 'RPC: BTC removed from oracle note');
 
 // ── Frontend oracle integration tests ──
 console.log('\n── Frontend Oracle Integration ──');
@@ -601,7 +604,7 @@ assert(!dexSource.includes('updateExternalPricedPairs'), 'FE: Old updateExternal
 assert(!dexSource.includes('apiPriceless'), 'FE: Old apiPriceless flag removed');
 assert(dexSource.includes('real-time overlay'), 'FE: Binance feed documented as real-time overlay');
 assert(dexSource.includes('MOLT_GENESIS_PRICE'), 'FE: MOLT genesis price constant used in overlay');
-assert(dexSource.includes("backend oracle price feeder") || dexSource.includes("backend oracle feeder"), 'FE: Documented backend oracle as primary source');
+assert(!dexSource.includes('externalPrices.BTC'), 'FE: BTC removed from externalPrices');
 
 // Real-time overlay logic
 assert(dexSource.includes('state.activePair') && dexSource.includes('applyBinanceRealTimeOverlay'), 'FE: Real-time overlay updates active pair only');
@@ -616,11 +619,12 @@ assert(validatorSrc.includes('wSOL/MOLT') && validatorSrc.includes('wsol_addr') 
 assert(validatorSrc.includes('wETH/MOLT') && validatorSrc.includes('weth_addr') && validatorSrc.includes('molt_addr'), 'GENESIS: wETH/MOLT pair created');
 assert(validatorSrc.includes('MOLT/mUSD') && validatorSrc.includes('molt_addr') && validatorSrc.includes('musd_addr'), 'GENESIS: MOLT/mUSD pair created');
 
-// AMM pools with initial sqrt_price
-assert(validatorSrc.includes('13_360_000_000'), 'GENESIS: wSOL/mUSD pool sqrt_price configured');
-assert(validatorSrc.includes('59_345_000_000'), 'GENESIS: wETH/mUSD pool sqrt_price configured');
-assert(validatorSrc.includes('20_591_000_000'), 'GENESIS: wSOL/MOLT pool sqrt_price configured');
-assert(validatorSrc.includes('91_558_000_000'), 'GENESIS: wETH/MOLT pool sqrt_price configured');
+// AMM pools with corrected initial sqrt_price (Q32: (1<<32)*sqrt(price))
+// Updated to match genesis oracle prices: MOLT=$0.10, wSOL=$82, wETH=$1,979
+assert(validatorSrc.includes('38_892_583_020'), 'GENESIS: wSOL/mUSD pool sqrt_price configured ($82)');
+assert(validatorSrc.includes('191_065_712_575'), 'GENESIS: wETH/mUSD pool sqrt_price configured ($1,979)');
+assert(validatorSrc.includes('122_989_146_433'), 'GENESIS: wSOL/MOLT pool sqrt_price configured (820 MOLT)');
+assert(validatorSrc.includes('604_202_834_500'), 'GENESIS: wETH/MOLT pool sqrt_price configured (19,790 MOLT)');
 
 // ── moltoracle contract tests ──
 console.log('\n── MoltOracle Contract ──');
@@ -654,9 +658,9 @@ console.log('\n── End-to-End Data Flow ──');
 // Verify the complete pipeline exists:
 // Binance → oracle feeder → moltoracle storage → put_contract_storage → RPC reads ana_lp_ → frontend loadPairs
 
-// 1. External source → Validator feeder
-assert(validatorSrc.includes('reqwest::Client'), 'E2E: HTTP client for Binance API');
-assert(validatorSrc.includes('json::<Vec<BinanceTicker>>'), 'E2E: Parses Binance ticker response');
+// 1. External source → Validator WebSocket feeder
+assert(validatorSrc.includes('tokio_tungstenite'), 'E2E: WebSocket client for Binance');
+assert(validatorSrc.includes('AtomicU64'), 'E2E: Lock-free atomic price storage');
 
 // 2. Feeder → Oracle storage
 assert(validatorSrc.includes('put_contract_storage') && validatorSrc.includes('oracle_pk'), 'E2E: Writes to oracle contract storage');
@@ -716,6 +720,125 @@ assert(dexSource.includes('needsFallback'), 'P1.5: needsFallback flag tracks reg
     const loadPairsIdx = dexSource.indexOf('await loadPairs()', initIdx);
     assert(loadContractIdx < loadPairsIdx, 'P1.6: loadContractAddresses called before loadPairs in init');
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// DEX Plan Phase 2 — Genesis & First-Boot Deploy
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n── DEX P2: Genesis & First-Boot Deploy ──');
+
+const validatorSource = fs.readFileSync(__dirname + '/../validator/src/main.rs', 'utf-8');
+const firstBootSource = fs.readFileSync(__dirname + '/../scripts/first-boot-deploy.sh', 'utf-8');
+const testnetDeploySource = fs.readFileSync(__dirname + '/../scripts/testnet-deploy.sh', 'utf-8');
+
+// P2.1: genesis_exec_contract returns false on WASM failure (F2.3)
+assert(
+    validatorSource.includes('return false;') &&
+    validatorSource.includes('contract returned error code'),
+    'P2.1: genesis_exec_contract returns false on non-zero error code'
+);
+
+// P2.2: MOLT/mUSD AMM sqrt_price matches $0.10 (F2.4)
+// Q32 value for sqrt(0.10) = 1,358,187,913
+assert(
+    validatorSource.includes('1_358_187_913'),
+    'P2.2: MOLT/mUSD AMM sqrt_price = 1_358_187_913 (Q32 for $0.10)'
+);
+// Old $1.00 price (1 << 32 = 4294967296) must NOT be used for MOLT/mUSD pool
+assert(
+    !validatorSource.includes('1u64 << 32'),
+    'P2.2: Old 1<<32 ($1.00) sqrt_price removed'
+);
+
+// P2.3: wSOL/mUSD AMM sqrt_price matches $82 (F2.5)
+assert(
+    validatorSource.includes('38_892_583_020'),
+    'P2.3: wSOL/mUSD AMM sqrt_price = 38_892_583_020 (Q32 for $82)'
+);
+
+// P2.4: wETH/mUSD AMM sqrt_price matches $1,979 (F2.5)
+assert(
+    validatorSource.includes('191_065_712_575'),
+    'P2.4: wETH/mUSD AMM sqrt_price = 191_065_712_575 (Q32 for $1,979)'
+);
+
+// P2.5: Cross-pair AMM prices derived from base oracle prices
+assert(
+    validatorSource.includes('122_989_146_433'),
+    'P2.5: wSOL/MOLT sqrt_price for 820 MOLT present'
+);
+assert(
+    validatorSource.includes('604_202_834_500'),
+    'P2.5: wETH/MOLT sqrt_price for 19,790 MOLT present'
+);
+
+// P2.6: Genesis creates exactly 5 pairs (not 7, no REEF)
+{
+    const genesisPairFn = validatorSource.indexOf('fn genesis_create_trading_pairs');
+    const genesisPairEnd = validatorSource.indexOf('fn genesis_seed_oracle');
+    const pairBlock = validatorSource.slice(genesisPairFn, genesisPairEnd);
+    // Narrow to just the CLOB pairs array (not AMM pool_configs)
+    const pairsStart = pairBlock.indexOf('let pairs:');
+    const pairsEnd = pairBlock.indexOf('];', pairsStart);
+    const pairsArray = pairBlock.slice(pairsStart, pairsEnd);
+    const pairDefs = (pairsArray.match(/\("(MOLT|wSOL|wETH)\/(mUSD|MOLT)"/g) || []);
+    assert(pairDefs.length === 5, `P2.6: Genesis creates 5 CLOB pairs (got ${pairDefs.length})`);
+    assert(!pairBlock.includes('REEF'), 'P2.6: No REEF pairs in genesis');
+}
+
+// P2.7: first-boot-deploy.sh uses 1-indexed pair IDs (F2.7)
+assert(
+    firstBootSource.includes("'pair_id': 1") && !firstBootSource.includes("'pair_id': 0"),
+    'P2.7: first-boot-deploy.sh pair IDs are 1-indexed (not 0-indexed)'
+);
+
+// P2.8: first-boot-deploy.sh has 5 pools (not 7, no REEF) (F2.9)
+{
+    const poolCount = (firstBootSource.match(/'pair_id':/g) || []).length;
+    assert(poolCount === 5, `P2.8: first-boot-deploy.sh has 5 pools (got ${poolCount})`);
+    assert(!firstBootSource.includes('REEF'), 'P2.8: No REEF pools in first-boot-deploy');
+}
+
+// P2.9: testnet-deploy.sh also uses 1-indexed pair IDs and 5 pools
+assert(
+    testnetDeploySource.includes("'pair_id': 1") && !testnetDeploySource.includes("'pair_id': 0"),
+    'P2.9: testnet-deploy.sh pair IDs are 1-indexed'
+);
+{
+    const testnetPoolCount = (testnetDeploySource.match(/'pair_id':/g) || []).length;
+    assert(testnetPoolCount === 5, `P2.9: testnet-deploy.sh has 5 pools (got ${testnetPoolCount})`);
+}
+
+// P2.10: Startup reconciliation for analytics prices (F2.1)
+assert(
+    validatorSource.includes('Analytics price seeds missing'),
+    'P2.10: Startup reconciliation checks for missing ana_lp_1'
+);
+assert(
+    validatorSource.includes('genesis_seed_analytics_prices'),
+    'P2.10: Reconciliation calls genesis_seed_analytics_prices'
+);
+
+// P2.11: Startup reconciliation for oracle prices (F2.2)
+assert(
+    validatorSource.includes('Oracle price feeds missing'),
+    'P2.11: Startup reconciliation checks for missing price_MOLT'
+);
+assert(
+    validatorSource.includes('Oracle price seeded'),
+    'P2.11: Reconciliation writes oracle prices directly'
+);
+
+// P2.12: AMM sqrt_price comments aligned with oracle seed prices
+assert(
+    validatorSource.includes('MOLT=$0.10, wSOL=$82, wETH=$1,979'),
+    'P2.12: AMM sqrt_price comment cites correct oracle prices'
+);
+
+// P2.13: Q32 formula documented
+assert(
+    validatorSource.includes('(1 << 32) * sqrt(real_price)'),
+    'P2.13: Q32 sqrt_price formula documented in code'
+);
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Summary

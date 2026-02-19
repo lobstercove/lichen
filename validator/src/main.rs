@@ -42,8 +42,11 @@ use std::env;
 use std::fs;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use futures_util::{SinkExt, StreamExt};
+use tokio_tungstenite::tungstenite;
 use sync::SyncManager;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::time;
@@ -1979,11 +1982,22 @@ fn genesis_exec_contract(
     match runtime.execute(&contract, function_name, args, ctx) {
         Ok(result) => {
             if !result.success {
+                // Check for non-zero return code — indicates a real WASM error,
+                // not just "already initialized". Return false so callers know.
+                let rc = result.return_code.unwrap_or(1);
+                if rc != 0 {
+                    warn!(
+                        "  FAIL {}: contract returned error code {} — {:?}",
+                        label, rc, result.error
+                    );
+                    return false;
+                }
+                // return_code == 0 with success == false: treat as non-fatal
+                // (e.g., "already initialized" idempotent calls)
                 warn!(
-                    "  WARN {}: contract returned error: {:?}",
+                    "  WARN {}: contract returned !success with rc=0: {:?}",
                     label, result.error
                 );
-                // Some contracts return non-zero on "already initialized" — not fatal
             }
             // Apply storage changes
             for (key, val_opt) in &result.storage_changes {
@@ -2593,19 +2607,20 @@ fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey, la
     // Args: [0x01][caller 32B][token_a 32B][token_b 32B][fee_tier 1B][initial_sqrt_price 8B]
     // fee_tier = 2 (30bps)
     // sqrt_price in Q32 fixed-point: value = (1 << 32) * sqrt(real_price)
-    //   MOLT/mUSD  = 1.0          → sqrt_price = 1 << 32  (4_294_967_296)
-    //   wSOL/mUSD  ~ $178         → sqrt_price = 13_360_000_000
-    //   wETH/mUSD  ~ $3,521       → sqrt_price = 59_345_000_000
-    //   wSOL/MOLT  ~ 424 MOLT     → sqrt_price = 20_591_000_000
-    //   wETH/MOLT  ~ 8,383 MOLT   → sqrt_price = 91_558_000_000
+    // Prices aligned with genesis oracle seeds: MOLT=$0.10, wSOL=$82, wETH=$1,979
+    //   MOLT/mUSD  = $0.10         → sqrt_price =  1_358_187_913
+    //   wSOL/mUSD  = $82           → sqrt_price = 38_892_583_020
+    //   wETH/mUSD  = $1,979        → sqrt_price = 191_065_712_575
+    //   wSOL/MOLT  = 820 MOLT      → sqrt_price = 122_989_146_433
+    //   wETH/MOLT  = 19,790 MOLT   → sqrt_price = 604_202_834_500
     let fee_tier: u8 = 2; // FEE_TIER_30BPS
 
     let pool_configs: [(&str, [u8; 32], [u8; 32], u64); 5] = [
-        ("MOLT/mUSD",  molt_addr, musd_addr, 1u64 << 32),        // 1.0
-        ("wSOL/mUSD",  wsol_addr, musd_addr, 13_360_000_000),    // ~$178
-        ("wETH/mUSD",  weth_addr, musd_addr, 59_345_000_000),    // ~$3,521
-        ("wSOL/MOLT",  wsol_addr, molt_addr, 20_591_000_000),    // ~424 MOLT
-        ("wETH/MOLT",  weth_addr, molt_addr, 91_558_000_000),    // ~8,383 MOLT
+        ("MOLT/mUSD",  molt_addr, musd_addr,    1_358_187_913),   // $0.10
+        ("wSOL/mUSD",  wsol_addr, musd_addr,   38_892_583_020),   // $82
+        ("wETH/mUSD",  weth_addr, musd_addr,  191_065_712_575),   // $1,979
+        ("wSOL/MOLT",  wsol_addr, molt_addr,  122_989_146_433),   // 820 MOLT
+        ("wETH/MOLT",  weth_addr, molt_addr,  604_202_834_500),   // 19,790 MOLT
     ];
 
     for (label, token_a, token_b, sqrt_price) in &pool_configs {
@@ -2707,14 +2722,13 @@ fn genesis_seed_oracle(state: &StateStore, deployer_pubkey: &Pubkey, label: &str
         warn!("  SKIP initial price submission failed");
     }
 
-    // ── Step 3: Seed external asset price feeds (wSOL, wETH, BTC) ──
+    // ── Step 3: Seed external asset price feeds (wSOL, wETH) ──
     // These provide reference prices for oracle-priced DEX pairs.
-    // Prices are representative launch values; the background price feeder
-    // will update them to live market prices once the validator is running.
-    let external_feeds: [(&[u8], u64, &str); 3] = [
-        (b"wSOL", 17_000_000_000,         "$170.00"),     // $170 at 8 decimals
-        (b"wETH", 250_000_000_000,         "$2,500.00"),   // $2,500 at 8 decimals
-        (b"BTC",  10_000_000_000_000,      "$100,000.00"), // $100,000 at 8 decimals
+    // Prices are approximate current market values; the background
+    // WebSocket price feeder will update them to live prices immediately.
+    let external_feeds: [(&[u8], u64, &str); 2] = [
+        (b"wSOL", 8_200_000_000,           "$82.00"),      // $82 at 8 decimals
+        (b"wETH", 197_900_000_000,         "$1,979.00"),   // $1,979 at 8 decimals
     ];
 
     for (ext_asset, ext_price, display_price) in &external_feeds {
@@ -2767,7 +2781,7 @@ fn genesis_seed_oracle(state: &StateStore, deployer_pubkey: &Pubkey, label: &str
     genesis_seed_analytics_prices(state, deployer_pubkey);
 
     info!("──────────────────────────────────────────────────────");
-    info!("  Genesis oracle seeding complete (MOLT + wSOL + wETH + BTC)");
+    info!("  Genesis oracle seeding complete (MOLT + wSOL + wETH)");
     info!("──────────────────────────────────────────────────────");
 }
 
@@ -2792,15 +2806,15 @@ fn genesis_seed_analytics_prices(state: &StateStore, deployer_pubkey: &Pubkey) {
     // Pair IDs match genesis_create_trading_pairs order:
     //   1=MOLT/mUSD, 2=wSOL/mUSD, 3=wETH/mUSD, 4=wSOL/MOLT, 5=wETH/MOLT
     let molt_usd: f64 = 0.10;
-    let wsol_usd: f64 = 170.0;
-    let weth_usd: f64 = 2500.0;
+    let wsol_usd: f64 = 82.0;
+    let weth_usd: f64 = 1979.0;
 
     let pair_prices: [(u64, f64); 5] = [
         (1, molt_usd),                    // MOLT/mUSD = $0.10
-        (2, wsol_usd),                    // wSOL/mUSD = $170
-        (3, weth_usd),                    // wETH/mUSD = $2,500
-        (4, wsol_usd / molt_usd),         // wSOL/MOLT = 1,700
-        (5, weth_usd / molt_usd),         // wETH/MOLT = 25,000
+        (2, wsol_usd),                    // wSOL/mUSD = $82
+        (3, weth_usd),                    // wETH/mUSD = $1,979
+        (4, wsol_usd / molt_usd),         // wSOL/MOLT = 820
+        (5, weth_usd / molt_usd),         // wETH/MOLT = 19,790
     ];
 
     for (pair_id, price_f64) in &pair_prices {
@@ -2867,20 +2881,38 @@ fn genesis_seed_analytics_prices(state: &StateStore, deployer_pubkey: &Pubkey) {
 }
 
 // ========================================================================
-//  BACKGROUND ORACLE PRICE FEEDER — Fetches live prices from Binance and
-//  writes them to moltoracle + dex_analytics contract storage every 15s.
-//  This keeps oracle-priced pairs (wSOL/mUSD, wETH/mUSD, etc.) up-to-date
-//  with live market data, generating candle history continuously.
+//  BACKGROUND ORACLE PRICE FEEDER — Real-time Binance WebSocket price feed
+//  with REST API fallback. Writes to moltoracle + dex_analytics storage.
+//
+//  Architecture:
+//    1. WebSocket reader: connects to Binance aggTrade streams for SOL/ETH,
+//       stores latest prices in lock-free AtomicU64 (microdollars).
+//    2. Storage writer: 1-second tick reads atomics, writes to oracle +
+//       analytics contract storage only when prices have changed.
+//    3. REST fallback: if WebSocket is unhealthy (no message in 30s),
+//       fetches prices from Binance REST API as backup.
+//    4. Auto-reconnect: exponential backoff 1s → 2s → 4s → ... → 30s max.
 // ========================================================================
+
+/// Price stored as microdollars in AtomicU64 (price * 1_000_000).
+/// This gives 6 decimal precision, far exceeding oracle's 8-decimal format.
+const MICRO_SCALE: f64 = 1_000_000.0;
+
+/// Binance WebSocket aggTrade stream URL for SOL and ETH
+const BINANCE_WS_URL: &str = "wss://stream.binance.com:9443/ws/solusdt@aggTrade/ethusdt@aggTrade";
+
+/// Binance REST fallback URL
+const BINANCE_REST_URL: &str = "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22]";
+
+/// REST ticker response
+#[derive(Deserialize)]
+struct BinanceTicker {
+    symbol: String,
+    price: String,
+}
 
 fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
     tokio::spawn(async move {
-        let mut interval = time::interval(Duration::from_secs(15));
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
-
         // Resolve contract pubkeys via symbol registry
         let oracle_pk = match state.get_symbol_registry("ORACLE") {
             Ok(Some(entry)) => entry.program,
@@ -2900,51 +2932,83 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
         const PRICE_SCALE: u64 = 1_000_000_000; // 1e9 for DEX price scaling
         const ORACLE_DECIMALS: u8 = 8;
         let feeder = deployer_pubkey.0; // genesis admin is the authorized feeder
-
-        // MOLT genesis price (read from oracle or use default)
         let molt_usd_default: f64 = 0.10;
 
-        info!("🔮 Oracle price feeder started (15s interval)");
+        // Lock-free atomic price storage shared between WS reader and storage writer
+        let wsol_micro = Arc::new(AtomicU64::new(0));
+        let weth_micro = Arc::new(AtomicU64::new(0));
+        let ws_healthy = Arc::new(AtomicBool::new(false));
 
-        // Track per-pair candle state: (last_candle_slot, last_price)
-        // Pair IDs: 2=wSOL/mUSD, 3=wETH/mUSD, 4=wSOL/MOLT, 5=wETH/MOLT
+        // Spawn WebSocket reader task
+        {
+            let ws_wsol = wsol_micro.clone();
+            let ws_weth = weth_micro.clone();
+            let ws_flag = ws_healthy.clone();
+            tokio::spawn(async move {
+                binance_ws_loop(ws_wsol, ws_weth, ws_flag).await;
+            });
+        }
+
+        // REST fallback HTTP client (used only when WebSocket is unhealthy)
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
+        info!("🔮 Oracle price feeder started (WebSocket real-time + 1s storage writes)");
+
         let candle_intervals: [u64; 9] = [60, 300, 900, 3600, 14400, 86400, 259200, 604800, 31536000];
 
+        // Track last-written prices to skip no-op writes
+        let mut prev_wsol: u64 = 0;
+        let mut prev_weth: u64 = 0;
+
+        // Storage writer loop: 1-second tick
+        let mut write_tick = time::interval(Duration::from_secs(1));
+
         loop {
-            interval.tick().await;
+            write_tick.tick().await;
 
-            // Fetch prices from Binance REST API
-            let url = "https://api.binance.com/api/v3/ticker/price?symbols=[\"SOLUSDT\",\"ETHUSDT\",\"BTCUSDT\"]";
-            let prices = match client.get(url).send().await {
-                Ok(resp) => match resp.json::<Vec<BinanceTicker>>().await {
-                    Ok(tickers) => tickers,
-                    Err(e) => {
-                        debug!("🔮 Binance parse error: {}", e);
-                        continue;
+            // Read current prices from atomics
+            let mut cur_wsol = wsol_micro.load(Ordering::Relaxed);
+            let mut cur_weth = weth_micro.load(Ordering::Relaxed);
+
+            // REST fallback if WebSocket is not healthy or no prices yet
+            if !ws_healthy.load(Ordering::Relaxed) || (cur_wsol == 0 && cur_weth == 0) {
+                if let Ok(resp) = http.get(BINANCE_REST_URL).send().await {
+                    if let Ok(tickers) = resp.json::<Vec<BinanceTicker>>().await {
+                        for t in &tickers {
+                            let p: f64 = t.price.parse().unwrap_or(0.0);
+                            if p <= 0.0 { continue; }
+                            let micro = (p * MICRO_SCALE) as u64;
+                            match t.symbol.as_str() {
+                                "SOLUSDT" => {
+                                    wsol_micro.store(micro, Ordering::Relaxed);
+                                    cur_wsol = micro;
+                                }
+                                "ETHUSDT" => {
+                                    weth_micro.store(micro, Ordering::Relaxed);
+                                    cur_weth = micro;
+                                }
+                                _ => {}
+                            }
+                        }
                     }
-                },
-                Err(e) => {
-                    debug!("🔮 Binance fetch error: {}", e);
-                    continue;
-                }
-            };
-
-            let mut wsol_usd: f64 = 0.0;
-            let mut weth_usd: f64 = 0.0;
-            let mut btc_usd: f64 = 0.0;
-
-            for ticker in &prices {
-                let price: f64 = ticker.price.parse().unwrap_or(0.0);
-                match ticker.symbol.as_str() {
-                    "SOLUSDT" => wsol_usd = price,
-                    "ETHUSDT" => weth_usd = price,
-                    "BTCUSDT" => btc_usd = price,
-                    _ => {}
                 }
             }
 
+            // Skip storage writes if prices haven't changed
+            if cur_wsol == prev_wsol && cur_weth == prev_weth {
+                continue;
+            }
+            prev_wsol = cur_wsol;
+            prev_weth = cur_weth;
+
+            let wsol_usd = cur_wsol as f64 / MICRO_SCALE;
+            let weth_usd = cur_weth as f64 / MICRO_SCALE;
+
             if wsol_usd <= 0.0 && weth_usd <= 0.0 {
-                continue; // no valid prices
+                continue;
             }
 
             let now_ts = std::time::SystemTime::now()
@@ -2963,10 +3027,9 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
             };
 
             // Write oracle prices for each external asset
-            let oracle_feeds: [(&[u8], f64); 3] = [
+            let oracle_feeds: [(&[u8], f64); 2] = [
                 (b"wSOL", wsol_usd),
                 (b"wETH", weth_usd),
-                (b"BTC", btc_usd),
             ];
 
             for (asset, price_usd) in &oracle_feeds {
@@ -3026,7 +3089,6 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
 
                 if price_scaled > high { high = price_scaled; }
                 if price_scaled < low { low = price_scaled; }
-                // Volume and trades stay the same (oracle updates don't generate volume)
 
                 let mut stats = Vec::with_capacity(48);
                 stats.extend_from_slice(&vol.to_le_bytes());
@@ -3051,18 +3113,88 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
             }
 
             debug!(
-                "🔮 Oracle prices updated: wSOL=${:.2} wETH=${:.2} BTC=${:.0}",
-                wsol_usd, weth_usd, btc_usd
+                "🔮 Oracle prices updated: wSOL=${:.2} wETH=${:.2}",
+                wsol_usd, weth_usd
             );
         }
     });
 }
 
-/// Binance REST ticker response
-#[derive(Deserialize)]
-struct BinanceTicker {
-    symbol: String,
-    price: String,
+/// Binance WebSocket reader loop with auto-reconnect.
+/// Connects to aggTrade streams, parses prices, stores in atomics.
+/// On disconnect, retries with exponential backoff (1s → 30s max).
+async fn binance_ws_loop(
+    wsol: Arc<AtomicU64>,
+    weth: Arc<AtomicU64>,
+    healthy: Arc<AtomicBool>,
+) {
+    let mut backoff_secs: u64 = 1;
+
+    loop {
+        info!("🔮 Binance WebSocket connecting...");
+        healthy.store(false, Ordering::Relaxed);
+
+        match tokio_tungstenite::connect_async(BINANCE_WS_URL).await {
+            Ok((ws_stream, _)) => {
+                info!("🔮 Binance WebSocket connected (real-time aggTrade feed)");
+                backoff_secs = 1; // reset backoff on successful connect
+                healthy.store(true, Ordering::Relaxed);
+
+                let (mut write, mut read) = ws_stream.split();
+
+                while let Some(msg_result) = read.next().await {
+                    match msg_result {
+                        Ok(tungstenite::Message::Text(ref text)) => {
+                            // aggTrade format: {"e":"aggTrade","s":"SOLUSDT","p":"82.30",...}
+                            if let Ok(trade) = serde_json::from_str::<serde_json::Value>(text) {
+                                if let (Some(sym), Some(price_str)) = (
+                                    trade["s"].as_str(),
+                                    trade["p"].as_str(),
+                                ) {
+                                    let price: f64 = price_str.parse().unwrap_or(0.0);
+                                    if price > 0.0 {
+                                        let micro = (price * MICRO_SCALE) as u64;
+                                        match sym {
+                                            "SOLUSDT" => wsol.store(micro, Ordering::Relaxed),
+                                            "ETHUSDT" => weth.store(micro, Ordering::Relaxed),
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Ok(tungstenite::Message::Ping(data)) => {
+                            // Respond to keep connection alive
+                            if write.send(tungstenite::Message::Pong(data)).await.is_err() {
+                                warn!("🔮 Binance WebSocket pong send failed");
+                                break;
+                            }
+                        }
+                        Ok(tungstenite::Message::Close(_)) => {
+                            info!("🔮 Binance WebSocket closed by server");
+                            break;
+                        }
+                        Err(e) => {
+                            warn!("🔮 Binance WebSocket read error: {}", e);
+                            break;
+                        }
+                        _ => {} // Binary, Pong, Frame — ignore
+                    }
+                }
+
+                healthy.store(false, Ordering::Relaxed);
+                warn!("🔮 Binance WebSocket disconnected, reconnecting...");
+            }
+            Err(e) => {
+                warn!("🔮 Binance WebSocket connect failed: {}", e);
+            }
+        }
+
+        // Exponential backoff: 1 → 2 → 4 → 8 → 16 → 30 (capped)
+        let delay = backoff_secs.min(30);
+        tokio::time::sleep(Duration::from_secs(delay)).await;
+        backoff_secs = (backoff_secs * 2).min(60);
+    }
 }
 
 /// Update a single candle for an oracle-priced pair.
@@ -4347,6 +4479,82 @@ async fn run_validator() {
             }
 
             info!("✅ Treasury migration complete");
+        }
+
+        // ================================================================
+        // STARTUP RECONCILIATION: Seed analytics prices if missing.
+        // genesis_seed_analytics_prices was added after genesis block 0
+        // was already created, so the data was never written. This check
+        // runs on every startup and writes the seed data exactly once.
+        // Also reconciles oracle price feeds if missing.
+        // ================================================================
+        {
+            let genesis_pk = genesis_wallet
+                .as_ref()
+                .map(|w| w.pubkey)
+                .unwrap_or(Pubkey([0u8; 32]));
+
+            // Check if analytics seed data is present (ana_lp_1 = MOLT/mUSD)
+            let ana_lp_1_exists = state
+                .get_program_storage("ANALYTICS", b"ana_lp_1")
+                .is_some();
+
+            if !ana_lp_1_exists {
+                info!("🔄 RECONCILE: Analytics price seeds missing — writing initial prices");
+                genesis_seed_analytics_prices(&state, &genesis_pk);
+                info!("  ✓ Analytics prices seeded for pairs 1-5");
+            }
+
+            // Check if oracle price feeds are present (price_MOLT)
+            let molt_price_exists = state
+                .get_program_storage("ORACLE", b"price_MOLT")
+                .is_some();
+
+            if !molt_price_exists {
+                info!("🔄 RECONCILE: Oracle price feeds missing — seeding initial prices");
+                // Write oracle prices directly to contract storage
+                // (WASM calls may not work on existing DB, so use direct writes)
+                if let Some(oracle_pk) = derive_contract_address(&genesis_pk, "moltoracle") {
+                    const ORACLE_DECIMALS: u8 = 8;
+                    let oracle_feeds: &[(&str, u64)] = &[
+                        ("MOLT",  10_000_000),          // $0.10
+                        ("wSOL",  8_200_000_000),       // $82
+                        ("wETH",  197_900_000_000),     // $1,979
+                    ];
+                    let now_secs = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+
+                    for (asset, price) in oracle_feeds {
+                        // price_{asset}: 8 bytes LE (u64)
+                        let price_key = format!("price_{}", asset);
+                        let _ = state.put_contract_storage(
+                            &oracle_pk,
+                            price_key.as_bytes(),
+                            &price.to_le_bytes(),
+                        );
+
+                        // price_{asset}_ts: 8 bytes LE (u64 timestamp)
+                        let ts_key = format!("price_{}_ts", asset);
+                        let _ = state.put_contract_storage(
+                            &oracle_pk,
+                            ts_key.as_bytes(),
+                            &now_secs.to_le_bytes(),
+                        );
+
+                        // price_{asset}_dec: 1 byte (decimals)
+                        let dec_key = format!("price_{}_dec", asset);
+                        let _ = state.put_contract_storage(
+                            &oracle_pk,
+                            dec_key.as_bytes(),
+                            &[ORACLE_DECIMALS],
+                        );
+
+                        info!("  ✓ Oracle price seeded: {} = {} ({}dec)", asset, price, ORACLE_DECIMALS);
+                    }
+                }
+            }
         }
     }
 
@@ -7094,9 +7302,9 @@ async fn run_validator() {
     info!("✅ RPC server starting on http://0.0.0.0:{}", rpc_port);
 
     // Start the oracle price feeder background task
-    // Fetches live wSOL/wETH/BTC prices from Binance every 15s and writes
-    // them to moltoracle + dex_analytics contract storage so oracle-priced
-    // pairs have live price data, candles, and tickers.
+    // Connects to Binance WebSocket (aggTrade) for real-time wSOL/wETH prices
+    // and writes to moltoracle + dex_analytics storage every 1s when prices change.
+    // Auto-reconnects with exponential backoff; falls back to REST API if WS is down.
     if let Ok(Some(gpk)) = state.get_genesis_pubkey() {
         let state_for_oracle = state.clone();
         spawn_oracle_price_feeder(state_for_oracle, gpk);

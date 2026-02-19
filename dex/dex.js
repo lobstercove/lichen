@@ -952,17 +952,18 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ═══════════════════════════════════════════════════════════════════════
     // F10E.7 — External Price Feed (Binance WebSocket for real-time wSOL, wETH)
-    // The backend oracle price feeder writes live prices to moltoracle +
-    // dex_analytics every 15s, so the standard API (/pairs, /tickers, /candles)
-    // returns real oracle-sourced prices. The Binance WebSocket supplements
-    // this with sub-second price updates for a responsive UI (between API polls).
+    // The backend oracle price feeder connects to Binance WebSocket
+    // (aggTrade streams) for real-time SOL/ETH prices and writes to
+    // moltoracle + dex_analytics every 1s when prices change. The frontend
+    // Binance WebSocket supplements this with sub-second ticker updates
+    // for a responsive UI between API polls.
     // ═══════════════════════════════════════════════════════════════════════
-    const externalPrices = { wSOL: 0, wETH: 0, BTC: 0 };
+    const externalPrices = { wSOL: 0, wETH: 0 };
     let binanceWs = null;
 
     function connectBinancePriceFeed() {
-        // Streams: SOL/USDT, ETH/USDT, BTC/USDT mini tickers
-        const streams = 'solusdt@miniTicker/ethusdt@miniTicker/btcusdt@miniTicker';
+        // Streams: SOL/USDT, ETH/USDT mini tickers
+        const streams = 'solusdt@miniTicker/ethusdt@miniTicker';
         const url = `wss://stream.binance.com:9443/ws/${streams}`;
         try {
             binanceWs = new WebSocket(url);
@@ -974,12 +975,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     const sym = (d.s || '').toUpperCase();
                     if (sym === 'SOLUSDT') externalPrices.wSOL = price;
                     else if (sym === 'ETHUSDT') externalPrices.wETH = price;
-                    else if (sym === 'BTCUSDT') externalPrices.BTC = price;
                     // Real-time overlay: update active pair price between API polls
                     applyBinanceRealTimeOverlay();
                 } catch { /* malformed message */ }
             };
-            binanceWs.onclose = () => { setTimeout(connectBinancePriceFeed, 10000); };
+            binanceWs.onclose = () => { setTimeout(connectBinancePriceFeed, 5000); };
             binanceWs.onerror = () => { try { binanceWs.close(); } catch { /* already closed */ } };
             console.log('[DEX] Binance price feed connected (real-time overlay)');
         } catch (e) {
@@ -998,8 +998,6 @@ document.addEventListener('DOMContentLoaded', () => {
             realtimePrice = externalPrices.wSOL;
         } else if ((base === 'WETH' || base === 'ETH') && externalPrices.wETH > 0) {
             realtimePrice = externalPrices.wETH;
-        } else if ((base === 'WBTC' || base === 'BTC') && externalPrices.BTC > 0) {
-            realtimePrice = externalPrices.BTC;
         }
         if (realtimePrice <= 0) return;
         // For MOLT-quoted pairs, convert using MOLT genesis price or API price
