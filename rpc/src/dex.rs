@@ -340,6 +340,7 @@ pub struct DepthQuery {
 #[derive(Deserialize)]
 pub struct LimitQuery {
     limit: Option<usize>,
+    trader: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -1115,6 +1116,8 @@ async fn get_trades(
     Query(q): Query<LimitQuery>,
 ) -> Response {
     let limit = q.limit.unwrap_or(50).min(200);
+    // F4.4: Support optional trader filter (hex-encoded pubkey)
+    let trader_filter = q.trader.as_deref().unwrap_or("").to_lowercase();
     let slot = current_slot(&state);
     let trade_count = read_u64(&state, DEX_CORE_PROGRAM, "dex_trade_count");
 
@@ -1137,6 +1140,10 @@ async fn get_trades(
         if let Some(data) = read_bytes(&state, DEX_CORE_PROGRAM, &key) {
             if let Some(mut trade) = decode_trade(&data) {
                 if trade.pair_id == pair_id {
+                    // F4.4: Filter by trader address if specified
+                    if !trader_filter.is_empty() && trade.taker != trader_filter {
+                        continue;
+                    }
                     // F3.2: Infer taker side from maker order
                     // The maker's side is the opposite of the taker's side.
                     let maker_key = format!("dex_order_{}", trade.maker_order_id);

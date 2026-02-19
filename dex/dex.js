@@ -697,6 +697,17 @@ document.addEventListener('DOMContentLoaded', () => {
         const price = parseFloat(priceInput?.value) || 0, amount = parseFloat(amountInput?.value) || 0;
         if (!amount || (state.orderType !== 'market' && !price)) { showNotification('Enter price and amount', 'warning'); return; }
         if (!contracts.dex_core) { showNotification('Contract addresses not loaded', 'error'); return; }
+        // F4.3: Client-side balance check before submitting order
+        {
+            const pair = state.activePair;
+            const neededToken = state.orderSide === 'buy' ? (pair?.quote || 'mUSD') : (pair?.base || 'MOLT');
+            const neededAmount = state.orderSide === 'buy' ? (price * amount) : amount;
+            const available = balances[neededToken]?.available || 0;
+            if (neededAmount > available) {
+                showNotification(`Insufficient ${neededToken} balance: need ${formatAmount(neededAmount)}, have ${formatAmount(available)}`, 'warning');
+                return;
+            }
+        }
         submitBtn.disabled = true; submitBtn.textContent = 'Submitting...';
         try {
             const result = await wallet.sendTransaction([{

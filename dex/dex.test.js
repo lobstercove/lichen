@@ -996,6 +996,114 @@ assert(
 );
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Phase 4: Trade View — Order Form & Execution
+// ═══════════════════════════════════════════════════════════════════════════
+
+// P4.1: Submit handler sends correct fields to sendTransaction
+{
+    const submitMatch = dexSource.match(/sendTransaction\(\[\{[\s\S]*?op:\s*'place_order'[\s\S]*?\}\]\)/);
+    assert(submitMatch, 'P4.1a: Submit handler calls sendTransaction with op: place_order');
+    const block = submitMatch[0];
+    assert(block.includes('pair_id:'), 'P4.1b: Submit sends pair_id');
+    assert(block.includes('side:'), 'P4.1c: Submit sends side');
+    assert(block.includes('order_type:'), 'P4.1d: Submit sends order_type');
+    assert(block.includes('price:') && block.includes('PRICE_SCALE'), 'P4.1e: Submit sends price scaled by PRICE_SCALE');
+    assert(block.includes('quantity:') && block.includes('PRICE_SCALE'), 'P4.1f: Submit sends quantity scaled by PRICE_SCALE');
+}
+
+// P4.2: Market order hides price input
+assert(
+    dexSource.includes("state.orderType === 'market' ? 'none' : 'block'"),
+    'P4.2: Market order type hides price input'
+);
+
+// P4.3: Stop-limit shows stop-price group
+assert(
+    dexSource.includes("state.orderType === 'stop-limit' ? 'block' : 'none'"),
+    'P4.3: Stop-limit type shows stop-price group'
+);
+
+// P4.4: Cancel order uses sendTransaction with op: cancel_order
+assert(
+    dexSource.includes("op: 'cancel_order'") && dexSource.includes('order_id:'),
+    'P4.4: Cancel order sends op: cancel_order with order_id via sendTransaction'
+);
+
+// P4.5: Percentage preset buttons exist and calculate from balance
+{
+    const presetMatch = dexSource.match(/preset-btn[\s\S]{0,300}?dataset\.pct/);
+    assert(presetMatch, 'P4.5a: Percentage preset buttons wire up dataset.pct');
+    assert(
+        dexSource.includes('bal.available * pct'),
+        'P4.5b: Preset buttons calculate from balance.available'
+    );
+}
+
+// P4.6: calcTotal computes price × amount
+assert(
+    dexSource.includes('(p * a).toFixed(4)'),
+    'P4.6: calcTotal computes price × amount as total'
+);
+
+// P4.7: Fee estimate uses 0.0005 rate
+assert(
+    dexSource.includes('p * a * 0.0005'),
+    'P4.7: Fee estimate uses 0.05% rate (0.0005)'
+);
+
+// P4.8: Route info shows CLOB Direct vs CLOB + AMM Split
+assert(
+    dexSource.includes("'CLOB + AMM Split'") && dexSource.includes("'CLOB Direct'"),
+    'P4.8: Route info shows CLOB Direct or CLOB + AMM Split'
+);
+
+// P4.9: Route threshold is 50000
+assert(
+    dexSource.includes('> 50000'),
+    'P4.9: Route splits at 50000 threshold'
+);
+
+// P4.10: Open orders render with cancel buttons
+assert(
+    dexSource.includes('cancel-btn') && dexSource.includes('renderOpenOrders'),
+    'P4.10: Open orders section renders with cancel buttons'
+);
+
+// P4.11: Trade history loads with trader param
+assert(
+    dexSource.includes('trades?limit=50&trader='),
+    'P4.11: loadTradeHistory sends trader query param'
+);
+
+// P4.12: Positions tab loads margin positions from API
+assert(
+    dexSource.includes("/margin/positions?trader="),
+    'P4.12: Positions tab loads margin positions from /margin/positions API'
+);
+
+// --- Fix verification tests ---
+
+// P4.F3: F4.3 FIX — Balance validation before order submission
+assert(
+    dexSource.includes('Insufficient') && dexSource.includes('neededToken') && dexSource.includes('neededAmount > available'),
+    'P4.F3: Client-side balance validation checks neededAmount vs available (F4.3 fix)'
+);
+
+// P4.F4a: F4.4 FIX — LimitQuery has trader field
+assert(
+    rpcDexSource.includes('pub struct LimitQuery') &&
+    rpcDexSource.includes('trader: Option<String>'),
+    'P4.F4a: LimitQuery struct has trader: Option<String> field (F4.4 fix)'
+);
+
+// P4.F4b: F4.4 FIX — get_trades filters by trader address
+assert(
+    rpcDexSource.includes('trader_filter') &&
+    rpcDexSource.includes('trade.taker != trader_filter'),
+    'P4.F4b: get_trades filters trades by trader address when specified (F4.4 fix)'
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Summary
 // ═══════════════════════════════════════════════════════════════════════════
 console.log(`\n${'═'.repeat(60)}`);

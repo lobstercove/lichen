@@ -72,7 +72,7 @@
 | 1 | Contract Address Resolution | 8/8 | 5 | `[x]` |
 | 2 | Genesis & First-Boot Deploy | 10/10 | 12 | `[x]` |
 | 3 | Trade View — Order Book (CLOB) | 18/18 | 9 | `[x]` |
-| 4 | Trade View — Order Form & Execution | 0/16 | 0 | `[ ]` |
+| 4 | Trade View — Order Form & Execution | 16/16 | 10 | `[x]` |
 | 5 | Trade View — TradingView Chart | 0/10 | 0 | `[ ]` |
 | 6 | Trade View — WebSocket Feeds | 0/12 | 0 | `[ ]` |
 | 7 | Pool View — AMM Liquidity | 0/20 | 0 | `[ ]` |
@@ -93,7 +93,7 @@
 | 22 | Security & Input Validation | 0/14 | 0 | `[ ]` |
 | 23 | Mobile / Responsive Layout | 0/8 | 0 | `[ ]` |
 | 24 | End-to-End Integration Tests | 0/12 | 0 | `[ ]` |
-| — | **TOTAL** | **36/314** | **26** | **11%** |
+| — | **TOTAL** | **52/314** | **36** | **17%** |
 
 ---
 
@@ -200,25 +200,35 @@
 
 | # | Task | Status |
 |---|---|---|
-| 4.1 | Read submit handler (dex.js) — verify `sendTransaction` instruction format matches `dex_core` expected input | `[ ]` |
-| 4.2 | Verify limit order placement: price, quantity, side, pair_id serialized correctly | `[ ]` |
-| 4.3 | Verify market order placement: no price field, immediate execution | `[ ]` |
-| 4.4 | Verify stop-limit order placement: trigger price + limit price | `[ ]` |
-| 4.5 | Read cancel order handler — verify correct instruction sent to `dex_core` | `[ ]` |
-| 4.6 | Verify order cancellation removes order from open orders panel | `[ ]` |
-| 4.7 | Test order type tabs (Limit / Market / Stop-Limit) — correct form fields shown per type | `[ ]` |
-| 4.8 | Verify Buy/Sell tab switch updates button color and label | `[ ]` |
-| 4.9 | Verify preset percentage buttons (25/50/75/100%) calculate from wallet balance | `[ ]` |
-| 4.10 | Verify fee estimate displayed in order form matches contract fee logic | `[ ]` |
-| 4.11 | Verify "Route" info pill shows correct routing source (CLOB / AMM / Split) | `[ ]` |
-| 4.12 | Test: place order with insufficient balance — verify rejection and error notification | `[ ]` |
-| 4.13 | Verify `calcTotal()` function: price × amount = total | `[ ]` |
-| 4.14 | Verify open orders render with cancel buttons and live fill percentage | `[ ]` |
-| 4.15 | Verify trade history tab shows user's executed trades with correct data | `[ ]` |
-| 4.16 | Verify positions tab shows open margin positions (if margin mode active) | `[ ]` |
+| 4.1 | Read submit handler (dex.js) — verify `sendTransaction` instruction format matches `dex_core` expected input | `[x]` |
+| 4.2 | Verify limit order placement: price, quantity, side, pair_id serialized correctly | `[x]` |
+| 4.3 | Verify market order placement: no price field, immediate execution | `[x]` |
+| 4.4 | Verify stop-limit order placement: trigger price + limit price | `[x]` |
+| 4.5 | Read cancel order handler — verify correct instruction sent to `dex_core` | `[x]` |
+| 4.6 | Verify order cancellation removes order from open orders panel | `[x]` |
+| 4.7 | Test order type tabs (Limit / Market / Stop-Limit) — correct form fields shown per type | `[x]` |
+| 4.8 | Verify Buy/Sell tab switch updates button color and label | `[x]` |
+| 4.9 | Verify preset percentage buttons (25/50/75/100%) calculate from wallet balance | `[x]` |
+| 4.10 | Verify fee estimate displayed in order form matches contract fee logic | `[x]` |
+| 4.11 | Verify "Route" info pill shows correct routing source (CLOB / AMM / Split) | `[x]` |
+| 4.12 | Test: place order with insufficient balance — verify rejection and error notification | `[x]` |
+| 4.13 | Verify `calcTotal()` function: price × amount = total | `[x]` |
+| 4.14 | Verify open orders render with cancel buttons and live fill percentage | `[x]` |
+| 4.15 | Verify trade history tab shows user's executed trades with correct data | `[x]` |
+| 4.16 | Verify positions tab shows open margin positions (if margin mode active) | `[x]` |
 
 **Findings:**
-- (none yet)
+
+- **F4.1 — HIGH (stop-limit order stop_price never sent):** The stop-limit order type UI shows a stop price input group (toggled at L672), but the submit handler at L702-713 never reads `#stopPrice` value. The JSON payload contains `order_type: 'stop-limit'` but no `stop_price` or `trigger_price` field. The contract's `place_order` doesn't have a trigger mechanism — it only has `price` + `expiry_slot`. Stop-limit orders are partially stubbed. **FIX:** Add `stop_price` to the order JSON, or note that stop-limits use the `price` field as the limit and a separate trigger mechanism is needed.
+- **F4.2 — MEDIUM (expiry_slot not sent in order payload):** The order submission JSON at L702-713 omits `expiry_slot`. The contract defaults to 0 (GTC — Good Til Cancelled). This means all orders are GTC by default, which is correct for basic trading but prevents time-limited orders. **FIX:** Add optional expiry field to order form (or document that GTC is the only supported TIF).
+- **F4.3 — MEDIUM (no client-side balance validation):** The submit handler validates wallet connection, keypair, price/amount non-zero, and contract address, but never checks `balances[token].available >= requiredAmount`. Users can submit orders they can't afford — rejection happens at the contract level. The preset buttons cap to available balance, but manual input is unchecked. **FIX:** Add balance check before submission with clear error message.
+- **F4.4 — MEDIUM (trade history ignores trader filter):** `loadTradeHistory()` at L1255 calls `/pairs/:id/trades?limit=50&trader=xxx`, but the `get_trades` RPC handler uses `LimitQuery` (only `limit` param), silently ignoring `trader`. All traders see all trades, not just their own. **FIX:** Accept `trader` param in `get_trades` and filter by taker address.
+- **F4.5 — LOW (fee estimate hardcoded at 0.05%):** `calcTotal()` at L681 uses `0.0005` (5 bps) but the contract has configurable per-pair taker fees (default: 5 bps). If fees change, the estimate would be wrong. **FIX:** Read fee from pair config in `/pairs` response.
+- **F4.6 — LOW (route info pill uses static threshold):** Route shows `'CLOB + AMM Split'` for orders > 50,000 or `'CLOB Direct'` otherwise. This doesn't reflect actual SOR logic. **FIX:** Connect to real SOR quote endpoint when available.
+- **F4.7 — OK (order type tabs and UI controls work correctly):** Buy/Sell tabs toggle `state.orderSide` and update button color/label. Order type buttons toggle `state.orderType`, show/hide stop-price group for stop-limit, and hide price input for market orders.
+- **F4.8 — OK (preset percentage buttons calculate correctly):** Buttons at L686-691 calculate `balance.available * pct / price` for buy side and `balance.available * pct` for sell side. `calcTotal()` computes `price × amount = total` with reverse calc from total → amount.
+- **F4.9 — OK (open orders render with cancel and fill %):** `renderOpenOrders()` at L726 renders table with pair, side, type, price, amount, fill%, time, and cancel button. Cancel uses signed `sendTransaction` with `op: 'cancel_order'`. Removal is done locally + re-render.
+- **F4.10 — OK (positions tab renders margin positions):** `loadPositionsTab()` at L1271 and `loadMarginPositions()` at L1195 handle trade-view positions panel and margin-view positions list respectively. Close position uses signed `sendTransaction` with `op: 'close_position'`.
 
 ---
 
