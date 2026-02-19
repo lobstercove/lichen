@@ -1,5 +1,5 @@
 /**
- * DEX Frontend Tests — Phase 10 audit fixes
+ * DEX Frontend Tests — Phase 10 + Phase 10 Extra audit fixes
  * Run: node dex.test.js
  *
  * Tests all pure-function fixes applied during Phase 10 audit:
@@ -8,6 +8,19 @@
  *  F10.9  — sendTransaction validator-compatible wire format
  *  F10.10 — bs58 encode/decode round-trip
  *  F10.1-F10.7 — handler wiring (structural tests)
+ *
+ * Phase 10 Extra pass tests:
+ *  F10E.1  — Order form wallet-gate
+ *  F10E.2  — Quick Trade + Create Market wallet-gate
+ *  F10E.3  — Consistent bottom panel toggling
+ *  F10E.4  — Governance New Proposal wallet-gate
+ *  F10E.5  — Parameter + Delist proposal form fields
+ *  F10E.6  — MOLT/mUSD genesis price $0.10
+ *  F10E.7  — Binance price feed integration
+ *  F10E.8  — CSS disabled styles
+ *  F10E.9  — Margin position wallet-gate
+ *  F10E.10 — Add Liquidity wallet-gate
+ *  F10E.11 — Pool "My Pools" filter logic
  */
 'use strict';
 
@@ -353,6 +366,139 @@ assert(dexSource.includes('await loadContractAddresses()'), 'F10.10: Called in i
 
 // F10.11: Auto-reconnect indicator
 assert(dexSource.includes('(view only)'), 'F10.11: View-only indicator shown');
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase 10 Extra Pass (F10E) — Structural Tests
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n── F10E: Extra pass structural checks ──');
+
+// F10E.1: Order form wallet-gate — applyWalletGateAll function exists and targets order form
+assert(dexSource.includes('function applyWalletGateAll'), 'F10E.1: applyWalletGateAll function exists');
+assert(dexSource.includes("Connect Wallet to Trade"), 'F10E.1: Order form shows wallet-gate button text');
+assert(dexSource.includes('wallet-gated-disabled'), 'F10E.1: Uses wallet-gated-disabled CSS class');
+
+// F10E.2: Quick Trade + Create Market wallet-gate
+assert(dexSource.includes("Connect Wallet to Create"), 'F10E.2: Create Market shows wallet-gate text');
+assert(dexSource.includes("predict-trade-panel") && dexSource.includes("wallet-gated-disabled"), 'F10E.2: Quick Trade panel gets wallet-gated-disabled');
+assert(dexSource.includes("predict-create-panel") && dexSource.includes("wallet-gated-disabled"), 'F10E.2: Create Market panel gets wallet-gated-disabled');
+
+// F10E.3: Consistent bottom panel toggling across all views
+assert(dexSource.includes("predictBottomPanel"), 'F10E.3: Predict bottom panel ID referenced in JS');
+assert(dexSource.includes("poolBottomPanel"), 'F10E.3: Pool bottom panel ID referenced in JS');
+assert(dexSource.includes("rewardsBottomPanel"), 'F10E.3: Rewards bottom panel ID referenced in JS');
+
+// F10E.4: Governance New Proposal wallet-gate
+assert(dexSource.includes("Connect Wallet to Propose"), 'F10E.4: Governance proposal shows wallet-gate text');
+assert(dexSource.includes("proposalForm") && dexSource.includes("wallet-gated-disabled"), 'F10E.4: Proposal form gets wallet-gated-disabled');
+
+// F10E.5: Parameter + Delist proposal fields
+assert(dexSource.includes('delistFields'), 'F10E.5: delistFields element referenced');
+assert(dexSource.includes('paramFields'), 'F10E.5: paramFields element referenced');
+assert(dexSource.includes("propDelistPair"), 'F10E.5: Delist pair selector exists');
+assert(dexSource.includes("propDelistReason"), 'F10E.5: Delist reason textarea exists');
+assert(dexSource.includes("propParamName"), 'F10E.5: Parameter name selector exists');
+assert(dexSource.includes("propParamValue"), 'F10E.5: Parameter value input exists');
+assert(dexSource.includes("propParamCurrent"), 'F10E.5: Current param value display exists');
+assert(dexSource.includes("propParamDesc"), 'F10E.5: Parameter description display exists');
+// Proposal data includes delist + param types
+assert(dexSource.includes("ptype === 'delist'"), 'F10E.5: Delist proposal data construction');
+assert(dexSource.includes("ptype === 'param'"), 'F10E.5: Param proposal data construction');
+assert(dexSource.includes('proposalData.pair_id') && dexSource.includes('proposalData.reason') && dexSource.includes('delistReason'), 'F10E.5: Delist sends pair_id + reason');
+assert(dexSource.includes('proposalData.parameter') && dexSource.includes('proposalData.proposed_value'), 'F10E.5: Param sends parameter + proposed_value');
+
+// F10E.6: MOLT/mUSD genesis price $0.10
+assert(dexSource.includes('MOLT_GENESIS_PRICE'), 'F10E.6: MOLT_GENESIS_PRICE constant exists');
+assert(dexSource.includes('MOLT_GENESIS_PRICE = 0.10') || dexSource.includes('MOLT_GENESIS_PRICE = 0.1'), 'F10E.6: Genesis price is $0.10');
+assert(dexSource.includes('lastPrice: MOLT_GENESIS_PRICE'), 'F10E.6: State defaults to genesis price');
+// Verify fallback pair creation
+assert(dexSource.includes("genesis MOLT/mUSD"), 'F10E.6: Genesis pair fallback message');
+assert(dexSource.includes("price: MOLT_GENESIS_PRICE"), 'F10E.6: Genesis pair uses MOLT_GENESIS_PRICE');
+
+// F10E.7: Binance price feed integration
+assert(dexSource.includes('connectBinancePriceFeed'), 'F10E.7: connectBinancePriceFeed function exists');
+assert(dexSource.includes('stream.binance.com'), 'F10E.7: Uses Binance WebSocket endpoint');
+assert(dexSource.includes('solusdt@miniTicker'), 'F10E.7: Subscribes to SOL/USDT');
+assert(dexSource.includes('ethusdt@miniTicker'), 'F10E.7: Subscribes to ETH/USDT');
+assert(dexSource.includes('btcusdt@miniTicker'), 'F10E.7: Subscribes to BTC/USDT');
+assert(dexSource.includes('updateExternalPricedPairs'), 'F10E.7: updateExternalPricedPairs function exists');
+assert(dexSource.includes("externalPrices"), 'F10E.7: externalPrices state object exists');
+assert(dexSource.includes("apiPriceless"), 'F10E.7: Marks externally-priced pairs');
+
+// F10E.8: CSS disabled styles
+const cssSource = fs.readFileSync(__dirname + '/dex.css', 'utf8');
+assert(cssSource.includes('.btn-full:disabled') || cssSource.includes('.btn:disabled'), 'F10E.8: CSS has disabled button styles');
+assert(cssSource.includes('.btn-wallet-gate'), 'F10E.8: CSS has .btn-wallet-gate class');
+assert(cssSource.includes('.wallet-gated-disabled input'), 'F10E.8: CSS dims inputs in wallet-gated-disabled containers');
+
+// F10E.9: Margin position wallet-gate
+assert(dexSource.includes("margin-form-card") && dexSource.includes("wallet-gated-disabled"), 'F10E.9: Margin form gets wallet-gated-disabled');
+assert(dexSource.includes("marginOpenBtn") && dexSource.includes("Connect Wallet"), 'F10E.9: Margin open button shows wallet-gate text');
+
+// F10E.10: Add Liquidity wallet-gate
+assert(dexSource.includes("addLiqForm") && dexSource.includes("wallet-gated-disabled"), 'F10E.10: Add Liquidity form gets wallet-gated-disabled');
+
+// F10E.11: Pool "My Pools" filter logic
+assert(dexSource.includes("filter === 'my'") && dexSource.includes("state.connected"), 'F10E.11: My Pools filter checks connected');
+assert(dexSource.includes("lp-position-card"), 'F10E.11: My Pools filter references LP positions');
+
+// F10E.5: Parameter select change handler
+assert(dexSource.includes("propParamName") && dexSource.includes("addEventListener('change'"), 'F10E.5: Parameter select has change handler');
+assert(dexSource.includes("dataset?.current"), 'F10E.5: Reads data-current from option');
+assert(dexSource.includes("dataset?.desc"), 'F10E.5: Reads data-desc from option');
+assert(dexSource.includes("dataset?.unit"), 'F10E.5: Reads data-unit from option');
+
+// F10E: Wallet-gate is called in init, connect, disconnect
+const gateCallCount = (dexSource.match(/applyWalletGateAll\(\)/g) || []).length;
+assert(gateCallCount >= 4, `F10E: applyWalletGateAll called ${gateCallCount} times (>=4 expected: init, connect, disconnect, auto-connect)`);
+
+// F10E: Binance feed is connected in init
+assert(dexSource.includes('connectBinancePriceFeed()'), 'F10E.7: Binance feed connected in init');
+
+// ─── HTML structural tests ─────────────────────────────────────────────
+console.log('\n── F10E: HTML structural checks ──');
+
+const htmlSource = fs.readFileSync(__dirname + '/index.html', 'utf8');
+
+// F10E.3: Bottom panels have IDs + hidden class
+assert(htmlSource.includes('id="predictBottomPanel"') && htmlSource.includes('predict-bottom-panel hidden'), 'F10E.3: Predict bottom panel has ID + hidden');
+assert(htmlSource.includes('id="poolBottomPanel"') && htmlSource.includes('pool-bottom-panel hidden'), 'F10E.3: Pool bottom panel has ID + hidden');
+assert(htmlSource.includes('id="rewardsBottomPanel"') && htmlSource.includes('rewards-bottom-panel hidden'), 'F10E.3: Rewards bottom panel has ID + hidden');
+
+// F10E.5: Delist fields in HTML
+assert(htmlSource.includes('id="delistFields"'), 'F10E.5: delistFields section in HTML');
+assert(htmlSource.includes('id="propDelistPair"'), 'F10E.5: propDelistPair select in HTML');
+assert(htmlSource.includes('id="propDelistReason"'), 'F10E.5: propDelistReason textarea in HTML');
+assert(htmlSource.includes('Delist Impact'), 'F10E.5: Delist impact info box in HTML');
+
+// F10E.5: Parameter fields in HTML
+assert(htmlSource.includes('id="paramFields"'), 'F10E.5: paramFields section in HTML');
+assert(htmlSource.includes('id="propParamName"'), 'F10E.5: propParamName select in HTML');
+assert(htmlSource.includes('id="propParamValue"'), 'F10E.5: propParamValue input in HTML');
+assert(htmlSource.includes('id="propParamCurrent"'), 'F10E.5: propParamCurrent display in HTML');
+assert(htmlSource.includes('id="propParamDesc"'), 'F10E.5: propParamDesc display in HTML');
+
+// F10E.5: Parameter options with data attributes
+assert(htmlSource.includes('data-current="5"') && htmlSource.includes('data-unit="x"'), 'F10E.5: Max Leverage option has current+unit');
+assert(htmlSource.includes('data-desc="Maximum leverage') , 'F10E.5: Max Leverage option has description');
+assert(htmlSource.includes('value="fee_split_treasury"'), 'F10E.5: Fee Split Treasury option exists');
+assert(htmlSource.includes('value="prediction_fee"'), 'F10E.5: Prediction Market Fee option exists');
+assert(htmlSource.includes('value="margin_maintenance"'), 'F10E.5: Margin Maintenance Ratio option exists');
+
+// F10E.5: Parameter count — should be 11 protocol parameters
+const paramOptionCount = (htmlSource.match(/<option value="[a-z_]+" data-current="/g) || []).length;
+assert(paramOptionCount >= 10, `F10E.5: ${paramOptionCount} protocol parameter options (>=10 expected)`);
+
+// F10E.5: Delist reason + impact
+assert(htmlSource.includes('All open orders on this pair will be cancelled'), 'F10E.5: Delist impact — open orders warning');
+assert(htmlSource.includes('LP positions will be auto-withdrawn'), 'F10E.5: Delist impact — LP withdrawal warning');
+assert(htmlSource.includes('Margin positions will be force-closed'), 'F10E.5: Delist impact — margin close warning');
+
+// F10E.8: CSS disabled styles (HTML references disabled on buttons/inputs)
+assert(cssSource.includes('cursor: not-allowed'), 'F10E.8: Disabled cursor style exists');
+assert(cssSource.includes('pointer-events: none'), 'F10E.8: Disabled pointer-events exists');
+
+// Deklist pair select populated
+assert(dexSource.includes("delistSelect") && dexSource.includes("propDelistPair"), 'F10E.5: Delist pair select populated from pairs');
 
 // ═══════════════════════════════════════════════════════════════════════════
 // hexToBytes / bytesToHex

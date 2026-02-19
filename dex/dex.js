@@ -287,10 +287,13 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     // State
     // ═══════════════════════════════════════════════════════════════════════
+    // F10E.6: MOLT genesis price — $0.10 per MOLT at network launch
+    const MOLT_GENESIS_PRICE = 0.10;
+
     const state = {
         activePair: null, activePairId: 0, orderSide: 'buy', orderType: 'limit',
         marginSide: 'long', marginType: 'isolated', chartInterval: '15m', chartType: 'candle',
-        currentView: 'trade', leverageValue: 2, lastPrice: 0, orderBook: { asks: [], bids: [] },
+        currentView: 'trade', leverageValue: 2, lastPrice: MOLT_GENESIS_PRICE, orderBook: { asks: [], bids: [] },
         candles: [], connected: false, tradeMode: 'spot', _wsSubs: [],
     };
     let pairs = [], balances = {}, openOrders = [];
@@ -345,10 +348,15 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         } catch (e) { console.warn('[DEX] Pairs API unavailable:', e.message); }
         if (pairs.length) {
-            state.activePair = pairs[0]; state.activePairId = pairs[0].pairId; state.lastPrice = pairs[0].price;
+            state.activePair = pairs[0]; state.activePairId = pairs[0].pairId;
+            state.lastPrice = pairs[0].price || MOLT_GENESIS_PRICE;
+            // F10E.6: Ensure pairs with zero price get genesis fallback
+            pairs.forEach(p => { if (!p.price) p.price = (p.id === 'MOLT/mUSD' || p.base === 'MOLT') ? MOLT_GENESIS_PRICE : 0; });
         } else {
-            state.activePair = null; state.activePairId = null; state.lastPrice = 0;
-            console.warn('[DEX] No trading pairs on-chain — create pairs via dex_core.create_pair()');
+            // F10E.6: No pairs from API — create genesis default MOLT/mUSD pair
+            pairs = [{ pairId: 0, id: 'MOLT/mUSD', base: 'MOLT', quote: 'mUSD', price: MOLT_GENESIS_PRICE, change: 0, tickSize: 0.0001, lotSize: 0.01, symbol: 'MOLT/mUSD' }];
+            state.activePair = pairs[0]; state.activePairId = 0; state.lastPrice = MOLT_GENESIS_PRICE;
+            console.info('[DEX] No trading pairs on-chain — using genesis MOLT/mUSD @ $0.10');
         }
         // Populate all select dropdowns from real pairs
         populateSelectsFromPairs();
@@ -358,10 +366,12 @@ document.addEventListener('DOMContentLoaded', () => {
         const poolSelect = document.getElementById('liqPoolSelect');
         const marginSelect = document.getElementById('marginPairSelect');
         const feeSelect = document.getElementById('propFeePair');
+        const delistSelect = document.getElementById('propDelistPair');
         const opts = pairs.map((p, i) => `<option value="${escapeHtml(String(p.pairId))}">${escapeHtml(p.id)}</option>`).join('');
         if (poolSelect) poolSelect.innerHTML = opts || '<option>No pairs available</option>';
         if (marginSelect) marginSelect.innerHTML = opts || '<option>No pairs available</option>';
         if (feeSelect) feeSelect.innerHTML = opts || '<option>No pairs available</option>';
+        if (delistSelect) delistSelect.innerHTML = opts || '<option>No pairs available</option>';
     }
 
     async function loadOrderBook() {
@@ -778,6 +788,7 @@ document.addEventListener('DOMContentLoaded', () => {
         state.connected = true; state.walletAddress = address;
         if (connectBtn) { connectBtn.innerHTML = `<i class="fas fa-wallet"></i> ${shortAddr}`; connectBtn.className = 'btn btn-small btn-secondary'; }
         toggleWalletPanels(true);
+        applyWalletGateAll();
         await Promise.all([loadBalances(address), loadUserOrders(address)]);
         renderBalances(); renderOpenOrders(); loadTradeHistory(); loadPositionsTab();
         if (dexWs && state.activePairId != null) subscribePair(state.activePairId);
@@ -788,6 +799,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (connectBtn) { connectBtn.innerHTML = '<i class="fas fa-wallet"></i> Connect Wallet'; connectBtn.className = 'btn btn-small btn-primary'; }
         openOrders = []; balances = {};
         toggleWalletPanels(false);
+        applyWalletGateAll();
         renderBalances(); renderOpenOrders();
         // Clear wallet-gated sections
         loadTradeHistory(); loadPositionsTab(); loadLPPositions(); loadPredictionPositions();
@@ -796,8 +808,15 @@ document.addEventListener('DOMContentLoaded', () => {
     function toggleWalletPanels(show) {
         const bp = document.getElementById('walletBalancePanel');
         const tp = document.getElementById('tradeBottomPanel');
+        // F10E.3: Toggle ALL bottom panels consistently across views
+        const pp = document.getElementById('predictBottomPanel');
+        const plp = document.getElementById('poolBottomPanel');
+        const rp = document.getElementById('rewardsBottomPanel');
         if (bp) bp.classList.toggle('hidden', !show);
         if (tp) tp.classList.toggle('hidden', !show);
+        if (pp) pp.classList.toggle('hidden', !show);
+        if (plp) plp.classList.toggle('hidden', !show);
+        if (rp) rp.classList.toggle('hidden', !show);
     }
 
     function renderWalletList() {
@@ -813,6 +832,176 @@ document.addEventListener('DOMContentLoaded', () => {
         const c = document.querySelector('.balance-list'); if (!c) return;
         if (!state.connected) { c.innerHTML = ''; return; }
         c.innerHTML = Object.entries(balances).map(([t, b]) => `<div class="balance-row"><div class="balance-token"><div class="token-icon ${escapeHtml(t.toLowerCase())}-icon">${escapeHtml(t[0])}</div><span>${escapeHtml(t)}</span></div><div class="balance-amounts"><span class="balance-available">${formatAmount(b.available)}</span><span class="balance-usd">≈ $${formatAmount(b.usd)}</span></div></div>`).join('');
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // F10E.1/E2/E4/E9/E10 — Wallet-Gate All Interactive Forms
+    // ═══════════════════════════════════════════════════════════════════════
+    function applyWalletGateAll() {
+        const connected = state.connected;
+
+        // --- Trade view: Order Form (F10E.1) ---
+        const orderForm = document.querySelector('.order-form');
+        if (orderForm) orderForm.classList.toggle('wallet-gated-disabled', !connected);
+        if (submitBtn) {
+            if (connected) {
+                submitBtn.disabled = false;
+                submitBtn.classList.remove('btn-wallet-gate');
+                updateSubmitBtn();
+            } else {
+                submitBtn.disabled = true;
+                submitBtn.className = 'btn-full btn-wallet-gate';
+                submitBtn.innerHTML = '<i class="fas fa-wallet"></i> Connect Wallet to Trade';
+            }
+        }
+
+        // --- Predict view: Quick Trade + Create Market (F10E.2) ---
+        const predictTradePanel = document.querySelector('.predict-trade-panel');
+        const predictCreatePanel = document.querySelector('.predict-create-panel');
+        if (predictTradePanel) predictTradePanel.classList.toggle('wallet-gated-disabled', !connected);
+        if (predictCreatePanel) predictCreatePanel.classList.toggle('wallet-gated-disabled', !connected);
+
+        const predictSubmit = document.getElementById('predictSubmitBtn');
+        if (predictSubmit) {
+            if (connected) {
+                predictSubmit.disabled = false;
+                predictSubmit.classList.remove('btn-wallet-gate');
+                const side = (typeof predictState !== 'undefined' && predictState.selectedOutcome === 'no') ? 'NO' : 'YES';
+                predictSubmit.innerHTML = `<i class="fas fa-bolt"></i> Buy ${side} Shares`;
+            } else {
+                predictSubmit.disabled = true;
+                predictSubmit.className = 'btn-full btn-wallet-gate';
+                predictSubmit.innerHTML = '<i class="fas fa-wallet"></i> Connect Wallet to Trade';
+            }
+        }
+        const predictCreate = document.getElementById('predictCreateBtn');
+        if (predictCreate) {
+            if (connected) {
+                predictCreate.disabled = false;
+                predictCreate.classList.remove('btn-wallet-gate');
+                predictCreate.innerHTML = '<i class="fas fa-rocket"></i> Create Market';
+            } else {
+                predictCreate.disabled = true;
+                predictCreate.className = 'btn btn-full btn-wallet-gate';
+                predictCreate.innerHTML = '<i class="fas fa-wallet"></i> Connect Wallet to Create';
+            }
+        }
+
+        // --- Pool view: Add Liquidity (F10E.10) ---
+        const addLiqForm = document.getElementById('addLiqForm');
+        if (addLiqForm) addLiqForm.classList.toggle('wallet-gated-disabled', !connected);
+        const addLiqSubmit = document.getElementById('addLiqBtn');
+        if (addLiqSubmit) {
+            if (connected) {
+                addLiqSubmit.disabled = false;
+                addLiqSubmit.classList.remove('btn-wallet-gate');
+                addLiqSubmit.textContent = 'Add Liquidity';
+            } else {
+                addLiqSubmit.disabled = true;
+                addLiqSubmit.className = 'btn btn-full btn-wallet-gate';
+                addLiqSubmit.innerHTML = '<i class="fas fa-wallet"></i> Connect Wallet';
+            }
+        }
+
+        // --- Margin view: Open Position (F10E.9) ---
+        const marginFormCard = document.querySelector('.margin-form-card');
+        if (marginFormCard) marginFormCard.classList.toggle('wallet-gated-disabled', !connected);
+        const marginOpen = document.getElementById('marginOpenBtn');
+        if (marginOpen) {
+            if (connected) {
+                marginOpen.disabled = false;
+                marginOpen.classList.remove('btn-wallet-gate');
+                marginOpen.textContent = `Open ${state.marginSide === 'long' ? 'Long' : 'Short'}`;
+            } else {
+                marginOpen.disabled = true;
+                marginOpen.className = 'btn btn-full btn-wallet-gate';
+                marginOpen.innerHTML = '<i class="fas fa-wallet"></i> Connect Wallet';
+            }
+        }
+
+        // --- Governance: New Proposal (F10E.4) ---
+        const proposalForm = document.getElementById('proposalForm');
+        if (proposalForm) proposalForm.classList.toggle('wallet-gated-disabled', !connected);
+        const proposalSubmit = document.getElementById('submitProposalBtn');
+        if (proposalSubmit) {
+            if (connected) {
+                proposalSubmit.disabled = false;
+                proposalSubmit.classList.remove('btn-wallet-gate');
+                proposalSubmit.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Proposal';
+            } else {
+                proposalSubmit.disabled = true;
+                proposalSubmit.className = 'btn btn-full btn-wallet-gate';
+                proposalSubmit.innerHTML = '<i class="fas fa-wallet"></i> Connect Wallet to Propose';
+            }
+        }
+
+        // --- Rewards: Claim button (already has wallet check, but disable visually) ---
+        const claimAll = document.getElementById('claimAllBtn');
+        if (claimAll) {
+            claimAll.disabled = !connected;
+        }
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // F10E.7 — External Price Feed (Binance WebSocket for wSOL, wETH)
+    // ═══════════════════════════════════════════════════════════════════════
+    const externalPrices = { wSOL: 0, wETH: 0, BTC: 0 };
+    let binanceWs = null;
+
+    function connectBinancePriceFeed() {
+        // Streams: SOL/USDT, ETH/USDT, BTC/USDT mini tickers
+        const streams = 'solusdt@miniTicker/ethusdt@miniTicker/btcusdt@miniTicker';
+        const url = `wss://stream.binance.com:9443/ws/${streams}`;
+        try {
+            binanceWs = new WebSocket(url);
+            binanceWs.onmessage = (evt) => {
+                try {
+                    const d = JSON.parse(evt.data);
+                    const price = parseFloat(d.c); // close price
+                    if (!price || isNaN(price)) return;
+                    const sym = (d.s || '').toUpperCase();
+                    if (sym === 'SOLUSDT') externalPrices.wSOL = price;
+                    else if (sym === 'ETHUSDT') externalPrices.wETH = price;
+                    else if (sym === 'BTCUSDT') externalPrices.BTC = price;
+                    // Update MOLT price from wSOL price if wSOL/MOLT pair exists
+                    updateExternalPricedPairs();
+                } catch { /* malformed message */ }
+            };
+            binanceWs.onclose = () => { setTimeout(connectBinancePriceFeed, 10000); };
+            binanceWs.onerror = () => { try { binanceWs.close(); } catch { /* already closed */ } };
+            console.log('[DEX] Binance price feed connected');
+        } catch (e) {
+            console.warn('[DEX] Binance price feed unavailable:', e.message);
+        }
+    }
+
+    function updateExternalPricedPairs() {
+        // For pairs like wSOL/mUSD, wETH/mUSD — map Binance price to mUSD terms
+        // mUSD is pegged 1:1 to USD, so Binance USDT price ≈ mUSD price
+        pairs.forEach(p => {
+            const base = (p.base || '').toUpperCase();
+            if (base === 'WSOL' || base === 'SOL') {
+                if (externalPrices.wSOL > 0 && (!p.price || p.apiPriceless)) {
+                    p.price = externalPrices.wSOL;
+                    p.apiPriceless = true; // mark as externally priced
+                }
+            } else if (base === 'WETH' || base === 'ETH') {
+                if (externalPrices.wETH > 0 && (!p.price || p.apiPriceless)) {
+                    p.price = externalPrices.wETH;
+                    p.apiPriceless = true;
+                }
+            } else if (base === 'WBTC' || base === 'BTC') {
+                if (externalPrices.BTC > 0 && (!p.price || p.apiPriceless)) {
+                    p.price = externalPrices.BTC;
+                    p.apiPriceless = true;
+                }
+            }
+        });
+        // Update ticker if active pair is externally priced
+        if (state.activePair?.apiPriceless && state.activePair.price) {
+            state.lastPrice = state.activePair.price;
+            updateTickerDisplay();
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -949,6 +1138,29 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('.pool-table-panel .filter-pill').forEach(btn => btn.addEventListener('click', () => {
         document.querySelectorAll('.pool-table-panel .filter-pill').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
+        // F10E.11: "My Pools" filter — show only rows for pools where user has LP positions
+        const filter = btn.dataset.filter;
+        if (filter === 'my' && !state.connected) {
+            showNotification('Connect wallet to view your pools', 'warning');
+            return;
+        }
+        const rows = document.querySelectorAll('.pool-table tbody .pool-row');
+        if (filter === 'all') {
+            rows.forEach(r => r.style.display = '');
+        } else {
+            // Get pool IDs from LP positions
+            const myPools = document.querySelectorAll('#pool-positions .lp-position-card');
+            const myPoolIds = new Set();
+            myPools.forEach(card => { const pid = card.dataset.positionId; if (pid) myPoolIds.add(pid); });
+            let visibleCount = 0;
+            rows.forEach(r => {
+                const poolId = r.dataset.poolId;
+                const show = myPoolIds.has(poolId);
+                r.style.display = show ? '' : 'none';
+                if (show) visibleCount++;
+            });
+            if (!visibleCount) showNotification('No liquidity positions found', 'info');
+        }
     }));
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -1234,13 +1446,32 @@ document.addEventListener('DOMContentLoaded', () => {
     const proposalTypeBtns = document.querySelectorAll('.proposal-type-btn');
     const pairFields = document.getElementById('pairFields');
     const feeFields = document.getElementById('feeFields');
+    const delistFields = document.getElementById('delistFields');
+    const paramFields = document.getElementById('paramFields');
     proposalTypeBtns.forEach(btn => btn.addEventListener('click', () => {
         proposalTypeBtns.forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         const ptype = btn.dataset.ptype;
         if (pairFields) pairFields.classList.toggle('hidden', ptype !== 'pair');
         if (feeFields) feeFields.classList.toggle('hidden', ptype !== 'fee');
+        if (delistFields) delistFields.classList.toggle('hidden', ptype !== 'delist');
+        if (paramFields) paramFields.classList.toggle('hidden', ptype !== 'param');
     }));
+
+    // F10E.5: Parameter selector — show current value + description
+    const propParamName = document.getElementById('propParamName');
+    if (propParamName) propParamName.addEventListener('change', () => {
+        const opt = propParamName.options[propParamName.selectedIndex];
+        const current = opt?.dataset?.current || '—';
+        const unit = opt?.dataset?.unit || '';
+        const desc = opt?.dataset?.desc || '';
+        const curEl = document.getElementById('propParamCurrent');
+        const unitEl = document.getElementById('propParamUnit');
+        const descEl = document.getElementById('propParamDesc');
+        if (curEl) curEl.textContent = `${current}${unit}`;
+        if (unitEl) unitEl.textContent = unit;
+        if (descEl) descEl.textContent = desc;
+    });
 
     // Governance filter pills
     document.querySelectorAll('.proposals-section .filter-pill').forEach(btn => btn.addEventListener('click', () => {
@@ -1274,6 +1505,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 proposalData.pair = document.getElementById('propFeePair')?.value || 'MOLT/mUSD';
                 proposalData.maker_fee = parseInt(document.getElementById('propMakerFee')?.value) || -1;
                 proposalData.taker_fee = parseInt(document.getElementById('propTakerFee')?.value) || 5;
+            } else if (ptype === 'delist') {
+                // F10E.5: Delist proposal with pair selection + reason
+                const delistPair = document.getElementById('propDelistPair')?.value;
+                const delistReason = document.getElementById('propDelistReason')?.value?.trim();
+                if (!delistPair) { showNotification('Select a pair to delist', 'warning'); submitProposalBtn.disabled = false; submitProposalBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Proposal'; return; }
+                if (!delistReason) { showNotification('Provide a reason for delisting', 'warning'); submitProposalBtn.disabled = false; submitProposalBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Proposal'; return; }
+                const pair = pairs.find(p => String(p.pairId) === delistPair);
+                proposalData.pair_id = parseInt(delistPair);
+                proposalData.pair_symbol = pair?.id || `Pair#${delistPair}`;
+                proposalData.reason = delistReason;
+            } else if (ptype === 'param') {
+                // F10E.5: Parameter change proposal
+                const paramName = document.getElementById('propParamName')?.value;
+                const paramValue = document.getElementById('propParamValue')?.value;
+                if (!paramName || paramValue === '' || paramValue === undefined) { showNotification('Select parameter and enter new value', 'warning'); submitProposalBtn.disabled = false; submitProposalBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Proposal'; return; }
+                const opt = document.getElementById('propParamName')?.options[document.getElementById('propParamName')?.selectedIndex];
+                proposalData.parameter = paramName;
+                proposalData.current_value = opt?.dataset?.current || '';
+                proposalData.proposed_value = paramValue;
             }
             await wallet.sendTransaction([{
                 program_id: contracts.dex_governance,
@@ -1284,6 +1534,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 showNotification(`Proposal submitted: List ${escapeHtml(proposalData.base_token)}/${escapeHtml(proposalData.quote_token)}`, 'success');
             } else if (ptype === 'fee') {
                 showNotification(`Fee change proposal submitted for ${escapeHtml(proposalData.pair)}`, 'success');
+            } else if (ptype === 'delist') {
+                showNotification(`Delist proposal submitted for ${escapeHtml(proposalData.pair_symbol)}`, 'success');
+            } else if (ptype === 'param') {
+                showNotification(`Parameter change proposal: ${escapeHtml(proposalData.parameter)} → ${escapeHtml(proposalData.proposed_value)}`, 'success');
             } else {
                 showNotification('Proposal submitted', 'success');
             }
@@ -2063,6 +2317,7 @@ document.addEventListener('DOMContentLoaded', () => {
         await loadContractAddresses();
         await loadPairs();
         renderPairList(); renderBalances(); renderOpenOrders(); updateSubmitBtn();
+        applyWalletGateAll(); // F10E.1: Apply wallet-gate to all forms on load
         loadTradeHistory(); loadPositionsTab();
         if (state.activePair) {
             if (pairActive) pairActive.querySelector('.pair-name').textContent = state.activePair.id;
@@ -2080,6 +2335,8 @@ document.addEventListener('DOMContentLoaded', () => {
             setTimeout(initTradingView, 200);
             connectWebSocket();
         }
+        // F10E.7: Connect Binance price feed for wSOL/wETH alignment
+        connectBinancePriceFeed();
         if (savedWallets.length) {
             const l = savedWallets[savedWallets.length - 1];
             // AUDIT-FIX F10.11: Auto-connect is display-only — no keypair stored.
@@ -2093,6 +2350,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 connectBtn.title = 'View-only mode — click to import keypair for signing';
             }
             toggleWalletPanels(true);
+            applyWalletGateAll(); // F10E.1: Re-apply wallet-gate after auto-connect
             try { await loadBalances(l.address); await loadUserOrders(l.address); } catch { /* API unavailable */ }
             renderBalances(); renderOpenOrders(); loadTradeHistory(); loadPositionsTab();
             if (dexWs && state.activePairId != null) subscribePair(state.activePairId);
