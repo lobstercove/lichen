@@ -362,8 +362,8 @@ document.addEventListener('DOMContentLoaded', () => {
             pairs.forEach(p => { if (!p.price) p.price = (p.id === 'MOLT/mUSD' || p.base === 'MOLT') ? MOLT_GENESIS_PRICE : 0; });
         } else {
             // F10E.6: No pairs from API — create genesis default MOLT/mUSD pair
-            pairs = [{ pairId: 0, id: 'MOLT/mUSD', base: 'MOLT', quote: 'mUSD', price: MOLT_GENESIS_PRICE, change: 0, tickSize: 0.0001, lotSize: 0.01, symbol: 'MOLT/mUSD' }];
-            state.activePair = pairs[0]; state.activePairId = 0; state.lastPrice = MOLT_GENESIS_PRICE;
+            pairs = [{ pairId: 1, id: 'MOLT/mUSD', base: 'MOLT', quote: 'mUSD', price: MOLT_GENESIS_PRICE, change: 0, tickSize: 0.0001, lotSize: 0.01, symbol: 'MOLT/mUSD' }];
+            state.activePair = pairs[0]; state.activePairId = 1; state.lastPrice = MOLT_GENESIS_PRICE;
             console.info('[DEX] No trading pairs on-chain — using genesis MOLT/mUSD @ $0.10');
         }
         // Populate all select dropdowns from real pairs

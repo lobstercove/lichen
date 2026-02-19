@@ -159,6 +159,8 @@ pub struct TradeJson {
     pub taker: String,
     pub maker_order_id: u64,
     pub slot: u64,
+    pub side: &'static str,
+    pub timestamp: u64,
 }
 
 #[derive(Serialize, Clone)]
@@ -596,7 +598,9 @@ fn decode_order(data: &[u8]) -> Option<OrderJson> {
     })
 }
 
-/// Decode a trade from 80-byte blob
+/// Decode a trade from 80-byte blob.
+/// `side` defaults to "buy" — caller should infer from maker order (opposite side).
+/// `timestamp` defaults to 0 — caller should compute from slot if possible.
 fn decode_trade(data: &[u8]) -> Option<TradeJson> {
     if data.len() < 80 {
         return None;
@@ -619,6 +623,8 @@ fn decode_trade(data: &[u8]) -> Option<TradeJson> {
         taker,
         maker_order_id,
         slot,
+        side: "buy",      // default; overridden in get_trades
+        timestamp: 0,     // default; overridden in get_trades
     })
 }
 
@@ -1113,13 +1119,37 @@ async fn get_trades(
     let trade_count = read_u64(&state, DEX_CORE_PROGRAM, "dex_trade_count");
 
     let mut trades = Vec::new();
-    // Read from most recent
-    let start = trade_count.saturating_sub(limit as u64);
-    for i in (start..trade_count).rev() {
+    // Read from most recent — trade IDs are 1-indexed, trade_count is highest ID
+    let start = if trade_count > limit as u64 {
+        trade_count - limit as u64 + 1
+    } else {
+        1
+    };
+    // Genesis timestamp: use chain start time for slot→timestamp conversion
+    // Slot duration: ~400ms
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    for i in (start..=trade_count).rev() {
         let key = format!("dex_trade_{}", i);
         if let Some(data) = read_bytes(&state, DEX_CORE_PROGRAM, &key) {
-            if let Some(trade) = decode_trade(&data) {
+            if let Some(mut trade) = decode_trade(&data) {
                 if trade.pair_id == pair_id {
+                    // F3.2: Infer taker side from maker order
+                    // The maker's side is the opposite of the taker's side.
+                    let maker_key = format!("dex_order_{}", trade.maker_order_id);
+                    if let Some(maker_data) = read_bytes(&state, DEX_CORE_PROGRAM, &maker_key) {
+                        if maker_data.len() > 40 {
+                            // Byte 40 = side (0=buy, 1=sell); taker is opposite
+                            trade.side = if maker_data[40] == 0 { "sell" } else { "buy" };
+                        }
+                    }
+                    // F3.3: Approximate timestamp from slot delta
+                    // timestamp_ms ≈ now - (current_slot - trade_slot) * 400ms
+                    let slot_age_ms = slot.saturating_sub(trade.slot) * 400;
+                    trade.timestamp = now_ms.saturating_sub(slot_age_ms);
                     trades.push(trade);
                     if trades.len() >= limit {
                         break;

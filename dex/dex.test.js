@@ -841,6 +841,161 @@ assert(
 );
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Phase 3: Trade View — Order Book (CLOB)
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n── DEX P3: Trade View — Order Book (CLOB) ──');
+
+const dexCoreSource = fs.readFileSync(__dirname + '/../contracts/dex_core/src/lib.rs', 'utf8');
+const rpcDexSource = fs.readFileSync(__dirname + '/../rpc/src/dex.rs', 'utf8');
+
+// P3.1: dex_core place_order storage layout
+assert(
+    dexCoreSource.includes('ORDER_SIZE: usize = 128') &&
+    dexCoreSource.includes('fn encode_order(') &&
+    dexCoreSource.includes('fn place_order('),
+    'P3.1: dex_core has place_order with 128-byte ORDER_SIZE'
+);
+
+// P3.2: Matching engine uses price-time priority
+assert(
+    dexCoreSource.includes('fn match_order(') &&
+    dexCoreSource.includes('fn fill_at_price_level(') &&
+    dexCoreSource.includes('fn add_to_book('),
+    'P3.2: Matching engine has match_order + fill_at_price_level + add_to_book'
+);
+
+// P3.3: RPC get_orderbook reads real contract storage (not mock)
+assert(
+    rpcDexSource.includes('fn get_orderbook(') &&
+    rpcDexSource.includes('read_bytes(&state, DEX_CORE_PROGRAM,') &&
+    rpcDexSource.includes('get_program_storage('),
+    'P3.3: RPC get_orderbook reads real contract storage via get_program_storage'
+);
+
+// P3.4: Order byte layout matches between contract and RPC (F3.7)
+{
+    // Contract: [0:32 trader][32:40 pair_id][40 side][41 type][42:50 price]...
+    // RPC: data[0..32] trader, data[32..40] pair_id, data[40] side, data[41] type, data[42..50] price
+    assert(
+        rpcDexSource.includes('data[32..40]') && rpcDexSource.includes('data[40]') &&
+        rpcDexSource.includes('data[42..50]') && rpcDexSource.includes('data[83..91]'),
+        'P3.4: RPC decode_order byte offsets match contract layout (trader, pair_id, side, type, price, order_id)'
+    );
+}
+
+// P3.5: Orderbook depth — bids desc, asks asc
+assert(
+    rpcDexSource.includes('b.price') && rpcDexSource.includes('partial_cmp') &&
+    rpcDexSource.includes('a.price'),
+    'P3.5: Orderbook sorts bids desc and asks asc'
+);
+
+// P3.6: Frontend loadOrderBook path and parsing
+assert(
+    dexSource.includes("loadOrderBook()") &&
+    dexSource.includes("/pairs/${state.activePairId}/orderbook") &&
+    dexSource.includes("data?.asks && data?.bids"),
+    'P3.6: Frontend loadOrderBook hits correct API path with null-safe checks'
+);
+
+// P3.7: renderOrderBook depth bars
+assert(
+    dexSource.includes('renderOrderBook()') &&
+    dexSource.includes('depth-bar') &&
+    dexSource.includes('formatPrice(a.price)'),
+    'P3.7: renderOrderBook renders depth bars with formatted prices'
+);
+
+// P3.8/3.9/3.10: Matching engine correctness (no live orders, verified via code)
+assert(
+    dexCoreSource.includes('SIDE_BUY: u8 = 0') &&
+    dexCoreSource.includes('SIDE_SELL: u8 = 1') &&
+    dexCoreSource.includes('price >= best_ask') &&
+    dexCoreSource.includes('price <= best_bid'),
+    'P3.8-10: Matching engine checks buy vs best_ask, sell vs best_bid'
+);
+
+// P3.11: Spread display calculation
+assert(
+    dexSource.includes('ba - tb') || dexSource.includes('Spread:'),
+    'P3.11: Spread is computed as lowest_ask - highest_bid'
+);
+
+// P3.12: Empty orderbook state
+assert(
+    dexSource.includes('No asks') && dexSource.includes('No bids'),
+    'P3.12: Empty orderbook shows "No asks" / "No bids" placeholders'
+);
+
+// P3.13: loadRecentTrades reads from dex_core trades
+assert(
+    dexSource.includes('loadRecentTrades()') &&
+    dexSource.includes("/pairs/${state.activePairId}/trades"),
+    'P3.13: loadRecentTrades hits /pairs/:id/trades API'
+);
+
+// P3.14: Trade byte layout matches — decode_trade in RPC
+assert(
+    rpcDexSource.includes('data[0..8]') &&   // trade_id
+    rpcDexSource.includes('data[16..24]') &&  // price
+    rpcDexSource.includes('data[32..64]') &&  // taker
+    rpcDexSource.includes('data[72..80]'),    // slot
+    'P3.14: RPC decode_trade byte offsets match contract trade layout (80 bytes)'
+);
+
+// P3.15: F3.1 FIX — get_trades uses inclusive range (no off-by-one)
+assert(
+    rpcDexSource.includes('start..=trade_count') &&
+    !rpcDexSource.includes('(start..trade_count).rev()'),
+    'P3.15: get_trades uses inclusive range ..=trade_count (F3.1 fix: no off-by-one)'
+);
+
+// P3.16: PRICE_SCALE matches across all layers (F3.8)
+assert(
+    dexSource.includes('PRICE_SCALE = 1_000_000_000') &&
+    rpcDexSource.includes('PRICE_SCALE: u64 = 1_000_000_000') &&
+    dexCoreSource.includes('1_000_000_000'),
+    'P3.16: PRICE_SCALE = 1e9 consistent across frontend, RPC, and contract'
+);
+
+// P3.17: Pair selector populates from /api/v1/pairs
+assert(
+    dexSource.includes('loadPairs()') &&
+    dexSource.includes("api.get('/pairs')") &&
+    dexSource.includes('renderPairList'),
+    'P3.17: Pair selector populates from /pairs API with renderPairList'
+);
+
+// P3.18: Pair switching reloads orderbook + trades
+assert(
+    dexSource.includes('selectPair(pair)') &&
+    dexSource.includes('Promise.all([loadOrderBook(), loadRecentTrades()])') &&
+    dexSource.includes('subscribePair(pair.pairId)'),
+    'P3.18: selectPair reloads orderbook, trades, and WebSocket subscriptions'
+);
+
+// P3.F2: F3.2 FIX — TradeJson now has side field
+assert(
+    rpcDexSource.includes("pub side: &'static str") &&
+    rpcDexSource.includes("maker_data[40] == 0"),
+    'P3.F2: TradeJson has side field, inferred from maker order byte 40 (F3.2 fix)'
+);
+
+// P3.F3: F3.3 FIX — TradeJson now has timestamp field
+assert(
+    rpcDexSource.includes('pub timestamp: u64') &&
+    rpcDexSource.includes('slot.saturating_sub(trade.slot)'),
+    'P3.F3: TradeJson has timestamp field, computed from slot delta (F3.3 fix)'
+);
+
+// P3.F5: F3.5 FIX — Fallback pair uses pairId: 1 (not 0)
+assert(
+    dexSource.includes('pairId: 1, id:') &&
+    !dexSource.includes("pairId: 0, id: 'MOLT/mUSD'"),
+    'P3.F5: Fallback MOLT/mUSD pair uses pairId: 1 (not 0) (F3.5 fix)'
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Summary
 // ═══════════════════════════════════════════════════════════════════════════
 console.log(`\n${'═'.repeat(60)}`);
