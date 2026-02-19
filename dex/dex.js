@@ -1162,9 +1162,9 @@ document.addEventListener('DOMContentLoaded', () => {
     function applyWalletGateAll() {
         const connected = state.connected;
 
-        // --- Trade view: Order Form (F10E.1) ---
-        const orderForm = document.querySelector('.order-form');
-        if (orderForm) orderForm.classList.toggle('wallet-gated-disabled', !connected);
+        // --- Trade view: Order Form Panel (F15.2: gate entire panel including tabs/type/mode) ---
+        const orderFormPanel = document.querySelector('.order-form-panel');
+        if (orderFormPanel) orderFormPanel.classList.toggle('wallet-gated-disabled', !connected);
         if (submitBtn) {
             if (connected) {
                 submitBtn.disabled = false;
@@ -1268,6 +1268,23 @@ document.addEventListener('DOMContentLoaded', () => {
         if (rewardsSources) rewardsSources.classList.toggle('wallet-gated-disabled', !connected);
         const tierPanel = document.querySelector('.tier-your-progress');
         if (tierPanel) tierPanel.classList.toggle('wallet-gated-disabled', !connected);
+
+        // --- Rewards: Per-source Claim buttons (F15.9) ---
+        document.querySelectorAll('.rewards-sources .claim-btn').forEach(btn => {
+            btn.disabled = !connected;
+        });
+
+        // --- Pool: Per-row Add buttons (F15.7) ---
+        document.querySelectorAll('.pool-add-btn').forEach(btn => {
+            btn.disabled = !connected;
+            btn.classList.toggle('btn-wallet-gate', !connected);
+        });
+
+        // --- Governance: Vote buttons (F15.10) ---
+        document.querySelectorAll('.vote-btn').forEach(btn => {
+            btn.disabled = !connected;
+            btn.classList.toggle('btn-wallet-gate', !connected);
+        });
     }
 
     // ═══════════════════════════════════════════════════════════════════════
