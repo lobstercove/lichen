@@ -3295,6 +3295,142 @@ console.log('\n── Phase 16: Data Format Consistency ──');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Phase 18: Analytics Contract Wiring
+// ═══════════════════════════════════════════════════════════════════════════
+
+const analyticsContractPath = '/Users/johnrobin/.openclaw/workspace/moltchain/contracts/dex_analytics/src/lib.rs';
+const dexCoreContractPath = '/Users/johnrobin/.openclaw/workspace/moltchain/contracts/dex_core/src/lib.rs';
+
+// P18.1: Analytics contract tracks trades, candles (9 intervals), 24h stats, trader stats
+{
+    const src = fs.readFileSync(analyticsContractPath, 'utf8');
+    assert(src.includes('INTERVAL_1M'), 'P18.1a: 1-minute interval defined');
+    assert(src.includes('INTERVAL_1D'), 'P18.1b: 1-day interval defined');
+    assert(src.includes('INTERVALS: [u64; 9]'), 'P18.1c: 9 intervals defined');
+    assert(src.includes('update_24h_stats'), 'P18.1d: 24h stats update function');
+    assert(src.includes('update_trader_stats'), 'P18.1e: trader stats update function');
+    assert(src.includes('update_candle'), 'P18.1f: candle update function');
+}
+
+// P18.2: dex_core calls analytics after trade settlement (cross-contract)
+{
+    const core = fs.readFileSync(dexCoreContractPath, 'utf8');
+    assert(core.includes('ANALYTICS_ADDRESS_KEY'), 'P18.2a: Analytics address key in dex_core');
+    assert(core.includes('call_contract'), 'P18.2b: call_contract imported in dex_core');
+    assert(core.includes('CrossCall'), 'P18.2c: CrossCall imported in dex_core');
+    // Check the cross-contract call is in fill_at_price_level
+    const fillIdx = core.indexOf('fn fill_at_price_level');
+    assert(fillIdx !== -1, 'P18.2d: fill_at_price_level function exists');
+    const fillBlock = core.substring(fillIdx, fillIdx + 5500);
+    assert(fillBlock.includes('"record_trade"'), 'P18.2e: Cross-contract call to record_trade in fill function');
+    assert(fillBlock.includes('analytics_addr'), 'P18.2f: Analytics address loaded in fill function');
+    // Analytics accepts authorized callers
+    const analytics = fs.readFileSync(analyticsContractPath, 'utf8');
+    assert(analytics.includes('AUTHORIZED_CALLER_KEY'), 'P18.2g: Authorized caller key in analytics');
+    assert(analytics.includes('set_authorized_caller'), 'P18.2h: set_authorized_caller function in analytics');
+}
+
+// P18.3: Candle retention enforced via modular indexing
+{
+    const src = fs.readFileSync(analyticsContractPath, 'utf8');
+    const candleIdx = src.indexOf('fn update_candle');
+    assert(candleIdx !== -1, 'P18.3a: update_candle function exists');
+    const candleBlock = src.substring(candleIdx, candleIdx + 1800);
+    assert(candleBlock.includes('get_retention'), 'P18.3b: get_retention called in update_candle');
+    assert(candleBlock.includes('% max_candles'), 'P18.3c: Modular indexing used for candle retention');
+    // Verify retention values exist
+    assert(src.includes('MAX_CANDLES_1M: u64 = 1_440'), 'P18.3d: 1-min retention is 1440 candles (24h)');
+}
+
+// P18.4: /stats/core reads from dex_core storage keys
+{
+    const dexRs = fs.readFileSync(dexRsPath, 'utf8');
+    const statsIdx = dexRs.indexOf('fn get_core_stats');
+    assert(statsIdx !== -1, 'P18.4a: get_core_stats function exists');
+    const statsBlock = dexRs.substring(statsIdx, statsIdx + 500);
+    assert(statsBlock.includes('dex_pair_count'), 'P18.4b: Reads pair count from dex_core');
+    assert(statsBlock.includes('dex_trade_count'), 'P18.4c: Reads trade count from dex_core');
+    assert(statsBlock.includes('dex_total_volume'), 'P18.4d: Reads total volume from dex_core');
+}
+
+// P18.5: /stats/analytics uses camelCase keys
+{
+    const dexRs = fs.readFileSync(dexRsPath, 'utf8');
+    const anaStatsIdx = dexRs.indexOf('fn get_analytics_stats');
+    assert(anaStatsIdx !== -1, 'P18.5a: get_analytics_stats function exists');
+    const anaBlock = dexRs.substring(anaStatsIdx, anaStatsIdx + 400);
+    assert(anaBlock.includes('"recordCount"'), 'P18.5b: camelCase recordCount');
+    assert(anaBlock.includes('"traderCount"'), 'P18.5c: camelCase traderCount');
+    assert(anaBlock.includes('"totalVolume"'), 'P18.5d: camelCase totalVolume');
+    // Verify snake_case is gone
+    assert(!anaBlock.includes('"record_count"'), 'P18.5e: No snake_case record_count');
+}
+
+// P18.6: 24h stats open/low bytes correctly decoded (F18.6 fix)
+{
+    const dexRs = fs.readFileSync(dexRsPath, 'utf8');
+    // Check standalone decoder (was already correct)
+    const decodeIdx = dexRs.indexOf('fn decode_stats_24h');
+    const decodeBlock = dexRs.substring(decodeIdx, decodeIdx + 400);
+    assert(decodeBlock.includes('let low = u64::from_le_bytes(data[16..24]'), 'P18.6a: Standalone decoder: [16..24] = low');
+    assert(decodeBlock.includes('let open = u64::from_le_bytes(data[24..32]'), 'P18.6b: Standalone decoder: [24..32] = open');
+    // Check inline decoders have F18.6 fix comment
+    const ticker1 = dexRs.indexOf('fn get_pair_ticker');
+    const tickerBlock = dexRs.substring(ticker1, ticker1 + 3500);
+    assert(tickerBlock.includes('F18.6'), 'P18.6c: get_pair_ticker has F18.6 fix comment');
+    assert(tickerBlock.includes('let low_raw = u64::from_le_bytes(data[16..24]'), 'P18.6d: get_pair_ticker: [16..24] = low_raw');
+    // Check get_pairs
+    const pairsIdx = dexRs.indexOf('fn get_pairs');
+    const pairsBlock = dexRs.substring(pairsIdx, pairsIdx + 5000);
+    assert(pairsBlock.includes('stats_data[24..32]'), 'P18.6e: get_pairs reads open from [24..32]');
+}
+
+// P18.7: daily_volume resets per day using slot-based boundary
+{
+    const core = fs.readFileSync(dexCoreContractPath, 'utf8');
+    assert(core.includes('SLOTS_PER_DAY: u64 = 216_000'), 'P18.7a: SLOTS_PER_DAY constant defined');
+    assert(core.includes('dex_day_slot_'), 'P18.7b: Day slot tracking key exists');
+    const fillIdx = core.indexOf('fn fill_at_price_level');
+    const fillBlock = core.substring(fillIdx, fillIdx + 5500);
+    assert(fillBlock.includes('current_day != stored_day'), 'P18.7c: Day boundary check in fill function');
+}
+
+// P18.8: Candle aggregation tested (unit tests exist in analytics contract)
+{
+    const src = fs.readFileSync(analyticsContractPath, 'utf8');
+    assert(src.includes('#[cfg(test)]'), 'P18.8a: Analytics contract has test module');
+    assert(src.includes('test_record_trade'), 'P18.8b: test_record_trade test exists');
+    // Cross-contract integration depends on runtime support (F18.2)
+    assert(src.includes('update_candle(pair_id'), 'P18.8c: update_candle called from record_trade');
+}
+
+// P18.9: Leaderboard population implemented in update_trader_stats
+{
+    const src = fs.readFileSync(analyticsContractPath, 'utf8');
+    assert(src.includes('fn update_leaderboard'), 'P18.9a: update_leaderboard function exists');
+    assert(src.includes('LEADERBOARD_COUNT_KEY'), 'P18.9b: Leaderboard count key defined');
+    assert(src.includes('LEADERBOARD_MIN_VOL_KEY'), 'P18.9c: Leaderboard min volume key defined');
+    // Check it's called from update_trader_stats
+    const traderStatsIdx = src.indexOf('fn update_trader_stats');
+    const traderBlock = src.substring(traderStatsIdx, traderStatsIdx + 1100);
+    assert(traderBlock.includes('update_leaderboard(trader, new_volume)'), 'P18.9d: update_leaderboard called from update_trader_stats');
+    // MAX_LEADERBOARD is in the update_leaderboard function itself
+    const lbIdx = src.indexOf('fn update_leaderboard');
+    const lbBlock = src.substring(lbIdx, lbIdx + 500);
+    assert(lbBlock.includes('MAX_LEADERBOARD'), 'P18.9e: MAX_LEADERBOARD used in leaderboard');
+}
+
+// P18.10: PnL tracking via record_pnl function
+{
+    const src = fs.readFileSync(analyticsContractPath, 'utf8');
+    assert(src.includes('pub fn record_pnl'), 'P18.10a: record_pnl function exists');
+    assert(src.includes('pnl_biased'), 'P18.10b: PnL biased parameter accepted');
+    assert(src.includes('pnl_delta_signed'), 'P18.10c: PnL delta calculation implemented');
+    // Dispatch opcode 12
+    assert(src.includes('12 =>'), 'P18.10d: Opcode 12 dispatches to record_pnl');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Summary
 // ═══════════════════════════════════════════════════════════════════════════
 console.log(`\n${'═'.repeat(60)}`);

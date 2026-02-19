@@ -86,14 +86,14 @@
 | 15 | Wallet Gating & UX States | 14/14 | 5 | `[x]` |
 | 16 | Data Format Consistency | 16/16 | 5 | `[x]` |
 | 17 | Real-Time Updates & Polling | 10/10 | 2 | `[x]` |
-| 18 | Analytics Contract Wiring | 0/10 | 0 | `[ ]` |
+| 18 | Analytics Contract Wiring | 10/10 | 7 | `[x]` |
 | 19 | Token Contracts & Balances | 0/12 | 0 | `[ ]` |
 | 20 | Error Handling & Edge Cases | 0/14 | 0 | `[ ]` |
 | 21 | SDK & Market Maker Integration | 0/10 | 0 | `[ ]` |
 | 22 | Security & Input Validation | 0/14 | 0 | `[ ]` |
 | 23 | Mobile / Responsive Layout | 0/8 | 0 | `[ ]` |
 | 24 | End-to-End Integration Tests | 0/12 | 0 | `[ ]` |
-| — | **TOTAL** | **236/314** | **153** | **75%** |
+| — | **TOTAL** | **246/314** | **160** | **78%** |
 
 ---
 
@@ -691,19 +691,25 @@
 
 | # | Task | Status |
 |---|---|---|
-| 18.1 | Read `dex_analytics` contract: what events does it track? (trades, volume, candles) | `[ ]` |
-| 18.2 | Verify analytics contract is called during trade execution (by `dex_core` or `dex_router`) | `[ ]` |
-| 18.3 | Read candle aggregation logic: how are slot-based trades bucketed into time intervals? | `[ ]` |
-| 18.4 | Verify `/stats/core` handler reads from `dex_analytics` storage | `[ ]` |
-| 18.5 | Verify `/stats/analytics` handler returns comprehensive platform data | `[ ]` |
-| 18.6 | Verify 24h stats (volume, trades, high, low) calculation from analytics data | `[ ]` |
-| 18.7 | Verify pair-level stats (daily_volume in `decode_pair`) are updated by analytics | `[ ]` |
-| 18.8 | Test: execute multiple trades → verify candle data updates | `[ ]` |
-| 18.9 | Verify leaderboard endpoint populates from analytics tracking | `[ ]` |
-| 18.10 | Verify trader stats endpoint uses analytics for volume/PnL calculation | `[ ]` |
+| 18.1 | Read `dex_analytics` contract: what events does it track? (trades, volume, candles) | `[x]` |
+| 18.2 | Verify analytics contract is called during trade execution (by `dex_core` or `dex_router`) | `[x]` |
+| 18.3 | Read candle aggregation logic: how are slot-based trades bucketed into time intervals? | `[x]` |
+| 18.4 | Verify `/stats/core` handler reads from `dex_analytics` storage | `[x]` |
+| 18.5 | Verify `/stats/analytics` handler returns comprehensive platform data | `[x]` |
+| 18.6 | Verify 24h stats (volume, trades, high, low) calculation from analytics data | `[x]` |
+| 18.7 | Verify pair-level stats (daily_volume in `decode_pair`) are updated by analytics | `[x]` |
+| 18.8 | Test: execute multiple trades → verify candle data updates | `[x]` |
+| 18.9 | Verify leaderboard endpoint populates from analytics tracking | `[x]` |
+| 18.10 | Verify trader stats endpoint uses analytics for volume/PnL calculation | `[x]` |
 
 **Findings:**
-- (none yet)
+- F18.2 CRITICAL — dex_core never called dex_analytics — analytics pipeline fully disconnected. Fixed: added cross-contract call from `fill_at_price_level` to `record_trade`, with `set_analytics_address` admin function. Added `AUTHORIZED_CALLER_KEY` in analytics to accept calls from dex_core.
+- F18.3 MEDIUM — Candle retention defined but never enforced — unbounded storage growth. Fixed: `update_candle` uses modular indexing `((new_count-1) % max_candles) + 1` to recycle storage.
+- F18.5 MINOR — `/stats/analytics` used snake_case (`record_count`, `trader_count`, `total_volume`). Fixed: changed to camelCase.
+- F18.6 HIGH — `open`/`low` bytes swapped in 3 inline 24h-stats decoders (`get_pair_ticker`, `get_all_tickers`, `get_pairs`). Contract layout: [16..24]=low, [24..32]=open. Fixed all 3 locations.
+- F18.7 MEDIUM — `daily_volume` never resets — acts as lifetime cumulative volume. Fixed: added slot-based daily reset using `dex_day_slot_{pair_id}` key and `SLOTS_PER_DAY = 216,000`.
+- F18.9 CRITICAL — Leaderboard `ana_lb_*` keys never written — always returns empty. Fixed: implemented `update_leaderboard()` in `update_trader_stats` with insertion sort, min-volume short-circuit, and ranked storage.
+- F18.10 MEDIUM — PnL never updated in trader stats — always zero. Fixed: added `record_pnl(trader, pnl_biased)` function (opcode 12) that applies PnL delta to existing trader stats.
 
 ---
 

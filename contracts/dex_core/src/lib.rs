@@ -41,7 +41,8 @@
 extern crate alloc;
 use alloc::vec::Vec;
 
-use moltchain_sdk::{bytes_to_u64, get_caller, get_slot, log_info, storage_get, storage_set, u64_to_bytes};
+use moltchain_sdk::{bytes_to_u64, get_caller, get_slot, log_info, storage_get, storage_set, u64_to_bytes,
+    Address, CrossCall, call_contract};
 
 // ============================================================================
 // CONSTANTS
@@ -59,6 +60,10 @@ const FEE_LP_SHARE: u64 = 20; // 20% to LPs
 const FEE_STAKER_SHARE: u64 = 20; // 20% to stakers
 const MIN_FEE_PER_TRADE: u64 = 1; // 1 shell minimum
 const ORDER_EXPIRY_MAX: u64 = 2_592_000; // ~30 days in slots
+// F18.2: Analytics cross-contract call — record trades after settlement
+const ANALYTICS_ADDRESS_KEY: &str = "dex_analytics_addr";
+// F18.7: Daily volume reset tracking (slot-based day boundary)
+const SLOTS_PER_DAY: u64 = 216_000; // 24h * 3600s / 0.4s
 
 // Order sides
 const SIDE_BUY: u8 = 0;
@@ -1398,13 +1403,39 @@ fn fill_at_price_level(
         let total_vol = load_u64(TOTAL_VOLUME_KEY);
         save_u64(TOTAL_VOLUME_KEY, total_vol.saturating_add(notional));
 
-        // Update pair daily volume
+        // F18.7: Update pair daily volume with slot-based daily reset
         let pk = pair_key(pair_id);
         if let Some(mut pd) = storage_get(&pk) {
             if pd.len() >= 109 {
-                let vol = decode_pair_daily_volume(&pd) + notional;
-                pd[101..109].copy_from_slice(&u64_to_bytes(vol));
+                let mut day_key = Vec::from(&b"dex_day_slot_"[..]);
+                day_key.extend_from_slice(&u64_to_decimal(pair_id));
+                let current_day = current_slot / SLOTS_PER_DAY;
+                let stored_day = load_u64(&day_key) / SLOTS_PER_DAY;
+                if current_day != stored_day {
+                    // New day — reset daily volume
+                    pd[101..109].copy_from_slice(&u64_to_bytes(notional));
+                    save_u64(&day_key, current_slot);
+                } else {
+                    let vol = decode_pair_daily_volume(&pd) + notional;
+                    pd[101..109].copy_from_slice(&u64_to_bytes(vol));
+                }
                 storage_set(&pk, &pd);
+            }
+        }
+
+        // F18.2: Cross-contract call to analytics — record trade for candles/stats
+        {
+            let analytics_addr = load_addr(ANALYTICS_ADDRESS_KEY.as_bytes());
+            if !is_zero(&analytics_addr) {
+                let mut ana_args = Vec::with_capacity(57);
+                ana_args.push(1u8); // opcode: record_trade
+                ana_args.extend_from_slice(&u64_to_bytes(pair_id));
+                ana_args.extend_from_slice(&u64_to_bytes(price));
+                ana_args.extend_from_slice(&u64_to_bytes(notional));
+                ana_args.extend_from_slice(taker);
+                let call = CrossCall::new(Address(analytics_addr), "record_trade", ana_args)
+                    .with_value(0);
+                let _ = call_contract(call); // best-effort: don't fail trade if analytics unavailable
             }
         }
 
@@ -1592,6 +1623,23 @@ pub fn modify_order(caller: *const u8, order_id: u64, new_price: u64, new_quanti
         new_quantity,
         expiry,
     )
+}
+
+/// F18.2: Set analytics contract address (admin only)
+/// Enables cross-contract trade recording for candles/stats/leaderboard
+pub fn set_analytics_address(caller: *const u8, analytics: *const u8) -> u32 {
+    let mut c = [0u8; 32];
+    let mut a = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(analytics, a.as_mut_ptr(), 32);
+    }
+    let real_caller = get_caller();
+    if real_caller.0 != c { return 200; }
+    if !require_admin(&c) { return 1; }
+    storage_set(ANALYTICS_ADDRESS_KEY.as_bytes(), &a);
+    log_info("DEX Core: analytics address set");
+    0
 }
 
 /// Emergency pause (admin only) — instant, no timelock
@@ -1987,6 +2035,13 @@ pub extern "C" fn call() {
                 let addr: [u8; 32] = args[1..33].try_into().unwrap_or([0u8; 32]);
                 let count = load_u64(&user_order_count_key(&addr));
                 moltchain_sdk::set_return_data(&u64_to_bytes(count));
+            }
+        }
+        // 28 = F18.2: set_analytics_address(caller[32], analytics_addr[32])
+        28 => {
+            if args.len() >= 65 {
+                let r = set_analytics_address(args[1..33].as_ptr(), args[33..65].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }

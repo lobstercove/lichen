@@ -69,6 +69,11 @@ const PAUSED_KEY: &[u8] = b"ana_paused";
 const TRADE_RECORD_COUNT_KEY: &[u8] = b"ana_rec_count";
 const TRADER_COUNT_KEY: &[u8] = b"ana_trader_count";
 const TOTAL_VOLUME_KEY: &[u8] = b"ana_total_volume";
+// F18.2: Authorized caller key — allows dex_core to call record_trade on behalf of traders
+const AUTHORIZED_CALLER_KEY: &[u8] = b"ana_auth_caller";
+// F18.9: Minimum volume for leaderboard entry (updated when board is full)
+const LEADERBOARD_MIN_VOL_KEY: &[u8] = b"ana_lb_min_vol";
+const LEADERBOARD_COUNT_KEY: &[u8] = b"ana_lb_count";
 
 // ============================================================================
 // HELPERS
@@ -389,7 +394,7 @@ pub extern "C" fn initialize(admin: *const u8) -> u32 {
     0
 }
 
-/// Record a trade (called by dex_core after settlement)
+/// Record a trade (called by dex_core after settlement, or directly by trader)
 /// Returns: 0=success
 pub fn record_trade(pair_id: u64, price: u64, volume: u64, trader: *const u8) -> u32 {
     // SECURITY-FIX: Check pause state before recording
@@ -405,9 +410,10 @@ pub fn record_trade(pair_id: u64, price: u64, volume: u64, trader: *const u8) ->
     unsafe {
         core::ptr::copy_nonoverlapping(trader, t.as_mut_ptr(), 32);
     }
-    // AUDIT-FIX: verify caller matches transaction signer
+    // F18.2: Accept calls from either the trader themselves OR an authorized contract (dex_core)
     let real_caller = get_caller();
-    if real_caller.0 != t {
+    let authorized = load_addr(AUTHORIZED_CALLER_KEY);
+    if real_caller.0 != t && (is_zero(&authorized) || real_caller.0 != authorized) {
         reentrancy_exit();
         return 200;
     }
@@ -429,6 +435,47 @@ pub fn record_trade(pair_id: u64, price: u64, volume: u64, trader: *const u8) ->
     // Increment record count
     let count = load_u64(TRADE_RECORD_COUNT_KEY);
     save_u64(TRADE_RECORD_COUNT_KEY, count + 1);
+
+    reentrancy_exit();
+    0
+}
+
+/// F18.10: Record realized PnL for a trader (called after margin position close/liquidation)
+/// pnl_biased: PNL_BIAS + signed_pnl. Value > PNL_BIAS means profit, < PNL_BIAS means loss.
+pub fn record_pnl(trader: *const u8, pnl_biased: u64) -> u32 {
+    if is_paused() { return 2; }
+    if !reentrancy_enter() { return 3; }
+
+    let mut t = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(trader, t.as_mut_ptr(), 32);
+    }
+    // Accept calls from trader themselves or authorized caller (dex_margin)
+    let real_caller = get_caller();
+    let authorized = load_addr(AUTHORIZED_CALLER_KEY);
+    if real_caller.0 != t && (is_zero(&authorized) || real_caller.0 != authorized) {
+        reentrancy_exit();
+        return 200;
+    }
+
+    let tk = trader_stats_key(&t);
+    let (vol, trades, current_pnl, last_slot) = match storage_get(&tk) {
+        Some(d) if d.len() >= TRADER_STATS_SIZE => (
+            decode_ts_volume(&d),
+            decode_ts_trades(&d),
+            decode_ts_pnl(&d),
+            if d.len() >= 32 { bytes_to_u64(&d[24..32]) } else { 0 },
+        ),
+        _ => (0, 0, PNL_BIAS, 0),
+    };
+
+    // Apply PnL delta: both are biased values, so subtract one PNL_BIAS to stay in biased space
+    // new_pnl = current_pnl + (pnl_biased - PNL_BIAS)
+    let pnl_delta_signed = (pnl_biased as i128) - (PNL_BIAS as i128);
+    let new_pnl = ((current_pnl as i128) + pnl_delta_signed) as u64;
+
+    let stats = encode_trader_stats(vol, trades, new_pnl, last_slot);
+    storage_set(&tk, &stats);
 
     reentrancy_exit();
     0
@@ -496,8 +543,15 @@ fn update_candle(pair_id: u64, interval: u64, price: u64, volume: u64, current_s
         save_u64(&cur_key, candle_start_slot);
         let count = load_u64(&candle_count_key(pair_id, interval));
         let new_count = count + 1;
+        // F18.3: Enforce candle retention via modular indexing
+        let max_candles = get_retention(interval);
+        let write_idx = if max_candles > 0 && max_candles != u64::MAX {
+            ((new_count - 1) % max_candles) + 1
+        } else {
+            new_count
+        };
         let candle = encode_candle(price, price, price, price, volume, current_slot);
-        storage_set(&candle_key(pair_id, interval, new_count), &candle);
+        storage_set(&candle_key(pair_id, interval, write_idx), &candle);
         save_u64(&candle_count_key(pair_id, interval), new_count);
     }
 }
@@ -516,10 +570,114 @@ fn update_trader_stats(trader: &[u8; 32], volume: u64, slot: u64) {
             (0, 0, PNL_BIAS)
         },
     };
+    let new_volume = vol + volume;
     // Track global cumulative volume
     save_u64(TOTAL_VOLUME_KEY, load_u64(TOTAL_VOLUME_KEY).saturating_add(volume));
-    let stats = encode_trader_stats(vol + volume, trades + 1, pnl, slot);
+    let stats = encode_trader_stats(new_volume, trades + 1, pnl, slot);
     storage_set(&tk, &stats);
+
+    // F18.9: Leaderboard maintenance — insert/promote trader if volume qualifies
+    update_leaderboard(trader, new_volume);
+}
+
+/// F18.9: Leaderboard insertion logic
+/// Maintains a sorted top-100 leaderboard by trading volume.
+/// Each entry is a 32-byte trader address stored at `ana_lb_{rank}`.
+fn update_leaderboard(trader: &[u8; 32], new_volume: u64) {
+    let lb_count = load_u64(LEADERBOARD_COUNT_KEY);
+    let min_vol = load_u64(LEADERBOARD_MIN_VOL_KEY);
+
+    // Skip expensive scan if leaderboard is full and trader volume is below minimum
+    if lb_count >= MAX_LEADERBOARD && new_volume <= min_vol {
+        return;
+    }
+
+    // Scan leaderboard to find trader's current position (if any) and insertion point
+    let mut existing_rank: Option<u64> = None;
+    let mut insert_rank: u64 = lb_count; // default: end of list
+
+    for rank in 0..lb_count {
+        let key = leaderboard_key(rank);
+        if let Some(addr_data) = storage_get(&key) {
+            if addr_data.len() >= 32 {
+                let mut addr = [0u8; 32];
+                addr.copy_from_slice(&addr_data[..32]);
+                if addr == *trader {
+                    existing_rank = Some(rank);
+                    continue;
+                }
+                // Look up this entry's volume from trader stats
+                let entry_vol = match storage_get(&trader_stats_key(&addr)) {
+                    Some(d) if d.len() >= 8 => decode_ts_volume(&d),
+                    _ => 0,
+                };
+                if insert_rank == lb_count && new_volume > entry_vol {
+                    insert_rank = rank;
+                }
+            }
+        }
+    }
+
+    // If trader already exists on the leaderboard at a better position, nothing to do
+    if let Some(er) = existing_rank {
+        if er <= insert_rank {
+            return; // already at or above the insertion point
+        }
+        // Remove from old position by shifting entries up
+        for r in er..lb_count.saturating_sub(1) {
+            let next_data = storage_get(&leaderboard_key(r + 1)).unwrap_or_default();
+            storage_set(&leaderboard_key(r), &next_data);
+        }
+        let new_count = lb_count - 1;
+        save_u64(LEADERBOARD_COUNT_KEY, new_count);
+        // Adjust insert rank if it was after the removed position
+        if insert_rank > er {
+            insert_rank -= 1;
+        }
+        // Re-insert below
+        let effective_count = new_count;
+        // Shift entries down from insert_rank
+        let final_count = if effective_count < MAX_LEADERBOARD {
+            effective_count + 1
+        } else {
+            MAX_LEADERBOARD
+        };
+        let mut r = final_count.saturating_sub(1);
+        while r > insert_rank {
+            let prev_data = storage_get(&leaderboard_key(r - 1)).unwrap_or_default();
+            storage_set(&leaderboard_key(r), &prev_data);
+            r -= 1;
+        }
+        storage_set(&leaderboard_key(insert_rank), trader);
+        save_u64(LEADERBOARD_COUNT_KEY, final_count);
+    } else if lb_count < MAX_LEADERBOARD || insert_rank < lb_count {
+        // New entry: shift down and insert
+        let final_count = if lb_count < MAX_LEADERBOARD { lb_count + 1 } else { MAX_LEADERBOARD };
+        let mut r = final_count.saturating_sub(1);
+        while r > insert_rank {
+            let prev_data = storage_get(&leaderboard_key(r - 1)).unwrap_or_default();
+            storage_set(&leaderboard_key(r), &prev_data);
+            r -= 1;
+        }
+        storage_set(&leaderboard_key(insert_rank), trader);
+        save_u64(LEADERBOARD_COUNT_KEY, final_count);
+    }
+
+    // Update minimum volume (entry at last rank)
+    let final_count = load_u64(LEADERBOARD_COUNT_KEY);
+    if final_count > 0 {
+        if let Some(last_addr) = storage_get(&leaderboard_key(final_count - 1)) {
+            if last_addr.len() >= 32 {
+                let mut addr = [0u8; 32];
+                addr.copy_from_slice(&last_addr[..32]);
+                let last_vol = match storage_get(&trader_stats_key(&addr)) {
+                    Some(d) if d.len() >= 8 => decode_ts_volume(&d),
+                    _ => 0,
+                };
+                save_u64(LEADERBOARD_MIN_VOL_KEY, last_vol);
+            }
+        }
+    }
 }
 
 // ============================================================================
@@ -619,6 +777,27 @@ pub fn emergency_unpause(caller: *const u8) -> u32 {
     0
 }
 
+/// F18.2: Set authorized caller (dex_core contract address) — admin only
+/// Allows dex_core to call record_trade on behalf of traders
+pub fn set_authorized_caller(caller: *const u8, authorized: *const u8) -> u32 {
+    let mut c = [0u8; 32];
+    let mut a = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(authorized, a.as_mut_ptr(), 32);
+    }
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        return 200;
+    }
+    if !require_admin(&c) {
+        return 1;
+    }
+    storage_set(AUTHORIZED_CALLER_KEY, &a);
+    log_info("DEX Analytics: authorized caller set");
+    0
+}
+
 // WASM entry
 #[cfg(target_arch = "wasm32")]
 #[no_mangle]
@@ -712,6 +891,21 @@ pub extern "C" fn call() {
             buf.extend_from_slice(&u64_to_bytes(load_u64(TRADER_COUNT_KEY)));
             buf.extend_from_slice(&u64_to_bytes(load_u64(TOTAL_VOLUME_KEY)));
             moltchain_sdk::set_return_data(&buf);
+        }
+        // 11 = F18.2: set_authorized_caller(caller[32], authorized[32])
+        11 => {
+            if args.len() >= 65 {
+                let r = set_authorized_caller(args[1..33].as_ptr(), args[33..65].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 12 = F18.10: record_pnl(trader[32], pnl_biased[8])
+        12 => {
+            if args.len() >= 41 {
+                let pnl_biased = bytes_to_u64(&args[33..41]);
+                let r = record_pnl(args[1..33].as_ptr(), pnl_biased);
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
         }
         _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
     }

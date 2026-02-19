@@ -972,7 +972,8 @@ async fn get_pairs(
                 let stats_key = format!("ana_24h_{}", pair.pair_id);
                 if let Some(stats_data) = read_bytes(&state, DEX_ANALYTICS_PROGRAM, &stats_key) {
                     if stats_data.len() >= 48 {
-                        let open = u64::from_le_bytes(stats_data[16..24].try_into().unwrap_or([0; 8]));
+                        // F18.6: Contract layout: [16..24]=low, [24..32]=open (was reading low as open)
+                        let open = u64::from_le_bytes(stats_data[24..32].try_into().unwrap_or([0; 8]));
                         if open > 0 && lp_raw > 0 {
                             pair.change_24h = Some(((lp_raw as f64 - open as f64) / open as f64) * 100.0);
                         }
@@ -1349,8 +1350,9 @@ async fn get_pair_ticker(State(state): State<Arc<RpcState>>, Path(pair_id): Path
         Some(data) if data.len() >= 48 => {
             let vol = u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]));
             let high_raw = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
-            let open_raw = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
-            let low_raw = u64::from_le_bytes(data[24..32].try_into().unwrap_or([0; 8]));
+            // F18.6: Contract layout: [16..24]=low, [24..32]=open (was swapped)
+            let low_raw = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
+            let open_raw = u64::from_le_bytes(data[24..32].try_into().unwrap_or([0; 8]));
             let _close_raw = u64::from_le_bytes(data[32..40].try_into().unwrap_or([0; 8]));
             let tcount = u64::from_le_bytes(data[40..48].try_into().unwrap_or([0; 8]));
             let open_f = open_raw as f64 / PRICE_SCALE as f64;
@@ -1412,8 +1414,9 @@ async fn get_all_tickers(State(state): State<Arc<RpcState>>) -> Response {
             Some(data) if data.len() >= 48 => {
                 let vol = u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]));
                 let high_raw = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
-                let open_raw = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
-                let low_raw = u64::from_le_bytes(data[24..32].try_into().unwrap_or([0; 8]));
+                // F18.6: Contract layout: [16..24]=low, [24..32]=open (was swapped)
+                let low_raw = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
+                let open_raw = u64::from_le_bytes(data[24..32].try_into().unwrap_or([0; 8]));
                 let tcount = u64::from_le_bytes(data[40..48].try_into().unwrap_or([0; 8]));
                 let open_f = open_raw as f64 / PRICE_SCALE as f64;
                 let change = if open_f > 0.0 { ((last_price - open_f) / open_f) * 100.0 } else { 0.0 };
@@ -2409,9 +2412,9 @@ async fn get_rewards_stats(State(state): State<Arc<RpcState>>) -> Response {
 async fn get_analytics_stats(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
     ApiResponse::ok(serde_json::json!({
-        "record_count": read_u64(&state, DEX_ANALYTICS_PROGRAM, "ana_rec_count"),
-        "trader_count": read_u64(&state, DEX_ANALYTICS_PROGRAM, "ana_trader_count"),
-        "total_volume": read_u64(&state, DEX_ANALYTICS_PROGRAM, "ana_total_volume"),
+        "recordCount": read_u64(&state, DEX_ANALYTICS_PROGRAM, "ana_rec_count"),
+        "traderCount": read_u64(&state, DEX_ANALYTICS_PROGRAM, "ana_trader_count"),
+        "totalVolume": read_u64(&state, DEX_ANALYTICS_PROGRAM, "ana_total_volume"),
     }), slot).into_response()
 }
 
