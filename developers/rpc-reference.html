@@ -11,16 +11,6 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
-    <style>
-        .nav-menu a.active { color: var(--primary); }
-        .search-input { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; color: #fff; padding: 0.5rem 0.75rem 0.5rem 2rem; font-size: 0.85rem; width: 180px; font-family: inherit; }
-        .search-input:focus { outline: none; border-color: var(--primary); }
-        .search-container { position: relative; }
-        .search-icon { position: absolute; left: 0.65rem; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 0.8rem; pointer-events: none; }
-        .network-select { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); padding: 0.5rem 0.75rem; font-size: 0.85rem; font-weight: 600; cursor: pointer; }
-        .network-select:focus { outline: none; border-color: var(--primary); }
-        .nav-actions { display: flex; align-items: center; gap: 1rem; }
-    </style>
 </head>
 <body>
     <nav class="nav">
@@ -50,7 +40,7 @@
                     <option value="local-mainnet">Local Mainnet</option>
                 </select>
             </div>
-            <button class="nav-toggle" id="navToggle"><span></span><span></span><span></span></button>
+            <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu"><span></span><span></span><span></span></button>
         </div>
     </nav>
     <div class="search-overlay" id="searchOverlay">
@@ -160,7 +150,7 @@
         <main class="docs-main">
             <div class="breadcrumbs">
                 <a href="index.html">Developers</a>
-                <span class="separator">/</span>
+                <span class="separator">›</span>
                 <span>API Reference</span>
             </div>
 
@@ -1251,41 +1241,6 @@
         </main>
     </div>
 
-    <script>
-    // Sidebar active link tracking
-    document.querySelectorAll('.sidebar-link').forEach(link => {
-        link.addEventListener('click', () => {
-            document.querySelectorAll('.sidebar-link').forEach(l => l.classList.remove('active'));
-            link.classList.add('active');
-        });
-    });
-    // Search shortcut
-    document.addEventListener('keydown', (e) => {
-        if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-            e.preventDefault();
-            document.getElementById('searchOverlay').classList.toggle('active');
-            document.getElementById('searchModalInput').focus();
-        }
-        if (e.key === 'Escape') {
-            document.getElementById('searchOverlay').classList.remove('active');
-        }
-    });
-    document.getElementById('searchOverlay')?.addEventListener('click', (e) => {
-        if (e.target === e.currentTarget) e.currentTarget.classList.remove('active');
-    });
-    // Mobile nav toggle
-    document.getElementById('navToggle')?.addEventListener('click', () => {
-        document.querySelector('.nav-menu')?.classList.toggle('active');
-    });
-    // Copy buttons
-    document.querySelectorAll('.code-copy-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-            const code = btn.closest('.code-block').querySelector('code').textContent;
-            navigator.clipboard.writeText(code);
-            btn.innerHTML = '<i class="fas fa-check"></i>';
-            setTimeout(() => btn.innerHTML = '<i class="fas fa-copy"></i>', 1500);
-        });
-    });
-    </script>
+    <script src="js/developers.js"></script>
 </body>
 </html>

@@ -11,16 +11,6 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
-    <style>
-        .nav-menu a.active { color: var(--primary); }
-        .search-input { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; color: #fff; padding: 0.5rem 0.75rem 0.5rem 2rem; font-size: 0.85rem; width: 180px; font-family: inherit; }
-        .search-input:focus { outline: none; border-color: var(--primary); }
-        .search-container { position: relative; }
-        .search-icon { position: absolute; left: 0.65rem; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 0.8rem; pointer-events: none; }
-        .network-select { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); padding: 0.5rem 0.75rem; font-size: 0.85rem; font-weight: 600; cursor: pointer; }
-        .network-select:focus { outline: none; border-color: var(--primary); }
-        .nav-actions { display: flex; align-items: center; gap: 1rem; }
-    </style>
 </head>
 <body>
     <nav class="nav">
@@ -50,7 +40,7 @@
                     <option value="local-mainnet">Local Mainnet</option>
                 </select>
             </div>
-            <button class="nav-toggle" id="navToggle"><span></span><span></span><span></span></button>
+            <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu"><span></span><span></span><span></span></button>
         </div>
     </nav>
     <div class="search-overlay" id="searchOverlay">
@@ -60,7 +50,7 @@
         </div>
     </div>
 
-    <button class="sidebar-toggle" id="sidebarToggle"><i class="fas fa-bars"></i></button>
+    <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar"><i class="fas fa-bars"></i></button>
     <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
     <div class="docs-layout">
@@ -127,7 +117,7 @@
                 <p>Create a new contract project with the following <code>Cargo.toml</code>:</p>
 
                 <div class="code-block">
-                    <div class="code-header"><span>Cargo.toml</span></div>
+                    <div class="code-header"><span>Cargo.toml</span><button class="code-copy-btn">Copy</button></div>
 <pre><code>[package]
 name = "my-contract"
 version = "0.1.0"
@@ -143,7 +133,7 @@ moltchain-sdk = { path = "../../sdk" }</code></pre>
                 <p>Your <code>src/lib.rs</code> must declare <code>#![no_std]</code> and export entry points as <code>extern "C"</code> functions:</p>
 
                 <div class="code-block">
-                    <div class="code-header"><span>src/lib.rs &mdash; Minimal Contract</span></div>
+                    <div class="code-header"><span>src/lib.rs &mdash; Minimal Contract</span><button class="code-copy-btn">Copy</button></div>
 <pre><code>#![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
 
@@ -374,7 +364,7 @@ pub extern "C" fn get_value() -> u32 {
                 </ul>
 
                 <div class="code-block">
-                    <div class="code-header"><span>Storage Pattern Example</span></div>
+                    <div class="code-header"><span>Storage Pattern Example</span><button class="code-copy-btn">Copy</button></div>
 <pre><code>use moltchain_sdk::{storage, u64_to_bytes, bytes_to_u64, Address};
 
 // Store a counter
@@ -462,7 +452,7 @@ match call_contract(call) {
 
                 <h3>MoltyID Integration Pattern</h3>
                 <div class="code-block">
-                    <div class="code-header"><span>Identity Gate Example</span></div>
+                    <div class="code-header"><span>Identity Gate Example</span><button class="code-copy-btn">Copy</button></div>
 <pre><code>use moltchain_sdk::crosscall::{CrossCall, call_contract};
 use moltchain_sdk::{Address, bytes_to_u64};
 
@@ -688,7 +678,7 @@ fn require_reputation(caller: &amp;[u8]) -&gt; bool {
                 </table>
 
                 <div class="code-block">
-                    <div class="code-header"><span>Full Test Example</span></div>
+                    <div class="code-header"><span>Full Test Example</span><button class="code-copy-btn">Copy</button></div>
 <pre><code>#[cfg(test)]
 mod tests {
     use super::*;
@@ -739,7 +729,7 @@ mod tests {
                 <h3>Build</h3>
                 <p>Compile your contract to WASM:</p>
                 <div class="code-block">
-                    <div class="code-header"><span>Terminal</span></div>
+                    <div class="code-header"><span>Terminal</span><button class="code-copy-btn">Copy</button></div>
 <pre><code># Install the WASM target (one-time)
 rustup target add wasm32-unknown-unknown
 
@@ -752,7 +742,7 @@ cargo build --target wasm32-unknown-unknown --release
 
                 <h3>Optimize (Optional)</h3>
                 <div class="code-block">
-                    <div class="code-header"><span>Terminal</span></div>
+                    <div class="code-header"><span>Terminal</span><button class="code-copy-btn">Copy</button></div>
 <pre><code># Reduce WASM size with wasm-opt
 wasm-opt -Oz -o optimized.wasm \
   target/wasm32-unknown-unknown/release/my_contract.wasm</code></pre>
@@ -760,7 +750,7 @@ wasm-opt -Oz -o optimized.wasm \
 
                 <h3>Deploy</h3>
                 <div class="code-block">
-                    <div class="code-header"><span>Terminal</span></div>
+                    <div class="code-header"><span>Terminal</span><button class="code-copy-btn">Copy</button></div>
 <pre><code># Deploy to the network
 molt deploy target/wasm32-unknown-unknown/release/my_contract.wasm
 
@@ -774,7 +764,7 @@ molt deploy target/wasm32-unknown-unknown/release/my_contract.wasm
 
                 <h3>Call</h3>
                 <div class="code-block">
-                    <div class="code-header"><span>Terminal</span></div>
+                    <div class="code-header"><span>Terminal</span><button class="code-copy-btn">Copy</button></div>
 <pre><code># Call a function on the deployed contract
 molt call 7xK9...mN2q initialize '[]'
 
@@ -792,7 +782,7 @@ molt call 7xK9...mN2q set_value --args '[42]'</code></pre>
                 <h3>1. Reentrancy Guards</h3>
                 <p>Cross-contract calls can be re-entered. Use a storage-based mutex pattern:</p>
                 <div class="code-block">
-                    <div class="code-header"><span>Reentrancy Guard</span></div>
+                    <div class="code-header"><span>Reentrancy Guard</span><button class="code-copy-btn">Copy</button></div>
 <pre><code>fn enter_guard() -&gt; bool {
     if storage::get(b"_locked").is_some() {
         return false; // already locked
@@ -819,7 +809,7 @@ pub extern "C" fn sensitive_operation() -&gt; u32 {
                 <h3>2. Overflow Protection</h3>
                 <p>Always use <code>saturating_add</code> and <code>saturating_sub</code> for arithmetic. MoltChain contracts run in <code>#![no_std]</code> where overflow panics abort the WASM instance.</p>
                 <div class="code-block">
-                    <div class="code-header"><span>Safe Arithmetic</span></div>
+                    <div class="code-header"><span>Safe Arithmetic</span><button class="code-copy-btn">Copy</button></div>
 <pre><code>// <i class="fa-solid fa-circle-xmark"></i> BAD: can overflow/underflow
 let new_balance = balance + amount;
 let new_balance = balance - amount;
@@ -838,7 +828,7 @@ let new_balance = balance - amount;</code></pre>
                 <h3>3. Admin Authentication</h3>
                 <p>Always verify the caller is the authorized admin before state-changing operations:</p>
                 <div class="code-block">
-                    <div class="code-header"><span>Auth Pattern</span></div>
+                    <div class="code-header"><span>Auth Pattern</span><button class="code-copy-btn">Copy</button></div>
 <pre><code>fn require_admin(caller: &amp;[u8]) -&gt; bool {
     match storage::get(b"admin") {
         Some(admin) =&gt; caller == admin.as_slice(),

@@ -11,31 +11,6 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
-    <style>
-        .nav-menu a.active { color: var(--primary); }
-        .search-input { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; color: #fff; padding: 0.5rem 0.75rem 0.5rem 2rem; font-size: 0.85rem; width: 180px; font-family: inherit; }
-        .search-input:focus { outline: none; border-color: var(--primary); }
-        .search-container { position: relative; }
-        .search-icon { position: absolute; left: 0.65rem; top: 50%; transform: translateY(-50%); color: var(--text-muted); font-size: 0.8rem; pointer-events: none; }
-        .network-select { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; color: var(--text-primary); padding: 0.5rem 0.75rem; font-size: 0.85rem; font-weight: 600; cursor: pointer; }
-        .network-select:focus { outline: none; border-color: var(--primary); }
-        .nav-actions { display: flex; align-items: center; gap: 1rem; }
-        .arch-table { width: 100%; border-collapse: collapse; margin: 1.5rem 0; font-size: 0.85rem; }
-        .arch-table th { text-align: left; padding: 0.75rem 1rem; color: #718096; font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(255,255,255,0.02); }
-        .arch-table td { padding: 0.65rem 1rem; color: #E2E8F0; border-bottom: 1px solid rgba(255,255,255,0.04); }
-        .arch-table tr:hover td { background: rgba(255,107,53,0.03); }
-        .arch-table code { font-family: 'JetBrains Mono', monospace; font-size: 0.8rem; color: var(--primary); background: rgba(255,107,53,0.08); padding: 0.1rem 0.35rem; border-radius: 3px; }
-        .arch-layer-diagram { display: flex; flex-direction: column; gap: 0; margin: 1.5rem 0; }
-        .arch-layer { padding: 1rem 1.5rem; text-align: center; font-weight: 600; font-size: 0.95rem; border: 1px solid rgba(255,255,255,0.08); }
-        .arch-layer:first-child { border-radius: 12px 12px 0 0; }
-        .arch-layer:last-child { border-radius: 0 0 12px 12px; }
-        .arch-layer .layer-name { color: #fff; }
-        .arch-layer .layer-desc { font-size: 0.8rem; font-weight: 400; color: #A0AEC0; margin-top: 0.25rem; }
-        .layer-network { background: rgba(0,78,137,0.15); border-color: rgba(0,78,137,0.3); }
-        .layer-consensus { background: rgba(255,107,53,0.12); border-color: rgba(255,107,53,0.25); }
-        .layer-execution { background: rgba(6,214,160,0.1); border-color: rgba(6,214,160,0.2); }
-        .layer-state { background: rgba(159,122,234,0.1); border-color: rgba(159,122,234,0.2); }
-    </style>
 </head>
 <body>
     <nav class="nav">
@@ -65,7 +40,7 @@
                     <option value="local-mainnet">Local Mainnet</option>
                 </select>
             </div>
-            <button class="nav-toggle" id="navToggle">
+            <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu">
                 <span></span><span></span><span></span>
             </button>
         </div>
@@ -80,7 +55,7 @@
     </div>
 
     <!-- SIDEBAR TOGGLE (mobile) -->
-    <button class="sidebar-toggle" id="sidebarToggle"><i class="fas fa-bars"></i></button>
+    <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar"><i class="fas fa-bars"></i></button>
     <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
 
     <div class="docs-layout">
@@ -466,48 +441,48 @@ contribution_score = (
                 <tbody>
                     <tr>
                         <td><strong>0</strong></td>
-                        <td>Unverified</td>
-                        <td>0 – 9.9</td>
+                        <td>Newcomer</td>
+                        <td>0 – 99</td>
                         <td>1.0×</td>
                         <td>0%</td>
                         <td>100</td>
                     </tr>
                     <tr>
                         <td><strong>1</strong></td>
-                        <td>Newcomer</td>
-                        <td>10 – 24.9</td>
+                        <td>Verified</td>
+                        <td>100 – 499</td>
                         <td>1.1×</td>
-                        <td>5%</td>
-                        <td>150</td>
+                        <td>0%</td>
+                        <td>100</td>
                     </tr>
                     <tr>
                         <td><strong>2</strong></td>
-                        <td>Participant</td>
-                        <td>25 – 44.9</td>
-                        <td>1.3×</td>
+                        <td>Trusted</td>
+                        <td>500 – 999</td>
+                        <td>1.25×</td>
                         <td>10%</td>
                         <td>200</td>
                     </tr>
                     <tr>
                         <td><strong>3</strong></td>
-                        <td>Contributor</td>
-                        <td>45 – 64.9</td>
-                        <td>1.6×</td>
-                        <td>15%</td>
-                        <td>300</td>
+                        <td>Established</td>
+                        <td>1,000 – 4,999</td>
+                        <td>1.5×</td>
+                        <td>30%</td>
+                        <td>500</td>
                     </tr>
                     <tr>
                         <td><strong>4</strong></td>
-                        <td>Trusted</td>
-                        <td>65 – 84.9</td>
+                        <td>Elite</td>
+                        <td>5,000 – 9,999</td>
                         <td>2.0×</td>
-                        <td>20%</td>
-                        <td>400</td>
+                        <td>30%</td>
+                        <td>500</td>
                     </tr>
                     <tr>
                         <td><strong>5</strong></td>
-                        <td>Authority</td>
-                        <td>85 – 100</td>
+                        <td>Legendary</td>
+                        <td>10,000+</td>
                         <td>3.0×</td>
                         <td>30%</td>
                         <td>500</td>

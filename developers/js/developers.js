@@ -11,6 +11,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initSearch();
     initNetworkSelector();
     initNavHighlight();
+    initMobileNav();
 });
 
 
@@ -164,16 +165,20 @@ function initCodeCopy() {
             if (!code) return;
 
             const text = code.textContent;
+            const originalHTML = btn.innerHTML;
+            const hasIcon = btn.querySelector('i');
 
-            navigator.clipboard.writeText(text).then(() => {
-                const originalText = btn.textContent;
-                btn.textContent = 'Copied!';
+            function showCopied() {
+                btn.innerHTML = hasIcon ? '<i class="fas fa-check"></i>' : 'Copied!';
                 btn.classList.add('copied');
-
                 setTimeout(() => {
-                    btn.textContent = originalText;
+                    btn.innerHTML = originalHTML;
                     btn.classList.remove('copied');
                 }, 2000);
+            }
+
+            navigator.clipboard.writeText(text).then(() => {
+                showCopied();
             }).catch(() => {
                 // Fallback for older browsers
                 const textarea = document.createElement('textarea');
@@ -184,12 +189,7 @@ function initCodeCopy() {
                 textarea.select();
                 try {
                     document.execCommand('copy');
-                    btn.textContent = 'Copied!';
-                    btn.classList.add('copied');
-                    setTimeout(() => {
-                        btn.textContent = 'Copy';
-                        btn.classList.remove('copied');
-                    }, 2000);
+                    showCopied();
                 } catch (_) { /* silently fail */ }
                 document.body.removeChild(textarea);
             });
@@ -279,58 +279,58 @@ function initLangTabs() {
 const SEARCH_INDEX = [
     // Getting Started
     { title: 'Quick Start Guide', desc: 'Set up your development environment in minutes', url: 'getting-started.html', category: 'Guide' },
-    { title: 'Installation', desc: 'Install the MoltChain SDK and CLI tools', url: 'getting-started.html#installation', category: 'Guide' },
-    { title: 'Hello World Tutorial', desc: 'Build your first MoltChain application', url: 'getting-started.html#hello-world', category: 'Tutorial' },
-    { title: 'Network Configuration', desc: 'Connect to devnet, testnet, or mainnet', url: 'getting-started.html#network-config', category: 'Guide' },
+    { title: 'Install CLI', desc: 'Install the MoltChain SDK and CLI tools', url: 'getting-started.html#install-cli', category: 'Guide' },
+    { title: 'First Transfer Tutorial', desc: 'Send your first MoltChain transaction', url: 'getting-started.html#first-transfer', category: 'Tutorial' },
+    { title: 'Create Wallet', desc: 'Generate a wallet and get testnet tokens', url: 'getting-started.html#create-wallet', category: 'Guide' },
 
     // Architecture
     { title: 'Architecture Overview', desc: 'Understanding MoltChain\'s design and components', url: 'architecture.html', category: 'Concepts' },
     { title: 'Consensus Mechanism', desc: 'Proof-of-Evolution consensus explained', url: 'architecture.html#consensus', category: 'Concepts' },
     { title: 'Transaction Lifecycle', desc: 'How transactions flow through the network', url: 'architecture.html#tx-lifecycle', category: 'Concepts' },
-    { title: 'Block Structure', desc: 'Understanding block headers and body format', url: 'architecture.html#block-structure', category: 'Concepts' },
-    { title: 'State Model', desc: 'Account-based state management', url: 'architecture.html#state-model', category: 'Concepts' },
-    { title: 'Mempool', desc: 'Transaction pool and ordering mechanics', url: 'architecture.html#mempool', category: 'Concepts' },
+    { title: 'WASM Runtime', desc: 'WebAssembly smart contract execution engine', url: 'architecture.html#wasm', category: 'Concepts' },
+    { title: 'State Model', desc: 'Account-based state management', url: 'architecture.html#state', category: 'Concepts' },
+    { title: 'MoltyID Integration', desc: 'On-chain identity and reputation system', url: 'architecture.html#moltyid-integration', category: 'Concepts' },
 
     // JSON-RPC API
     { title: 'JSON-RPC API Reference', desc: 'Complete list of all RPC endpoints', url: 'rpc-reference.html', category: 'API' },
     { title: 'molt_getBalance', desc: 'Get account balance by address', url: 'rpc-reference.html#getBalance', category: 'API' },
     { title: 'molt_getBlock', desc: 'Retrieve a block by number or hash', url: 'rpc-reference.html#getBlock', category: 'API' },
     { title: 'molt_sendTransaction', desc: 'Submit a signed transaction', url: 'rpc-reference.html#sendTransaction', category: 'API' },
-    { title: 'molt_getTransactionReceipt', desc: 'Get transaction receipt by hash', url: 'rpc-reference.html#getTransactionReceipt', category: 'API' },
-    { title: 'molt_call', desc: 'Execute a read-only smart contract call', url: 'rpc-reference.html#call', category: 'API' },
-    { title: 'molt_estimateGas', desc: 'Estimate gas for a transaction', url: 'rpc-reference.html#estimateGas', category: 'API' },
-    { title: 'molt_subscribe', desc: 'Subscribe to real-time events via WebSocket', url: 'ws-reference.html#subscribe', category: 'API' },
-    { title: 'molt_getCode', desc: 'Get contract bytecode at an address', url: 'rpc-reference.html#getCode', category: 'API' },
-    { title: 'molt_getLogs', desc: 'Query event logs with filters', url: 'rpc-reference.html#getLogs', category: 'API' },
+    { title: 'molt_getTransaction', desc: 'Get transaction details by hash', url: 'rpc-reference.html#getTransaction', category: 'API' },
+    { title: 'molt_simulateTransaction', desc: 'Simulate a transaction without sending', url: 'rpc-reference.html#simulateTransaction', category: 'API' },
+    { title: 'molt_getAccountInfo', desc: 'Get full account info including data', url: 'rpc-reference.html#getAccountInfo', category: 'API' },
+    { title: 'WebSocket Subscriptions', desc: 'Subscribe to real-time events via WebSocket', url: 'ws-reference.html#subscribeSlots', category: 'API' },
+    { title: 'molt_getContractInfo', desc: 'Get contract info and ABI', url: 'rpc-reference.html#getContractInfo', category: 'API' },
+    { title: 'molt_getContractLogs', desc: 'Query contract event logs', url: 'rpc-reference.html#getContractLogs', category: 'API' },
 
     // SDK
     { title: 'JavaScript SDK', desc: 'Client library for Node.js and browsers', url: 'sdk-js.html', category: 'SDK' },
     { title: 'Python SDK', desc: 'Client library for Python applications', url: 'sdk-python.html', category: 'SDK' },
     { title: 'Rust SDK', desc: 'Native Rust client with async support', url: 'sdk-rust.html', category: 'SDK' },
-    { title: 'Creating a Wallet', desc: 'Generate and manage keypairs', url: 'sdk-js.html#wallets', category: 'SDK' },
-    { title: 'Sending Transactions', desc: 'Build, sign, and send transactions', url: 'sdk-js.html#transactions', category: 'SDK' },
-    { title: 'Querying Balances', desc: 'Check token and MOLT balances', url: 'sdk-js.html#balances', category: 'SDK' },
+    { title: 'Keypair Generation', desc: 'Generate and manage keypairs', url: 'sdk-js.html#keypair-generate', category: 'SDK' },
+    { title: 'Transaction Builder', desc: 'Build, sign, and send transactions', url: 'sdk-js.html#transaction-builder', category: 'SDK' },
+    { title: 'Account Methods', desc: 'Query account balances and info', url: 'sdk-js.html#connection-account', category: 'SDK' },
 
     // Smart Contracts
     { title: 'Smart Contracts Overview', desc: 'Writing and deploying contracts on MoltChain', url: 'contracts.html', category: 'Contracts' },
-    { title: 'Contract Development', desc: 'Tools and patterns for contract development', url: 'contracts.html#development', category: 'Contracts' },
+    { title: 'Contract Setup', desc: 'Tools and patterns for contract development', url: 'contracts.html#setup', category: 'Contracts' },
     { title: 'Deploying Contracts', desc: 'Deploy smart contracts to MoltChain networks', url: 'contracts.html#deploy', category: 'Contracts' },
-    { title: 'Contract Events', desc: 'Emitting and listening for events', url: 'contracts.html#events', category: 'Contracts' },
+    { title: 'Cross-Contract Calls', desc: 'Call between contracts on-chain', url: 'contracts.html#crosscall', category: 'Contracts' },
     { title: 'Contract Reference', desc: 'Full reference for all 27 on-chain contracts', url: 'contract-reference.html', category: 'Contracts' },
     { title: 'MoltyID Identity', desc: 'On-chain identity, naming, and reputation', url: 'moltyid.html', category: 'Contracts' },
 
     // CLI
     { title: 'CLI Reference', desc: 'Complete command-line tool documentation', url: 'cli-reference.html', category: 'CLI' },
-    { title: 'molt init', desc: 'Initialize a new MoltChain project', url: 'cli-reference.html#init', category: 'CLI' },
+    { title: 'molt call', desc: 'Invoke a smart contract function', url: 'cli-reference.html#call', category: 'CLI' },
     { title: 'molt deploy', desc: 'Deploy a contract to the network', url: 'cli-reference.html#deploy', category: 'CLI' },
-    { title: 'molt test', desc: 'Run contract tests locally', url: 'cli-reference.html#test', category: 'CLI' },
-    { title: 'molt keygen', desc: 'Generate new keypair', url: 'cli-reference.html#keygen', category: 'CLI' },
+    { title: 'molt transfer', desc: 'Send MOLT between addresses', url: 'cli-reference.html#transfer', category: 'CLI' },
+    { title: 'molt wallet-create', desc: 'Generate a new wallet keypair', url: 'cli-reference.html#wallet-create', category: 'CLI' },
     { title: 'molt balance', desc: 'Check address balance', url: 'cli-reference.html#balance', category: 'CLI' },
 
     // Tokens
-    { title: 'Token Standard (MRC-20)', desc: 'Fungible token standard specification', url: 'contract-reference.html#musd_token', category: 'Tokens' },
+    { title: 'Token Standard (MRC-20)', desc: 'Fungible token standard specification', url: 'contract-reference.html#musd-token', category: 'Tokens' },
     { title: 'NFT Standard (MRC-721)', desc: 'Non-fungible token standard', url: 'contract-reference.html#moltpunks', category: 'Tokens' },
-    { title: 'Creating a Token', desc: 'Step-by-step token creation guide', url: 'contracts.html#tokens', category: 'Tutorial' },
+    { title: 'Creating a Token', desc: 'Step-by-step token creation guide', url: 'contracts.html#token', category: 'Tutorial' },
 
     // Validators
     { title: 'Running a Validator', desc: 'Set up and operate a validator node', url: 'validator.html', category: 'Validators' },
@@ -665,3 +665,16 @@ if (document.querySelector('.toc')) {
 
 // Expose for manual invocation
 window.generateTOC = generateTOC;
+
+// ============================================================
+// 9. MOBILE NAV TOGGLE — Top navigation hamburger
+// ============================================================
+
+function initMobileNav() {
+    const navToggle = document.getElementById('navToggle');
+    if (!navToggle) return;
+    navToggle.addEventListener('click', () => {
+        document.querySelector('.nav-menu')?.classList.toggle('active');
+        document.querySelector('.nav-actions')?.classList.toggle('active');
+    });
+}

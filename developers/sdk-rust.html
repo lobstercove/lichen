@@ -40,7 +40,7 @@
                     <option value="local-mainnet">Local Mainnet</option>
                 </select>
             </div>
-            <button class="nav-toggle" id="navToggle"><span></span><span></span><span></span></button>
+            <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu"><span></span><span></span><span></span></button>
         </div>
     </nav>
     <div class="search-overlay" id="searchOverlay">
@@ -73,6 +73,7 @@
                 <a href="#client-contract" class="sidebar-link">Contract Methods</a>
                 <a href="#client-program" class="sidebar-link">Program Methods</a>
                 <a href="#client-nft" class="sidebar-link">NFT Methods</a>
+                <a href="#client-ws" class="sidebar-link">WebSocket Subscriptions</a>
             </div>
             <div class="sidebar-section">
                 <h3 class="sidebar-heading">Keypair</h3>
@@ -99,9 +100,9 @@
         <main class="docs-main">
             <div class="breadcrumbs">
                 <a href="index.html">Developers</a>
-                <span class="separator">/</span>
+                <span class="separator">›</span>
                 <a href="sdk-js.html">SDK</a>
-                <span class="separator">/</span>
+                <span class="separator">›</span>
                 <span>Rust</span>
             </div>
 
@@ -619,38 +620,72 @@ pub struct NetworkInfo {
             <div class="callout callout-tip">
                 <p><strong>Tip:</strong> For production services, use the <code>ClientBuilder</code> with a custom timeout and wrap calls in a retry loop with exponential backoff for transient network errors.</p>
             </div>
+
+            <!-- WebSocket Subscriptions -->
+            <h3 id="client-ws">WebSocket Subscriptions</h3>
+            <p>The Rust SDK supports real-time event streaming via WebSocket. Create a <code>WsClient</code> and subscribe to on-chain events with typed callbacks.</p>
+
+            <div class="code-block">
+                <div class="code-header"><span>WebSocket — Subscribe to Slots &amp; Accounts</span><button class="code-copy-btn">Copy</button></div>
+<pre><code>use moltchain_sdk::{WsClient, Pubkey};
+
+#[tokio::main]
+async fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
+    let ws = WsClient::connect("ws://localhost:8900").await?;
+
+    // Subscribe to slot updates
+    let slot_sub = ws.on_slot(|slot| {
+        println!("New slot: {}", slot);
+    }).await?;
+
+    // Subscribe to account changes
+    let acct = Pubkey::from_base58("YourAccountBase58Here")?;
+    let acct_sub = ws.on_account_change(&amp;acct, |account| {
+        println!("Balance changed: {} lamports", account.lamports);
+    }).await?;
+
+    // Unsubscribe when done
+    ws.off_slot(slot_sub).await?;
+    ws.off_account_change(acct_sub).await?;
+
+    // Close all subscriptions
+    ws.close().await;
+    Ok(())
+}</code></pre>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">WsClient::connect(url: &amp;str) -&gt; Result&lt;WsClient&gt;</h3>
+                <p class="method-desc">Open a WebSocket connection to the given endpoint.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">on_slot(callback) / off_slot(sub_id)</h3>
+                <p class="method-desc">Subscribe to slot updates. Returns a subscription ID for unsubscribing.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">on_block(callback) / off_block(sub_id)</h3>
+                <p class="method-desc">Subscribe to new blocks.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">on_account_change(pubkey, callback) / off_account_change(sub_id)</h3>
+                <p class="method-desc">Watch a specific account for balance or data changes.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">on_logs(callback, contract_id?) / off_logs(sub_id)</h3>
+                <p class="method-desc">Stream contract logs. Optionally filter by contract ID.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">close()</h3>
+                <p class="method-desc">Close the WebSocket connection and clear all active subscriptions.</p>
+            </div>
         </main>
     </div>
 
-    <script>
-    document.querySelectorAll('.sidebar-link').forEach(link => {
-        link.addEventListener('click', () => {
-            document.querySelectorAll('.sidebar-link').forEach(l => l.classList.remove('active'));
-            link.classList.add('active');
-        });
-    });
-    document.addEventListener('keydown', (e) => {
-        if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-            e.preventDefault();
-            document.getElementById('searchOverlay').classList.toggle('active');
-            document.getElementById('searchModalInput').focus();
-        }
-        if (e.key === 'Escape') document.getElementById('searchOverlay').classList.remove('active');
-    });
-    document.getElementById('searchOverlay')?.addEventListener('click', (e) => {
-        if (e.target === e.currentTarget) e.currentTarget.classList.remove('active');
-    });
-    document.getElementById('navToggle')?.addEventListener('click', () => {
-        document.querySelector('.nav-menu')?.classList.toggle('active');
-    });
-    document.querySelectorAll('.code-copy-btn').forEach(btn => {
-        btn.addEventListener('click', () => {
-            const code = btn.closest('.code-block').querySelector('code').textContent;
-            navigator.clipboard.writeText(code);
-            btn.innerHTML = '<i class="fas fa-check"></i>';
-            setTimeout(() => btn.innerHTML = '<i class="fas fa-copy"></i>', 1500);
-        });
-    });
-    </script>
+    <script src="js/developers.js"></script>
 </body>
 </html>
