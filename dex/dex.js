@@ -943,7 +943,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
-    // F10E.7 — External Price Feed (Binance WebSocket for wSOL, wETH)
+    // F10E.7 — External Price Feed (Binance WebSocket for real-time wSOL, wETH)
+    // The backend oracle price feeder writes live prices to moltoracle +
+    // dex_analytics every 15s, so the standard API (/pairs, /tickers, /candles)
+    // returns real oracle-sourced prices. The Binance WebSocket supplements
+    // this with sub-second price updates for a responsive UI (between API polls).
     // ═══════════════════════════════════════════════════════════════════════
     const externalPrices = { wSOL: 0, wETH: 0, BTC: 0 };
     let binanceWs = null;
@@ -963,45 +967,43 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (sym === 'SOLUSDT') externalPrices.wSOL = price;
                     else if (sym === 'ETHUSDT') externalPrices.wETH = price;
                     else if (sym === 'BTCUSDT') externalPrices.BTC = price;
-                    // Update MOLT price from wSOL price if wSOL/MOLT pair exists
-                    updateExternalPricedPairs();
+                    // Real-time overlay: update active pair price between API polls
+                    applyBinanceRealTimeOverlay();
                 } catch { /* malformed message */ }
             };
             binanceWs.onclose = () => { setTimeout(connectBinancePriceFeed, 10000); };
             binanceWs.onerror = () => { try { binanceWs.close(); } catch { /* already closed */ } };
-            console.log('[DEX] Binance price feed connected');
+            console.log('[DEX] Binance price feed connected (real-time overlay)');
         } catch (e) {
             console.warn('[DEX] Binance price feed unavailable:', e.message);
         }
     }
 
-    function updateExternalPricedPairs() {
-        // For pairs like wSOL/mUSD, wETH/mUSD — map Binance price to mUSD terms
-        // mUSD is pegged 1:1 to USD, so Binance USDT price ≈ mUSD price
-        pairs.forEach(p => {
-            const base = (p.base || '').toUpperCase();
-            if (base === 'WSOL' || base === 'SOL') {
-                if (externalPrices.wSOL > 0 && (!p.price || p.apiPriceless)) {
-                    p.price = externalPrices.wSOL;
-                    p.apiPriceless = true; // mark as externally priced
-                }
-            } else if (base === 'WETH' || base === 'ETH') {
-                if (externalPrices.wETH > 0 && (!p.price || p.apiPriceless)) {
-                    p.price = externalPrices.wETH;
-                    p.apiPriceless = true;
-                }
-            } else if (base === 'WBTC' || base === 'BTC') {
-                if (externalPrices.BTC > 0 && (!p.price || p.apiPriceless)) {
-                    p.price = externalPrices.BTC;
-                    p.apiPriceless = true;
-                }
-            }
-        });
-        // Update ticker if active pair is externally priced
-        if (state.activePair?.apiPriceless && state.activePair.price) {
-            state.lastPrice = state.activePair.price;
-            updateTickerDisplay();
+    function applyBinanceRealTimeOverlay() {
+        // Only update the active pair's ticker display in real-time.
+        // The pair list prices come from the backend oracle feeder via loadPairs().
+        if (!state.activePair) return;
+        const base = (state.activePair.base || '').toUpperCase();
+        const quote = (state.activePair.quote || '').toUpperCase();
+        let realtimePrice = 0;
+        if ((base === 'WSOL' || base === 'SOL') && externalPrices.wSOL > 0) {
+            realtimePrice = externalPrices.wSOL;
+        } else if ((base === 'WETH' || base === 'ETH') && externalPrices.wETH > 0) {
+            realtimePrice = externalPrices.wETH;
+        } else if ((base === 'WBTC' || base === 'BTC') && externalPrices.BTC > 0) {
+            realtimePrice = externalPrices.BTC;
         }
+        if (realtimePrice <= 0) return;
+        // For MOLT-quoted pairs, convert using MOLT genesis price or API price
+        if (quote === 'MOLT') {
+            const moltPair = pairs.find(p => (p.base || '').toUpperCase() === 'MOLT' && (p.quote || '').toUpperCase() === 'MUSD');
+            const moltUsd = moltPair?.price || MOLT_GENESIS_PRICE;
+            if (moltUsd > 0) realtimePrice = realtimePrice / moltUsd;
+            else return;
+        }
+        // Update ticker display with sub-second price
+        state.lastPrice = realtimePrice;
+        updateTickerDisplay();
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -1053,7 +1055,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             <td class="mono-value">${tvl}</td>
                             <td class="mono-value">${vol}</td>
                             <td class="apr-value">${apr}</td>
-                            <td><button class="btn btn-small btn-secondary pool-add-btn" data-pool-id="${p.poolId || p.id || 0}">Add</button></td>
+                            <td><button class="btn btn-small btn-secondary pool-add-btn${!state.connected ? ' btn-wallet-gate' : ''}" data-pool-id="${p.poolId || p.id || 0}"${!state.connected ? ' disabled' : ''}>Add</button></td>
                         </tr>`;
                     }).join('');
                 }

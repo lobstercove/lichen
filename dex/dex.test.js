@@ -1,5 +1,5 @@
 /**
- * DEX Frontend Tests — Phase 10 + Phase 10 Extra audit fixes
+ * DEX Frontend Tests — Phase 10 + Phase 10 Extra + Oracle Price Feed Integration
  * Run: node dex.test.js
  *
  * Tests all pure-function fixes applied during Phase 10 audit:
@@ -16,11 +16,19 @@
  *  F10E.4  — Governance New Proposal wallet-gate
  *  F10E.5  — Parameter + Delist proposal form fields
  *  F10E.6  — MOLT/mUSD genesis price $0.10
- *  F10E.7  — Binance price feed integration
+ *  F10E.7  — External price feed (Binance WebSocket real-time overlay)
  *  F10E.8  — CSS disabled styles
  *  F10E.9  — Margin position wallet-gate
  *  F10E.10 — Add Liquidity wallet-gate
  *  F10E.11 — Pool "My Pools" filter logic
+ *
+ * Oracle Price Feed Integration tests:
+ *  - Genesis oracle seeding (wSOL, wETH, BTC feeds)
+ *  - Genesis analytics price seeding (ana_lp_, ana_24h_, candles)
+ *  - Background price feeder service (Binance REST → moltoracle + analytics)
+ *  - RPC oracle integration (fallback prices, /oracle/prices endpoint)
+ *  - Frontend real-time overlay (Binance WS for sub-second updates)
+ *  - End-to-end data flow verification
  */
 'use strict';
 
@@ -414,15 +422,16 @@ assert(dexSource.includes('lastPrice: MOLT_GENESIS_PRICE'), 'F10E.6: State defau
 assert(dexSource.includes("genesis MOLT/mUSD"), 'F10E.6: Genesis pair fallback message');
 assert(dexSource.includes("price: MOLT_GENESIS_PRICE"), 'F10E.6: Genesis pair uses MOLT_GENESIS_PRICE');
 
-// F10E.7: Binance price feed integration
+// F10E.7: External price feed — Binance WebSocket for real-time overlay,
+// backend oracle feeder provides primary prices via standard API
 assert(dexSource.includes('connectBinancePriceFeed'), 'F10E.7: connectBinancePriceFeed function exists');
 assert(dexSource.includes('stream.binance.com'), 'F10E.7: Uses Binance WebSocket endpoint');
 assert(dexSource.includes('solusdt@miniTicker'), 'F10E.7: Subscribes to SOL/USDT');
 assert(dexSource.includes('ethusdt@miniTicker'), 'F10E.7: Subscribes to ETH/USDT');
 assert(dexSource.includes('btcusdt@miniTicker'), 'F10E.7: Subscribes to BTC/USDT');
-assert(dexSource.includes('updateExternalPricedPairs'), 'F10E.7: updateExternalPricedPairs function exists');
+assert(dexSource.includes('applyBinanceRealTimeOverlay'), 'F10E.7: applyBinanceRealTimeOverlay function exists');
 assert(dexSource.includes("externalPrices"), 'F10E.7: externalPrices state object exists');
-assert(dexSource.includes("apiPriceless"), 'F10E.7: Marks externally-priced pairs');
+assert(dexSource.includes("real-time overlay"), 'F10E.7: Binance feed documented as real-time overlay');
 
 // F10E.8: CSS disabled styles
 const cssSource = fs.readFileSync(__dirname + '/dex.css', 'utf8');
@@ -501,6 +510,175 @@ assert(cssSource.includes('pointer-events: none'), 'F10E.8: Disabled pointer-eve
 assert(dexSource.includes("delistSelect") && dexSource.includes("propDelistPair"), 'F10E.5: Delist pair select populated from pairs');
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Oracle Price Feed Integration Tests
+// Tests the full oracle → RPC → candles → frontend pipeline
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n── Oracle Price Feed Integration ──');
+
+// ── Validator oracle seeding tests ──
+const validatorSrc = fs.readFileSync(__dirname + '/../validator/src/main.rs', 'utf8');
+
+assert(validatorSrc.includes('genesis_seed_analytics_prices'), 'ORACLE: genesis_seed_analytics_prices function exists');
+assert(validatorSrc.includes('spawn_oracle_price_feeder'), 'ORACLE: spawn_oracle_price_feeder function exists');
+assert(validatorSrc.includes('oracle_update_candle'), 'ORACLE: oracle_update_candle function exists');
+assert(validatorSrc.includes('BinanceTicker'), 'ORACLE: BinanceTicker struct exists');
+
+// Genesis oracle seeding: wSOL, wETH, BTC feeds
+assert(validatorSrc.includes('"wSOL"') && validatorSrc.includes('17_000_000_000'), 'ORACLE: wSOL genesis price seeded ($170)');
+assert(validatorSrc.includes('"wETH"') && validatorSrc.includes('250_000_000_000'), 'ORACLE: wETH genesis price seeded ($2,500)');
+assert(validatorSrc.includes('"BTC"') && validatorSrc.includes('10_000_000_000_000'), 'ORACLE: BTC genesis price seeded ($100,000)');
+
+// Genesis oracle seeding: feeder authorization for external assets
+assert(validatorSrc.includes('add_price_feeder') && validatorSrc.includes('ext_feeder_args'), 'ORACLE: External asset feeder authorization');
+assert(validatorSrc.includes('submit_price') && validatorSrc.includes('ext_price_args'), 'ORACLE: External asset price submission');
+
+// Genesis analytics price seeding
+assert(validatorSrc.includes('ana_lp_') && validatorSrc.includes('put_contract_storage'), 'ORACLE: Analytics last prices seeded (ana_lp_)');
+assert(validatorSrc.includes('ana_24h_') && validatorSrc.includes('put_contract_storage'), 'ORACLE: Analytics 24h stats seeded (ana_24h_)');
+assert(validatorSrc.includes('ana_c_') && validatorSrc.includes('put_contract_storage'), 'ORACLE: Genesis candles seeded (ana_c_)');
+assert(validatorSrc.includes('ana_cc_') && validatorSrc.includes('put_contract_storage'), 'ORACLE: Candle counts seeded (ana_cc_)');
+
+// Genesis pair price mapping
+assert(validatorSrc.includes('wsol_usd / molt_usd'), 'ORACLE: wSOL/MOLT computed from wsol/molt ratio');
+assert(validatorSrc.includes('weth_usd / molt_usd'), 'ORACLE: wETH/MOLT computed from weth/molt ratio');
+
+// Background price feeder service
+assert(validatorSrc.includes('api.binance.com/api/v3/ticker/price'), 'ORACLE: Binance REST API URL');
+assert(validatorSrc.includes('SOLUSDT'), 'ORACLE: Fetches SOL/USDT from Binance');
+assert(validatorSrc.includes('ETHUSDT'), 'ORACLE: Fetches ETH/USDT from Binance');
+assert(validatorSrc.includes('BTCUSDT'), 'ORACLE: Fetches BTC/USDT from Binance');
+assert(validatorSrc.includes('Duration::from_secs(15)'), 'ORACLE: 15-second price update interval');
+
+// Background feeder writes to moltoracle storage
+assert(validatorSrc.includes('price_wSOL') || validatorSrc.includes('price_{}'), 'ORACLE: Writes to moltoracle price keys');
+assert(validatorSrc.includes('ORACLE_DECIMALS') && validatorSrc.includes('u8 = 8'), 'ORACLE: 8 decimal precision');
+assert(validatorSrc.includes('get_symbol_registry("ORACLE")'), 'ORACLE: Resolves oracle contract by symbol');
+assert(validatorSrc.includes('get_symbol_registry("ANALYTICS")'), 'ORACLE: Resolves analytics contract by symbol');
+
+// Background feeder generates candle data
+assert(validatorSrc.includes('oracle_update_candle'), 'ORACLE: Calls oracle_update_candle for each interval');
+assert(validatorSrc.includes('candle_intervals: [u64; 9]'), 'ORACLE: All 9 candle intervals processed');
+
+// Oracle candle update logic
+assert(validatorSrc.includes('candle_start') && validatorSrc.includes('interval'), 'ORACLE: Candle period calculation');
+assert(validatorSrc.includes('ana_cur_'), 'ORACLE: Current candle slot tracking (ana_cur_)');
+assert(validatorSrc.includes('copy_from_slice(&price.to_le_bytes())'), 'ORACLE: In-place OHLC update');
+
+// Background feeder spawned after RPC server
+assert(validatorSrc.includes('state_for_oracle') && validatorSrc.includes('spawn_oracle_price_feeder'), 'ORACLE: Feeder spawned with state clone');
+assert(validatorSrc.includes('get_genesis_pubkey'), 'ORACLE: Genesis pubkey resolved from state store');
+
+// ── RPC oracle integration tests ──
+const rpcDexSrc = fs.readFileSync(__dirname + '/../rpc/src/dex.rs', 'utf8');
+
+assert(rpcDexSrc.includes('ORACLE_PROGRAM'), 'RPC: ORACLE_PROGRAM constant defined');
+assert(rpcDexSrc.includes('get_oracle_prices'), 'RPC: get_oracle_prices endpoint handler');
+assert(rpcDexSrc.includes('/oracle/prices'), 'RPC: Oracle prices route registered');
+assert(rpcDexSrc.includes('oracleActive'), 'RPC: Oracle active flag in response');
+
+// RPC oracle price fallback in get_pairs
+assert(rpcDexSrc.includes('Oracle price fallback') && rpcDexSrc.includes('price_'), 'RPC: Oracle fallback in get_pairs');
+assert(rpcDexSrc.includes('oracle_price') || rpcDexSrc.includes('oracle_usd'), 'RPC: Oracle price variable used');
+assert(rpcDexSrc.includes('100_000_000.0'), 'RPC: 8-decimal oracle price conversion');
+
+// RPC oracle fallback for MOLT-quoted pairs
+assert(rpcDexSrc.includes('price_MOLT') && rpcDexSrc.includes('oracle'), 'RPC: MOLT oracle read for pair conversion');
+assert(rpcDexSrc.includes('"wSOL"') && rpcDexSrc.includes('"wETH"'), 'RPC: Oracle mappings for wSOL and wETH');
+
+// RPC oracle fallback in get_pair_ticker
+assert((rpcDexSrc.match(/Oracle price fallback/g) || []).length >= 2, 'RPC: Oracle fallback in both get_pairs and get_pair_ticker');
+
+// priceOracleActive flag
+const rpcLibSrc = fs.readFileSync(__dirname + '/../rpc/src/lib.rs', 'utf8');
+assert(rpcLibSrc.includes('"priceOracleActive": true'), 'RPC: priceOracleActive set to true');
+assert(rpcLibSrc.includes('Oracle price feeds active'), 'RPC: Updated oracle note message');
+
+// ── Frontend oracle integration tests ──
+console.log('\n── Frontend Oracle Integration ──');
+
+assert(dexSource.includes('applyBinanceRealTimeOverlay'), 'FE: applyBinanceRealTimeOverlay function exists');
+assert(!dexSource.includes('updateExternalPricedPairs'), 'FE: Old updateExternalPricedPairs removed');
+assert(!dexSource.includes('apiPriceless'), 'FE: Old apiPriceless flag removed');
+assert(dexSource.includes('real-time overlay'), 'FE: Binance feed documented as real-time overlay');
+assert(dexSource.includes('MOLT_GENESIS_PRICE'), 'FE: MOLT genesis price constant used in overlay');
+assert(dexSource.includes("backend oracle price feeder") || dexSource.includes("backend oracle feeder"), 'FE: Documented backend oracle as primary source');
+
+// Real-time overlay logic
+assert(dexSource.includes('state.activePair') && dexSource.includes('applyBinanceRealTimeOverlay'), 'FE: Real-time overlay updates active pair only');
+assert(dexSource.includes('MOLT') && dexSource.includes('moltPair'), 'FE: MOLT-quoted pair conversion in overlay');
+
+// ── Validator genesis pair creation tests ──
+console.log('\n── Genesis Pair Creation ──');
+
+assert(validatorSrc.includes('wSOL/mUSD') && validatorSrc.includes('wsol_addr') && validatorSrc.includes('musd_addr'), 'GENESIS: wSOL/mUSD pair created');
+assert(validatorSrc.includes('wETH/mUSD') && validatorSrc.includes('weth_addr') && validatorSrc.includes('musd_addr'), 'GENESIS: wETH/mUSD pair created');
+assert(validatorSrc.includes('wSOL/MOLT') && validatorSrc.includes('wsol_addr') && validatorSrc.includes('molt_addr'), 'GENESIS: wSOL/MOLT pair created');
+assert(validatorSrc.includes('wETH/MOLT') && validatorSrc.includes('weth_addr') && validatorSrc.includes('molt_addr'), 'GENESIS: wETH/MOLT pair created');
+assert(validatorSrc.includes('MOLT/mUSD') && validatorSrc.includes('molt_addr') && validatorSrc.includes('musd_addr'), 'GENESIS: MOLT/mUSD pair created');
+
+// AMM pools with initial sqrt_price
+assert(validatorSrc.includes('13_360_000_000'), 'GENESIS: wSOL/mUSD pool sqrt_price configured');
+assert(validatorSrc.includes('59_345_000_000'), 'GENESIS: wETH/mUSD pool sqrt_price configured');
+assert(validatorSrc.includes('20_591_000_000'), 'GENESIS: wSOL/MOLT pool sqrt_price configured');
+assert(validatorSrc.includes('91_558_000_000'), 'GENESIS: wETH/MOLT pool sqrt_price configured');
+
+// ── moltoracle contract tests ──
+console.log('\n── MoltOracle Contract ──');
+
+const oracleSrc = fs.readFileSync(__dirname + '/../contracts/moltoracle/src/lib.rs', 'utf8');
+assert(oracleSrc.includes('submit_price'), 'ORACLE CONTRACT: submit_price function exists');
+assert(oracleSrc.includes('add_price_feeder'), 'ORACLE CONTRACT: add_price_feeder function exists');
+assert(oracleSrc.includes('get_price'), 'ORACLE CONTRACT: get_price function exists');
+assert(oracleSrc.includes('get_aggregated_price'), 'ORACLE CONTRACT: get_aggregated_price function exists');
+assert(oracleSrc.includes('query_oracle'), 'ORACLE CONTRACT: query_oracle function exists');
+assert(oracleSrc.includes('PRICE_FEED_SIZE'), 'ORACLE CONTRACT: PRICE_FEED_SIZE constant defined');
+assert(oracleSrc.includes('49'), 'ORACLE CONTRACT: 49-byte price feed size');
+assert(oracleSrc.includes('is_mo_paused'), 'ORACLE CONTRACT: Pause guard on submit_price');
+assert(oracleSrc.includes('reentrancy_enter'), 'ORACLE CONTRACT: Reentrancy guard');
+
+// ── dex_analytics contract tests ──
+console.log('\n── DEX Analytics Contract ──');
+
+const analyticsSrc = fs.readFileSync(__dirname + '/../contracts/dex_analytics/src/lib.rs', 'utf8');
+assert(analyticsSrc.includes('record_trade'), 'ANALYTICS CONTRACT: record_trade function exists');
+assert(analyticsSrc.includes('update_candle'), 'ANALYTICS CONTRACT: update_candle function exists');
+assert(analyticsSrc.includes('update_24h_stats'), 'ANALYTICS CONTRACT: update_24h_stats function exists');
+assert(analyticsSrc.includes('INTERVAL_1M') && analyticsSrc.includes('60'), 'ANALYTICS CONTRACT: 1-minute candle interval');
+assert(analyticsSrc.includes('INTERVAL_1H') && analyticsSrc.includes('3_600'), 'ANALYTICS CONTRACT: 1-hour candle interval');
+assert(analyticsSrc.includes('INTERVAL_1D') && analyticsSrc.includes('86_400'), 'ANALYTICS CONTRACT: 1-day candle interval');
+assert(analyticsSrc.includes('INTERVALS: [u64; 9]'), 'ANALYTICS CONTRACT: 9 candle intervals defined');
+
+// ── End-to-end data flow tests ──
+console.log('\n── End-to-End Data Flow ──');
+
+// Verify the complete pipeline exists:
+// Binance → oracle feeder → moltoracle storage → put_contract_storage → RPC reads ana_lp_ → frontend loadPairs
+
+// 1. External source → Validator feeder
+assert(validatorSrc.includes('reqwest::Client'), 'E2E: HTTP client for Binance API');
+assert(validatorSrc.includes('json::<Vec<BinanceTicker>>'), 'E2E: Parses Binance ticker response');
+
+// 2. Feeder → Oracle storage
+assert(validatorSrc.includes('put_contract_storage') && validatorSrc.includes('oracle_pk'), 'E2E: Writes to oracle contract storage');
+
+// 3. Feeder → Analytics storage
+assert(validatorSrc.includes('put_contract_storage') && validatorSrc.includes('analytics_pk'), 'E2E: Writes to analytics contract storage');
+
+// 4. RPC reads analytics → serves to frontend
+assert(rpcDexSrc.includes('get_program_storage') || rpcDexSrc.includes('read_u64') || rpcDexSrc.includes('read_bytes'), 'E2E: RPC reads from contract storage');
+assert(rpcDexSrc.includes('ana_lp_'), 'E2E: RPC reads analytics last price');
+assert(rpcDexSrc.includes('ana_24h_'), 'E2E: RPC reads analytics 24h stats');
+assert(rpcDexSrc.includes('ana_c_'), 'E2E: RPC reads analytics candles');
+
+// 5. Frontend consumes standard API
+assert(dexSource.includes("loadPairs") && dexSource.includes("/pairs"), 'E2E: Frontend loads pairs from API');
+assert(dexSource.includes("loadCandles") || dexSource.includes("/candles"), 'E2E: Frontend loads candles from API');
+assert(dexSource.includes("loadTicker") || dexSource.includes("/ticker"), 'E2E: Frontend loads ticker from API');
+
+// 6. Oracle prices endpoint
+assert(rpcDexSrc.includes('get_oracle_prices') && rpcDexSrc.includes('/oracle/prices'), 'E2E: Oracle prices REST endpoint');
+
+// ═══════════════════════════════════════════════════════════════════════════
 // hexToBytes / bytesToHex
 // ═══════════════════════════════════════════════════════════════════════════
 console.log('\n── Utility: hexToBytes / bytesToHex ──');
@@ -513,6 +691,6 @@ assertEqual(bytesToHex(new Uint8Array([0, 255, 128])), '00ff80', 'bytesToHex');
 // Summary
 // ═══════════════════════════════════════════════════════════════════════════
 console.log(`\n${'═'.repeat(60)}`);
-console.log(`  Phase 10 Tests: ${passed} passed, ${failed} failed, ${passed + failed} total`);
+console.log(`  Phase 10 + Oracle Integration Tests: ${passed} passed, ${failed} failed, ${passed + failed} total`);
 console.log(`${'═'.repeat(60)}\n`);
 process.exit(failed > 0 ? 1 : 0);

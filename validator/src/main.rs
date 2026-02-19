@@ -48,6 +48,8 @@ use sync::SyncManager;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::time;
 use tracing::{debug, error, info, warn};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 const SYSTEM_ACCOUNT_OWNER: Pubkey = Pubkey([0x01; 32]);
 const GENESIS_MINT_PUBKEY: Pubkey = Pubkey([0xFE; 32]);
@@ -2705,9 +2707,489 @@ fn genesis_seed_oracle(state: &StateStore, deployer_pubkey: &Pubkey, label: &str
         warn!("  SKIP initial price submission failed");
     }
 
+    // ── Step 3: Seed external asset price feeds (wSOL, wETH, BTC) ──
+    // These provide reference prices for oracle-priced DEX pairs.
+    // Prices are representative launch values; the background price feeder
+    // will update them to live market prices once the validator is running.
+    let external_feeds: [(&[u8], u64, &str); 3] = [
+        (b"wSOL", 17_000_000_000,         "$170.00"),     // $170 at 8 decimals
+        (b"wETH", 250_000_000_000,         "$2,500.00"),   // $2,500 at 8 decimals
+        (b"BTC",  10_000_000_000_000,      "$100,000.00"), // $100,000 at 8 decimals
+    ];
+
+    for (ext_asset, ext_price, display_price) in &external_feeds {
+        // Authorize genesis admin as feeder for this asset
+        let mut ext_feeder_args = Vec::with_capacity(32 + ext_asset.len() + 4);
+        ext_feeder_args.extend_from_slice(&admin);
+        ext_feeder_args.extend_from_slice(*ext_asset);
+        ext_feeder_args.extend_from_slice(&(ext_asset.len() as u32).to_le_bytes());
+
+        let asset_name = core::str::from_utf8(ext_asset).unwrap_or("?");
+        if genesis_exec_contract(
+            state,
+            &oracle_pk,
+            deployer_pubkey,
+            "add_price_feeder",
+            &ext_feeder_args,
+            &format!("moltoracle.add_price_feeder({})", asset_name),
+        ) {
+            info!("  FEEDER authorized: genesis admin → {}", asset_name);
+        } else {
+            warn!("  SKIP feeder auth for {} failed", asset_name);
+            continue;
+        }
+
+        // Submit initial price
+        let mut ext_price_args = Vec::with_capacity(32 + ext_asset.len() + 4 + 8 + 1);
+        ext_price_args.extend_from_slice(&admin);
+        ext_price_args.extend_from_slice(*ext_asset);
+        ext_price_args.extend_from_slice(&(ext_asset.len() as u32).to_le_bytes());
+        ext_price_args.extend_from_slice(&ext_price.to_le_bytes());
+        ext_price_args.push(decimals); // 8 decimals
+
+        if genesis_exec_contract(
+            state,
+            &oracle_pk,
+            deployer_pubkey,
+            "submit_price",
+            &ext_price_args,
+            &format!("moltoracle.submit_price({}={})", asset_name, display_price),
+        ) {
+            info!("  PRICE submitted: {} = {} (launch price)", asset_name, display_price);
+        } else {
+            warn!("  SKIP initial {} price submission failed", asset_name);
+        }
+    }
+
+    // ── Step 4: Seed initial analytics prices for oracle-priced pairs ──
+    // Write ana_lp_{pair_id} so the RPC /pairs endpoint shows prices from
+    // the very first request, before the background price feeder starts.
+    genesis_seed_analytics_prices(state, deployer_pubkey);
+
     info!("──────────────────────────────────────────────────────");
-    info!("  Genesis oracle seeding complete");
+    info!("  Genesis oracle seeding complete (MOLT + wSOL + wETH + BTC)");
     info!("──────────────────────────────────────────────────────");
+}
+
+// ========================================================================
+//  GENESIS PHASE 4b — Seed initial analytics prices for oracle-priced pairs
+//  Writes ana_lp_{pair_id} and ana_24h_{pair_id} directly to dex_analytics
+//  contract storage so that RPC /pairs and /tickers endpoints return valid
+//  prices immediately, before any trades occur or the live feeder starts.
+// ========================================================================
+
+fn genesis_seed_analytics_prices(state: &StateStore, deployer_pubkey: &Pubkey) {
+    let analytics_pk = match derive_contract_address(deployer_pubkey, "dex_analytics") {
+        Some(pk) => pk,
+        None => {
+            warn!("  SKIP analytics price seeding: dex_analytics not derived");
+            return;
+        }
+    };
+
+    const PRICE_SCALE: u64 = 1_000_000_000;
+
+    // Pair IDs match genesis_create_trading_pairs order:
+    //   1=MOLT/mUSD, 2=wSOL/mUSD, 3=wETH/mUSD, 4=wSOL/MOLT, 5=wETH/MOLT
+    let molt_usd: f64 = 0.10;
+    let wsol_usd: f64 = 170.0;
+    let weth_usd: f64 = 2500.0;
+
+    let pair_prices: [(u64, f64); 5] = [
+        (1, molt_usd),                    // MOLT/mUSD = $0.10
+        (2, wsol_usd),                    // wSOL/mUSD = $170
+        (3, weth_usd),                    // wETH/mUSD = $2,500
+        (4, wsol_usd / molt_usd),         // wSOL/MOLT = 1,700
+        (5, weth_usd / molt_usd),         // wETH/MOLT = 25,000
+    ];
+
+    for (pair_id, price_f64) in &pair_prices {
+        let price_scaled = (*price_f64 * PRICE_SCALE as f64) as u64;
+
+        // Write last price: ana_lp_{pair_id}
+        let lp_key = format!("ana_lp_{}", pair_id);
+        let _ = state.put_contract_storage(
+            &analytics_pk,
+            lp_key.as_bytes(),
+            &price_scaled.to_le_bytes(),
+        );
+
+        // Write 24h stats: ana_24h_{pair_id} (48 bytes)
+        // Layout: volume(8) + high(8) + low(8) + open(8) + close(8) + trades(8)
+        let mut stats = Vec::with_capacity(48);
+        stats.extend_from_slice(&0u64.to_le_bytes());            // volume = 0
+        stats.extend_from_slice(&price_scaled.to_le_bytes());    // high = price
+        stats.extend_from_slice(&price_scaled.to_le_bytes());    // low = price (not u64::MAX for new pair)
+        stats.extend_from_slice(&price_scaled.to_le_bytes());    // open = price
+        stats.extend_from_slice(&price_scaled.to_le_bytes());    // close = price
+        stats.extend_from_slice(&0u64.to_le_bytes());            // trades = 0
+        let stats_key = format!("ana_24h_{}", pair_id);
+        let _ = state.put_contract_storage(
+            &analytics_pk,
+            stats_key.as_bytes(),
+            &stats,
+        );
+
+        info!("  ANA seeded: pair {} → price {:.4}", pair_id, price_f64);
+    }
+
+    // Also write initial 1h candles for each pair so TradingView has data
+    let slot: u64 = 0; // genesis slot
+    for (pair_id, price_f64) in &pair_prices {
+        let price_scaled = (*price_f64 * PRICE_SCALE as f64) as u64;
+
+        // Candle layout: open(8)+high(8)+low(8)+close(8)+volume(8)+slot(8) = 48 bytes
+        let mut candle = Vec::with_capacity(48);
+        candle.extend_from_slice(&price_scaled.to_le_bytes()); // open
+        candle.extend_from_slice(&price_scaled.to_le_bytes()); // high
+        candle.extend_from_slice(&price_scaled.to_le_bytes()); // low
+        candle.extend_from_slice(&price_scaled.to_le_bytes()); // close
+        candle.extend_from_slice(&0u64.to_le_bytes());         // volume
+        candle.extend_from_slice(&slot.to_le_bytes());         // slot
+
+        // Write a single genesis candle for 1h (3600) and 1d (86400) intervals
+        for interval in &[3600u64, 86400u64] {
+            let candle_key = format!("ana_c_{}_{}_{}", pair_id, interval, 0);
+            let _ = state.put_contract_storage(
+                &analytics_pk,
+                candle_key.as_bytes(),
+                &candle,
+            );
+            // Set candle count to 1
+            let count_key = format!("ana_cc_{}_{}", pair_id, interval);
+            let _ = state.put_contract_storage(
+                &analytics_pk,
+                count_key.as_bytes(),
+                &1u64.to_le_bytes(),
+            );
+        }
+    }
+}
+
+// ========================================================================
+//  BACKGROUND ORACLE PRICE FEEDER — Fetches live prices from Binance and
+//  writes them to moltoracle + dex_analytics contract storage every 15s.
+//  This keeps oracle-priced pairs (wSOL/mUSD, wETH/mUSD, etc.) up-to-date
+//  with live market data, generating candle history continuously.
+// ========================================================================
+
+fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
+    tokio::spawn(async move {
+        let mut interval = time::interval(Duration::from_secs(15));
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
+        // Resolve contract pubkeys via symbol registry
+        let oracle_pk = match state.get_symbol_registry("ORACLE") {
+            Ok(Some(entry)) => entry.program,
+            _ => {
+                warn!("🔮 Oracle price feeder: ORACLE symbol not found, aborting");
+                return;
+            }
+        };
+        let analytics_pk = match state.get_symbol_registry("ANALYTICS") {
+            Ok(Some(entry)) => entry.program,
+            _ => {
+                warn!("🔮 Oracle price feeder: ANALYTICS symbol not found, aborting");
+                return;
+            }
+        };
+
+        const PRICE_SCALE: u64 = 1_000_000_000; // 1e9 for DEX price scaling
+        const ORACLE_DECIMALS: u8 = 8;
+        let feeder = deployer_pubkey.0; // genesis admin is the authorized feeder
+
+        // MOLT genesis price (read from oracle or use default)
+        let molt_usd_default: f64 = 0.10;
+
+        info!("🔮 Oracle price feeder started (15s interval)");
+
+        // Track per-pair candle state: (last_candle_slot, last_price)
+        // Pair IDs: 2=wSOL/mUSD, 3=wETH/mUSD, 4=wSOL/MOLT, 5=wETH/MOLT
+        let candle_intervals: [u64; 9] = [60, 300, 900, 3600, 14400, 86400, 259200, 604800, 31536000];
+
+        loop {
+            interval.tick().await;
+
+            // Fetch prices from Binance REST API
+            let url = "https://api.binance.com/api/v3/ticker/price?symbols=[\"SOLUSDT\",\"ETHUSDT\",\"BTCUSDT\"]";
+            let prices = match client.get(url).send().await {
+                Ok(resp) => match resp.json::<Vec<BinanceTicker>>().await {
+                    Ok(tickers) => tickers,
+                    Err(e) => {
+                        debug!("🔮 Binance parse error: {}", e);
+                        continue;
+                    }
+                },
+                Err(e) => {
+                    debug!("🔮 Binance fetch error: {}", e);
+                    continue;
+                }
+            };
+
+            let mut wsol_usd: f64 = 0.0;
+            let mut weth_usd: f64 = 0.0;
+            let mut btc_usd: f64 = 0.0;
+
+            for ticker in &prices {
+                let price: f64 = ticker.price.parse().unwrap_or(0.0);
+                match ticker.symbol.as_str() {
+                    "SOLUSDT" => wsol_usd = price,
+                    "ETHUSDT" => weth_usd = price,
+                    "BTCUSDT" => btc_usd = price,
+                    _ => {}
+                }
+            }
+
+            if wsol_usd <= 0.0 && weth_usd <= 0.0 {
+                continue; // no valid prices
+            }
+
+            let now_ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            let current_slot = state.get_last_slot().unwrap_or(0);
+
+            // Read current MOLT price from oracle (or use default)
+            let molt_usd = match state.get_contract_storage(&oracle_pk, b"price_MOLT") {
+                Ok(Some(feed)) if feed.len() >= 8 => {
+                    let raw = u64::from_le_bytes(feed[0..8].try_into().unwrap_or([0; 8]));
+                    if raw > 0 { raw as f64 / 100_000_000.0 } else { molt_usd_default }
+                }
+                _ => molt_usd_default,
+            };
+
+            // Write oracle prices for each external asset
+            let oracle_feeds: [(&[u8], f64); 3] = [
+                (b"wSOL", wsol_usd),
+                (b"wETH", weth_usd),
+                (b"BTC", btc_usd),
+            ];
+
+            for (asset, price_usd) in &oracle_feeds {
+                if *price_usd <= 0.0 { continue; }
+                let price_raw = (*price_usd * 10f64.powi(ORACLE_DECIMALS as i32)) as u64;
+
+                // Build 49-byte oracle feed: price(8)+timestamp(8)+decimals(1)+feeder(32)
+                let mut feed = Vec::with_capacity(49);
+                feed.extend_from_slice(&price_raw.to_le_bytes());
+                feed.extend_from_slice(&now_ts.to_le_bytes());
+                feed.push(ORACLE_DECIMALS);
+                feed.extend_from_slice(&feeder);
+
+                let price_key = format!("price_{}", core::str::from_utf8(asset).unwrap_or("?"));
+                let _ = state.put_contract_storage(&oracle_pk, price_key.as_bytes(), &feed);
+
+                // Also write indexed key for aggregation
+                let indexed_key = format!("{}_0", price_key);
+                let _ = state.put_contract_storage(&oracle_pk, indexed_key.as_bytes(), &feed);
+            }
+
+            // Update dex_analytics for oracle-priced pairs
+            // Pair 2=wSOL/mUSD, 3=wETH/mUSD, 4=wSOL/MOLT, 5=wETH/MOLT
+            let pair_prices: [(u64, f64); 4] = [
+                (2, wsol_usd),                        // wSOL/mUSD
+                (3, weth_usd),                        // wETH/mUSD
+                (4, if molt_usd > 0.0 { wsol_usd / molt_usd } else { 0.0 }), // wSOL/MOLT
+                (5, if molt_usd > 0.0 { weth_usd / molt_usd } else { 0.0 }), // wETH/MOLT
+            ];
+
+            for (pair_id, price_f64) in &pair_prices {
+                if *price_f64 <= 0.0 { continue; }
+                let price_scaled = (*price_f64 * PRICE_SCALE as f64) as u64;
+
+                // Update last price
+                let lp_key = format!("ana_lp_{}", pair_id);
+                let _ = state.put_contract_storage(
+                    &analytics_pk,
+                    lp_key.as_bytes(),
+                    &price_scaled.to_le_bytes(),
+                );
+
+                // Update 24h stats (read-modify-write)
+                let stats_key = format!("ana_24h_{}", pair_id);
+                let (vol, mut high, mut low, open, _close, trades) =
+                    match state.get_contract_storage(&analytics_pk, stats_key.as_bytes()) {
+                        Ok(Some(d)) if d.len() >= 48 => (
+                            u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
+                            u64::from_le_bytes(d[8..16].try_into().unwrap_or([0; 8])),
+                            u64::from_le_bytes(d[16..24].try_into().unwrap_or([0; 8])),
+                            u64::from_le_bytes(d[24..32].try_into().unwrap_or([0; 8])),
+                            u64::from_le_bytes(d[32..40].try_into().unwrap_or([0; 8])),
+                            u64::from_le_bytes(d[40..48].try_into().unwrap_or([0; 8])),
+                        ),
+                        _ => (0, 0, u64::MAX, price_scaled, price_scaled, 0),
+                    };
+
+                if price_scaled > high { high = price_scaled; }
+                if price_scaled < low { low = price_scaled; }
+                // Volume and trades stay the same (oracle updates don't generate volume)
+
+                let mut stats = Vec::with_capacity(48);
+                stats.extend_from_slice(&vol.to_le_bytes());
+                stats.extend_from_slice(&high.to_le_bytes());
+                stats.extend_from_slice(&low.to_le_bytes());
+                stats.extend_from_slice(&open.to_le_bytes());
+                stats.extend_from_slice(&price_scaled.to_le_bytes()); // close = current
+                stats.extend_from_slice(&trades.to_le_bytes());
+                let _ = state.put_contract_storage(
+                    &analytics_pk,
+                    stats_key.as_bytes(),
+                    &stats,
+                );
+
+                // Update candles for each interval
+                for &ci in &candle_intervals {
+                    oracle_update_candle(
+                        &state, &analytics_pk,
+                        *pair_id, ci, price_scaled, current_slot,
+                    );
+                }
+            }
+
+            debug!(
+                "🔮 Oracle prices updated: wSOL=${:.2} wETH=${:.2} BTC=${:.0}",
+                wsol_usd, weth_usd, btc_usd
+            );
+        }
+    });
+}
+
+/// Binance REST ticker response
+#[derive(Deserialize)]
+struct BinanceTicker {
+    symbol: String,
+    price: String,
+}
+
+/// Update a single candle for an oracle-priced pair.
+/// Mirrors the logic in dex_analytics `update_candle` but runs directly
+/// against the state store from the validator background task.
+fn oracle_update_candle(
+    state: &StateStore,
+    analytics_pk: &Pubkey,
+    pair_id: u64,
+    interval: u64,
+    price: u64,
+    current_slot: u64,
+) {
+    let candle_start = (current_slot / interval) * interval;
+
+    // Read current candle's start slot
+    let cur_key = format!("ana_cur_{}_{}", pair_id, interval);
+    let stored_start = match state.get_contract_storage(analytics_pk, cur_key.as_bytes()) {
+        Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
+        _ => 0,
+    };
+
+    let count_key = format!("ana_cc_{}_{}", pair_id, interval);
+
+    if stored_start == candle_start && stored_start > 0 {
+        // Same candle period — update OHLC in-place
+        let candle_count = match state.get_contract_storage(analytics_pk, count_key.as_bytes()) {
+            Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
+            _ => 0,
+        };
+        if candle_count == 0 { return; }
+        let idx = candle_count - 1;
+        let candle_key = format!("ana_c_{}_{}_{}", pair_id, interval, idx);
+
+        if let Ok(Some(mut data)) = state.get_contract_storage(analytics_pk, candle_key.as_bytes()) {
+            if data.len() >= 48 {
+                let high = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
+                let low = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
+                if price > high {
+                    data[8..16].copy_from_slice(&price.to_le_bytes());
+                }
+                if price < low {
+                    data[16..24].copy_from_slice(&price.to_le_bytes());
+                }
+                // Update close price
+                data[24..32].copy_from_slice(&price.to_le_bytes());
+                // Update slot
+                data[40..48].copy_from_slice(&current_slot.to_le_bytes());
+                let _ = state.put_contract_storage(analytics_pk, candle_key.as_bytes(), &data);
+            }
+        }
+    } else {
+        // New candle period — create a new candle
+        let candle_count = match state.get_contract_storage(analytics_pk, count_key.as_bytes()) {
+            Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
+            _ => 0,
+        };
+
+        // Build new candle: open(8)+high(8)+low(8)+close(8)+volume(8)+slot(8) = 48
+        let mut candle = Vec::with_capacity(48);
+        candle.extend_from_slice(&price.to_le_bytes()); // open
+        candle.extend_from_slice(&price.to_le_bytes()); // high
+        candle.extend_from_slice(&price.to_le_bytes()); // low
+        candle.extend_from_slice(&price.to_le_bytes()); // close
+        candle.extend_from_slice(&0u64.to_le_bytes());  // volume (oracle updates have 0 volume)
+        candle.extend_from_slice(&current_slot.to_le_bytes()); // slot
+
+        let new_idx = candle_count;
+        let candle_key = format!("ana_c_{}_{}_{}", pair_id, interval, new_idx);
+        let _ = state.put_contract_storage(analytics_pk, candle_key.as_bytes(), &candle);
+
+        // Update count
+        let _ = state.put_contract_storage(
+            analytics_pk,
+            count_key.as_bytes(),
+            &(new_idx + 1).to_le_bytes(),
+        );
+
+        // Store current candle start slot
+        let _ = state.put_contract_storage(
+            analytics_pk,
+            cur_key.as_bytes(),
+            &candle_start.to_le_bytes(),
+        );
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+//  LOG MANAGEMENT — background task that prunes old daily log files.
+//  Runs immediately on spawn then every 6 hours while the validator is alive.
+// ═══════════════════════════════════════════════════════════════════════
+
+/// Spawn a background task that periodically removes log files older than
+/// `max_age_days` from `log_dir`.  Targets files matching the
+/// `validator.log.YYYY-MM-DD` pattern produced by
+/// `tracing_appender::rolling::daily`.
+fn spawn_log_cleanup_task(log_dir: PathBuf, max_age_days: u64) {
+    tokio::spawn(async move {
+        let sweep_interval = tokio::time::Duration::from_secs(3 * 3600); // 3 hours
+        loop {
+            let cutoff = std::time::SystemTime::now()
+                - std::time::Duration::from_secs(max_age_days * 86400);
+            if let Ok(entries) = fs::read_dir(&log_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let name = match path.file_name().and_then(|n| n.to_str()) {
+                        Some(n) => n.to_string(),
+                        None => continue,
+                    };
+                    if !name.starts_with("validator.log.") {
+                        continue;
+                    }
+                    if let Ok(meta) = fs::metadata(&path) {
+                        if let Ok(modified) = meta.modified() {
+                            if modified < cutoff {
+                                match fs::remove_file(&path) {
+                                    Ok(_) => info!("🗑️  Removed old log file: {}", name),
+                                    Err(e) => warn!("Failed to remove old log {}: {}", name, e),
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(sweep_interval).await;
+        }
+    });
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -2760,9 +3242,10 @@ fn main() {
     let mut restart_count: u32 = 0;
     let mut backoff_secs: u64 = 1;
 
-    // Initialize minimal logging for supervisor messages
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
+    // Initialize minimal logging for supervisor messages (stdout only)
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().with_ansi(true))
+        .with(tracing_subscriber::filter::LevelFilter::INFO)
         .init();
 
     info!(
@@ -2876,10 +3359,46 @@ fn run_validator_sync() {
 
 /// The actual validator entrypoint — all existing logic lives here.
 async fn run_validator() {
-    // Initialize logging (only if not already initialized by supervisor)
-    let _ = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::INFO)
+    // ── Logging ──
+    // Parse data-dir early so we can place log files inside it.
+    let pre_args: Vec<String> = env::args().collect();
+    let pre_data_dir = pre_args
+        .iter()
+        .position(|arg| arg == "--db-path" || arg == "--db" || arg == "--data-dir")
+        .and_then(|pos| pre_args.get(pos + 1))
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            let port = pre_args
+                .iter()
+                .position(|arg| arg == "--p2p-port")
+                .and_then(|pos| pre_args.get(pos + 1))
+                .and_then(|s| s.parse::<u16>().ok())
+                .unwrap_or(8000);
+            format!("./data/state-{}", port)
+        });
+    let log_dir = PathBuf::from(&pre_data_dir).join("logs");
+    let _ = fs::create_dir_all(&log_dir);
+
+    // Rolling daily file appender — creates files like validator.2026-02-15.log
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "validator.log");
+    let (non_blocking_writer, _guard) = tracing_appender::non_blocking(file_appender);
+
+    // Layered subscriber: stdout (with ANSI colors) + rolling file (plain text)
+    let _ = tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(true),
+        )
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_writer(non_blocking_writer),
+        )
+        .with(tracing_subscriber::filter::LevelFilter::INFO)
         .try_init();
+
+    // Background task: sweep log files older than 7 days every 3 hours
+    spawn_log_cleanup_task(log_dir.clone(), 7);
 
     info!("🦞 MoltChain Validator starting...");
 
@@ -6573,6 +7092,17 @@ async fn run_validator() {
         }
     });
     info!("✅ RPC server starting on http://0.0.0.0:{}", rpc_port);
+
+    // Start the oracle price feeder background task
+    // Fetches live wSOL/wETH/BTC prices from Binance every 15s and writes
+    // them to moltoracle + dex_analytics contract storage so oracle-priced
+    // pairs have live price data, candles, and tickers.
+    if let Ok(Some(gpk)) = state.get_genesis_pubkey() {
+        let state_for_oracle = state.clone();
+        spawn_oracle_price_feeder(state_for_oracle, gpk);
+    } else {
+        warn!("⚠️  Oracle price feeder: no genesis pubkey found, skipping");
+    }
 
     info!("⚡ Starting consensus-based block production");
     info!("Validator: {}", validator_pubkey);

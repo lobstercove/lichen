@@ -35,6 +35,7 @@ const DEX_ANALYTICS_PROGRAM: &str = "ANALYTICS";
 const DEX_ROUTER_PROGRAM: &str = "DEXROUTER";
 const DEX_REWARDS_PROGRAM: &str = "DEXREWARDS";
 const DEX_GOVERNANCE_PROGRAM: &str = "DEXGOV";
+const ORACLE_PROGRAM: &str = "ORACLE";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // JSON Response Types
@@ -893,6 +894,45 @@ async fn get_pairs(
                 let lp_raw = read_u64(&state, DEX_ANALYTICS_PROGRAM, &lp_key);
                 if lp_raw > 0 {
                     pair.last_price = Some(lp_raw as f64 / PRICE_SCALE as f64);
+                } else {
+                    // Oracle price fallback: read from moltoracle if no analytics
+                    if let Some(ref base_sym) = pair.base_symbol {
+                        let oracle_asset = match base_sym.as_str() {
+                            "wSOL" | "SOL" => Some("wSOL"),
+                            "wETH" | "ETH" => Some("wETH"),
+                            "wBTC" | "BTC" => Some("BTC"),
+                            "MOLT" => Some("MOLT"),
+                            _ => None,
+                        };
+                        if let Some(asset_name) = oracle_asset {
+                            let oracle_key = format!("price_{}", asset_name);
+                            if let Some(feed) = read_bytes(&state, ORACLE_PROGRAM, &oracle_key) {
+                                if feed.len() >= 8 {
+                                    let raw = u64::from_le_bytes(feed[0..8].try_into().unwrap_or([0; 8]));
+                                    if raw > 0 {
+                                        // Oracle uses 8 decimals; convert to f64 USD
+                                        let oracle_price = raw as f64 / 100_000_000.0;
+                                        // If quote is mUSD, price = oracle_price
+                                        // If quote is MOLT, price = oracle_price / molt_price
+                                        let final_price = match pair.quote_symbol.as_deref() {
+                                            Some("MOLT") => {
+                                                let molt_key = "price_MOLT";
+                                                let molt_raw = read_bytes(&state, ORACLE_PROGRAM, molt_key)
+                                                    .and_then(|f| if f.len() >= 8 { Some(u64::from_le_bytes(f[0..8].try_into().unwrap_or([0; 8]))) } else { None })
+                                                    .unwrap_or(10_000_000); // $0.10 default
+                                                let molt_usd = molt_raw as f64 / 100_000_000.0;
+                                                if molt_usd > 0.0 { oracle_price / molt_usd } else { 0.0 }
+                                            }
+                                            _ => oracle_price,
+                                        };
+                                        if final_price > 0.0 {
+                                            pair.last_price = Some(final_price);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
 
                 // Read 24h stats for change
@@ -1167,7 +1207,47 @@ async fn get_pair_ticker(State(state): State<Arc<RpcState>>, Path(pair_id): Path
 
     let last_price_key = format!("ana_lp_{}", pair_id);
     let last_price_raw = read_u64(&state, DEX_ANALYTICS_PROGRAM, &last_price_key);
-    let last_price = last_price_raw as f64 / PRICE_SCALE as f64;
+    let mut last_price = last_price_raw as f64 / PRICE_SCALE as f64;
+
+    // Oracle price fallback: if no analytics price, try oracle for the pair's base asset
+    if last_price_raw == 0 {
+        let pair_key = format!("dex_pair_{}", pair_id);
+        if let Some(pair_data) = read_bytes(&state, DEX_CORE_PROGRAM, &pair_key) {
+            if let Some(pair_info) = decode_pair(&pair_data) {
+                let symbol_map = build_token_symbol_map(&state);
+                let base_sym = symbol_map.get(&pair_info.base_token);
+                let quote_sym = symbol_map.get(&pair_info.quote_token);
+                let oracle_asset = base_sym.and_then(|s| match s.as_str() {
+                    "wSOL" | "SOL" => Some("wSOL"),
+                    "wETH" | "ETH" => Some("wETH"),
+                    "wBTC" | "BTC" => Some("BTC"),
+                    "MOLT" => Some("MOLT"),
+                    _ => None,
+                });
+                if let Some(asset_name) = oracle_asset {
+                    let oracle_key = format!("price_{}", asset_name);
+                    if let Some(feed) = read_bytes(&state, ORACLE_PROGRAM, &oracle_key) {
+                        if feed.len() >= 8 {
+                            let raw = u64::from_le_bytes(feed[0..8].try_into().unwrap_or([0; 8]));
+                            if raw > 0 {
+                                let oracle_usd = raw as f64 / 100_000_000.0;
+                                last_price = match quote_sym.map(|s| s.as_str()) {
+                                    Some("MOLT") => {
+                                        let molt_raw = read_bytes(&state, ORACLE_PROGRAM, "price_MOLT")
+                                            .and_then(|f| if f.len() >= 8 { Some(u64::from_le_bytes(f[0..8].try_into().unwrap_or([0; 8]))) } else { None })
+                                            .unwrap_or(10_000_000);
+                                        let molt_usd = molt_raw as f64 / 100_000_000.0;
+                                        if molt_usd > 0.0 { oracle_usd / molt_usd } else { 0.0 }
+                                    }
+                                    _ => oracle_usd,
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     let best_bid_raw = read_u64(
         &state,
@@ -2033,6 +2113,50 @@ async fn post_vote(Path(_proposal_id): Path<u64>) -> Response {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// ORACLE: Price feed endpoints
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// GET /api/v1/oracle/prices — All oracle price feeds
+async fn get_oracle_prices(State(state): State<Arc<RpcState>>) -> Response {
+    let slot = current_slot(&state);
+    let assets = ["MOLT", "wSOL", "wETH", "BTC"];
+    let mut feeds = Vec::new();
+
+    for asset in &assets {
+        let key = format!("price_{}", asset);
+        if let Some(feed) = read_bytes(&state, ORACLE_PROGRAM, &key) {
+            if feed.len() >= 17 {
+                let price_raw = u64::from_le_bytes(feed[0..8].try_into().unwrap_or([0; 8]));
+                let timestamp = u64::from_le_bytes(feed[8..16].try_into().unwrap_or([0; 8]));
+                let decimals = feed[16];
+                let price_f64 = price_raw as f64 / 10f64.powi(decimals as i32);
+                let stale = {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    now.saturating_sub(timestamp) > 3600
+                };
+
+                feeds.push(serde_json::json!({
+                    "asset": asset,
+                    "price": price_f64,
+                    "priceRaw": price_raw,
+                    "decimals": decimals,
+                    "timestamp": timestamp,
+                    "stale": stale
+                }));
+            }
+        }
+    }
+
+    ApiResponse::ok(serde_json::json!({
+        "oracleActive": true,
+        "feeds": feeds,
+    }), slot).into_response()
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // PUBLIC: Build the DEX API router
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -2084,6 +2208,8 @@ pub(crate) fn build_dex_router() -> Router<Arc<RpcState>> {
         .route("/stats/analytics", get(get_analytics_stats))
         .route("/stats/governance", get(get_governance_stats))
         .route("/stats/moltswap", get(get_moltswap_stats))
+        // Oracle
+        .route("/oracle/prices", get(get_oracle_prices))
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
