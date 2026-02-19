@@ -727,81 +727,119 @@ Each contract must be validated for: correct opcode dispatch, proper authority c
 
 ---
 
-## PHASE 12: WALLET EXTENSION (`wallet/extension/` — ~20,000 lines)
+## PHASE 12: WALLET EXTENSION (`wallet/extension/` — 15,386 lines, 39 files) ✅ COMPLETE
 
-### 12.1 Popup (`popup.js` — 54K, `popup.html` — 23K)
-- [ ] Verify account management
-- [ ] Verify transaction approval flow
-- [ ] Verify dApp connection
-- [ ] Verify network switching
-- [ ] **Findings:**
+**Audit completed:** 9 findings (E-1 through E-9), 67 tests, commit `3aaf8e7`
 
-### 12.2 Full Page (`full.js` — 99K, `full.html` — 40K)
-- [ ] Verify extended wallet features
-- [ ] Verify settings management
-- [ ] Verify backup/restore
-- [ ] **Findings:**
+### 12.1 Popup (`popup.js` — 1,441 lines, `popup.html` — 412 lines)
+- [x] Verify account management
+- [x] Verify transaction approval flow
+- [x] Verify dApp connection
+- [x] Verify network switching
+- [x] **Findings:**
+  - **E-3** (MED): XSS in `loadIdentityPanel()` — `identity.name`, `moltName`, `tierName`, skill names injected into innerHTML without escaping. Fixed: added `escapeHtml()` helper, applied to all identity data.
 
-### 12.3 Content Script (`content-script.js` — 3.6K)
-- [ ] Verify injection mechanism
-- [ ] Verify message passing to/from popup
-- [ ] **Findings:**
+### 12.2 Full Page (`full.js` — 2,037 lines, `full.html` — 787 lines)
+- [x] Verify extended wallet features
+- [x] Verify settings management
+- [x] Verify backup/restore
+- [x] **Findings:**
+  - **E-2** (HIGH): XSS in identity tab — `displayName`, `moltNameDisplay`, skill names, vouch labels, endpoint, achievement names injected into innerHTML without escaping despite `escapeHtmlExt()` existing. Fixed: applied `escapeHtmlExt()` to all user-controlled data.
+  - **E-8** (MED): `handleImportPrivKey()` only checks `key.length !== 64`, doesn't validate hex format. Fixed: added `/^[0-9a-fA-F]{64}$/` regex.
+  - **E-9** (LOW): Inline `onclick="loadActivity(false)"` in Load More button. Fixed: replaced with `document.createElement` + `addEventListener`.
 
-### 12.4 In-Page Provider (`inpage-provider.js` — 4.5K)
-- [ ] Verify `window.moltwallet` API surface
-- [ ] Verify `window.ethereum` compatibility shim
-- [ ] Verify no 0x address leaks into MoltChain pages
-- [ ] Verify event handling (accountsChanged, etc.)
-- [ ] **Findings:**
+### 12.3 Content Script (`content-script.js` — 148 lines)
+- [x] Verify injection mechanism
+- [x] Verify message passing to/from popup
+- [x] **Findings:** None — clean IIFE, proper message relay via `window.postMessage` ↔ `chrome.runtime.sendMessage`.
 
-### 12.5 Approval Pages
-- [ ] Verify transaction approval UI
-- [ ] Verify permission request UI
-- [ ] **Findings:**
+### 12.4 In-Page Provider (`inpage-provider.js` — 144 lines)
+- [x] Verify `window.moltwallet` API surface
+- [x] Verify `window.ethereum` compatibility shim
+- [x] Verify no 0x address leaks into MoltChain pages
+- [x] Verify event handling (accountsChanged, etc.)
+- [x] **Findings:** None — clean request/response pattern with 120s timeout, proper event emitter.
+
+### 12.5 Approval Pages (`approve.js` — 216 lines)
+- [x] Verify transaction approval UI
+- [x] Verify permission request UI
+- [x] **Findings:** None — already uses `escapeHtml()` for all rendered fields.
+
+### 12.6 Core Services (11 files, 2,562 lines)
+- [x] Verify provider-router.js (739 lines)
+- [x] Verify crypto-service.js (569 lines)
+- [x] Verify tx-service.js (220 lines)
+- [x] Verify identity-service.js, rpc-service.js, ws-service.js, staking-service.js, bridge-service.js, state-store.js, nft-service.js, lock-service.js, notification-service.js
+- [x] **Findings:**
+  - **E-6** (MED): `serializeMessageForSigning()` in tx-service.js doesn't validate blockhash hex format — `parseInt` on non-hex produces NaN → zeroed bytes. Fixed: added `/^[0-9a-fA-F]{64}$/` check with throw.
+  - **E-7** (MED): Private key hex not zeroed after use in `finalizeSignMessage`, `finalizeSignTransaction`, `finalizeSendTransaction` in provider-router.js. Fixed: wrapped in `try/finally` blocks that zero the key string.
+
+### 12.7 Extension Pages (settings.js — 473 lines, identity.js — 460 lines, nfts.js — 99 lines, home.js — 469 lines)
+- [x] Verify settings page
+- [x] Verify identity detail page
+- [x] Verify NFT gallery page
+- [x] Verify home dashboard page
+- [x] **Findings:**
+  - **E-1** (HIGH): XSS in nfts.js — NFT data (name, image, mint, symbol, standard) injected into innerHTML with zero escaping; image URL not protocol-validated. Fixed: added `escapeHtml()` and `safeImageUrl()` helpers, applied to all NFT fields.
+  - **E-4** (MED): XSS in settings.js `loadApprovedOrigins()` — origin strings injected into innerHTML and `data-origin` attribute without escaping. Fixed: added `escapeHtml()`, escape origin before rendering.
+  - **E-5** (MED): XSS in identity.js `loadIdentityPage()` — identity name, endpoint, skill names, achievement names injected into innerHTML without escaping. Fixed: added `escapeHtml()`, applied to all identity data.
 
 ---
 
 ## PHASE 13: EXPLORER (`explorer/` — 11,472 lines)
 
 ### 13.1 Dashboard (`index.html` + `explorer.js` — 789 lines)
-- [ ] Verify latest blocks display
-- [ ] Verify latest transactions display
-- [ ] Verify network stats (TPS, slot, epoch)
-- [ ] Verify search functionality
-- [ ] **Findings:**
+- [x] Verify latest blocks display
+- [x] Verify latest transactions display
+- [x] Verify network stats (TPS, slot, epoch)
+- [x] Verify search functionality
+- [x] **Findings:**
+  - **F13.1** XSS in onclick copyToClipboard handlers — `block.hash`, `block.validator`, `signature` interpolated into `onclick="copyToClipboard('${val}')"` across explorer.js, blocks.js, transactions.js, validators.js, agents.js. A crafted value with `'` breaks out of the attribute.
+  - **F13.2** Unescaped RPC data in innerHTML — `updateLatestBlocks()` and `updateLatestTransactions()` in explorer.js inject `block.hash`, `block.validator`, `signature` into innerHTML without escaping.
 
 ### 13.2 Block Detail (`block.html` + `block.js` — 295 lines)
-- [ ] Verify block data loads from RPC
-- [ ] Verify transactions list in block
-- [ ] **Findings:**
+- [x] Verify block data loads from RPC
+- [x] Verify transactions list in block
+- [x] **Findings:**
+  - **F13.1** (cont.) copyToClipboard onclick XSS — same pattern in block.js
+  - **F13.4** Duplicate utility functions — `formatNumber()`, `formatTime()`, `formatBytes()`, `copyToClipboard()` redefined locally, shadowing utils.js
 
 ### 13.3 Transaction Detail (`transaction.html` + `transaction.js` — 471 lines)
-- [ ] Verify transaction data loads from RPC
-- [ ] Verify instruction display
-- [ ] Verify signature verification UI
-- [ ] **Findings:**
+- [x] Verify transaction data loads from RPC
+- [x] Verify instruction display
+- [x] Verify signature verification UI
+- [x] **Findings:**
+  - **F13.1** (cont.) `onclick="navigator.clipboard.writeText('${sigHex}')"` — XSS if sig contains quotes
+  - **F13.4** (cont.) Duplicate `formatNumber()`, `formatTime()`, `formatMolt()`, `copyToClipboard()`
 
 ### 13.4 Address / Account (`address.html` + `address.js` — 2,039 lines)
-- [ ] Verify account balance display
-- [ ] Verify transaction history for address
-- [ ] Verify token balances
-- [ ] Verify contract data display
-- [ ] **Findings:**
+- [x] Verify account balance display
+- [x] Verify transaction history for address
+- [x] Verify token balances
+- [x] Verify contract data display
+- [x] **Findings:**
+  - **F13.3** `showError(message)` injects message into innerHTML without escaping — XSS if error message contains user input
+  - **F13.6** Duplicate `rpcCall()` helper — address.js defines its own RPC call function duplicating `MoltChainRPC.call()` from explorer.js
 
 ### 13.5 Contracts List (`contracts.html` + `contracts.js` — 241 lines)
-- [ ] Verify deployed contracts list
-- [ ] Verify contract detail view
-- [ ] **Findings:**
+- [x] Verify deployed contracts list
+- [x] Verify contract detail view
+- [x] **Findings:**
+  - **F13.7** Contract metadata `displayKey` and `displayVal` not HTML-escaped before innerHTML injection in contract.js metadata grid
 
 ### 13.6 Validators (`validators.html` + `validators.js` — 162 lines)
-- [ ] Verify validator list from RPC
-- [ ] Verify stake / commission display
-- [ ] **Findings:**
+- [x] Verify validator list from RPC
+- [x] Verify stake / commission display
+- [x] **Findings:**
+  - **F13.1** (cont.) copyToClipboard onclick XSS — same pattern
+  - **F13.4** (cont.) Duplicate `formatNumber()`, `formatMolt()`, `copyToClipboard()`
 
 ### 13.7 Agents (`agents.html` + `agents.js` — 215 lines)
-- [ ] Verify agent list display
-- [ ] Verify MoltyID integration
-- [ ] **Findings:**
+- [x] Verify agent list display
+- [x] Verify MoltyID integration
+- [x] **Findings:**
+  - **F13.1** (cont.) copyToClipboard onclick XSS — same pattern
+  - **F13.5** Trust tier thresholds inconsistent — agents.js uses 0-10000 scale (0→Newcomer, 100→Verified, 500→Trusted, 1000→Established, 5000→Elite, 10000→Legendary) vs address.js/validators.js 0-950 scale. Agents directory uses a different reputation source than MoltyID.
 
 ---
 
