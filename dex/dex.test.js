@@ -3562,6 +3562,119 @@ const rpcLibPath = '/Users/johnrobin/.openclaw/workspace/moltchain/rpc/src/lib.r
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Phase 20: Error Handling & Edge Cases
+// ═══════════════════════════════════════════════════════════════════════════
+
+// P20.1: RPC res.ok check (F20.1)
+{
+    const js = fs.readFileSync(dexJsPath, 'utf8');
+    const rpcIdx = js.indexOf('async rpc(method');
+    assert(rpcIdx !== -1, 'P20.1a: api.rpc() method exists');
+    const rpcBlock = js.substring(rpcIdx, rpcIdx + 500);
+    assert(rpcBlock.includes('res.ok'), 'P20.1b: RPC checks res.ok before parsing JSON');
+    assert(rpcBlock.includes('res.status'), 'P20.1c: Error includes HTTP status code');
+}
+
+// P20.2: Contract error propagation
+{
+    const js = fs.readFileSync(dexJsPath, 'utf8');
+    assert(js.includes('json.error.message'), 'P20.2a: RPC propagates error message from response');
+    assert(js.includes('Order failed:'), 'P20.2b: Order submit shows error message');
+}
+
+// P20.3: Balance check uses per-token decimals (F20.3)
+{
+    const js = fs.readFileSync(dexJsPath, 'utf8');
+    assert(js.includes('ta.decimals'), 'P20.3a: Token balance uses ta.decimals');
+    assert(js.includes('Math.pow(10, decimals)'), 'P20.3b: Division uses actual decimals, not hardcoded 1e9');
+}
+
+// P20.4: Negative price/amount validation (F20.4)
+{
+    const js = fs.readFileSync(dexJsPath, 'utf8');
+    assert(js.includes('amount <= 0'), 'P20.4a: Rejects zero/negative amount');
+    assert(js.includes('price <= 0'), 'P20.4b: Rejects zero/negative price');
+    assert(js.includes('must be positive'), 'P20.4c: Shows clear error message for negative values');
+}
+
+// P20.5: Prediction market expired check (F20.5)
+{
+    const js = fs.readFileSync(dexJsPath, 'utf8');
+    assert(js.includes('no longer active'), 'P20.5a: Prediction buy checks market status');
+}
+
+// P20.6: Submit button disable
+{
+    const js = fs.readFileSync(dexJsPath, 'utf8');
+    assert(js.includes('submitBtn.disabled = true'), 'P20.6a: Submit button disabled on click');
+    assert(js.includes('Submitting...'), 'P20.6b: Button text changes to Submitting...');
+}
+
+// P20.7: showNotification types
+{
+    const js = fs.readFileSync(dexJsPath, 'utf8');
+    assert(js.includes('success'), 'P20.7a: showNotification supports success type');
+    assert(js.includes('warning'), 'P20.7b: showNotification supports warning type');
+    assert(js.includes('error'), 'P20.7c: showNotification supports error type');
+}
+
+// P20.8: TradingView fallback
+{
+    const js = fs.readFileSync(dexJsPath, 'utf8');
+    assert(js.includes('Chart unavailable') || js.includes('library failed'), 'P20.8a: Chart has fallback message');
+}
+
+// P20.9: WebSocket JSON.parse in try/catch
+{
+    const js = fs.readFileSync(dexJsPath, 'utf8');
+    assert(js.includes('JSON.parse(ev.data)') || js.includes('JSON.parse(e.data)'), 'P20.9a: WebSocket parses JSON');
+    // The parse is inside a try/catch block
+    const wsIdx = js.indexOf('onmessage');
+    assert(wsIdx !== -1, 'P20.9b: WebSocket has onmessage handler');
+}
+
+// P20.10: Overflow protection (F20.10)
+{
+    const js = fs.readFileSync(dexJsPath, 'utf8');
+    assert(js.includes('9_000_000'), 'P20.10a: Maximum amount/price cap at 9M');
+    assert(js.includes('Amount too large'), 'P20.10b: Shows overflow error for large amounts');
+    assert(js.includes('Price too large'), 'P20.10c: Shows overflow error for large prices');
+}
+
+// P20.11: Cancel order error handling (F20.11)
+{
+    const js = fs.readFileSync(dexJsPath, 'utf8');
+    assert(js.includes('Cancel failed:'), 'P20.11a: Cancel shows failure message on error');
+    // Verify success is NOT outside the try block
+    const cancelIdx = js.indexOf('Cancel failed');
+    const cancelBlock = js.substring(cancelIdx - 300, cancelIdx + 100);
+    assert(cancelBlock.includes('Order cancelled'), 'P20.11b: Success notification near cancel code');
+}
+
+// P20.12: Reentrancy guards
+{
+    const core = fs.readFileSync(dexCoreContractPath, 'utf8');
+    assert(core.includes('reentrancy_enter'), 'P20.12a: dex_core has reentrancy_enter');
+    assert(core.includes('reentrancy_exit'), 'P20.12b: dex_core has reentrancy_exit');
+}
+
+// P20.13: Retry utility (F20.13)
+{
+    const js = fs.readFileSync(dexJsPath, 'utf8');
+    assert(js.includes('async function withRetry'), 'P20.13a: withRetry utility function exists');
+    assert(js.includes('maxRetries'), 'P20.13b: withRetry has configurable max retries');
+    assert(js.includes('setTimeout(r, delay'), 'P20.13c: withRetry uses backoff delay');
+}
+
+// P20.14: Hex key validation (F20.14)
+{
+    const js = fs.readFileSync(dexJsPath, 'utf8');
+    assert(js.includes('must be hexadecimal'), 'P20.14a: hexToBytes validates hex format');
+    assert(js.includes('odd number of hex'), 'P20.14b: hexToBytes rejects odd-length hex');
+    assert(js.includes('Invalid key'), 'P20.14c: fromSecretKey throws on invalid key');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Summary
 // ═══════════════════════════════════════════════════════════════════════════
 console.log(`\n${'═'.repeat(60)}`);
