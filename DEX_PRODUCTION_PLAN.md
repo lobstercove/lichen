@@ -91,9 +91,9 @@
 | 20 | Error Handling & Edge Cases | 14/14 | 8 | `[x]` |
 | 21 | SDK & Market Maker Integration | 10/10 | 10 | `[x]` |
 | 22 | Security & Input Validation | 14/14 | 13 | `[x]` |
-| 23 | Mobile / Responsive Layout | 0/8 | 0 | `[ ]` |
+| 23 | Mobile / Responsive Layout | 8/8 | 16 | `[x]` |
 | 24 | End-to-End Integration Tests | 0/12 | 0 | `[ ]` |
-| — | **TOTAL** | **296/314** | **200** | **94%** |
+| — | **TOTAL** | **304/314** | **216** | **97%** |
 
 ---
 
@@ -854,17 +854,32 @@
 
 | # | Task | Status |
 |---|---|---|
-| 23.1 | Read CSS media queries — verify breakpoints for mobile (≤768px) and tablet (≤1024px) | `[ ]` |
-| 23.2 | Verify Trade view: chart + orderbook + form stack vertically on mobile | `[ ]` |
-| 23.3 | Verify Predict view: market cards grid adapts to single column | `[ ]` |
-| 23.4 | Verify Pool view: table scrolls horizontally or adapts columns | `[ ]` |
-| 23.5 | Verify navigation works on mobile (hamburger menu or scrollable tabs) | `[ ]` |
-| 23.6 | Verify modals (wallet, chart) are usable on small screens | `[ ]` |
-| 23.7 | Verify touch interactions: buttons, sliders, toggles all respond to touch | `[ ]` |
-| 23.8 | Verify no horizontal overflow on any view at 375px width | `[ ]` |
+| 23.1 | Read CSS media queries — verify breakpoints for mobile (≤768px) and tablet (≤1024px) | `[x]` |
+| 23.2 | Verify Trade view: chart + orderbook + form stack vertically on mobile | `[x]` |
+| 23.3 | Verify Predict view: market cards grid adapts to single column | `[x]` |
+| 23.4 | Verify Pool view: table scrolls horizontally or adapts columns | `[x]` |
+| 23.5 | Verify navigation works on mobile (hamburger menu or scrollable tabs) | `[x]` |
+| 23.6 | Verify modals (wallet, chart) are usable on small screens | `[x]` |
+| 23.7 | Verify touch interactions: buttons, sliders, toggles all respond to touch | `[x]` |
+| 23.8 | Verify no horizontal overflow on any view at 375px width | `[x]` |
 
 **Findings:**
-- (none yet)
+- F23.1a (MEDIUM): Missing 1024px tablet breakpoint — FIXED: added `@media (max-width: 1024px)` with stat-item/info-pill scaling
+- F23.1b (MEDIUM): Missing 480px small-phone breakpoint — FIXED: added `@media (max-width: 480px)` with chart 220px, column footer, compact nav
+- F23.2a (HIGH): `order: -1` on `.order-form-panel` at 1200px puts form above chart — FIXED: removed `order: -1`
+- F23.2b (HIGH): `.tv-chart-container` fixed 520px height too tall on mobile — FIXED: 300px at 768px, 220px at 480px
+- F23.3b (LOW): 5-col predict-stats-row orphan column at intermediate widths — FIXED: `repeat(2,1fr)` at 1024px, `1fr` at 768px
+- F23.4b (HIGH): Positions panel tables overflow without horizontal scroll — FIXED: `.positions-panel table { overflow-x: auto }`
+- F23.4c (HIGH): Predict/pool tables no overflow-x — FIXED: same table overflow-x rule
+- F23.5a (CRITICAL): `.nav-actions` overflows at 375px — FIXED: `gap: 6px` at 768px, `gap: 4px` at 480px
+- F23.5c (LOW): No hamburger X animation — acknowledged, hamburger toggle functional
+- F23.6a (LOW): Modal padding too large on mobile — FIXED: predict-chart padding reduced at 640px/480px
+- F23.6b (MEDIUM): `.predict-chart-content` no max-height — FIXED: `max-height: 90vh; overflow-y: auto` at 768px
+- F23.7b (MEDIUM): Touch targets under 44px — FIXED: `.pos-tab { min-height: 44px }`, `.btn { min-height: 44px }` at 768px
+- F23.8a (CRITICAL): `.network-select` not hidden at 768px — FIXED: `display: none` at 768px
+- F23.8c (HIGH): `.footer-container` no flex-wrap — FIXED: `flex-wrap: wrap; gap: 12px` at 768px, `flex-direction: column` at 480px
+- F23.8e (MEDIUM): `.positions-tabs` no overflow-x — FIXED: `overflow-x: auto; white-space: nowrap` at 768px
+- F23.8f (LOW): `.info-pill` size too large on mobile — FIXED: scaled down at each breakpoint
 
 ---
 

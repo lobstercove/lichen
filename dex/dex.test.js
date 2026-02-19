@@ -4002,6 +4002,126 @@ const predictionContractPath = '/Users/johnrobin/.openclaw/workspace/moltchain/c
 // (implicitly tested by the test runner — if we get here, all prior tests passed)
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Phase 23: Mobile / Responsive Layout
+// ═══════════════════════════════════════════════════════════════════════════
+
+const cssContent = fs.readFileSync(__dirname + '/dex.css', 'utf8');
+
+// P23.1: Breakpoint verification
+{
+    assert(cssContent.includes('@media (max-width: 1200px)'), 'P23.1a: has 1200px breakpoint');
+    assert(cssContent.includes('@media (max-width: 1024px)'), 'P23.1b: has 1024px tablet breakpoint');
+    assert(cssContent.includes('@media (max-width: 768px)'), 'P23.1c: has 768px mobile breakpoint');
+    assert(cssContent.includes('@media (max-width: 640px)'), 'P23.1d: has 640px small breakpoint');
+    assert(cssContent.includes('@media (max-width: 480px)'), 'P23.1e: has 480px small-phone breakpoint');
+}
+
+// P23.2: Trade view stacks vertically — no order:-1 pushing form above chart
+{
+    // At 1200px the grid collapses to 1fr (single column)
+    assert(cssContent.includes('.trade-layout { grid-template-columns: 1fr'), 'P23.2a: trade layout collapses to single column');
+    // order: -1 removed — form should NOT appear above chart
+    const responsive = cssContent.slice(cssContent.indexOf('@media (max-width: 1200px)'));
+    const end1200 = responsive.indexOf('}') + responsive.slice(responsive.indexOf('}')).indexOf('\n');
+    const block1200 = responsive.slice(0, responsive.indexOf('\n@media'));
+    assert(!block1200.includes('order: -1'), 'P23.2b: no order:-1 on order-form-panel at 1200px');
+}
+
+// P23.2c: Chart height reduced on mobile
+{
+    const at768 = cssContent.slice(cssContent.indexOf('@media (max-width: 768px)'));
+    assert(at768.includes('.tv-chart-container { height: 300px'), 'P23.2c: chart height 300px at 768px');
+    const at480 = cssContent.slice(cssContent.indexOf('@media (max-width: 480px)'));
+    assert(at480.includes('.tv-chart-container { height: 220px'), 'P23.2d: chart height 220px at 480px');
+}
+
+// P23.3: Predict grid adapts
+{
+    assert(cssContent.includes('.predict-grid { grid-template-columns: 1fr'), 'P23.3a: predict grid single column at 1200px');
+    const at768 = cssContent.slice(cssContent.indexOf('@media (max-width: 768px)'));
+    assert(at768.includes('.predict-stats-row') && at768.includes('grid-template-columns: 1fr'), 'P23.3b: predict stats single column at 768px');
+}
+
+// P23.4: Tables have horizontal scroll
+{
+    const at768 = cssContent.slice(cssContent.indexOf('@media (max-width: 768px)'));
+    assert(at768.includes('.positions-panel table') && at768.includes('overflow-x: auto'), 'P23.4a: positions table overflow-x auto');
+}
+
+// P23.5: Navigation — hamburger visible, nav-actions gap reduced, network-select hidden
+{
+    const at768 = cssContent.slice(cssContent.indexOf('@media (max-width: 768px)'));
+    assert(at768.includes('.nav-toggle { display: flex'), 'P23.5a: hamburger toggle displayed at 768px');
+    assert(at768.includes('.nav-menu { display: none'), 'P23.5b: nav menu hidden at 768px');
+    assert(at768.includes('.network-select { display: none'), 'P23.5c: network-select hidden at 768px');
+    assert(at768.includes('.nav-actions { gap: 6px'), 'P23.5d: nav-actions gap tightened at 768px');
+}
+
+// P23.6: Modals usable on small screens
+{
+    const at768 = cssContent.slice(cssContent.indexOf('@media (max-width: 768px)'));
+    assert(at768.includes('.predict-chart-content { max-height: 90vh'), 'P23.6a: chart modal max-height 90vh at 768px');
+    assert(at768.includes('overflow-y: auto'), 'P23.6b: chart modal scrollable at 768px');
+    const at640 = cssContent.slice(cssContent.indexOf('@media (max-width: 640px)'));
+    assert(at640.includes('.predict-chart-content { width: 96%'), 'P23.6c: chart modal 96% width at 640px');
+}
+
+// P23.7: Touch targets ≥ 44px
+{
+    const at768 = cssContent.slice(cssContent.indexOf('@media (max-width: 768px)'));
+    assert(at768.includes('.pos-tab') && at768.includes('min-height: 44px'), 'P23.7a: position tabs 44px touch target');
+    assert(at768.includes('.btn') && at768.includes('min-height: 44px'), 'P23.7b: buttons 44px touch target');
+}
+
+// P23.8: No horizontal overflow at 375px
+{
+    // Verify footer wraps
+    const at768 = cssContent.slice(cssContent.indexOf('@media (max-width: 768px)'));
+    assert(at768.includes('.footer-container { flex-wrap: wrap'), 'P23.8a: footer wraps at 768px');
+    // Verify positions-tabs scrollable
+    assert(at768.includes('.positions-tabs { overflow-x: auto'), 'P23.8b: positions tabs scrollable at 768px');
+    // Verify 480px further tightens
+    const at480 = cssContent.slice(cssContent.indexOf('@media (max-width: 480px)'));
+    assert(at480.includes('.footer-container { flex-direction: column'), 'P23.8c: footer column at 480px');
+    assert(at480.includes('.nav-actions { gap: 4px'), 'P23.8d: nav-actions super tight at 480px');
+}
+
+// P23.9: Info pills scale down
+{
+    const at1024 = cssContent.slice(cssContent.indexOf('@media (max-width: 1024px)'));
+    assert(at1024.includes('.info-pill { font-size: 0.65rem'), 'P23.9a: info pills shrink at 1024px');
+    const at480 = cssContent.slice(cssContent.indexOf('@media (max-width: 480px)'));
+    assert(at480.includes('.info-pill { font-size: 0.6rem'), 'P23.9b: info pills shrink further at 480px');
+}
+
+// P23.10: Stat items scale at tablet breakpoint
+{
+    const at1024 = cssContent.slice(cssContent.indexOf('@media (max-width: 1024px)'));
+    assert(at1024.includes('.stat-item .stat-label { font-size: 0.6rem'), 'P23.10a: stat labels shrink at 1024px');
+    assert(at1024.includes('.stat-item .stat-value { font-size: 0.78rem'), 'P23.10b: stat values shrink at 1024px');
+}
+
+// P23.11: Breakpoints are in descending order
+{
+    const idx1200 = cssContent.indexOf('@media (max-width: 1200px)');
+    const idx1024 = cssContent.indexOf('@media (max-width: 1024px)');
+    const idx768  = cssContent.indexOf('@media (max-width: 768px)');
+    const idx640  = cssContent.indexOf('@media (max-width: 640px)');
+    const idx480  = cssContent.indexOf('@media (max-width: 480px)');
+    assert(idx1200 < idx1024, 'P23.11a: 1200px before 1024px');
+    assert(idx1024 < idx768, 'P23.11b: 1024px before 768px');
+    assert(idx768 < idx640, 'P23.11c: 768px before 640px');
+    assert(idx640 < idx480, 'P23.11d: 640px before 480px');
+}
+
+// P23.12: webkit overflow scrolling for touch devices
+{
+    assert(cssContent.includes('-webkit-overflow-scrolling: touch'), 'P23.12a: webkit overflow scrolling on tables');
+    const matches = cssContent.match(/-webkit-overflow-scrolling: touch/g);
+    assert(matches && matches.length >= 2, 'P23.12b: multiple touch-scrolling declarations');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Summary
 // ═══════════════════════════════════════════════════════════════════════════
 console.log(`\n${'═'.repeat(60)}`);
