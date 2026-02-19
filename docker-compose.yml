@@ -36,10 +36,10 @@ services:
     restart: unless-stopped
     entrypoint: ["moltchain-faucet"]
     ports:
-      - "9100:9100"
+      - "9101:9101"
     environment:
       - RUST_LOG=info
-      - PORT=9100
+      - PORT=9101
       - RPC_URL=http://validator:8899
     depends_on:
       validator:

@@ -46,6 +46,7 @@ FROM debian:bookworm-slim
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         ca-certificates \
+        curl \
         libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
@@ -72,8 +73,10 @@ EXPOSE 7001
 EXPOSE 8899
 # WebSocket port
 EXPOSE 8900
-# Metrics port
+# Validator Metrics port
 EXPOSE 9100
+# Faucet port (when running moltchain-faucet entrypoint)
+EXPOSE 9101
 
 ENV MOLTCHAIN_DATA_DIR=/var/lib/moltchain
 ENV MOLTCHAIN_CONFIG=/etc/moltchain/config.toml
