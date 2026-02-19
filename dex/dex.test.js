@@ -1222,6 +1222,103 @@ assert(
 );
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Phase 6: Trade View — WebSocket Feeds
+// ═══════════════════════════════════════════════════════════════════════════
+
+// P6.1: WS URL configurable
+assert(
+    dexSource.includes('MOLTCHAIN_WS') && dexSource.includes('ws://localhost:8900'),
+    'P6.1: WS URL defaults to ws://localhost:8900 with MOLTCHAIN_WS override'
+);
+
+// P6.2: DexWS class with constructor, connect, subscribe, unsubscribe
+assert(
+    dexSource.includes('class DexWS') && dexSource.includes('connect()') &&
+    dexSource.includes('subscribe(') && dexSource.includes('unsubscribe('),
+    'P6.2: DexWS class has connect, subscribe, unsubscribe methods'
+);
+
+// P6.3: Exponential backoff reconnection
+assert(
+    dexSource.includes('reconnectDelay * 2') && dexSource.includes('30000'),
+    'P6.3: WS reconnect uses exponential backoff capped at 30s'
+);
+
+// P6.4: Orderbook WS subscription
+assert(
+    dexSource.includes('`orderbook:${pairId}`') && dexSource.includes('d.bids') && dexSource.includes('d.asks'),
+    'P6.4: orderbook channel subscribes and processes bids/asks'
+);
+
+// P6.5: Trades WS subscription
+assert(
+    dexSource.includes('`trades:${pairId}`') && dexSource.includes('streamBarUpdate'),
+    'P6.5: trades channel subscribes and calls streamBarUpdate'
+);
+
+// P6.6: Ticker WS subscription uses camelCase (F6.9 fix)
+assert(
+    dexSource.includes('`ticker:${pairId}`') && dexSource.includes('d.lastPrice'),
+    'P6.6: ticker channel uses camelCase d.lastPrice (F6.9 fix)'
+);
+
+// P6.7: Orders WS subscription uses camelCase (F6.9 fix)
+assert(
+    dexSource.includes('`orders:${wallet.address}`') && dexSource.includes('d.orderId'),
+    'P6.7: orders channel uses camelCase d.orderId (F6.9 fix)'
+);
+
+// P6.8: DexEvent has rename_all = camelCase (F6.9 fix)
+{
+    const wsPath = '/Users/johnrobin/.openclaw/workspace/moltchain/rpc/src/dex_ws.rs';
+    const wsSource = fs.readFileSync(wsPath, 'utf8');
+    assert(
+        wsSource.includes('rename_all = "camelCase"') && wsSource.includes('pub enum DexEvent'),
+        'P6.8: DexEvent enum uses serde rename_all = camelCase (F6.9 fix)'
+    );
+}
+
+// P6.9: RAF throttle on orderbook updates (F6.11 fix)
+assert(
+    dexSource.includes('rafThrottle') && dexSource.includes('throttledRenderOrderBook'),
+    'P6.9: orderbook WS callback uses RAF-throttled renderOrderBook (F6.11 fix)'
+);
+
+// P6.10: DexWS close() method (F6.12 fix)
+assert(
+    dexSource.includes('close()') && dexSource.includes('_closing'),
+    'P6.10: DexWS has close() method with _closing flag (F6.12 fix)'
+);
+
+// P6.11: beforeunload cleanup (F6.12 fix)
+assert(
+    dexSource.includes('beforeunload') && dexSource.includes('dexWs.close()'),
+    'P6.11: Page unload calls dexWs.close() (F6.12 fix)'
+);
+
+// P6.12: Polling fallback runs unconditionally
+assert(
+    dexSource.includes('setInterval') && dexSource.includes('loadOrderBook'),
+    'P6.12: Polling fallback runs loadOrderBook on interval'
+);
+
+// P6.13: WS subscriptions change on pair switch
+assert(
+    dexSource.includes('state._wsSubs.forEach(id => dexWs.unsubscribe(id))'),
+    'P6.13: subscribePair unsubscribes previous channels before subscribing new'
+);
+
+// P6.14: emit_dex_events wired in validator (F6.2 fix)
+{
+    const validatorPath = '/Users/johnrobin/.openclaw/workspace/moltchain/validator/src/main.rs';
+    const validatorSource = fs.readFileSync(validatorPath, 'utf8');
+    assert(
+        validatorSource.includes('fn emit_dex_events(') && validatorSource.includes('emit_dex_events(&state, &ws_dex_broadcaster'),
+        'P6.14: emit_dex_events function exists and is called in block production (F6.2 fix)'
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Summary
 // ═══════════════════════════════════════════════════════════════════════════
 console.log(`\n${'═'.repeat(60)}`);

@@ -109,6 +109,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 } catch { /* ignore */ }
             };
             this.ws.onclose = () => {
+                if (this._closing) return;
                 setTimeout(() => this.connect(), this.reconnectDelay);
                 this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
             };
@@ -143,6 +144,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     this.ws.send(JSON.stringify({ jsonrpc: '2.0', id: this.nextReqId++, method: 'unsubscribeDex', params: { subscription: subId } }));
                 } catch { /* connection may have closed */ }
             }
+        }
+        close() {
+            this._closing = true;
+            if (this.ws) { this.ws.onclose = null; this.ws.close(); this.ws = null; }
         }
     }
 
@@ -464,6 +469,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     function connectWebSocket() { try { dexWs = new DexWS(WS_URL); } catch { /* ws unavailable */ } }
 
+    // F6.11: RAF-throttle for high-frequency WS order book updates
+    function rafThrottle(fn) { let pending = false, lastArgs; return function(...args) { lastArgs = args; if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; fn(...lastArgs); }); } }; }
+    const throttledRenderOrderBook = rafThrottle(() => { if (state.currentView === 'trade') renderOrderBook(); });
+
     function subscribePair(pairId) {
         if (!dexWs) return;
         state._wsSubs.forEach(id => dexWs.unsubscribe(id)); state._wsSubs = [];
@@ -473,7 +482,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const map = arr => arr.map(a => ({ price: a.price, amount: a.quantity, total: 0 }));
                 const asks = map(d.asks); asks.sort((a, b) => a.price - b.price); let t = 0; asks.forEach(a => { t += a.amount; a.total = t; });
                 const bids = map(d.bids); bids.sort((a, b) => b.price - a.price); t = 0; bids.forEach(b => { t += b.amount; b.total = t; });
-                state.orderBook = { asks, bids }; if (state.currentView === 'trade') renderOrderBook();
+                state.orderBook = { asks, bids }; throttledRenderOrderBook();
             }
         }).then(id => state._wsSubs.push(id)).catch(() => {});
 
@@ -491,22 +500,22 @@ document.addEventListener('DOMContentLoaded', () => {
         }).then(id => state._wsSubs.push(id)).catch(() => {});
 
         dexWs.subscribe(`ticker:${pairId}`, (d) => {
-            if (d.last_price) {
-                state.lastPrice = d.last_price;
+            if (d.lastPrice) {
+                state.lastPrice = d.lastPrice;
                 const pair = pairs.find(p => p.pairId === pairId);
-                if (pair) { pair.price = d.last_price; pair.change = d.change_24h || pair.change; }
+                if (pair) { pair.price = d.lastPrice; pair.change = d.change24h || pair.change; }
                 updateTickerDisplay();
             }
         }).then(id => state._wsSubs.push(id)).catch(() => {});
 
         if (wallet.address) {
             dexWs.subscribe(`orders:${wallet.address}`, (d) => {
-                if (d.order_id) {
-                    const o = openOrders.find(x => x.id === String(d.order_id));
+                if (d.orderId) {
+                    const o = openOrders.find(x => x.id === String(d.orderId));
                     if (o) { o.filled = d.filled / ((d.filled + d.remaining) || 1); }
                     if (d.status === 'filled' || d.status === 'cancelled') {
-                        showNotification(`Order ${d.status}: #${d.order_id}`, d.status === 'filled' ? 'success' : 'info');
-                        openOrders = openOrders.filter(x => x.id !== String(d.order_id));
+                        showNotification(`Order ${d.status}: #${d.orderId}`, d.status === 'filled' ? 'success' : 'info');
+                        openOrders = openOrders.filter(x => x.id !== String(d.orderId));
                     }
                     renderOpenOrders();
                 }
@@ -2376,4 +2385,9 @@ document.addEventListener('DOMContentLoaded', () => {
             if (dexWs && state.activePairId != null) subscribePair(state.activePairId);
         }
     })().catch(e => console.error('[DEX] Init error:', e));
+
+    // F6.12: Clean up WebSocket connections on page unload
+    window.addEventListener('beforeunload', () => {
+        if (dexWs) dexWs.close();
+    });
 });

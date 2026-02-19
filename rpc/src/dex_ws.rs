@@ -20,7 +20,7 @@ use tokio::sync::broadcast;
 
 /// DEX-specific events broadcast to WebSocket subscribers
 #[derive(Clone, Debug, Serialize)]
-#[serde(tag = "type")]
+#[serde(tag = "type", rename_all = "camelCase")]
 pub enum DexEvent {
     /// Order book snapshot for a pair
     OrderBookUpdate {
