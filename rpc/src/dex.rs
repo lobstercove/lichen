@@ -900,7 +900,6 @@ async fn get_pairs(
                         let oracle_asset = match base_sym.as_str() {
                             "wSOL" | "SOL" => Some("wSOL"),
                             "wETH" | "ETH" => Some("wETH"),
-                            "wBTC" | "BTC" => Some("BTC"),
                             "MOLT" => Some("MOLT"),
                             _ => None,
                         };
@@ -1220,7 +1219,6 @@ async fn get_pair_ticker(State(state): State<Arc<RpcState>>, Path(pair_id): Path
                 let oracle_asset = base_sym.and_then(|s| match s.as_str() {
                     "wSOL" | "SOL" => Some("wSOL"),
                     "wETH" | "ETH" => Some("wETH"),
-                    "wBTC" | "BTC" => Some("BTC"),
                     "MOLT" => Some("MOLT"),
                     _ => None,
                 });
@@ -2119,7 +2117,7 @@ async fn post_vote(Path(_proposal_id): Path<u64>) -> Response {
 /// GET /api/v1/oracle/prices — All oracle price feeds
 async fn get_oracle_prices(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
-    let assets = ["MOLT", "wSOL", "wETH", "BTC"];
+    let assets = ["MOLT", "wSOL", "wETH"];
     let mut feeds = Vec::new();
 
     for asset in &assets {

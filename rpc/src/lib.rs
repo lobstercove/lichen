@@ -8492,7 +8492,7 @@ async fn handle_get_reward_adjustment_info(
         "activeValidators": active_count,
         "unclaimedRewards": stats.total_unclaimed_rewards,
         "estimatedApy": format!("{:.2}", apy),
-        "note": "Oracle price feeds active: MOLT, wSOL, wETH, BTC via Binance live feed"
+        "note": "Oracle price feeds active: MOLT, wSOL, wETH via Binance WebSocket real-time feed"
     }))
 }
 
