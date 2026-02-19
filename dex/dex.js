@@ -641,7 +641,7 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const { data } = await api.get(`/pairs/${state.activePairId}/orderbook?depth=20`);
             if (data?.asks && data?.bids) {
-                const map = arr => arr.map(a => ({ price: +a.price, amount: +(a.quantity || a.amount || 0), total: 0 }));
+                const map = arr => arr.map(a => ({ price: +a.price, amount: +(a.quantity || a.amount || 0) / 1e9, total: 0 }));
                 const asks = map(data.asks); asks.sort((a, b) => a.price - b.price);
                 let t = 0; asks.forEach(a => { t += a.amount; a.total = t; });
                 const bids = map(data.bids); bids.sort((a, b) => b.price - a.price);
@@ -661,7 +661,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (Array.isArray(data) && data.length > 0) {
                 const container = document.querySelector('.trades-list'); if (!container) return;
                 container.innerHTML = data.map(tr => {
-                    const buy = tr.side === 'buy'; const price = +tr.price || 0; const amount = tr.quantity || tr.amount || 0;
+                    const buy = tr.side === 'buy'; const price = +tr.price || 0; const amount = (tr.quantity || tr.amount || 0) / 1e9;
                     return `<div class="trade-row"><span class="trade-price ${buy ? 'buy' : 'sell'}">${formatPrice(price)}</span><span>${formatAmount(amount)}</span><span class="trade-time">${tr.timestamp ? new Date(tr.timestamp).toLocaleTimeString() : ''}</span></div>`;
                 }).join(''); return;
             }
@@ -729,7 +729,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         dexWs.subscribe(`orderbook:${pairId}`, (d) => {
             if (d.bids && d.asks) {
-                const map = arr => arr.map(a => ({ price: a.price, amount: a.quantity, total: 0 }));
+                const map = arr => arr.map(a => ({ price: a.price, amount: (a.quantity || 0) / 1e9, total: 0 }));
                 const asks = map(d.asks); asks.sort((a, b) => a.price - b.price); let t = 0; asks.forEach(a => { t += a.amount; a.total = t; });
                 const bids = map(d.bids); bids.sort((a, b) => b.price - a.price); t = 0; bids.forEach(b => { t += b.amount; b.total = t; });
                 state.orderBook = { asks, bids }; throttledRenderOrderBook();
@@ -742,7 +742,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const c = document.querySelector('.trades-list');
                 if (c && state.currentView === 'trade') {
                     const row = document.createElement('div'); row.className = 'trade-row';
-                    row.innerHTML = `<span class="trade-price ${d.side === 'buy' ? 'buy' : 'sell'}">${formatPrice(d.price)}</span><span>${formatAmount(d.quantity || 0)}</span><span class="trade-time">${new Date().toLocaleTimeString()}</span>`;
+                    row.innerHTML = `<span class="trade-price ${d.side === 'buy' ? 'buy' : 'sell'}">${formatPrice(d.price)}</span><span>${formatAmount((d.quantity || 0) / 1e9)}</span><span class="trade-time">${new Date().toLocaleTimeString()}</span>`;
                     c.prepend(row); if (c.children.length > 40) c.lastChild.remove();
                 }
                 streamBarUpdate(d.price, d.quantity || 0);
@@ -837,7 +837,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function updatePairStats(pair) {
         const stats = document.querySelectorAll('.pair-stats .stat-item .stat-value');
         if (stats.length >= 4) loadTicker(pair.pairId).then(t => {
-            if (t) { stats[0].textContent = formatPrice(t.high24h || 0); stats[1].textContent = formatPrice(t.low24h || 0); stats[2].textContent = formatVolume(t.volume24h || 0); stats[3].textContent = String(t.trades24h || '0'); }
+            if (t) { stats[0].textContent = formatPrice(t.high24h || 0); stats[1].textContent = formatPrice(t.low24h || 0); stats[2].textContent = formatVolume((t.volume24h || 0) / 1e9); stats[3].textContent = String(t.trades24h || '0'); }
             else { stats[0].textContent = '--'; stats[1].textContent = '--'; stats[2].textContent = '--'; stats[3].textContent = '0'; }
         });
     }
@@ -1482,10 +1482,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const { data } = await api.get('/stats/amm');
             if (data) {
                 const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
-                el('poolTvl', formatVolume(data.tvl || data.total_volume || 0));
+                el('poolTvl', formatVolume(data.tvl || data.totalVolume || 0));
                 el('poolVolume24h', formatVolume(data.volume_24h || 0));
-                el('poolFees24h', formatVolume(data.fees_24h || data.total_fees || 0));
-                el('poolCount', data.pool_count ?? '—');
+                el('poolFees24h', formatVolume(data.fees24h || data.totalFees || 0));
+                el('poolCount', data.poolCount ?? '—');
             }
         } catch { /* API unavailable — keep placeholder */ }
     }
@@ -1500,7 +1500,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         const pair = `${escapeHtml(p.tokenASymbol || 'Token A')}/${escapeHtml(p.tokenBSymbol || 'Token B')}`;
                         const feeBps = parseInt(p.feeTier) || 30;
                         const fee = (feeBps / 100).toFixed(2) + '%';
-                        const tvl = formatVolume(p.liquidity || 0);
+                        const tvl = p.tvl ? formatVolume(p.tvl) : formatAmount((p.liquidity || 0) / 1e9) + ' LP';
                         const vol = p.totalVolume ? formatVolume(p.totalVolume) : '—';
                         const apr = p.apr ? p.apr.toFixed(1) + '%' : '—';
                         return `<tr class="pool-row" data-pool-id="${p.poolId || p.id || 0}">
@@ -1566,7 +1566,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             <div class="lp-pos-details">
                                 <div class="lp-detail"><span>Tick Range</span><span class="mono-value">${pos.lowerTick ?? 0} — ${pos.upperTick ?? 0}</span></div>
                                 <div class="lp-detail"><span>Liquidity</span><span class="mono-value">${formatVolume(pos.liquidity || 0)}</span></div>
-                                <div class="lp-detail"><span>Uncollected Fees</span><span class="mono-value accent-text">${formatVolume((pos.feeAOwed || 0) + (pos.feeBOwed || 0))}</span></div>
+                                <div class="lp-detail"><span>Uncollected Fees</span><span class="mono-value accent-text">${formatVolume(((pos.feeAOwed || 0) + (pos.feeBOwed || 0)) / 1e9)}</span></div>
                             </div>
                             <div class="lp-pos-actions">
                                 <button class="btn btn-small btn-primary lp-collect-btn" data-position-id="${pos.positionId || 0}">Collect Fees</button>
@@ -1745,7 +1745,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const { data } = await api.get('/stats/margin');
             if (data) {
                 const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
-                el('marginInsurance', formatVolume(data.insurance_fund || 0));
+                el('marginInsurance', formatVolume((data.insuranceFund || 0) / 1e9));
             }
         } catch { /* API unavailable */ }
         // Load margin info
@@ -1790,7 +1790,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 <span class="mono-value">${pos.leverage || state.leverageValue}x</span>
                             </div>
                             <div class="margin-pos-details">
-                                <span>Size: ${formatAmount(pos.size || 0)}</span>
+                                <span>Size: ${formatAmount((pos.size || 0) / 1e9)}</span>
                                 <span>Entry: ${formatPrice(pos.entryPrice || 0)}</span>
                                 <span class="${pnl >= 0 ? 'positive' : 'negative'}">P&L: ${pnl >= 0 ? '+' : ''}${formatPrice(pnl)}</span>
                             </div>
@@ -1835,7 +1835,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const { data } = await api.get(`/pairs/${state.activePairId}/trades?limit=50&trader=${wallet.address}`);
             if (Array.isArray(data) && data.length > 0) {
                 container.innerHTML = `<table class="orders-table"><thead><tr><th>Pair</th><th>Side</th><th>Price</th><th>Amount</th><th>Total</th><th>Time</th></tr></thead><tbody>${
-                    data.map(tr => `<tr><td>${escapeHtml(state.activePair?.id || '')}</td><td class="side-${tr.side || 'buy'}">${escapeHtml((tr.side || 'buy').toUpperCase())}</td><td class="mono-value">${formatPrice(tr.price || 0)}</td><td class="mono-value">${formatAmount(tr.quantity || tr.amount || 0)}</td><td class="mono-value">${formatPrice((tr.price || 0) * (tr.quantity || tr.amount || 0))}</td><td class="mono-value" style="color:var(--text-muted)">${tr.timestamp ? new Date(tr.timestamp).toLocaleString() : ''}</td></tr>`).join('')
+                    data.map(tr => { const qty = (tr.quantity || tr.amount || 0) / 1e9; return `<tr><td>${escapeHtml(state.activePair?.id || '')}</td><td class="side-${tr.side || 'buy'}">${escapeHtml((tr.side || 'buy').toUpperCase())}</td><td class="mono-value">${formatPrice(tr.price || 0)}</td><td class="mono-value">${formatAmount(qty)}</td><td class="mono-value">${formatPrice((tr.price || 0) * qty)}</td><td class="mono-value" style="color:var(--text-muted)">${tr.timestamp ? new Date(tr.timestamp).toLocaleString() : ''}</td></tr>`; }).join('')
                 }</tbody></table>`;
                 return;
             }
@@ -1865,7 +1865,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         } else {
                             pnl = 0;
                         }
-                        return `<tr><td>${escapeHtml(p.pair || state.activePair?.id || '')}</td><td class="side-${side.toLowerCase()}">${escapeHtml(side)}</td><td class="mono-value">${formatAmount(p.size || 0)}</td><td class="mono-value">${formatPrice(p.entryPrice || 0)}</td><td class="mono-value">${formatPrice(mark)}</td><td class="mono-value ${pnl >= 0 ? 'positive' : 'negative'}">${pnl >= 0 ? '+' : ''}${formatPrice(pnl)}</td><td>${p.leverage || '2'}x</td><td><button class="btn btn-small btn-secondary">Close</button></td></tr>`;
+                        return `<tr><td>${escapeHtml(p.pair || state.activePair?.id || '')}</td><td class="side-${side.toLowerCase()}">${escapeHtml(side)}</td><td class="mono-value">${formatAmount((p.size || 0) / 1e9)}</td><td class="mono-value">${formatPrice(p.entryPrice || 0)}</td><td class="mono-value">${formatPrice(mark)}</td><td class="mono-value ${pnl >= 0 ? 'positive' : 'negative'}">${pnl >= 0 ? '+' : ''}${formatPrice(pnl)}</td><td>${p.leverage || '2'}x</td><td><button class="btn btn-small btn-secondary">Close</button></td></tr>`;
                     }).join('')
                 }</tbody></table>`;
                 return;
@@ -2008,7 +2008,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function loadProposals() {
         try {
-            const { data } = await api.get('/governance/proposals');
+            const { data, slot: currentSlot } = await api.get('/governance/proposals');
             if (Array.isArray(data) && data.length > 0) {
                 const container = document.getElementById('proposalsList');
                 if (container) {
@@ -2024,11 +2024,11 @@ document.addEventListener('DOMContentLoaded', () => {
                         const safeTitle = escapeHtml(typeLabels[p.proposalType] || p.proposalType || 'Proposal') + ` #${p.proposalId || 0}`;
                         const safeType = escapeHtml(p.proposalType || 'New Pair');
                         const safeStatus = escapeHtml(status.charAt(0).toUpperCase() + status.slice(1));
-                        // F14.5: Compute time remaining from endSlot (0.5s per slot)
+                        // F16.9: Compute time remaining from endSlot using API slot (0.4s per slot)
                         let timeStr = '';
                         if (p.endSlot && status === 'active') {
-                            const nowSlot = Math.floor(Date.now() / 500);
-                            const remaining = (p.endSlot - nowSlot) * 0.5;
+                            const nowSlot = currentSlot || 0;
+                            const remaining = (p.endSlot - nowSlot) * 0.4;
                             if (remaining > 3600) timeStr = `${Math.floor(remaining / 3600)}h ${Math.floor((remaining % 3600) / 60)}m remaining`;
                             else if (remaining > 0) timeStr = `${Math.floor(remaining / 60)}m remaining`;
                             else timeStr = 'Voting ended';
@@ -2985,7 +2985,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 currentSlot = statsResp?.data?.current_slot || 0;
             } catch { /* will use fallback */ }
             // If we couldn't get current slot, use a large estimate
-            if (!currentSlot) currentSlot = Math.round(Date.now() / 500);
+            if (!currentSlot) currentSlot = Math.round(Date.now() / 400); // F16.9: 400ms per slot
             const closeSlot = currentSlot + durationSlots;
             // F12.8 FIX: Create market, then add initial liquidity
             // Market ID is next pm_count value, obtained from stats
@@ -3078,9 +3078,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     document.head.appendChild(Object.assign(document.createElement('style'), { textContent: '@keyframes slideIn{from{transform:translateX(100%);opacity:0}to{transform:translateX(0);opacity:1}}' }));
 
-    function formatPrice(p) { if (!p || isNaN(p)) return '0.00'; if (p >= 1000) return p.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); if (p >= 1) return p.toFixed(4); if (p >= 0.001) return p.toFixed(6); return p.toFixed(8); }
+    function formatPrice(p) { if (p == null || isNaN(p)) return '0.00'; if (p === 0) return '0.00'; const a = Math.abs(p), sign = p < 0 ? '-' : ''; if (a >= 1000) return sign + a.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); if (a >= 1) return sign + a.toFixed(4); if (a >= 0.001) return sign + a.toFixed(6); return sign + a.toFixed(8); }
     function formatAmount(a) { if (!a || isNaN(a)) return '0'; if (a >= 1e6) return (a / 1e6).toFixed(2) + 'M'; if (a >= 1000) return a.toLocaleString('en-US', { maximumFractionDigits: 2 }); return a.toFixed(4); }
-    function formatVolume(v) { if (!v || isNaN(v)) return '--'; if (v >= 1e9) return '$' + (v / 1e9).toFixed(2) + 'B'; if (v >= 1e6) return '$' + (v / 1e6).toFixed(2) + 'M'; if (v >= 1e3) return '$' + (v / 1e3).toFixed(1) + 'K'; return '$' + v.toFixed(2); }
+    function formatVolume(v) { if (v == null || isNaN(v)) return '--'; if (v === 0) return '$0.00'; if (v >= 1e9) return '$' + (v / 1e9).toFixed(2) + 'B'; if (v >= 1e6) return '$' + (v / 1e6).toFixed(2) + 'M'; if (v >= 1e3) return '$' + (v / 1e3).toFixed(1) + 'K'; return '$' + v.toFixed(2); }
 
     // ═══════════════════════════════════════════════════════════════════════
     // Polling fallback (when WS unavailable)

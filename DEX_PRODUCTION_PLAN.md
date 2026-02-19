@@ -84,7 +84,7 @@
 | 13 | Rewards & Fee Mining | 14/14 | 14 | `[x]` |
 | 14 | Governance — Proposals & Voting | 16/16 | 16 | `[x]` |
 | 15 | Wallet Gating & UX States | 14/14 | 5 | `[x]` |
-| 16 | Data Format Consistency | 0/16 | 0 | `[ ]` |
+| 16 | Data Format Consistency | 16/16 | 5 | `[x]` |
 | 17 | Real-Time Updates & Polling | 0/10 | 0 | `[ ]` |
 | 18 | Analytics Contract Wiring | 0/10 | 0 | `[ ]` |
 | 19 | Token Contracts & Balances | 0/12 | 0 | `[ ]` |
@@ -93,7 +93,7 @@
 | 22 | Security & Input Validation | 0/14 | 0 | `[ ]` |
 | 23 | Mobile / Responsive Layout | 0/8 | 0 | `[ ]` |
 | 24 | End-to-End Integration Tests | 0/12 | 0 | `[ ]` |
-| — | **TOTAL** | **210/314** | **146** | **67%** |
+| — | **TOTAL** | **226/314** | **151** | **72%** |
 
 ---
 
@@ -636,25 +636,29 @@
 
 | # | Task | Status |
 |---|---|---|
-| 16.1 | **Critical fix:** Pool `feeTier` mismatch — RPC returns `"30bps"` (string), frontend expects number for `p.feeTier / 100` → NaN% | `[ ]` |
-| 16.2 | Verify all price fields use consistent scale: `PRICE_SCALE` constant matches contract ↔ RPC ↔ frontend | `[ ]` |
-| 16.3 | Verify all amount fields use consistent scale: shells (1e9) vs display (MOLT) | `[ ]` |
-| 16.4 | Verify `rename_all = "camelCase"` on all RPC response structs — JS expects camelCase | `[ ]` |
-| 16.5 | Verify `/api/v1/pools/positions` uses `address` query param — frontend sends `address=`, RPC expects `owner=` | `[ ]` |
-| 16.6 | Verify prediction market share price format: percentage (0-100) vs decimal (0-1) | `[ ]` |
-| 16.7 | Verify margin position `entry_price_raw` vs `entry_price` (float) consistency | `[ ]` |
-| 16.8 | Verify candle data format matches TradingView datafeed expectations (OHLCV + time) | `[ ]` |
-| 16.9 | Verify governance proposal `end_slot` → remaining time calculation (slot-to-seconds conversion) | `[ ]` |
-| 16.10 | Verify reward amounts: shells vs display MOLT conversion matches across contract → RPC → UI | `[ ]` |
-| 16.11 | Check `formatVolume()`, `formatPrice()`, `formatAmount()` — verify they handle all cases (zero, very large, very small) | `[ ]` |
-| 16.12 | Verify pool liquidity display converts from raw u64 to human-readable USD | `[ ]` |
-| 16.13 | Verify ticker endpoint returns `last_price` in correct scale for 24h stats row | `[ ]` |
-| 16.14 | Verify order quantity: shells or human-readable? Check `parseFloat` vs integer handling | `[ ]` |
-| 16.15 | Verify sqrt_price → human price conversion for pool current price display | `[ ]` |
-| 16.16 | Cross-check: every `formatPrice(x)` call — is `x` in the right scale? | `[ ]` |
+| 16.1 | **Critical fix:** Pool `feeTier` mismatch — RPC returns `"30bps"` (string), frontend expects number for `p.feeTier / 100` → NaN% | `[x]` |
+| 16.2 | Verify all price fields use consistent scale: `PRICE_SCALE` constant matches contract ↔ RPC ↔ frontend | `[x]` |
+| 16.3 | Verify all amount fields use consistent scale: shells (1e9) vs display (MOLT) | `[x]` |
+| 16.4 | Verify `rename_all = "camelCase"` on all RPC response structs — JS expects camelCase | `[x]` |
+| 16.5 | Verify `/api/v1/pools/positions` uses `address` query param — frontend sends `address=`, RPC expects `owner=` | `[x]` |
+| 16.6 | Verify prediction market share price format: percentage (0-100) vs decimal (0-1) | `[x]` |
+| 16.7 | Verify margin position `entry_price_raw` vs `entry_price` (float) consistency | `[x]` |
+| 16.8 | Verify candle data format matches TradingView datafeed expectations (OHLCV + time) | `[x]` |
+| 16.9 | Verify governance proposal `end_slot` → remaining time calculation (slot-to-seconds conversion) | `[x]` |
+| 16.10 | Verify reward amounts: shells vs display MOLT conversion matches across contract → RPC → UI | `[x]` |
+| 16.11 | Check `formatVolume()`, `formatPrice()`, `formatAmount()` — verify they handle all cases (zero, very large, very small) | `[x]` |
+| 16.12 | Verify pool liquidity display converts from raw u64 to human-readable USD | `[x]` |
+| 16.13 | Verify ticker endpoint returns `last_price` in correct scale for 24h stats row | `[x]` |
+| 16.14 | Verify order quantity: shells or human-readable? Check `parseFloat` vs integer handling | `[x]` |
+| 16.15 | Verify sqrt_price → human price conversion for pool current price display | `[x]` |
+| 16.16 | Cross-check: every `formatPrice(x)` call — is `x` in the right scale? | `[x]` |
 
 **Findings:**
-- (none yet)
+- F16.3/14/16 HIGH — Raw u64 shell quantities not divided by 1e9 before display (orderbook, trades, margin size, LP fees, ticker volume, insurance fund). Fixed: all consumption points now divide by 1e9.
+- F16.4 LOW — 5 stats endpoints (core, amm, margin, router, moltswap) used snake_case in `json!()` macros. Fixed: all changed to camelCase, frontend updated.
+- F16.9 HIGH — Governance time remaining used `Date.now()/500` (wrong epoch) and 0.5s/slot (wrong rate). Fixed: uses API response `slot` field + 0.4s/slot. Also fixed prediction market fallback.
+- F16.11 MEDIUM — `formatPrice` broke on negative values (PnL), `formatVolume(0)` returned '--'. Fixed: use Math.abs for ranges with sign prefix; explicit zero check.
+- F16.12 MEDIUM — Pool liquidity raw u64 displayed with $ prefix via formatVolume. Fixed: uses TVL if available, otherwise formatAmount(liquidity/1e9) + ' LP'.
 
 ---
 

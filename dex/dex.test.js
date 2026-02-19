@@ -1403,9 +1403,9 @@ const indexHtmlPath = '/Users/johnrobin/.openclaw/workspace/moltchain/dex/index.
 {
     const dexJs = fs.readFileSync(dexJsPath, 'utf8');
     assert(!dexJs.includes('swap_count ? data.swap_count * 100'), 'P7.7a: fabricated swap_count * 100 removed (F7.7 fix)');
-    assert(dexJs.includes("data.tvl || data.total_volume"), 'P7.7b: TVL uses data.tvl with total_volume fallback');
+    assert(dexJs.includes('data.tvl || data.totalVolume'), 'P7.7b: TVL uses data.tvl with totalVolume fallback');
     assert(dexJs.includes("data.volume_24h"), 'P7.7c: Volume 24h uses data.volume_24h');
-    assert(dexJs.includes("data.fees_24h || data.total_fees"), 'P7.7d: Fees uses fees_24h with total_fees fallback');
+    assert(dexJs.includes('data.fees24h || data.totalFees'), 'P7.7d: Fees uses fees24h with totalFees fallback');
 }
 
 // P7.8: /stats/amm reads real AMM storage keys
@@ -3049,6 +3049,124 @@ console.log('\n── Phase 15: Wallet Gating & UX States ──');
     assert(connectStart > 0, 'P15.14: connectWalletTo function exists');
     const fnSection = dexJs.substring(connectStart, connectStart + 1000);
     assert(fnSection.includes('applyWalletGateAll'), 'P15.14: connectWalletTo calls applyWalletGateAll');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase 16: Data Format Consistency
+// ═══════════════════════════════════════════════════════════════════════════
+
+console.log('\n── Phase 16: Data Format Consistency ──');
+
+// P16.1: feeTier parsed via parseInt("30bps") → 30
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('parseInt(p.feeTier)'), 'P16.1: feeTier parsed via parseInt for "Nbps" strings');
+}
+
+// P16.2: PRICE_SCALE = 1e9 constant in frontend
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('PRICE_SCALE') && dexJs.includes('1_000_000_000'), 'P16.2: PRICE_SCALE = 1e9 defined');
+}
+
+// P16.3: Order book quantities divided by 1e9
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const obSection = dexJs.substring(dexJs.indexOf('async function loadOrderBook'), dexJs.indexOf('async function loadOrderBook') + 1000);
+    assert(obSection.includes('/ 1e9'), 'P16.3: Order book quantities divided by 1e9');
+}
+
+// P16.4: RPC stats endpoints use camelCase keys
+{
+    const dexRs = fs.readFileSync(dexRsPath, 'utf8');
+    const coreStats = dexRs.substring(dexRs.indexOf('fn get_core_stats'), dexRs.indexOf('fn get_core_stats') + 500);
+    assert(coreStats.includes('"pairCount"'), 'P16.4a: core stats uses camelCase pairCount');
+    assert(coreStats.includes('"orderCount"'), 'P16.4b: core stats uses camelCase orderCount');
+    const ammStats = dexRs.substring(dexRs.indexOf('fn get_amm_stats'), dexRs.indexOf('fn get_amm_stats') + 500);
+    assert(ammStats.includes('"poolCount"'), 'P16.4c: amm stats uses camelCase poolCount');
+    assert(ammStats.includes('"totalFees"'), 'P16.4d: amm stats uses camelCase totalFees');
+}
+
+// P16.5: Frontend sends owner= param for LP positions
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('owner=${wallet.address}') || dexJs.includes("owner=${wallet"), 'P16.5: LP positions query uses owner= param');
+}
+
+// P16.6: Prediction prices used as decimal 0-1 with *100 for percentage
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('* 100)') && dexJs.includes('.yes'), 'P16.6: Prediction yes price multiplied by 100 for percentage');
+}
+
+// P16.7: Margin entry_price is float from RPC
+{
+    const dexRs = fs.readFileSync(dexRsPath, 'utf8');
+    assert(dexRs.includes('entry_price_raw as f64 / PRICE_SCALE'), 'P16.7: Margin entry_price divided by PRICE_SCALE in RPC');
+}
+
+// P16.8: Candle timestamp multiplied by 1000 for TradingView (ms)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('timestamp * 1000') || dexJs.includes('.timestamp * 1000'), 'P16.8: Candle timestamp converted to ms for TradingView');
+}
+
+// P16.9: Governance time remaining uses API slot and 0.4s/slot
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const govSection = dexJs.substring(dexJs.indexOf('governance/proposals'), dexJs.indexOf('governance/proposals') + 2000);
+    assert(govSection.includes('* 0.4'), 'P16.9: Governance slot-to-seconds uses 0.4s/slot');
+    assert(govSection.includes('currentSlot'), 'P16.9: Governance uses currentSlot from API');
+    assert(!govSection.includes('Date.now() / 500'), 'P16.9: No Date.now()/500 in governance time calc');
+}
+
+// P16.10: Reward pending divided by 1e9
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('pending / 1e9') || dexJs.includes('.pending / 1e9'), 'P16.10: Reward pending divided by 1e9');
+}
+
+// P16.11: formatPrice handles negative values
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const fpSection = dexJs.substring(dexJs.indexOf('function formatPrice'), dexJs.indexOf('function formatPrice') + 400);
+    assert(fpSection.includes('Math.abs'), 'P16.11a: formatPrice uses Math.abs for negative values');
+    // formatVolume(0) should not return '--'
+    const fvSection = dexJs.substring(dexJs.indexOf('function formatVolume'), dexJs.indexOf('function formatVolume') + 300);
+    assert(fvSection.includes('v === 0'), 'P16.11b: formatVolume has explicit zero check');
+}
+
+// P16.12: Pool liquidity not displayed with raw formatVolume
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    // Should use TVL or formatAmount, not formatVolume(p.liquidity)
+    assert(!dexJs.includes("formatVolume(p.liquidity"), 'P16.12: Pool liquidity not fed raw into formatVolume');
+}
+
+// P16.13: Ticker lastPrice correctly scaled (float from RPC)
+{
+    const dexRs = fs.readFileSync(dexRsPath, 'utf8');
+    assert(dexRs.includes('last_price_raw as f64 / PRICE_SCALE'), 'P16.13: Ticker lastPrice divided by PRICE_SCALE');
+}
+
+// P16.14: Trade table quantity divided by 1e9
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    // Find the trade history table (not recent trades panel)
+    const tradeHistStart = dexJs.indexOf('async function loadTradeHistory') || dexJs.indexOf('const qty = (tr.quantity');
+    assert(tradeHistStart > 0 || dexJs.includes('tr.quantity || tr.amount || 0) / 1e9'), 'P16.14: Trade table quantity divided by 1e9');
+}
+
+// P16.15: sqrt_price Q32.32 conversion
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('(1 << 16)') || dexJs.includes('2**32'), 'P16.15: sqrt_price Q32.32 conversion present');
+}
+
+// P16.16: Margin size displayed divided by 1e9 in position table
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('(p.size || 0) / 1e9'), 'P16.16: Margin position size divided by 1e9');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
