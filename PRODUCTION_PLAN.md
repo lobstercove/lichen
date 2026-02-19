@@ -909,14 +909,18 @@ Each contract must be validated for: correct opcode dispatch, proper authority c
 
 ---
 
-## PHASE 16: FAUCET (`faucet/` — backend 560 lines + frontend 839 lines)
+## PHASE 16: FAUCET (`faucet/` — backend 560 lines + frontend 839 lines) ✅
 
-- [ ] Verify airdrop request flow — frontend to backend to chain
-- [ ] Verify rate limiting (no faucet drain)
-- [ ] Verify amount limits
-- [ ] Verify address validation
-- [ ] Verify transaction confirmation display
-- [ ] **Findings:**
+- [x] Verify airdrop request flow — frontend to backend to chain
+- [x] Verify rate limiting (no faucet drain)
+- [x] Verify amount limits
+- [x] Verify address validation
+- [x] Verify transaction confirmation display
+- **Findings: 4 found, 4 fixed (39 tests)**
+  - **F16.1 (Medium):** `addRecentRequest()` in `faucet.js` injected `shortAddress` (sliced from user input) into `row.innerHTML` without escaping – XSS vector. **Fix:** Added `escapeHtml()` helper; all user data in innerHTML now passes through it.
+  - **F16.2 (Low):** Success message injected `data.signature` into href and `data.amount` into text without escaping. **Fix:** `data.amount` escaped via `escapeHtml()`; `data.signature` and `data.amount` URI-encoded via `encodeURIComponent()` in href parameters.
+  - **F16.3 (Medium):** `docker-compose.yml` faucet service set `MOLTCHAIN_RPC_URL` but `main.rs` reads `RPC_URL` – faucet would fall back to localhost:8899 instead of docker-internal validator URL. **Fix:** Changed env var to `RPC_URL=http://validator:8899`.
+  - **F16.4 (Low):** Frontend address validation was permissive (`length < 20`). **Fix:** Tightened to 32-44 chars + base58-only regex `[1-9A-HJ-NP-Za-km-z]+`.
 
 ---
 
@@ -1080,7 +1084,7 @@ Each contract must be validated for: correct opcode dispatch, proper authority c
 | 13 | Explorer | 14 | 7 | `[x]` |
 | 14 | Programs Playground | 10 | 10 | `[x]` |
 | 15 | Marketplace | 8 | 0 | `[ ]` |
-| 16 | Faucet | 5 | 0 | `[ ]` |
+| 16 | Faucet | 5 | 4 | `[x]` |
 | 17 | Monitoring | 3 | 0 | `[ ]` |
 | 18 | Website | 4 | 0 | `[ ]` |
 | 19 | Developer Docs | 10 | 0 | `[ ]` |

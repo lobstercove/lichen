@@ -4,6 +4,16 @@
 const FAUCET_API = (window.MOLT_CONFIG && window.MOLT_CONFIG.faucet) || 'http://localhost:9100';
 const MOLT_PER_REQUEST = 100;
 
+// F16.1 fix: HTML-escape helper to prevent XSS in innerHTML
+function escapeHtml(str) {
+    return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 // Generate random captcha
 function generateCaptcha() {
     const num1 = Math.floor(Math.random() * 10) + 1;
@@ -53,9 +63,14 @@ document.getElementById('faucetForm').addEventListener('submit', async (e) => {
     successMessage.classList.add('hidden');
     errorMessage.classList.add('hidden');
 
-    // Validate address format (base58 addresses, typically 32-44 chars)
-    if (!address || address.length < 20) {
-        showError('Invalid address. Enter a valid MoltChain base58 address.');
+    // F16.4 fix: validate address format (base58 addresses, 32-44 chars)
+    if (!address || address.length < 32 || address.length > 44) {
+        showError('Invalid address. Enter a valid MoltChain base58 address (32-44 characters).');
+        return;
+    }
+    // Reject non-base58 characters
+    if (!/^[1-9A-HJ-NP-Za-km-z]+$/.test(address)) {
+        showError('Invalid address. Only base58 characters are allowed.');
         return;
     }
 
@@ -81,14 +96,16 @@ document.getElementById('faucetForm').addEventListener('submit', async (e) => {
         const data = await response.json();
 
         if (data.success) {
-            // Build explorer link with airdrop details
+            // F16.2 fix: escape all dynamic values in success HTML
+            const safeSig = escapeHtml(data.signature || '');
+            const safeAmount = escapeHtml(String(data.amount));
             const explorerLink = data.signature
-                ? ` <a href="../explorer/transaction.html?sig=${data.signature}&to=${encodeURIComponent(address)}&amount=${data.amount}" class="tx-link">View in Explorer</a>`
+                ? ` <a href="../explorer/transaction.html?sig=${encodeURIComponent(data.signature)}&to=${encodeURIComponent(address)}&amount=${encodeURIComponent(data.amount)}" class="tx-link">View in Explorer</a>`
                 : '';
 
             // Show success
             successMessage.querySelector('div').innerHTML =
-                `<strong>Success!</strong> ${data.amount} MOLT sent to your address.` + explorerLink;
+                `<strong>Success!</strong> ${safeAmount} MOLT sent to your address.` + explorerLink;
             successMessage.classList.remove('hidden');
 
             // Reset form
@@ -121,12 +138,14 @@ function showError(message) {
 // Add request to recent list
 function addRecentRequest(address, amount, signature) {
     const tbody = document.getElementById('recentRequests');
-    const shortAddress = `${address.slice(0, 8)}...${address.slice(-4)}`;
+    // F16.1 fix: escape user-supplied address before innerHTML injection
+    const shortAddress = escapeHtml(`${address.slice(0, 8)}...${address.slice(-4)}`);
+    const safeAmount = escapeHtml(String(amount));
 
     const row = document.createElement('tr');
     row.innerHTML = `
         <td><code>${shortAddress}</code></td>
-        <td>${amount} MOLT</td>
+        <td>${safeAmount} MOLT</td>
         <td>Just now</td>
         <td><span class="badge badge-success">Completed</span></td>
     `;

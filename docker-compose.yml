@@ -40,7 +40,7 @@ services:
     environment:
       - RUST_LOG=info
       - PORT=9100
-      - MOLTCHAIN_RPC_URL=http://validator:8899
+      - RPC_URL=http://validator:8899
     depends_on:
       validator:
         condition: service_healthy
