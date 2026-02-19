@@ -799,6 +799,266 @@ fn reset_24h_stats_if_expired(state: &StateStore) {
     }
 }
 
+        debug!("📊 24h stats reset for pair {} (window expired)", pair_id);
+    }
+}
+
+// ============================================================================
+// STOP-LOSS / TAKE-PROFIT TRIGGER ENGINE
+// ============================================================================
+// After each block, check dormant stop-limit orders and margin position SL/TP
+// levels. If conditions are met, activate orders and close positions by directly
+// modifying contract storage (deterministic, all validators produce same result).
+
+fn run_sltp_trigger_engine(
+    state: &StateStore,
+    from_trade: u64,
+    to_trade: u64,
+) {
+    if from_trade >= to_trade {
+        return;
+    }
+
+    let dex_pk = match state.get_symbol_registry("DEX") {
+        Ok(Some(entry)) => entry.program,
+        _ => return,
+    };
+
+    // Collect latest trade price per pair from new trades
+    let mut pair_last_prices: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
+    for trade_id in (from_trade + 1)..=to_trade {
+        let key = format!("dex_trade_{}", trade_id);
+        if let Some(data) = state.get_program_storage("DEX", key.as_bytes()) {
+            if data.len() >= 32 {
+                let pair_id = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
+                let price = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
+                if price > 0 {
+                    pair_last_prices.insert(pair_id, price);
+                }
+            }
+        }
+    }
+
+    if pair_last_prices.is_empty() {
+        return;
+    }
+
+    // --- Part 1: Activate dormant stop-limit orders ---
+    let order_count = state.get_program_storage_u64("DEX", b"dex_order_count");
+    let mut triggered_count: u64 = 0;
+
+    for oid in 1..=order_count {
+        let ok = format!("dex_order_{}", oid);
+        let data = match state.get_program_storage("DEX", ok.as_bytes()) {
+            Some(d) if d.len() >= 128 => d,
+            _ => continue,
+        };
+
+        // Check if dormant (status byte at offset 66, STATUS_DORMANT = 5)
+        if data[66] != 5 {
+            continue;
+        }
+
+        let pair_id = u64::from_le_bytes(data[32..40].try_into().unwrap_or([0; 8]));
+        let last_price = match pair_last_prices.get(&pair_id) {
+            Some(&p) => p,
+            None => continue,
+        };
+
+        // Trigger price at bytes 91..99
+        let trigger_price = u64::from_le_bytes(data[91..99].try_into().unwrap_or([0; 8]));
+        if trigger_price == 0 {
+            continue;
+        }
+
+        let side = data[40]; // 0=buy, 1=sell
+
+        // Check trigger condition
+        let should_trigger = if side == 1 {
+            // Sell-stop: triggers when price falls to or below trigger
+            last_price <= trigger_price
+        } else {
+            // Buy-stop: triggers when price rises to or above trigger
+            last_price >= trigger_price
+        };
+
+        if !should_trigger {
+            continue;
+        }
+
+        // Activate: set status to STATUS_OPEN (0)
+        let mut new_data = data.clone();
+        new_data[66] = 0; // STATUS_OPEN
+
+        // Write activated order back
+        let _ = state.put_contract_storage(&dex_pk, ok.as_bytes(), &new_data);
+
+        // Add to order book level (the matching engine will process it on next trade)
+        let price = u64::from_le_bytes(new_data[42..50].try_into().unwrap_or([0; 8]));
+        let book_side_key = if side == 0 {
+            format!("dex_bid_{}_{}", pair_id, price)
+        } else {
+            format!("dex_ask_{}_{}", pair_id, price)
+        };
+
+        // Append order ID to the price level's order queue
+        if let Ok(Some(existing)) = state.get_contract_storage(&dex_pk, book_side_key.as_bytes()) {
+            let mut updated = existing;
+            updated.extend_from_slice(&oid.to_le_bytes());
+            let _ = state.put_contract_storage(&dex_pk, book_side_key.as_bytes(), &updated);
+        } else {
+            let _ = state.put_contract_storage(&dex_pk, book_side_key.as_bytes(), &oid.to_le_bytes());
+        }
+
+        // Update best bid/ask if needed
+        if side == 0 {
+            // Buy order: update best bid if higher
+            let best_bid = state.get_program_storage_u64("DEX", format!("dex_best_bid_{}", pair_id).as_bytes());
+            if price > best_bid {
+                let _ = state.put_contract_storage(&dex_pk, format!("dex_best_bid_{}", pair_id).as_bytes(), &price.to_le_bytes());
+            }
+        } else {
+            // Sell order: update best ask if lower
+            let best_ask = state.get_program_storage_u64("DEX", format!("dex_best_ask_{}", pair_id).as_bytes());
+            if best_ask == 0 || best_ask == u64::MAX || price < best_ask {
+                let _ = state.put_contract_storage(&dex_pk, format!("dex_best_ask_{}", pair_id).as_bytes(), &price.to_le_bytes());
+            }
+        }
+
+        triggered_count += 1;
+    }
+
+    if triggered_count > 0 {
+        info!("🎯 Trigger engine: activated {} dormant stop-limit order(s)", triggered_count);
+    }
+
+    // --- Part 2: Check margin position SL/TP ---
+    let margin_pk = match state.get_symbol_registry("MARGIN") {
+        Ok(Some(entry)) => entry.program,
+        _ => return,
+    };
+
+    let pos_count = state.get_program_storage_u64("MARGIN", b"position_count");
+    let mut sltp_closed: u64 = 0;
+
+    for pid in 1..=pos_count {
+        let pk = format!("margin_pos_{}", pid);
+        let data = match state.get_program_storage("MARGIN", pk.as_bytes()) {
+            Some(d) if d.len() >= 114 => d,
+            _ => continue,
+        };
+
+        // Only open positions (status byte at offset 49, POS_OPEN = 0)
+        if data[49] != 0 {
+            continue;
+        }
+
+        let pair_id = u64::from_le_bytes(data[40..48].try_into().unwrap_or([0; 8]));
+        let last_price = match pair_last_prices.get(&pair_id) {
+            Some(&p) => p,
+            None => continue,
+        };
+
+        // Read SL/TP from position data (bytes 106..114 = sl, 114..122 = tp)
+        let sl_price = if data.len() >= 114 {
+            u64::from_le_bytes(data[106..114].try_into().unwrap_or([0; 8]))
+        } else { 0 };
+        let tp_price = if data.len() >= 122 {
+            u64::from_le_bytes(data[114..122].try_into().unwrap_or([0; 8]))
+        } else { 0 };
+
+        if sl_price == 0 && tp_price == 0 {
+            continue;
+        }
+
+        let side = data[48]; // 0=long, 1=short
+        let mut should_close = false;
+
+        // Stop-loss check
+        if sl_price > 0 {
+            if side == 0 && last_price <= sl_price {
+                // Long position: SL hit (price fell)
+                should_close = true;
+            } else if side == 1 && last_price >= sl_price {
+                // Short position: SL hit (price rose)
+                should_close = true;
+            }
+        }
+
+        // Take-profit check
+        if !should_close && tp_price > 0 {
+            if side == 0 && last_price >= tp_price {
+                // Long position: TP hit (price rose)
+                should_close = true;
+            } else if side == 1 && last_price <= tp_price {
+                // Short position: TP hit (price fell)
+                should_close = true;
+            }
+        }
+
+        if !should_close {
+            continue;
+        }
+
+        // Close the position: set status to POS_CLOSED (1)
+        let mut new_data = data.clone();
+        new_data[49] = 1; // POS_CLOSED
+
+        // Calculate realized PnL using the last trade price
+        let entry_price = u64::from_le_bytes(new_data[66..74].try_into().unwrap_or([0; 8]));
+        let size = u64::from_le_bytes(new_data[50..58].try_into().unwrap_or([0; 8]));
+        let margin = u64::from_le_bytes(new_data[58..66].try_into().unwrap_or([0; 8]));
+
+        // PnL = (exit_price - entry_price) * size / 1e9 for longs
+        // PnL = (entry_price - exit_price) * size / 1e9 for shorts
+        // Stored as biased: actual_pnl + BIAS where BIAS = 1 << 62
+        const BIAS: u64 = 1u64 << 62;
+        let pnl_raw: i64 = if side == 0 {
+            // Long
+            ((last_price as i128 - entry_price as i128) * size as i128 / 1_000_000_000i128) as i64
+        } else {
+            // Short
+            ((entry_price as i128 - last_price as i128) * size as i128 / 1_000_000_000i128) as i64
+        };
+        let biased_pnl = (pnl_raw as i128 + BIAS as i128) as u64;
+        new_data[90..98].copy_from_slice(&biased_pnl.to_le_bytes()); // realized_pnl
+
+        let _ = state.put_contract_storage(&margin_pk, pk.as_bytes(), &new_data);
+
+        // Unlock margin back to user (margin ± pnl)
+        let trader: [u8; 32] = new_data[0..32].try_into().unwrap_or([0u8; 32]);
+        let return_amount = if pnl_raw >= 0 {
+            margin.saturating_add(pnl_raw as u64)
+        } else {
+            margin.saturating_sub((-pnl_raw) as u64)
+        };
+
+        // Credit user's moltcoin balance
+        let balance_key = format!("balance_{}", hex::encode(trader));
+        let current_bal = state.get_program_storage_u64("MOLTCOIN", balance_key.as_bytes());
+        let _ = state.put_contract_storage(
+            &match state.get_symbol_registry("MOLTCOIN") {
+                Ok(Some(e)) => e.program,
+                _ => continue,
+            },
+            balance_key.as_bytes(),
+            &(current_bal + return_amount).to_le_bytes(),
+        );
+
+        let trigger_type = if sl_price > 0 && ((side == 0 && last_price <= sl_price) || (side == 1 && last_price >= sl_price)) {
+            "SL"
+        } else {
+            "TP"
+        };
+        info!("🎯 Margin {} triggered: position {} closed at price {} (entry {})", trigger_type, pid, last_price, entry_price);
+        sltp_closed += 1;
+    }
+
+    if sltp_closed > 0 {
+        info!("🎯 Trigger engine: closed {} margin position(s) via SL/TP", sltp_closed);
+    }
+}
+
 fn bridge_dex_trades_to_analytics(
     state: &StateStore,
     from_trade: u64,
@@ -8186,6 +8446,9 @@ async fn run_validator() {
     // emit_dex_events each maintain their own cursors.
     let mut last_bridge_trade_count = last_dex_trade_count;
 
+    // SL/TP trigger engine: tracks its own cursor for deterministic triggering
+    let mut last_trigger_trade_count = last_dex_trade_count;
+
     loop {
         // TIP-BASED SLOT: Always derive the next slot to produce from the chain tip.
         // This guarantees consecutive slot numbers — no gaps. Every validator agrees
@@ -8634,6 +8897,15 @@ async fn run_validator() {
                 tokio::task::spawn_blocking(move || {
                     bridge_dex_trades_to_analytics(&state_c, prev, current_trade_count, slot_c);
                 });
+            }
+
+            // SL/TP trigger engine: check dormant stop-limit orders and margin
+            // position SL/TP levels when new trades occurred.
+            // Runs synchronously to ensure deterministic state across validators.
+            if current_trade_count > last_trigger_trade_count {
+                let prev = last_trigger_trade_count;
+                last_trigger_trade_count = current_trade_count;
+                run_sltp_trigger_engine(&state, prev, current_trade_count);
             }
         }
 

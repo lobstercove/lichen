@@ -183,7 +183,7 @@ fn require_admin(caller: &[u8; 32]) -> bool {
 }
 
 // ============================================================================
-// POSITION LAYOUT (112 bytes)
+// POSITION LAYOUT (128 bytes, V1 was 112)
 // ============================================================================
 // Bytes 0..32   : trader address
 // Bytes 32..40  : position_id (u64)
@@ -197,9 +197,13 @@ fn require_admin(caller: &[u8; 32]) -> bool {
 // Bytes 82..90  : created_slot (u64)
 // Bytes 90..98  : realized_pnl (u64, stored as signed via bias)
 // Bytes 98..106 : accumulated_funding (u64)
-// Bytes 106..112: padding
+// Bytes 106..114: sl_price (u64, stop-loss trigger price, 0 = none)
+// Bytes 114..122: tp_price (u64, take-profit trigger price, 0 = none)
+// Bytes 122..128: padding
 
-const POSITION_SIZE: usize = 112;
+/// V1 position records are 112 bytes — guards use this for backward compat
+const POSITION_SIZE_V1: usize = 112;
+const POSITION_SIZE: usize = 128;
 
 fn encode_position(
     trader: &[u8; 32], pos_id: u64, pair_id: u64, side: u8, status: u8,
@@ -219,8 +223,33 @@ fn encode_position(
     data.extend_from_slice(&u64_to_bytes(created_slot));
     data.extend_from_slice(&u64_to_bytes(realized_pnl));
     data.extend_from_slice(&u64_to_bytes(accumulated_funding));
+    // SL/TP default to 0 (no trigger)
+    data.extend_from_slice(&u64_to_bytes(0)); // sl_price
+    data.extend_from_slice(&u64_to_bytes(0)); // tp_price
     while data.len() < POSITION_SIZE { data.push(0); }
     data
+}
+
+/// Decode stop-loss price from position data (0 if V1 record or not set)
+fn decode_pos_sl_price(data: &[u8]) -> u64 {
+    if data.len() >= 114 { bytes_to_u64(&data[106..114]) } else { 0 }
+}
+
+/// Decode take-profit price from position data (0 if V1 record or not set)
+fn decode_pos_tp_price(data: &[u8]) -> u64 {
+    if data.len() >= 122 { bytes_to_u64(&data[114..122]) } else { 0 }
+}
+
+/// Update stop-loss price on a position record. Grows V1 records to 128 bytes.
+fn update_pos_sl_price(data: &mut Vec<u8>, sl: u64) {
+    while data.len() < POSITION_SIZE { data.push(0); }
+    data[106..114].copy_from_slice(&u64_to_bytes(sl));
+}
+
+/// Update take-profit price on a position record. Grows V1 records to 128 bytes.
+fn update_pos_tp_price(data: &mut Vec<u8>, tp: u64) {
+    while data.len() < POSITION_SIZE { data.push(0); }
+    data[114..122].copy_from_slice(&u64_to_bytes(tp));
 }
 
 fn decode_pos_trader(data: &[u8]) -> [u8; 32] {
@@ -455,7 +484,7 @@ pub fn close_position(caller: *const u8, position_id: u64) -> u32 {
 
     let pk = position_key(position_id);
     let mut data = match storage_get(&pk) {
-        Some(d) if d.len() >= POSITION_SIZE => d,
+        Some(d) if d.len() >= POSITION_SIZE_V1 => d,
         _ => { reentrancy_exit(); return 1; }
     };
 
@@ -530,7 +559,7 @@ pub fn add_margin(caller: *const u8, position_id: u64, amount: u64) -> u32 {
 
     let pk = position_key(position_id);
     let mut data = match storage_get(&pk) {
-        Some(d) if d.len() >= POSITION_SIZE => d,
+        Some(d) if d.len() >= POSITION_SIZE_V1 => d,
         _ => { reentrancy_exit(); return 1; }
     };
     if decode_pos_trader(&data) != c { reentrancy_exit(); return 2; }
@@ -563,7 +592,7 @@ pub fn remove_margin(caller: *const u8, position_id: u64, amount: u64) -> u32 {
 
     let pk = position_key(position_id);
     let mut data = match storage_get(&pk) {
-        Some(d) if d.len() >= POSITION_SIZE => d,
+        Some(d) if d.len() >= POSITION_SIZE_V1 => d,
         _ => { reentrancy_exit(); return 1; }
     };
     if decode_pos_trader(&data) != c { reentrancy_exit(); return 2; }
@@ -614,7 +643,7 @@ pub fn liquidate(_liquidator: *const u8, position_id: u64) -> u32 {
 
     let pk = position_key(position_id);
     let mut data = match storage_get(&pk) {
-        Some(d) if d.len() >= POSITION_SIZE => d,
+        Some(d) if d.len() >= POSITION_SIZE_V1 => d,
         _ => { reentrancy_exit(); return 1; }
     };
 
@@ -823,7 +852,7 @@ pub fn get_maintenance_margin(leverage: u64) -> u64 {
 pub fn get_margin_ratio(position_id: u64) -> u64 {
     let pk = position_key(position_id);
     let data = match storage_get(&pk) {
-        Some(d) if d.len() >= POSITION_SIZE => d,
+        Some(d) if d.len() >= POSITION_SIZE_V1 => d,
         _ => return 0,
     };
     let margin = decode_pos_margin(&data);
@@ -844,7 +873,7 @@ pub fn get_insurance_fund() -> u64 { load_u64(INSURANCE_FUND_KEY) }
 pub fn get_position_info(position_id: u64) -> u64 {
     let pk = position_key(position_id);
     match storage_get(&pk) {
-        Some(d) if d.len() >= POSITION_SIZE => {
+        Some(d) if d.len() >= POSITION_SIZE_V1 => {
             moltchain_sdk::set_return_data(&d);
             position_id
         }
@@ -879,6 +908,79 @@ pub fn emergency_unpause(caller: *const u8) -> u32 {
 
     if !require_admin(&c) { return 1; }
     storage_set(PAUSED_KEY, &[0u8]);
+    0
+}
+
+// ============================================================================
+// STOP-LOSS / TAKE-PROFIT ON MARGIN POSITIONS
+// ============================================================================
+
+/// Set or update the stop-loss and/or take-profit prices on a margin position.
+/// Pass 0 for sl_price or tp_price to clear that trigger.
+/// Returns: 0=success, 1=not found, 2=not owner, 3=not open, 4=reentrancy,
+///          5=invalid SL (long: sl must be < entry, short: sl must be > entry),
+///          6=invalid TP (long: tp must be > entry, short: tp must be < entry)
+pub fn set_position_sl_tp(
+    caller: *const u8,
+    position_id: u64,
+    sl_price: u64,
+    tp_price: u64,
+) -> u32 {
+    if !reentrancy_enter() {
+        return 4;
+    }
+    let mut c = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+    }
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        reentrancy_exit();
+        return 200;
+    }
+
+    let pk = position_key(position_id);
+    let mut data = match storage_get(&pk) {
+        Some(d) if d.len() >= POSITION_SIZE_V1 => d,
+        _ => { reentrancy_exit(); return 1; }
+    };
+
+    let trader = decode_pos_trader(&data);
+    if trader != c { reentrancy_exit(); return 2; }
+    if decode_pos_status(&data) != POS_OPEN { reentrancy_exit(); return 3; }
+
+    let side = decode_pos_side(&data);
+    let entry_price = decode_pos_entry_price(&data);
+
+    // Validate SL direction
+    if sl_price > 0 {
+        if side == SIDE_LONG && sl_price >= entry_price {
+            reentrancy_exit();
+            return 5; // Long SL must be below entry
+        }
+        if side == SIDE_SHORT && sl_price <= entry_price {
+            reentrancy_exit();
+            return 5; // Short SL must be above entry
+        }
+    }
+
+    // Validate TP direction
+    if tp_price > 0 {
+        if side == SIDE_LONG && tp_price <= entry_price {
+            reentrancy_exit();
+            return 6; // Long TP must be above entry
+        }
+        if side == SIDE_SHORT && tp_price >= entry_price {
+            reentrancy_exit();
+            return 6; // Short TP must be below entry
+        }
+    }
+
+    update_pos_sl_price(&mut data, sl_price);
+    update_pos_tp_price(&mut data, tp_price);
+    storage_set(&pk, &data);
+
+    reentrancy_exit();
     0
 }
 
@@ -1080,6 +1182,18 @@ pub extern "C" fn call() {
             if args.len() >= 9 {
                 let pair_id = bytes_to_u64(&args[1..9]);
                 moltchain_sdk::set_return_data(&u64_to_bytes(is_margin_enabled(pair_id)));
+            }
+        }
+        // 24 = set_position_sl_tp(caller[32], position_id[8], sl_price[8], tp_price[8])
+        24 => {
+            if args.len() >= 57 {
+                let r = set_position_sl_tp(
+                    args[1..33].as_ptr(),
+                    bytes_to_u64(&args[33..41]),
+                    bytes_to_u64(&args[41..49]),
+                    bytes_to_u64(&args[49..57]),
+                );
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }

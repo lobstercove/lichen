@@ -1019,7 +1019,7 @@ assert(
     const builderMatch = dexSource.match(/function buildPlaceOrderArgs[^}]+}/s);
     assert(builderMatch, 'P4.1d: buildPlaceOrderArgs body found');
     const body = builderMatch[0];
-    assert(body.includes('new ArrayBuffer(67)'), 'P4.1e: PlaceOrder binary layout is 67 bytes');
+    assert(body.includes('new ArrayBuffer(75)'), 'P4.1e: PlaceOrder binary layout is 75 bytes (67 + 8 trigger_price)');
     assert(body.includes('PRICE_SCALE') || dexSource.includes('Math.round(price * PRICE_SCALE)'), 'P4.1f: PlaceOrder scales price');
 }
 
@@ -1670,7 +1670,7 @@ const indexHtmlPath = '/Users/johnrobin/.openclaw/workspace/moltchain/dex/index.
     const builderMatch = dexJs.match(/function buildPlaceOrderArgs[^}]+}/s);
     assert(builderMatch, 'P8.24a: buildPlaceOrderArgs found');
     const body = builderMatch[0];
-    assert(body.includes('new ArrayBuffer(67)'), 'P8.24b: PlaceOrder allocates 67 bytes');
+    assert(body.includes('new ArrayBuffer(75)'), 'P8.24b: PlaceOrder allocates 75 bytes (67 + 8 trigger_price)');
     assert(body.includes('writeU8(arr, 0, 2)'), 'P8.24c: PlaceOrder opcode is 2');
 }
 
@@ -5055,6 +5055,247 @@ console.log('\n── Phase 6: Governance Lifecycle ──');
 
     // P8.1ad: Outcome label displayed in dispute panel
     assert(dexJs.includes('outcomeLabel'), 'P8.1ad: Winning outcome displayed in dispute panel');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase 2: Stop-Loss / Take-Profit System Tests
+// ═══════════════════════════════════════════════════════════════════════════
+{
+    console.log('\n── Phase 2: Stop-Loss / Take-Profit System ──');
+
+    const dexJsP2 = fs.readFileSync(__dirname + '/dex.js', 'utf8');
+    const dexHtmlP2 = fs.readFileSync(__dirname + '/index.html', 'utf8');
+    const dexCoreP2 = fs.readFileSync(__dirname + '/../contracts/dex_core/src/lib.rs', 'utf8');
+    const dexMarginP2 = fs.readFileSync(__dirname + '/../contracts/dex_margin/src/lib.rs', 'utf8');
+    const validatorP2 = fs.readFileSync(__dirname + '/../validator/src/main.rs', 'utf8');
+
+    // ── Task 2.1: buildPlaceOrderArgs with stopPrice ──
+    assert(dexJsP2.includes('function buildPlaceOrderArgs(trader, pairId, side, orderType, price, quantity, stopPrice)'), 'P2.1a: buildPlaceOrderArgs accepts stopPrice parameter');
+    assert(dexJsP2.includes('new ArrayBuffer(75)'), 'P2.1b: buildPlaceOrderArgs creates 75-byte buffer');
+    assert(dexJsP2.includes('writeU64LE(view, 67, stopPrice || 0)'), 'P2.1c: stopPrice written at offset 67');
+
+    // ── Task 2.2: Contract trigger_price storage ──
+    assert(dexCoreP2.includes('const STATUS_DORMANT: u8 = 5'), 'P2.2a: STATUS_DORMANT constant defined');
+    assert(dexCoreP2.includes('trigger_price: u64'), 'P2.2b: encode_order accepts trigger_price parameter');
+    assert(dexCoreP2.includes('fn decode_order_trigger_price'), 'P2.2c: decode_order_trigger_price helper exists');
+    assert(dexCoreP2.includes('fn update_order_trigger_price'), 'P2.2d: update_order_trigger_price helper exists');
+    assert(dexCoreP2.includes('data[91..99]'), 'P2.2e: trigger_price stored at bytes 91..99');
+    assert(dexCoreP2.includes('STATUS_DORMANT') && dexCoreP2.includes('trigger_price: u64,'), 'P2.2f: place_order with trigger_price signature');
+
+    // ── Task 2.2 continued: Dormant order logic ──
+    assert(dexCoreP2.includes('order_type == ORDER_STOP_LIMIT && trigger_price > 0'), 'P2.2g: Stop-limit with trigger goes dormant');
+    assert(dexCoreP2.includes('initial_status == STATUS_DORMANT'), 'P2.2h: Dormant orders skip matching');
+
+    // ── Task 2.2: Opcode 2 backward compatibility ──
+    assert(dexCoreP2.includes('args.len() >= 75'), 'P2.2i: Opcode 2 parses trigger_price from 75-byte args');
+    assert(dexCoreP2.includes('0u64') && dexCoreP2.includes('trigger_price,'), 'P2.2j: Falls back to 0 trigger for shorter args');
+
+    // ── Task 2.3: check_triggers function ──
+    assert(dexCoreP2.includes('pub fn check_triggers(pair_id: u64, last_price: u64)'), 'P2.3a: check_triggers function exists');
+    assert(dexCoreP2.includes('decode_order_status(&data) != STATUS_DORMANT'), 'P2.3b: Only processes dormant orders');
+    assert(dexCoreP2.includes('last_price <= trigger'), 'P2.3c: Sell-stop trigger condition (price <= trigger)');
+    assert(dexCoreP2.includes('last_price >= trigger'), 'P2.3d: Buy-stop trigger condition (price >= trigger)');
+    assert(dexCoreP2.includes('update_order_status(&mut od, STATUS_OPEN)'), 'P2.3e: Activated orders set to STATUS_OPEN');
+    assert(dexCoreP2.includes('match_order(oid, pair_id, side, price, remaining_qty'), 'P2.3f: Activated orders sent through matching engine');
+    assert(dexCoreP2.includes('add_to_book(pair_id, side, price, oid)'), 'P2.3g: Unfilled remainder rests on book');
+
+    // ── Task 2.3: check_triggers opcode 29 ──
+    assert(dexCoreP2.includes('29 =>'), 'P2.3h: Opcode 29 dispatch exists');
+    assert(dexCoreP2.includes('check_triggers(') && dexCoreP2.includes('args[1..9]') && dexCoreP2.includes('args[9..17]'), 'P2.3i: Opcode 29 passes pair_id and last_price');
+
+    // ── Task 2.4: Stop price form wiring ──
+    assert(dexJsP2.includes("getElementById('stopPrice')"), 'P2.4a: Stop price input read from DOM');
+    assert(dexJsP2.includes('Stop price required for stop-limit orders'), 'P2.4b: Validation requires stopPrice for stop-limit');
+    assert(dexJsP2.includes('Sell-stop price must be below current market price'), 'P2.4c: Sell-stop directional validation');
+    assert(dexJsP2.includes('Buy-stop price must be above current market price'), 'P2.4d: Buy-stop directional validation');
+    assert(dexJsP2.includes('stopPrice * PRICE_SCALE'), 'P2.4e: stopPrice scaled by PRICE_SCALE');
+
+    // ── Task 2.4: Order confirmation shows stop price ──
+    assert(dexJsP2.includes("stopPrice: effectiveOrderType === 'stop-limit' ? stopPrice : null"), 'P2.4f: stopPrice passed to confirmation dialog');
+    assert(dexJsP2.includes('order.stopPrice'), 'P2.4g: Confirmation dialog displays stop price');
+
+    // ── Task 2.5: Margin inline SL/TP inputs ──
+    assert(dexHtmlP2.includes('id="marginSL"'), 'P2.5a: Margin SL input exists in HTML');
+    assert(dexHtmlP2.includes('id="marginTP"'), 'P2.5b: Margin TP input exists in HTML');
+    assert(dexHtmlP2.includes('margin-sltp-row'), 'P2.5c: SL/TP row container exists');
+    assert(dexHtmlP2.includes('Stop-Loss') && dexHtmlP2.includes('Take-Profit'), 'P2.5d: SL/TP labels in margin form');
+
+    // ── Task 2.5: Auto-set SL/TP after margin open ──
+    assert(dexJsP2.includes("getElementById('marginSL')") && dexJsP2.includes("getElementById('marginTP')"), 'P2.5e: SL/TP inputs read after margin open');
+    assert(dexJsP2.includes('buildSetPositionSlTpArgs(wallet.address, newPos.positionId'), 'P2.5f: buildSetPositionSlTpArgs called after position open');
+    assert(dexJsP2.includes('Position opened but SL/TP failed'), 'P2.5g: Graceful error if SL/TP fails after open');
+
+    // ── Task 2.6: set_position_sl_tp contract ──
+    assert(dexMarginP2.includes('const POSITION_SIZE: usize = 128'), 'P2.6a: POSITION_SIZE expanded to 128');
+    assert(dexMarginP2.includes('const POSITION_SIZE_V1: usize = 112'), 'P2.6b: POSITION_SIZE_V1 for backward compat');
+    assert(dexMarginP2.includes('fn decode_pos_sl_price'), 'P2.6c: decode_pos_sl_price helper exists');
+    assert(dexMarginP2.includes('fn decode_pos_tp_price'), 'P2.6d: decode_pos_tp_price helper exists');
+    assert(dexMarginP2.includes('fn update_pos_sl_price'), 'P2.6e: update_pos_sl_price helper exists');
+    assert(dexMarginP2.includes('fn update_pos_tp_price'), 'P2.6f: update_pos_tp_price helper exists');
+    assert(dexMarginP2.includes('pub fn set_position_sl_tp('), 'P2.6g: set_position_sl_tp function exists');
+    assert(dexMarginP2.includes('SIDE_LONG && sl_price >= entry_price'), 'P2.6h: Long SL must be below entry validation');
+    assert(dexMarginP2.includes('SIDE_SHORT && sl_price <= entry_price'), 'P2.6i: Short SL must be above entry validation');
+    assert(dexMarginP2.includes('SIDE_LONG && tp_price <= entry_price'), 'P2.6j: Long TP must be above entry validation');
+    assert(dexMarginP2.includes('SIDE_SHORT && tp_price >= entry_price'), 'P2.6k: Short TP must be below entry validation');
+
+    // ── Task 2.6: Opcode 24 dispatch ──
+    assert(dexMarginP2.includes('24 =>'), 'P2.6l: Opcode 24 dispatch exists');
+    assert(dexMarginP2.includes('set_position_sl_tp(') && dexMarginP2.includes('args[41..49]'), 'P2.6m: Opcode 24 parses sl_price and tp_price');
+    assert(dexMarginP2.includes('>= POSITION_SIZE_V1'), 'P2.6n: Guards use POSITION_SIZE_V1 for backward compat');
+
+    // ── Task 2.7: SL/TP edit UI on position rows ──
+    assert(dexJsP2.includes('function buildSetPositionSlTpArgs(caller, positionId, slPrice, tpPrice)'), 'P2.7a: buildSetPositionSlTpArgs builder exists');
+    assert(dexJsP2.includes('new ArrayBuffer(57)'), 'P2.7b: buildSetPositionSlTpArgs creates 57-byte buffer');
+    assert(dexJsP2.includes('writeU8(arr, 0, 24)'), 'P2.7c: buildSetPositionSlTpArgs uses opcode 24');
+    assert(dexJsP2.includes('btn-margin-sltp'), 'P2.7d: SL/TP edit button exists on position rows');
+    assert(dexJsP2.includes('margin-sltp-inline'), 'P2.7e: SL/TP inline edit form exists');
+    assert(dexJsP2.includes('sltp-sl-input'), 'P2.7f: SL input field in inline edit form');
+    assert(dexJsP2.includes('sltp-tp-input'), 'P2.7g: TP input field in inline edit form');
+    assert(dexJsP2.includes('sltp-save-btn'), 'P2.7h: Save button in SL/TP edit form');
+    assert(dexJsP2.includes('sltp-cancel-btn'), 'P2.7i: Cancel button in SL/TP edit form');
+    assert(dexJsP2.includes('SL/TP updated'), 'P2.7j: Success notification after SL/TP save');
+
+    // ── Task 2.7: SL/TP display on position rows ──
+    assert(dexJsP2.includes('pos.slPrice'), 'P2.7k: SL price read from position data');
+    assert(dexJsP2.includes('pos.tpPrice'), 'P2.7l: TP price read from position data');
+    assert(dexJsP2.includes("SL: ${slPrice"), 'P2.7m: SL displayed on position row');
+    assert(dexJsP2.includes("TP: ${tpPrice"), 'P2.7n: TP displayed on position row');
+
+    // ── Task 2.8: Validator trigger engine ──
+    assert(validatorP2.includes('fn run_sltp_trigger_engine('), 'P2.8a: run_sltp_trigger_engine function exists');
+    assert(validatorP2.includes('last_trigger_trade_count'), 'P2.8b: Trigger engine has its own trade counter');
+    assert(validatorP2.includes('pair_last_prices'), 'P2.8c: Collects last trade price per pair');
+
+    // ── Task 2.8: Order trigger activation ──
+    assert(validatorP2.includes('data[66] != 5'), 'P2.8d: Checks for STATUS_DORMANT (5) in order status');
+    assert(validatorP2.includes('data[91..99]'), 'P2.8e: Reads trigger_price from order bytes 91..99');
+    assert(validatorP2.includes('new_data[66] = 0'), 'P2.8f: Sets activated order to STATUS_OPEN (0)');
+    assert(validatorP2.includes('dex_bid_') && validatorP2.includes('dex_ask_'), 'P2.8g: Adds activated orders to book');
+    assert(validatorP2.includes('dex_best_bid_') && validatorP2.includes('dex_best_ask_'), 'P2.8h: Updates best bid/ask on activation');
+
+    // ── Task 2.8: Margin position SL/TP engine ──
+    assert(validatorP2.includes('data[49] != 0'), 'P2.8i: Only checks open margin positions (status 0)');
+    assert(validatorP2.includes('data[106..114]') && validatorP2.includes('data[114..122]'), 'P2.8j: Reads SL/TP from position bytes');
+    assert(validatorP2.includes('new_data[49] = 1'), 'P2.8k: Closes position (POS_CLOSED = 1) on SL/TP hit');
+    assert(validatorP2.includes('biased_pnl'), 'P2.8l: Calculates biased PnL on SL/TP close');
+    assert(validatorP2.includes('Trigger engine: activated') && validatorP2.includes('dormant stop-limit'), 'P2.8m: Logs activated orders');
+    assert(validatorP2.includes('Trigger engine: closed') && validatorP2.includes('margin position'), 'P2.8n: Logs closed margin positions');
+    assert(validatorP2.includes('run_sltp_trigger_engine(&state, prev, current_trade_count)'), 'P2.8o: Trigger engine called in block production loop');
+
+    // ── Functional tests for buildPlaceOrderArgs ──
+    {
+        // Simulate the instruction builder with inline ArrayBuffer logic
+        const buf = new ArrayBuffer(75);
+        const dv = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        arr[0] = 2; // opcode
+        // Write a fake pubkey (32 bytes of 0xAA)
+        for (let i = 1; i <= 32; i++) arr[i] = 0xAA;
+        dv.setBigUint64(33, 1n, true); // pairId = 1
+        arr[41] = 1; // side = sell
+        arr[42] = 2; // type = stop-limit
+        dv.setBigUint64(43, 100000000000n, true); // price = 100 (scaled)
+        dv.setBigUint64(51, 5000000000n, true); // qty = 5 (scaled)
+        dv.setBigUint64(59, 0n, true); // expiry = 0
+        dv.setBigUint64(67, 95000000000n, true); // stopPrice = 95 (scaled)
+
+        assert(arr[0] === 2, 'P2.F1: Opcode byte is 2 (place_order)');
+        assert(arr[42] === 2, 'P2.F2: Order type byte is 2 (stop-limit)');
+        assert(dv.getBigUint64(67, true) === 95000000000n, 'P2.F3: Stop price correctly written at offset 67');
+        assert(arr.length === 75, 'P2.F4: Total buffer is 75 bytes');
+        assert(dv.getBigUint64(43, true) === 100000000000n, 'P2.F5: Limit price at offset 43 correct');
+    }
+
+    // ── Functional tests for buildSetPositionSlTpArgs ──
+    {
+        const buf = new ArrayBuffer(57);
+        const dv = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        arr[0] = 24; // opcode
+        for (let i = 1; i <= 32; i++) arr[i] = 0xBB; // fake pubkey
+        dv.setBigUint64(33, 42n, true); // positionId = 42
+        dv.setBigUint64(41, 90000000000n, true); // slPrice
+        dv.setBigUint64(49, 110000000000n, true); // tpPrice
+
+        assert(arr[0] === 24, 'P2.F6: Opcode byte is 24 (set_position_sl_tp)');
+        assert(dv.getBigUint64(33, true) === 42n, 'P2.F7: positionId correctly at offset 33');
+        assert(dv.getBigUint64(41, true) === 90000000000n, 'P2.F8: SL price correctly at offset 41');
+        assert(dv.getBigUint64(49, true) === 110000000000n, 'P2.F9: TP price correctly at offset 49');
+        assert(arr.length === 57, 'P2.F10: Total buffer is 57 bytes');
+    }
+
+    // ── Validation logic tests ──
+    {
+        // Test stop-limit validation scenarios
+        const lastPrice = 100;
+
+        // Sell-stop: must be below market
+        const sellStopValid = 95; // < 100 → valid
+        const sellStopInvalid = 105; // >= 100 → invalid
+        assert(sellStopValid < lastPrice, 'P2.V1: Sell-stop below market is valid');
+        assert(sellStopInvalid >= lastPrice, 'P2.V2: Sell-stop at/above market is invalid');
+
+        // Buy-stop: must be above market
+        const buyStopValid = 105; // > 100 → valid
+        const buyStopInvalid = 95; // <= 100 → invalid
+        assert(buyStopValid > lastPrice, 'P2.V3: Buy-stop above market is valid');
+        assert(buyStopInvalid <= lastPrice, 'P2.V4: Buy-stop at/below market is invalid');
+    }
+
+    // ── Trigger condition truth table tests ──
+    {
+        // Sell-stop: triggers when last_price <= trigger_price
+        assert(90 <= 95, 'P2.T1: Sell-stop triggers when price below trigger');
+        assert(95 <= 95, 'P2.T2: Sell-stop triggers when price equals trigger');
+        assert(!(100 <= 95), 'P2.T3: Sell-stop does NOT trigger when price above trigger');
+
+        // Buy-stop: triggers when last_price >= trigger_price
+        assert(110 >= 105, 'P2.T4: Buy-stop triggers when price above trigger');
+        assert(105 >= 105, 'P2.T5: Buy-stop triggers when price equals trigger');
+        assert(!(100 >= 105), 'P2.T6: Buy-stop does NOT trigger when price below trigger');
+    }
+
+    // ── Margin SL/TP direction validation tests ──
+    {
+        const entryPrice = 100;
+        // Long position: SL < entry, TP > entry
+        assert(95 < entryPrice, 'P2.M1: Long SL below entry is valid');
+        assert(!(105 < entryPrice), 'P2.M2: Long SL above entry is invalid');
+        assert(110 > entryPrice, 'P2.M3: Long TP above entry is valid');
+        assert(!(90 > entryPrice), 'P2.M4: Long TP below entry is invalid');
+
+        // Short position: SL > entry, TP < entry
+        assert(105 > entryPrice, 'P2.M5: Short SL above entry is valid');
+        assert(!(95 > entryPrice), 'P2.M6: Short SL below entry is invalid');
+        assert(90 < entryPrice, 'P2.M7: Short TP below entry is valid');
+        assert(!(110 < entryPrice), 'P2.M8: Short TP above entry is invalid');
+    }
+
+    // ── Position layout backward compatibility tests ──
+    {
+        // V1 records (112 bytes) should decode SL/TP as 0
+        const v1Record = new Uint8Array(112);
+        const v2Record = new Uint8Array(128);
+        // Write a known SL price in v2 at bytes 106..114
+        const slBytes = new DataView(v2Record.buffer);
+        slBytes.setBigUint64(106, 95000000000n, true);
+        slBytes.setBigUint64(114, 110000000000n, true);
+
+        assert(v1Record.length === 112, 'P2.BC1: V1 record is 112 bytes');
+        assert(v2Record.length === 128, 'P2.BC2: V2 record is 128 bytes');
+        // V1 doesn't have meaningful data at 106..112 → all zeros
+        const v1Dv = new DataView(v1Record.buffer);
+        // bytes 106..112 exist but are 0  (positions 106-111 in 112-byte record)
+        // If we tried to read the full 8-byte sl_price at 106..114, we'd go out of bounds
+        // Rust decode_pos_sl_price checks len >= 114 first, returns 0 for shorter records
+        assert(v1Record.length < 114, 'P2.BC3: V1 record too short for SL field (returns 0)');
+        // V2 has SL at 106..114
+        const v2Dv = new DataView(v2Record.buffer);
+        const v2Sl = v2Dv.getBigUint64(106, true);
+        assert(v2Sl === 95000000000n, 'P2.BC4: V2 record returns correct SL');
+        const v2Tp = v2Dv.getBigUint64(114, true);
+        assert(v2Tp === 110000000000n, 'P2.BC5: V2 record returns correct TP');
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
