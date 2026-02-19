@@ -240,6 +240,27 @@ fi
 echo -e "${GREEN}  Fingerprint and migration artifacts cleaned${NC}"
 
 # ════════════════════════════════════════════════════════════
+# STEP 5b: FLUSH LOGS & DEPLOY MANIFEST (dev convenience)
+# ════════════════════════════════════════════════════════════
+echo -e "${YELLOW}[5b/7] Cleaning logs and deploy manifest...${NC}"
+
+if [ "$NETWORK" = "all" ] || [ "$NETWORK" = "testnet" ]; then
+    # Flush validator logs so new runs get clean log files
+    rm -f "$REPO_ROOT"/logs/v*.log 2>/dev/null && echo "  removed logs/v*.log" || true
+
+    # Flush deploy manifest (contract addresses change on each genesis)
+    rm -f "$REPO_ROOT/deploy-manifest.json" 2>/dev/null && echo "  removed deploy-manifest.json" || true
+
+    # Flush faucet keypair (regenerated on genesis)
+    rm -f "$REPO_ROOT/faucet-keypair.json" 2>/dev/null || true
+
+    # Flush test artifacts that reference old contract addresses
+    rm -f "$REPO_ROOT"/artifacts/*.json 2>/dev/null && echo "  removed artifacts/*.json" || true
+fi
+
+echo -e "${GREEN}  Dev artifacts cleaned${NC}"
+
+# ════════════════════════════════════════════════════════════
 # STEP 6: VERIFY CLEAN STATE
 # ════════════════════════════════════════════════════════════
 echo -e "${YELLOW}[6/7] Verifying clean state...${NC}"
