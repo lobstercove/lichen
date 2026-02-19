@@ -478,6 +478,26 @@ document.addEventListener('DOMContentLoaded', () => {
         return arr;
     }
 
+    // Task 6.1: Opcode 3: finalize_proposal(proposal_id)
+    function buildFinalizeProposalArgs(proposalId) {
+        const buf = new ArrayBuffer(9);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 3); // opcode
+        writeU64LE(view, 1, proposalId);
+        return arr;
+    }
+
+    // Task 6.2: Opcode 4: execute_proposal(proposal_id)
+    function buildExecuteProposalArgs(proposalId) {
+        const buf = new ArrayBuffer(9);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 4); // opcode
+        writeU64LE(view, 1, proposalId);
+        return arr;
+    }
+
     // ── Prediction Market instruction builders ──
     // Opcode 4: buy_shares(buyer, market_id, outcome, amount)
     function buildBuySharesArgs(buyer, marketId, outcome, amount) {
@@ -2590,7 +2610,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         const noVotes = p.noVotes || 0;
                         const totalVotes = yesVotes + noVotes;
                         const yesPct = totalVotes > 0 ? Math.round(yesVotes / totalVotes * 100) : 50;
-                        const statusClass = status === 'active' ? 'active-proposal' : status === 'passed' ? 'passed-proposal' : 'executed-proposal';
+                        const statusClass = status === 'active' ? 'active-proposal' : status === 'passed' ? 'passed-proposal' : status === 'rejected' ? 'rejected-proposal' : 'executed-proposal';
                         // F14.5: Generate title from proposalType + proposalId
                         const typeLabels = { new_pair: 'New Pair Listing', fee_change: 'Fee Change', delist: 'Pair Delisting', param_change: 'Parameter Change' };
                         const safeTitle = escapeHtml(typeLabels[p.proposalType] || p.proposalType || 'Proposal') + ` #${p.proposalId || 0}`;
@@ -2598,8 +2618,9 @@ document.addEventListener('DOMContentLoaded', () => {
                         const safeStatus = escapeHtml(status.charAt(0).toUpperCase() + status.slice(1));
                         // F16.9: Compute time remaining from endSlot using API slot (0.4s per slot)
                         let timeStr = '';
+                        const nowSlot = currentSlot || 0;
+                        const votingEnded = p.endSlot && nowSlot > p.endSlot;
                         if (p.endSlot && status === 'active') {
-                            const nowSlot = currentSlot || 0;
                             const remaining = (p.endSlot - nowSlot) * 0.4;
                             if (remaining > 3600) timeStr = `${Math.floor(remaining / 3600)}h ${Math.floor((remaining % 3600) / 60)}m remaining`;
                             else if (remaining > 0) timeStr = `${Math.floor(remaining / 60)}m remaining`;
@@ -2614,6 +2635,41 @@ document.addEventListener('DOMContentLoaded', () => {
                         } else {
                             evidenceHtml = `<p class="proposal-desc text-secondary">Pair #${p.pairId || 0}</p>`;
                         }
+
+                        // Task 6.3: Proposal status pipeline
+                        const pipelineStages = ['Created', 'Voting', 'Finalized', 'Executed'];
+                        let activeStage = 0;
+                        if (status === 'active' && !votingEnded) activeStage = 1;
+                        else if (status === 'active' && votingEnded) activeStage = 1; // ready to finalize
+                        else if (status === 'passed') activeStage = 2;
+                        else if (status === 'executed') activeStage = 3;
+                        else if (status === 'rejected') activeStage = 2; // finalized as rejected
+                        const pipelineHtml = `<div class="proposal-pipeline">${pipelineStages.map((s, i) => {
+                            let cls = 'pipeline-step';
+                            if (i < activeStage) cls += ' completed';
+                            else if (i === activeStage) cls += ' active';
+                            if (status === 'rejected' && i === 2) cls += ' rejected';
+                            if (status === 'rejected' && i === 3) cls = 'pipeline-step skipped';
+                            return `<div class="${cls}"><div class="pipeline-dot"></div><span>${status === 'rejected' && i === 2 ? 'Rejected' : s}</span></div>`;
+                        }).join('<div class="pipeline-line"></div>')}</div>`;
+
+                        // Task 6.1/6.2: Action buttons based on lifecycle
+                        let actionHtml = '';
+                        if (status === 'active' && !votingEnded) {
+                            actionHtml = `<div class="proposal-actions">
+                                <button class="btn btn-small btn-primary vote-btn vote-for">Vote Yes</button>
+                                <button class="btn btn-small btn-secondary vote-btn vote-against">Vote No</button>
+                            </div>`;
+                        } else if (status === 'active' && votingEnded) {
+                            actionHtml = `<div class="proposal-actions">
+                                <button class="btn btn-small btn-primary finalize-btn" data-proposal-id="${p.proposalId || p.id || 0}">Finalize</button>
+                            </div>`;
+                        } else if (status === 'passed') {
+                            actionHtml = `<div class="proposal-actions">
+                                <button class="btn btn-small btn-primary execute-btn" data-proposal-id="${p.proposalId || p.id || 0}">Execute</button>
+                            </div>`;
+                        }
+
                         return `<div class="proposal-card ${statusClass}" data-proposal-id="${p.proposalId || p.id || 0}">
                             <div class="proposal-top-row">
                                 <div class="proposal-status-badge ${status}">${safeStatus}</div>
@@ -2622,6 +2678,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             </div>
                             <h4>${safeTitle}</h4>
                             ${evidenceHtml}
+                            ${pipelineHtml}
                             <div class="proposal-votes">
                                 <div class="vote-bar"><div class="vote-yes" style="width: ${yesPct}%"></div></div>
                                 <div class="vote-counts">
@@ -2631,15 +2688,16 @@ document.addEventListener('DOMContentLoaded', () => {
                             </div>
                             <div class="proposal-footer">
                                 <span class="proposal-time"><i class="fas fa-clock"></i> ${timeStr}</span>
-                                ${status === 'active' ? `<div class="proposal-actions">
-                                    <button class="btn btn-small btn-primary vote-btn vote-for">Vote Yes</button>
-                                    <button class="btn btn-small btn-secondary vote-btn vote-against">Vote No</button>
-                                </div>` : ''}
+                                ${actionHtml}
                             </div>
                         </div>`;
                     }).join('');
                     // Rebind vote buttons
                     bindVoteButtons();
+                    // Task 6.1: Bind finalize buttons
+                    bindFinalizeButtons();
+                    // Task 6.2: Bind execute buttons
+                    bindExecuteButtons();
                     // F14.10: Re-apply filter after DOM rebuild
                     applyGovernanceFilter();
                     // Re-apply wallet gating on dynamically rendered vote buttons
@@ -2674,6 +2732,52 @@ document.addEventListener('DOMContentLoaded', () => {
             showNotification(`Vote submitted on "${escapeHtml(title)}"`, 'success');
             // F24.6 FIX: Refresh proposals after vote
             loadProposals().catch(() => {});
+        }));
+    }
+
+    // Task 6.1: Finalize proposal button handler
+    function bindFinalizeButtons() {
+        document.querySelectorAll('.finalize-btn').forEach(btn => btn.addEventListener('click', async () => {
+            if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
+            if (!wallet.keypair) { showNotification('Re-import wallet to sign', 'warning'); return; }
+            if (!contracts.dex_governance) { showNotification('Governance contract not loaded', 'error'); return; }
+            const pid = parseInt(btn.dataset.proposalId);
+            if (!pid) return;
+            btn.disabled = true; btn.textContent = 'Finalizing...';
+            try {
+                await wallet.sendTransaction([contractIx(
+                    contracts.dex_governance,
+                    buildFinalizeProposalArgs(pid)
+                )]);
+                showNotification('Proposal finalized', 'success');
+                loadProposals().catch(() => {});
+            } catch (e) {
+                showNotification(`Finalize failed: ${e.message}`, 'error');
+            }
+            btn.disabled = false; btn.textContent = 'Finalize';
+        }));
+    }
+
+    // Task 6.2: Execute proposal button handler
+    function bindExecuteButtons() {
+        document.querySelectorAll('.execute-btn').forEach(btn => btn.addEventListener('click', async () => {
+            if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
+            if (!wallet.keypair) { showNotification('Re-import wallet to sign', 'warning'); return; }
+            if (!contracts.dex_governance) { showNotification('Governance contract not loaded', 'error'); return; }
+            const pid = parseInt(btn.dataset.proposalId);
+            if (!pid) return;
+            btn.disabled = true; btn.textContent = 'Executing...';
+            try {
+                await wallet.sendTransaction([contractIx(
+                    contracts.dex_governance,
+                    buildExecuteProposalArgs(pid)
+                )]);
+                showNotification('Proposal executed', 'success');
+                loadProposals().catch(() => {});
+            } catch (e) {
+                showNotification(`Execute failed: ${e.message}`, 'error');
+            }
+            btn.disabled = false; btn.textContent = 'Execute';
         }));
     }
 
