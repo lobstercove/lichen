@@ -243,6 +243,16 @@ fn calculate_margin_ratio(margin: u64, size: u64, mark_price: u64) -> u64 {
     (margin as u128 * 10_000 / notional as u128) as u64 // in bps
 }
 
+/// F10.2-A FIX: Calculate margin ratio accounting for unrealized PnL
+/// effective_margin = margin ± unrealized PnL, then ratio = effective / notional
+fn calculate_margin_ratio_with_pnl(margin: u64, size: u64, entry_price: u64, mark_price: u64, side: u8) -> u64 {
+    let (is_profit, pnl) = calculate_pnl(side, size, entry_price, mark_price);
+    let effective = if is_profit { margin.saturating_add(pnl) } else { margin.saturating_sub(pnl) };
+    let notional = (size as u128 * mark_price as u128 / 1_000_000_000) as u64;
+    if notional == 0 { return 10_000; }
+    (effective as u128 * 10_000 / notional as u128) as u64
+}
+
 /// Calculate unrealized PnL
 fn calculate_pnl(side: u8, size: u64, entry_price: u64, mark_price: u64) -> (bool, u64) {
     // Returns (is_profit, amount)
@@ -425,6 +435,14 @@ pub fn close_position(caller: *const u8, position_id: u64) -> u32 {
     // Calculate PnL and determine unlock amount
     let unlock_amount = if mark_price > 0 {
         let (is_profit, pnl) = calculate_pnl(side, size, entry_price, mark_price);
+        // F10.2-B FIX: Write realized PnL to position data
+        // Store as biased u64: value = PNL_BIAS + signed_pnl
+        let pnl_biased = if is_profit {
+            (1u64 << 63).saturating_add(pnl)
+        } else {
+            (1u64 << 63).saturating_sub(pnl)
+        };
+        data[90..98].copy_from_slice(&pnl_biased.to_le_bytes());
         // Track cumulative PnL
         if is_profit {
             save_u64(TOTAL_PNL_PROFIT_KEY, load_u64(TOTAL_PNL_PROFIT_KEY).saturating_add(pnl));
@@ -523,7 +541,10 @@ pub fn remove_margin(caller: *const u8, position_id: u64, amount: u64) -> u32 {
     // AUDIT-FIX M20: Freshness-checked mark price for margin health
     let mark_price = fresh_mark_price(pair_id);
     if mark_price > 0 {
-        let ratio = calculate_margin_ratio(new_margin, size, mark_price);
+        let side = decode_pos_side(&data);
+        let entry_price = decode_pos_entry_price(&data);
+        // F10.2-A FIX: Use PnL-aware margin ratio for health check
+        let ratio = calculate_margin_ratio_with_pnl(new_margin, size, entry_price, mark_price, side);
         let (_init_bps, maint_bps, _liq_bps, _fund_mult) = get_tier_params(leverage);
         // Use admin-overridden maintenance if set and higher than tier
         let admin_maint = get_maintenance_margin_override();
@@ -564,11 +585,14 @@ pub fn liquidate(_liquidator: *const u8, position_id: u64) -> u32 {
     let size = decode_pos_size(&data);
     let pair_id = decode_pos_pair_id(&data);
     let leverage = decode_pos_leverage(&data);
+    let side = decode_pos_side(&data);
+    let entry_price = decode_pos_entry_price(&data);
     // AUDIT-FIX M20: Freshness-checked mark price for liquidation
     let mark_price = fresh_mark_price(pair_id);
     if mark_price == 0 { reentrancy_exit(); return 2; }
 
-    let ratio = calculate_margin_ratio(margin, size, mark_price);
+    // F10.2-A FIX: Use PnL-aware margin ratio for liquidation check
+    let ratio = calculate_margin_ratio_with_pnl(margin, size, entry_price, mark_price, side);
     let (_init_bps, maint_bps, liq_penalty_bps, _fund_mult) = get_tier_params(leverage);
     // Use admin-overridden maintenance if set and higher than tier
     let admin_maint = get_maintenance_margin_override();
@@ -766,10 +790,13 @@ pub fn get_margin_ratio(position_id: u64) -> u64 {
     let margin = decode_pos_margin(&data);
     let size = decode_pos_size(&data);
     let pair_id = decode_pos_pair_id(&data);
+    let side = decode_pos_side(&data);
+    let entry_price = decode_pos_entry_price(&data);
     // AUDIT-FIX M20: Freshness-checked mark price for ratio query
     let mark_price = fresh_mark_price(pair_id);
     if mark_price == 0 { return 0; }
-    calculate_margin_ratio(margin, size, mark_price)
+    // F10.2-A FIX: Use PnL-aware ratio
+    calculate_margin_ratio_with_pnl(margin, size, entry_price, mark_price, side)
 }
 
 pub fn get_position_count() -> u64 { load_u64(POSITION_COUNT_KEY) }

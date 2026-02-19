@@ -708,6 +708,253 @@ fn emit_dex_events(
     *last_trade_count = trade_count;
 }
 
+// ========================================================================
+//  TRADE BRIDGE — dex_core → dex_analytics
+//
+//  After each block, iterates new dex_trade_* records from the DEX matching
+//  engine and writes trade-driven analytics data directly to dex_analytics
+//  contract storage:
+//    • ana_lp_{pair_id}           — last trade price (overrides oracle)
+//    • ana_24h_{pair_id}          — 24h volume, OHLC, trade count
+//    • ana_c_{pair_id}_{iv}_{idx} — candles for all 9 intervals
+//    • ana_last_trade_ts_{pair_id}— unix timestamp of last real trade
+//                                   (used by oracle feeder to skip writes)
+//
+//  This makes real trades drive displayed prices, charts, and volume.
+//  The oracle feeder (Phase B) checks ana_last_trade_ts and only writes
+//  indicative prices when no real trade occurred within 60 seconds.
+// ========================================================================
+
+fn bridge_dex_trades_to_analytics(
+    state: &StateStore,
+    last_bridge_count: &mut u64,
+    slot: u64,
+) {
+    const PRICE_SCALE: f64 = 1_000_000_000.0;
+
+    // Resolve ANALYTICS pubkey via symbol registry
+    let analytics_pk = match state.get_symbol_registry("ANALYTICS") {
+        Ok(Some(entry)) => entry.program,
+        _ => return, // no analytics contract deployed
+    };
+
+    // Read current trade count from dex_core storage
+    let trade_count = state.get_program_storage_u64("DEX", b"dex_trade_count");
+    if trade_count <= *last_bridge_count {
+        return; // no new trades
+    }
+
+    let now_ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+
+    // Candle intervals matching dex_analytics: 1m, 5m, 15m, 1h, 4h, 1d, 3d, 1w, 1y
+    const CANDLE_INTERVALS: [u64; 9] = [60, 300, 900, 3600, 14400, 86400, 259200, 604800, 31536000];
+
+    // Collect per-pair trade summaries for this block
+    // (pair_id → (last_price, total_volume, trade_count, high, low))
+    let mut pair_trades: std::collections::HashMap<u64, (u64, u64, u64, u64, u64)> =
+        std::collections::HashMap::new();
+
+    for trade_id in (*last_bridge_count + 1)..=trade_count {
+        let key = format!("dex_trade_{}", trade_id);
+        if let Some(data) = state.get_program_storage("DEX", key.as_bytes()) {
+            if data.len() >= 80 {
+                // Trade layout: trade_id[0:8], pair_id[8:16], price[16:24], qty[24:32],
+                //               taker[32:64], maker_order_id[64:72], slot[72:80]
+                let pair_id = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
+                let price = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
+                let quantity = u64::from_le_bytes(data[24..32].try_into().unwrap_or([0; 8]));
+
+                // Notional value = price * quantity / 1e9 (scaled)
+                let notional = (price as u128 * quantity as u128 / 1_000_000_000) as u64;
+
+                let entry = pair_trades.entry(pair_id).or_insert((0, 0, 0, 0, u64::MAX));
+                entry.0 = price;                              // last price
+                entry.1 = entry.1.saturating_add(notional);   // cumulative volume
+                entry.2 += 1;                                 // trade count
+                if price > entry.3 { entry.3 = price; }       // high
+                if price < entry.4 { entry.4 = price; }       // low
+            }
+        }
+    }
+
+    // Write analytics for each pair that had trades
+    for (pair_id, (last_price, volume, new_trades, high, low)) in &pair_trades {
+        // ── ana_lp_{pair_id}: last trade price ──
+        let lp_key = format!("ana_lp_{}", pair_id);
+        let _ = state.put_contract_storage(
+            &analytics_pk,
+            lp_key.as_bytes(),
+            &last_price.to_le_bytes(),
+        );
+
+        // ── ana_last_trade_ts_{pair_id}: unix timestamp for oracle fallback ──
+        let ts_key = format!("ana_last_trade_ts_{}", pair_id);
+        let _ = state.put_contract_storage(
+            &analytics_pk,
+            ts_key.as_bytes(),
+            &now_ts.to_le_bytes(),
+        );
+
+        // ── ana_24h_{pair_id}: read-modify-write 24h stats ──
+        // Layout: volume(8) + high(8) + low(8) + open(8) + close(8) + trades(8) = 48
+        let stats_key = format!("ana_24h_{}", pair_id);
+        let (prev_vol, mut prev_high, mut prev_low, prev_open, _prev_close, prev_trades) =
+            match state.get_contract_storage(&analytics_pk, stats_key.as_bytes()) {
+                Ok(Some(d)) if d.len() >= 48 => (
+                    u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
+                    u64::from_le_bytes(d[8..16].try_into().unwrap_or([0; 8])),
+                    u64::from_le_bytes(d[16..24].try_into().unwrap_or([0; 8])),
+                    u64::from_le_bytes(d[24..32].try_into().unwrap_or([0; 8])),
+                    u64::from_le_bytes(d[32..40].try_into().unwrap_or([0; 8])),
+                    u64::from_le_bytes(d[40..48].try_into().unwrap_or([0; 8])),
+                ),
+                _ => (0, 0, u64::MAX, *last_price, *last_price, 0),
+            };
+
+        if *high > prev_high { prev_high = *high; }
+        if *low < prev_low { prev_low = *low; }
+
+        // If open was zero (fresh 24h window), set it from first trade
+        let open = if prev_open == 0 { *last_price } else { prev_open };
+
+        let mut stats = Vec::with_capacity(48);
+        stats.extend_from_slice(&prev_vol.saturating_add(*volume).to_le_bytes()); // volume
+        stats.extend_from_slice(&prev_high.to_le_bytes());                        // high
+        stats.extend_from_slice(&prev_low.to_le_bytes());                         // low
+        stats.extend_from_slice(&open.to_le_bytes());                             // open
+        stats.extend_from_slice(&last_price.to_le_bytes());                       // close = last trade
+        stats.extend_from_slice(&prev_trades.saturating_add(*new_trades).to_le_bytes()); // trades
+        let _ = state.put_contract_storage(
+            &analytics_pk,
+            stats_key.as_bytes(),
+            &stats,
+        );
+
+        // ── Candles: update all 9 intervals with real trade data ──
+        for &interval in &CANDLE_INTERVALS {
+            bridge_update_candle(
+                state,
+                &analytics_pk,
+                *pair_id,
+                interval,
+                *last_price,
+                *high,
+                *low,
+                *volume,
+                slot,
+            );
+        }
+
+        let display_price = *last_price as f64 / PRICE_SCALE;
+        info!(
+            "📊 Trade bridge: pair {} → price {:.4}, vol {}, trades {}",
+            pair_id, display_price, volume, new_trades
+        );
+    }
+
+    *last_bridge_count = trade_count;
+}
+
+/// Update a candle for trade-bridged data.
+/// Unlike oracle_update_candle which has volume=0, this writes real volume
+/// and properly updates OHLC from actual trade price ranges.
+fn bridge_update_candle(
+    state: &StateStore,
+    analytics_pk: &Pubkey,
+    pair_id: u64,
+    interval: u64,
+    close_price: u64,
+    high_price: u64,
+    low_price: u64,
+    volume: u64,
+    current_slot: u64,
+) {
+    let candle_start = (current_slot / interval) * interval;
+
+    // Read current candle's start slot
+    let cur_key = format!("ana_cur_{}_{}", pair_id, interval);
+    let stored_start = match state.get_contract_storage(analytics_pk, cur_key.as_bytes()) {
+        Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
+        _ => 0,
+    };
+
+    let count_key = format!("ana_cc_{}_{}", pair_id, interval);
+
+    if stored_start == candle_start && stored_start > 0 {
+        // Same candle period — update OHLC in-place
+        let candle_count = match state.get_contract_storage(analytics_pk, count_key.as_bytes()) {
+            Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
+            _ => 0,
+        };
+        if candle_count == 0 {
+            return;
+        }
+        let idx = candle_count - 1;
+        let candle_key = format!("ana_c_{}_{}_{}", pair_id, interval, idx);
+
+        if let Ok(Some(mut data)) = state.get_contract_storage(analytics_pk, candle_key.as_bytes()) {
+            if data.len() >= 48 {
+                // Candle layout: open(8)+high(8)+low(8)+close(8)+volume(8)+slot(8)
+                let existing_high = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
+                let existing_low = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
+                let existing_vol = u64::from_le_bytes(data[32..40].try_into().unwrap_or([0; 8]));
+
+                if high_price > existing_high {
+                    data[8..16].copy_from_slice(&high_price.to_le_bytes());
+                }
+                if low_price < existing_low {
+                    data[16..24].copy_from_slice(&low_price.to_le_bytes());
+                }
+                // Close = last trade price
+                data[24..32].copy_from_slice(&close_price.to_le_bytes());
+                // Accumulate real volume
+                let new_vol = existing_vol.saturating_add(volume);
+                data[32..40].copy_from_slice(&new_vol.to_le_bytes());
+                // Slot
+                data[40..48].copy_from_slice(&current_slot.to_le_bytes());
+
+                let _ = state.put_contract_storage(analytics_pk, candle_key.as_bytes(), &data);
+            }
+        }
+    } else {
+        // New candle period — create a new candle with real trade data
+        let candle_count = match state.get_contract_storage(analytics_pk, count_key.as_bytes()) {
+            Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
+            _ => 0,
+        };
+
+        // open = close_price (first trade of new period)
+        let mut candle = Vec::with_capacity(48);
+        candle.extend_from_slice(&close_price.to_le_bytes()); // open = first trade price in period
+        candle.extend_from_slice(&high_price.to_le_bytes());  // high
+        candle.extend_from_slice(&low_price.to_le_bytes());   // low
+        candle.extend_from_slice(&close_price.to_le_bytes()); // close
+        candle.extend_from_slice(&volume.to_le_bytes());      // real trade volume
+        candle.extend_from_slice(&current_slot.to_le_bytes()); // slot
+
+        let new_idx = candle_count;
+        let candle_key = format!("ana_c_{}_{}_{}", pair_id, interval, new_idx);
+        let _ = state.put_contract_storage(analytics_pk, candle_key.as_bytes(), &candle);
+
+        // Update count
+        let _ = state.put_contract_storage(
+            analytics_pk,
+            count_key.as_bytes(),
+            &(new_idx + 1).to_le_bytes(),
+        );
+
+        // Store current candle start slot
+        let _ = state.put_contract_storage(
+            analytics_pk,
+            cur_key.as_bytes(),
+            &candle_start.to_le_bytes(),
+        );
+    }
+}
+
 fn emit_program_and_nft_events(
     state: &StateStore,
     ws_event_tx: &tokio::sync::broadcast::Sender<moltchain_rpc::ws::Event>,
@@ -3005,6 +3252,16 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
             }
         };
 
+        // Resolve DEX symbol for writing oracle price bands
+        let dex_pk = match state.get_symbol_registry("DEX") {
+            Ok(Some(entry)) => entry.program,
+            _ => {
+                warn!("🔮 Oracle price feeder: DEX symbol not found (price bands disabled)");
+                // Use a sentinel — bands won't be written but feeder continues
+                Pubkey([0u8; 32])
+            }
+        };
+
         const PRICE_SCALE: u64 = 1_000_000_000; // 1e9 for DEX price scaling
         const ORACLE_DECIMALS: u8 = 8;
         let feeder = deployer_pubkey.0; // genesis admin is the authorized feeder
@@ -3136,10 +3393,55 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
                 (5, if molt_usd > 0.0 { weth_usd / molt_usd } else { 0.0 }), // wETH/MOLT
             ];
 
+            // ── Phase C: Write oracle price bands to dex_core storage ──
+            // dex_band_{pair_id}: 16 bytes = reference_price(8) + slot(8)
+            // The dex_core contract reads this during place_order to enforce
+            // ±5% (market) / ±10% (limit) price band protection.
+            // Uses slot (not unix timestamp) because get_timestamp() in WASM
+            // returns the block slot number.
+            if dex_pk.0 != [0u8; 32] {
+                for (pair_id, price_f64) in &pair_prices {
+                    if *price_f64 <= 0.0 { continue; }
+                    let price_scaled = (*price_f64 * PRICE_SCALE as f64) as u64;
+                    let band_key = format!("dex_band_{}", pair_id);
+                    let mut band_data = Vec::with_capacity(16);
+                    band_data.extend_from_slice(&price_scaled.to_le_bytes());
+                    band_data.extend_from_slice(&current_slot.to_le_bytes());
+                    let _ = state.put_contract_storage(
+                        &dex_pk,
+                        band_key.as_bytes(),
+                        &band_data,
+                    );
+                }
+            }
+
             for (pair_id, price_f64) in &pair_prices {
                 if *price_f64 <= 0.0 { continue; }
                 let price_scaled = (*price_f64 * PRICE_SCALE as f64) as u64;
 
+                // ── Phase B: Trade-driven fallback ──
+                // If a real trade occurred within 60 seconds for this pair,
+                // skip oracle analytics writes — the trade bridge owns the
+                // displayed price and candles. Oracle still writes to
+                // moltoracle storage (reference index) unconditionally.
+                let ts_key = format!("ana_last_trade_ts_{}", pair_id);
+                let last_trade_ts: u64 = match state.get_contract_storage(
+                    &analytics_pk,
+                    ts_key.as_bytes(),
+                ) {
+                    Ok(Some(d)) if d.len() >= 8 => {
+                        u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8]))
+                    }
+                    _ => 0,
+                };
+                let trade_active = last_trade_ts > 0 && now_ts.saturating_sub(last_trade_ts) < 60;
+
+                if trade_active {
+                    // Active market: trades drive analytics, skip oracle overwrite
+                    continue;
+                }
+
+                // Inactive market: oracle writes indicative price
                 // Update last price
                 let lp_key = format!("ana_lp_{}", pair_id);
                 let _ = state.put_contract_storage(
@@ -7812,6 +8114,10 @@ async fn run_validator() {
     // F6.2: Track DEX trade count for WS event emission
     let mut last_dex_trade_count = state.get_program_storage_u64("DEX", b"dex_trade_count");
 
+    // Trade bridge: track separately so bridge_dex_trades_to_analytics and
+    // emit_dex_events each maintain their own cursors.
+    let mut last_bridge_trade_count = last_dex_trade_count;
+
     loop {
         // TIP-BASED SLOT: Always derive the next slot to produce from the chain tip.
         // This guarantees consecutive slot numbers — no gaps. Every validator agrees
@@ -8233,6 +8539,9 @@ async fn run_validator() {
 
         // F6.2: Emit DEX WebSocket events for new trades/orders
         emit_dex_events(&state, &ws_dex_broadcaster, &mut last_dex_trade_count, slot);
+
+        // Trade bridge: write real trade data to dex_analytics (prices, volume, candles)
+        bridge_dex_trades_to_analytics(&state, &mut last_bridge_trade_count, slot);
 
         // Broadcast block event to WebSocket subscribers
         let _ = ws_event_tx.send(moltchain_rpc::ws::Event::Block(block.clone()));
