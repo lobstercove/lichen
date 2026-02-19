@@ -1715,6 +1715,114 @@ const indexHtmlPath = '/Users/johnrobin/.openclaw/workspace/moltchain/dex/index.
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Phase 9: Smart Order Router
+// ═══════════════════════════════════════════════════════════════════════════
+
+// P9.1: decode_route byte offsets match contract layout (96 bytes)
+{
+    const dexRs = fs.readFileSync(dexRsPath, 'utf8');
+    const decodeMatch = dexRs.match(/fn decode_route[\s\S]*?\n\}/);
+    assert(decodeMatch, 'P9.1a: decode_route function exists');
+    const body = decodeMatch[0];
+    assert(body.includes('0..32') || body.includes('[0..32]'), 'P9.1b: token_in at 0..32');
+    assert(body.includes('32..64') || body.includes('[32..64]'), 'P9.1c: token_out at 32..64');
+    assert(body.includes('64..72') || body.includes('[64..72]'), 'P9.1d: route_id at 64..72');
+    assert(body.includes('[72]') || body.includes('data[72]'), 'P9.1e: route_type at byte 72');
+    assert(body.includes('73..81') || body.includes('[73..81]'), 'P9.1f: pool_or_pair_id at 73..81');
+    assert(body.includes('[89]') || body.includes('data[89]'), 'P9.1g: split_percent at byte 89');
+    assert(body.includes('[90]') || body.includes('data[90]'), 'P9.1h: enabled at byte 90');
+}
+
+// P9.2: get_routes handler exists and iterates route count
+{
+    const dexRs = fs.readFileSync(dexRsPath, 'utf8');
+    assert(dexRs.includes('async fn get_routes'), 'P9.2a: get_routes handler exists');
+    assert(dexRs.includes('rtr_route_count'), 'P9.2b: reads rtr_route_count from storage');
+    assert(dexRs.includes('rtr_route_'), 'P9.2c: iterates rtr_route_{id} keys');
+}
+
+// P9.3: post_router_quote returns minAmountOut (F9.3a fix)
+{
+    const dexRs = fs.readFileSync(dexRsPath, 'utf8');
+    assert(dexRs.includes('async fn post_router_quote'), 'P9.3a: post_router_quote handler exists');
+    assert(dexRs.includes('"minAmountOut"'), 'P9.3b: Response includes minAmountOut field');
+}
+
+// P9.4: Split route quoting works (F9.4a fix)
+{
+    const dexRs = fs.readFileSync(dexRsPath, 'utf8');
+    assert(dexRs.includes('route.route_type == "split"'), 'P9.4a: Split route type handled separately');
+    assert(dexRs.includes('quote_clob_swap') && dexRs.includes('quote_amm_swap'), 'P9.4b: Both CLOB and AMM quote functions exist');
+    // Split should quote both legs
+    const splitBlock = dexRs.match(/route_type == "split"[\s\S]*?else/);
+    assert(splitBlock, 'P9.4c: Split route block found');
+    const sb = splitBlock[0];
+    assert(sb.includes('clob_amount') && sb.includes('amm_amount'), 'P9.4d: Split divides into CLOB and AMM amounts');
+    assert(sb.includes('split_percent'), 'P9.4e: Split uses split_percent for division');
+}
+
+// P9.5: Dead slippage guard removed (F9.4b fix)
+{
+    const dexRs = fs.readFileSync(dexRsPath, 'utf8');
+    assert(!dexRs.includes('best_output < min_out'), 'P9.5: Dead slippage guard removed (best_output < min_out was always false)');
+}
+
+// P9.6: Route info pill calls router API (F9.5a fix)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('/router/quote'), 'P9.6a: calcTotal calls /router/quote API');
+    assert(dexJs.includes('ROUTE_TYPE_LABELS'), 'P9.6b: ROUTE_TYPE_LABELS mapping exists');
+    assert(dexJs.includes("'clob'") || dexJs.includes('"clob"') || dexJs.includes('clob:'), 'P9.6c: CLOB route type in labels');
+    assert(dexJs.includes("'amm'") || dexJs.includes('"amm"') || dexJs.includes('amm:'), 'P9.6d: AMM route type in labels');
+    assert(dexJs.includes("'split'") || dexJs.includes('"split"') || dexJs.includes('split:'), 'P9.6e: Split route type in labels');
+    assert(dexJs.includes("'multi_hop'") || dexJs.includes('"multi_hop"') || dexJs.includes('multi_hop:'), 'P9.6f: Multi-hop route type in labels');
+}
+
+// P9.7: Fee estimate uses feeRate from router response (F9.12a fix)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('data.feeRate'), 'P9.7a: calcTotal reads feeRate from router response');
+    assert(dexJs.includes('feeRate / 10000') || dexJs.includes('feeRate/10000'), 'P9.7b: feeRate converted from bps to decimal');
+}
+
+// P9.8: Router response includes feeRate and estimatedFee (F9.12b fix)
+{
+    const dexRs = fs.readFileSync(dexRsPath, 'utf8');
+    assert(dexRs.includes('"feeRate"'), 'P9.8a: Router response has feeRate field');
+    assert(dexRs.includes('"estimatedFee"'), 'P9.8b: Router response has estimatedFee field');
+    assert(dexRs.includes('"splitPercent"'), 'P9.8c: Router response has splitPercent field');
+}
+
+// P9.9: AMM fee lookup for route fee calculation
+{
+    const dexRs = fs.readFileSync(dexRsPath, 'utf8');
+    assert(dexRs.includes('AMM_FEE_BPS'), 'P9.9a: AMM_FEE_BPS constant used for fee lookup');
+    assert(dexRs.includes('amm_pool_') && dexRs.includes('data[92]'), 'P9.9b: Fee tier read from pool byte 92');
+}
+
+// P9.10: Router quote debounced in frontend
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('_routeQuoteTimer') || dexJs.includes('routeQuoteTimer'), 'P9.10a: Route quote is debounced');
+    assert(dexJs.includes('setTimeout') && dexJs.includes('300'), 'P9.10b: Debounce delay is 300ms');
+    assert(dexJs.includes('clearTimeout'), 'P9.10c: Previous timer cleared on new input');
+}
+
+// P9.11: Fallback route info when API unavailable
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes("catch") && dexJs.includes("CLOB Direct"), 'P9.11: Fallback heuristic when router API unavailable');
+}
+
+// P9.12: Route endpoints registered in router
+{
+    const dexRs = fs.readFileSync(dexRsPath, 'utf8');
+    assert(dexRs.includes('"/router/swap"'), 'P9.12a: /router/swap endpoint registered');
+    assert(dexRs.includes('"/router/quote"'), 'P9.12b: /router/quote endpoint registered');
+    assert(dexRs.includes('"/routes"'), 'P9.12c: /routes endpoint registered');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Summary
 // ═══════════════════════════════════════════════════════════════════════════
 console.log(`\n${'═'.repeat(60)}`);

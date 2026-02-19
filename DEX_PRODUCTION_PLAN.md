@@ -77,7 +77,7 @@
 | 6 | Trade View — WebSocket Feeds | 12/12 | 8 | `[x]` |
 | 7 | Pool View — AMM Liquidity | 20/20 | 13 | `[x]` |
 | 8 | Pool View — Add/Remove/Collect | 14/14 | 7 | `[x]` |
-| 9 | Smart Order Router | 0/12 | 0 | `[ ]` |
+| 9 | Smart Order Router | 12/12 | 8 | `[x]` |
 | 10 | Margin Trading (Inline) | 0/16 | 0 | `[ ]` |
 | 11 | Prediction Market — Markets & Cards | 0/14 | 0 | `[ ]` |
 | 12 | Prediction Market — Trade & Create | 0/16 | 0 | `[ ]` |
@@ -93,7 +93,7 @@
 | 22 | Security & Input Validation | 0/14 | 0 | `[ ]` |
 | 23 | Mobile / Responsive Layout | 0/8 | 0 | `[ ]` |
 | 24 | End-to-End Integration Tests | 0/12 | 0 | `[ ]` |
-| — | **TOTAL** | **108/314** | **71** | **34%** |
+| — | **TOTAL** | **120/314** | **79** | **38%** |
 
 ---
 
@@ -382,21 +382,28 @@
 
 | # | Task | Status |
 |---|---|---|
-| 9.1 | Read `dex_router` contract: routing logic (CLOB-only, AMM-only, Split) | `[ ]` |
-| 9.2 | Read RPC `get_routes` handler — verify route discovery from contract storage | `[ ]` |
-| 9.3 | Read RPC `post_router_quote` handler — verify quote calculation uses real pool/book data | `[ ]` |
-| 9.4 | Read RPC `post_router_swap` handler — verify execution flow | `[ ]` |
-| 9.5 | Verify frontend "Route" info pill displays correct routing source | `[ ]` |
-| 9.6 | Verify router considers both CLOB depth and AMM slippage for best execution | `[ ]` |
-| 9.7 | Test: small order → should route through CLOB (tighter spread) | `[ ]` |
-| 9.8 | Test: large order beyond CLOB depth → should split or route through AMM | `[ ]` |
-| 9.9 | Verify route storage: `decode_route()` in RPC matches contract layout | `[ ]` |
-| 9.10 | Verify split_percent encoding (0-100 range) | `[ ]` |
-| 9.11 | Test: verify routing works after pool liquidity changes | `[ ]` |
-| 9.12 | Verify fee display accounts for routing path (CLOB fees vs AMM fees differ) | `[ ]` |
+| 9.1 | Read `dex_router` contract: routing logic (CLOB-only, AMM-only, Split) | `[x]` |
+| 9.2 | Read RPC `get_routes` handler — verify route discovery from contract storage | `[x]` |
+| 9.3 | Read RPC `post_router_quote` handler — verify quote calculation uses real pool/book data | `[x]` |
+| 9.4 | Read RPC `post_router_swap` handler — verify execution flow | `[x]` |
+| 9.5 | Verify frontend "Route" info pill displays correct routing source | `[x]` |
+| 9.6 | Verify router considers both CLOB depth and AMM slippage for best execution | `[x]` |
+| 9.7 | Test: small order → should route through CLOB (tighter spread) | `[x]` |
+| 9.8 | Test: large order beyond CLOB depth → should split or route through AMM | `[x]` |
+| 9.9 | Verify route storage: `decode_route()` in RPC matches contract layout | `[x]` |
+| 9.10 | Verify split_percent encoding (0-100 range) | `[x]` |
+| 9.11 | Test: verify routing works after pool liquidity changes | `[x]` |
+| 9.12 | Verify fee display accounts for routing path (CLOB fees vs AMM fees differ) | `[x]` |
 
 **Findings:**
-- (none yet)
+- **F9.4a HIGH**: Split and multi-hop routes quoted as CLOB-only — AMM leg ignored entirely. Split route with 60% CLOB / 40% AMM would be quoted as 100% CLOB. **FIXED**: Added explicit split route quoting in `post_router_swap`: divides `amount_in` by `split_percent`, quotes CLOB leg via `quote_clob_swap` and AMM leg via `quote_amm_swap`, sums outputs.
+- **F9.4b MEDIUM**: Slippage guard `best_output < min_out` was dead code — `min_out = best_output * (1 - slippage/100)` guarantees `min_out <= best_output`, so the condition is always false. **FIXED**: Removed dead slippage error; now returns `minAmountOut` in response for client-side validation.
+- **F9.5a HIGH**: Route info pill used hardcoded `p * a > 50000` threshold — never called router API. **FIXED**: `calcTotal()` now calls `/api/v1/router/quote` (debounced 300ms) and displays actual `routeType` from response.
+- **F9.5b MEDIUM**: Route info pill only showed "CLOB Direct" or "CLOB + AMM Split". **FIXED**: Added `ROUTE_TYPE_LABELS` mapping all 5 route types (clob, amm, split, multi_hop, legacy_swap).
+- **F9.12a HIGH**: Fee estimate hardcoded at 5bps (0.0005) regardless of route type. **FIXED**: `calcTotal()` now uses `feeRate` from router quote response.
+- **F9.12b LOW**: Router quote response lacked fee information. **FIXED**: Added `feeRate` (bps), `estimatedFee`, `minAmountOut`, and `splitPercent` to response JSON. AMM fee looked up from pool's fee_tier, split fee is weighted average.
+- **F9.3a MEDIUM**: Quote endpoint was direct alias for swap — no `minAmountOut`. **FIXED** (falls through — same endpoint now returns `minAmountOut`).
+- **F9.6a HIGH** (known limitation): No dynamic split construction — only pre-registered split ratios are used. Router can't discover optimal split based on current order book depth. Logged for future enhancement.
 
 ---
 

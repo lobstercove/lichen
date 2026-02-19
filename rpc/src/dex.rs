@@ -1813,6 +1813,34 @@ async fn post_router_swap(
                             best_route = Some(route);
                         }
                     }
+                } else if route.route_type == "split" {
+                    // F9.4a: Quote both CLOB and AMM legs proportionally
+                    let clob_pct = route.split_percent as u64;
+                    let amm_pct = 100u64.saturating_sub(clob_pct);
+                    let clob_amount = body.amount_in * clob_pct / 100;
+                    let amm_amount = body.amount_in.saturating_sub(clob_amount);
+                    let mut total_out = 0u64;
+                    let mut total_impact = 0.0f64;
+                    let mut legs = 0u32;
+                    if clob_amount > 0 {
+                        if let Some((out, imp)) = quote_clob_swap(&state, route.pool_or_pair_id, &token_in, clob_amount) {
+                            total_out += out;
+                            total_impact += imp;
+                            legs += 1;
+                        }
+                    }
+                    if amm_amount > 0 {
+                        if let Some((out, imp)) = quote_amm_swap(&state, route.secondary_id, &token_in, amm_amount) {
+                            total_out += out;
+                            total_impact += imp;
+                            legs += 1;
+                        }
+                    }
+                    if total_out > best_output {
+                        best_output = total_out;
+                        best_impact = if legs > 0 { total_impact / legs as f64 } else { 0.0 };
+                        best_route = Some(route);
+                    }
                 } else {
                     // CLOB route: quote against resting limit orders on the order book
                     if let Some((amount_out, impact)) =
@@ -1871,22 +1899,49 @@ async fn post_router_swap(
 
     match best_route {
         Some(route) => {
-            // FIX F15: Slippage tolerance relative to expected output, not input
+            // F9.4b: Compute minAmountOut for the response (slippage check is informational only for quotes)
             let min_out = (best_output as f64 * (1.0 - body.slippage / 100.0)) as u64;
-            if best_output > 0 && best_output < min_out {
-                return api_err(&format!(
-                    "slippage exceeded: output {} below minimum {}",
-                    best_output, min_out
-                ));
-            }
+
+            // F9.12b: Determine fee rate based on route type
+            let fee_bps: u64 = if route.route_type == "amm" {
+                // Read pool fee tier
+                let pk = format!("amm_pool_{}", route.pool_or_pair_id);
+                if let Some(data) = read_bytes(&state, DEX_AMM_PROGRAM, &pk) {
+                    if data.len() >= 93 {
+                        let idx = data[92] as usize;
+                        if idx < AMM_FEE_BPS.len() { AMM_FEE_BPS[idx] } else { 30 }
+                    } else { 30 }
+                } else { 30 }
+            } else if route.route_type == "split" {
+                // Blended fee: weighted average of CLOB taker (5bps) and AMM fee
+                let clob_pct = route.split_percent as u64;
+                let amm_pct = 100u64.saturating_sub(clob_pct);
+                let amm_fee = {
+                    let pk = format!("amm_pool_{}", route.secondary_id);
+                    if let Some(data) = read_bytes(&state, DEX_AMM_PROGRAM, &pk) {
+                        if data.len() >= 93 {
+                            let idx = data[92] as usize;
+                            if idx < AMM_FEE_BPS.len() { AMM_FEE_BPS[idx] } else { 30 }
+                        } else { 30 }
+                    } else { 30 }
+                };
+                (5 * clob_pct + amm_fee * amm_pct) / 100
+            } else {
+                5 // CLOB taker fee default
+            };
+            let estimated_fee = best_output * fee_bps / 10000;
 
             let result = serde_json::json!({
                 "amountIn": body.amount_in,
                 "amountOut": best_output,
+                "minAmountOut": min_out,
                 "routeType": route.route_type,
                 "routeId": route.route_id,
                 "poolId": route.pool_or_pair_id,
                 "priceImpact": best_impact,
+                "feeRate": fee_bps,
+                "estimatedFee": estimated_fee,
+                "splitPercent": route.split_percent,
                 "slot": slot,
             });
             // FIX F14: Removed WS event emissions from read-only quote endpoint.
