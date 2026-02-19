@@ -2376,10 +2376,10 @@ async fn get_router_stats(State(state): State<Arc<RpcState>>) -> Response {
 async fn get_rewards_stats(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
     ApiResponse::ok(serde_json::json!({
-        "trade_count": read_u64(&state, DEX_REWARDS_PROGRAM, "rew_trade_count"),
-        "trader_count": read_u64(&state, DEX_REWARDS_PROGRAM, "rew_trader_count"),
-        "total_volume": read_u64(&state, DEX_REWARDS_PROGRAM, "rew_total_volume"),
-        "total_distributed": read_u64(&state, DEX_REWARDS_PROGRAM, "rew_total_dist"),
+        "tradeCount": read_u64(&state, DEX_REWARDS_PROGRAM, "rew_trade_count"),
+        "traderCount": read_u64(&state, DEX_REWARDS_PROGRAM, "rew_trader_count"),
+        "totalVolume": read_u64(&state, DEX_REWARDS_PROGRAM, "rew_total_volume"),
+        "totalDistributed": read_u64(&state, DEX_REWARDS_PROGRAM, "rew_total_dist"),
     }), slot).into_response()
 }
 

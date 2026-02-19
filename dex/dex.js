@@ -1262,6 +1262,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (claimAll) {
             claimAll.disabled = !connected;
         }
+
+        // --- Rewards: Source panels wallet-gated (F13.5) ---
+        const rewardsSources = document.querySelector('.rewards-sources');
+        if (rewardsSources) rewardsSources.classList.toggle('wallet-gated-disabled', !connected);
+        const tierPanel = document.querySelector('.tier-your-progress');
+        if (tierPanel) tierPanel.classList.toggle('wallet-gated-disabled', !connected);
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -1878,15 +1884,35 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     // Rewards View — Load from API
     // ═══════════════════════════════════════════════════════════════════════
+    // F13.2: Compute tier from volume client-side (contract thresholds in shells: 1 MOLT = 1e9 shells)
+    const TIER_THRESHOLDS = [
+        { name: 'Bronze',  max: 100_000_000_000_000,    mult: 1.0 },  // < 100K MOLT
+        { name: 'Silver',  max: 1_000_000_000_000_000,  mult: 1.5 },  // 100K — 1M MOLT
+        { name: 'Gold',    max: 10_000_000_000_000_000,  mult: 2.0 },  // 1M — 10M MOLT
+        { name: 'Diamond', max: Infinity,                mult: 3.0 },  // >= 10M MOLT
+    ];
+
+    function computeRewardTier(volumeShells) {
+        for (let i = 0; i < TIER_THRESHOLDS.length; i++) {
+            if (volumeShells < TIER_THRESHOLDS[i].max) return i;
+        }
+        return TIER_THRESHOLDS.length - 1;
+    }
+
     async function loadRewardsStats() {
         // Global stats
         try {
             const { data } = await api.get('/stats/rewards');
             if (data) {
                 const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
-                el('rewardsTotalDist', formatAmount(data.total_distributed ? data.total_distributed / 1e9 : 0) + ' MOLT');
+                el('rewardsTotalDist', formatAmount(data.totalDistributed ? data.totalDistributed / 1e9 : 0) + ' MOLT');
             }
         } catch { /* API unavailable */ }
+        // F13.4: Generate referral link when wallet connected
+        if (state.connected) {
+            const refEl = document.getElementById('referralLink');
+            if (refEl) refEl.textContent = `${location.origin}?ref=${wallet.address}`;
+        }
         // User rewards
         if (!state.connected) return;
         try {
@@ -1896,27 +1922,55 @@ document.addEventListener('DOMContentLoaded', () => {
                 const pending = data.pending ? data.pending / 1e9 : 0;
                 el('rewardsPending', formatAmount(pending) + ' MOLT');
                 el('rewardsPendingUsd', `≈ $${formatAmount(pending * state.lastPrice)}`);
-                const tierNames = ['Bronze', 'Silver', 'Gold', 'Diamond'];
-                const tierNum = data.tier ?? 1;
-                const tierName = tierNames[tierNum] || 'Bronze';
-                el('rewardsTier', `<span class="tier-badge ${tierName.toLowerCase()}">${tierName}</span>`);
+                // F13.2: Compute tier from totalVolume (camelCase from RPC)
+                const volume = data.totalVolume || 0;
+                const tierNum = computeRewardTier(volume);
+                const tier = TIER_THRESHOLDS[tierNum];
+                const tierName = tier.name;
+                // F13.14: Use innerHTML directly, no redundant textContent
                 const tierEl = document.getElementById('rewardsTier');
                 if (tierEl) tierEl.innerHTML = `<span class="tier-badge ${tierName.toLowerCase()}">${tierName}</span>`;
-                const multipliers = [1.0, 1.5, 2.0, 3.0];
-                el('rewardsMultiplier', `${multipliers[tierNum] || 1.0}x`);
+                el('rewardsMultiplier', `${tier.mult}x`);
                 el('rewardsMultiplierSub', `${tierName} tier bonus`);
+                // F13.6: Update tier progress bar
+                const tierMin = tierNum > 0 ? TIER_THRESHOLDS[tierNum - 1].max : 0;
+                const tierMax = tier.max === Infinity ? tierMin * 10 : tier.max;
+                const pct = tierMax > tierMin ? Math.min(100, ((volume - tierMin) / (tierMax - tierMin)) * 100) : 100;
+                const tierBar = document.querySelector('.tier-bar');
+                if (tierBar) tierBar.style.width = `${pct.toFixed(1)}%`;
+                // Update tier progress text
+                const volMolt = volume / 1e9;
+                const progStats = document.querySelectorAll('.tier-your-progress .progress-stat .mono-value');
+                if (progStats.length >= 2) {
+                    progStats[0].textContent = formatAmount(volMolt) + ' MOLT';
+                    if (tierNum < TIER_THRESHOLDS.length - 1) {
+                        const nextTier = TIER_THRESHOLDS[tierNum + 1] || TIER_THRESHOLDS[tierNum];
+                        const nextName = nextTier === TIER_THRESHOLDS[tierNum] ? tierName : TIER_THRESHOLDS[tierNum + 1].name;
+                        const remaining = (tier.max / 1e9) - volMolt;
+                        progStats[1].textContent = `${formatAmount(remaining)} MOLT to ${tierNum < 3 ? TIER_THRESHOLDS[tierNum + 1].name : tierName}`;
+                    } else {
+                        progStats[1].textContent = 'Max tier reached!';
+                    }
+                }
+                // Highlight active tier row in table
+                const tierRows = document.querySelectorAll('.tier-table-row:not(.header-row)');
+                tierRows.forEach((row, idx) => {
+                    row.classList.toggle('active-tier', idx === tierNum);
+                });
                 // Trading reward card metrics
                 el('rewardTradePending', formatAmount(pending) + ' MOLT');
-                el('rewardTradeMonth', formatAmount(data.monthly_earned ? data.monthly_earned / 1e9 : 0) + ' MOLT');
-                el('rewardTradeAll', formatAmount(data.total_earned ? data.total_earned / 1e9 : 0) + ' MOLT');
-                // LP Mining card metrics
-                el('rewardLpPending', formatAmount(data.lp_pending ? data.lp_pending / 1e9 : 0) + ' MOLT');
-                el('rewardLpPositions', data.lp_positions ?? '0');
-                el('rewardLpLiquidity', data.lp_liquidity ? '$' + formatAmount(data.lp_liquidity / 1e9) : '—');
-                // Referral card metrics
-                el('rewardRefCount', (data.referral_count ?? 0) + ' traders');
-                el('rewardRefEarnings', formatAmount(data.referral_earnings ? data.referral_earnings / 1e9 : 0) + ' MOLT');
-                el('rewardRefRate', (data.referral_rate ?? 10) + '%');
+                // F13.7: Use claimed (available from RPC) for "All Time"; no monthly field in contract
+                const claimed = data.claimed ? data.claimed / 1e9 : 0;
+                el('rewardTradeMonth', '—');
+                el('rewardTradeAll', formatAmount(claimed + pending) + ' MOLT');
+                // LP Mining card — no per-user LP reward data in contract; show pending or —
+                el('rewardLpPending', '—');
+                el('rewardLpPositions', '—');
+                el('rewardLpLiquidity', '—');
+                // F13.3: Referral card metrics — use camelCase field names from RPC
+                el('rewardRefCount', (data.referralCount ?? 0) + ' traders');
+                el('rewardRefEarnings', formatAmount(data.referralEarnings ? data.referralEarnings / 1e9 : 0) + ' MOLT');
+                el('rewardRefRate', '10%');
             }
         } catch { /* API unavailable */ }
     }

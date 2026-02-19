@@ -81,7 +81,7 @@
 | 10 | Margin Trading (Inline) | 16/16 | 11 | `[x]` |
 | 11 | Prediction Market — Markets & Cards | 14/14 | 9 | `[x]` |
 | 12 | Prediction Market — Trade & Create | 16/16 | 12 | `[x]` |
-| 13 | Rewards & Fee Mining | 0/14 | 0 | `[ ]` |
+| 13 | Rewards & Fee Mining | 14/14 | 14 | `[x]` |
 | 14 | Governance — Proposals & Voting | 0/16 | 0 | `[ ]` |
 | 15 | Wallet Gating & UX States | 0/14 | 0 | `[ ]` |
 | 16 | Data Format Consistency | 0/16 | 0 | `[ ]` |
@@ -93,7 +93,7 @@
 | 22 | Security & Input Validation | 0/14 | 0 | `[ ]` |
 | 23 | Mobile / Responsive Layout | 0/8 | 0 | `[ ]` |
 | 24 | End-to-End Integration Tests | 0/12 | 0 | `[ ]` |
-| — | **TOTAL** | **166/314** | **111** | **53%** |
+| — | **TOTAL** | **180/314** | **125** | **57%** |
 
 ---
 
@@ -524,23 +524,36 @@
 
 | # | Task | Status |
 |---|---|---|
-| 13.1 | Read `dex_rewards` contract: reward calculation logic (per-epoch, volume-based, tier multiplier) | `[ ]` |
-| 13.2 | Read `dex_rewards` contract: LP mining rewards — how are they distributed? | `[ ]` |
-| 13.3 | Read `dex_rewards` contract: referral system — tracking, earnings, rate calculation | `[ ]` |
-| 13.4 | Read RPC `get_rewards` handler — verify it reads `dex_rewards` contract storage | `[ ]` |
-| 13.5 | Read RPC `get_rewards_stats` handler — verify aggregated totals are real | `[ ]` |
-| 13.6 | Read `loadRewardsStats()` frontend — verify stats populate from API response | `[ ]` |
-| 13.7 | Verify tier logic: Bronze → Silver → Gold → Platinum → Diamond with volume thresholds | `[ ]` |
-| 13.8 | Verify tier multiplier display matches contract constants | `[ ]` |
-| 13.9 | Verify progress bar shows correct percentage toward next tier | `[ ]` |
-| 13.10 | Read Claim All button handler — verify `claim_rewards` instruction format | `[ ]` |
-| 13.11 | Test: execute trades → verify pending rewards accumulate | `[ ]` |
-| 13.12 | Test: claim rewards → verify balance increases | `[ ]` |
-| 13.13 | Verify referral link generation and copy functionality | `[ ]` |
-| 13.14 | **Fix:** Reward source panels should get `wallet-gated-disabled` when no wallet connected (currently only buttons disabled, not the panel) | `[ ]` |
+| 13.1 | Read `dex_rewards` contract: reward calculation logic (per-epoch, volume-based, tier multiplier) | `[x]` |
+| 13.2 | Read `dex_rewards` contract: LP mining rewards — how are they distributed? | `[x]` |
+| 13.3 | Read `dex_rewards` contract: referral system — tracking, earnings, rate calculation | `[x]` |
+| 13.4 | Read RPC `get_rewards` handler — verify it reads `dex_rewards` contract storage | `[x]` |
+| 13.5 | Read RPC `get_rewards_stats` handler — verify aggregated totals are real | `[x]` |
+| 13.6 | Read `loadRewardsStats()` frontend — verify stats populate from API response | `[x]` |
+| 13.7 | Verify tier logic: Bronze → Silver → Gold → Diamond with volume thresholds | `[x]` |
+| 13.8 | Verify tier multiplier display matches contract constants | `[x]` |
+| 13.9 | Verify progress bar shows correct percentage toward next tier | `[x]` |
+| 13.10 | Read Claim All button handler — verify `claim_rewards` instruction format | `[x]` |
+| 13.11 | Test: execute trades → verify pending rewards accumulate | `[x]` |
+| 13.12 | Test: claim rewards → verify balance increases | `[x]` |
+| 13.13 | Verify referral link generation and copy functionality | `[x]` |
+| 13.14 | **Fix:** Reward source panels should get `wallet-gated-disabled` when no wallet connected (currently only buttons disabled, not the panel) | `[x]` |
 
 **Findings:**
-- (none yet)
+- **F13.1 CRITICAL** — HTML tier table thresholds 10× too low (10K/100K/1M vs contract's 100K/1M/10M). Fixed: updated index.html to Bronze < 100K, Silver 100K–1M, Gold 1M–10M, Diamond > 10M.
+- **F13.2 CRITICAL** — JS reads `data.tier` (non-existent field) and defaults to `?? 1` (Silver). Fixed: compute tier client-side from `totalVolume` using `computeRewardTier()` with contract thresholds; added `TIER_THRESHOLDS` constant array.
+- **F13.3 CRITICAL** — JS reads snake_case fields (`data.referral_count`, `data.referral_earnings`) but RPC serializes as camelCase. Fixed: JS now uses `data.referralCount`, `data.referralEarnings`, `data.totalVolume`.
+- **F13.4 HIGH** — Referral link never generated; shows placeholder text. Fixed: `loadRewardsStats()` now sets `referralLink.textContent` to `${location.origin}?ref=${wallet.address}` when connected.
+- **F13.5 HIGH** — Reward source panels not wallet-gated (only claim button disabled). Fixed: added `.rewards-sources` and `.tier-your-progress` to `applyWalletGateAll()`.
+- **F13.6 HIGH** — Progress bar never updates (always 0%, no width calculation). Fixed: computes `(volume - tierMin) / (tierMax - tierMin) * 100` and sets `.tier-bar` width; also updates "Cumulative Volume" and "Next Tier" text.
+- **F13.7 HIGH** — JS reads phantom fields (`monthly_earned`, `total_earned`, `lp_pending`, `lp_positions`, `lp_liquidity`) not in `RewardInfoJson`. Fixed: "All Time" uses `claimed + pending` from available fields; LP metrics show "—"; monthly shows "—" (not tracked by contract).
+- **F13.8 CORRECT** — `buildClaimRewardsArgs` layout matches contract (opcode 2, 33 bytes). ✓
+- **F13.9 CORRECT** — Claim handler sends real signed transaction. ✓
+- **F13.10 CORRECT** — Tier multipliers in JS (1.0/1.5/2.0/3.0) match contract constants (10000/15000/20000/30000 ÷ 10000). ✓
+- **F13.11 CORRECT** — 4 tiers (Bronze/Silver/Gold/Diamond, no Platinum). ✓
+- **F13.12 CORRECT** — RPC `get_rewards` reads real contract storage keys (`rew_pend_`, `rew_claim_`, `rew_vol_`, `rew_refc_`, `rew_refr_`). ✓
+- **F13.13 CORRECT** — RPC `get_rewards_stats` reads real aggregated keys. Fixed snake_case keys → camelCase in `serde_json::json!()`.
+- **F13.14 LOW** — Wasted `textContent` write before `innerHTML` overwrite on `rewardsTier`. Fixed: removed redundant `el()` call, use `innerHTML` directly.
 
 ---
 

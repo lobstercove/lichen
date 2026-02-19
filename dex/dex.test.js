@@ -2610,6 +2610,169 @@ assert(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Phase 13: Rewards & Fee Mining
+// ═══════════════════════════════════════════════════════════════════════════
+
+// P13.1: HTML tier thresholds match contract (100K/1M/10M, not 10K/100K/1M)
+{
+    const html = fs.readFileSync(indexHtmlPath, 'utf8');
+    assert(html.includes('&lt; 100K MOLT'), 'P13.1: Bronze threshold is < 100K MOLT');
+    assert(html.includes('100K — 1M'), 'P13.1: Silver threshold is 100K — 1M');
+    assert(html.includes('1M — 10M'), 'P13.1: Gold threshold is 1M — 10M');
+    assert(html.includes('&gt; 10M MOLT'), 'P13.1: Diamond threshold is > 10M MOLT');
+    assert(!html.includes('&lt; 10K MOLT'), 'P13.1: Old wrong Bronze threshold removed');
+    assert(!html.includes('&gt; 1M MOLT'), 'P13.1: Old wrong Diamond threshold removed');
+}
+
+// P13.2: Tier computed client-side from totalVolume (no data.tier dependency)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('TIER_THRESHOLDS'), 'P13.2: TIER_THRESHOLDS constant defined');
+    assert(dexJs.includes('computeRewardTier'), 'P13.2: computeRewardTier function defined');
+    assert(dexJs.includes('computeRewardTier(volume)'), 'P13.2: Tier computed from volume');
+    assert(!dexJs.includes('data.tier'), 'P13.2: No data.tier dependency (phantom field removed)');
+}
+
+// P13.3: TIER_THRESHOLDS match contract constants (in shells)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    // Bronze < 100K MOLT = 100_000 * 1e9 = 100_000_000_000_000
+    assert(dexJs.includes('100_000_000_000_000'), 'P13.3: Bronze max matches contract TIER_BRONZE_MAX');
+    // Silver < 1M MOLT = 1_000_000 * 1e9 = 1_000_000_000_000_000
+    assert(dexJs.includes('1_000_000_000_000_000'), 'P13.3: Silver max matches contract TIER_SILVER_MAX');
+    // Gold < 10M MOLT = 10_000_000 * 1e9 = 10_000_000_000_000_000
+    assert(dexJs.includes('10_000_000_000_000_000'), 'P13.3: Gold max matches contract TIER_GOLD_MAX');
+    // Diamond has Infinity (no upper bound)
+    assert(dexJs.includes('Infinity'), 'P13.3: Diamond has no upper bound (Infinity)');
+}
+
+// P13.4: Tier multipliers match contract (1.0, 1.5, 2.0, 3.0)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const thresholdSection = dexJs.substring(dexJs.indexOf('TIER_THRESHOLDS'), dexJs.indexOf('TIER_THRESHOLDS') + 600);
+    assert(thresholdSection.includes("mult: 1.0"), 'P13.4: Bronze multiplier 1.0');
+    assert(thresholdSection.includes("mult: 1.5"), 'P13.4: Silver multiplier 1.5');
+    assert(thresholdSection.includes("mult: 2.0"), 'P13.4: Gold multiplier 2.0');
+    assert(thresholdSection.includes("mult: 3.0"), 'P13.4: Diamond multiplier 3.0');
+}
+
+// P13.5: JS uses camelCase field names (matching RPC serde(rename_all = "camelCase"))
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const fnDef = dexJs.indexOf('async function loadRewardsStats');
+    const rewardsSection = dexJs.substring(fnDef, fnDef + 5000);
+    assert(rewardsSection.includes('data.referralCount'), 'P13.5: Uses camelCase referralCount');
+    assert(rewardsSection.includes('data.referralEarnings'), 'P13.5: Uses camelCase referralEarnings');
+    assert(rewardsSection.includes('data.totalVolume'), 'P13.5: Uses camelCase totalVolume');
+    assert(!rewardsSection.includes('data.referral_count'), 'P13.5: No snake_case referral_count');
+    assert(!rewardsSection.includes('data.referral_earnings'), 'P13.5: No snake_case referral_earnings');
+}
+
+// P13.6: RPC get_rewards_stats returns camelCase keys
+{
+    const dexRs = fs.readFileSync(dexRsPath, 'utf8');
+    const fnStart = dexRs.indexOf('fn get_rewards_stats');
+    const statsSection = dexRs.substring(fnStart, fnStart + 500);
+    assert(statsSection.includes('"totalDistributed"'), 'P13.6: RPC uses camelCase totalDistributed');
+    assert(statsSection.includes('"tradeCount"'), 'P13.6: RPC uses camelCase tradeCount');
+    assert(statsSection.includes('"traderCount"'), 'P13.6: RPC uses camelCase traderCount');
+    assert(statsSection.includes('"totalVolume"'), 'P13.6: RPC uses camelCase totalVolume');
+}
+
+// P13.7: Referral link generated from wallet address
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('referralLink'), 'P13.7: referralLink element referenced');
+    assert(dexJs.includes('?ref='), 'P13.7: Referral link uses ?ref= parameter');
+    assert(dexJs.includes('wallet.address'), 'P13.7: Referral link includes wallet address');
+}
+
+// P13.8: Reward source panels wallet-gated
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const gateStart = dexJs.indexOf('function applyWalletGateAll');
+    const gateSection = dexJs.substring(gateStart, gateStart + 6500);
+    assert(gateSection.includes('.rewards-sources'), 'P13.8: rewards-sources panel wallet-gated');
+    assert(gateSection.includes('.tier-your-progress'), 'P13.8: tier-your-progress panel wallet-gated');
+}
+
+// P13.9: Progress bar width calculated from volume
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('.tier-bar'), 'P13.9: tier-bar element targeted');
+    assert(dexJs.includes('tierBar.style.width'), 'P13.9: Progress bar width set dynamically');
+    assert(dexJs.includes('tierMin'), 'P13.9: Uses tierMin for progress calculation');
+    assert(dexJs.includes('tierMax'), 'P13.9: Uses tierMax for progress calculation');
+}
+
+// P13.10: No phantom fields referenced (monthly_earned, total_earned, lp_pending, etc.)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(!dexJs.includes('data.monthly_earned'), 'P13.10: No phantom monthly_earned field');
+    assert(!dexJs.includes('data.total_earned'), 'P13.10: No phantom total_earned field');
+    assert(!dexJs.includes('data.lp_pending'), 'P13.10: No phantom lp_pending field');
+    assert(!dexJs.includes('data.lp_positions'), 'P13.10: No phantom lp_positions field');
+    assert(!dexJs.includes('data.lp_liquidity'), 'P13.10: No phantom lp_liquidity field');
+}
+
+// P13.11: "All Time" earned uses claimed + pending (real fields)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('data.claimed'), 'P13.11: Uses data.claimed (real RPC field)');
+    assert(dexJs.includes('claimed + pending'), 'P13.11: All Time = claimed + pending');
+}
+
+// P13.12: No redundant textContent before innerHTML on rewardsTier
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const fnDef = dexJs.indexOf('async function loadRewardsStats');
+    const rewardsSection = dexJs.substring(fnDef, fnDef + 5000);
+    // Should NOT have el('rewardsTier', ...) followed by innerHTML — only innerHTML
+    const tierElMatches = rewardsSection.match(/el\('rewardsTier'/g);
+    assert(!tierElMatches, 'P13.12: No el() call on rewardsTier (innerHTML used directly)');
+}
+
+// P13.13: Active tier row highlighted in table
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes("'active-tier'"), 'P13.13: active-tier class toggled on tier rows');
+    assert(dexJs.includes('.tier-table-row:not(.header-row)'), 'P13.13: Selects non-header tier rows');
+}
+
+// P13.14: Claim button disabled when not connected
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes("claimAllBtn"), 'P13.14: claimAllBtn referenced in wallet-gate');
+    assert(dexJs.includes('claimAll.disabled = !connected'), 'P13.14: Claim disabled when not connected');
+}
+
+// P13.15: RewardInfoJson has correct fields with camelCase serialization
+{
+    const dexRs = fs.readFileSync(dexRsPath, 'utf8');
+    const structStart = dexRs.indexOf('pub struct RewardInfoJson');
+    const structSection = dexRs.substring(structStart, structStart + 300);
+    assert(structSection.includes('pending'), 'P13.15: RewardInfoJson has pending field');
+    assert(structSection.includes('claimed'), 'P13.15: RewardInfoJson has claimed field');
+    assert(structSection.includes('total_volume'), 'P13.15: RewardInfoJson has total_volume field');
+    assert(structSection.includes('referral_count'), 'P13.15: RewardInfoJson has referral_count field');
+    assert(structSection.includes('referral_earnings'), 'P13.15: RewardInfoJson has referral_earnings field');
+    // Verify camelCase serialization annotation
+    const annotationStart = dexRs.lastIndexOf('#[serde(rename_all', structStart);
+    const annotationSection = dexRs.substring(annotationStart, structStart);
+    assert(annotationSection.includes('camelCase'), 'P13.15: RewardInfoJson uses camelCase serialization');
+}
+
+// P13.16: buildClaimRewardsArgs layout correct (opcode 2, 33 bytes)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('buildClaimRewardsArgs'), 'P13.16: buildClaimRewardsArgs function exists');
+    const fnStart = dexJs.indexOf('function buildClaimRewardsArgs');
+    const fnSection = dexJs.substring(fnStart, fnStart + 300);
+    assert(fnSection.includes('ArrayBuffer(33)'), 'P13.16: Claim args is 33 bytes');
+    assert(fnSection.includes('writeU8(arr, 0, 2)'), 'P13.16: Opcode is 2');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Summary
 // ═══════════════════════════════════════════════════════════════════════════
 console.log(`\n${'═'.repeat(60)}`);
