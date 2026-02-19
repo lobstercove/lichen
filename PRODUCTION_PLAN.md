@@ -924,12 +924,19 @@ Each contract must be validated for: correct opcode dispatch, proper authority c
 
 ---
 
-## PHASE 17: MONITORING (`monitoring/` — 3,207 lines)
+## PHASE 17: MONITORING (`monitoring/` — 3,207 lines) ✅
 
-- [ ] Verify dashboard connects to real validator metrics
-- [ ] Verify TPS / block time / peer count display
-- [ ] Verify alerting thresholds
-- [ ] **Findings:**
+- [x] Verify dashboard connects to real validator metrics
+- [x] Verify TPS / block time / peer count display
+- [x] Verify alerting thresholds
+- **Findings: 7 found, 7 fixed (60 tests)**
+  - **F17.1 (Critical):** `renderEvents()` — `e.text` injected unescaped into innerHTML. Event text includes threat details and kill-switch user input. **Fix:** Added `escapeHtml()` helper; all event fields escaped.
+  - **F17.2 (Critical):** `renderThreats()` — `t.type/source/method/details` injected unescaped. `t.source` in `onclick="quickBan('${t.source}')"` enabled arbitrary JS via single-quote injection. **Fix:** All fields escaped; replaced inline onclick with `data-ban-source`/`data-throttle-source` data-attributes + `addEventListener`.
+  - **F17.3 (Critical):** `renderBans()` — `b.target` and `b.reason` from user `prompt()` injected unescaped. **Fix:** All fields escaped; replaced `onclick="removeBan(${i})"` with data-attribute.
+  - **F17.4 (Medium):** `renderBlocks()` — `b.hash` from RPC injected unescaped. **Fix:** Escaped via `escapeHtml()`.
+  - **F17.5 (Medium):** `updateContracts()` — `c.symbol`, `c.template`, `c.program` from RPC unescaped. **Fix:** All fields escaped.
+  - **F17.6 (Medium):** Validator grid, DEX monitor, contract monitor — `truncAddr(pubkey)`, `truncAddr(program)`, `program` in title attr all unescaped RPC data. **Fix:** All wrapped in `escapeHtml()`.
+  - **F17.7 (Low):** `setTPSRange()` used implicit global `event` variable — fragile, breaks in strict mode. **Fix:** Added explicit `evt` parameter to function signature and updated HTML onclick handlers to pass `event`.
 
 ---
 
@@ -1085,7 +1092,7 @@ Each contract must be validated for: correct opcode dispatch, proper authority c
 | 14 | Programs Playground | 10 | 10 | `[x]` |
 | 15 | Marketplace | 8 | 0 | `[ ]` |
 | 16 | Faucet | 5 | 4 | `[x]` |
-| 17 | Monitoring | 3 | 0 | `[ ]` |
+| 17 | Monitoring | 3 | 7 | `[x]` |
 | 18 | Website | 4 | 0 | `[ ]` |
 | 19 | Developer Docs | 10 | 0 | `[ ]` |
 | 20 | Infrastructure | 10 | 0 | `[ ]` |
