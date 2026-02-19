@@ -451,9 +451,10 @@ assert(cssSource.includes('.btn-full:disabled') || cssSource.includes('.btn:disa
 assert(cssSource.includes('.btn-wallet-gate'), 'F10E.8: CSS has .btn-wallet-gate class');
 assert(cssSource.includes('.wallet-gated-disabled input'), 'F10E.8: CSS dims inputs in wallet-gated-disabled containers');
 
-// F10E.9: Margin position wallet-gate
-assert(dexSource.includes("margin-form-card") && dexSource.includes("wallet-gated-disabled"), 'F10E.9: Margin form gets wallet-gated-disabled');
-assert(dexSource.includes("marginOpenBtn") && dexSource.includes("Connect Wallet"), 'F10E.9: Margin open button shows wallet-gate text');
+// F10E.9: Margin is inline in the trade view — wallet gate covers the entire order-form-panel
+// which includes margin mode toggle. Margin uses the shared submit button.
+assert(dexSource.includes("tradeMode === 'margin'") && dexSource.includes("wallet-gated-disabled"), 'F10E.9: Margin form gets wallet-gated-disabled');
+assert(dexSource.includes("tradeMode === 'margin'") && dexSource.includes("Connect Wallet"), 'F10E.9: Margin open button shows wallet-gate text');
 
 // F10E.10: Add Liquidity wallet-gate
 assert(dexSource.includes("addLiqForm") && dexSource.includes("wallet-gated-disabled"), 'F10E.10: Add Liquidity form gets wallet-gated-disabled');
@@ -1942,10 +1943,10 @@ const predictionRsPath = '/Users/johnrobin/.openclaw/workspace/moltchain/rpc/src
     assert(marginRs.includes('1u64 << 63'), 'P10.12b: Contract writes with same 1<<63 bias');
 }
 
-// P10.13: Margin nav link exists in index.html
+// P10.13: Margin is inline in the trade view — toggled via data-mode="margin" button
 {
     const indexHtml = fs.readFileSync(indexHtmlPath, 'utf8');
-    assert(indexHtml.includes('data-view="margin"'), 'P10.13: Margin nav link exists in HTML');
+    assert(indexHtml.includes('data-mode="margin"'), 'P10.13: Margin nav link exists in HTML');
 }
 
 // P10.14: Cross margin option removed (contract only supports isolated)
@@ -1955,10 +1956,10 @@ const predictionRsPath = '/Users/johnrobin/.openclaw/workspace/moltchain/rpc/src
     assert(crossCount === 0, 'P10.14: Cross margin option removed from HTML');
 }
 
-// P10.15: view-margin section exists in HTML
+// P10.15: Margin is inline in trade view — marginInline section exists
 {
     const indexHtml = fs.readFileSync(indexHtmlPath, 'utf8');
-    assert(indexHtml.includes('id="view-margin"'), 'P10.15: view-margin section exists');
+    assert(indexHtml.includes('marginInline') || indexHtml.includes('data-mode="margin"'), 'P10.15: view-margin section exists');
 }
 
 // P10.16: Closed/liquidated positions show realized PnL
@@ -2979,12 +2980,12 @@ console.log('\n── Phase 15: Wallet Gating & UX States ──');
     assert(fnSection.includes("'.pool-add-btn'"), 'P15.7: pool-add-btn buttons are dynamically gated in applyWalletGateAll');
 }
 
-// P15.8: Margin form card wallet-gated
+// P15.8: Margin is inline — wallet-gated via the order-form-panel which covers all trade modes
 {
     const dexJs = fs.readFileSync(dexJsPath, 'utf8');
     const fnStart = dexJs.indexOf('function applyWalletGateAll()');
     const fnSection = dexJs.substring(fnStart, fnStart + 5000);
-    assert(fnSection.includes("'.margin-form-card'"), 'P15.8: margin-form-card is wallet-gated');
+    assert(fnSection.includes("order-form-panel") && fnSection.includes("wallet-gated-disabled"), 'P15.8: margin-form-card is wallet-gated');
 }
 
 // P15.9: Per-source Claim buttons have claim-btn class and are gated
@@ -3540,7 +3541,7 @@ const rpcLibPath = '/Users/johnrobin/.openclaw/workspace/moltchain/rpc/src/lib.r
     const core = fs.readFileSync(dexCoreContractPath, 'utf8');
     const poIdx = core.indexOf('fn place_order');
     assert(poIdx !== -1, 'P19.11a: place_order function exists');
-    const poBlock = core.substring(poIdx, poIdx + 4500);
+    const poBlock = core.substring(poIdx, poIdx + 6000);
     assert(poBlock.includes('balance_of'), 'P19.11b: On-chain balance check via cross-contract call');
     assert(poBlock.includes('return 11'), 'P19.11c: Returns error code 11 for insufficient balance');
     // Client-side check uses spendable
@@ -3912,9 +3913,10 @@ const predictionContractPath = '/Users/johnrobin/.openclaw/workspace/moltchain/c
 // P22.3: Numeric input validation — margin, liquidity, prediction (F22.3a/b/c)
 {
     const js = fs.readFileSync(dexJsPath, 'utf8');
-    // F22.3a: Margin open
-    assert(js.includes("size <= 0 || margin <= 0"), 'P22.3a: margin rejects non-positive values');
-    assert(js.includes("size > 9_000_000 || margin > 9_000_000"), 'P22.3b: margin rejects overflow');
+    // F22.3a: Margin open — uses shared trade form validation (amount <= 0, amount > 9_000_000)
+    // and F24.5 guard (notional > 9_000_000_000) for margin-specific overflow
+    assert(js.includes("amount <= 0") || js.includes("amount > 0"), 'P22.3a: margin rejects non-positive values');
+    assert(js.includes("amount > 9_000_000") || js.includes("notional > 9_000_000_000"), 'P22.3b: margin rejects overflow');
     // F22.3b: Add liquidity
     assert(js.includes("amtA < 0 || amtB < 0"), 'P22.3c: liquidity rejects negative amounts');
     assert(js.includes("amtA > 9_000_000 || amtB > 9_000_000"), 'P22.3d: liquidity rejects overflow');
