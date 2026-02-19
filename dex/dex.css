@@ -1484,6 +1484,7 @@
 .proposal-card.active-proposal { border-left: 3px solid var(--orange-primary); }
 .proposal-card.passed-proposal { border-left: 3px solid var(--green-primary, #06d6a0); }
 .proposal-card.executed-proposal { border-left: 3px solid var(--text-muted); opacity: 0.7; }
+.proposal-card.rejected-proposal { border-left: 3px solid #ef4444; opacity: 0.75; }
 .proposal-top-row {
     display: flex;
     align-items: center;
@@ -1549,6 +1550,74 @@
 }
 .proposal-time { font-size: 0.78rem; color: var(--text-muted); }
 .proposal-actions { display: flex; gap: 8px; }
+
+/* Task 6.3: Proposal Pipeline */
+.proposal-pipeline {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    margin: 10px 0;
+    padding: 8px 0;
+}
+.pipeline-step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+}
+.pipeline-step span {
+    font-size: 0.65rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+.pipeline-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--bg-tertiary, #2a2a30);
+    border: 2px solid var(--border-color);
+    transition: all 0.2s;
+}
+.pipeline-step.completed .pipeline-dot {
+    background: var(--green-success, #06d6a0);
+    border-color: var(--green-success, #06d6a0);
+}
+.pipeline-step.completed span {
+    color: var(--green-success, #06d6a0);
+}
+.pipeline-step.active .pipeline-dot {
+    background: var(--orange-primary);
+    border-color: var(--orange-primary);
+    box-shadow: 0 0 6px rgba(255, 107, 53, 0.5);
+}
+.pipeline-step.active span {
+    color: var(--orange-primary);
+    font-weight: 600;
+}
+.pipeline-step.rejected .pipeline-dot {
+    background: #ef4444;
+    border-color: #ef4444;
+}
+.pipeline-step.rejected span {
+    color: #ef4444;
+    font-weight: 600;
+}
+.pipeline-step.skipped .pipeline-dot {
+    background: transparent;
+    border-color: var(--border-color);
+    opacity: 0.3;
+}
+.pipeline-step.skipped span {
+    opacity: 0.3;
+}
+.pipeline-line {
+    flex: 1;
+    height: 2px;
+    background: var(--border-color);
+    margin: 0 4px;
+    margin-bottom: 18px;
+}
 
 /* Create Proposal Panel */
 .create-proposal-panel { min-width: 0; }

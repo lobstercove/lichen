@@ -2845,7 +2845,8 @@ assert(
 // P14.8: Vote handler no longer checks MOLT balance (contract checks reputation)
 {
     const dexJs = fs.readFileSync(dexJsPath, 'utf8');
-    const voteSection = dexJs.substring(dexJs.indexOf('bindVoteButtons'), dexJs.indexOf('bindVoteButtons') + 1500);
+    const fnStart = dexJs.indexOf('function bindVoteButtons');
+    const voteSection = dexJs.substring(fnStart, fnStart + 1500);
     assert(!voteSection.includes('moltBalance'), 'P14.8: No MOLT balance check for voting');
     assert(voteSection.includes('buildVoteArgs'), 'P14.8: Uses buildVoteArgs for binary instruction');
 }
@@ -4615,6 +4616,102 @@ console.log('\n── Phase 5: Settings & Preferences ──');
     assert(dexJs.includes('savedPair'), 'P5.4d: savedPair lookup from pairs array');
     // selectPair saves pair
     assert(dexJs.includes("localStorage.setItem('dexLastPair', String(pair.pairId))"), 'P5.4e: selectPair persists pairId');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase 6: Governance Lifecycle Completion Tests
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n── Phase 6: Governance Lifecycle ──');
+{
+    const dexJs = fs.readFileSync(__dirname + '/dex.js', 'utf8');
+    const cssSrc = fs.readFileSync(__dirname + '/dex.css', 'utf8');
+
+    // 6.1: Finalize proposal builder
+    assert(dexJs.includes('function buildFinalizeProposalArgs('), 'P6.1a: buildFinalizeProposalArgs defined');
+    {
+        const fnMatch = dexJs.match(/function buildFinalizeProposalArgs\(proposalId\)\s*\{([\s\S]*?)\n\s{4}\}/);
+        assert(fnMatch, 'P6.1b: buildFinalizeProposalArgs function body found');
+        assert(fnMatch[1].includes('ArrayBuffer(9)'), 'P6.1c: Finalize args = 9 bytes');
+        assert(fnMatch[1].includes('writeU8(arr, 0, 3)'), 'P6.1d: Finalize opcode = 3');
+    }
+
+    // 6.1e: Functional test — build finalize args
+    {
+        const helperSrc = dexJs.match(/function writeU64LE[\s\S]*?function writePubkey[\s\S]*?arr\.set\(bytes\.subarray\(0, 32\), offset\);\s*\}/);
+        const writeU8Src = dexJs.match(/function writeU8\(arr, offset, n\)[\s\S]*?\}/);
+        const buildFnSrc = dexJs.match(/function buildFinalizeProposalArgs[\s\S]*?return arr;\s*\}/);
+        assert(helperSrc && writeU8Src && buildFnSrc, 'P6.1e: Finalize builder extractable');
+        const bs58Stub = 'function bs58decode(s) { const b = Buffer.alloc(32); b.write(s.slice(0,32)); return b; }';
+        const fullSrc = bs58Stub + '\n' + helperSrc[0] + '\n' + writeU8Src[0] + '\n' + buildFnSrc[0];
+        const buildFinalizeTEST = new Function(fullSrc + '\nreturn buildFinalizeProposalArgs;')();
+        const fArgs = buildFinalizeTEST(42);
+        assertEqual(fArgs[0], 3, 'P6.1f: Finalize opcode byte = 3');
+        assertEqual(fArgs.length, 9, 'P6.1g: Finalize total bytes = 9');
+        const fv = new DataView(fArgs.buffer);
+        assertEqual(Number(fv.getBigUint64(1, true)), 42, 'P6.1h: Finalize proposal_id = 42');
+    }
+
+    // 6.1i: Finalize button and handler
+    assert(dexJs.includes('finalize-btn'), 'P6.1i: Finalize button class');
+    assert(dexJs.includes('function bindFinalizeButtons'), 'P6.1j: bindFinalizeButtons function defined');
+    assert(dexJs.includes('buildFinalizeProposalArgs(pid)'), 'P6.1k: Finalize handler calls builder');
+    assert(dexJs.includes("Proposal finalized"), 'P6.1l: Finalize success notification');
+    assert(dexJs.includes("Finalize failed"), 'P6.1m: Finalize failure notification');
+    // Finalize shown only when voting ended
+    assert(dexJs.includes('votingEnded'), 'P6.1n: votingEnded variable used');
+
+    // 6.2: Execute proposal builder
+    assert(dexJs.includes('function buildExecuteProposalArgs('), 'P6.2a: buildExecuteProposalArgs defined');
+    {
+        const fnMatch = dexJs.match(/function buildExecuteProposalArgs\(proposalId\)\s*\{([\s\S]*?)\n\s{4}\}/);
+        assert(fnMatch, 'P6.2b: buildExecuteProposalArgs function body found');
+        assert(fnMatch[1].includes('ArrayBuffer(9)'), 'P6.2c: Execute args = 9 bytes');
+        assert(fnMatch[1].includes('writeU8(arr, 0, 4)'), 'P6.2d: Execute opcode = 4');
+    }
+
+    // 6.2e: Functional test — build execute args
+    {
+        const helperSrc = dexJs.match(/function writeU64LE[\s\S]*?function writePubkey[\s\S]*?arr\.set\(bytes\.subarray\(0, 32\), offset\);\s*\}/);
+        const writeU8Src = dexJs.match(/function writeU8\(arr, offset, n\)[\s\S]*?\}/);
+        const buildFnSrc = dexJs.match(/function buildExecuteProposalArgs[\s\S]*?return arr;\s*\}/);
+        assert(helperSrc && writeU8Src && buildFnSrc, 'P6.2e: Execute builder extractable');
+        const bs58Stub = 'function bs58decode(s) { const b = Buffer.alloc(32); b.write(s.slice(0,32)); return b; }';
+        const fullSrc = bs58Stub + '\n' + helperSrc[0] + '\n' + writeU8Src[0] + '\n' + buildFnSrc[0];
+        const buildExecuteTEST = new Function(fullSrc + '\nreturn buildExecuteProposalArgs;')();
+        const eArgs = buildExecuteTEST(99);
+        assertEqual(eArgs[0], 4, 'P6.2f: Execute opcode byte = 4');
+        assertEqual(eArgs.length, 9, 'P6.2g: Execute total bytes = 9');
+        const ev = new DataView(eArgs.buffer);
+        assertEqual(Number(ev.getBigUint64(1, true)), 99, 'P6.2h: Execute proposal_id = 99');
+    }
+
+    // 6.2i: Execute button and handler
+    assert(dexJs.includes('execute-btn'), 'P6.2i: Execute button class');
+    assert(dexJs.includes('function bindExecuteButtons'), 'P6.2j: bindExecuteButtons function defined');
+    assert(dexJs.includes('buildExecuteProposalArgs(pid)'), 'P6.2k: Execute handler calls builder');
+    assert(dexJs.includes("Proposal executed"), 'P6.2l: Execute success notification');
+    assert(dexJs.includes("Execute failed"), 'P6.2m: Execute failure notification');
+    // Execute shown only when status = passed
+    assert(dexJs.includes("status === 'passed'"), 'P6.2n: Execute button conditional on passed status');
+
+    // 6.3: Proposal status pipeline
+    assert(dexJs.includes('proposal-pipeline'), 'P6.3a: Pipeline container class');
+    assert(dexJs.includes('pipeline-step'), 'P6.3b: Pipeline step class');
+    assert(dexJs.includes('pipeline-dot'), 'P6.3c: Pipeline dot class');
+    assert(dexJs.includes('pipeline-line'), 'P6.3d: Pipeline line class');
+    // Pipeline stages
+    assert(dexJs.includes("'Created', 'Voting', 'Finalized', 'Executed'"), 'P6.3e: Pipeline stages defined');
+    // Rejected status handling
+    assert(dexJs.includes("rejected-proposal"), 'P6.3f: Rejected proposal CSS class');
+    assert(cssSrc.includes('.rejected-proposal'), 'P6.3g: Rejected proposal CSS defined');
+    assert(cssSrc.includes('.proposal-pipeline'), 'P6.3h: Pipeline CSS defined');
+    assert(cssSrc.includes('.pipeline-step'), 'P6.3i: Pipeline step CSS');
+    assert(cssSrc.includes('.pipeline-dot'), 'P6.3j: Pipeline dot CSS');
+    assert(cssSrc.includes('.pipeline-line'), 'P6.3k: Pipeline line CSS');
+    assert(cssSrc.includes('.pipeline-step.completed'), 'P6.3l: Completed step CSS');
+    assert(cssSrc.includes('.pipeline-step.active'), 'P6.3m: Active step CSS');
+    assert(cssSrc.includes('.pipeline-step.rejected'), 'P6.3n: Rejected step CSS');
+    assert(cssSrc.includes('.pipeline-step.skipped'), 'P6.3o: Skipped step CSS');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
