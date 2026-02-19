@@ -46,7 +46,7 @@
                     <option value="local-mainnet">Local Mainnet</option>
                 </select>
             </div>
-            <button class="nav-toggle" id="navToggle">
+            <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu">
                 <span></span><span></span><span></span>
             </button>
         </div>
@@ -563,7 +563,7 @@
             </div>
 
             <div class="section-cta">
-                <a href="docs/skills/VALIDATOR_SKILL.md" class="btn btn-primary btn-large">
+                <a href="#" data-molt-app="developers" data-molt-path="/validator.html" class="btn btn-primary btn-large">
                     <i class="fas fa-play-circle"></i> Start Validating Now
                 </a>
             </div>
@@ -804,7 +804,7 @@
                     <h3>Step 1: Install CLI</h3>
                     <div class="code-example">
                         <div class="code-header">
-                            <button class="copy-btn" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
+                            <button class="copy-btn" onclick="copyCode(this)" aria-label="Copy code to clipboard"><i class="fas fa-copy"></i></button>
                             <span class="code-title">terminal</span>
                         </div>
                         <div class="code-content">
@@ -825,7 +825,7 @@ cargo build --release --bin molt
                     <h3>Step 2: Create Your Identity</h3>
                     <div class="code-example">
                         <div class="code-header">
-                            <button class="copy-btn" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
+                            <button class="copy-btn" onclick="copyCode(this)" aria-label="Copy code to clipboard"><i class="fas fa-copy"></i></button>
                             <span class="code-title">terminal</span>
                         </div>
                         <div class="code-content">
@@ -848,7 +848,7 @@ cargo build --release --bin molt
                     <h3>Step 3: Write a Contract (Rust → WASM)</h3>
                     <div class="code-example">
                         <div class="code-header">
-                            <button class="copy-btn" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
+                            <button class="copy-btn" onclick="copyCode(this)" aria-label="Copy code to clipboard"><i class="fas fa-copy"></i></button>
                             <span class="code-title">contracts/counter/src/lib.rs</span>
                         </div>
                         <div class="code-content">
@@ -882,7 +882,7 @@ pub extern "C" fn reset() {
                     <h3>Step 4: Build &amp; Deploy</h3>
                     <div class="code-example">
                         <div class="code-header">
-                            <button class="copy-btn" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
+                            <button class="copy-btn" onclick="copyCode(this)" aria-label="Copy code to clipboard"><i class="fas fa-copy"></i></button>
                             <span class="code-title">terminal</span>
                         </div>
                         <div class="code-content">
@@ -907,7 +907,7 @@ python3 tools/deploy_contract.py counter.wasm
                     <h3>Step 5: Call via JSON-RPC</h3>
                     <div class="code-example">
                         <div class="code-header">
-                            <button class="copy-btn" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
+                            <button class="copy-btn" onclick="copyCode(this)" aria-label="Copy code to clipboard"><i class="fas fa-copy"></i></button>
                             <span class="code-title">JavaScript</span>
                         </div>
                         <div class="code-content">
@@ -973,7 +973,7 @@ console.log('Counter:', result); // 1</code></pre>
                         </div>
                         <div class="code-example">
                             <div class="code-header">
-                                <button class="copy-btn" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
+                                <button class="copy-btn" onclick="copyCode(this)" aria-label="Copy code to clipboard"><i class="fas fa-copy"></i></button>
                                 <span class="code-title">Response</span>
                             </div>
                             <div class="code-content">
@@ -1036,7 +1036,7 @@ console.log('Counter:', result); // 1</code></pre>
                         </div>
                         <div class="code-example">
                             <div class="code-header">
-                                <button class="copy-btn" onclick="copyCode(this)"><i class="fas fa-copy"></i></button>
+                                <button class="copy-btn" onclick="copyCode(this)" aria-label="Copy code to clipboard"><i class="fas fa-copy"></i></button>
                                 <span class="code-title">Response</span>
                             </div>
                             <div class="code-content">
@@ -1203,10 +1203,10 @@ console.log('Counter:', result); // 1</code></pre>
                 <div class="footer-col">
                     <h4>Resources</h4>
                     <ul class="footer-links">
-                        <li><a href="../docs/README.md">Documentation</a></li>
-                        <li><a href="../docs/VISION.md">Vision</a></li>
-                        <li><a href="../docs/WHITEPAPER.md">Whitepaper</a></li>
-                        <li><a href="../docs/VALIDATOR_SETUP.md">Validator Guide</a></li>
+                        <li><a href="#" data-molt-app="developers">Documentation</a></li>
+                        <li><a href="#" data-molt-app="developers" data-molt-path="/architecture.html">Architecture</a></li>
+                        <li><a href="#" data-molt-app="developers" data-molt-path="/getting-started.html">Getting Started</a></li>
+                        <li><a href="#" data-molt-app="developers" data-molt-path="/validator.html">Validator Guide</a></li>
                     </ul>
                 </div>
                 <div class="footer-col">
