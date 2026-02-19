@@ -183,6 +183,12 @@ fn best_ask_key(pair_id: u64) -> Vec<u8> {
     k
 }
 
+fn band_key(pair_id: u64) -> Vec<u8> {
+    let mut k = Vec::from(&b"dex_band_"[..]);
+    k.extend_from_slice(&u64_to_decimal(pair_id));
+    k
+}
+
 fn user_order_count_key(addr: &[u8; 32]) -> Vec<u8> {
     let mut k = Vec::from(&b"dex_uoc_"[..]);
     k.extend_from_slice(&hex_encode(addr));
@@ -1044,6 +1050,53 @@ pub fn place_order(
     if user_count >= MAX_OPEN_ORDERS_PER_USER {
         reentrancy_exit();
         return 5;
+    }
+
+    // ── Oracle Price Band Protection ──
+    // The validator writes dex_band_{pair_id} (16 bytes: ref_price + slot)
+    // for oracle-priced pairs. If present and fresh (<300 slots), enforce:
+    //   Market orders: reject if worst-price bound is >5% from oracle
+    //   Limit orders:  reject if limit price is >10% from oracle
+    // Native-only pairs (no band record) → unrestricted.
+    // Return code 10 = price outside oracle band.
+    {
+        let band_key_str = band_key(pair_id);
+        if let Some(band_data) = storage_get(&band_key_str) {
+            if band_data.len() >= 16 {
+                let ref_price = u64::from_le_bytes([
+                    band_data[0], band_data[1], band_data[2], band_data[3],
+                    band_data[4], band_data[5], band_data[6], band_data[7],
+                ]);
+                let band_slot = u64::from_le_bytes([
+                    band_data[8], band_data[9], band_data[10], band_data[11],
+                    band_data[12], band_data[13], band_data[14], band_data[15],
+                ]);
+
+                // Only enforce if band data is fresh (within 300 slots ≈ 5 min)
+                if ref_price > 0 && current_slot.saturating_sub(band_slot) < 300 {
+                    let check_price = if order_type == ORDER_MARKET {
+                        // Market order with worst-price bound
+                        if price > 0 { price } else { 0 }
+                    } else {
+                        price
+                    };
+
+                    if check_price > 0 {
+                        // Percentage thresholds (basis points): market=500 (5%), limit=1000 (10%)
+                        let band_bps: u64 = if order_type == ORDER_MARKET { 500 } else { 1000 };
+
+                        // Calculate allowed range: ref_price * (1 ± band_bps/10000)
+                        let lower = ref_price.saturating_sub(ref_price * band_bps / 10000);
+                        let upper = ref_price.saturating_add(ref_price * band_bps / 10000);
+
+                        if check_price < lower || check_price > upper {
+                            reentrancy_exit();
+                            return 10; // price outside oracle band
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // Post-only check: reject if would immediately match

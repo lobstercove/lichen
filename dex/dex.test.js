@@ -1823,6 +1823,138 @@ const indexHtmlPath = '/Users/johnrobin/.openclaw/workspace/moltchain/dex/index.
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// PHASE 10: Margin Trading (Inline) — Tests
+// ═══════════════════════════════════════════════════════════════════════════
+const marginRsPath = '/Users/johnrobin/.openclaw/workspace/moltchain/contracts/dex_margin/src/lib.rs';
+
+// P10.1: calculate_margin_ratio_with_pnl exists in contract
+{
+    const marginRs = fs.readFileSync(marginRsPath, 'utf8');
+    assert(marginRs.includes('fn calculate_margin_ratio_with_pnl'), 'P10.1a: calculate_margin_ratio_with_pnl function exists');
+    assert(marginRs.includes('entry_price'), 'P10.1b: PnL-aware ratio takes entry_price parameter');
+    assert(marginRs.includes('mark_price'), 'P10.1c: PnL-aware ratio takes mark_price parameter');
+}
+
+// P10.2: Liquidation uses PnL-aware ratio
+{
+    const marginRs = fs.readFileSync(marginRsPath, 'utf8');
+    const liqBlock = marginRs.substring(marginRs.indexOf('fn liquidate('));
+    assert(liqBlock.includes('calculate_margin_ratio_with_pnl'), 'P10.2a: liquidate() uses PnL-aware ratio');
+    assert(liqBlock.includes('entry_price'), 'P10.2b: liquidate() reads entry_price for PnL');
+}
+
+// P10.3: get_margin_ratio uses PnL-aware ratio
+{
+    const marginRs = fs.readFileSync(marginRsPath, 'utf8');
+    const gmrBlock = marginRs.substring(marginRs.indexOf('fn get_margin_ratio('));
+    assert(gmrBlock.includes('calculate_margin_ratio_with_pnl'), 'P10.3: get_margin_ratio() uses PnL-aware ratio');
+}
+
+// P10.4: remove_margin uses PnL-aware ratio for health check
+{
+    const marginRs = fs.readFileSync(marginRsPath, 'utf8');
+    const rmBlock = marginRs.substring(marginRs.indexOf('fn remove_margin('));
+    assert(rmBlock.includes('calculate_margin_ratio_with_pnl'), 'P10.4: remove_margin() uses PnL-aware ratio');
+}
+
+// P10.5: Realized PnL written on close_position (F10.2-B fix)
+{
+    const marginRs = fs.readFileSync(marginRsPath, 'utf8');
+    const closeBlock = marginRs.substring(marginRs.indexOf('fn close_position('), marginRs.indexOf('fn close_position(') + 3000);
+    assert(closeBlock.includes('data[90..98]'), 'P10.5a: close_position writes to realized_pnl bytes [90..98]');
+    assert(closeBlock.includes('pnl_biased'), 'P10.5b: PnL stored as biased value');
+    assert(closeBlock.includes('1u64 << 63'), 'P10.5c: Uses PNL_BIAS (1<<63) for encoding');
+}
+
+// P10.6: Tier table provides maintenance BPS
+{
+    const marginRs = fs.readFileSync(marginRsPath, 'utf8');
+    assert(marginRs.includes('fn get_tier_params'), 'P10.6a: get_tier_params function exists');
+    assert(marginRs.includes('maintenance_margin_bps'), 'P10.6b: Tier returns maintenance margin BPS');
+    // Verify tier values
+    assert(marginRs.includes('2500'), 'P10.6c: Tier <=2x has 2500 maintenance BPS');
+    assert(marginRs.includes('1700'), 'P10.6d: Tier <=3x has 1700 maintenance BPS');
+}
+
+// P10.7: JS getMaintenanceBps mirrors contract tier table
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('function getMaintenanceBps'), 'P10.7a: getMaintenanceBps helper exists in dex.js');
+    assert(dexJs.includes('return 2500'), 'P10.7b: JS tier <=2x returns 2500');
+    assert(dexJs.includes('return 1700'), 'P10.7c: JS tier <=3x returns 1700');
+    assert(dexJs.includes('return 1000'), 'P10.7d: JS tier <=5x returns 1000');
+    assert(dexJs.includes('return 500'), 'P10.7e: JS tier <=10x returns 500');
+    assert(dexJs.includes('return 200'), 'P10.7f: JS tier <=25x returns 200');
+    assert(dexJs.includes('return 100'), 'P10.7g: JS tier <=50x returns 100');
+    assert(dexJs.includes('return 50'), 'P10.7h: JS tier >50x returns 50');
+}
+
+// P10.8: Liquidation price formula uses maintBps (not hardcoded 0.9)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const updateMarginInfo = dexJs.substring(dexJs.indexOf('function updateMarginInfo'), dexJs.indexOf('function updateMarginInfo') + 800);
+    assert(updateMarginInfo.includes('getMaintenanceBps'), 'P10.8a: updateMarginInfo calls getMaintenanceBps');
+    assert(updateMarginInfo.includes('maintFrac'), 'P10.8b: Uses maintenance fraction in liq price formula');
+    assert(!updateMarginInfo.includes('* 0.9'), 'P10.8c: Hardcoded 0.9 factor removed');
+}
+
+// P10.9: Trade submit handler branches on margin mode (F10.6 fix)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes("state.tradeMode === 'margin'"), 'P10.9a: Submit handler checks tradeMode');
+    assert(dexJs.includes('contracts.dex_margin'), 'P10.9b: Margin mode uses dex_margin contract');
+    assert(dexJs.includes('buildOpenPositionArgs'), 'P10.9c: Margin mode calls buildOpenPositionArgs');
+}
+
+// P10.10: Margin side derived from orderSide (buy→long, sell→short)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes("orderSide === 'buy' ? 'long' : 'short'"), 'P10.10: Margin side correctly derived from buy/sell');
+}
+
+// P10.11: Unrealized PnL computed client-side for open positions
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const pnlCalc = dexJs.includes('mark - entry') && dexJs.includes('entry - mark');
+    assert(pnlCalc, 'P10.11a: Unrealized PnL computed from mark vs entry price');
+    assert(dexJs.includes('/ PRICE_SCALE'), 'P10.11b: PnL divided by PRICE_SCALE for display');
+}
+
+// P10.12: RPC PNL_BIAS matches contract encoding
+{
+    const dexRs = fs.readFileSync(dexRsPath, 'utf8');
+    assert(dexRs.includes('const PNL_BIAS: u64 = 1u64 << 63'), 'P10.12a: RPC declares PNL_BIAS = 1<<63');
+    const marginRs = fs.readFileSync(marginRsPath, 'utf8');
+    assert(marginRs.includes('1u64 << 63'), 'P10.12b: Contract writes with same 1<<63 bias');
+}
+
+// P10.13: Margin nav link exists in index.html
+{
+    const indexHtml = fs.readFileSync(indexHtmlPath, 'utf8');
+    assert(indexHtml.includes('data-view="margin"'), 'P10.13: Margin nav link exists in HTML');
+}
+
+// P10.14: Cross margin option removed (contract only supports isolated)
+{
+    const indexHtml = fs.readFileSync(indexHtmlPath, 'utf8');
+    const crossCount = (indexHtml.match(/data-mtype="cross"|data-type="cross"/g) || []).length;
+    assert(crossCount === 0, 'P10.14: Cross margin option removed from HTML');
+}
+
+// P10.15: view-margin section exists in HTML
+{
+    const indexHtml = fs.readFileSync(indexHtmlPath, 'utf8');
+    assert(indexHtml.includes('id="view-margin"'), 'P10.15: view-margin section exists');
+}
+
+// P10.16: Closed/liquidated positions show realized PnL
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes("pos.status === 'closed'") || dexJs.includes("p.status === 'closed'"), 'P10.16a: Checks for closed position status');
+    assert(dexJs.includes('realizedPnl'), 'P10.16b: Uses realizedPnl for closed positions');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Summary
 // ═══════════════════════════════════════════════════════════════════════════
 console.log(`\n${'═'.repeat(60)}`);

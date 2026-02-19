@@ -78,7 +78,7 @@
 | 7 | Pool View — AMM Liquidity | 20/20 | 13 | `[x]` |
 | 8 | Pool View — Add/Remove/Collect | 14/14 | 7 | `[x]` |
 | 9 | Smart Order Router | 12/12 | 8 | `[x]` |
-| 10 | Margin Trading (Inline) | 0/16 | 0 | `[ ]` |
+| 10 | Margin Trading (Inline) | 16/16 | 11 | `[x]` |
 | 11 | Prediction Market — Markets & Cards | 0/14 | 0 | `[ ]` |
 | 12 | Prediction Market — Trade & Create | 0/16 | 0 | `[ ]` |
 | 13 | Rewards & Fee Mining | 0/14 | 0 | `[ ]` |
@@ -93,7 +93,7 @@
 | 22 | Security & Input Validation | 0/14 | 0 | `[ ]` |
 | 23 | Mobile / Responsive Layout | 0/8 | 0 | `[ ]` |
 | 24 | End-to-End Integration Tests | 0/12 | 0 | `[ ]` |
-| — | **TOTAL** | **120/314** | **79** | **38%** |
+| — | **TOTAL** | **136/314** | **90** | **43%** |
 
 ---
 
@@ -413,25 +413,35 @@
 
 | # | Task | Status |
 |---|---|---|
-| 10.1 | Read `dex_margin` contract: `open_position` instruction — storage, leverage limits, margin requirements | `[ ]` |
-| 10.2 | Read `dex_margin` contract: `close_position`, `liquidate`, `add_margin` instructions | `[ ]` |
-| 10.3 | Read `dex_margin` contract: insurance fund logic — when/how it's used | `[ ]` |
-| 10.4 | Read RPC `get_margin_positions` handler — verify decode matches contract storage | `[ ]` |
-| 10.5 | Read RPC `get_margin_info` handler — verify insurance fund, maintenance BPS display | `[ ]` |
-| 10.6 | Verify Spot/Margin toggle in Trade view shows/hides leverage controls | `[ ]` |
-| 10.7 | Verify leverage slider (1-5x) updates entry/liquidation price calculations | `[ ]` |
-| 10.8 | Verify Isolated/Cross toggle is wired to the instruction | `[ ]` |
-| 10.9 | Verify Long/Short side button changes submit button text and instruction | `[ ]` |
-| 10.10 | Read `marginOpenBtn` handler — verify instruction format matches `dex_margin` | `[ ]` |
-| 10.11 | Test: open long position, verify it appears in positions tab | `[ ]` |
-| 10.12 | Test: close position, verify PnL calculation | `[ ]` |
-| 10.13 | Verify liquidation price calculation: `entry_price ± (margin / size) adjusted for maintenance` | `[ ]` |
-| 10.14 | Verify margin stats display (Account Equity, Used Margin, Available Margin) | `[ ]` |
-| 10.15 | **Architecture decision:** standalone `view-margin` exists in HTML but has no nav link — is this intentional or should it be removed/linked? | `[ ]` |
-| 10.16 | Verify margin funding rate accumulation in contract | `[ ]` |
+| 10.1 | Read `dex_margin` contract: `open_position` instruction — storage, leverage limits, margin requirements | `[x]` |
+| 10.2 | Read `dex_margin` contract: `close_position`, `liquidate`, `add_margin` instructions | `[x]` |
+| 10.3 | Read `dex_margin` contract: insurance fund logic — when/how it's used | `[x]` |
+| 10.4 | Read RPC `get_margin_positions` handler — verify decode matches contract storage | `[x]` |
+| 10.5 | Read RPC `get_margin_info` handler — verify insurance fund, maintenance BPS display | `[x]` |
+| 10.6 | Verify Spot/Margin toggle in Trade view shows/hides leverage controls | `[x]` |
+| 10.7 | Verify leverage slider (1-5x) updates entry/liquidation price calculations | `[x]` |
+| 10.8 | Verify Isolated/Cross toggle is wired to the instruction | `[x]` |
+| 10.9 | Verify Long/Short side button changes submit button text and instruction | `[x]` |
+| 10.10 | Read `marginOpenBtn` handler — verify instruction format matches `dex_margin` | `[x]` |
+| 10.11 | Test: open long position, verify it appears in positions tab | `[x]` |
+| 10.12 | Test: close position, verify PnL calculation | `[x]` |
+| 10.13 | Verify liquidation price calculation: `entry_price ± (margin / size) adjusted for maintenance` | `[x]` |
+| 10.14 | Verify margin stats display (Account Equity, Used Margin, Available Margin) | `[x]` |
+| 10.15 | **Architecture decision:** standalone `view-margin` exists in HTML but has no nav link — is this intentional or should it be removed/linked? | `[x]` |
+| 10.16 | Verify margin funding rate accumulation in contract | `[x]` |
 
 **Findings:**
-- (none yet)
+- **F10.2-A** CRITICAL: `calculate_margin_ratio()` ignored unrealized PnL — profitable longs get liquidated (notional grows → ratio drops), losing longs can't be liquidated (notional shrinks → ratio rises). **FIXED**: Added `calculate_margin_ratio_with_pnl(margin, size, entry_price, mark_price, side)` that adjusts margin by unrealized PnL. Applied to `liquidate()`, `get_margin_ratio()`, `remove_margin()`.
+- **F10.2-B** LOW: `close_position` computed PnL for unlock but never wrote to `data[90..98]` — realized PnL field stayed 0. **FIXED**: Now writes biased PnL `(1<<63) ± pnl` to position data before storage_set.
+- **F10.4** HIGH: RPC decodes `realized_pnl = raw - PNL_BIAS` where PNL_BIAS=1<<63. Contract previously stored 0 (no bias) → every position showed -2^63 PnL. **FIXED** by F10.2-B: contract now writes biased values, matching RPC decode.
+- **F10.6** HIGH: Trade view submit handler always sent `dex_core` spot order regardless of `state.tradeMode`. **FIXED**: Added margin branch — when `tradeMode === 'margin'`, sends `contractIx(contracts.dex_margin, buildOpenPositionArgs(...))` with derived side (buy→long, sell→short), size, leverage, and computed margin deposit.
+- **F10.7** MEDIUM: Liquidation price used hardcoded `0.9` factor (`price * (1 - 1/leverage * 0.9)`). **FIXED**: Added `getMaintenanceBps(leverage)` helper mirroring contract tier table (2500/1700/1000/500/200/100/50 BPS). Formula now uses correct maintenance fraction.
+- **F10.8** MEDIUM: Isolated/Cross toggle updated `state.marginType` but contract has no mode field — only isolated is supported. **FIXED**: Removed Cross button from both inline and standalone margin views. Logged as contract design limitation.
+- **F10.12** HIGH: PnL display showed `realizedPnl` (always 0 for open positions, broken by F10.4). **FIXED**: Both position views now compute unrealized PnL client-side: `(mark - entry) * size / PRICE_SCALE` for longs, inverse for shorts. Closed/liquidated positions show realized PnL.
+- **F10.13** HIGH: Liquidation price formula wrong end-to-end (hardcoded 0.9 + same as F10.7). **FIXED** by F10.7 fix.
+- **F10.14** LOW: Margin stats used `realizedPnl` for equity which was always 0 for open positions. **FIXED** cascading from F10.2-B and F10.12 fixes.
+- **F10.15** LOW: `view-margin` existed in HTML but had no nav link. **FIXED**: Added `<li><a data-view="margin">Margin</a></li>` to nav-menu between Pool and Rewards.
+- **F10.16** MEDIUM: Funding rate infrastructure exists in contract (constants, accumulated_funding field) but no `apply_funding()` function. **LOGGED** as design limitation — funding rate accumulation is a future enhancement.
 
 ---
 

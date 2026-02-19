@@ -986,14 +986,29 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         submitBtn.disabled = true; submitBtn.textContent = 'Submitting...';
         try {
-            const result = await wallet.sendTransaction([contractIx(
-                contracts.dex_core,
-                buildPlaceOrderArgs(wallet.address, state.activePairId, state.orderSide, state.orderType, Math.round(price * PRICE_SCALE), Math.round(amount * PRICE_SCALE))
-            )]);
-            showNotification(`${state.orderSide.toUpperCase()} order placed: ${formatAmount(amount)} ${state.activePair?.base || ''} @ ${state.orderType === 'market' ? 'MARKET' : formatPrice(price)}`, 'success');
-            const orderId = result?.order_id || result?.orderId || Math.random().toString(36).slice(2, 8).toUpperCase();
-            openOrders.push({ id: String(orderId), pair: state.activePair?.id, side: state.orderSide, type: state.orderType, price: price || state.lastPrice, amount, filled: 0, time: new Date() });
-            renderOpenOrders(); if (amountInput) amountInput.value = ''; if (totalInput) totalInput.value = '';
+            // F10.6 FIX: Route to margin contract when tradeMode is margin
+            if (state.tradeMode === 'margin') {
+                if (!contracts.dex_margin) { showNotification('Margin contract not loaded', 'error'); submitBtn.disabled = false; updateSubmitBtn(); return; }
+                const marginSide = state.orderSide === 'buy' ? 'long' : 'short';
+                const size = Math.round(amount * PRICE_SCALE);
+                const leverage = state.leverageValue;
+                const marginDeposit = Math.round((amount * (price || state.lastPrice) / leverage) * PRICE_SCALE);
+                const result = await wallet.sendTransaction([contractIx(
+                    contracts.dex_margin,
+                    buildOpenPositionArgs(wallet.address, state.activePairId, marginSide, size, leverage, marginDeposit)
+                )]);
+                showNotification(`${marginSide.toUpperCase()} ${state.leverageValue}x opened: ${formatAmount(amount)} ${state.activePair?.base || ''} @ ${formatPrice(price || state.lastPrice)}`, 'success');
+            } else {
+                const result = await wallet.sendTransaction([contractIx(
+                    contracts.dex_core,
+                    buildPlaceOrderArgs(wallet.address, state.activePairId, state.orderSide, state.orderType, Math.round(price * PRICE_SCALE), Math.round(amount * PRICE_SCALE))
+                )]);
+                showNotification(`${state.orderSide.toUpperCase()} order placed: ${formatAmount(amount)} ${state.activePair?.base || ''} @ ${state.orderType === 'market' ? 'MARKET' : formatPrice(price)}`, 'success');
+                const orderId = result?.order_id || result?.orderId || Math.random().toString(36).slice(2, 8).toUpperCase();
+                openOrders.push({ id: String(orderId), pair: state.activePair?.id, side: state.orderSide, type: state.orderType, price: price || state.lastPrice, amount, filled: 0, time: new Date() });
+                renderOpenOrders();
+            }
+            if (amountInput) amountInput.value = ''; if (totalInput) totalInput.value = '';
         } catch (e) { showNotification(`Order failed: ${e.message}`, 'error'); }
         finally { submitBtn.disabled = false; updateSubmitBtn(); }
     });
@@ -1291,6 +1306,96 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ═══════════════════════════════════════════════════════════════════════
+    // Phase D — Oracle Price Reference Line on Chart
+    // Fetches oracle prices from /api/v1/oracle/prices every 5s and draws
+    // a horizontal dashed line on the TradingView chart showing the
+    // Binance oracle reference price for the active pair. This gives
+    // traders a visual comparison between on-chain trade price and the
+    // external oracle index price.
+    // ═══════════════════════════════════════════════════════════════════════
+    let oracleLineId = null;
+    let oracleRefPrices = {};
+
+    async function fetchOracleRefPrices() {
+        try {
+            const resp = await fetch(`${API}/oracle/prices`);
+            if (!resp.ok) return;
+            const data = await resp.json();
+            if (data.feeds) {
+                for (const feed of data.feeds) {
+                    if (feed.price > 0 && !feed.stale) {
+                        oracleRefPrices[feed.asset] = feed.price;
+                    }
+                }
+            }
+            updateOracleReferenceLine();
+        } catch { /* network error — skip */ }
+    }
+
+    function getOracleRefForPair() {
+        if (!state.activePair) return 0;
+        const base = (state.activePair.base || '').toUpperCase();
+        const quote = (state.activePair.quote || '').toUpperCase();
+        let refPrice = 0;
+        if ((base === 'WSOL' || base === 'SOL') && oracleRefPrices['wSOL']) {
+            refPrice = oracleRefPrices['wSOL'];
+        } else if ((base === 'WETH' || base === 'ETH') && oracleRefPrices['wETH']) {
+            refPrice = oracleRefPrices['wETH'];
+        } else if (base === 'MOLT' && oracleRefPrices['MOLT']) {
+            refPrice = oracleRefPrices['MOLT'];
+        }
+        if (refPrice <= 0) return 0;
+        // Convert for MOLT-quoted pairs
+        if (quote === 'MOLT') {
+            const moltUsd = oracleRefPrices['MOLT'] || MOLT_GENESIS_PRICE;
+            if (moltUsd > 0) refPrice = refPrice / moltUsd;
+            else return 0;
+        }
+        return refPrice;
+    }
+
+    function updateOracleReferenceLine() {
+        if (!tvWidget?.activeChart) return;
+        try {
+            const chart = tvWidget.activeChart();
+            const refPrice = getOracleRefForPair();
+            // Remove old line
+            if (oracleLineId) {
+                try { chart.removeEntity(oracleLineId); } catch { /* already removed */ }
+                oracleLineId = null;
+            }
+            if (refPrice <= 0) return;
+            // Draw horizontal dashed line at oracle reference price
+            oracleLineId = chart.createShape(
+                { time: 0, price: refPrice },
+                {
+                    shape: 'horizontal_line',
+                    lock: true,
+                    disableSelection: true,
+                    disableSave: true,
+                    disableUndo: true,
+                    overrides: {
+                        linecolor: '#FFD700',
+                        linewidth: 1,
+                        linestyle: 2, // dashed
+                        showLabel: true,
+                        text: `Oracle: $${refPrice < 1 ? refPrice.toFixed(4) : refPrice.toFixed(2)}`,
+                        textcolor: '#FFD700',
+                        fontsize: 10,
+                        horzLabelsAlign: 'right',
+                        showPrice: false,
+                    },
+                }
+            );
+        } catch { /* TradingView API not ready yet */ }
+    }
+
+    // Poll oracle prices every 5 seconds for the reference line
+    setInterval(fetchOracleRefPrices, 5000);
+    // Initial fetch after short delay to allow TradingView to initialize
+    setTimeout(fetchOracleRefPrices, 2000);
+
+    // ═══════════════════════════════════════════════════════════════════════
     // Margin View
     // ═══════════════════════════════════════════════════════════════════════
     const leverageSlider = document.getElementById('leverageSlider'), leverageDisplay = document.querySelector('.leverage-display');
@@ -1298,10 +1403,30 @@ document.addEventListener('DOMContentLoaded', () => {
     document.querySelectorAll('.margin-type').forEach(btn => btn.addEventListener('click', () => { document.querySelectorAll('.margin-type').forEach(b => b.classList.remove('active')); btn.classList.add('active'); state.marginType = btn.dataset.type; if (leverageSlider) leverageSlider.max = state.marginType === 'isolated' ? '5' : '3'; if (state.leverageValue > parseFloat(leverageSlider?.max)) { state.leverageValue = parseFloat(leverageSlider.max); leverageSlider.value = state.leverageValue; if (leverageDisplay) leverageDisplay.textContent = `${state.leverageValue}x`; } updateMarginInfo(); }));
     document.querySelectorAll('.side-btn').forEach(btn => btn.addEventListener('click', () => { document.querySelectorAll('.side-btn').forEach(b => b.classList.remove('active')); btn.classList.add('active'); state.marginSide = btn.classList.contains('long-btn') ? 'long' : 'short'; const ob = document.getElementById('marginOpenBtn'); if (ob) { ob.textContent = `Open ${state.marginSide === 'long' ? 'Long' : 'Short'}`; ob.className = `btn btn-full ${state.marginSide === 'long' ? 'btn-buy' : 'btn-sell'}`; } }));
 
+    // F10.7 FIX: Maintenance margin BPS lookup matching contract tier table
+    function getMaintenanceBps(leverage) {
+        if (leverage <= 2) return 2500;   // 25%
+        if (leverage <= 3) return 1700;   // 17%
+        if (leverage <= 5) return 1000;   // 10%
+        if (leverage <= 10) return 500;   //  5%
+        if (leverage <= 25) return 200;   //  2%
+        if (leverage <= 50) return 100;   //  1%
+        return 50;                        // 0.5%
+    }
+
     function updateMarginInfo() {
         const e = document.getElementById('marginEntry'), l = document.getElementById('marginLiqPrice'), r = document.getElementById('marginRatio');
         if (e) e.textContent = formatPrice(state.lastPrice);
-        if (l) l.textContent = formatPrice(state.marginSide === 'long' ? state.lastPrice * (1 - 1 / state.leverageValue * 0.9) : state.lastPrice * (1 + 1 / state.leverageValue * 0.9));
+        // F10.7 FIX: Liquidation price uses tier-appropriate maintenance BPS
+        // Liq occurs when margin_ratio drops to maintenance level
+        // For long: liq_price = entry * (1 - (margin/notional - maintBps/10000))
+        //         = entry * (1 - 1/leverage + maintBps/10000) — simplified
+        // For short: liq_price = entry * (1 + 1/leverage - maintBps/10000)
+        const maintBps = getMaintenanceBps(state.leverageValue);
+        const maintFrac = maintBps / 10000;
+        if (l) l.textContent = formatPrice(state.marginSide === 'long'
+            ? state.lastPrice * (1 - 1 / state.leverageValue + maintFrac)
+            : state.lastPrice * (1 + 1 / state.leverageValue - maintFrac));
         if (r) r.textContent = `${(100 / state.leverageValue).toFixed(1)}%`;
     }
 
@@ -1604,7 +1729,17 @@ document.addEventListener('DOMContentLoaded', () => {
                     container.innerHTML = data.map(pos => {
                         const side = pos.side === 'long' ? 'Long' : 'Short';
                         const sideClass = side === 'Long' ? 'side-buy' : 'side-sell';
-                        const pnl = pos.realizedPnl || 0;
+                        // F10.12 FIX: Compute unrealized PnL for open positions
+                        const mark = pos.markPrice || state.lastPrice;
+                        const entry = pos.entryPrice || 0;
+                        let pnl;
+                        if (pos.status === 'closed' || pos.status === 'liquidated') {
+                            pnl = pos.realizedPnl || 0;
+                        } else if (entry > 0 && mark > 0) {
+                            pnl = side === 'Long' ? (mark - entry) * (pos.size || 0) / PRICE_SCALE : (entry - mark) * (pos.size || 0) / PRICE_SCALE;
+                        } else {
+                            pnl = 0;
+                        }
                         return `<div class="margin-pos-row">
                             <div class="margin-pos-info">
                                 <span class="${sideClass}">${escapeHtml(side)} ${escapeHtml(pos.pair || 'MOLT/mUSD')}</span>
@@ -1674,8 +1809,19 @@ document.addEventListener('DOMContentLoaded', () => {
                 container.innerHTML = `<table class="orders-table"><thead><tr><th>Pair</th><th>Side</th><th>Size</th><th>Entry</th><th>Mark</th><th>P&L</th><th>Lev</th><th></th></tr></thead><tbody>${
                     data.map(p => {
                         const side = p.side === 'long' ? 'Long' : 'Short';
-                        const pnl = p.realizedPnl || 0;
-                        return `<tr><td>${escapeHtml(p.pair || state.activePair?.id || '')}</td><td class="side-${side.toLowerCase()}">${escapeHtml(side)}</td><td class="mono-value">${formatAmount(p.size || 0)}</td><td class="mono-value">${formatPrice(p.entryPrice || 0)}</td><td class="mono-value">${formatPrice(p.markPrice || state.lastPrice)}</td><td class="mono-value ${pnl >= 0 ? 'positive' : 'negative'}">${pnl >= 0 ? '+' : ''}${formatPrice(pnl)}</td><td>${p.leverage || '2'}x</td><td><button class="btn btn-small btn-secondary">Close</button></td></tr>`;
+                        // F10.12 FIX: Compute unrealized PnL from entry vs mark price
+                        const mark = p.markPrice || state.lastPrice;
+                        const entry = p.entryPrice || 0;
+                        const size = p.size || 0;
+                        let pnl;
+                        if (p.status === 'closed' || p.status === 'liquidated') {
+                            pnl = p.realizedPnl || 0;
+                        } else if (entry > 0 && mark > 0) {
+                            pnl = side === 'Long' ? (mark - entry) * size / PRICE_SCALE : (entry - mark) * size / PRICE_SCALE;
+                        } else {
+                            pnl = 0;
+                        }
+                        return `<tr><td>${escapeHtml(p.pair || state.activePair?.id || '')}</td><td class="side-${side.toLowerCase()}">${escapeHtml(side)}</td><td class="mono-value">${formatAmount(p.size || 0)}</td><td class="mono-value">${formatPrice(p.entryPrice || 0)}</td><td class="mono-value">${formatPrice(mark)}</td><td class="mono-value ${pnl >= 0 ? 'positive' : 'negative'}">${pnl >= 0 ? '+' : ''}${formatPrice(pnl)}</td><td>${p.leverage || '2'}x</td><td><button class="btn btn-small btn-secondary">Close</button></td></tr>`;
                     }).join('')
                 }</tbody></table>`;
                 return;
