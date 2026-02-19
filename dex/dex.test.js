@@ -1318,6 +1318,161 @@ assert(
     );
 }
 
+// P6.14: emit_dex_events wired in validator (F6.2 fix)
+{
+    const validatorPath = '/Users/johnrobin/.openclaw/workspace/moltchain/validator/src/main.rs';
+    const validatorSource = fs.readFileSync(validatorPath, 'utf8');
+    assert(
+        validatorSource.includes('fn emit_dex_events(') && validatorSource.includes('emit_dex_events(&state, &ws_dex_broadcaster'),
+        'P6.14: emit_dex_events function exists and is called in block production (F6.2 fix)'
+    );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase 7: Pool View — AMM Liquidity
+// ═══════════════════════════════════════════════════════════════════════════
+const dexRsPath = '/Users/johnrobin/.openclaw/workspace/moltchain/rpc/src/dex.rs';
+const dexJsPath = '/Users/johnrobin/.openclaw/workspace/moltchain/dex/dex.js';
+const indexHtmlPath = '/Users/johnrobin/.openclaw/workspace/moltchain/dex/index.html';
+
+// P7.1: decode_pool byte offsets match contract (96-byte layout)
+{
+    const dexRs = fs.readFileSync(dexRsPath, 'utf8');
+    assert(dexRs.includes('data[0..32]'), 'P7.1a: decode_pool reads token_a from bytes 0..32');
+    assert(dexRs.includes('data[32..64]'), 'P7.1b: decode_pool reads token_b from bytes 32..64');
+    assert(dexRs.includes('data[64..72]'), 'P7.1c: decode_pool reads pool_id from bytes 64..72');
+    assert(dexRs.includes('data[72..80]'), 'P7.1d: decode_pool reads sqrt_price from bytes 72..80');
+    assert(dexRs.includes('data[80..84]'), 'P7.1e: decode_pool reads tick from bytes 80..84');
+    assert(dexRs.includes('data[84..92]'), 'P7.1f: decode_pool reads liquidity from bytes 84..92');
+    assert(dexRs.includes('data[92]'), 'P7.1g: decode_pool reads fee_tier from byte 92');
+}
+
+// P7.2: fee_tier returned as string "1bps"/"5bps"/"30bps"/"100bps" in RPC
+{
+    const dexRs = fs.readFileSync(dexRsPath, 'utf8');
+    assert(dexRs.includes('"1bps"') && dexRs.includes('"5bps"') && dexRs.includes('"30bps"') && dexRs.includes('"100bps"'),
+        'P7.2: decode_pool maps fee_tier byte to bps strings');
+}
+
+// P7.3: F7.3 fix — fee display parses bps from string, no NaN (was: p.feeTier / 100 on string)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('parseInt(p.feeTier)'), 'P7.3a: fee_tier parsed with parseInt (F7.3 fix)');
+    assert(!dexJs.includes('p.feeTier / 100'), 'P7.3b: old NaN-producing feeTier / 100 removed');
+    // Verify parseInt("30bps") === 30
+    assert(parseInt("30bps") === 30, 'P7.3c: parseInt("30bps") correctly extracts 30');
+    assert(parseInt("1bps") === 1, 'P7.3d: parseInt("1bps") correctly extracts 1');
+}
+
+// P7.4: PoolJson has rename_all = "camelCase"
+{
+    const dexRs = fs.readFileSync(dexRsPath, 'utf8');
+    const poolJsonIdx = dexRs.indexOf('pub struct PoolJson');
+    assert(poolJsonIdx > 0, 'P7.4a: PoolJson struct exists');
+    const before = dexRs.slice(Math.max(0, poolJsonIdx - 80), poolJsonIdx);
+    assert(before.includes('rename_all = "camelCase"'), 'P7.4b: PoolJson has camelCase serde rename');
+}
+
+// P7.5: build_token_symbol_map resolves hex to symbols
+{
+    const dexRs = fs.readFileSync(dexRsPath, 'utf8');
+    assert(dexRs.includes('build_token_symbol_map') || dexRs.includes('token_symbol_map'),
+        'P7.5: token symbol map function exists in RPC');
+}
+
+// P7.6: Pool table renders 6 columns — Pool, Fee Tier, TVL, Volume 24h, APR, action
+{
+    const indexHtml = fs.readFileSync(indexHtmlPath, 'utf8');
+    assert(indexHtml.includes('poolTableBody'), 'P7.6a: poolTableBody element exists');
+    assert(indexHtml.includes('Fee Tier') || indexHtml.includes('fee-tier'), 'P7.6b: Fee Tier column header');
+    assert(indexHtml.includes('TVL') || indexHtml.includes('tvl'), 'P7.6c: TVL column header');
+}
+
+// P7.7: F7.7 fix — loadPoolStats uses correct field mappings
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(!dexJs.includes('swap_count ? data.swap_count * 100'), 'P7.7a: fabricated swap_count * 100 removed (F7.7 fix)');
+    assert(dexJs.includes("data.tvl || data.total_volume"), 'P7.7b: TVL uses data.tvl with total_volume fallback');
+    assert(dexJs.includes("data.volume_24h"), 'P7.7c: Volume 24h uses data.volume_24h');
+    assert(dexJs.includes("data.fees_24h || data.total_fees"), 'P7.7d: Fees uses fees_24h with total_fees fallback');
+}
+
+// P7.8: /stats/amm reads real AMM storage keys
+{
+    const dexRs = fs.readFileSync(dexRsPath, 'utf8');
+    assert(dexRs.includes('amm_pool_count') && dexRs.includes('amm_swap_count'),
+        'P7.8: /stats/amm handler reads amm_pool_count and amm_swap_count from contract storage');
+}
+
+// P7.9: F7.9 fix — pool row click delegation wired
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes("poolTableBody')?.addEventListener('click'"), 'P7.9a: poolTableBody click delegation exists (F7.9 fix)');
+    assert(dexJs.includes(".pool-add-btn") && dexJs.includes("scrollIntoView"), 'P7.9b: click handler selects pool and scrolls to form');
+}
+
+// P7.10: Empty state placeholder renders
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('No liquidity pools'), 'P7.10: empty state placeholder message');
+}
+
+// P7.11: F7.12 fix — LP positions uses ?owner= not ?address=
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('positions?owner='), 'P7.11a: LP positions query uses ?owner= (F7.12a fix)');
+    assert(!dexJs.includes('positions?address='), 'P7.11b: old ?address= param removed');
+}
+
+// P7.12: F7.12 fix — LP position cards have data-pool-id attribute
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('lp-position-card" data-position-id="${pos.positionId || 0}" data-pool-id="${pos.poolId || 0}"'),
+        'P7.12a: LP position card has both data-position-id and data-pool-id (F7.12b fix)');
+    assert(dexJs.includes('card.dataset.poolId'), 'P7.12b: My Pools filter uses card.dataset.poolId not positionId');
+}
+
+// P7.13: Volume per-row shows "—" when field unavailable (not $0)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes("p.totalVolume ? formatVolume(p.totalVolume) : '\u2014'"),
+        'P7.13: volume shows \u2014 when totalVolume unavailable (F7.15 fix)');
+}
+
+// P7.14: F7.17 fix — liqPoolSelect populated from pools, not CLOB pairs
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('Populate liqPoolSelect from actual pools'), 'P7.14: liqPoolSelect populated from pools (F7.17 fix)');
+}
+
+// P7.15: F7.18 fix — current price computed from sqrtPrice on pool select change
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('pool.sqrtPrice') && dexJs.includes('liqCurrentPrice'), 'P7.15: current price computed from sqrtPrice (F7.18 fix)');
+    assert(dexJs.includes('sqrtP * sqrtP'), 'P7.15b: price = sqrtP^2 after Q32.32 conversion');
+}
+
+// P7.16: F7.19 fix — pool share estimate calculation wired
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('liqPoolShare') && dexJs.includes('pool.liquidity + deposit'),
+        'P7.16: pool share estimate calculates deposit / (existing + deposit) (F7.19 fix)');
+}
+
+// P7.17: F7.20 fix — fee tier selector stores state.selectedFeeTier
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('state.selectedFeeTier'), 'P7.17a: state.selectedFeeTier exists (F7.20 fix)');
+    assert(dexJs.includes("parseInt(btn.dataset.fee)"), 'P7.17b: fee tier click sets from data-fee attribute');
+}
+
+// P7.18: Add buttons wallet-gated
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes("pool-add-btn${!state.connected") && dexJs.includes("btn-wallet-gate"),
+        'P7.18: Add buttons disabled and styled when wallet disconnected');
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Summary
 // ═══════════════════════════════════════════════════════════════════════════

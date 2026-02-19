@@ -1056,9 +1056,9 @@ document.addEventListener('DOMContentLoaded', () => {
             const { data } = await api.get('/stats/amm');
             if (data) {
                 const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
-                el('poolTvl', formatVolume(data.total_volume || 0));
-                el('poolVolume24h', formatVolume(data.swap_count ? data.swap_count * 100 : 0));
-                el('poolFees24h', formatVolume(data.total_fees || 0));
+                el('poolTvl', formatVolume(data.tvl || data.total_volume || 0));
+                el('poolVolume24h', formatVolume(data.volume_24h || 0));
+                el('poolFees24h', formatVolume(data.fees_24h || data.total_fees || 0));
                 el('poolCount', data.pool_count ?? '—');
             }
         } catch { /* API unavailable — keep placeholder */ }
@@ -1072,9 +1072,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (tbody) {
                     tbody.innerHTML = data.map(p => {
                         const pair = `${escapeHtml(p.tokenASymbol || 'Token A')}/${escapeHtml(p.tokenBSymbol || 'Token B')}`;
-                        const fee = p.feeTier ? (p.feeTier / 100).toFixed(2) + '%' : '0.30%';
+                        const feeBps = parseInt(p.feeTier) || 30;
+                        const fee = (feeBps / 100).toFixed(2) + '%';
                         const tvl = formatVolume(p.liquidity || 0);
-                        const vol = formatVolume(p.totalVolume || 0);
+                        const vol = p.totalVolume ? formatVolume(p.totalVolume) : '—';
                         const apr = p.apr ? p.apr.toFixed(1) + '%' : '—';
                         return `<tr class="pool-row" data-pool-id="${p.poolId || p.id || 0}">
                             <td class="pool-pair"><span class="token-pair-icons"><span class="mini-icon">${escapeHtml((p.tokenASymbol || 'A')[0])}</span><span class="mini-icon">${escapeHtml((p.tokenBSymbol || 'B')[0])}</span></span> ${pair}</td>
@@ -1086,6 +1087,28 @@ document.addEventListener('DOMContentLoaded', () => {
                         </tr>`;
                     }).join('');
                 }
+                // F7.17: Populate liqPoolSelect from actual pools instead of CLOB pairs
+                const poolSelect = document.getElementById('liqPoolSelect');
+                if (poolSelect) {
+                    poolSelect.innerHTML = data.map(p => {
+                        const label = `${p.tokenASymbol || 'A'}/${p.tokenBSymbol || 'B'}`;
+                        return `<option value="${p.poolId || p.id || 0}">${escapeHtml(label)}</option>`;
+                    }).join('') || '<option>No pools available</option>';
+                }
+                // F7.18: Store pools for price lookup on select change
+                state.poolsCache = data;
+                const selEvt = () => {
+                    const sel = document.getElementById('liqPoolSelect');
+                    const pool = state.poolsCache?.find(p => String(p.poolId || p.id) === sel?.value);
+                    const priceEl = document.getElementById('liqCurrentPrice');
+                    if (pool && pool.sqrtPrice && priceEl) {
+                        const sqrtP = pool.sqrtPrice / (1 << 16) / (1 << 16); // Q32.32 → float
+                        const price = sqrtP * sqrtP;
+                        priceEl.textContent = price >= 0.01 ? price.toFixed(6) : price.toExponential(4);
+                    } else if (priceEl) { priceEl.textContent = '—'; }
+                };
+                const liqSel = document.getElementById('liqPoolSelect');
+                if (liqSel) { liqSel.removeEventListener('change', selEvt); liqSel.addEventListener('change', selEvt); selEvt(); }
                 return;
             }
         } catch { /* API unavailable */ }
@@ -1101,12 +1124,12 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
         try {
-            const { data } = await api.get(`/pools/positions?address=${wallet.address}`);
+            const { data } = await api.get(`/pools/positions?owner=${wallet.address}`);
             if (Array.isArray(data) && data.length > 0) {
                 const container = document.getElementById('pool-positions');
                 if (container) {
                     container.innerHTML = data.map(pos => `
-                        <div class="lp-position-card" data-position-id="${pos.positionId || 0}">
+                        <div class="lp-position-card" data-position-id="${pos.positionId || 0}" data-pool-id="${pos.poolId || 0}">
                             <div class="lp-pos-header">
                                 <div class="lp-pos-pair">
                                     <span class="lp-pair-name">${escapeHtml(pos.pair || 'Pool #' + (pos.poolId || '?'))}</span>
@@ -1157,10 +1180,12 @@ document.addEventListener('DOMContentLoaded', () => {
         finally { addLiqBtn.disabled = false; addLiqBtn.textContent = 'Add Liquidity'; }
     });
 
-    // Fee tier selector
+    // Fee tier selector — F7.20: store selected value in state
+    state.selectedFeeTier = 30; // default 30bps
     document.querySelectorAll('.fee-tier-btn').forEach(btn => btn.addEventListener('click', () => {
         document.querySelectorAll('.fee-tier-btn').forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
+        state.selectedFeeTier = parseInt(btn.dataset.fee) || 30;
     }));
 
     // Pool filter pills
@@ -1180,7 +1205,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // Get pool IDs from LP positions
             const myPools = document.querySelectorAll('#pool-positions .lp-position-card');
             const myPoolIds = new Set();
-            myPools.forEach(card => { const pid = card.dataset.positionId; if (pid) myPoolIds.add(pid); });
+            myPools.forEach(card => { const pid = card.dataset.poolId; if (pid) myPoolIds.add(pid); });
             let visibleCount = 0;
             rows.forEach(r => {
                 const poolId = r.dataset.poolId;
@@ -1191,6 +1216,37 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!visibleCount) showNotification('No liquidity positions found', 'info');
         }
     }));
+
+    // F7.9: Pool row / Add button click delegation — select pool in Add Liquidity form
+    document.getElementById('poolTableBody')?.addEventListener('click', (e) => {
+        const btn = e.target.closest('.pool-add-btn');
+        const row = e.target.closest('.pool-row');
+        if (btn || row) {
+            const poolId = (btn || row).dataset.poolId;
+            const poolSelect = document.getElementById('liqPoolSelect');
+            if (poolSelect) {
+                poolSelect.value = poolId;
+                poolSelect.dispatchEvent(new Event('change'));
+            }
+            document.getElementById('addLiqForm')?.scrollIntoView({ behavior: 'smooth' });
+        }
+    });
+
+    // F7.19: Pool share estimate — update on amount input
+    ['liqAmountA', 'liqAmountB'].forEach(id => {
+        document.getElementById(id)?.addEventListener('input', () => {
+            const shareEl = document.getElementById('liqPoolShare');
+            if (!shareEl) return;
+            const sel = document.getElementById('liqPoolSelect');
+            const pool = state.poolsCache?.find(p => String(p.poolId || p.id) === sel?.value);
+            if (!pool || !pool.liquidity) { shareEl.textContent = '—'; return; }
+            const amtA = parseFloat(document.getElementById('liqAmountA')?.value) || 0;
+            const amtB = parseFloat(document.getElementById('liqAmountB')?.value) || 0;
+            const deposit = (amtA + amtB) * 1e9; // scale to match liquidity units
+            const share = deposit / (pool.liquidity + deposit) * 100;
+            shareEl.textContent = share >= 0.01 ? share.toFixed(2) + '%' : '< 0.01%';
+        });
+    });
 
     // ═══════════════════════════════════════════════════════════════════════
     // Margin — Open/Close Positions + Load from API

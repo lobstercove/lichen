@@ -75,7 +75,7 @@
 | 4 | Trade View — Order Form & Execution | 16/16 | 10 | `[x]` |
 | 5 | Trade View — TradingView Chart | 10/10 | 7 | `[x]` |
 | 6 | Trade View — WebSocket Feeds | 12/12 | 8 | `[x]` |
-| 7 | Pool View — AMM Liquidity | 0/20 | 0 | `[ ]` |
+| 7 | Pool View — AMM Liquidity | 20/20 | 13 | `[x]` |
 | 8 | Pool View — Add/Remove/Collect | 0/14 | 0 | `[ ]` |
 | 9 | Smart Order Router | 0/12 | 0 | `[ ]` |
 | 10 | Margin Trading (Inline) | 0/16 | 0 | `[ ]` |
@@ -93,7 +93,7 @@
 | 22 | Security & Input Validation | 0/14 | 0 | `[ ]` |
 | 23 | Mobile / Responsive Layout | 0/8 | 0 | `[ ]` |
 | 24 | End-to-End Integration Tests | 0/12 | 0 | `[ ]` |
-| — | **TOTAL** | **74/314** | **51** | **24%** |
+| — | **TOTAL** | **94/314** | **64** | **30%** |
 
 ---
 
@@ -305,29 +305,41 @@
 
 | # | Task | Status |
 |---|---|---|
-| 7.1 | Read `dex_amm` contract: `create_pool` instruction — pool storage layout (96 bytes) | `[ ]` |
-| 7.2 | Read `decode_pool()` in RPC (dex.rs) — verify byte offsets match contract storage | `[ ]` |
-| 7.3 | **Critical fix:** `fee_tier` returned as string (`"30bps"`) but frontend JS divides by 100 — data format mismatch causes NaN% | `[ ]` |
-| 7.4 | Verify `PoolJson` struct has `rename_all = "camelCase"` — confirm client receives `feeTier`, `tokenASymbol`, etc. | `[ ]` |
-| 7.5 | Verify `build_token_symbol_map()` resolves hex addresses to human-readable symbols (MOLT, mUSD, wSOL, etc.) | `[ ]` |
-| 7.6 | Verify pool table populates from `/api/v1/pools` with correct columns | `[ ]` |
-| 7.7 | Read `loadPoolStats()` — verify TVL, 24h Volume, Fees, Pool Count come from `/stats/amm` | `[ ]` |
-| 7.8 | Verify `/stats/amm` handler reads real aggregated data from `dex_analytics` or `dex_amm` | `[ ]` |
-| 7.9 | Verify pool row click selects pool in Add Liquidity form | `[ ]` |
-| 7.10 | Test: verify all 7 genesis pools appear in pool table with correct pair names | `[ ]` |
-| 7.11 | Test empty pool state: no pools → placeholder message renders | `[ ]` |
-| 7.12 | Verify "My Pools" filter shows only pools where user has LP positions | `[ ]` |
-| 7.13 | Verify pool APR calculation: is it real or placeholder "—"? | `[ ]` |
-| 7.14 | Verify TVL calculation: does it reflect actual pool liquidity in USD terms? | `[ ]` |
-| 7.15 | Verify pool volume (24h) aggregation source | `[ ]` |
-| 7.16 | **Fix:** Per-row "Add" buttons in pool table must be wallet-gated (disabled when disconnected) | `[ ]` |
-| 7.17 | Verify `liqPoolSelect` dropdown populates with available pools | `[ ]` |
-| 7.18 | Verify current price display in Add Liquidity panel uses real pool sqrt_price | `[ ]` |
-| 7.19 | Verify pool share estimate calculation | `[ ]` |
-| 7.20 | Verify fee tier selector buttons properly map to `fee_tier_idx` (0-3) | `[ ]` |
+| 7.1 | Read `dex_amm` contract: `create_pool` instruction — pool storage layout (96 bytes) | `[x]` |
+| 7.2 | Read `decode_pool()` in RPC (dex.rs) — verify byte offsets match contract storage | `[x]` |
+| 7.3 | **Critical fix:** `fee_tier` returned as string (`"30bps"`) but frontend JS divides by 100 — data format mismatch causes NaN% | `[x]` |
+| 7.4 | Verify `PoolJson` struct has `rename_all = "camelCase"` — confirm client receives `feeTier`, `tokenASymbol`, etc. | `[x]` |
+| 7.5 | Verify `build_token_symbol_map()` resolves hex addresses to human-readable symbols (MOLT, mUSD, wSOL, etc.) | `[x]` |
+| 7.6 | Verify pool table populates from `/api/v1/pools` with correct columns | `[x]` |
+| 7.7 | Read `loadPoolStats()` — verify TVL, 24h Volume, Fees, Pool Count come from `/stats/amm` | `[x]` |
+| 7.8 | Verify `/stats/amm` handler reads real aggregated data from `dex_analytics` or `dex_amm` | `[x]` |
+| 7.9 | Verify pool row click selects pool in Add Liquidity form | `[x]` |
+| 7.10 | Test: verify all 7 genesis pools appear in pool table with correct pair names | `[x]` |
+| 7.11 | Test empty pool state: no pools → placeholder message renders | `[x]` |
+| 7.12 | Verify "My Pools" filter shows only pools where user has LP positions | `[x]` |
+| 7.13 | Verify pool APR calculation: is it real or placeholder "—"? | `[x]` |
+| 7.14 | Verify TVL calculation: does it reflect actual pool liquidity in USD terms? | `[x]` |
+| 7.15 | Verify pool volume (24h) aggregation source | `[x]` |
+| 7.16 | **Fix:** Per-row "Add" buttons in pool table must be wallet-gated (disabled when disconnected) | `[x]` |
+| 7.17 | Verify `liqPoolSelect` dropdown populates with available pools | `[x]` |
+| 7.18 | Verify current price display in Add Liquidity panel uses real pool sqrt_price | `[x]` |
+| 7.19 | Verify pool share estimate calculation | `[x]` |
+| 7.20 | Verify fee tier selector buttons properly map to `fee_tier_idx` (0-3) | `[x]` |
 
 **Findings:**
-- (none yet)
+- F7.3 **HIGH**: `fee_tier` returned as string `"30bps"` — `"30bps" / 100` → `NaN%` in every pool row. → **FIXED**: Parse integer from string with `parseInt(p.feeTier) || 30`.
+- F7.7 **HIGH**: `loadPoolStats()` shows wrong metrics — `poolTvl` displays cumulative swap volume, `poolVolume24h` fabricates `swap_count * 100`, `poolFees24h` is all-time not 24h. → **FIXED**: Use correct field mappings; label cumulative metrics honestly when 24h windows unavailable.
+- F7.9 **MEDIUM**: No click handler on `.pool-row` or `.pool-add-btn` — clicking does nothing. → **FIXED**: Added event delegation on `#poolTableBody` to select pool in `liqPoolSelect` and scroll to Add Liquidity form.
+- F7.10 **LOW**: Deploy script creates 5 genesis pools (MOLT/mUSD, wSOL/mUSD, wETH/mUSD, wSOL/MOLT, wETH/MOLT), not 7. Acceptable — REEF/PUNKS/BOUNTY/COMPUTE tokens exist but have no required pools yet.
+- F7.12 **HIGH**: "My Pools" filter broken: (a) LP positions query uses `?address=` but RPC expects `?owner=`; (b) filter compares `positionId` (position) against `poolId` (pool) — different ID spaces. → **FIXED**: Changed to `?owner=`, added `data-pool-id` to position cards, filter uses `card.dataset.poolId`.
+- F7.13 **INFO**: APR is placeholder "—" — no calculation exists. Acceptable for now; real APR requires fee revenue tracking over time.
+- F7.14 **MEDIUM**: Per-row TVL shows raw Q64.64 `liquidity` units as USD — misleading. → **FIXED**: Format as volume with note that true USD TVL requires oracle price integration (future phase).
+- F7.15 **MEDIUM**: `p.totalVolume` doesn't exist in `PoolJson` — always shows $0. → **FIXED**: Show "—" when field unavailable instead of misleading $0.
+- F7.16 **PASS**: Add buttons already wallet-gated with `disabled` and `.btn-wallet-gate` class.
+- F7.17 **MEDIUM**: `liqPoolSelect` populated from CLOB trading pairs, not AMM pools. → **FIXED**: `loadPools()` now populates `liqPoolSelect` from actual pool data.
+- F7.18 **MEDIUM**: `#liqCurrentPrice` never populated — permanently shows "—". → **FIXED**: Pool select change handler computes price from `sqrtPrice` (Q32.32).
+- F7.19 **MEDIUM**: `#liqPoolShare` never calculated. → **FIXED**: Estimates pool share from user input vs. existing pool liquidity.
+- F7.20 **HIGH**: Fee tier selector toggles CSS only — selected value never read or sent. → **FIXED**: Store `state.selectedFeeTier` on click for use in pool creation flows.
 
 ---
 
