@@ -1049,7 +1049,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 const marginSide = state.orderSide === 'buy' ? 'long' : 'short';
                 const size = Math.round(amount * PRICE_SCALE);
                 const leverage = state.leverageValue;
-                const marginDeposit = Math.round((amount * (price || state.lastPrice) / leverage) * PRICE_SCALE);
+                // F24.5 FIX: Guard margin notional against overflow past Number.MAX_SAFE_INTEGER
+                const notional = amount * (price || state.lastPrice);
+                if (notional > 9_000_000_000) { showNotification('Notional too large for margin (max $9B)', 'warning'); submitBtn.disabled = false; updateSubmitBtn(); return; }
+                const marginDeposit = Math.round((notional / leverage) * PRICE_SCALE);
                 const result = await wallet.sendTransaction([contractIx(
                     contracts.dex_margin,
                     buildOpenPositionArgs(wallet.address, state.activePairId, marginSide, size, leverage, marginDeposit)
@@ -1063,9 +1066,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     buildPlaceOrderArgs(wallet.address, state.activePairId, state.orderSide, state.orderType, Math.round(price * PRICE_SCALE), Math.round(amount * PRICE_SCALE))
                 )]);
                 showNotification(`${state.orderSide.toUpperCase()} order placed: ${formatAmount(amount)} ${state.activePair?.base || ''} @ ${state.orderType === 'market' ? 'MARKET' : formatPrice(price)}`, 'success');
-                const orderId = result?.order_id || result?.orderId || Math.random().toString(36).slice(2, 8).toUpperCase();
-                openOrders.push({ id: String(orderId), pair: state.activePair?.id, side: state.orderSide, type: state.orderType, price: price || state.lastPrice, amount, filled: 0, time: new Date() });
-                renderOpenOrders();
+                // F24.16: Refresh from API instead of pushing client-side stub (avoids stale/duplicate entries)
+                loadTradeHistory().catch(() => {});
+                loadUserOrders().catch(() => {});
             }
             if (amountInput) amountInput.value = ''; if (totalInput) totalInput.value = '';
             // F17.8: Immediate panel refresh after trade execution — update balances + orderbook
@@ -1094,6 +1097,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 )]);
                 // F20.11: Only update local state and show success after confirmed cancel
                 openOrders = openOrders.filter(o => o.id !== btn.dataset.id); renderOpenOrders(); showNotification('Order cancelled', 'info');
+                // F24.5b: Refresh balances and orderbook after cancel
+                if (wallet.address) loadBalances(wallet.address).then(() => renderBalances()).catch(() => {});
+                loadOrderBook().catch(() => {});
             } catch (e) { showNotification(`Cancel failed: ${e.message}`, 'error'); }
         }));
     }
@@ -1607,7 +1613,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             </div>
                             <div class="lp-pos-details">
                                 <div class="lp-detail"><span>Tick Range</span><span class="mono-value">${pos.lowerTick ?? 0} — ${pos.upperTick ?? 0}</span></div>
-                                <div class="lp-detail"><span>Liquidity</span><span class="mono-value">${formatVolume(pos.liquidity || 0)}</span></div>
+                                <div class="lp-detail"><span>Liquidity</span><span class="mono-value" data-raw-liquidity="${pos.liquidity || 0}">${formatAmount((pos.liquidity || 0) / 1e9)}</span></div>
                                 <div class="lp-detail"><span>Uncollected Fees</span><span class="mono-value accent-text">${formatVolume(((pos.feeAOwed || 0) + (pos.feeBOwed || 0)) / 1e9)}</span></div>
                             </div>
                             <div class="lp-pos-actions">
@@ -1648,15 +1654,9 @@ document.addEventListener('DOMContentLoaded', () => {
         if (removeBtn) {
             const posId = parseInt(removeBtn.dataset.positionId) || 0;
             const card = removeBtn.closest('.lp-position-card');
-            const liquidityText = card?.querySelector('.lp-detail:nth-child(2) .mono-value')?.textContent || '0';
-            // Parse displayed liquidity back to raw — formatVolume shows $X.XXM/K etc.
-            let liqAmount = 0;
-            const liqMatch = liquidityText.replace(/[$,]/g, '');
-            if (liqMatch.endsWith('M')) liqAmount = parseFloat(liqMatch) * 1e6;
-            else if (liqMatch.endsWith('K')) liqAmount = parseFloat(liqMatch) * 1e3;
-            else if (liqMatch.endsWith('B')) liqAmount = parseFloat(liqMatch) * 1e9;
-            else liqAmount = parseFloat(liqMatch) || 0;
-            const rawLiq = Math.round(liqAmount * 1e9);
+            // F24.2 FIX: Read raw liquidity from data attribute instead of parsing display text
+            const rawLiqEl = card?.querySelector('[data-raw-liquidity]');
+            const rawLiq = parseInt(rawLiqEl?.dataset?.rawLiquidity) || 0;
             if (!confirm(`Remove all liquidity from position #${posId}? This cannot be undone.`)) return;
             removeBtn.disabled = true; const origText = removeBtn.innerHTML; removeBtn.textContent = 'Removing...';
             try {
@@ -1709,6 +1709,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 buildAddLiquidityArgs(wallet.address, poolId, lt, ut, Math.round(amtA * 1e9), Math.round(amtB * 1e9))
             )]);
             showNotification(`Liquidity added: ${formatAmount(amtA)} + ${formatAmount(amtB)}`, 'success');
+            // F24.10 FIX: Refresh LP positions and pools after adding liquidity
+            loadLPPositions().catch(() => {}); loadPools().catch(() => {});
         } catch (e) { showNotification(`Add liquidity: ${e.message}`, 'error'); }
         finally { addLiqBtn.disabled = false; addLiqBtn.textContent = 'Add Liquidity'; }
     });
@@ -1775,7 +1777,9 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!pool || !pool.liquidity) { shareEl.textContent = '—'; return; }
             const amtA = parseFloat(document.getElementById('liqAmountA')?.value) || 0;
             const amtB = parseFloat(document.getElementById('liqAmountB')?.value) || 0;
-            const deposit = (amtA + amtB) * 1e9; // scale to match liquidity units
+            // F24.17 FIX: Weight deposit by pool price ratio for accurate share estimate
+            const poolPrice = pool.sqrtPrice ? Math.pow(pool.sqrtPrice / (1 << 16), 2) : 1;
+            const deposit = (amtA * poolPrice + amtB) * 1e9; // scale to match liquidity units
             const share = deposit / (pool.liquidity + deposit) * 100;
             shareEl.textContent = share >= 0.01 ? share.toFixed(2) + '%' : '< 0.01%';
         });
@@ -1859,7 +1863,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 // Update equity stats
                 let totalMargin = 0, totalPnl = 0;
-                data.forEach(p => { totalMargin += (p.margin || 0); totalPnl += (p.realizedPnl || 0); });
+                data.forEach(p => { totalMargin += (p.margin || 0) / 1e9; totalPnl += (p.realizedPnl || 0) / 1e9; });
                 const eq = (balances.mUSD?.available || 0) + totalPnl;
                 const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
                 el('marginEquity', formatVolume(eq));
@@ -2143,6 +2147,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             } catch (e) { showNotification(`Vote failed: ${e.message}`, 'error'); return; }
             showNotification(`Vote submitted on "${escapeHtml(title)}"`, 'success');
+            // F24.6 FIX: Refresh proposals after vote
+            loadProposals().catch(() => {});
         }));
     }
 
@@ -2489,7 +2495,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         <div class="outcome-label"><span class="outcome-dot no"></span><span>NO</span></div>
                         <div class="outcome-bar-wrap"><div class="outcome-bar no-bar" style="width:${noPct}%"></div></div>
                         <div class="outcome-price"><span class="outcome-price-val no-price">$${noPrice}</span>${noChg}</div>
-                        <button class="btn btn-small btn-predict-sell" data-outcome="no" data-market="${m.id}">Buy</button>
+                        <button class="btn btn-small btn-predict-buy-no" data-outcome="no" data-market="${m.id}">Buy</button>
                     </div>`;
             }
 
@@ -2614,7 +2620,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
 
         // Buy/Sell buttons on cards
-        document.querySelectorAll('.btn-predict-buy, .btn-predict-sell').forEach(btn => btn.addEventListener('click', () => {
+        document.querySelectorAll('.btn-predict-buy, .btn-predict-buy-no').forEach(btn => btn.addEventListener('click', () => {
             if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
             const mid = parseInt(btn.dataset.market);
             const outcome = btn.dataset.outcome;
@@ -2974,6 +2980,8 @@ document.addEventListener('DOMContentLoaded', () => {
             // F12.1 FIX: Contract uses MUSD_UNIT (1e6), not PRICE_SCALE (1e9)
             await wallet.sendTransaction([contractIx(contracts.prediction_market, buildBuySharesArgs(wallet.address, m.id, outcomeVal, Math.round(amt * 1e6)))]);
             showNotification(`Bought ${predictState.selectedOutcome.toUpperCase()} on "${escapeHtml(m.question.slice(0, 40))}..." for $${amt.toFixed(2)}`, 'success');
+            // F24.7 FIX: Refresh prediction data after buy
+            loadPredictionMarkets().catch(() => {}); loadPredictionPositions().catch(() => {});
         } catch (e) { showNotification(`Trade failed: ${e.message}`, 'error'); }
         predictSubmitBtn.disabled = false;
         const side = predictState.selectedOutcome === 'yes' ? 'YES' : 'NO';
@@ -3108,6 +3116,8 @@ document.addEventListener('DOMContentLoaded', () => {
             // AUDIT-FIX F10.7: Reward claim via signed sendTransaction (not fake GET)
             await wallet.sendTransaction([contractIx(contracts.dex_rewards, buildClaimRewardsArgs(wallet.address))]);
             showNotification('Rewards claimed successfully!', 'success');
+            // F24.8 FIX: Refresh rewards stats after claim
+            loadRewardsStats().catch(() => {});
         } catch (e) { showNotification(`Claim failed: ${e.message}`, 'error'); }
         btn.disabled = false; btn.innerHTML = origText;
     }));

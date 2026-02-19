@@ -3647,7 +3647,7 @@ const rpcLibPath = '/Users/johnrobin/.openclaw/workspace/moltchain/rpc/src/lib.r
     assert(js.includes('Cancel failed:'), 'P20.11a: Cancel shows failure message on error');
     // Verify success is NOT outside the try block
     const cancelIdx = js.indexOf('Cancel failed');
-    const cancelBlock = js.substring(cancelIdx - 300, cancelIdx + 100);
+    const cancelBlock = js.substring(cancelIdx - 500, cancelIdx + 100);
     assert(cancelBlock.includes('Order cancelled'), 'P20.11b: Success notification near cancel code');
 }
 
@@ -4119,6 +4119,113 @@ const cssContent = fs.readFileSync(__dirname + '/dex.css', 'utf8');
     assert(cssContent.includes('-webkit-overflow-scrolling: touch'), 'P23.12a: webkit overflow scrolling on tables');
     const matches = cssContent.match(/-webkit-overflow-scrolling: touch/g);
     assert(matches && matches.length >= 2, 'P23.12b: multiple touch-scrolling declarations');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase 24: End-to-End Integration Tests
+// ═══════════════════════════════════════════════════════════════════════════
+const dexJs = fs.readFileSync(__dirname + '/dex.js', 'utf-8');
+
+// P24.1: Margin equity uses divided values (not raw shells)
+{
+    const eqBlock = dexJs.substring(dexJs.indexOf('totalMargin = 0, totalPnl = 0'), dexJs.indexOf('totalMargin = 0, totalPnl = 0') + 200);
+    assert(eqBlock.includes('/ 1e9'), 'P24.1a: margin sums divided by 1e9');
+    assert(eqBlock.includes('(p.margin || 0) / 1e9'), 'P24.1b: p.margin divided by 1e9');
+    assert(eqBlock.includes('(p.realizedPnl || 0) / 1e9'), 'P24.1c: p.realizedPnl divided by 1e9');
+}
+
+// P24.2: LP position cards store raw liquidity in data attribute
+{
+    const lpBlock = dexJs.substring(dexJs.indexOf('data-raw-liquidity'), dexJs.indexOf('data-raw-liquidity') + 200);
+    assert(lpBlock.includes('data-raw-liquidity='), 'P24.2a: data-raw-liquidity attribute exists');
+    assert(dexJs.includes('formatAmount((pos.liquidity || 0) / 1e9)'), 'P24.2b: LP liquidity uses formatAmount not formatVolume');
+    // Verify remove handler reads data attribute
+    const removeBlock = dexJs.substring(dexJs.indexOf('data-raw-liquidity]'), dexJs.indexOf('data-raw-liquidity]') + 150);
+    assert(removeBlock.includes('rawLiquidity'), 'P24.2c: remove handler reads data-raw-liquidity');
+}
+
+// P24.3: MarginPositionJson includes mark_price
+{
+    const dexRsContent = fs.readFileSync(__dirname + '/../rpc/src/dex.rs', 'utf-8');
+    const structBlock = dexRsContent.substring(dexRsContent.indexOf('pub struct MarginPositionJson'), dexRsContent.indexOf('pub struct MarginPositionJson') + 600);
+    assert(structBlock.includes('mark_price'), 'P24.3a: MarginPositionJson has mark_price field');
+    // Verify handler populates mark_price from mrg_mark
+    const handlerBlock = dexRsContent.substring(dexRsContent.indexOf('mrg_mark_'), dexRsContent.indexOf('mrg_mark_') + 500);
+    assert(handlerBlock.includes('mark_price'), 'P24.3b: mark_price populated from mrg_mark key');
+    assert(handlerBlock.includes('PRICE_SCALE'), 'P24.3c: mark_price divided by PRICE_SCALE');
+}
+
+// P24.5: Margin notional overflow guard
+{
+    const guardIdx = dexJs.indexOf('notional > ');  // find the guard check
+    const notionalBlock = dexJs.substring(guardIdx, guardIdx + 200);
+    assert(notionalBlock.includes('9_000_000_000'), 'P24.5a: notional guard checks > 9B');
+    assert(dexJs.includes('notional / leverage'), 'P24.5b: marginDeposit uses factored notional');
+}
+
+// P24.6: Refresh proposals after vote
+{
+    const voteBlock = dexJs.substring(dexJs.indexOf('Vote submitted'), dexJs.indexOf('Vote submitted') + 200);
+    assert(voteBlock.includes('loadProposals'), 'P24.6: loadProposals called after vote');
+}
+
+// P24.7: Refresh prediction data after buy
+{
+    const buyIdx = dexJs.indexOf('Bought ${predictState');
+    const buyBlock = dexJs.substring(buyIdx, buyIdx + 400);
+    assert(buyBlock.includes('loadPredictionMarkets'), 'P24.7a: loadPredictionMarkets after predict buy');
+    assert(buyBlock.includes('loadPredictionPositions'), 'P24.7b: loadPredictionPositions after predict buy');
+}
+
+// P24.8: Refresh rewards after claim
+{
+    const claimBlock = dexJs.substring(dexJs.indexOf('Rewards claimed'), dexJs.indexOf('Rewards claimed') + 200);
+    assert(claimBlock.includes('loadRewardsStats'), 'P24.8: loadRewardsStats after rewards claim');
+}
+
+// P24.9: MarginInfoJson includes max_leverage
+{
+    const dexRsContent = fs.readFileSync(__dirname + '/../rpc/src/dex.rs', 'utf-8');
+    const infoBlock = dexRsContent.substring(dexRsContent.indexOf('pub struct MarginInfoJson'), dexRsContent.indexOf('pub struct MarginInfoJson') + 300);
+    assert(infoBlock.includes('max_leverage'), 'P24.9a: MarginInfoJson has max_leverage field');
+    const handlerBlock = dexRsContent.substring(dexRsContent.indexOf('mrg_max_lev'), dexRsContent.indexOf('mrg_max_lev') + 200);
+    assert(handlerBlock.includes('20'), 'P24.9b: max_leverage defaults to 20');
+}
+
+// P24.10: Refresh LP positions and pools after add liquidity
+{
+    const addLiqBlock = dexJs.substring(dexJs.indexOf('Liquidity added:'), dexJs.indexOf('Liquidity added:') + 250);
+    assert(addLiqBlock.includes('loadLPPositions'), 'P24.10a: loadLPPositions after add liquidity');
+    assert(addLiqBlock.includes('loadPools'), 'P24.10b: loadPools after add liquidity');
+}
+
+// P24.11: btn-predict-sell renamed to btn-predict-buy-no
+{
+    assert(!dexJs.includes('btn-predict-sell'), 'P24.11a: btn-predict-sell removed');
+    assert(dexJs.includes('btn-predict-buy-no'), 'P24.11b: btn-predict-buy-no exists');
+}
+
+// P24.16: No client-side order stub after placement
+{
+    assert(!dexJs.includes('openOrders.push({ id: String(orderId)'), 'P24.16a: no client-side order stub');
+    const placeIdx = dexJs.indexOf('order placed:');
+    const afterPlace = dexJs.substring(placeIdx, placeIdx + 500);
+    assert(afterPlace.includes('loadTradeHistory'), 'P24.16b: loadTradeHistory after order placement');
+    assert(afterPlace.includes('loadUserOrders'), 'P24.16c: loadUserOrders after order placement');
+}
+
+// P24.17: Pool share estimate uses price-weighted deposit
+{
+    const shareBlock = dexJs.substring(dexJs.indexOf('pool price ratio'), dexJs.indexOf('pool price ratio') + 200);
+    assert(shareBlock.includes('sqrtPrice'), 'P24.17a: pool share uses sqrtPrice');
+    assert(shareBlock.includes('poolPrice'), 'P24.17b: pool share weighs by poolPrice');
+}
+
+// P24.cancel: Cancel order refreshes balances and orderbook
+{
+    const cancelBlock = dexJs.substring(dexJs.indexOf('Order cancelled'), dexJs.indexOf('Order cancelled') + 300);
+    assert(cancelBlock.includes('loadBalances'), 'P24.cancel-a: loadBalances after cancel');
+    assert(cancelBlock.includes('loadOrderBook'), 'P24.cancel-b: loadOrderBook after cancel');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

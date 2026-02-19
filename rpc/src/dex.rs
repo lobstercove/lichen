@@ -227,6 +227,7 @@ pub struct MarginPositionJson {
     pub created_slot: u64,
     pub realized_pnl: i64,
     pub accumulated_funding: u64,
+    pub mark_price: f64,
 }
 
 #[derive(Serialize, Clone)]
@@ -236,6 +237,7 @@ pub struct MarginInfoJson {
     pub last_funding_slot: u64,
     pub maintenance_bps: u64,
     pub position_count: u64,
+    pub max_leverage: u64,
 }
 
 #[derive(Serialize, Clone)]
@@ -738,6 +740,7 @@ fn decode_margin_position(data: &[u8]) -> Option<MarginPositionJson> {
         created_slot,
         realized_pnl,
         accumulated_funding,
+        mark_price: 0.0, // populated in handler with pair-specific mark price
     })
 }
 
@@ -2039,7 +2042,24 @@ async fn get_margin_positions(
         let pos_id = read_u64(&state, DEX_MARGIN_PROGRAM, &idx_key);
         let key = format!("mrg_pos_{}", pos_id);
         if let Some(data) = read_bytes(&state, DEX_MARGIN_PROGRAM, &key) {
-            if let Some(pos) = decode_margin_position(&data) {
+            if let Some(mut pos) = decode_margin_position(&data) {
+                // F24.3 FIX: Populate mark_price from pair's current mark price
+                let mark_key = format!("mrg_mark_{}", pos.pair_id);
+                let mark_raw = read_u64(&state, DEX_MARGIN_PROGRAM, &mark_key);
+                if mark_raw > 0 {
+                    pos.mark_price = mark_raw as f64 / PRICE_SCALE as f64;
+                } else {
+                    // Fallback: use analytics last price for the pair
+                    let lp_key = format!("ana_lp_{}", pos.pair_id);
+                    if let Some(lp_data) = read_bytes(&state, DEX_ANALYTICS_PROGRAM, &lp_key) {
+                        if lp_data.len() >= 8 {
+                            let close_raw = u64::from_le_bytes(lp_data[0..8].try_into().unwrap_or([0u8; 8]));
+                            if close_raw > 0 {
+                                pos.mark_price = close_raw as f64 / PRICE_SCALE as f64;
+                            }
+                        }
+                    }
+                }
                 positions.push(pos);
             }
         }
@@ -2074,6 +2094,10 @@ async fn get_margin_info(State(state): State<Arc<RpcState>>) -> Response {
         last_funding_slot: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_last_fund"),
         maintenance_bps: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_maint_bps"),
         position_count: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_pos_count"),
+        max_leverage: {
+            let v = read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_max_lev");
+            if v > 0 { v } else { 20 } // default 20x
+        },
     };
 
     ApiResponse::ok(info, slot).into_response()
