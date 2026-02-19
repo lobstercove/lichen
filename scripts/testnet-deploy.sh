@@ -190,15 +190,16 @@ async def go():
     margin = addrs.get('dex_margin')
 
     if amm:
+        # Pair IDs are 1-indexed (matching genesis_create_trading_pairs):
+        #   1=MOLT/mUSD, 2=wSOL/mUSD, 3=wETH/mUSD, 4=wSOL/MOLT, 5=wETH/MOLT
+        # sqrt_price in Q32: (1 << 32) * sqrt(real_price)
+        # Prices aligned with genesis oracle: MOLT=\$0.10, wSOL=\$170, wETH=\$2,500
         pools = [
-            {'pair_id': 0, 'fee_bps': 30, 'sqrt_price': 648_000_000},   # MOLT/mUSD ~0.42
-            {'pair_id': 1, 'fee_bps': 30, 'sqrt_price': 13_360_000_000}, # wSOL/mUSD ~178
-            {'pair_id': 2, 'fee_bps': 30, 'sqrt_price': 59_345_000_000}, # wETH/mUSD ~3521
-            {'pair_id': 3, 'fee_bps': 30, 'sqrt_price': 135_700_000},   # REEF/mUSD ~0.018
-            # MOLT-denominated pools
-            {'pair_id': 4, 'fee_bps': 30, 'sqrt_price': 20_591_000_000},  # wSOL/MOLT ~424
-            {'pair_id': 5, 'fee_bps': 30, 'sqrt_price': 91_558_000_000},  # wETH/MOLT ~8383
-            {'pair_id': 6, 'fee_bps': 30, 'sqrt_price': 207_400_000},     # REEF/MOLT ~0.043
+            {'pair_id': 1, 'fee_bps': 30, 'sqrt_price': 1_358_187_913},      # MOLT/mUSD $0.10
+            {'pair_id': 2, 'fee_bps': 30, 'sqrt_price': 55_999_522_252},     # wSOL/mUSD $170
+            {'pair_id': 3, 'fee_bps': 30, 'sqrt_price': 214_748_364_800},    # wETH/mUSD $2,500
+            {'pair_id': 4, 'fee_bps': 30, 'sqrt_price': 177_086_038_199},    # wSOL/MOLT 1,700
+            {'pair_id': 5, 'fee_bps': 30, 'sqrt_price': 679_093_956_564},    # wETH/MOLT 25,000
         ]
         for pool in pools:
             try:

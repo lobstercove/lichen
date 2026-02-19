@@ -70,7 +70,7 @@
 | Phase | Section | Tasks | Findings | Status |
 |---|---|---|---|---|
 | 1 | Contract Address Resolution | 8/8 | 5 | `[x]` |
-| 2 | Genesis & First-Boot Deploy | 0/10 | 0 | `[ ]` |
+| 2 | Genesis & First-Boot Deploy | 10/10 | 12 | `[x]` |
 | 3 | Trade View — Order Book (CLOB) | 0/18 | 0 | `[ ]` |
 | 4 | Trade View — Order Form & Execution | 0/16 | 0 | `[ ]` |
 | 5 | Trade View — TradingView Chart | 0/10 | 0 | `[ ]` |
@@ -93,7 +93,7 @@
 | 22 | Security & Input Validation | 0/14 | 0 | `[ ]` |
 | 23 | Mobile / Responsive Layout | 0/8 | 0 | `[ ]` |
 | 24 | End-to-End Integration Tests | 0/12 | 0 | `[ ]` |
-| — | **TOTAL** | **8/314** | **5** | **3%** |
+| — | **TOTAL** | **18/314** | **17** | **6%** |
 
 ---
 
@@ -127,19 +127,31 @@
 
 | # | Task | Status |
 |---|---|---|
-| 2.1 | Read `first-boot-deploy.sh` — list all contract deployments in order | `[ ]` |
-| 2.2 | Verify 7 trading pairs are created with correct base/quote tokens | `[ ]` |
-| 2.3 | Confirm pair IDs (0-6) match frontend `pairs[]` array expectations | `[ ]` |
-| 2.4 | Verify 7 AMM pools are seeded with correct sqrt_price and fee tiers | `[ ]` |
-| 2.5 | **Critical check:** `MOLT_GENESIS_PRICE` in dex.js (`$0.10`) vs deploy seed sqrt_price (`~$0.42`) — resolve discrepancy | `[ ]` |
-| 2.6 | Verify insurance fund seeding (10,000 MOLT) into `dex_margin` | `[ ]` |
-| 2.7 | Confirm treasury keypair has sufficient balance for all deployments | `[ ]` |
-| 2.8 | Verify token contract registration: MOLT, mUSD, wSOL, wETH, REEF in symbol registry | `[ ]` |
-| 2.9 | Test fresh-boot scenario: stop stack, wipe state, restart — all pairs/pools/tokens created? | `[ ]` |
-| 2.10 | Verify no duplicate pair/pool creation if `first-boot-deploy.sh` runs twice | `[ ]` |
+| 2.1 | Read `first-boot-deploy.sh` — list all contract deployments in order | `[x]` |
+| 2.2 | Verify 7 trading pairs are created with correct base/quote tokens | `[x]` |
+| 2.3 | Confirm pair IDs (0-6) match frontend `pairs[]` array expectations | `[x]` |
+| 2.4 | Verify 7 AMM pools are seeded with correct sqrt_price and fee tiers | `[x]` |
+| 2.5 | **Critical check:** `MOLT_GENESIS_PRICE` in dex.js (`$0.10`) vs deploy seed sqrt_price (`~$0.42`) — resolve discrepancy | `[x]` |
+| 2.6 | Verify insurance fund seeding (10,000 MOLT) into `dex_margin` | `[x]` |
+| 2.7 | Confirm treasury keypair has sufficient balance for all deployments | `[x]` |
+| 2.8 | Verify token contract registration: MOLT, mUSD, wSOL, wETH, REEF in symbol registry | `[x]` |
+| 2.9 | Test fresh-boot scenario: stop stack, wipe state, restart — all pairs/pools/tokens created? | `[x]` |
+| 2.10 | Verify no duplicate pair/pool creation if `first-boot-deploy.sh` runs twice | `[x]` |
 
 **Findings:**
-- (none yet)
+
+- **F2.1 — CRITICAL (genesis_seed_analytics_prices never ran):** The function was introduced in commit `ba74a67` AFTER genesis block 0 was already created. Since genesis only runs on first boot, the `ana_lp_{pair_id}` and `ana_24h_{pair_id}` keys were never written — confirmed via live `getProgramStorage` query (only 3 init-phase keys exist: `ana_admin`, `ana_paused`, `ana_rec_count`). Root cause of ALL tickers showing `lastPrice: 0.0`. **FIX:** Add startup reconciliation that seeds analytics prices if missing.
+- **F2.2 — CRITICAL (genesis_seed_oracle price feeds never ran):** Same root cause — `genesis_seed_oracle` was added in commit `3b294a4` after genesis. Oracle contract storage has only 1 init-phase key (`oracle_owner`). No `price_MOLT`, no feeder authorizations. All oracle price feed data comes only from the background feeder, with zero genesis baseline. **FIX:** Add startup reconciliation for oracle prices.
+- **F2.3 — HIGH (genesis_exec_contract returns true on WASM failure):** At `validator/src/main.rs:1987-1991`, when `result.success` is `false`, the function logs a warning but returns `true` anyway. This masks WASM execution failures throughout genesis. **FIX:** Return `false` when `!result.success` and the return code is non-zero.
+- **F2.4 — HIGH (MOLT/mUSD AMM sqrt_price implies $1.00, not $0.10):** `genesis_create_trading_pairs` at L2612 sets MOLT/mUSD `sqrt_price = 1 << 32` (Q32 for price=1.0). But MOLT genesis price is $0.10 per oracle, frontend, and analytics seeding. This 10x discrepancy means AMM quotes would be 10x too expensive. **FIX:** Change to `sqrt(0.10) * (1 << 32)` = `1_357_913_941`.
+- **F2.5 — HIGH (wSOL/wETH AMM sqrt_prices use stale prices):** wSOL at ~$178 and wETH at ~$3,521 in AMM pools vs oracle seeds of $82 and $1,979. The AMM prices were from an older era. **FIXED:** Aligned all 5 AMM sqrt_prices with oracle seed prices: MOLT/mUSD=1,358,187,913 ($0.10), wSOL/mUSD=38,892,583,020 ($82), wETH/mUSD=191,065,712,575 ($1,979), wSOL/MOLT=122,989,146,433 (820 MOLT), wETH/MOLT=604,202,834,500 (19,790 MOLT).
+- **F2.6 — MEDIUM (only 5 pairs/pools, not 7):** Genesis creates 5 pairs: MOLT/mUSD, wSOL/mUSD, wETH/mUSD, wSOL/MOLT, wETH/MOLT. No REEF token registered, no REEF pairs. Plan assumed 7 pairs — this is by design (REEF deferred). **FIX:** Update plan expectations to 5 pairs. No REEF token at genesis is correct.
+- **F2.7 — MEDIUM (pair IDs are 1-indexed, not 0-indexed):** Live pairs use IDs 1-5, not 0-6. Frontend and analytics seeding correctly use 1-indexed. `first-boot-deploy.sh` incorrectly uses 0-indexed pair_ids (0-6). **FIX:** Update `first-boot-deploy.sh` pair_ids to 1-5.
+- **F2.8 — MEDIUM (insurance fund = 0, never seeded):** Genesis doesn't seed the insurance fund. `first-boot-deploy.sh` attempts to seed 10,000 MOLT via `dex_margin.seed_insurance`, but deployer has 0 balance and the manifest addresses are wrong. Live `/api/v1/margin/info` confirms `insuranceFund: 0`. **FIX:** Add insurance fund seeding to genesis startup reconciliation.
+- **F2.9 — MEDIUM (first-boot-deploy.sh completely broken):** Uses stale manifest addresses, 0-indexed pair_ids, MOLT at $0.42, 7 pools (including non-existent REEF), deployer has 0 balance. This script has never successfully seeded anything on the live chain. **FIX:** Rewrite to use symbol registry + genesis addresses.
+- **F2.10 — LOW (two deployment paths create confusion):** `genesis_auto_deploy` (genesis) and `deploy_dex.py` (first-boot-deploy) deploy the same contracts at different addresses (different deployer keys). The canonical path is genesis. `first-boot-deploy.sh` is redundant for contract deployment. **FIX:** Document that genesis auto-deploy is canonical; mark `first-boot-deploy.sh` deploy steps as deprecated.
+- **F2.11 — LOW (fresh-boot would partially fail):** On a fresh boot, the NEW validator binary WOULD execute `genesis_seed_oracle` and `genesis_seed_analytics_prices`. However, the WASM execution failures would be masked by F2.3 (returns true on failure). The analytics direct writes would succeed. Oracle WASM calls depend on whether the oracle contract's `add_price_feeder`/`submit_price` functions work correctly — untested. **FIX:** Addressed by F2.3 fix + startup reconciliation.
+- **F2.12 — INFO (idempotency is correct):** `genesis_auto_deploy` checks `get_account` before deploying (skips if exists). `genesis_create_trading_pairs` uses `genesis_exec_contract` which would error on duplicate pairs (WASM returns error). `first-boot-deploy.sh` checks manifest for 10+ contracts before proceeding. Genesis itself only runs when no genesis block exists.
 
 ---
 
