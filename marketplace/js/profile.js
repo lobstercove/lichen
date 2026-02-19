@@ -5,6 +5,26 @@
     'use strict';
 
     const RPC_URL = (window.moltMarketConfig && window.moltMarketConfig.rpcUrl) || 'http://localhost:8899';
+
+    // XSS prevention utility
+    function escapeHtml(str) {
+        return String(str ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    // Safe image URL — only allow http(s) and ipfs protocols
+    function safeImageUrl(url) {
+        if (!url) return null;
+        if (url.startsWith('ipfs://')) return url.replace('ipfs://', 'https://ipfs.io/ipfs/');
+        if (url.startsWith('http://') || url.startsWith('https://')) return url;
+        if (url.startsWith('linear-gradient')) return url;
+        return null;
+    }
+
     let currentWallet = null;
     let profileAddress = null;
     let isOwnProfile = false;
@@ -374,12 +394,12 @@
 
         tbody.innerHTML = activity.slice(0, 50).map(function (event) {
             var icon = eventIcons[event.type] || '📋';
-            return '<tr onclick="' + (event.token ? "window._profileViewNFT('" + event.token + "')" : '') + '" style="cursor:pointer;">' +
-                '<td>' + icon + ' ' + (event.type || '-') + '</td>' +
-                '<td>' + (event.item || '-') + '</td>' +
-                '<td>' + (event.price ? event.price + ' MOLT' : '-') + '</td>' +
-                '<td><span title="' + (event.from || '') + '">' + formatHash(event.from, 8) + '</span></td>' +
-                '<td><span title="' + (event.to || '') + '">' + formatHash(event.to, 8) + '</span></td>' +
+            return '<tr onclick="' + (event.token ? "window._profileViewNFT('" + escapeHtml(event.token) + "')" : '') + '" style="cursor:pointer;">' +
+                '<td>' + icon + ' ' + escapeHtml(event.type || '-') + '</td>' +
+                '<td>' + escapeHtml(event.item || '-') + '</td>' +
+                '<td>' + (event.price ? escapeHtml(event.price) + ' MOLT' : '-') + '</td>' +
+                '<td><span title="' + escapeHtml(event.from || '') + '">' + formatHash(event.from, 8) + '</span></td>' +
+                '<td><span title="' + escapeHtml(event.to || '') + '">' + formatHash(event.to, 8) + '</span></td>' +
                 '<td>' + (event.timestamp ? timeAgo(event.timestamp) : '-') + '</td>' +
                 '</tr>';
         }).join('');
@@ -395,15 +415,13 @@
 
         return nfts.map(function (nft) {
             var imageUrl = nft.metadata_uri || nft.image;
-            var isGradient = false;
+            var safeUrl = safeImageUrl(imageUrl);
             var imageStyle = '';
 
-            if (imageUrl && imageUrl.startsWith && imageUrl.startsWith('linear-gradient')) {
-                isGradient = true;
-                imageStyle = 'background: ' + imageUrl;
-            } else if (imageUrl && imageUrl.startsWith && (imageUrl.startsWith('http') || imageUrl.startsWith('ipfs'))) {
-                var url = imageUrl.startsWith('ipfs://') ? imageUrl.replace('ipfs://', 'https://ipfs.io/ipfs/') : imageUrl;
-                imageStyle = 'background-image: url(' + url + '); background-size: cover; background-position: center;';
+            if (safeUrl && safeUrl.startsWith('linear-gradient')) {
+                imageStyle = 'background: ' + safeUrl;
+            } else if (safeUrl) {
+                imageStyle = 'background-image: url(' + encodeURI(safeUrl) + '); background-size: cover; background-position: center;';
             } else {
                 imageStyle = 'background: ' + gradientFromHash(nft.id || nft.token || 'x');
             }
@@ -412,12 +430,12 @@
                 : nft.price || priceToMolt(nft.price_shells || 0);
             var name = nft.name || (nft.token_id !== undefined ? '#' + nft.token_id : 'NFT');
 
-            return '<div class="nft-card" onclick="window._profileViewNFT(\'' + (nft.id || nft.token || '') + '\')" style="cursor:pointer;">' +
+            return '<div class="nft-card" onclick="window._profileViewNFT(\'' + escapeHtml(nft.id || nft.token || '') + '\')" style="cursor:pointer;">' +
                 '<div class="nft-image" style="height:200px;border-radius:8px;' + imageStyle + '"></div>' +
                 '<div class="nft-info" style="padding: 8px 0;">' +
-                '<div class="nft-collection" style="font-size:12px;color:var(--text-secondary);">' + (nft.collection || nft.collection_name || 'Unknown') + '</div>' +
-                '<div class="nft-name">' + name + '</div>' +
-                '<div class="nft-price-value" style="font-size:14px;color:var(--accent-color);">' + price + ' MOLT</div>' +
+                '<div class="nft-collection" style="font-size:12px;color:var(--text-secondary);">' + escapeHtml(nft.collection || nft.collection_name || 'Unknown') + '</div>' +
+                '<div class="nft-name">' + escapeHtml(name) + '</div>' +
+                '<div class="nft-price-value" style="font-size:14px;color:var(--accent-color);">' + escapeHtml(price) + ' MOLT</div>' +
                 '</div>' +
                 '</div>';
         }).join('');

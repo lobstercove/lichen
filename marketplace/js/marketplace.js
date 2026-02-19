@@ -61,18 +61,18 @@ async function loadFeaturedCollections() {
     }
     
     container.innerHTML = collections.map(collection => `
-        <div class="collection-card" onclick="viewCollection('${collection.id}')">
-            <div class="collection-banner" style="background: ${collection.banner}"></div>
-            <div class="collection-avatar">${collection.avatar}</div>
+        <div class="collection-card" onclick="viewCollection('${escapeHtml(collection.id)}')">
+            <div class="collection-banner" style="background: ${escapeHtml(collection.banner)}"></div>
+            <div class="collection-avatar">${escapeHtml(collection.avatar)}</div>
             <div class="collection-info">
-                <div class="collection-name">${collection.name}</div>
+                <div class="collection-name">${escapeHtml(collection.name)}</div>
                 <div class="collection-stats">
                     <div class="collection-stat">
                         <div class="collection-stat-value">${formatNumber(collection.items)}</div>
                         <div class="collection-stat-label">Items</div>
                     </div>
                     <div class="collection-stat">
-                        <div class="collection-stat-value">${collection.floor}</div>
+                        <div class="collection-stat-value">${escapeHtml(collection.floor)}</div>
                         <div class="collection-stat-label">Floor</div>
                     </div>
                     <div class="collection-stat">
@@ -142,9 +142,9 @@ async function loadTopCreators() {
     }
     
     container.innerHTML = creators.slice(0, 5).map(creator => `
-        <div class="creator-card" onclick="viewCreator('${creator.id}')">
-            <div class="creator-avatar">${creator.avatar}</div>
-            <div class="creator-name">${creator.name}</div>
+        <div class="creator-card" onclick="viewCreator('${escapeHtml(creator.id)}')">
+            <div class="creator-avatar">${escapeHtml(creator.avatar)}</div>
+            <div class="creator-name">${escapeHtml(creator.name)}</div>
             <div class="creator-sales">${formatNumber(creator.sales)} sales</div>
         </div>
     `).join('');
@@ -169,25 +169,25 @@ async function loadRecentSales() {
     }
     
     tbody.innerHTML = sales.map(sale => `
-        <tr onclick="viewNFT('${sale.id}')">
+        <tr onclick="viewNFT('${escapeHtml(sale.id)}')">
             <td>
                 <div class="sale-nft">
-                    <div class="sale-nft-image" style="background: ${sale.image}"></div>
+                    <div class="sale-nft-image" style="background: ${escapeHtml(sale.image)}"></div>
                     <div>
-                        <div class="sale-nft-name">${sale.nft}</div>
-                        <div class="sale-nft-collection">${sale.collection}</div>
+                        <div class="sale-nft-name">${escapeHtml(sale.nft)}</div>
+                        <div class="sale-nft-collection">${escapeHtml(sale.collection)}</div>
                     </div>
                 </div>
             </td>
-            <td>${sale.collection}</td>
-            <td class="sale-price">${sale.price} MOLT</td>
+            <td>${escapeHtml(sale.collection)}</td>
+            <td class="sale-price">${escapeHtml(sale.price)} MOLT</td>
             <td>
-                <a href="#" class="sale-address" onclick="event.stopPropagation(); viewAddress('${sale.from}')">
+                <a href="#" class="sale-address" onclick="event.stopPropagation(); viewAddress('${escapeHtml(sale.from)}')">
                     ${formatHash(sale.from, 8)}
                 </a>
             </td>
             <td>
-                <a href="#" class="sale-address" onclick="event.stopPropagation(); viewAddress('${sale.to}')">
+                <a href="#" class="sale-address" onclick="event.stopPropagation(); viewAddress('${escapeHtml(sale.to)}')">
                     ${formatHash(sale.to, 8)}
                 </a>
             </td>

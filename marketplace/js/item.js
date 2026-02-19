@@ -67,6 +67,15 @@
         return 'linear-gradient(135deg, ' + colorFromNum(hashString(base + '-a')) + ', ' + colorFromNum(hashString(base + '-b')) + ')';
     }
 
+    // Safe image URL — only allow http(s) and ipfs protocols
+    function safeImageUrl(url) {
+        if (!url) return null;
+        if (url.startsWith('ipfs://')) return url.replace('ipfs://', 'https://ipfs.io/ipfs/');
+        if (url.startsWith('http://') || url.startsWith('https://')) return url;
+        if (url.startsWith('linear-gradient')) return url;
+        return null;
+    }
+
     function normalizeImage(uri, seed) {
         if (uri && uri.startsWith('ipfs://')) return uri.replace('ipfs://', 'https://ipfs.io/ipfs/');
         if (uri && (uri.startsWith('http://') || uri.startsWith('https://'))) return uri;
@@ -263,14 +272,14 @@
             return '<div class="activity-item" style="display:flex; align-items:center; padding: 12px 0; border-bottom: 1px solid var(--border-color);">' +
                 '<div style="font-size: 24px; margin-right: 12px;">' + icon + '</div>' +
                 '<div style="flex: 1;">' +
-                '<div style="font-weight: 600; text-transform: capitalize;">' + (event.type || event.kind || 'Event') + '</div>' +
+                '<div style="font-weight: 600; text-transform: capitalize;">' + escapeHtml(event.type || event.kind || 'Event') + '</div>' +
                 '<div style="font-size: 13px; color: var(--text-secondary);">' +
                 (event.from ? 'From ' + formatHash(event.from, 8) : '') +
                 (event.to ? ' → ' + formatHash(event.to, 8) : '') +
                 '</div>' +
                 '</div>' +
                 '<div style="text-align: right;">' +
-                (price !== '-' ? '<div style="font-weight: 600;">' + price + ' MOLT</div>' : '') +
+                (price !== '-' ? '<div style="font-weight: 600;">' + escapeHtml(price) + ' MOLT</div>' : '') +
                 '<div style="font-size: 12px; color: var(--text-secondary);">' + timeAgo(ts) + '</div>' +
                 '</div>' +
                 '</div>';
@@ -302,22 +311,25 @@
         }
 
         container.innerHTML = nfts.slice(0, 6).map(function (nft) {
-            var isGradient = nft.image && nft.image.startsWith && nft.image.startsWith('linear-gradient');
-            var imageStyle = isGradient
-                ? 'background: ' + nft.image
-                : 'background-image: url(' + (nft.image || nft.metadata_uri || '') + '); background-size: cover; background-position: center;';
-            if (!nft.image && !nft.metadata_uri) {
+            var rawUrl = nft.image || nft.metadata_uri;
+            var safeUrl = safeImageUrl(rawUrl);
+            var imageStyle;
+            if (safeUrl && safeUrl.startsWith('linear-gradient')) {
+                imageStyle = 'background: ' + safeUrl;
+            } else if (safeUrl) {
+                imageStyle = 'background-image: url(' + encodeURI(safeUrl) + '); background-size: cover; background-position: center;';
+            } else {
                 imageStyle = 'background: ' + gradientFromHash(nft.id || 'x');
             }
 
             var price = nft.price_molt !== undefined ? Number(nft.price_molt).toFixed(2)
                 : nft.price || priceToMolt(nft.price_shells || 0);
 
-            return '<div class="nft-card" onclick="window._itemViewNFT(\'' + (nft.id || nft.token) + '\')" style="cursor:pointer;">' +
+            return '<div class="nft-card" onclick="window._itemViewNFT(\'' + escapeHtml(nft.id || nft.token) + '\')" style="cursor:pointer;">' +
                 '<div class="nft-image" style="height:180px;border-radius:8px;' + imageStyle + '"></div>' +
                 '<div class="nft-info" style="padding:8px 0;">' +
-                '<div class="nft-name">' + (nft.name || '#' + (nft.token_id || '0')) + '</div>' +
-                '<div class="nft-price-value">' + price + ' MOLT</div>' +
+                '<div class="nft-name">' + escapeHtml(nft.name || '#' + (nft.token_id || '0')) + '</div>' +
+                '<div class="nft-price-value">' + escapeHtml(price) + ' MOLT</div>' +
                 '</div>' +
                 '</div>';
         }).join('');

@@ -83,6 +83,7 @@
     function normalizeImage(uri, seed) {
         if (uri && uri.startsWith('ipfs://')) return uri.replace('ipfs://', 'https://ipfs.io/ipfs/');
         if (uri && (uri.startsWith('http://') || uri.startsWith('https://'))) return uri;
+        if (uri && uri.startsWith('linear-gradient')) return uri;
         return gradientFromHash(seed || 'default');
     }
 
@@ -145,8 +146,8 @@
 
         collectionsLoaded = collections;
         container.innerHTML = collections.map(function (c, i) {
-            const name = c.name || c.symbol || formatHash(c.id || c.program_id || ('col-' + i), 12);
-            const id = c.id || c.program_id || ('collection-' + i);
+            var name = escapeHtml(c.name || c.symbol || formatHash(c.id || c.program_id || ('col-' + i), 12));
+            var id = escapeHtml(c.id || c.program_id || ('collection-' + i));
             return '<label class="collection-filter-item">' +
                 '<input type="checkbox" value="' + id + '" onchange="window._browseApplyFilters()">' +
                 '<span>' + name + '</span>' +
@@ -351,15 +352,15 @@
                     ? 'background: ' + nft.image
                     : 'background-image: url(' + nft.image + '); background-size: cover; background-position: center;';
 
-                return '<div class="nft-list-item" onclick="window._browseViewNFT(\'' + nft.id + '\')">' +
+                return '<div class="nft-list-item" onclick="window._browseViewNFT(\'' + escapeHtml(nft.id) + '\')">' +
                     '<div class="nft-list-image" style="width:64px;height:64px;border-radius:8px;' + imageStyle + '"></div>' +
                     '<div class="nft-list-info" style="flex:1;padding:0 16px;">' +
-                    '<div class="nft-collection">' + (nft.collection || 'Unknown') + '</div>' +
-                    '<div class="nft-name">' + (nft.name || 'Unnamed') + '</div>' +
+                    '<div class="nft-collection">' + escapeHtml(nft.collection || 'Unknown') + '</div>' +
+                    '<div class="nft-name">' + escapeHtml(nft.name || 'Unnamed') + '</div>' +
                     '</div>' +
                     '<div class="nft-list-price" style="text-align:right;">' +
-                    '<div class="nft-price-value">' + nft.price + ' MOLT</div>' +
-                    '<div class="nft-rarity nft-rarity-' + (nft.rarity || 'Common').toLowerCase() + '">' + (nft.rarity || 'Common') + '</div>' +
+                    '<div class="nft-price-value">' + escapeHtml(nft.price) + ' MOLT</div>' +
+                    '<div class="nft-rarity nft-rarity-' + escapeHtml((nft.rarity || 'Common').toLowerCase()) + '">' + escapeHtml(nft.rarity || 'Common') + '</div>' +
                     '</div>' +
                     '</div>';
             }).join('') + '</div>';

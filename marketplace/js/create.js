@@ -5,6 +5,17 @@
     'use strict';
 
     const RPC_URL = (window.moltMarketConfig && window.moltMarketConfig.rpcUrl) || 'http://localhost:8899';
+
+    // XSS prevention utility
+    function escapeHtml(str) {
+        return String(str ?? '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
     let currentWallet = null;
     let uploadedFile = null;
     let uploadedDataUrl = null;
@@ -135,7 +146,7 @@
             html += '<img src="' + dataUrl + '" style="max-width:100%;max-height:300px;border-radius:8px;" alt="Preview">';
         }
         html += '<button onclick="window._createRemoveFile()" style="position:absolute;top:8px;right:8px;background:rgba(0,0,0,0.7);color:white;border:none;border-radius:50%;width:32px;height:32px;cursor:pointer;font-size:16px;">&times;</button>';
-        html += '<div style="margin-top:8px;font-size:13px;color:var(--text-secondary);">' + file.name + ' (' + (file.size / 1024).toFixed(1) + ' KB)</div>';
+        html += '<div style="margin-top:8px;font-size:13px;color:var(--text-secondary);">' + escapeHtml(file.name) + ' (' + (file.size / 1024).toFixed(1) + ' KB)</div>';
         html += '</div>';
 
         filePreview.innerHTML = html;
@@ -162,10 +173,10 @@
 
         container.innerHTML = properties.map(function (prop, index) {
             return '<div class="property-row" style="display:flex;gap:8px;margin-bottom:8px;align-items:center;">' +
-                '<input type="text" placeholder="Trait type (e.g., Background)" value="' + (prop.trait_type || '') + '" ' +
+                '<input type="text" placeholder="Trait type (e.g., Background)" value="' + escapeHtml(prop.trait_type || '') + '" ' +
                 'onchange="window._createUpdateProperty(' + index + ', \'trait_type\', this.value)" ' +
                 'style="flex:1;padding:8px 12px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-secondary);color:var(--text-primary);">' +
-                '<input type="text" placeholder="Value (e.g., Blue)" value="' + (prop.value || '') + '" ' +
+                '<input type="text" placeholder="Value (e.g., Blue)" value="' + escapeHtml(prop.value || '') + '" ' +
                 'onchange="window._createUpdateProperty(' + index + ', \'value\', this.value)" ' +
                 'style="flex:1;padding:8px 12px;border:1px solid var(--border-color);border-radius:8px;background:var(--bg-secondary);color:var(--text-primary);">' +
                 '<button onclick="window._createRemoveProperty(' + index + ')" ' +
@@ -247,6 +258,18 @@
         if (!name) {
             alert('Please enter an NFT name');
             if (nameInput) nameInput.focus();
+            return;
+        }
+
+        if (name.length > 128) {
+            alert('NFT name must be 128 characters or fewer');
+            if (nameInput) nameInput.focus();
+            return;
+        }
+
+        if (description.length > 2048) {
+            alert('Description must be 2048 characters or fewer');
+            if (descInput) descInput.focus();
             return;
         }
 
