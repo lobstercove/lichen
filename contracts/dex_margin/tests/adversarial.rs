@@ -13,6 +13,8 @@ fn setup() -> [u8; 32] {
     assert_eq!(initialize(admin.as_ptr()), 0);
     // Set mark price for pair 1: 1.0 (1_000_000_000)
     set_mark_price(admin.as_ptr(), 1, 1_000_000_000);
+    // Enable margin for pair 1
+    enable_margin_pair(admin.as_ptr(), 1);
     admin
 }
 
@@ -200,9 +202,10 @@ fn test_liquidation_penalty_exceeds_margin() {
     moltchain_sdk::test_mock::set_caller(trader);
     assert_eq!(open_position(trader.as_ptr(), 1, 0, 10_000, 50, 200), 0);
 
-    // Raise price to 3.0
+    // Drop price to 0.985 → PnL = -(10000*(1B-985M)/1e9) = -150, effective = 50
+    // notional = 10000*985M/1e9 = 9850, ratio = 50/9850*10000 = 50 bps < 100 maint → liquidatable
     moltchain_sdk::test_mock::set_caller(admin);
-    set_mark_price(admin.as_ptr(), 1, 3_000_000_000);
+    set_mark_price(admin.as_ptr(), 1, 985_000_000);
     moltchain_sdk::test_mock::set_caller(liquidator);
     let result = liquidate(liquidator.as_ptr(), 1);
     assert_eq!(result, 0);
@@ -430,7 +433,8 @@ fn test_open_position_no_mark_price() {
     let admin = [1u8; 32];
     moltchain_sdk::test_mock::set_caller(admin);
     assert_eq!(initialize(admin.as_ptr()), 0);
-    // No mark price set for pair 1
+    // Enable margin for pair 1 but don't set mark price
+    enable_margin_pair(admin.as_ptr(), 1);
     let trader = [2u8; 32];
     moltchain_sdk::test_mock::set_caller(trader);
     moltchain_sdk::test_mock::set_slot(100);

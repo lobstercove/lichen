@@ -28,7 +28,6 @@
                 <li><a href="#" class="nav-link active" data-view="trade">Trade</a></li>
                 <li><a href="#" class="nav-link" data-view="predict">Predict</a></li>
                 <li><a href="#" class="nav-link" data-view="pool">Pool</a></li>
-                <li><a href="#" class="nav-link" data-view="margin">Margin</a></li>
                 <li><a href="#" class="nav-link" data-view="rewards">Rewards</a></li>
                 <li><a href="#" class="nav-link" data-view="governance">Governance</a></li>
             </ul>
@@ -162,6 +161,14 @@
                                 <span class="leverage-tag" id="inlineLeverageTag">2x</span>
                             </div>
                         </div>
+                        <div class="margin-inline-info" style="font-size:0.75rem;color:var(--text-muted);padding:4px 0;">
+                            <div style="display:flex;justify-content:space-between;"><span>Entry</span><span id="marginEntry">—</span></div>
+                            <div style="display:flex;justify-content:space-between;"><span>Liq. Price</span><span class="text-warning" id="marginLiqPrice">—</span></div>
+                            <div style="display:flex;justify-content:space-between;"><span>Margin Ratio</span><span id="marginRatio">—</span></div>
+                        </div>
+                        <div id="marginPairWarning" class="hidden" style="font-size:0.75rem;color:var(--yellow-warning);padding:4px 0;text-align:center;">
+                            <i class="fas fa-exclamation-triangle"></i> This pair is not enabled for margin trading
+                        </div>
                     </div>
                     <div class="order-tabs">
                         <button class="order-tab active" data-side="buy">Buy</button>
@@ -253,6 +260,7 @@
                     <button class="pos-tab active" data-target="content-orders">Open Orders <span class="badge orders-badge"></span></button>
                     <button class="pos-tab" data-target="content-history">Trade History</button>
                     <button class="pos-tab" data-target="content-positions">Positions</button>
+                    <button class="pos-tab" data-target="content-margin-positions">Margin <span class="badge margin-badge"></span></button>
                 </div>
                 <div class="positions-content" id="content-orders">
                     <table class="orders-table">
@@ -283,6 +291,18 @@
                     <div style="text-align:center;color:var(--text-muted);padding:30px;font-size:0.85rem;">
                         <i class="fas fa-wallet" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
                         Connect wallet to view positions
+                    </div>
+                </div>
+                <div class="positions-content hidden" id="content-margin-positions">
+                    <div class="margin-positions-stats" id="marginStatsStrip" style="display:flex;gap:16px;padding:8px 12px;font-size:0.8rem;border-bottom:1px solid var(--border);margin-bottom:8px;">
+                        <span>Equity: <strong id="marginEquity">—</strong></span>
+                        <span>Used: <strong id="marginUsed">—</strong></span>
+                        <span>Available: <strong id="marginAvailable">—</strong></span>
+                        <span>Insurance: <strong id="marginInsurance">—</strong></span>
+                    </div>
+                    <div id="marginPositionsList" style="text-align:center;color:var(--text-muted);padding:20px;font-size:0.85rem;">
+                        <i class="fas fa-chart-line" style="font-size:1.2rem;margin-bottom:8px;display:block;opacity:0.4;"></i>
+                        No open margin positions
                     </div>
                 </div>
             </div>
@@ -679,88 +699,6 @@
                     </div>
                     <div class="positions-content hidden" id="pool-history">
                         <div class="empty-state"><i class="fas fa-history"></i><p>No pool transactions yet</p></div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </main>
-
-    <!-- ═══════════════════ MARGIN VIEW ═══════════════════ -->
-    <main class="dex-main hidden" id="view-margin">
-        <div class="margin-layout">
-            <div class="margin-header">
-                <h2>Margin Trading</h2>
-                <p class="text-secondary">Trade with up to 5x leverage on isolated margin</p>
-            </div>
-            <div class="margin-stats-row">
-                <div class="pool-stat-card">
-                    <div class="pool-stat-label">Account Equity</div>
-                    <div class="pool-stat-value" id="marginEquity">—</div>
-                </div>
-                <div class="pool-stat-card">
-                    <div class="pool-stat-label">Used Margin</div>
-                    <div class="pool-stat-value" id="marginUsed">—</div>
-                </div>
-                <div class="pool-stat-card">
-                    <div class="pool-stat-label">Available Margin</div>
-                    <div class="pool-stat-value" id="marginAvailable">—</div>
-                </div>
-                <div class="pool-stat-card">
-                    <div class="pool-stat-label">Insurance Fund</div>
-                    <div class="pool-stat-value" id="marginInsurance">—</div>
-                </div>
-            </div>
-
-            <div class="margin-trade-grid">
-                <div class="margin-form-card">
-                    <h4>Open Position</h4>
-                    <div class="margin-type-tabs">
-                        <button class="margin-type active" data-type="isolated">Isolated</button>
-                    </div>
-                    <div class="form-group">
-                        <label>Pair</label>
-                        <select class="form-select" id="marginPairSelect">
-                            <!-- Populated dynamically from pairs[] -->
-                        </select>
-                    </div>
-                    <div class="form-group">
-                        <label>Side</label>
-                        <div class="side-toggle">
-                            <button class="side-btn long-btn active">Long</button>
-                            <button class="side-btn short-btn">Short</button>
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label>Leverage</label>
-                        <div class="leverage-slider-container">
-                            <input type="range" min="1" max="5" value="2" class="leverage-slider" id="leverageSlider">
-                            <div class="leverage-marks">
-                                <span>1x</span><span>2x</span><span>3x</span><span>4x</span><span>5x</span>
-                            </div>
-                            <span class="leverage-display" id="leverageDisplay">2x</span>
-                        </div>
-                    </div>
-                    <div class="form-group">
-                        <label>Size (MOLT)</label>
-                        <input type="number" placeholder="0.00" class="form-input" id="marginSize">
-                    </div>
-                    <div class="form-group">
-                        <label>Margin (mUSD)</label>
-                        <input type="number" placeholder="0.00" class="form-input" id="marginAmount">
-                    </div>
-                    <div class="margin-info-rows">
-                        <div class="info-row"><span>Entry Price</span><span id="marginEntry">—</span></div>
-                        <div class="info-row"><span>Liq. Price</span><span class="text-warning" id="marginLiqPrice">—</span></div>
-                        <div class="info-row"><span>Margin Ratio</span><span id="marginRatio">—</span></div>
-                    </div>
-                    <button class="btn btn-full btn-buy" id="marginOpenBtn">Open Long</button>
-                </div>
-
-                <div class="margin-positions-card">
-                    <h4>Open Positions</h4>
-                    <div id="marginPositionsList" class="no-positions">
-                        <i class="fas fa-chart-line"></i>
-                        <p>No open margin positions</p>
                     </div>
                 </div>
             </div>

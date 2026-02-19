@@ -11,6 +11,7 @@
 
 #![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
+#![allow(dead_code)]
 
 extern crate alloc;
 use alloc::vec::Vec;

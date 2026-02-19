@@ -128,7 +128,7 @@ struct RpcState {
     /// Lock-free finality tracker for commitment levels (processed/confirmed/finalized)
     finality: Option<FinalityTracker>,
     /// DEX real-time event broadcaster (WS push to subscribers)
-    dex_broadcaster: Arc<dex_ws::DexEventBroadcaster>,
+    _dex_broadcaster: Arc<dex_ws::DexEventBroadcaster>,
     /// Prediction market real-time event broadcaster
     prediction_broadcaster: Arc<ws::PredictionEventBroadcaster>,
     /// Cached validators list — refreshed at most once per slot (~400ms).
@@ -935,7 +935,7 @@ pub fn build_rpc_router(
                 .unwrap_or(5_000)
         )),
         finality,
-        dex_broadcaster: dex_broadcaster.unwrap_or_else(|| Arc::new(dex_ws::DexEventBroadcaster::new(4096))),
+        _dex_broadcaster: dex_broadcaster.unwrap_or_else(|| Arc::new(dex_ws::DexEventBroadcaster::new(4096))),
         prediction_broadcaster: prediction_broadcaster.unwrap_or_else(|| Arc::new(ws::PredictionEventBroadcaster::new(1024))),
         validator_cache: Arc::new(RwLock::new((Instant::now() - std::time::Duration::from_secs(60), Vec::new()))),
         metrics_cache: Arc::new(RwLock::new((Instant::now() - std::time::Duration::from_secs(60), None))),

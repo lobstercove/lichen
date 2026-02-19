@@ -1845,7 +1845,7 @@ async fn post_router_swap(
                 } else if route.route_type == "split" {
                     // F9.4a: Quote both CLOB and AMM legs proportionally
                     let clob_pct = route.split_percent as u64;
-                    let amm_pct = 100u64.saturating_sub(clob_pct);
+                    let _amm_pct = 100u64.saturating_sub(clob_pct);
                     let clob_amount = body.amount_in * clob_pct / 100;
                     let amm_amount = body.amount_in.saturating_sub(clob_amount);
                     let mut total_out = 0u64;
@@ -2103,6 +2103,20 @@ async fn get_margin_info(State(state): State<Arc<RpcState>>) -> Response {
     ApiResponse::ok(info, slot).into_response()
 }
 
+/// GET /api/v1/margin/enabled-pairs — List pair IDs that have margin trading enabled
+async fn get_margin_enabled_pairs(State(state): State<Arc<RpcState>>) -> Response {
+    let slot = current_slot(&state);
+    let pair_count = read_u64(&state, DEX_CORE_PROGRAM, "dex_pair_count");
+    let mut enabled: Vec<u64> = Vec::new();
+    for i in 1..=pair_count.min(500) {
+        let key = format!("mrg_ena_{}", i);
+        if read_u64(&state, DEX_MARGIN_PROGRAM, &key) == 1 {
+            enabled.push(i);
+        }
+    }
+    ApiResponse::ok(serde_json::json!({ "enabledPairIds": enabled }), slot).into_response()
+}
+
 // ─── ANALYTICS ──────────────────────────────────────────────────────────────
 
 /// GET /api/v1/leaderboard — Top traders
@@ -2356,6 +2370,7 @@ pub(crate) fn build_dex_router() -> Router<Arc<RpcState>> {
         .route("/margin/positions", get(get_margin_positions))
         .route("/margin/positions/:id", get(get_margin_position))
         .route("/margin/info", get(get_margin_info))
+        .route("/margin/enabled-pairs", get(get_margin_enabled_pairs))
         // Analytics
         .route("/leaderboard", get(get_leaderboard))
         .route("/traders/:addr/stats", get(get_trader_stats))

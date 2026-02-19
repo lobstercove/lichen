@@ -1081,16 +1081,24 @@ pub fn place_order(
             let call = CrossCall::new(Address(token_addr), "balance_of", bal_args)
                 .with_value(0);
             let bal_result = call_contract(call);
-            // If cross-contract call succeeded (non-zero result = balance returned),
-            // validate against required amount
-            if bal_result > 0 {
-                let required = if side == SIDE_BUY { notional } else { quantity };
-                if bal_result < required as i64 {
-                    reentrancy_exit();
-                    return 11; // Insufficient token balance
+            // If cross-contract call succeeded, parse the returned balance bytes
+            // and validate against the required amount
+            if let Ok(bal_bytes) = bal_result {
+                if bal_bytes.len() >= 8 {
+                    let balance = u64::from_le_bytes([
+                        bal_bytes[0], bal_bytes[1], bal_bytes[2], bal_bytes[3],
+                        bal_bytes[4], bal_bytes[5], bal_bytes[6], bal_bytes[7],
+                    ]);
+                    if balance > 0 {
+                        let required = if side == SIDE_BUY { notional } else { quantity };
+                        if balance < required {
+                            reentrancy_exit();
+                            return 11; // Insufficient token balance
+                        }
+                    }
                 }
             }
-            // If bal_result == 0, cross-contract calls not yet supported — allow trade (fail-open)
+            // If call failed or returned empty, cross-contract calls not yet supported — allow trade (fail-open)
         }
     }
 

@@ -643,12 +643,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function populateSelectsFromPairs() {
         const poolSelect = document.getElementById('liqPoolSelect');
-        const marginSelect = document.getElementById('marginPairSelect');
         const feeSelect = document.getElementById('propFeePair');
         const delistSelect = document.getElementById('propDelistPair');
         const opts = pairs.map((p, i) => `<option value="${escapeHtml(String(p.pairId))}">${escapeHtml(p.id)}</option>`).join('');
         if (poolSelect) poolSelect.innerHTML = opts || '<option>No pairs available</option>';
-        if (marginSelect) marginSelect.innerHTML = opts || '<option>No pairs available</option>';
         if (feeSelect) feeSelect.innerHTML = opts || '<option>No pairs available</option>';
         if (delistSelect) delistSelect.innerHTML = opts || '<option>No pairs available</option>';
     }
@@ -808,7 +806,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     const navLinks = document.querySelectorAll('.nav-menu a[data-view]');
     const views = document.querySelectorAll('.dex-main');
-    function switchView(v) { state.currentView = v; views.forEach(el => el.classList.toggle('hidden', el.id !== `view-${v}`)); navLinks.forEach(l => l.classList.toggle('active', l.dataset.view === v)); if (v === 'trade') { drawChart(); loadTradeHistory(); loadPositionsTab(); } if (v === 'predict') { loadPredictionStats(); loadPredictionMarkets(); loadPredictionPositions(); loadCreatedMarkets(); } if (v === 'pool') { loadPoolStats(); loadPools(); loadLPPositions(); } if (v === 'margin') { loadMarginStats(); loadMarginPositions(); } if (v === 'rewards') { loadRewardsStats(); } if (v === 'governance') { loadGovernanceStats(); loadProposals(); } }
+    function switchView(v) { state.currentView = v; views.forEach(el => el.classList.toggle('hidden', el.id !== `view-${v}`)); navLinks.forEach(l => l.classList.toggle('active', l.dataset.view === v)); if (v === 'trade') { drawChart(); loadTradeHistory(); loadPositionsTab(); if (state.tradeMode === 'margin') { loadMarginStats(); loadMarginPositions(); } } if (v === 'predict') { loadPredictionStats(); loadPredictionMarkets(); loadPredictionPositions(); loadCreatedMarkets(); } if (v === 'pool') { loadPoolStats(); loadPools(); loadLPPositions(); } if (v === 'rewards') { loadRewardsStats(); } if (v === 'governance') { loadGovernanceStats(); loadProposals(); } }
     navLinks.forEach(l => l.addEventListener('click', e => { e.preventDefault(); switchView(l.dataset.view); }));
 
     // Mobile nav toggle
@@ -862,6 +860,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (tvWidget?.activeChart) { try { tvWidget.activeChart().setSymbol(pair.id, () => {}); } catch { drawChart(); } } else drawChart();
         // Update oracle reference line for new pair
         updateOracleReferenceLine();
+        // Update margin enablement warning for new pair
+        if (state.tradeMode === 'margin') { checkMarginPairEnabled(); updateMarginInfo(); }
     }
 
     function updatePairStats(pair) {
@@ -965,9 +965,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function updateSubmitBtn() { if (!submitBtn) return; const m = state.tradeMode === 'margin' ? ` ${state.leverageValue}x` : ''; submitBtn.className = `btn-full ${state.orderSide === 'buy' ? 'btn-buy' : 'btn-sell'}`; submitBtn.textContent = `${state.orderSide === 'buy' ? 'Buy' : 'Sell'}${m} ${state.activePair?.base || ''}`; }
 
-    document.querySelectorAll('.trade-mode').forEach(btn => { btn.addEventListener('click', () => { document.querySelectorAll('.trade-mode').forEach(b => b.classList.remove('active')); btn.classList.add('active'); state.tradeMode = btn.dataset.mode; const mi = document.getElementById('marginInline'); if (mi) mi.classList.toggle('hidden', state.tradeMode !== 'margin'); updateSubmitBtn(); }); });
+    document.querySelectorAll('.trade-mode').forEach(btn => { btn.addEventListener('click', () => { document.querySelectorAll('.trade-mode').forEach(b => b.classList.remove('active')); btn.classList.add('active'); state.tradeMode = btn.dataset.mode; const mi = document.getElementById('marginInline'); if (mi) mi.classList.toggle('hidden', state.tradeMode !== 'margin'); updateSubmitBtn(); if (state.tradeMode === 'margin') { checkMarginPairEnabled(); loadMarginStats(); loadMarginPositions(); updateMarginInfo(); } }); });
     const inlineLeverage = document.getElementById('inlineLeverage'), inlineLeverageTag = document.getElementById('inlineLeverageTag');
-    if (inlineLeverage) inlineLeverage.addEventListener('input', () => { state.leverageValue = parseFloat(inlineLeverage.value); if (inlineLeverageTag) inlineLeverageTag.textContent = `${state.leverageValue}x`; updateSubmitBtn(); });
+    if (inlineLeverage) inlineLeverage.addEventListener('input', () => { state.leverageValue = parseFloat(inlineLeverage.value); if (inlineLeverageTag) inlineLeverageTag.textContent = `${state.leverageValue}x`; updateSubmitBtn(); updateMarginInfo(); });
     document.querySelectorAll('.margin-inline-type').forEach(btn => btn.addEventListener('click', () => { document.querySelectorAll('.margin-inline-type').forEach(b => b.classList.remove('active')); btn.classList.add('active'); state.marginType = btn.dataset.mtype; if (inlineLeverage) inlineLeverage.max = state.marginType === 'isolated' ? '5' : '3'; }));
 
     // F9.5a/F9.5b/F9.12a: Route info and fee estimate from actual router quote API
@@ -1046,6 +1046,7 @@ document.addEventListener('DOMContentLoaded', () => {
             // F10.6 FIX: Route to margin contract when tradeMode is margin
             if (state.tradeMode === 'margin') {
                 if (!contracts.dex_margin) { showNotification('Margin contract not loaded', 'error'); submitBtn.disabled = false; updateSubmitBtn(); return; }
+                if (!marginEnabledPairIds.includes(state.activePairId)) { showNotification('This pair is not enabled for margin trading', 'warning'); submitBtn.disabled = false; updateSubmitBtn(); return; }
                 const marginSide = state.orderSide === 'buy' ? 'long' : 'short';
                 const size = Math.round(amount * PRICE_SCALE);
                 const leverage = state.leverageValue;
@@ -1104,7 +1105,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }));
     }
 
-    document.querySelectorAll('.pos-tab').forEach(tab => tab.addEventListener('click', () => { document.querySelectorAll('.pos-tab').forEach(t => t.classList.remove('active')); tab.classList.add('active'); document.querySelectorAll('.positions-content').forEach(c => c.classList.add('hidden')); const t = document.getElementById(tab.dataset.target); if (t) t.classList.remove('hidden'); }));
+    document.querySelectorAll('.pos-tab').forEach(tab => tab.addEventListener('click', () => { document.querySelectorAll('.pos-tab').forEach(t => t.classList.remove('active')); tab.classList.add('active'); document.querySelectorAll('.positions-content').forEach(c => c.classList.add('hidden')); const t = document.getElementById(tab.dataset.target); if (t) t.classList.remove('hidden'); if (tab.dataset.target === 'content-margin-positions') { loadMarginStats(); loadMarginPositions(); } }));
 
     // ═══════════════════════════════════════════════════════════════════════
     // Wallet UI
@@ -1270,22 +1271,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 addLiqSubmit.disabled = true;
                 addLiqSubmit.className = 'btn btn-full btn-wallet-gate';
                 addLiqSubmit.innerHTML = '<i class="fas fa-wallet"></i> Connect Wallet';
-            }
-        }
-
-        // --- Margin view: Open Position (F10E.9) ---
-        const marginFormCard = document.querySelector('.margin-form-card');
-        if (marginFormCard) marginFormCard.classList.toggle('wallet-gated-disabled', !connected);
-        const marginOpen = document.getElementById('marginOpenBtn');
-        if (marginOpen) {
-            if (connected) {
-                marginOpen.disabled = false;
-                marginOpen.classList.remove('btn-wallet-gate');
-                marginOpen.textContent = `Open ${state.marginSide === 'long' ? 'Long' : 'Short'}`;
-            } else {
-                marginOpen.disabled = true;
-                marginOpen.className = 'btn btn-full btn-wallet-gate';
-                marginOpen.innerHTML = '<i class="fas fa-wallet"></i> Connect Wallet';
             }
         }
 
@@ -1488,12 +1473,21 @@ document.addEventListener('DOMContentLoaded', () => {
     setTimeout(fetchOracleRefPrices, 2000);
 
     // ═══════════════════════════════════════════════════════════════════════
-    // Margin View
+    // Margin — Inline in Trade View (no standalone Margin tab)
     // ═══════════════════════════════════════════════════════════════════════
-    const leverageSlider = document.getElementById('leverageSlider'), leverageDisplay = document.querySelector('.leverage-display');
-    if (leverageSlider) leverageSlider.addEventListener('input', () => { state.leverageValue = parseFloat(leverageSlider.value); if (leverageDisplay) leverageDisplay.textContent = `${state.leverageValue}x`; updateMarginInfo(); });
-    document.querySelectorAll('.margin-type').forEach(btn => btn.addEventListener('click', () => { document.querySelectorAll('.margin-type').forEach(b => b.classList.remove('active')); btn.classList.add('active'); state.marginType = btn.dataset.type; if (leverageSlider) leverageSlider.max = state.marginType === 'isolated' ? '5' : '3'; if (state.leverageValue > parseFloat(leverageSlider?.max)) { state.leverageValue = parseFloat(leverageSlider.max); leverageSlider.value = state.leverageValue; if (leverageDisplay) leverageDisplay.textContent = `${state.leverageValue}x`; } updateMarginInfo(); }));
-    document.querySelectorAll('.side-btn').forEach(btn => btn.addEventListener('click', () => { document.querySelectorAll('.side-btn').forEach(b => b.classList.remove('active')); btn.classList.add('active'); state.marginSide = btn.classList.contains('long-btn') ? 'long' : 'short'; const ob = document.getElementById('marginOpenBtn'); if (ob) { ob.textContent = `Open ${state.marginSide === 'long' ? 'Long' : 'Short'}`; ob.className = `btn btn-full ${state.marginSide === 'long' ? 'btn-buy' : 'btn-sell'}`; } }));
+    // Margin enabled-pairs cache
+    let marginEnabledPairIds = [];
+    async function loadMarginEnabledPairs() {
+        try {
+            const { data } = await api.get('/margin/enabled-pairs');
+            if (data && Array.isArray(data.enabledPairIds)) marginEnabledPairIds = data.enabledPairIds;
+        } catch { /* keep empty */ }
+    }
+    function checkMarginPairEnabled() {
+        const warn = document.getElementById('marginPairWarning');
+        const enabled = marginEnabledPairIds.includes(state.activePairId);
+        if (warn) warn.classList.toggle('hidden', enabled);
+    }
 
     // F10.7 FIX: Maintenance margin BPS lookup matching contract tier table
     function getMaintenanceBps(leverage) {
@@ -1807,13 +1801,16 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function loadMarginPositions() {
+        const badge = document.querySelector('.margin-badge');
         if (!state.connected) {
             const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
             el('marginEquity', '—'); el('marginUsed', '—'); el('marginAvailable', '—');
+            if (badge) badge.textContent = '';
             return;
         }
         try {
             const { data } = await api.get(`/margin/positions?trader=${wallet.address}`);
+            if (badge) badge.textContent = Array.isArray(data) && data.length > 0 ? data.length : '';
             if (Array.isArray(data) && data.length > 0) {
                 const container = document.getElementById('marginPositionsList');
                 if (container) {
@@ -1921,32 +1918,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch { /* no positions from API */ }
     }
 
-    // Margin Open Position submit
-    const marginOpenBtn = document.getElementById('marginOpenBtn');
-    if (marginOpenBtn) marginOpenBtn.addEventListener('click', async () => {
-        if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-        if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
-        const size = parseFloat(document.getElementById('marginSize')?.value) || 0;
-        const margin = parseFloat(document.getElementById('marginAmount')?.value) || 0;
-        if (!size || !margin) { showNotification('Enter size and margin', 'warning'); return; }
-        if (size <= 0 || margin <= 0) { showNotification('Values must be positive', 'warning'); return; }
-        if (size > 9_000_000 || margin > 9_000_000) { showNotification('Value too large (max 9M)', 'warning'); return; }
-        const pairSelect = document.getElementById('marginPairSelect');
-        const pairId = pairSelect ? parseInt(pairSelect.value) : 0;
-        marginOpenBtn.disabled = true; marginOpenBtn.textContent = 'Opening...';
-        try {
-            // AUDIT-FIX F10.3: Open margin position via signed sendTransaction (not unsigned REST)
-            await wallet.sendTransaction([contractIx(
-                contracts.dex_margin,
-                buildOpenPositionArgs(wallet.address, pairId, state.marginSide, Math.round(size * 1e9), state.leverageValue, Math.round(margin * 1e9))
-            )]);
-            showNotification(`${state.marginSide.toUpperCase()} position opened: ${formatAmount(size)} @ ${state.leverageValue}x`, 'success');
-            await loadMarginPositions();
-            if (document.getElementById('marginSize')) document.getElementById('marginSize').value = '';
-            if (document.getElementById('marginAmount')) document.getElementById('marginAmount').value = '';
-        } catch (e) { showNotification(`Open position: ${e.message}`, 'error'); }
-        finally { marginOpenBtn.disabled = false; marginOpenBtn.textContent = `Open ${state.marginSide === 'long' ? 'Long' : 'Short'}`; }
-    });
+    // Margin open position is now handled inline in the Trade view submit handler
 
     // ═══════════════════════════════════════════════════════════════════════
     // Rewards View — Load from API
@@ -3188,6 +3160,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // AUDIT-FIX F10.10: Load contract addresses before any operations
         await loadContractAddresses();
         await loadPairs();
+        loadMarginEnabledPairs(); // async, non-blocking
         renderPairList(); renderBalances(); renderOpenOrders(); updateSubmitBtn();
         applyWalletGateAll(); // F10E.1: Apply wallet-gate to all forms on load
         loadTradeHistory(); loadPositionsTab();

@@ -14,6 +14,7 @@
 
 #![no_std]
 #![cfg_attr(target_arch = "wasm32", no_main)]
+#![allow(dead_code)]
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -119,6 +120,10 @@ fn position_key(pos_id: u64) -> Vec<u8> {
 }
 fn max_leverage_key(pair_id: u64) -> Vec<u8> {
     let mut k = Vec::from(&b"mrg_maxl_"[..]);
+    k.extend_from_slice(&u64_to_decimal(pair_id)); k
+}
+fn margin_enabled_key(pair_id: u64) -> Vec<u8> {
+    let mut k = Vec::from(&b"mrg_ena_"[..]);
     k.extend_from_slice(&u64_to_decimal(pair_id)); k
 }
 fn maintenance_margin_key_fn() -> Vec<u8> {
@@ -321,9 +326,40 @@ pub fn set_mark_price(caller: *const u8, pair_id: u64, price: u64) -> u32 {
     0
 }
 
+/// Enable margin trading on a pair (admin only)
+/// Returns: 0=success, 1=not admin
+pub fn enable_margin_pair(caller: *const u8, pair_id: u64) -> u32 {
+    let mut c = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    let real_caller = get_caller();
+    if real_caller.0 != c { return 200; }
+    if !require_admin(&c) { return 1; }
+    save_u64(&margin_enabled_key(pair_id), 1);
+    log_info("Margin pair enabled");
+    0
+}
+
+/// Disable margin trading on a pair (admin only)
+/// Returns: 0=success, 1=not admin
+pub fn disable_margin_pair(caller: *const u8, pair_id: u64) -> u32 {
+    let mut c = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    let real_caller = get_caller();
+    if real_caller.0 != c { return 200; }
+    if !require_admin(&c) { return 1; }
+    save_u64(&margin_enabled_key(pair_id), 0);
+    log_info("Margin pair disabled");
+    0
+}
+
+/// Check if margin is enabled for a pair
+pub fn is_margin_enabled(pair_id: u64) -> u64 {
+    load_u64(&margin_enabled_key(pair_id))
+}
+
 /// Open a new margin position
 /// Returns: 0=success, 1=paused, 2=invalid leverage, 3=insufficient margin,
-///          4=max positions, 5=reentrancy, 6=no mark price
+///          4=max positions, 5=reentrancy, 6=no mark price, 7=pair not margin-enabled
 pub fn open_position(
     trader: *const u8, pair_id: u64, side: u8, size: u64,
     leverage: u64, margin_amount: u64,
@@ -340,6 +376,9 @@ pub fn open_position(
         reentrancy_exit();
         return 200;
     }
+
+    // Check pair is enabled for margin
+    if load_u64(&margin_enabled_key(pair_id)) != 1 { reentrancy_exit(); return 7; }
 
     // Validate leverage
     let max_lev = load_u64(&max_leverage_key(pair_id));
@@ -1020,6 +1059,29 @@ pub extern "C" fn call() {
             buf.extend_from_slice(&u64_to_bytes(load_u64(INSURANCE_FUND_KEY)));
             moltchain_sdk::set_return_data(&buf);
         }
+        // 21 = enable_margin_pair(caller[32], pair_id[8])
+        21 => {
+            if args.len() >= 41 {
+                let pair_id = bytes_to_u64(&args[33..41]);
+                let r = enable_margin_pair(args[1..33].as_ptr(), pair_id);
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 22 = disable_margin_pair(caller[32], pair_id[8])
+        22 => {
+            if args.len() >= 41 {
+                let pair_id = bytes_to_u64(&args[33..41]);
+                let r = disable_margin_pair(args[1..33].as_ptr(), pair_id);
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 23 = is_margin_enabled(pair_id[8])
+        23 => {
+            if args.len() >= 9 {
+                let pair_id = bytes_to_u64(&args[1..9]);
+                moltchain_sdk::set_return_data(&u64_to_bytes(is_margin_enabled(pair_id)));
+            }
+        }
         _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
     }
 }
@@ -1041,6 +1103,8 @@ mod tests {
         assert_eq!(initialize(admin.as_ptr()), 0);
         // Set mark price for pair 1: 1.0 (scaled by 1e9)
         set_mark_price(admin.as_ptr(), 1, 1_000_000_000);
+        // Enable margin for pair 1
+        enable_margin_pair(admin.as_ptr(), 1);
         admin
     }
 
@@ -1255,7 +1319,9 @@ mod tests {
 
     #[test]
     fn test_open_position_no_mark_price() {
-        let _admin = setup();
+        let admin = setup();
+        // Enable margin for pair 2 but don't set a mark price
+        enable_margin_pair(admin.as_ptr(), 2);
         let trader = [2u8; 32];
         test_mock::set_caller(trader);
         assert_eq!(open_position(trader.as_ptr(), 2, SIDE_LONG, 1000, 2, 200), 6);
@@ -1373,10 +1439,10 @@ mod tests {
         // 2x long, margin=500M, size=1B at price 1.0
         test_mock::set_caller(trader);
         open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000);
-        // Raise mark price to 2.5 → notional=2.5B
-        // margin_ratio = 500M / 2.5B = 2000 bps = 20% < 25% maint → liquidatable
+        // Drop mark price to 0.6 → PnL = -400M, effective = 100M, notional = 600M
+        // margin_ratio = 100M / 600M * 10000 = 1666 bps < 2500 maint → liquidatable
         test_mock::set_caller(admin);
-        set_mark_price(admin.as_ptr(), 1, 2_500_000_000);
+        set_mark_price(admin.as_ptr(), 1, 600_000_000);
         test_mock::set_caller(liquidator);
         assert_eq!(liquidate(liquidator.as_ptr(), 1), 0);
         let data = storage_get(&position_key(1)).unwrap();
@@ -1394,9 +1460,10 @@ mod tests {
         // maint_margin_bps=100 = 1%
         test_mock::set_caller(trader);
         open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 50, 20_000_000);
-        // Mark price 3.0 → notional=3B, ratio = 20M/3B ≈ 6.67bps < 100bps → liquidatable
+        // Drop mark price to 0.985 → PnL = -15M, effective = 5M, notional = 985M
+        // ratio = 5M / 985M * 10000 ≈ 50 bps < 100 bps maint → liquidatable
         test_mock::set_caller(admin);
-        set_mark_price(admin.as_ptr(), 1, 3_000_000_000);
+        set_mark_price(admin.as_ptr(), 1, 985_000_000);
         test_mock::set_caller(liquidator);
         assert_eq!(liquidate(liquidator.as_ptr(), 1), 0);
     }
@@ -1424,24 +1491,23 @@ mod tests {
 
         // For 5x tier: initial_margin_bps=2000, maint=1000bps=10%, penalty=500bps
         // notional=1B, required margin = 1B * 2000/10000 = 200M
-        // Give 200M = exactly at initial margin, below maintenance for a 2x price increase
         test_mock::set_caller(trader_a);
         let r1 = open_position(trader_a.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 5, 200_000_000);
         assert_eq!(r1, 0, "open_position 5x should succeed");
 
         let before = get_insurance_fund();
-        // Raise mark price to 2.5 → notional=2.5B
-        // margin_ratio = 200M/2.5B = 800bps < 1000bps maint → liquidatable
+        // Drop mark price to 0.85 → PnL=-150M, effective=50M, notional=850M
+        // ratio = 50M/850M*10000 = 588 bps < 1000 maint → liquidatable
         test_mock::set_caller(_admin);
-        set_mark_price(_admin.as_ptr(), 1, 2_500_000_000);
+        set_mark_price(_admin.as_ptr(), 1, 850_000_000);
         test_mock::set_caller(liquidator);
         let liq1 = liquidate(liquidator.as_ptr(), 1);
         assert_eq!(liq1, 0, "liquidate pos 1 should succeed");
         let after_a = get_insurance_fund();
         let insurance_a = after_a - before;
-        // penalty = 2.5B * 500/10000 = 125M, capped to min(125M, 200M) = 125M
-        // insurance = 125M / 2 = 62.5M → 62_500_000
-        assert_eq!(insurance_a, 62_500_000);
+        // penalty = 850M * 500/10000 = 42.5M = 42_500_000
+        // insurance = 42.5M / 2 = 21_250_000
+        assert_eq!(insurance_a, 21_250_000);
 
         // Reset price for 2nd position
         test_mock::set_caller(_admin);
@@ -1451,18 +1517,18 @@ mod tests {
         test_mock::set_caller(trader_b);
         let r2 = open_position(trader_b.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000);
         assert_eq!(r2, 0, "open_position 2x should succeed");
-        // Raise mark price to 2.5: notional = 1B * 2.5 = 2.5B
-        // margin_ratio = 500M/2.5B = 2000bps < 2500bps → liquidatable
+        // Drop mark price to 0.6 → PnL=-400M, effective=100M, notional=600M
+        // ratio = 100M/600M*10000 = 1666 bps < 2500 maint → liquidatable
         test_mock::set_caller(_admin);
-        set_mark_price(_admin.as_ptr(), 1, 2_500_000_000);
-        // penalty = 2.5B * 300/10000 = 75M, capped to min(75M, 500M) = 75M
-        // insurance = 75M / 2 = 37_500_000
+        set_mark_price(_admin.as_ptr(), 1, 600_000_000);
+        // penalty = 600M * 300/10000 = 18M
+        // insurance = 18M / 2 = 9_000_000
         test_mock::set_caller(liquidator);
         let liq2 = liquidate(liquidator.as_ptr(), 2);
         assert_eq!(liq2, 0, "liquidate pos 2 should succeed");
         let after_b = get_insurance_fund();
         let insurance_b = after_b - after_a;
-        assert_eq!(insurance_b, 37_500_000);
+        assert_eq!(insurance_b, 9_000_000);
     }
 
     #[test]
@@ -1474,9 +1540,9 @@ mod tests {
         // 5x tier: required = 1B * 2000/10000 = 200M, maint=1000bps=10%
         test_mock::set_caller(trader);
         open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 5, 200_000_000);
-        // Raise mark price → notional grows → position becomes unhealthy
+        // Drop mark price → position becomes unhealthy
         test_mock::set_caller(admin);
-        set_mark_price(admin.as_ptr(), 1, 3_000_000_000);
+        set_mark_price(admin.as_ptr(), 1, 850_000_000);
         let before = get_insurance_fund();
         test_mock::set_caller(liq);
         liquidate(liq.as_ptr(), 1);
@@ -1702,5 +1768,52 @@ mod tests {
         let ret = test_mock::get_return_data();
         let unlock = bytes_to_u64(&ret);
         assert_eq!(unlock, 500_000_000); // no price change → full margin returned
+    }
+
+    #[test]
+    fn test_enable_margin_pair() {
+        let admin = setup();
+        // Pair 2 is NOT enabled
+        assert_eq!(is_margin_enabled(2), 0);
+        // Enable it
+        assert_eq!(enable_margin_pair(admin.as_ptr(), 2), 0);
+        assert_eq!(is_margin_enabled(2), 1);
+    }
+
+    #[test]
+    fn test_disable_margin_pair() {
+        let admin = setup();
+        // Pair 1 was enabled in setup
+        assert_eq!(is_margin_enabled(1), 1);
+        assert_eq!(disable_margin_pair(admin.as_ptr(), 1), 0);
+        assert_eq!(is_margin_enabled(1), 0);
+    }
+
+    #[test]
+    fn test_enable_margin_pair_not_admin() {
+        let _admin = setup();
+        let rando = [99u8; 32];
+        test_mock::set_caller(rando);
+        assert_eq!(enable_margin_pair(rando.as_ptr(), 2), 1);
+    }
+
+    #[test]
+    fn test_open_position_pair_not_enabled() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        // Pair 2 has no margin enabled — should return 7
+        assert_eq!(open_position(trader.as_ptr(), 2, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 7);
+    }
+
+    #[test]
+    fn test_disable_then_open_fails() {
+        let admin = setup();
+        // Disable pair 1
+        assert_eq!(disable_margin_pair(admin.as_ptr(), 1), 0);
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        // Should fail with error 7 (pair not margin-enabled)
+        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 7);
     }
 }
