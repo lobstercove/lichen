@@ -303,7 +303,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // from deploy-manifest.json, resolved at runtime via getSymbolRegistry.
     const contracts = {
         dex_core: null, dex_amm: null, dex_router: null, dex_margin: null,
-        dex_rewards: null, dex_governance: null, prediction_market: null,
+        dex_rewards: null, dex_governance: null, dex_analytics: null, prediction_market: null,
     };
 
     async function loadContractAddresses() {
@@ -318,20 +318,28 @@ document.addEventListener('DOMContentLoaded', () => {
                 contracts.dex_margin = map['DEXMARGIN'] || null;
                 contracts.dex_rewards = map['DEXREWARDS'] || null;
                 contracts.dex_governance = map['DEXGOV'] || null;
+                contracts.dex_analytics = map['ANALYTICS'] || null;
                 contracts.prediction_market = map['PREDICT'] || null;
                 console.log('[DEX] Contract addresses loaded from symbol registry');
             }
         } catch (e) {
             console.warn('[DEX] Symbol registry unavailable, trying deploy manifest:', e.message);
         }
-        // Fallback: hard-coded testnet addresses from deploy-manifest.json
-        if (!contracts.dex_core) contracts.dex_core = '216MacD82KfB2hAeKR17M63ZXfURJQZnzDq2ho7SeJR7';
-        if (!contracts.dex_amm) contracts.dex_amm = 'AANMpDkSnvSKa6PuaLQuRDU4SMzao7Yx3nLKzC2iatBn';
-        if (!contracts.dex_router) contracts.dex_router = 'D7n4R73KPuHJcZz7tUEjAyXk1vrwUXPUtQb6cM5agccH';
-        if (!contracts.dex_margin) contracts.dex_margin = 'GJkJrM3DyDqxtMPL3BQyvrDNu3kaJCQCk9RDSTuMo8yz';
-        if (!contracts.dex_rewards) contracts.dex_rewards = 'dPUYAb3Ld8pZJiCsXkZ838CybU4v8k1ZCeYebX9cS3K';
-        if (!contracts.dex_governance) contracts.dex_governance = 'GFDF7SdCMhveUCU92japioP3uC6qA66EChQ3jbkFc5Bi';
-        if (!contracts.prediction_market) contracts.prediction_market = 'HE5DVQuG6mVNsvprmvLJr1gZ3nRmKNgytXZNc6mZjjXJ';
+        // Fallback: genesis-deployed addresses (deterministic from deployer + WASM)
+        // WARNING: These MUST match the live genesis auto-deploy. If contracts are
+        // recompiled, addresses change. Always prefer the symbol registry (above).
+        const needsFallback = !contracts.dex_core;
+        if (!contracts.dex_core) contracts.dex_core = '7QvQ1dxFTdSk9aSzbBe2gHCJH1bSRBDwVdPTn9M5iCds';
+        if (!contracts.dex_amm) contracts.dex_amm = '72AvbSmnkv82Bsci9BHAufeAGMTycKQX5Y6DL9ghTHay';
+        if (!contracts.dex_router) contracts.dex_router = 'FwAxYo2bKmCe1c5gZZjvuyopJMDgm1T9CAWr2svB1GPf';
+        if (!contracts.dex_margin) contracts.dex_margin = '8rTFuvbHZY89c3d9NktefAbHfjRoYh3vYJoC7eVgcw3W';
+        if (!contracts.dex_rewards) contracts.dex_rewards = '2okkNYSYPdN1jvhnhpXTmseFdXzgAgQXSCkQhgCkNiqC';
+        if (!contracts.dex_governance) contracts.dex_governance = '7BKw55h387pVAUs1dNApn2rfARBcGnnncXyb4WZDdGru';
+        if (!contracts.dex_analytics) contracts.dex_analytics = 'FBE25S5yGHUa6q38P8SjVXviw6dkoqD7oCMUuxj1aRof';
+        if (!contracts.prediction_market) contracts.prediction_market = 'J8sMvYFXW4ZCHc488KJ1zmZq1sQMTWyWfr8qnzUwwEyD';
+        if (needsFallback) {
+            console.warn('[DEX] Using fallback contract addresses — symbol registry was unavailable. Transactions may fail if contracts were recompiled.');
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════

@@ -688,9 +688,39 @@ assertEqual(hexToBytes('abcd').length, 2, 'hexToBytes length');
 assertEqual(bytesToHex(new Uint8Array([0, 255, 128])), '00ff80', 'bytesToHex');
 
 // ═══════════════════════════════════════════════════════════════════════════
+// DEX Plan Phase 1 — Contract Address Resolution
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n── DEX P1: Contract Address Resolution ──');
+
+// P1.1: contracts object includes all 8 DEX contracts (including dex_analytics)
+assert(dexSource.includes('dex_analytics: null'), 'P1.1: contracts object includes dex_analytics');
+assert(dexSource.includes("map['ANALYTICS']"), 'P1.2: ANALYTICS symbol mapped from registry');
+
+// P1.3: Fallback addresses match current genesis (not stale deploy-manifest)
+assert(dexSource.includes('7QvQ1dxFTdSk9aSzbBe2gHCJH1bSRBDwVdPTn9M5iCds'), 'P1.3: dex_core fallback = genesis address');
+assert(dexSource.includes('72AvbSmnkv82Bsci9BHAufeAGMTycKQX5Y6DL9ghTHay'), 'P1.3: dex_amm fallback = genesis address');
+assert(dexSource.includes('FwAxYo2bKmCe1c5gZZjvuyopJMDgm1T9CAWr2svB1GPf'), 'P1.3: dex_router fallback = genesis address');
+assert(dexSource.includes('J8sMvYFXW4ZCHc488KJ1zmZq1sQMTWyWfr8qnzUwwEyD'), 'P1.3: prediction_market fallback = genesis address');
+// Stale addresses from old deploy_dex.py must NOT be present
+assert(!dexSource.includes('216MacD82KfB2hAeKR17M63ZXfURJQZnzDq2ho7SeJR7'), 'P1.3: stale dex_core address removed');
+assert(!dexSource.includes('AANMpDkSnvSKa6PuaLQuRDU4SMzao7Yx3nLKzC2iatBn'), 'P1.3: stale dex_amm address removed');
+
+// P1.5: Fallback warning when registry unavailable
+assert(dexSource.includes('Using fallback contract addresses'), 'P1.5: Fallback warning logged');
+assert(dexSource.includes('needsFallback'), 'P1.5: needsFallback flag tracks registry miss');
+
+// P1.6: loadContractAddresses called BEFORE loadPairs (init order)
+{
+    const initIdx = dexSource.indexOf('async function init()');
+    const loadContractIdx = dexSource.indexOf('await loadContractAddresses()', initIdx);
+    const loadPairsIdx = dexSource.indexOf('await loadPairs()', initIdx);
+    assert(loadContractIdx < loadPairsIdx, 'P1.6: loadContractAddresses called before loadPairs in init');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Summary
 // ═══════════════════════════════════════════════════════════════════════════
 console.log(`\n${'═'.repeat(60)}`);
-console.log(`  Phase 10 + Oracle Integration Tests: ${passed} passed, ${failed} failed, ${passed + failed} total`);
+console.log(`  DEX Tests: ${passed} passed, ${failed} failed, ${passed + failed} total`);
 console.log(`${'═'.repeat(60)}\n`);
 process.exit(failed > 0 ? 1 : 0);
