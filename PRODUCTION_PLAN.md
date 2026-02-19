@@ -846,46 +846,66 @@ Each contract must be validated for: correct opcode dispatch, proper authority c
 ## PHASE 14: PROGRAMS PLAYGROUND (`programs/` — 18,014 lines)
 
 ### 14.1 Landing Page (`index.html` — 1,896 lines)
-- [ ] Verify showcase / documentation
-- [ ] Verify links to playground
-- [ ] **Findings:**
+- [x] Verify showcase / documentation — 37 example cards, wizard tabs, language tabs, static HTML — clean
+- [x] Verify links to playground — all hardcoded hrefs to `playground.html?example=…` — safe
+- [x] **Findings:** No critical issues. Minor: `rpcCall()` in landing.js duplicates SDK pattern (cosmetic, not fixing).
 
 ### 14.2 Playground (`playground.html` + `playground-complete.js` — 8,772 lines)
-- [ ] Verify code editor works
-- [ ] Verify compile button compiles real Rust to WASM
-- [ ] Verify deploy sends real transaction to chain
-- [ ] Verify contract interaction after deploy
-- [ ] Verify example contracts load correctly
-- [ ] Verify error display from compilation/deployment
-- [ ] Verify wallet connection for signing deploys
-- [ ] **Findings:**
+- [x] Verify code editor works — Monaco CDN loader, init, language switch — correct
+- [x] Verify compile button compiles real Rust to WASM — `buildProgram()` POSTs to `{rpcUrl}/compile` — correct
+- [x] Verify deploy sends real transaction to chain — `deployProgram()` uses `ProgramDeployer` — correct
+- [x] Verify contract interaction after deploy — `callFunctionBtn` → `testProgramAddr` + `testArgs` — correct
+- [x] Verify example contracts load correctly — `resolveExampleFiles()` fetches from `examples/` dir — correct
+- [x] Verify error display from compilation/deployment — `updateProblemsPanel()` — **FINDING: XSS**
+- [x] Verify wallet connection for signing deploys — `MoltChainWallet` via `window.nacl` — correct
+- [x] **Findings:**
+  - **F14.1 (Critical):** `addTerminalLine()` (L3930-3958) — `text` injected unescaped into innerHTML for all types. Link type also lacks URL scheme validation, allowing `javascript:` URIs.
+  - **F14.2 (Critical):** `updateDeployedProgramsList()` (L3830-3860) — `program.metadata?.name` from RPC injected unescaped into innerHTML. `program.programId` interpolated into `onclick="Playground.viewProgram('${program.programId}')"` — allows quote injection for arbitrary JS.
+  - **F14.3 (Critical):** `updateProblemsPanel()` (L3900-3925) — `err.message`, `err.file` from compiler response injected unescaped via innerHTML.
+  - **F14.4 (Critical):** `renderProgramCalls()` (L962-995) — `call.function`, `call.caller` from RPC data injected unescaped into innerHTML.
+  - **F14.5 (Critical):** Storage viewer (L4444-4449) — `entry.key`, `entry.value` from `getProgramStorage()` RPC injected unescaped.
+  - **F14.6 (Critical):** `displayProgramAbi()` (L4488-4555) — `fn.name`, `fn.description`, `p.name`, `p.type`, `ev.name`, `f.name`, `f.type`, `abi.template` from RPC all injected unescaped.
+  - **F14.7 (Medium):** `updateWalletDropdown()` (L3608-3630) — `item.name` from localStorage injected unescaped (self-XSS via localStorage poisoning).
+  - **F14.8 (Low):** `sendTransfer()` (L3702-3748) — No amount bounds check; `parseFloat` accepts `NaN`, negative, or huge values.
 
 ### 14.3 SDK Module (`moltchain-sdk.js` — 1,387 lines)
-- [ ] Verify RPC methods
-- [ ] Verify transaction construction
-- [ ] Verify keypair handling
-- [ ] **Findings:**
+- [x] Verify RPC methods — JSON-RPC client with retry, cache, timeout, AbortController — correct
+- [x] Verify transaction construction — `TransactionBuilder` with `encodeMessage`, `encodeTransaction` — correct
+- [x] Verify keypair handling — Ed25519 via `window.nacl.sign.keyPair.fromSeed()` — correct
+- [x] **Findings:**
+  - **F14.9 (Medium):** Duplicate `getAccount()` method defined twice (L313 and L471) — second definition silently shadows first.
+  - **F14.10 (Low):** `wallet.export(password)` ignores the password parameter — returns seed as plaintext base58. By design for dev playground but misleading API.
 
 ---
 
-## PHASE 15: MARKETPLACE (`marketplace/` — 6,152 lines)
+## PHASE 15: MARKETPLACE (`marketplace/` — 7,843 lines, 22 files) ✅
 
 ### 15.1 Browse / Listings
-- [ ] Verify NFT listings load from chain
-- [ ] Verify search / filter
-- [ ] Verify listing detail
-- [ ] **Findings:**
+- [x] Verify NFT listings load from chain
+- [x] Verify search / filter
+- [x] Verify listing detail
+- [x] **Findings:**
+  - **M-1 (HIGH):** XSS in marketplace.js — `loadFeaturedCollections()`, `loadTopCreators()`, `loadRecentSales()` injected raw RPC data into innerHTML. `escapeHtml()` existed but was only applied to `loadTrendingNFTs()`. **Fixed:** applied `escapeHtml()` to all collection.id/name/banner/avatar/floor, creator.id/avatar/name, sale.id/image/nft/collection/price/from/to.
+  - **M-3 (HIGH):** XSS in browse.js list view — list view rendering used raw `nft.id`, `nft.collection`, `nft.name`, `nft.price`, `nft.rarity` in innerHTML. Grid view was escaped, list view was not. Also `loadCollections()` injected raw collection ids/names into filter checkboxes. **Fixed:** applied `escapeHtml()` to all list view fields; collection names/ids already fixed in prior audit pass.
 
 ### 15.2 Create / Mint
-- [ ] Verify NFT minting flow
-- [ ] Verify metadata upload
-- [ ] Verify listing creation
-- [ ] **Findings:**
+- [x] Verify NFT minting flow
+- [x] Verify metadata upload
+- [x] Verify listing creation
+- [x] **Findings:**
+  - **M-5 (MED):** XSS in create.js — `showFilePreview()` rendered `file.name` unescaped in innerHTML. `renderProperties()` injected `prop.trait_type`/`prop.value` into `value="..."` attributes without quote escaping, allowing attribute breakout. **Fixed:** added `escapeHtml()` to create.js; applied to `file.name`, `prop.trait_type`, `prop.value`.
+  - **M-7 (MED):** No mint input length limits — `mintNFT()` had no name/description length caps. Unbounded metadata could be stored on-chain or cause DoS in listing displays. **Fixed:** added 128-char name limit and 2048-char description limit, both checked before upload validation.
 
 ### 15.3 Profile
-- [ ] Verify user profile loads owned NFTs
-- [ ] Verify transaction history
-- [ ] **Findings:**
+- [x] Verify user profile loads owned NFTs
+- [x] Verify transaction history
+- [x] **Findings:**
+  - **M-2 (HIGH):** XSS in profile.js — no `escapeHtml()` anywhere. `renderNFTGrid()` and `loadActivity()` injected raw RPC data (nft.name, nft.collection, event.type/from/to/token in onclick) into innerHTML. **Fixed:** added `escapeHtml()` + `safeImageUrl()`; applied to all NFT grid fields, all activity table fields, image URLs validated via `safeImageUrl()` with `encodeURI()`.
+  - **M-4 (MED):** XSS in item.js — `loadMoreFromCollection()` injected raw `nft.name`, `nft.id`/`nft.token` in onclick, raw `imageStyle`. `loadActivity()` injected raw `event.type`, `event.from`, `event.to`. **Fixed:** added `safeImageUrl()`; applied `escapeHtml()` to all injected fields; image URLs validated and encoded.
+  - **M-6 (MED):** Image URL injection — profile.js, item.js, and browse.js constructed `background-image: url(...)` from unvalidated RPC image URLs with no protocol check, allowing `javascript:` or CSS injection. **Fixed:** added `safeImageUrl()` (allows http/https/ipfs/linear-gradient only) to profile.js and item.js; browse.js `normalizeImage()` updated to reject non-standard protocols. All URLs encoded via `encodeURI()`.
+
+**Tests:** 101 tests in `tests/test_marketplace_audit.js` — all passing.
+**Commit:** `7c275bf`
 
 ---
 
