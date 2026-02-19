@@ -13,17 +13,28 @@ ws.on('open', () => {
         if (done) return;
         done = true;
         ws.close();
-        console.log('WS CLOSED OK — received ' + msgCount + ' messages');
+        if (msgCount < 1) {
+            console.error('WS FAIL — received 0 messages in 3 seconds');
+            process.exit(1);
+        }
+        console.log('WS PASS — received ' + msgCount + ' messages');
         process.exit(0);
     }, 3000);
 });
 
 ws.on('message', (d) => {
     msgCount++;
-    console.log('MSG:', d.toString().substring(0, 200));
+    const text = d.toString().substring(0, 200);
+    try {
+        JSON.parse(d.toString());
+    } catch (e) {
+        console.error('WS FAIL — non-JSON message:', text);
+        process.exit(1);
+    }
+    console.log('MSG:', text);
 });
 
 ws.on('error', (e) => {
-    console.log('WS ERROR:', e.message);
+    console.error('WS ERROR:', e.message);
     process.exit(1);
 });

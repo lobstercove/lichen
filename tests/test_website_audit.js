@@ -25,8 +25,31 @@ function extractFunction(source, name) {
     let depth = 0;
     const start = match.index;
     for (let i = start; i < source.length; i++) {
-        if (source[i] === '{') depth++;
-        if (source[i] === '}') { depth--; if (depth === 0) return source.slice(start, i + 1); }
+        const ch = source[i];
+        // Skip string literals and template literals
+        if (ch === '"' || ch === "'" || ch === '`') {
+            const q = ch;
+            i++;
+            while (i < source.length && source[i] !== q) {
+                if (source[i] === '\\') i++; // skip escaped char
+                i++;
+            }
+            continue;
+        }
+        // Skip single-line comments
+        if (ch === '/' && source[i + 1] === '/') {
+            while (i < source.length && source[i] !== '\n') i++;
+            continue;
+        }
+        // Skip multi-line comments
+        if (ch === '/' && source[i + 1] === '*') {
+            i += 2;
+            while (i < source.length - 1 && !(source[i] === '*' && source[i + 1] === '/')) i++;
+            i++;
+            continue;
+        }
+        if (ch === '{') depth++;
+        if (ch === '}') { depth--; if (depth === 0) return source.slice(start, i + 1); }
     }
     return null;
 }

@@ -36,12 +36,32 @@ const providerRouterSrc = fs.readFileSync(path.join(extRoot, 'core', 'provider-r
 
 // ── Extract escapeHtml / escapeHtmlExt from source files ──
 function extractEscapeHtml(src, fnName) {
-  const regex = new RegExp(`function ${fnName}\\(str\\)\\s*\\{[^}]+\\}`, 's');
+  const regex = new RegExp(`function ${fnName}\\(str\\)\\s*\\{`);
   const match = src.match(regex);
   if (!match) return null;
-  // eslint-disable-next-line no-eval
-  const fn = new Function('str', match[0].replace(`function ${fnName}(str)`, '').replace(/^\s*\{/, '').replace(/\}\s*$/, ''));
-  return fn;
+  let depth = 0;
+  const start = match.index;
+  for (let i = start; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === '"' || ch === "'" || ch === '`') {
+      const q = ch;
+      i++;
+      while (i < src.length && src[i] !== q) {
+        if (src[i] === '\\') i++;
+        i++;
+      }
+      continue;
+    }
+    if (ch === '{') depth++;
+    if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        const body = src.slice(start, i + 1).replace(`function ${fnName}(str)`, '').replace(/^\s*\{/, '').replace(/\}\s*$/, '');
+        return new Function('str', body);
+      }
+    }
+  }
+  return null;
 }
 
 // Build escapeHtml from nfts.js source

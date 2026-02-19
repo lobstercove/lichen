@@ -1,4 +1,5 @@
 // Test: Verify encodeTransaction signature format matches Rust bincode Vec<[u8; 64]>
+const assert = require('assert');
 
 // Inline minimal helpers (extracted from bincode.ts logic)
 function encodeU64LE(value) {
@@ -51,16 +52,16 @@ function encodeTransaction(signatures, messageBytes) {
   const result = encodeTransaction([sigHex], message);
 
   // Expected: 8 (vec len) + 64 (sig) + 40 (message) = 112
-  console.assert(result.length === 112, `Expected 112, got ${result.length}`);
+  assert.strictEqual(result.length, 112, `Expected 112, got ${result.length}`);
 
   // Vec length = 1 (little-endian u64)
   const view = new DataView(result.buffer);
   const vecLen = Number(view.getBigUint64(0, true));
-  console.assert(vecLen === 1, `Expected vec len 1, got ${vecLen}`);
+  assert.strictEqual(vecLen, 1, `Expected vec len 1, got ${vecLen}`);
 
   // Signature bytes match (no length prefix)
   for (let i = 0; i < 64; i++) {
-    console.assert(result[8 + i] === i, `Sig byte ${i} mismatch`);
+    assert.strictEqual(result[8 + i], i, `Sig byte ${i} mismatch`);
   }
   console.log('Test 1 PASSED: signature encoding matches Rust bincode');
 }
@@ -69,9 +70,9 @@ function encodeTransaction(signatures, messageBytes) {
 {
   try {
     encodeTransaction(['aabb'], new Uint8Array(1));
-    console.assert(false, 'Should have thrown');
+    assert.fail('Should have thrown');
   } catch (e) {
-    console.assert(e.message.includes('64 bytes'), `Wrong error: ${e.message}`);
+    assert.ok(e.message.includes('64 bytes'), `Wrong error: ${e.message}`);
     console.log('Test 2 PASSED: rejects short signature');
   }
 }
@@ -82,10 +83,10 @@ function encodeTransaction(signatures, messageBytes) {
   const sig2 = 'ff'.repeat(64);
   const result = encodeTransaction([sig1, sig2], new Uint8Array(10));
   // 8 + 64 + 64 + 10 = 146
-  console.assert(result.length === 146, `Expected 146, got ${result.length}`);
+  assert.strictEqual(result.length, 146, `Expected 146, got ${result.length}`);
   const view = new DataView(result.buffer);
   const vecLen = Number(view.getBigUint64(0, true));
-  console.assert(vecLen === 2, `Expected vec len 2, got ${vecLen}`);
+  assert.strictEqual(vecLen, 2, `Expected vec len 2, got ${vecLen}`);
   console.log('Test 3 PASSED: multiple signatures');
 }
 

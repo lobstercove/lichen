@@ -6,7 +6,7 @@
 # ═══════════════════════════════════════════════════════════════════════════════
 set -euo pipefail
 
-BASE="http://localhost:8899/api/v1"
+BASE="${MOLT_RPC_URL:-http://localhost:8899}/api/v1"
 PASS=0
 FAIL=0
 SKIP=0

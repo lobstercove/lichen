@@ -952,7 +952,7 @@ async def main() -> int:
             resp = await conn._rpc("requestAirdrop", [str(kp.public_key()), 100])
             report("PASS", f"{label} funded (100 MOLT)")
         except Exception as e:
-            report("PASS", f"{label} airdrop skipped: {e}")
+            report("SKIP", f"{label} airdrop skipped: {e}")
 
     # Ensure secondary has funds via deployer transfer as fallback
     try:
@@ -966,7 +966,7 @@ async def main() -> int:
             await wait_tx(conn, sig)
             report("PASS", f"secondary funded via transfer (10 MOLT)")
     except Exception as e:
-        report("PASS", f"secondary transfer fallback: {e}")
+        report("SKIP", f"secondary transfer fallback: {e}")
 
     # Discover contracts
     contracts = await discover_contracts(conn)
@@ -1039,7 +1039,7 @@ async def main() -> int:
             else:
                 report("PASS", "prediction_market.rest_price_history endpoint reachable (no data)")
     except Exception as e:
-        report("PASS", f"prediction_market.rest_price_history skip (API: {e})")
+        report("SKIP", f"prediction_market.rest_price_history skip (API: {e})")
 
     # ─── Stats RPC Validation (all 16 new getDex*Stats / get*Stats methods) ───
     import urllib.request
@@ -1064,7 +1064,7 @@ async def main() -> int:
                 else:
                     report("PASS", f"rpc.{method} returned null (contract not deployed)")
         except Exception as e:
-            report("PASS", f"rpc.{method} skip ({e})")
+            report("SKIP", f"rpc.{method} skip ({e})")
 
     # ─── REST Stats Endpoints Validation ───
     rest_stats_endpoints = [
@@ -1084,7 +1084,7 @@ async def main() -> int:
                 else:
                     report("FAIL", f"rest{endpoint} no success field")
         except Exception as e:
-            report("PASS", f"rest{endpoint} skip ({e})")
+            report("SKIP", f"rest{endpoint} skip ({e})")
 
     # ─── Extended RPC Read Methods ───
     extended_rpc_methods = [
@@ -1177,7 +1177,7 @@ async def main() -> int:
                 else:
                     report("PASS", f"rpc.{method} null result (acceptable)")
         except Exception as e:
-            report("PASS", f"rpc.{method} skip ({e})")
+            report("SKIP", f"rpc.{method} skip ({e})")
 
     # ─── Extended REST API Endpoints ───
     rest_extended = [
@@ -1209,7 +1209,7 @@ async def main() -> int:
             else:
                 report("FAIL", f"rest.{http_method}{endpoint} HTTP {he.code}")
         except Exception as e:
-            report("PASS", f"rest.{http_method}{endpoint} skip ({e})")
+            report("SKIP", f"rest.{http_method}{endpoint} skip ({e})")
 
     # ─── WebSocket Subscription Tests ───
     ws_url = RPC_URL.replace("http://", "ws://").replace("https://", "wss://") + "/ws"
@@ -1267,7 +1267,7 @@ async def main() -> int:
                 report("PASS", f"ws.subscribe({sub_type}) -> handshake returned non-101 (WS may not be enabled)")
             sock.close()
         except Exception as e:
-            report("PASS", f"ws.subscribe({sub_type}) skip ({e})")
+            report("SKIP", f"ws.subscribe({sub_type}) skip ({e})")
 
     # ─── Solana-Compatible RPC Methods ───
     sol_rpc_methods = [
@@ -1300,7 +1300,7 @@ async def main() -> int:
                     else:
                         report("FAIL", f"sol_compat.{method} error={body.get('error')}")
         except Exception as e:
-            report("PASS", f"sol_compat.{method} skip ({e})")
+            report("SKIP", f"sol_compat.{method} skip ({e})")
 
     # ─── EVM-Compatible RPC Methods ───
     evm_rpc_methods = [
@@ -1329,7 +1329,7 @@ async def main() -> int:
                     else:
                         report("FAIL", f"evm_compat.{method} error={body.get('error')}")
         except Exception as e:
-            report("PASS", f"evm_compat.{method} skip ({e})")
+            report("SKIP", f"evm_compat.{method} skip ({e})")
 
     # ─── Summary ───
     elapsed = time.time() - t_start
