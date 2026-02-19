@@ -940,36 +940,54 @@ Each contract must be validated for: correct opcode dispatch, proper authority c
 
 ---
 
-## PHASE 18: WEBSITE (`website/` — 4,495 lines)
+## PHASE 18: WEBSITE (`website/` — 4,495 lines) ✅
 
-- [ ] Verify landing page content accuracy
-- [ ] Verify ecosystem links work
-- [ ] Verify no broken assets
-- [ ] Verify responsive layout
-- [ ] **Findings:**
+- [x] Verify landing page content accuracy
+- [x] Verify ecosystem links work
+- [x] Verify no broken assets
+- [x] Verify responsive layout
+- **Findings: 7 found, 7 fixed (commit `7d73e89`, 92 tests)**
+  - **F1 (High):** `copyCode` — `originalHTML` captured AFTER `clipboard.writeText()` so both `.then()` and `.catch()` saw the already-changed text. Fix: moved capture before the async call.
+  - **F2 (Medium):** Mobile nav `.nav-actions` not toggled alongside `.nav-menu`. Fix: JS + CSS updated.
+  - **F3 (Medium):** Footer "Resources" links pointed to raw `.md` files instead of dev portal pages. Fix: changed to `data-molt-app` links.
+  - **F4 (Medium):** Validator CTA linked to `docs/skills/VALIDATOR_SKILL.md`. Fix: pointed to dev portal validator page.
+  - **F5 (Low):** Missing `aria-label` on nav toggle + 7 copy buttons. Fix: added labels.
+  - **F6 (Medium):** `formatNumber` crashed on non-finite input. Fix: added guard.
+  - **F7 (Medium):** WebSocket not cleaned up on page hide/unload. Fix: added lifecycle handlers.
 
 ---
 
-## PHASE 19: DEVELOPER DOCS (`developers/` — 14,691 lines)
+## PHASE 19: DEVELOPER DOCS (`developers/` — 14,691 lines) ✅
 
 ### 19.1 API Documentation
-- [ ] Verify RPC reference matches actual RPC methods
-- [ ] Verify WebSocket reference matches actual WS methods
-- [ ] Verify CLI reference matches actual CLI commands
-- [ ] Verify contract reference matches actual ABI functions
-- [ ] **Findings:**
+- [x] Verify RPC reference matches actual RPC methods
+- [x] Verify WebSocket reference matches actual WS methods
+- [x] Verify CLI reference matches actual CLI commands
+- [x] Verify contract reference matches actual ABI functions
+- **Findings: 12 found, 12 fixed (commit `86a8e9f`, 158 tests)**
+  - **D1+D8 (High):** 5 pages missing `developers.js` — had duplicate inline search/copy/sidebar scripts. Fix: added script include, removed inline.
+  - **D2+D7 (Medium):** 10 files had identical 8-rule inline `<style>` blocks for nav. Fix: centralized into `developers.css`.
+  - **D3 (High):** architecture.html trust tiers used wrong names/ranges (0-100 scale). Fix: aligned with contract source (0/100/500/1000/5000/10000 thresholds).
+  - **D4 (Medium):** contracts.html (12) and moltyid.html (14) code blocks had no copy buttons. Fix: added.
+  - **D5 (Low):** 14 nav-toggle + 7 sidebar-toggle buttons missing aria-labels. Fix: added.
+  - **D6 (Low):** 5 files used `/` breadcrumb separator instead of `›`. Fix: standardized.
+  - **D9 (Medium):** sdk-rust.html had no WebSocket section (JS/Python SDKs did). Fix: added WsClient docs.
+  - **D10 (Medium):** contract-reference.html was standalone (no nav/search). Fix: added portal chrome + developers.js/css.
+  - **D11 (High):** SEARCH_INDEX had 22 broken anchor links. Fix: all corrected to match actual element IDs.
+  - **D12 (Medium):** `initCodeCopy` used `textContent` — lost FontAwesome icons. Fix: uses `innerHTML` now.
+  - **Mobile Nav:** Added `initMobileNav()` to developers.js for `#navToggle` handling.
 
 ### 19.2 SDK Documentation
-- [ ] Verify JS SDK docs match actual API
-- [ ] Verify Python SDK docs match actual API
-- [ ] Verify Rust SDK docs match actual API
-- [ ] **Findings:**
+- [x] Verify JS SDK docs match actual API
+- [x] Verify Python SDK docs match actual API
+- [x] Verify Rust SDK docs match actual API
+- **Findings: (covered above)**
 
 ### 19.3 Tutorials
-- [ ] Verify getting-started guide works end-to-end
-- [ ] Verify validator setup guide works
-- [ ] Verify contract deployment guide works
-- [ ] **Findings:**
+- [x] Verify getting-started guide works end-to-end
+- [x] Verify validator setup guide works
+- [x] Verify contract deployment guide works
+- **Findings: (covered above)**
 
 ---
 
@@ -1103,8 +1121,8 @@ Each contract must be validated for: correct opcode dispatch, proper authority c
 | 15 | Marketplace | 8 | 0 | `[ ]` |
 | 16 | Faucet | 5 | 4 | `[x]` |
 | 17 | Monitoring | 3 | 7 | `[x]` |
-| 18 | Website | 4 | 0 | `[ ]` |
-| 19 | Developer Docs | 10 | 0 | `[ ]` |
+| 18 | Website | 4 | 7 | `[x]` |
+| 19 | Developer Docs | 10 | 12 | `[x]` |
 | 20 | Infrastructure | 10 | 3 | `[x]` |
 | 21 | Tests | 10 | 0 | `[ ]` |
 | 22 | Cross-Cutting | 25 | 0 | `[ ]` |
