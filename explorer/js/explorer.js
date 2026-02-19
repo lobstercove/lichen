@@ -614,8 +614,8 @@ async function updateLatestBlocks() {
             <tr>
                 <td><a href="block.html?slot=${block.slot}">#${formatSlot(block.slot)}</a></td>
                 <td>
-                <span class="hash-short" title="${block.hash}">${formatHash(block.hash)}</span>
-                    <i class="fas fa-copy copy-hash" onclick="copyToClipboard('${block.hash}')" title="Copy hash"></i>
+                <span class="hash-short" title="${escapeExplorerHtml(block.hash)}">${formatHash(block.hash)}</span>
+                    <i class="fas fa-copy copy-hash" data-copy="${escapeExplorerHtml(block.hash)}" onclick="safeCopy(this)" title="Copy hash"></i>
                 </td>
                 <td><span class="pill pill-info">${block.transaction_count || 0} txs</span></td>
                 <td>${formatValidator(block.validator)}</td>
@@ -652,10 +652,10 @@ async function updateLatestTransactions() {
             return `
             <tr>
                 <td>
-                    <a href="transaction.html?sig=${signature}" title="${signature}">${formatHash(signature)}</a>
-                    <i class="fas fa-copy copy-hash" onclick="copyToClipboard('${signature}')" title="Copy signature"></i>
+                    <a href="transaction.html?sig=${encodeURIComponent(signature)}" title="${escapeExplorerHtml(signature)}">${formatHash(signature)}</a>
+                    <i class="fas fa-copy copy-hash" data-copy="${escapeExplorerHtml(signature)}" onclick="safeCopy(this)" title="Copy signature"></i>
                 </td>
-                <td><span class="pill pill-${type.toLowerCase()}">${type}</span></td>
+                <td><span class="pill pill-${escapeExplorerHtml(type.toLowerCase())}">${escapeExplorerHtml(type)}</span></td>
                 <td><span class="pill pill-success"><i class="fas fa-check"></i> Success</span></td>
                 <td><span style="font-family: 'JetBrains Mono', monospace; font-weight: 600;">${amountDisplay}</span></td>
                 <td>${formatTime(timestamp)}</td>

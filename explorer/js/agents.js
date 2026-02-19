@@ -22,12 +22,13 @@ function formatRateMolt(rateRaw) {
 function trustTierLabel(agent) {
     if (agent?.trust_tier_name) return agent.trust_tier_name;
     const rep = Number(agent?.reputation || 0);
-    if (rep >= 10000) return 'Legendary';
-    if (rep >= 5000) return 'Elite';
-    if (rep >= 1000) return 'Established';
-    if (rep >= 500) return 'Trusted';
-    if (rep >= 100) return 'Verified';
-    return 'Newcomer';
+    if (rep >= 950) return 'Legendary';
+    if (rep >= 800) return 'Elite';
+    if (rep >= 600) return 'Established';
+    if (rep >= 400) return 'Trusted';
+    if (rep >= 200) return 'Verified';
+    if (rep >= 100) return 'Newcomer';
+    return 'Probation';
 }
 
 function tierPillClass(tier) {
@@ -146,8 +147,8 @@ function renderAgents() {
         <tr>
             <td>${nameLink}</td>
             <td>
-                <a href="address.html?address=${addr}&tab=identity" class="hash-short" title="${addr}">${formatHash(addr)}</a>
-                <i class="fas fa-copy copy-hash" onclick="copyToClipboard('${addr}')" title="Copy address"></i>
+                <a href="address.html?address=${encodeURIComponent(addr)}&tab=identity" class="hash-short" title="${escapeHtml(addr)}">${formatHash(addr)}</a>
+                <i class="fas fa-copy copy-hash" data-copy="${escapeHtml(addr)}" onclick="safeCopy(this)" title="Copy address"></i>
             </td>
             <td><span class="pill">${typeName}</span></td>
             <td>${formatNumber(rep)}</td>

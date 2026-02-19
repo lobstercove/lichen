@@ -87,11 +87,11 @@ function renderBlocks() {
         <tr>
             <td><a href="block.html?slot=${block.slot}">#${formatSlot(block.slot)}</a></td>
             <td>
-                <span class="hash-short" title="${block.hash}">${formatHash(block.hash)}</span>
-                <i class="fas fa-copy copy-hash" onclick="copyToClipboard('${block.hash}')" title="Copy hash"></i>
+                <span class="hash-short" title="${escapeHtml(block.hash)}">${formatHash(block.hash)}</span>
+                <i class="fas fa-copy copy-hash" data-copy="${escapeHtml(block.hash)}" onclick="safeCopy(this)" title="Copy hash"></i>
             </td>
             <td>
-                <span class="hash-short" title="${block.parent_hash}">${formatHash(block.parent_hash)}</span>
+                <span class="hash-short" title="${escapeHtml(block.parent_hash)}">${formatHash(block.parent_hash)}</span>
             </td>
             <td><span class="pill pill-info">${block.transaction_count || 0} txs</span></td>
             <td>${formatValidator(block.validator)}</td>

@@ -1,33 +1,16 @@
 // Transaction Detail Page - Reef Explorer
 // Uses `rpc` instance from explorer.js (loaded before this file)
+// NOTE: formatHash, formatAddress, formatNumber, formatMolt, copyToClipboard,
+//       escapeHtml, safeCopy are provided by utils.js (loaded before this file)
 
 const BASE_FEE = 1000000; // shells (from core/src/processor.rs — 0.001 MOLT)
-
-// Utility Functions
-function formatNumber(num) {
-    if (num === null || num === undefined || Number.isNaN(num)) {
-        return '0';
-    }
-    return Number(num).toLocaleString();
-}
-
-function formatMolt(shells) {
-    const molt = shells / 1_000_000_000;
-    const raw = molt.toLocaleString(undefined, {
-        minimumFractionDigits: 0,
-        maximumFractionDigits: 9,
-    });
-    return raw + ' MOLT';
-}
 
 function formatShells(shells) {
     return formatNumber(shells) + ' shells';
 }
 
-// NOTE: formatHash, formatAddress, etc. are provided by utils.js (loaded before this file).
-// Only override formatHash locally if utils.js is NOT loaded.
-
-function formatTime(timestamp) {
+// Transaction-specific full timestamp format (absolute + relative)
+function formatTimeFull(timestamp) {
     if (!timestamp || timestamp <= 0) return 'Genesis';
     const date = new Date(timestamp * 1000);
     const now = new Date();
@@ -40,22 +23,6 @@ function formatTime(timestamp) {
     else timeAgo = Math.floor(diff / 86400) + ' days ago';
     
     return date.toLocaleString() + ' (' + timeAgo + ')';
-}
-
-function copyToClipboard(elementIdOrText) {
-    const element = document.getElementById(elementIdOrText);
-    const text = element ? (element.dataset.full || element.textContent) : elementIdOrText;
-    navigator.clipboard.writeText(text).then(() => {
-        if (element) {
-            const original = element.innerHTML;
-            element.innerHTML = '<i class="fas fa-check"></i> Copied!';
-            element.style.color = 'var(--success)';
-            setTimeout(() => {
-                element.innerHTML = original;
-                element.style.color = '';
-            }, 2000);
-        }
-    });
 }
 
 // Get transaction hash from URL
@@ -178,8 +145,8 @@ async function displayAirdrop(txHash) {
     document.getElementById('detailBlockLink').textContent = 'N/A (off-chain)';
 
     // Timestamp
-    document.getElementById('txTimestamp').textContent = formatTime(timestampSec);
-    document.getElementById('detailTimestamp').textContent = formatTime(timestampSec);
+    document.getElementById('txTimestamp').textContent = formatTimeFull(timestampSec);
+    document.getElementById('detailTimestamp').textContent = formatTimeFull(timestampSec);
 
     // Type
     document.getElementById('txType').textContent = 'Airdrop';
@@ -338,8 +305,8 @@ async function displayTransaction(tx) {
     }
     
     // Timestamp
-    document.getElementById('txTimestamp').textContent = formatTime(timestamp);
-    document.getElementById('detailTimestamp').textContent = formatTime(timestamp);
+    document.getElementById('txTimestamp').textContent = formatTimeFull(timestamp);
+    document.getElementById('detailTimestamp').textContent = formatTimeFull(timestamp);
 
     document.getElementById('txType').textContent = type;
     document.getElementById('detailType').textContent = type;
@@ -431,13 +398,14 @@ async function displayTransaction(tx) {
             const sigHex = Array.isArray(sig) ? 
                 '0x' + sig.map(b => b.toString(16).padStart(2, '0')).join('') :
                 sig;
+            const safeHex = typeof escapeHtml === 'function' ? escapeHtml(sigHex) : sigHex;
             return `
                 <div class="signature-item">
                     <div class="detail-row">
                         <div class="detail-label">Signature #${idx + 1}</div>
                         <div class="detail-value">
-                            <code title="${sigHex}">${formatHash(sigHex)}</code>
-                            <button class="copy-icon" onclick="navigator.clipboard.writeText('${sigHex}')">
+                            <code title="${safeHex}">${formatHash(sigHex)}</code>
+                            <button class="copy-icon" data-copy="${safeHex}" onclick="safeCopy(this)">
                                 <i class="fas fa-copy"></i>
                             </button>
                         </div>

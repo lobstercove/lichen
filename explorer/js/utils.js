@@ -108,12 +108,30 @@ function resolveTxType(tx, instruction) {
     return 'Unknown';
 }
 
+// HTML-escape a value for safe embedding in attributes and innerHTML.
+// Canonical implementation — all explorer files should use this.
+function escapeHtml(str) {
+    return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 function copyToClipboard(text) {
     navigator.clipboard.writeText(text).then(() => {
         showToast('Copied to clipboard!');
     }).catch(err => {
         console.error('Failed to copy:', err);
     });
+}
+
+// Safe copy handler for elements with data-copy attribute.
+// Use in innerHTML: data-copy="${escapeHtml(val)}" onclick="safeCopy(this)"
+function safeCopy(el) {
+    const text = el?.dataset?.copy;
+    if (text) copyToClipboard(text);
 }
 
 function showToast(message) {

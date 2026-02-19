@@ -1057,7 +1057,7 @@ Each contract must be validated for: correct opcode dispatch, proper authority c
 | 10 | DEX Frontend | 40 | 11 | `[x]` |
 | 11 | Wallet App | 15 | 0 | `[ ]` |
 | 12 | Wallet Extension | 12 | 0 | `[ ]` |
-| 13 | Explorer | 14 | 0 | `[ ]` |
+| 13 | Explorer | 14 | 7 | `[x]` |
 | 14 | Programs Playground | 10 | 0 | `[ ]` |
 | 15 | Marketplace | 8 | 0 | `[ ]` |
 | 16 | Faucet | 5 | 0 | `[ ]` |

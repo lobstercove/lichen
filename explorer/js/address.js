@@ -85,7 +85,12 @@ function moltchainToEvmAddress(base58Pubkey) {
 }
 
 // ===== RPC helper =====
+// Delegates to the shared MoltChainRPC instance from explorer.js.
+// Falls back to direct fetch if rpc is unavailable (standalone testing).
 async function rpcCall(method, params = []) {
+    if (typeof rpc !== 'undefined' && rpc && typeof rpc.call === 'function') {
+        return rpc.call(method, params);
+    }
     const response = await fetch(getRpcUrl(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1987,13 +1992,14 @@ function setupSearch() {
 
 // ===== Error Display =====
 function showError(message) {
+    const safeMessage = escapeHtml(message);
     document.querySelector('.detail-header').innerHTML = `
         <div class="breadcrumb">
             <a href="index.html"><i class="fas fa-home"></i> Home</a>
             <i class="fas fa-chevron-right"></i><span>Error</span>
         </div>
         <h1 class="detail-title"><i class="fas fa-exclamation-triangle"></i> Error</h1>
-        <div class="detail-status failed"><i class="fas fa-times-circle"></i> ${message}</div>
+        <div class="detail-status failed"><i class="fas fa-times-circle"></i> ${safeMessage}</div>
     `;
 }
 

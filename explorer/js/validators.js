@@ -1,30 +1,7 @@
 // Validators Page Logic
 // Uses RPC_URL and MoltChainRPC class from explorer.js (loaded first)
-
-// RPC client instance created in explorer.js, reuse it here
-// No need to redeclare MoltChainRPC class
-
-// Utility Functions
-function formatNumber(num) {
-    return num.toLocaleString();
-}
-
-function formatMolt(shells) {
-    const molt = shells / 1_000_000_000;
-    const raw = molt.toLocaleString(undefined, {
-        minimumFractionDigits: 0,
-        maximumFractionDigits: 9,
-    });
-    return raw + ' MOLT';
-}
-
-// formatHash is provided by utils.js
-
-function copyToClipboard(text) {
-    navigator.clipboard.writeText(text).then(() => {
-        // console.log('Copied:', text);
-    });
-}
+// NOTE: formatNumber, formatMolt, formatHash, copyToClipboard, escapeHtml,
+//       safeCopy are provided by utils.js (loaded before this file)
 
 function trustTierFromReputation(score) {
     const rep = Number(score || 0);
@@ -90,8 +67,8 @@ async function loadValidators() {
             <tr>
                 <td><span style="font-weight: 700; color: var(--text-muted);">${index + 1}</span></td>
                 <td>
-                    <span class="hash-short" title="${validator.pubkey}">${addressLabel}</span>
-                    <i class="fas fa-copy copy-hash" onclick="copyToClipboard('${validator.pubkey}')" title="Copy address"></i>
+                    <span class="hash-short" title="${escapeHtml(validator.pubkey)}">${addressLabel}</span>
+                    <i class="fas fa-copy copy-hash" data-copy="${escapeHtml(validator.pubkey)}" onclick="safeCopy(this)" title="Copy address"></i>
                 </td>
                 <td><span style="font-family: 'JetBrains Mono', monospace; font-weight: 600;">${formatMolt(stake)}</span></td>
                 <td>

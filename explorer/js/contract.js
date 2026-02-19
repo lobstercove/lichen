@@ -212,10 +212,10 @@ async function loadContract() {
         if (entries.length > 0) {
             metaSection.style.display = '';
             metaGrid.innerHTML = entries.map(([key, val]) => {
-                const displayKey = key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+                const displayKey = escapeHtml(key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase()));
                 const displayVal = typeof val === 'boolean' ? (val ? 'Yes' : 'No')
                     : typeof val === 'number' ? formatNumber(val)
-                    : String(val);
+                    : escapeHtml(String(val));
                 return '<div class="token-stat">' +
                     '<div class="label">' + displayKey + '</div>' +
                     '<div class="value">' + displayVal + '</div>' +
@@ -250,12 +250,13 @@ function renderAbi(abi) {
     }
 
     tbody.innerHTML = abi.functions.map(fn => {
+        const safeName = escapeHtml(fn.name);
         const params = fn.params && fn.params.length > 0
-            ? fn.params.map(p => '<span style="color:var(--accent);">' + (p.param_type || p.type) + '</span> ' + p.name).join(', ')
+            ? fn.params.map(p => '<span style="color:var(--accent);">' + escapeHtml(p.param_type || p.type) + '</span> ' + escapeHtml(p.name)).join(', ')
             : '<span style="color:var(--text-muted);">none</span>';
 
         const returns = fn.returns
-            ? '<span style="color:var(--accent);">' + (fn.returns.return_type || fn.returns.type || fn.returns) + '</span>'
+            ? '<span style="color:var(--accent);">' + escapeHtml(fn.returns.return_type || fn.returns.type || fn.returns) + '</span>'
             : '<span style="color:var(--text-muted);">void</span>';
 
         const readOnly = fn.readonly || isViewFn(fn.name)
@@ -263,7 +264,7 @@ function renderAbi(abi) {
             : '<span class="badge" style="background:rgba(255,170,0,0.15);color:#ffaa00;font-size:0.75rem;"><i class="fas fa-pen"></i> Write</span>';
 
         return '<tr>' +
-            '<td style="font-weight:600;font-family:\'JetBrains Mono\',monospace;color:var(--text-primary);">' + fn.name + '</td>' +
+            '<td style="font-weight:600;font-family:\'JetBrains Mono\',monospace;color:var(--text-primary);">' + safeName + '</td>' +
             '<td style="font-family:\'JetBrains Mono\',monospace;font-size:0.85rem;">' + params + '</td>' +
             '<td style="font-family:\'JetBrains Mono\',monospace;font-size:0.85rem;">' + returns + '</td>' +
             '<td>' + readOnly + '</td>' +
@@ -273,7 +274,7 @@ function renderAbi(abi) {
     if (abi.events && abi.events.length > 0) {
         const evtRow = '<tr style="border-top:2px solid var(--border);"><td colspan="4" style="color:var(--text-muted);font-size:0.85rem;padding-top:1rem;">' +
             '<i class="fas fa-bell" style="color:var(--accent);"></i> ' + abi.events.length + ' event' + (abi.events.length > 1 ? 's' : '') + ' defined: ' +
-            abi.events.map(e => '<span style="color:var(--text-primary);font-weight:500;">' + e.name + '</span>').join(', ') +
+            abi.events.map(e => '<span style="color:var(--text-primary);font-weight:500;">' + escapeHtml(e.name) + '</span>').join(', ') +
         '</td></tr>';
         tbody.innerHTML += evtRow;
     }
@@ -398,12 +399,12 @@ function renderCallsPage() {
     tbody.innerHTML = pageItems.map(call => {
         const time = call.timestamp ? timeAgo(call.timestamp) : (call.slot !== undefined ? 'Slot ' + formatNumber(call.slot) : '--');
         const callerLabel = call.caller
-            ? (callsAddressNames[call.caller] ? `${callsAddressNames[call.caller]}.molt` : formatHash(call.caller))
+            ? (callsAddressNames[call.caller] ? `${escapeHtml(callsAddressNames[call.caller])}.molt` : formatHash(call.caller))
             : '--';
         const caller = call.caller
-            ? '<a href="address.html?address=' + call.caller + '" class="table-link" style="font-family:\'JetBrains Mono\',monospace;font-size:0.85rem;" title="' + call.caller + '">' + callerLabel + '</a>'
+            ? '<a href="address.html?address=' + encodeURIComponent(call.caller) + '" class="table-link" style="font-family:\'JetBrains Mono\',monospace;font-size:0.85rem;" title="' + escapeHtml(call.caller) + '">' + callerLabel + '</a>'
             : '--';
-        const fn_name = call.function_name || call.function || call.method || '--';
+        const fn_name = escapeHtml(call.function_name || call.function || call.method || '--');
         const fee = call.fee !== undefined ? formatMolt(call.fee) : (call.gas_used !== undefined ? formatNumber(call.gas_used) + ' shells' : '--');
         const status = call.success !== false
             ? '<span class="badge success" style="font-size:0.75rem;"><i class="fas fa-check"></i> OK</span>'
@@ -474,7 +475,7 @@ function renderEventsPage() {
 
     tbody.innerHTML = pageItems.map(evt => {
         const slot = evt.slot !== undefined ? '<a href="block.html?slot=' + evt.slot + '" class="table-link">' + formatNumber(evt.slot) + '</a>' : '--';
-        const name = evt.name || evt.event || '--';
+        const name = escapeHtml(evt.name || evt.event || '--');
         const data = typeof evt.data === 'object' ? JSON.stringify(evt.data) : (evt.data || '--');
         const dataDisplay = data.length > 80 ? data.slice(0, 80) + '...' : data;
 

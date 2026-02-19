@@ -1,14 +1,16 @@
 // Block Detail Page - Reef Explorer
 // Uses `rpc` instance from explorer.js (loaded before this file)
-// NOTE: formatHash, formatAddress, etc. are provided by utils.js (loaded before this file)
+// NOTE: formatHash, formatAddress, formatNumber, formatBytes, copyToClipboard,
+//       escapeHtml, safeCopy are provided by utils.js (loaded before this file)
 
-// Utility Functions (block-specific overrides)
-function formatNumber(num) {
-    if (num === null || num === undefined) return '0';
-    return num.toLocaleString();
+// Block-specific time format (full date + relative)
+function formatTimeShort(timestamp) {
+    if (timestamp === null || timestamp === undefined) return 'N/A';
+    if (timestamp <= 0) return 'Genesis';
+    return new Date(timestamp * 1000).toLocaleString();
 }
 
-function formatTime(timestamp) {
+function formatTimeFull(timestamp) {
     if (timestamp === null || timestamp === undefined) return 'N/A';
     if (timestamp <= 0) return 'Genesis';
     const date = new Date(timestamp * 1000);
@@ -22,35 +24,6 @@ function formatTime(timestamp) {
     else timeAgo = Math.floor(diff / 86400) + ' days ago';
     
     return date.toLocaleString() + ' (' + timeAgo + ')';
-}
-
-function formatTimeShort(timestamp) {
-    if (timestamp === null || timestamp === undefined) return 'N/A';
-    if (timestamp <= 0) return 'Genesis';
-    return new Date(timestamp * 1000).toLocaleString();
-}
-
-function formatBytes(bytes) {
-    if (bytes < 1024) return bytes + ' bytes';
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB';
-    return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
-}
-
-function copyToClipboard(elementIdOrText) {
-    const element = document.getElementById(elementIdOrText);
-    const text = element ? (element.dataset.full || element.textContent) : elementIdOrText;
-    navigator.clipboard.writeText(text).then(() => {
-        if (element) {
-            // Show feedback
-            const original = element.innerHTML;
-            element.innerHTML = '<i class="fas fa-check"></i> Copied!';
-            element.style.color = 'var(--success)';
-            setTimeout(() => {
-                element.innerHTML = original;
-                element.style.color = '';
-            }, 2000);
-        }
-    });
 }
 
 // Get block number from URL
@@ -142,7 +115,7 @@ async function displayBlock(block) {
     document.getElementById('parentHash').dataset.full = parentHash;
     document.getElementById('stateRoot').textContent = formatHash(stateRoot);
     document.getElementById('stateRoot').dataset.full = stateRoot;
-    document.getElementById('detailTimestamp').textContent = formatTime(timestamp);
+    document.getElementById('detailTimestamp').textContent = formatTimeFull(timestamp);
     const addressNames = typeof batchResolveMoltNames === 'function'
         ? await batchResolveMoltNames([
             validator,
@@ -189,6 +162,11 @@ async function displayBlock(block) {
         `;
     } else {
         tbody.innerHTML = transactions.map(tx => {
+            const safeSig = typeof escapeHtml === 'function' ? escapeHtml(tx.signature) : tx.signature;
+            const safeFrom = typeof escapeHtml === 'function' ? escapeHtml(tx.from) : tx.from;
+            const safeTo = typeof escapeHtml === 'function' ? escapeHtml(tx.to) : tx.to;
+            const safeType = typeof escapeHtml === 'function' ? escapeHtml(tx.type || 'Transfer') : (tx.type || 'Transfer');
+            const safeStatus = typeof escapeHtml === 'function' ? escapeHtml(tx.status || 'Success') : (tx.status || 'Success');
             const fromDisplay = addressNames[tx.from] && typeof formatAddressWithMoltName === 'function'
                 ? formatAddressWithMoltName(tx.from, addressNames[tx.from])
                 : formatAddress(tx.from);
@@ -198,28 +176,28 @@ async function displayBlock(block) {
             return `
             <tr>
                 <td>
-                    <a href="transaction.html?tx=${tx.signature}" class="hash-link" title="${tx.signature}">
+                    <a href="transaction.html?tx=${encodeURIComponent(tx.signature)}" class="hash-link" title="${safeSig}">
                         ${formatHash(tx.signature)}
                     </a>
                 </td>
                 <td>
-                    <a href="address.html?address=${tx.from}" class="hash-link">
+                    <a href="address.html?address=${encodeURIComponent(tx.from)}" class="hash-link">
                         ${fromDisplay}
                     </a>
                 </td>
                 <td>
-                    <a href="address.html?address=${tx.to}" class="hash-link">
+                    <a href="address.html?address=${encodeURIComponent(tx.to)}" class="hash-link">
                         ${toDisplay}
                     </a>
                 </td>
-                <td><span class="badge badge-info">${tx.type || 'Transfer'}</span></td>
+                <td><span class="badge badge-info">${safeType}</span></td>
                 <td>
                     <span class="badge ${tx.status === 'Success' ? 'badge-success' : 'badge-error'}">
-                        ${tx.status || 'Success'}
+                        ${safeStatus}
                     </span>
                 </td>
                 <td>
-                    <a href="transaction.html?tx=${tx.signature}" class="btn btn-small">
+                    <a href="transaction.html?tx=${encodeURIComponent(tx.signature)}" class="btn btn-small">
                         <i class="fas fa-eye"></i> View
                     </a>
                 </td>

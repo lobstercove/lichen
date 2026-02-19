@@ -97,8 +97,8 @@ async function renderTransactions() {
         return `
         <tr>
             <td>
-                <a href="transaction.html?sig=${signature}" title="${signature}">${formatHash(signature)}</a>
-                <i class="fas fa-copy copy-hash" onclick="copyToClipboard('${signature}')" title="Copy signature"></i>
+                <a href="transaction.html?sig=${encodeURIComponent(signature)}" title="${escapeHtml(signature)}">${formatHash(signature)}</a>
+                <i class="fas fa-copy copy-hash" data-copy="${escapeHtml(signature)}" onclick="safeCopy(this)" title="Copy signature"></i>
             </td>
             <td><a href="block.html?slot=${slot}">#${formatSlot(slot)}</a></td>
             <td><span class="pill pill-${type.toLowerCase()}">${type}</span></td>
