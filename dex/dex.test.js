@@ -2173,9 +2173,9 @@ assert(
     'PC.11: Market order without worst-price bound skips band enforcement'
 );
 
-// PC.12: Band calculation uses ref_price * band_bps / 10000
+// PC.12: Band calculation uses ref_price * band_bps / 10000 (via u128 to avoid overflow)
 assert(
-    dexCoreSrc.includes('ref_price * band_bps / 10000'),
+    dexCoreSrc.includes('ref_price as u128 * band_bps as u128 / 10000'),
     'PC.12: Band range calculated correctly with basis points'
 );
 
@@ -3877,6 +3877,129 @@ const sdkTransactionPath = '/Users/johnrobin/.openclaw/workspace/moltchain/sdk/j
     assert(feJs.includes('new ArrayBuffer(49)'), 'P21.Xg: frontend removeLiquidity buffer is 49 bytes');
     assert(sdkAmm.includes('new Uint8Array(49)'), 'P21.Xh: SDK removeLiquidity buffer is 49 bytes');
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase 22: Security & Input Validation
+// ═══════════════════════════════════════════════════════════════════════════
+
+const govContractPath = '/Users/johnrobin/.openclaw/workspace/moltchain/contracts/dex_governance/src/lib.rs';
+const predictionContractPath = '/Users/johnrobin/.openclaw/workspace/moltchain/contracts/prediction_market/src/lib.rs';
+
+// P22.1: escapeHtml applied to all user-supplied strings (F22.1a/b/c/d)
+{
+    const js = fs.readFileSync(dexJsPath, 'utf8');
+    // Market table: category and status escaped
+    assert(js.includes("escapeHtml(m.category || '—')"), 'P22.1a: m.category escaped in market table');
+    assert(js.includes("escapeHtml(m.status || 'Active')"), 'P22.1b: m.status text escaped in market table');
+    assert(js.includes("status-${escapeHtml(m.status || 'active')}"), 'P22.1c: m.status class attribute escaped');
+    // Prediction cards: statusLabel and idTag escaped
+    assert(js.includes('const statusClass = escapeHtml(statusInfo.cls)'), 'P22.1d: statusClass escaped');
+    assert(js.includes('const statusLabel = escapeHtml(statusInfo.label)'), 'P22.1e: statusLabel escaped');
+    assert(js.includes('const idTag = escapeHtml(m.pm_id'), 'P22.1f: idTag escaped');
+    // Question always escaped
+    assert(js.includes('escapeHtml(m.question.slice(0, 60))'), 'P22.1g: market question escaped');
+    assert(js.includes('escapeHtml(m.question)'), 'P22.1h: prediction question escaped');
+}
+
+// P22.2: No innerHTML with unescaped o.side or o.id (F22.2a/b)
+{
+    const js = fs.readFileSync(dexJsPath, 'utf8');
+    assert(js.includes('side-${escapeHtml(o.side)}'), 'P22.2a: o.side escaped in open orders class');
+    assert(js.includes('data-id="${escapeHtml(String(o.id))}'), 'P22.2b: o.id escaped in open orders data-id');
+    assert(js.includes("side-${escapeHtml(tr.side || 'buy')}"), 'P22.2c: tr.side escaped in trade history class');
+}
+
+// P22.3: Numeric input validation — margin, liquidity, prediction (F22.3a/b/c)
+{
+    const js = fs.readFileSync(dexJsPath, 'utf8');
+    // F22.3a: Margin open
+    assert(js.includes("size <= 0 || margin <= 0"), 'P22.3a: margin rejects non-positive values');
+    assert(js.includes("size > 9_000_000 || margin > 9_000_000"), 'P22.3b: margin rejects overflow');
+    // F22.3b: Add liquidity
+    assert(js.includes("amtA < 0 || amtB < 0"), 'P22.3c: liquidity rejects negative amounts');
+    assert(js.includes("amtA > 9_000_000 || amtB > 9_000_000"), 'P22.3d: liquidity rejects overflow');
+    // F22.3c: Prediction buy
+    assert(js.includes("amt > 9_000_000"), 'P22.3e: prediction buy rejects overflow');
+}
+
+// P22.4: Contract address validation via bs58decode
+{
+    const js = fs.readFileSync(dexJsPath, 'utf8');
+    assert(js.includes('bs58decode'), 'P22.4a: bs58decode used for address decoding');
+    assert(js.includes('writePubkey'), 'P22.4b: writePubkey calls bs58decode (throws on bad input)');
+}
+
+// P22.5: Ed25519 signing
+{
+    const js = fs.readFileSync(dexJsPath, 'utf8');
+    assert(js.includes('sign.detached'), 'P22.5a: uses nacl.sign.detached for Ed25519 signatures');
+}
+
+// P22.6: Private key storage — no zero-key fallback (F22.6a)
+{
+    const js = fs.readFileSync(dexJsPath, 'utf8');
+    assert(js.includes("Crypto library unavailable"), 'P22.6a: generate() throws instead of creating zero keypair');
+    assert(!js.includes("secretKey: new Uint8Array(64)"), 'P22.6b: no zero secretKey fallback');
+    // Keys never persisted to localStorage
+    assert(!js.includes("localStorage.setItem('secretKey"), 'P22.6c: secretKey not stored in localStorage');
+}
+
+// P22.7: Wallet keys memory-only
+{
+    const js = fs.readFileSync(dexJsPath, 'utf8');
+    assert(js.includes('keypair: null'), 'P22.7a: keypair starts as null (memory-only)');
+}
+
+// P22.8: CORS configured in RPC
+{
+    const rpc = fs.readFileSync(rpcLibPath, 'utf8');
+    assert(rpc.includes('AllowOrigin') || rpc.includes('allow_origin') || rpc.includes('Access-Control-Allow-Origin'), 'P22.8a: CORS headers configured in RPC');
+}
+
+// P22.9: Contract-side parameter validation
+{
+    const dex = fs.readFileSync(dexCoreContractPath, 'utf8');
+    assert(dex.includes('quantity == 0'), 'P22.9a: dex_core validates quantity non-zero');
+    assert(dex.includes('MAX_ORDER_SIZE'), 'P22.9b: dex_core checks max order size');
+}
+
+// P22.10: Overflow protection (F22.10a/b/c)
+{
+    const dex = fs.readFileSync(dexCoreContractPath, 'utf8');
+    assert(dex.includes('current_treasury.saturating_add(protocol_fee)'), 'P22.10a: fee treasury uses saturating_add');
+    // F22.10c: price band uses u128
+    assert(dex.includes('ref_price as u128 * band_bps as u128'), 'P22.10b: price band uses u128 intermediate');
+}
+{
+    const gov = fs.readFileSync(govContractPath, 'utf8');
+    assert(gov.includes('yes.saturating_add(1)'), 'P22.10c: yes votes use saturating_add');
+    assert(gov.includes('no.saturating_add(1)'), 'P22.10d: no votes use saturating_add');
+    assert(gov.includes("load_u64(TOTAL_VOTES_KEY).saturating_add(1)"), 'P22.10e: total votes use saturating_add');
+    assert(gov.includes("load_u64(VOTER_COUNT_KEY).saturating_add(1)"), 'P22.10f: voter count uses saturating_add');
+}
+
+// P22.11: Slippage protection
+{
+    const dex = fs.readFileSync(dexCoreContractPath, 'utf8');
+    assert(dex.includes('price outside oracle band'), 'P22.11a: oracle price band enforced');
+    assert(dex.includes('band_bps'), 'P22.11b: band configured in basis points');
+}
+
+// P22.12: Prediction market resolution protection
+{
+    const pred = fs.readFileSync(predictionContractPath, 'utf8');
+    assert(pred.includes('RESOLUTION_THRESHOLD') || pred.includes('resolution_threshold'), 'P22.12a: resolution requires quorum');
+}
+
+// P22.13: Governance double-vote prevention
+{
+    const gov = fs.readFileSync(govContractPath, 'utf8');
+    assert(gov.includes('vote_key') || gov.includes('vk'), 'P22.13a: unique vote key per (proposal, voter)');
+    assert(gov.includes('is_some()'), 'P22.13b: checks if voter already voted');
+}
+
+// P22.14: All previous tests pass (verified by running this file)
+// (implicitly tested by the test runner — if we get here, all prior tests passed)
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Summary

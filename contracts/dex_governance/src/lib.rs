@@ -603,21 +603,21 @@ pub fn vote(voter: *const u8, proposal_id: u64, approve: bool) -> u32 {
 
     if approve {
         let yes = decode_prop_yes(&data);
-        update_prop_yes(&mut data, yes + 1);
+        update_prop_yes(&mut data, yes.saturating_add(1));
     } else {
         let no = decode_prop_no(&data);
-        update_prop_no(&mut data, no + 1);
+        update_prop_no(&mut data, no.saturating_add(1));
     }
     storage_set(&pk, &data);
 
     // Track global vote stats
-    save_u64(TOTAL_VOTES_KEY, load_u64(TOTAL_VOTES_KEY) + 1);
+    save_u64(TOTAL_VOTES_KEY, load_u64(TOTAL_VOTES_KEY).saturating_add(1));
     // Track unique voters: check if voter has voted before (use voter global key)
     let mut voter_global_key = Vec::from(&b"gov_vg_"[..]);
     voter_global_key.extend_from_slice(&hex_encode(&v));
     if storage_get(&voter_global_key).is_none() {
         storage_set(&voter_global_key, &[1]);
-        save_u64(VOTER_COUNT_KEY, load_u64(VOTER_COUNT_KEY) + 1);
+        save_u64(VOTER_COUNT_KEY, load_u64(VOTER_COUNT_KEY).saturating_add(1));
     }
 
     log_info("Vote recorded");

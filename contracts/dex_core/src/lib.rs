@@ -1127,9 +1127,10 @@ pub fn place_order(
                         // Percentage thresholds (basis points): market=500 (5%), limit=1000 (10%)
                         let band_bps: u64 = if order_type == ORDER_MARKET { 500 } else { 1000 };
 
-                        // Calculate allowed range: ref_price * (1 ± band_bps/10000)
-                        let lower = ref_price.saturating_sub(ref_price * band_bps / 10000);
-                        let upper = ref_price.saturating_add(ref_price * band_bps / 10000);
+                        // Calculate allowed range: ref_price * (1 ± band_bps/10000) — use u128 to avoid overflow
+                        let band = (ref_price as u128 * band_bps as u128 / 10000) as u64;
+                        let lower = ref_price.saturating_sub(band);
+                        let upper = ref_price.saturating_add(band);
 
                         if check_price < lower || check_price > upper {
                             reentrancy_exit();
@@ -1407,7 +1408,7 @@ fn fill_at_price_level(
         // Record protocol fees
         let protocol_fee = taker_fee * FEE_PROTOCOL_SHARE / 100;
         let current_treasury = load_u64(FEE_TREASURY_KEY);
-        save_u64(FEE_TREASURY_KEY, current_treasury + protocol_fee);
+        save_u64(FEE_TREASURY_KEY, current_treasury.saturating_add(protocol_fee));
 
         // F19.12a: Deduct taker fee from taker's quote token balance via cross-contract call
         // Uses best-effort pattern — won't fail trade if runtime doesn't support cross-contract yet

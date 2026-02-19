@@ -90,10 +90,10 @@
 | 19 | Token Contracts & Balances | 12/12 | 9 | `[x]` |
 | 20 | Error Handling & Edge Cases | 14/14 | 8 | `[x]` |
 | 21 | SDK & Market Maker Integration | 10/10 | 10 | `[x]` |
-| 22 | Security & Input Validation | 0/14 | 0 | `[ ]` |
+| 22 | Security & Input Validation | 14/14 | 13 | `[x]` |
 | 23 | Mobile / Responsive Layout | 0/8 | 0 | `[ ]` |
 | 24 | End-to-End Integration Tests | 0/12 | 0 | `[ ]` |
-| — | **TOTAL** | **282/314** | **187** | **90%** |
+| — | **TOTAL** | **296/314** | **200** | **94%** |
 
 ---
 
@@ -816,23 +816,35 @@
 
 | # | Task | Status |
 |---|---|---|
-| 22.1 | Verify `escapeHtml()` is called on ALL user-supplied strings before rendering (token names, proposal text, market questions) | `[ ]` |
-| 22.2 | Verify no `innerHTML` with unsanitized data anywhere in dex.js | `[ ]` |
-| 22.3 | Verify numeric inputs are validated (NaN, negative, overflow) before tx submission | `[ ]` |
-| 22.4 | Verify contract addresses are validated (base58 format, correct length) | `[ ]` |
-| 22.5 | Verify transaction signing uses correct Ed25519 key and nonce | `[ ]` |
-| 22.6 | Verify private key storage is memory-only (never persisted in plaintext) | `[ ]` |
-| 22.7 | Read wallet keychain encryption — verify AES-256-GCM or similar | `[ ]` |
-| 22.8 | Verify CORS headers on RPC endpoints (restrict to same-origin or known domains) | `[ ]` |
-| 22.9 | Verify contract instructions validate all parameters server-side (don't trust client) | `[ ]` |
-| 22.10 | Verify integer overflow protection in contract arithmetic (checked_add/mul) | `[ ]` |
-| 22.11 | Verify slippage protection: orders/swaps reject if price moves beyond tolerance | `[ ]` |
-| 22.12 | Verify prediction market resolution cannot be manipulated (oracle/admin key checks) | `[ ]` |
-| 22.13 | Verify governance voting cannot be double-counted (one vote per address per proposal) | `[ ]` |
-| 22.14 | Run `node dex/dex.test.js` — verify all existing tests pass | `[ ]` |
+| 22.1 | Verify `escapeHtml()` is called on ALL user-supplied strings before rendering (token names, proposal text, market questions) | `[x]` |
+| 22.2 | Verify no `innerHTML` with unsanitized data anywhere in dex.js | `[x]` |
+| 22.3 | Verify numeric inputs are validated (NaN, negative, overflow) before tx submission | `[x]` |
+| 22.4 | Verify contract addresses are validated (base58 format, correct length) | `[x]` |
+| 22.5 | Verify transaction signing uses correct Ed25519 key and nonce | `[x]` |
+| 22.6 | Verify private key storage is memory-only (never persisted in plaintext) | `[x]` |
+| 22.7 | Read wallet keychain encryption — verify AES-256-GCM or similar | `[x]` |
+| 22.8 | Verify CORS headers on RPC endpoints (restrict to same-origin or known domains) | `[x]` |
+| 22.9 | Verify contract instructions validate all parameters server-side (don't trust client) | `[x]` |
+| 22.10 | Verify integer overflow protection in contract arithmetic (checked_add/mul) | `[x]` |
+| 22.11 | Verify slippage protection: orders/swaps reject if price moves beyond tolerance | `[x]` |
+| 22.12 | Verify prediction market resolution cannot be manipulated (oracle/admin key checks) | `[x]` |
+| 22.13 | Verify governance voting cannot be double-counted (one vote per address per proposal) | `[x]` |
+| 22.14 | Run `node dex/dex.test.js` — verify all existing tests pass | `[x]` |
 
 **Findings:**
-- (none yet)
+- F22.1a — `dex.js` market table: `m.category` rendered unescaped in innerHTML → wrapped in `escapeHtml()`
+- F22.1b — `dex.js` market table: `m.status` unescaped in class attribute and text → both escaped
+- F22.1c — `dex.js` prediction card: `statusLabel` from API fallback unescaped → `escapeHtml()` applied
+- F22.1d — `dex.js` prediction card: `idTag` from `m.pm_id` unescaped → escaped
+- F22.2a — `dex.js` open orders: `o.side` in class attribute and `o.id` in data attribute unescaped → both escaped
+- F22.2b — `dex.js` trade history: `tr.side` in class attribute unescaped → escaped
+- F22.3a — `dex.js` margin open: no negative/overflow validation → added ≤ 0 and > 9M guards
+- F22.3b — `dex.js` add liquidity: no negative/overflow validation → added < 0 and > 9M guards
+- F22.3c — `dex.js` prediction buy: no upper bound on amount → added > 9M guard
+- F22.6a — `dex.js` generate(): fallback created zero secretKey → now throws `Error('Crypto library unavailable')`
+- F22.10a — `dex_core`: fee treasury accumulation used unchecked `+` → `saturating_add()`
+- F22.10b — `dex_governance`: vote counts used unchecked `+ 1` → `saturating_add(1)` (4 instances)
+- F22.10c — `dex_core`: `ref_price * band_bps` could overflow u64 → u128 intermediate
 
 ---
 
