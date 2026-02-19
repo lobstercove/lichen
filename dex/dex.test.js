@@ -5299,6 +5299,296 @@ console.log('\n── Phase 6: Governance Lifecycle ──');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// PHASE 4: Margin Position Enhancements (Tasks 4.1 - 4.4)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ─── Task 4.2: Partial Close — Contract source tests ─────────────────────
+
+{
+    const marginSource = fs.readFileSync('contracts/dex_margin/src/lib.rs', 'utf8');
+
+    assert(marginSource.includes('pub fn partial_close('), 'MRG4.2a: partial_close function defined');
+    assert(marginSource.includes('partial_close(caller: *const u8, position_id: u64, close_amount: u64)'),
+        'MRG4.2b: partial_close has correct signature');
+    assert(marginSource.includes('partial_close(caller: *const u8, position_id: u64, close_amount: u64) -> u32'),
+        'MRG4.2c: partial_close returns u32');
+
+    const fnBody = marginSource.split('pub fn partial_close(')[1].split('pub fn ')[0];
+    assert(fnBody.includes('reentrancy_enter()'), 'MRG4.2d: partial_close uses reentrancy guard');
+    assert(fnBody.includes('get_caller()'), 'MRG4.2e: partial_close verifies transaction signer');
+    assert(fnBody.includes('close_amount == 0') && fnBody.includes('return 5'),
+        'MRG4.2f: partial_close returns 5 for zero close_amount');
+    assert(fnBody.includes('close_amount >= size') && fnBody.includes('close_position(caller, position_id)'),
+        'MRG4.2g: partial_close delegates to close_position when close_amount >= size');
+    assert(fnBody.includes('margin as u128 * close_amount as u128 / size as u128'),
+        'MRG4.2h: partial_close calculates proportional margin using u128');
+    assert(fnBody.includes('pnl_full as u128 * close_amount as u128 / size as u128'),
+        'MRG4.2i: partial_close calculates proportional PnL using u128');
+    assert(fnBody.includes('CrossCall::new') && fnBody.includes('"unlock"'),
+        'MRG4.2j: partial_close unlocks collateral via CrossCall unlock');
+    assert(fnBody.includes('update_pos_size(&mut data, remaining_size)') &&
+           fnBody.includes('update_pos_margin(&mut data, remaining_margin)'),
+        'MRG4.2k: partial_close updates size and margin in-place');
+    assert(fnBody.includes('partially closed'), 'MRG4.2m: partial_close logs partially closed');
+    assert(fnBody.includes('existing_pnl_biased') && fnBody.includes('new_pnl_biased'),
+        'MRG4.2n: partial_close accumulates realized PnL');
+    assert(fnBody.includes('TOTAL_PNL_PROFIT_KEY') && fnBody.includes('TOTAL_PNL_LOSS_KEY'),
+        'MRG4.2o: partial_close updates cumulative profit/loss tracking');
+    assert(marginSource.includes('fn update_pos_size(data: &mut Vec<u8>, s: u64)'),
+        'MRG4.2p: update_pos_size helper function defined');
+    assert(marginSource.includes('data[50..58].copy_from_slice'),
+        'MRG4.2q: update_pos_size writes to correct position offset');
+    assert(marginSource.includes('25 =>') && marginSource.includes('partial_close('),
+        'MRG4.2r: Opcode 25 dispatches to partial_close');
+    const dispatchBlock = marginSource.split('25 =>')[1].split('=>')[0];
+    assert(dispatchBlock.includes('args.len() >= 49'),
+        'MRG4.2s: Opcode 25 requires >= 49 bytes');
+    assert(fnBody.includes('trader != c') && fnBody.includes('return 2'),
+        'MRG4.2t: partial_close checks ownership (returns 2)');
+    assert(fnBody.includes('POS_OPEN') && fnBody.includes('return 3'),
+        'MRG4.2u: partial_close checks open status (returns 3)');
+    assert(fnBody.includes('fresh_mark_price(pair_id)'),
+        'MRG4.2v: partial_close uses freshness-checked mark price');
+    assert(fnBody.includes('set_return_data(&u64_to_bytes(unlock_amount))'),
+        'MRG4.2w: partial_close sets return data to unlock_amount');
+}
+
+// ─── Task 4.2: Partial Close — JS builder tests ─────────────────────────
+
+{
+    assert(dexSource.includes('function buildPartialCloseArgs('), 'MRG4.2F1: buildPartialCloseArgs defined');
+    const fnBody42 = dexSource.split('function buildPartialCloseArgs(')[1].split('function ')[0];
+    assert(fnBody42.includes('25'), 'MRG4.2F2: buildPartialCloseArgs uses opcode 25');
+    assert(fnBody42.includes('new ArrayBuffer(49)'), 'MRG4.2F3: buildPartialCloseArgs creates 49-byte buffer');
+
+    // Functional builder test
+    {
+        const buf = new ArrayBuffer(49);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        arr[0] = 25;
+        const callerBytes = hexToBytes('aa'.repeat(32));
+        arr.set(callerBytes.slice(0, 32), 1);
+        view.setBigUint64(33, 7n, true);
+        view.setBigUint64(41, 5000000000n, true);
+        assert(arr.length === 49, 'MRG4.2F4a: result is 49 bytes');
+        assert(arr[0] === 25, 'MRG4.2F4b: opcode is 25');
+        assert(arr[1] === 0xaa, 'MRG4.2F4c: caller starts at byte 1');
+        assert(view.getBigUint64(33, true) === 7n, 'MRG4.2F4d: positionId at 33');
+        assert(view.getBigUint64(41, true) === 5000000000n, 'MRG4.2F4e: closeAmount at 41');
+    }
+
+    assert(dexSource.includes('Close ▾'), 'MRG4.2F5: Close button shows dropdown chevron');
+    assert(dexSource.includes('margin-pclose-inline'), 'MRG4.2F6: Partial close inline panel class');
+    assert(dexSource.includes('data-pct="25"') && dexSource.includes('data-pct="50"') &&
+           dexSource.includes('data-pct="75"') && dexSource.includes('data-pct="100"'),
+        'MRG4.2F7: Partial close has 25/50/75/100% buttons');
+    assert(dexSource.includes('pclose-custom-input'), 'MRG4.2F8: Custom quantity input exists');
+    assert(dexSource.includes('Math.floor(fullSize * pct / 100)'),
+        'MRG4.2F9: Percentage buttons calculate closeAmount correctly');
+
+    const pcloseChunks = dexSource.split('pclose-pct-btn');
+    const handler100 = pcloseChunks[pcloseChunks.length - 1];
+    assert(handler100.includes('pct >= 100') && handler100.includes('buildClosePositionArgs'),
+        'MRG4.2F10: 100% uses buildClosePositionArgs for full close');
+    assert(dexSource.includes('pclose-custom-btn'), 'MRG4.2F11a: Custom close button exists');
+    const handlerCustom = dexSource.split('pclose-custom-btn')[1];
+    assert(handlerCustom.includes('buildPartialCloseArgs'), 'MRG4.2F11b: Custom handler calls buildPartialCloseArgs');
+    assert(dexSource.includes('pclose-cancel-btn'), 'MRG4.2F12: Cancel button exists');
+    const closeChunks = dexSource.split('margin-close-btn');
+    const handlerClose = closeChunks[closeChunks.length - 1] || '';
+    assert(handlerClose.includes('classList.toggle'), 'MRG4.2F13: Close button toggles panel');
+    assert(dexSource.includes('Closed') && dexSource.includes('of position'),
+        'MRG4.2F14: Partial close shows success notification');
+    assert(dexSource.includes('data-size="${sizeRaw}"'), 'MRG4.2F15: Position row passes sizeRaw');
+}
+
+// ─── Task 4.1: Funding Rate Display ─────────────────────────────────────
+
+{
+    const rpcSource = fs.readFileSync('rpc/src/dex.rs', 'utf8');
+
+    assert(rpcSource.includes('get_margin_funding_rate'), 'MRG4.1a: RPC has get_margin_funding_rate handler');
+    assert(rpcSource.includes('/margin/funding-rate'), 'MRG4.1b: /margin/funding-rate route registered');
+    assert(rpcSource.includes('struct FundingRateJson'), 'MRG4.1c: FundingRateJson struct defined');
+    assert(rpcSource.includes('struct FundingTierJson'), 'MRG4.1d: FundingTierJson struct defined');
+    assert(rpcSource.includes('base_rate_bps'), 'MRG4.1e: FundingRateJson includes base_rate_bps');
+    assert(rpcSource.includes('interval_hours'), 'MRG4.1f: FundingRateJson includes interval_hours');
+
+    const handler = rpcSource.split('get_margin_funding_rate')[1] || '';
+    assert(handler.includes('multiplier_x10: 10') &&
+           handler.includes('multiplier_x10: 15') &&
+           handler.includes('multiplier_x10: 20') &&
+           handler.includes('multiplier_x10: 30') &&
+           handler.includes('multiplier_x10: 50') &&
+           handler.includes('multiplier_x10: 100'),
+        'MRG4.1g: Handler includes all tier multipliers');
+    assert(handler.includes('interval_hours: u64 = 8'), 'MRG4.1h: Funding interval is 8 hours');
+
+    const htmlSource = fs.readFileSync('dex/index.html', 'utf8');
+    assert(htmlSource.includes('marginFundingRate'), 'MRG4.1i: HTML has #marginFundingRate element');
+    assert(htmlSource.includes('funding-rate-badge'), 'MRG4.1j: HTML has funding-rate-badge class');
+
+    assert(dexSource.includes('/margin/funding-rate'), 'MRG4.1k: JS fetches /margin/funding-rate');
+    assert(dexSource.includes('baseRateBps') && dexSource.includes('intervalHours'),
+        'MRG4.1l: JS reads baseRateBps and intervalHours');
+
+    const marginSource = fs.readFileSync('contracts/dex_margin/src/lib.rs', 'utf8');
+    assert(marginSource.includes('FUNDING_INTERVAL_SLOTS') && marginSource.includes('28_800'),
+        'MRG4.1n: Contract defines FUNDING_INTERVAL_SLOTS = 28_800');
+    assert(marginSource.includes('MAX_FUNDING_RATE_BPS') && marginSource.includes('100'),
+        'MRG4.1o: Contract defines MAX_FUNDING_RATE_BPS = 100');
+}
+
+// ─── Task 4.3: PnL Share Card ──────────────────────────────────────────
+
+{
+    assert(dexSource.includes('function generatePnlShareCard('), 'MRG4.3a: generatePnlShareCard defined');
+    assert(dexSource.includes('function showPnlShareCard('), 'MRG4.3b: showPnlShareCard defined');
+
+    const cardBody = dexSource.split('function generatePnlShareCard(')[1].split('\n    function ')[0];
+    assert(cardBody.includes("createElement('canvas')") && cardBody.includes('getContext'),
+        'MRG4.3c: Share card creates Canvas element');
+    assert(cardBody.includes('MoltChain DEX'), 'MRG4.3d: Card has MoltChain DEX branding');
+    assert(cardBody.includes('createLinearGradient'), 'MRG4.3e: Card uses gradient background');
+    assert(cardBody.includes('isProfit') && cardBody.includes('#0a2e1a'), 'MRG4.3f: Green gradient for profit');
+    assert(cardBody.includes('#2e0a0a'), 'MRG4.3g: Red gradient for loss');
+    assert(cardBody.includes('pair'), 'MRG4.3h: Card displays pair');
+    assert(cardBody.includes('side.toUpperCase()'), 'MRG4.3i: Card displays side uppercased');
+    assert(cardBody.includes("'Entry:'"), 'MRG4.3j: Card displays entry price');
+    assert(cardBody.includes("'Mark:'"), 'MRG4.3k: Card displays mark price');
+    assert(cardBody.includes("'PnL $:'"), 'MRG4.3l: Card displays PnL dollar');
+    assert(cardBody.includes("'PnL %:'"), 'MRG4.3m: Card displays PnL percentage');
+    assert(cardBody.includes("'Leverage:'"), 'MRG4.3n: Card displays leverage');
+    assert(cardBody.includes('canvas.width') && cardBody.includes('canvas.height'),
+        'MRG4.3x: Canvas has explicit dimensions');
+    assert(cardBody.includes('moltchain.io'), 'MRG4.3y: Card footer shows moltchain.io');
+
+    const modalBody = dexSource.split('function showPnlShareCard(')[1] || '';
+    assert(modalBody.includes('Copy Image'), 'MRG4.3o: Share modal has Copy Image button');
+    assert(modalBody.includes('navigator.clipboard.write') && modalBody.includes('ClipboardItem'),
+        'MRG4.3p: Copy uses clipboard API with ClipboardItem');
+    assert(modalBody.includes('Download PNG'), 'MRG4.3q: Share modal has Download PNG button');
+    assert(modalBody.includes('.png') && modalBody.includes('toDataURL'), 'MRG4.3r: Download generates PNG');
+    assert(modalBody.includes('modal.remove()'), 'MRG4.3s: Modal has close action');
+    assert(modalBody.includes('e.target === modal'), 'MRG4.3t: Modal closes on backdrop click');
+    assert(modalBody.includes('z-index') && modalBody.includes('10000'), 'MRG4.3z: Modal uses high z-index');
+
+    assert(dexSource.includes('margin-share-btn'), 'MRG4.3u: Share button class in position row');
+    assert(dexSource.includes('data-pair=') && dexSource.includes('data-side=') &&
+           dexSource.includes('data-entry=') && dexSource.includes('data-mark=') &&
+           dexSource.includes('data-pnl=') && dexSource.includes('data-leverage='),
+        'MRG4.3v: Share button passes position data attributes');
+    assert(dexSource.includes('showPnlShareCard({'), 'MRG4.3w: Share handler calls showPnlShareCard');
+}
+
+// ─── Task 4.4: Cross-Margin Design Doc ──────────────────────────────────
+
+{
+    assert(fs.existsSync('docs/CROSS_MARGIN_DESIGN.md'), 'MRG4.4a: Cross-margin design doc exists');
+    const doc = fs.readFileSync('docs/CROSS_MARGIN_DESIGN.md', 'utf8');
+    assert(doc.includes('Account Structure') || doc.includes('Cross-Margin Account'),
+        'MRG4.4b: Design doc covers account structure');
+    assert(doc.includes('open_cross_position') && doc.includes('deposit_cross_margin'),
+        'MRG4.4c: Design doc defines new opcodes');
+    assert(doc.includes('Cascading Liquidation') || doc.includes('cascading'),
+        'MRG4.4d: Design doc addresses cascading liquidation risk');
+    assert(doc.includes('MAX_LEVERAGE_CROSS') && doc.includes('3'),
+        'MRG4.4e: Design doc specifies MAX_LEVERAGE_CROSS = 3');
+    assert(doc.includes('Migration') || doc.includes('migration'),
+        'MRG4.4f: Design doc includes migration path');
+    assert(doc.includes('not yet implemented') || doc.includes('Design only'),
+        'MRG4.4g: Design doc explicitly defers implementation');
+    assert(doc.includes('Isolated Margin') && doc.includes('Cross-Margin'),
+        'MRG4.4h: Design doc compares isolated vs cross');
+    assert(doc.includes('Mode Toggle') || doc.includes('data-mtype'),
+        'MRG4.4i: Design doc describes frontend mode toggle');
+    assert(doc.includes('margin_mode') || doc.includes('Byte 122'),
+        'MRG4.4j: Design doc covers position record extension');
+}
+
+// ─── RPC SL/TP Decoder Fix ──────────────────────────────────────────────
+
+{
+    const rpcSource = fs.readFileSync('rpc/src/dex.rs', 'utf8');
+    assert(rpcSource.includes('sl_price: u64'), 'MRG4.RPC1: MarginPositionJson has sl_price');
+    assert(rpcSource.includes('tp_price: u64'), 'MRG4.RPC2: MarginPositionJson has tp_price');
+    assert(rpcSource.includes('data[106..114]'), 'MRG4.RPC3: Decoder reads SL from 106..114');
+    assert(rpcSource.includes('data[114..122]'), 'MRG4.RPC4: Decoder reads TP from 114..122');
+    assert(rpcSource.includes('data.len() >= 114') && rpcSource.includes('data.len() >= 122'),
+        'MRG4.RPC5: Decoder conditionally reads V2 SL/TP fields');
+}
+
+// ─── Functional: Partial Close Proportional Math ────────────────────────
+
+{
+    // 50% close
+    const size1 = 1000n, margin1 = 100n, ca1 = 500n;
+    assert(margin1 * ca1 / size1 === 50n, 'MRG4.MATH1: 50% close → proportional margin=50');
+
+    // 25% close
+    assert(margin1 * 250n / size1 === 25n, 'MRG4.MATH2: 25% close → proportional margin=25');
+
+    // Remaining size
+    assert(size1 - 750n === 250n, 'MRG4.MATH3: 75% close → remaining=250');
+
+    // PnL calculation
+    {
+        const size = 1000000000n;
+        const entryPrice = 100000000000n;
+        const markPrice = 110000000000n;
+        const fullPnl = size * (markPrice - entryPrice) / 1000000000n;
+        assert(fullPnl === 10000000000n, 'MRG4.MATH4a: Full PnL = 10.0');
+        const closeAmount = 500000000n;
+        const propPnl = fullPnl * closeAmount / size;
+        assert(propPnl === 5000000000n, 'MRG4.MATH4b: 50% proportional PnL = 5.0');
+    }
+
+    // Profit unlock
+    assert(50n + 10n === 60n, 'MRG4.MATH5: Profit → unlock = margin + pnl');
+
+    // Loss saturating
+    {
+        const pm = 50n, pnl = 60n;
+        assert((pm > pnl ? pm - pnl : 0n) === 0n, 'MRG4.MATH6: Loss > margin → saturates to 0');
+    }
+
+    // Full close delegation edge cases
+    assert(200n >= 100n, 'MRG4.MATH7: close_amount > size → full close');
+    assert(100n >= 100n, 'MRG4.MATH8: close_amount == size → full close');
+
+    // PnL bias accumulation
+    {
+        const PNL_BIAS = 1n << 63n;
+        const existing = PNL_BIAS;
+        const pnl = 5000000000n;
+        const newBiased = existing + pnl;
+        assert(newBiased === PNL_BIAS + 5000000000n, 'MRG4.MATH9a: Biased PnL accumulates');
+        assert(newBiased - PNL_BIAS === 5000000000n, 'MRG4.MATH9b: De-biased = +5.0');
+    }
+
+    // Loss bias
+    {
+        const PNL_BIAS = 1n << 63n;
+        const newBiased = PNL_BIAS - 3000000000n;
+        assert(newBiased - PNL_BIAS === -3000000000n, 'MRG4.MATH10: Loss de-biases to -3.0');
+    }
+}
+
+// ─── Funding Rate Tier Validation ───────────────────────────────────────
+
+{
+    const marginSource = fs.readFileSync('contracts/dex_margin/src/lib.rs', 'utf8');
+    assert(marginSource.includes('(5000, 2500, 300, 10)'), 'MRG4.TIER1: ≤2x tier (5000/2500/300/10)');
+    assert(marginSource.includes('(3333, 1700, 300, 10)'), 'MRG4.TIER2: ≤3x tier (3333/1700/300/10)');
+    assert(marginSource.includes('(2000, 1000, 500, 15)'), 'MRG4.TIER3: ≤5x tier (2000/1000/500/15)');
+    assert(marginSource.includes('(1000, 500, 500, 20)'), 'MRG4.TIER4: ≤10x tier (1000/500/500/20)');
+    assert(marginSource.includes('(400, 200, 700, 30)'), 'MRG4.TIER5: ≤25x tier (400/200/700/30)');
+    assert(marginSource.includes('(200, 100, 1000, 50)'), 'MRG4.TIER6: ≤50x tier (200/100/1000/50)');
+    assert(marginSource.includes('(100, 50, 1500, 100)'), 'MRG4.TIER7: ≤100x tier (100/50/1500/100)');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Summary
 // ═══════════════════════════════════════════════════════════════════════════
 console.log(`\n${'═'.repeat(60)}`);

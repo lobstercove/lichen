@@ -228,6 +228,8 @@ pub struct MarginPositionJson {
     pub realized_pnl: i64,
     pub accumulated_funding: u64,
     pub mark_price: f64,
+    pub sl_price: u64,
+    pub tp_price: u64,
 }
 
 #[derive(Serialize, Clone)]
@@ -238,6 +240,23 @@ pub struct MarginInfoJson {
     pub maintenance_bps: u64,
     pub position_count: u64,
     pub max_leverage: u64,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FundingRateJson {
+    pub base_rate_bps: u64,
+    pub interval_hours: u64,
+    pub max_rate_bps: u64,
+    pub tiers: Vec<FundingTierJson>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FundingTierJson {
+    pub max_leverage: u64,
+    pub multiplier_x10: u64,
+    pub effective_rate_bps: f64,
 }
 
 #[derive(Serialize, Clone)]
@@ -731,6 +750,14 @@ fn decode_margin_position(data: &[u8]) -> Option<MarginPositionJson> {
     let realized_pnl = raw_pnl as i64 - PNL_BIAS as i64;
     let accumulated_funding = u64::from_le_bytes(data[98..106].try_into().ok()?);
 
+    // Decode V2 fields (SL/TP) if present (>= 122 bytes)
+    let sl_price = if data.len() >= 114 {
+        u64::from_le_bytes(data[106..114].try_into().unwrap_or([0; 8]))
+    } else { 0 };
+    let tp_price = if data.len() >= 122 {
+        u64::from_le_bytes(data[114..122].try_into().unwrap_or([0; 8]))
+    } else { 0 };
+
     Some(MarginPositionJson {
         position_id,
         trader,
@@ -746,6 +773,8 @@ fn decode_margin_position(data: &[u8]) -> Option<MarginPositionJson> {
         realized_pnl,
         accumulated_funding,
         mark_price: 0.0, // populated in handler with pair-specific mark price
+        sl_price,
+        tp_price,
     })
 }
 
@@ -2138,6 +2167,36 @@ async fn get_margin_enabled_pairs(State(state): State<Arc<RpcState>>) -> Respons
     ApiResponse::ok(serde_json::json!({ "enabledPairIds": enabled }), slot).into_response()
 }
 
+/// GET /api/v1/margin/funding-rate — Returns funding rate constants per tier
+async fn get_margin_funding_rate(State(state): State<Arc<RpcState>>) -> Response {
+    let slot = current_slot(&state);
+
+    // Base rate: 1 bps = 0.01% per 8h interval (from contract constant MAX_FUNDING_RATE_BPS=100 / 100)
+    let base_rate_bps: u64 = 1;
+    let interval_hours: u64 = 8; // FUNDING_INTERVAL_SLOTS = 28_800 ≈ 8h
+    let max_rate_bps: u64 = 100; // 1% max per interval
+
+    // Tier table mirrors contract's get_tier_params funding_rate_mult_x10
+    let tiers = vec![
+        FundingTierJson { max_leverage: 2, multiplier_x10: 10, effective_rate_bps: base_rate_bps as f64 * 10.0 / 10.0 },
+        FundingTierJson { max_leverage: 3, multiplier_x10: 10, effective_rate_bps: base_rate_bps as f64 * 10.0 / 10.0 },
+        FundingTierJson { max_leverage: 5, multiplier_x10: 15, effective_rate_bps: base_rate_bps as f64 * 15.0 / 10.0 },
+        FundingTierJson { max_leverage: 10, multiplier_x10: 20, effective_rate_bps: base_rate_bps as f64 * 20.0 / 10.0 },
+        FundingTierJson { max_leverage: 25, multiplier_x10: 30, effective_rate_bps: base_rate_bps as f64 * 30.0 / 10.0 },
+        FundingTierJson { max_leverage: 50, multiplier_x10: 50, effective_rate_bps: base_rate_bps as f64 * 50.0 / 10.0 },
+        FundingTierJson { max_leverage: 100, multiplier_x10: 100, effective_rate_bps: base_rate_bps as f64 * 100.0 / 10.0 },
+    ];
+
+    let info = FundingRateJson {
+        base_rate_bps,
+        interval_hours,
+        max_rate_bps,
+        tiers,
+    };
+
+    ApiResponse::ok(info, slot).into_response()
+}
+
 // ─── ANALYTICS ──────────────────────────────────────────────────────────────
 
 /// GET /api/v1/leaderboard — Top traders
@@ -2392,6 +2451,7 @@ pub(crate) fn build_dex_router() -> Router<Arc<RpcState>> {
         .route("/margin/positions/:id", get(get_margin_position))
         .route("/margin/info", get(get_margin_info))
         .route("/margin/enabled-pairs", get(get_margin_enabled_pairs))
+        .route("/margin/funding-rate", get(get_margin_funding_rate))
         // Analytics
         .route("/leaderboard", get(get_leaderboard))
         .route("/traders/:addr/stats", get(get_trader_stats))

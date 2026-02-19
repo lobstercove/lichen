@@ -442,6 +442,18 @@ document.addEventListener('DOMContentLoaded', () => {
         return arr;
     }
 
+    // Opcode 25: partial_close(caller[32], position_id[8], close_amount[8])
+    function buildPartialCloseArgs(caller, positionId, closeAmount) {
+        const buf = new ArrayBuffer(49);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 25); // opcode
+        writePubkey(arr, 1, caller);
+        writeU64LE(view, 33, positionId);
+        writeU64LE(view, 41, closeAmount);
+        return arr;
+    }
+
     // Opcode 4: add_margin(caller[32], position_id[8], amount[8])
     function buildAddMarginArgs(caller, positionId, amount) {
         const buf = new ArrayBuffer(49);
@@ -2446,6 +2458,155 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // ═══════════════════════════════════════════════════════════════════════════
+    // PnL SHARE CARD — Canvas-based branded position card
+    // ═══════════════════════════════════════════════════════════════════════════
+
+    function generatePnlShareCard(opts) {
+        const { pair, side, entry, mark, pnl, pnlPct, leverage, createdSlot } = opts;
+        const isProfit = pnl >= 0;
+        const W = 480, H = 280;
+        const canvas = document.createElement('canvas');
+        canvas.width = W; canvas.height = H;
+        const ctx = canvas.getContext('2d');
+
+        // Background gradient — green for profit, red for loss
+        const grad = ctx.createLinearGradient(0, 0, W, H);
+        if (isProfit) {
+            grad.addColorStop(0, '#0a2e1a');
+            grad.addColorStop(1, '#134e2a');
+        } else {
+            grad.addColorStop(0, '#2e0a0a');
+            grad.addColorStop(1, '#4e1313');
+        }
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.roundRect(0, 0, W, H, 12);
+        ctx.fill();
+
+        // Border glow
+        ctx.strokeStyle = isProfit ? 'rgba(0,255,127,0.3)' : 'rgba(255,80,80,0.3)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.roundRect(1, 1, W - 2, H - 2, 12);
+        ctx.stroke();
+
+        // Header: MoltChain DEX branding
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 14px monospace';
+        ctx.fillText('MoltChain DEX', 20, 30);
+        ctx.fillStyle = 'rgba(255,255,255,0.5)';
+        ctx.font = '11px monospace';
+        ctx.fillText('Margin Trade', 160, 30);
+
+        // Pair + Side + Leverage
+        ctx.fillStyle = isProfit ? '#00ff7f' : '#ff5050';
+        ctx.font = 'bold 22px monospace';
+        ctx.fillText(`${side.toUpperCase()} ${pair}`, 20, 65);
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 16px monospace';
+        ctx.fillText(`${leverage}x`, 20, 88);
+
+        // Divider
+        ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(20, 100); ctx.lineTo(W - 20, 100); ctx.stroke();
+
+        // Stats grid — two columns
+        const leftX = 20, rightX = 260, rowH = 28;
+        let y = 125;
+        ctx.font = '12px monospace';
+
+        const drawStat = (x, yy, label, value, color) => {
+            ctx.fillStyle = 'rgba(255,255,255,0.6)';
+            ctx.fillText(label, x, yy);
+            ctx.fillStyle = color || '#ffffff';
+            ctx.fillText(value, x + 80, yy);
+        };
+
+        drawStat(leftX, y, 'Entry:', formatPrice(entry));
+        drawStat(rightX, y, 'Mark:', formatPrice(mark));
+        y += rowH;
+        drawStat(leftX, y, 'PnL $:', `${pnl >= 0 ? '+' : ''}${formatPrice(pnl)}`, isProfit ? '#00ff7f' : '#ff5050');
+        drawStat(rightX, y, 'PnL %:', pnlPct, isProfit ? '#00ff7f' : '#ff5050');
+        y += rowH;
+        drawStat(leftX, y, 'Leverage:', `${leverage}x`);
+        if (createdSlot > 0) {
+            drawStat(rightX, y, 'Slot:', String(createdSlot));
+        }
+
+        // Big PnL display
+        y += 38;
+        ctx.fillStyle = isProfit ? '#00ff7f' : '#ff5050';
+        ctx.font = 'bold 32px monospace';
+        const bigPnl = `${pnl >= 0 ? '+' : ''}${formatPrice(pnl)}`;
+        ctx.fillText(bigPnl, 20, y);
+
+        // Footer
+        ctx.fillStyle = 'rgba(255,255,255,0.3)';
+        ctx.font = '10px monospace';
+        ctx.fillText(`moltchain.io • ${new Date().toISOString().slice(0, 10)}`, 20, H - 12);
+
+        return canvas;
+    }
+
+    function showPnlShareCard(opts) {
+        // Remove existing modal if any
+        const existing = document.getElementById('pnlShareModal');
+        if (existing) existing.remove();
+
+        const canvas = generatePnlShareCard(opts);
+
+        const modal = document.createElement('div');
+        modal.id = 'pnlShareModal';
+        modal.style.cssText = 'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);display:flex;align-items:center;justify-content:center;z-index:10000;';
+
+        const card = document.createElement('div');
+        card.style.cssText = 'background:var(--bg-primary,#1a1a2e);padding:16px;border-radius:12px;display:flex;flex-direction:column;gap:12px;align-items:center;';
+
+        card.appendChild(canvas);
+
+        const btnRow = document.createElement('div');
+        btnRow.style.cssText = 'display:flex;gap:10px;';
+
+        const copyBtn = document.createElement('button');
+        copyBtn.className = 'btn btn-primary btn-small';
+        copyBtn.textContent = '📋 Copy Image';
+        copyBtn.addEventListener('click', async () => {
+            try {
+                const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
+                await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
+                showNotification('PnL card copied to clipboard', 'success');
+            } catch {
+                showNotification('Copy failed — try Download instead', 'warning');
+            }
+        });
+
+        const dlBtn = document.createElement('button');
+        dlBtn.className = 'btn btn-secondary btn-small';
+        dlBtn.textContent = '⬇ Download PNG';
+        dlBtn.addEventListener('click', () => {
+            const a = document.createElement('a');
+            a.download = `moltchain-pnl-${opts.pair.replace('/', '-')}-${Date.now()}.png`;
+            a.href = canvas.toDataURL('image/png');
+            a.click();
+        });
+
+        const closeBtn = document.createElement('button');
+        closeBtn.className = 'btn btn-secondary btn-small';
+        closeBtn.textContent = '✕ Close';
+        closeBtn.addEventListener('click', () => modal.remove());
+
+        btnRow.appendChild(copyBtn);
+        btnRow.appendChild(dlBtn);
+        btnRow.appendChild(closeBtn);
+        card.appendChild(btnRow);
+        modal.appendChild(card);
+
+        modal.addEventListener('click', e => { if (e.target === modal) modal.remove(); });
+        document.body.appendChild(modal);
+    }
+
     async function loadMarginStats() {
         try {
             const { data } = await api.get('/stats/margin');
@@ -2462,6 +2623,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (data.maxLeverage) { const ls = document.getElementById('leverageSlider'); if (ls) ls.max = String(data.maxLeverage); }
             }
         } catch { /* keep defaults */ }
+        // Load funding rate
+        try {
+            const { data } = await api.get('/margin/funding-rate');
+            if (data) {
+                const el = document.getElementById('marginFundingRate');
+                if (el) {
+                    const rate = (data.baseRateBps / 100).toFixed(2);
+                    el.textContent = `${rate}%/${data.intervalHours || 8}h`;
+                    el.title = `Base rate: ${rate}%/8h, Max: ${(data.maxRateBps / 100).toFixed(1)}%, Tiers: ${(data.tiers || []).length}`;
+                }
+            }
+        } catch { /* keep default */ }
     }
 
     async function loadMarginPositions() {
@@ -2536,7 +2709,8 @@ document.addEventListener('DOMContentLoaded', () => {
                                 <button class="btn btn-small btn-margin-add" data-position-id="${posId}" title="Add Margin">＋</button>
                                 <button class="btn btn-small btn-margin-remove" data-position-id="${posId}" title="Remove Margin">−</button>
                                 ${isOpen ? `<button class="btn btn-small btn-margin-sltp" data-position-id="${posId}" title="Edit SL/TP" style="font-size:0.72rem;">SL/TP</button>` : ''}
-                                <button class="btn btn-small btn-secondary margin-close-btn" data-position-id="${posId}">Close</button>
+                                ${isOpen ? `<button class="btn btn-small btn-secondary margin-close-btn" data-position-id="${posId}" data-size="${sizeRaw}">Close ▾</button>` : ''}
+                                ${isOpen ? `<button class="btn btn-small btn-outline margin-share-btn" data-position-id="${posId}" data-pair="${escapeHtml(pos.pair || 'MOLT/mUSD')}" data-side="${escapeHtml(side)}" data-entry="${pos.entryPrice || 0}" data-mark="${mark}" data-pnl="${pnl}" data-pnlpct="${pnlPctStr}" data-leverage="${leverage}" data-slot="${pos.createdSlot || 0}" title="Share PnL">📤</button>` : ''}
                             </div>
                             <div class="margin-sltp-inline hidden" data-position-id="${posId}">
                                 <div style="display:flex;gap:6px;align-items:center;">
@@ -2544,6 +2718,17 @@ document.addEventListener('DOMContentLoaded', () => {
                                     <input type="number" class="sltp-tp-input" placeholder="Take-Profit" step="0.0001" value="${tpPrice > 0 ? (tpPrice / PRICE_SCALE).toFixed(4) : ''}" style="flex:1;font-size:0.8rem;" />
                                     <button class="btn btn-small btn-primary sltp-save-btn" data-position-id="${posId}">Save</button>
                                     <button class="btn btn-small btn-secondary sltp-cancel-btn" data-position-id="${posId}">×</button>
+                                </div>
+                            </div>
+                            <div class="margin-pclose-inline hidden" data-position-id="${posId}" data-size="${sizeRaw}">
+                                <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+                                    <button class="btn btn-small btn-secondary pclose-pct-btn" data-position-id="${posId}" data-pct="25">25%</button>
+                                    <button class="btn btn-small btn-secondary pclose-pct-btn" data-position-id="${posId}" data-pct="50">50%</button>
+                                    <button class="btn btn-small btn-secondary pclose-pct-btn" data-position-id="${posId}" data-pct="75">75%</button>
+                                    <button class="btn btn-small btn-primary pclose-pct-btn" data-position-id="${posId}" data-pct="100">100%</button>
+                                    <input type="number" class="pclose-custom-input" placeholder="Custom qty" step="0.001" min="0.001" style="flex:1;font-size:0.8rem;max-width:100px;" />
+                                    <button class="btn btn-small btn-primary pclose-custom-btn" data-position-id="${posId}">Go</button>
+                                    <button class="btn btn-small btn-secondary pclose-cancel-btn" data-position-id="${posId}">×</button>
                                 </div>
                             </div>
                             <div class="margin-adjust-inline hidden" data-position-id="${posId}">
@@ -2560,21 +2745,77 @@ document.addEventListener('DOMContentLoaded', () => {
                             showNotification(`⚠ ${warningRows.length} position(s) near liquidation — margin ratio < 120%`, 'warning');
                         }
                     }
-                    // Bind close buttons
-                    container.querySelectorAll('.margin-close-btn').forEach(btn => btn.addEventListener('click', async () => {
+                    // Bind close buttons — toggle partial close panel
+                    container.querySelectorAll('.margin-close-btn').forEach(btn => btn.addEventListener('click', () => {
                         if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
                         if (!wallet.keypair) { showNotification('Re-import wallet to sign', 'warning'); return; }
+                        const posId = btn.dataset.positionId;
+                        const panel = container.querySelector(`.margin-pclose-inline[data-position-id="${posId}"]`);
+                        if (!panel) return;
+                        panel.classList.toggle('hidden');
+                    }));
+                    // Bind partial close percentage buttons
+                    container.querySelectorAll('.pclose-pct-btn').forEach(btn => btn.addEventListener('click', async () => {
+                        if (!state.connected || !wallet.keypair) return;
+                        const posId = parseInt(btn.dataset.positionId);
+                        const panel = btn.closest('.margin-pclose-inline');
+                        const fullSize = parseInt(panel.dataset.size);
+                        const pct = parseInt(btn.dataset.pct);
                         btn.disabled = true;
                         try {
-                            await wallet.sendTransaction([contractIx(
-                                contracts.dex_margin,
-                                buildClosePositionArgs(wallet.address, parseInt(btn.dataset.positionId))
-                            )]);
-                            showNotification('Position closed', 'success');
+                            let ix;
+                            if (pct >= 100) {
+                                ix = contractIx(contracts.dex_margin, buildClosePositionArgs(wallet.address, posId));
+                            } else {
+                                const closeAmt = Math.floor(fullSize * pct / 100);
+                                if (closeAmt <= 0) { showNotification('Close amount too small', 'warning'); btn.disabled = false; return; }
+                                ix = contractIx(contracts.dex_margin, buildPartialCloseArgs(wallet.address, posId, closeAmt));
+                            }
+                            await wallet.sendTransaction([ix]);
+                            showNotification(pct >= 100 ? 'Position closed' : `Closed ${pct}% of position`, 'success');
                             await loadMarginPositions();
                             if (wallet.address) loadBalances(wallet.address).then(() => renderBalances()).catch(() => {});
                         } catch (e) { showNotification(`Close failed: ${e.message}`, 'error'); }
                         btn.disabled = false;
+                    }));
+                    // Bind partial close custom button
+                    container.querySelectorAll('.pclose-custom-btn').forEach(btn => btn.addEventListener('click', async () => {
+                        if (!state.connected || !wallet.keypair) return;
+                        const posId = parseInt(btn.dataset.positionId);
+                        const panel = btn.closest('.margin-pclose-inline');
+                        const input = panel.querySelector('.pclose-custom-input');
+                        const qty = parseFloat(input.value || '0');
+                        if (qty <= 0) { showNotification('Enter a valid quantity', 'warning'); return; }
+                        const closeAmt = Math.floor(qty * 1e9);
+                        btn.disabled = true;
+                        try {
+                            await wallet.sendTransaction([contractIx(
+                                contracts.dex_margin,
+                                buildPartialCloseArgs(wallet.address, posId, closeAmt)
+                            )]);
+                            showNotification(`Closed ${qty} units of position`, 'success');
+                            await loadMarginPositions();
+                            if (wallet.address) loadBalances(wallet.address).then(() => renderBalances()).catch(() => {});
+                        } catch (e) { showNotification(`Close failed: ${e.message}`, 'error'); }
+                        btn.disabled = false;
+                    }));
+                    // Bind partial close cancel buttons
+                    container.querySelectorAll('.pclose-cancel-btn').forEach(btn => btn.addEventListener('click', () => {
+                        const panel = btn.closest('.margin-pclose-inline');
+                        if (panel) panel.classList.add('hidden');
+                    }));
+                    // Bind Share PnL buttons
+                    container.querySelectorAll('.margin-share-btn').forEach(btn => btn.addEventListener('click', () => {
+                        showPnlShareCard({
+                            pair: btn.dataset.pair,
+                            side: btn.dataset.side,
+                            entry: parseFloat(btn.dataset.entry),
+                            mark: parseFloat(btn.dataset.mark),
+                            pnl: parseFloat(btn.dataset.pnl),
+                            pnlPct: btn.dataset.pnlpct,
+                            leverage: btn.dataset.leverage,
+                            createdSlot: parseInt(btn.dataset.slot) || 0,
+                        });
                     }));
                     // Bind Add Margin buttons
                     container.querySelectorAll('.btn-margin-add').forEach(btn => btn.addEventListener('click', () => {

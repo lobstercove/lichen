@@ -265,6 +265,9 @@ fn decode_pos_entry_price(data: &[u8]) -> u64 { if data.len() >= 74 { bytes_to_u
 fn decode_pos_leverage(data: &[u8]) -> u64 { if data.len() >= 82 { bytes_to_u64(&data[74..82]) } else { 0 } }
 
 fn update_pos_status(data: &mut Vec<u8>, s: u8) { if data.len() > 49 { data[49] = s; } }
+fn update_pos_size(data: &mut Vec<u8>, s: u64) {
+    if data.len() >= 58 { data[50..58].copy_from_slice(&u64_to_bytes(s)); }
+}
 fn update_pos_margin(data: &mut Vec<u8>, m: u64) {
     if data.len() >= 66 { data[58..66].copy_from_slice(&u64_to_bytes(m)); }
 }
@@ -915,6 +918,116 @@ pub fn emergency_unpause(caller: *const u8) -> u32 {
 // STOP-LOSS / TAKE-PROFIT ON MARGIN POSITIONS
 // ============================================================================
 
+/// Partially close a margin position
+/// Closes `close_amount` of the position's size, settles proportional PnL,
+/// reduces margin proportionally, and keeps the remainder open.
+/// If close_amount >= position size, delegates to full close.
+/// Returns: 0=success, 1=not found, 2=not owner, 3=not open, 4=reentrancy,
+///          5=zero close amount
+pub fn partial_close(caller: *const u8, position_id: u64, close_amount: u64) -> u32 {
+    if !reentrancy_enter() { return 4; }
+    let mut c = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX: verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != c {
+        reentrancy_exit();
+        return 200;
+    }
+
+    if close_amount == 0 {
+        reentrancy_exit();
+        return 5;
+    }
+
+    let pk = position_key(position_id);
+    let mut data = match storage_get(&pk) {
+        Some(d) if d.len() >= POSITION_SIZE_V1 => d,
+        _ => { reentrancy_exit(); return 1; }
+    };
+
+    let trader = decode_pos_trader(&data);
+    if trader != c { reentrancy_exit(); return 2; }
+    if decode_pos_status(&data) != POS_OPEN { reentrancy_exit(); return 3; }
+
+    let size = decode_pos_size(&data);
+    let margin = decode_pos_margin(&data);
+    let pair_id = decode_pos_pair_id(&data);
+    let side = decode_pos_side(&data);
+    let entry_price = decode_pos_entry_price(&data);
+
+    // If closing the full size or more, do a full close
+    if close_amount >= size {
+        reentrancy_exit(); // release before calling close_position which re-enters
+        return close_position(caller, position_id);
+    }
+
+    let mark_price = fresh_mark_price(pair_id);
+
+    // Calculate proportional close fraction
+    // proportional_margin = margin * close_amount / size
+    let proportional_margin = (margin as u128 * close_amount as u128 / size as u128) as u64;
+    let remaining_margin = margin.saturating_sub(proportional_margin);
+    let remaining_size = size - close_amount; // safe since close_amount < size
+
+    // Calculate PnL on the closed portion
+    let unlock_amount = if mark_price > 0 {
+        let (is_profit, pnl_full) = calculate_pnl(side, size, entry_price, mark_price);
+        // Proportional PnL for the closed amount
+        let pnl = (pnl_full as u128 * close_amount as u128 / size as u128) as u64;
+
+        // Write proportional realized PnL to position
+        let existing_pnl_biased = if data.len() >= 98 {
+            bytes_to_u64(&data[90..98])
+        } else {
+            1u64 << 63
+        };
+        // Accumulate: add the new partial PnL to existing realized PnL
+        let new_pnl_biased = if is_profit {
+            existing_pnl_biased.saturating_add(pnl)
+        } else {
+            existing_pnl_biased.saturating_sub(pnl)
+        };
+        while data.len() < POSITION_SIZE { data.push(0); }
+        data[90..98].copy_from_slice(&new_pnl_biased.to_le_bytes());
+
+        // Track cumulative PnL
+        if is_profit {
+            save_u64(TOTAL_PNL_PROFIT_KEY, load_u64(TOTAL_PNL_PROFIT_KEY).saturating_add(pnl));
+            proportional_margin.saturating_add(pnl)
+        } else {
+            save_u64(TOTAL_PNL_LOSS_KEY, load_u64(TOTAL_PNL_LOSS_KEY).saturating_add(pnl));
+            proportional_margin.saturating_sub(pnl)
+        }
+    } else {
+        proportional_margin // no mark price → return proportional margin only
+    };
+
+    // Unlock proportional collateral
+    let unlock_call = CrossCall::new(
+        Address([0u8; 32]),
+        "unlock",
+        {
+            let mut args = Vec::with_capacity(40);
+            args.extend_from_slice(&trader);
+            args.extend_from_slice(&u64_to_bytes(unlock_amount));
+            args
+        },
+    );
+    let _ = call_contract(unlock_call);
+
+    // Update position in-place: reduce size and margin, keep it open
+    update_pos_size(&mut data, remaining_size);
+    update_pos_margin(&mut data, remaining_margin);
+    storage_set(&pk, &data);
+
+    moltchain_sdk::set_return_data(&u64_to_bytes(unlock_amount));
+    log_info("Margin position partially closed");
+    reentrancy_exit();
+    0
+}
+
 /// Set or update the stop-loss and/or take-profit prices on a margin position.
 /// Pass 0 for sl_price or tp_price to clear that trigger.
 /// Returns: 0=success, 1=not found, 2=not owner, 3=not open, 4=reentrancy,
@@ -1193,6 +1306,15 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[41..49]),
                     bytes_to_u64(&args[49..57]),
                 );
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 25 = partial_close(caller[32], position_id[8], close_amount[8])
+        25 => {
+            if args.len() >= 49 {
+                let pos_id = bytes_to_u64(&args[33..41]);
+                let close_amount = bytes_to_u64(&args[41..49]);
+                let r = partial_close(args[1..33].as_ptr(), pos_id, close_amount);
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
