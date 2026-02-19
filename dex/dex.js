@@ -318,10 +318,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // ── DEX Core instruction builders ──
-    // Opcode 2: place_order(trader, pair_id, side, type, price, qty, expiry)
+    // Opcode 2: place_order(trader, pair_id, side, type, price, qty, expiry, trigger_price)
     // Order types: 0=limit, 1=market, 2=stop-limit, 3=post-only
-    function buildPlaceOrderArgs(trader, pairId, side, orderType, price, quantity) {
-        const buf = new ArrayBuffer(67);
+    function buildPlaceOrderArgs(trader, pairId, side, orderType, price, quantity, stopPrice) {
+        const buf = new ArrayBuffer(75);
         const view = new DataView(buf);
         const arr = new Uint8Array(buf);
         writeU8(arr, 0, 2); // opcode
@@ -337,6 +337,7 @@ document.addEventListener('DOMContentLoaded', () => {
         writeU64LE(view, 43, price);
         writeU64LE(view, 51, quantity);
         writeU64LE(view, 59, 0); // expiry: 0 = no expiry
+        writeU64LE(view, 67, stopPrice || 0); // trigger_price for stop-limit orders
         return arr;
     }
 
@@ -462,6 +463,19 @@ document.addEventListener('DOMContentLoaded', () => {
         writePubkey(arr, 1, caller);
         writeU64LE(view, 33, positionId);
         writeU64LE(view, 41, amount);
+        return arr;
+    }
+
+    // Opcode 24: set_position_sl_tp(caller[32], position_id[8], sl_price[8], tp_price[8])
+    function buildSetPositionSlTpArgs(caller, positionId, slPrice, tpPrice) {
+        const buf = new ArrayBuffer(57);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 24); // opcode
+        writePubkey(arr, 1, caller);
+        writeU64LE(view, 33, positionId);
+        writeU64LE(view, 41, slPrice || 0);
+        writeU64LE(view, 49, tpPrice || 0);
         return arr;
     }
 
@@ -1314,10 +1328,24 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
         if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
         const price = parseFloat(priceInput?.value) || 0, amount = parseFloat(amountInput?.value) || 0;
+        const stopPriceInput = document.getElementById('stopPrice');
+        const stopPrice = parseFloat(stopPriceInput?.value) || 0;
         if (!amount || (state.orderType !== 'market' && !price)) { showNotification('Enter price and amount', 'warning'); return; }
         // F20.4: Reject negative values (would cause BigInt overflow in writeU64LE)
         if (amount <= 0) { showNotification('Amount must be positive', 'warning'); return; }
         if (state.orderType !== 'market' && price <= 0) { showNotification('Price must be positive', 'warning'); return; }
+        // Stop-limit validation: stop price required and directional check
+        if (state.orderType === 'stop-limit') {
+            if (stopPrice <= 0) { showNotification('Stop price required for stop-limit orders', 'warning'); return; }
+            if (stopPrice > 9_000_000) { showNotification('Stop price too large (max 9M)', 'warning'); return; }
+            const ref = state.lastPrice || 0;
+            if (ref > 0 && state.orderSide === 'sell' && stopPrice >= ref) {
+                showNotification('Sell-stop price must be below current market price', 'warning'); return;
+            }
+            if (ref > 0 && state.orderSide === 'buy' && stopPrice <= ref) {
+                showNotification('Buy-stop price must be above current market price', 'warning'); return;
+            }
+        }
         // F20.10: Reject values that would overflow MAX_SAFE_INTEGER when multiplied by PRICE_SCALE
         if (amount > 9_000_000) { showNotification('Amount too large (max 9M)', 'warning'); return; }
         if (price > 9_000_000) { showNotification('Price too large (max 9M)', 'warning'); return; }
@@ -1390,6 +1418,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 quote: state.activePair?.quote || '',
                 leverage: state.tradeMode === 'margin' ? state.leverageValue : null,
                 isMargin: state.tradeMode === 'margin',
+                stopPrice: effectiveOrderType === 'stop-limit' ? stopPrice : null,
             });
             if (!confirmed) return;
         }
@@ -1412,12 +1441,34 @@ document.addEventListener('DOMContentLoaded', () => {
                     buildOpenPositionArgs(wallet.address, state.activePairId, marginSide, size, leverage, marginDeposit)
                 )]);
                 showNotification(`${marginSide.toUpperCase()} ${state.leverageValue}x opened: ${formatAmount(amount)} ${state.activePair?.base || ''} @ ${formatPrice(price || state.lastPrice)}`, 'success');
+                // Auto-set SL/TP on newly opened position if the user specified values
+                const marginSLInput = document.getElementById('marginSL');
+                const marginTPInput = document.getElementById('marginTP');
+                const slVal = parseFloat(marginSLInput?.value) || 0;
+                const tpVal = parseFloat(marginTPInput?.value) || 0;
+                if (slVal > 0 || tpVal > 0) {
+                    try {
+                        // Get position count to determine the new position's ID
+                        const { data: posData } = await api.get(`/margin/positions?trader=${wallet.address}`);
+                        const openPositions = Array.isArray(posData) ? posData.filter(p => p.status === 'open' || p.status === 0) : [];
+                        const newPos = openPositions.length > 0 ? openPositions[openPositions.length - 1] : null;
+                        if (newPos && newPos.positionId) {
+                            await wallet.sendTransaction([contractIx(
+                                contracts.dex_margin,
+                                buildSetPositionSlTpArgs(wallet.address, newPos.positionId, slVal > 0 ? Math.round(slVal * PRICE_SCALE) : 0, tpVal > 0 ? Math.round(tpVal * PRICE_SCALE) : 0)
+                            )]);
+                            showNotification(`SL/TP set: ${slVal > 0 ? 'SL @ ' + formatPrice(slVal) : ''}${slVal > 0 && tpVal > 0 ? ' / ' : ''}${tpVal > 0 ? 'TP @ ' + formatPrice(tpVal) : ''}`, 'success');
+                            if (marginSLInput) marginSLInput.value = '';
+                            if (marginTPInput) marginTPInput.value = '';
+                        }
+                    } catch (e) { showNotification('Position opened but SL/TP failed: ' + e.message, 'warning'); }
+                }
                 // F17.8: Immediate panel refresh after margin trade
                 loadMarginPositions().catch(() => {});
             } else {
                 const result = await wallet.sendTransaction([contractIx(
                     contracts.dex_core,
-                    buildPlaceOrderArgs(wallet.address, state.activePairId, state.orderSide, effectiveOrderType, Math.round(price * PRICE_SCALE), Math.round(amount * PRICE_SCALE))
+                    buildPlaceOrderArgs(wallet.address, state.activePairId, state.orderSide, effectiveOrderType, Math.round(price * PRICE_SCALE), Math.round(amount * PRICE_SCALE), effectiveOrderType === 'stop-limit' ? Math.round(stopPrice * PRICE_SCALE) : 0)
                 )]);
                 showNotification(`${state.orderSide.toUpperCase()} order placed: ${formatAmount(amount)} ${state.activePair?.base || ''} @ ${effectiveOrderType === 'market' ? 'MARKET' : formatPrice(price)}`, 'success');
                 // F24.16: Refresh from API instead of pushing client-side stub (avoids stale/duplicate entries)
@@ -2462,6 +2513,10 @@ document.addEventListener('DOMContentLoaded', () => {
                         const marginRatioPct = notionalValue > 0 ? ((marginHuman + pnl) / notionalValue) * 100 : 999;
                         const isLiqWarning = marginRatioPct < 120 && pos.status !== 'closed' && pos.status !== 'liquidated';
                         const rowClass = isLiqWarning ? 'margin-pos-row liq-warning-flash' : 'margin-pos-row';
+                        // SL/TP display values
+                        const slPrice = pos.slPrice || 0;
+                        const tpPrice = pos.tpPrice || 0;
+                        const isOpen = pos.status !== 'closed' && pos.status !== 'liquidated';
                         return `<div class="${rowClass}" data-position-id="${posId}">
                             <div class="margin-pos-info">
                                 <span class="${sideClass}">${escapeHtml(side)} ${escapeHtml(pos.pair || 'MOLT/mUSD')}</span>
@@ -2474,11 +2529,22 @@ document.addEventListener('DOMContentLoaded', () => {
                                 <span>Liq: <span class="text-warning">${liqPrice > 0 ? formatPrice(liqPrice) : '—'}</span></span>
                                 <span class="${pnl >= 0 ? 'positive' : 'negative'}">P&L: ${pnl >= 0 ? '+' : ''}${formatPrice(pnl)} (${pnlPctStr})</span>
                                 <span>Margin: ${formatAmount(marginHuman)}</span>
+                                <span>SL: ${slPrice > 0 ? formatPrice(slPrice / PRICE_SCALE) : '—'}</span>
+                                <span>TP: ${tpPrice > 0 ? formatPrice(tpPrice / PRICE_SCALE) : '—'}</span>
                             </div>
                             <div class="margin-pos-actions">
                                 <button class="btn btn-small btn-margin-add" data-position-id="${posId}" title="Add Margin">＋</button>
                                 <button class="btn btn-small btn-margin-remove" data-position-id="${posId}" title="Remove Margin">−</button>
+                                ${isOpen ? `<button class="btn btn-small btn-margin-sltp" data-position-id="${posId}" title="Edit SL/TP" style="font-size:0.72rem;">SL/TP</button>` : ''}
                                 <button class="btn btn-small btn-secondary margin-close-btn" data-position-id="${posId}">Close</button>
+                            </div>
+                            <div class="margin-sltp-inline hidden" data-position-id="${posId}">
+                                <div style="display:flex;gap:6px;align-items:center;">
+                                    <input type="number" class="sltp-sl-input" placeholder="Stop-Loss" step="0.0001" value="${slPrice > 0 ? (slPrice / PRICE_SCALE).toFixed(4) : ''}" style="flex:1;font-size:0.8rem;" />
+                                    <input type="number" class="sltp-tp-input" placeholder="Take-Profit" step="0.0001" value="${tpPrice > 0 ? (tpPrice / PRICE_SCALE).toFixed(4) : ''}" style="flex:1;font-size:0.8rem;" />
+                                    <button class="btn btn-small btn-primary sltp-save-btn" data-position-id="${posId}">Save</button>
+                                    <button class="btn btn-small btn-secondary sltp-cancel-btn" data-position-id="${posId}">×</button>
+                                </div>
                             </div>
                             <div class="margin-adjust-inline hidden" data-position-id="${posId}">
                                 <input type="number" class="margin-adjust-input" placeholder="Amount" step="0.001" min="0.001" />
@@ -2570,6 +2636,40 @@ document.addEventListener('DOMContentLoaded', () => {
                             await loadMarginPositions();
                             if (wallet.address) loadBalances(wallet.address).then(() => renderBalances()).catch(() => {});
                         } catch (e) { showNotification(`${action === 'add' ? 'Add' : 'Remove'} margin failed: ${e.message}`, 'error'); }
+                        btn.disabled = false;
+                    }));
+                    // Bind SL/TP edit buttons
+                    container.querySelectorAll('.btn-margin-sltp').forEach(btn => btn.addEventListener('click', () => {
+                        const posId = btn.dataset.positionId;
+                        const row = container.querySelector(`.margin-sltp-inline[data-position-id="${posId}"]`);
+                        if (row) row.classList.toggle('hidden');
+                    }));
+                    // Bind SL/TP cancel buttons
+                    container.querySelectorAll('.sltp-cancel-btn').forEach(btn => btn.addEventListener('click', () => {
+                        const posId = btn.dataset.positionId;
+                        const row = container.querySelector(`.margin-sltp-inline[data-position-id="${posId}"]`);
+                        if (row) row.classList.add('hidden');
+                    }));
+                    // Bind SL/TP save buttons
+                    container.querySelectorAll('.sltp-save-btn').forEach(btn => btn.addEventListener('click', async () => {
+                        if (!state.connected || !wallet.keypair) { showNotification('Wallet not ready', 'warning'); return; }
+                        if (!contracts.dex_margin) { showNotification('Margin contract not loaded', 'error'); return; }
+                        const posId = parseInt(btn.dataset.positionId);
+                        const row = container.querySelector(`.margin-sltp-inline[data-position-id="${btn.dataset.positionId}"]`);
+                        const slInput = row?.querySelector('.sltp-sl-input');
+                        const tpInput = row?.querySelector('.sltp-tp-input');
+                        const slVal = parseFloat(slInput?.value) || 0;
+                        const tpVal = parseFloat(tpInput?.value) || 0;
+                        if (slVal <= 0 && tpVal <= 0) { showNotification('Enter at least one SL or TP price', 'warning'); return; }
+                        btn.disabled = true;
+                        try {
+                            await wallet.sendTransaction([contractIx(
+                                contracts.dex_margin,
+                                buildSetPositionSlTpArgs(wallet.address, posId, slVal > 0 ? Math.round(slVal * PRICE_SCALE) : 0, tpVal > 0 ? Math.round(tpVal * PRICE_SCALE) : 0)
+                            )]);
+                            showNotification(`SL/TP updated${slVal > 0 ? ' SL: ' + formatPrice(slVal) : ''}${tpVal > 0 ? ' TP: ' + formatPrice(tpVal) : ''}`, 'success');
+                            await loadMarginPositions();
+                        } catch (e) { showNotification(`SL/TP update failed: ${e.message}`, 'error'); }
                         btn.disabled = false;
                     }));
                 }
@@ -4454,6 +4554,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         <div class="confirm-row"><span>Total</span><span class="mono-value">${formatPrice(order.total)} ${escapeHtml(order.quote)}</span></div>
                         <div class="confirm-row"><span>Est. Fee</span><span class="mono-value">~${formatPrice(feeEst)} ${escapeHtml(order.quote)}</span></div>
                         ${order.isMargin ? `<div class="confirm-row"><span>Leverage</span><span class="mono-value">${order.leverage}x</span></div>` : ''}
+                        ${order.stopPrice ? `<div class="confirm-row"><span>Stop Price</span><span class="mono-value">${formatPrice(order.stopPrice)} ${escapeHtml(order.quote)}</span></div>` : ''}
                     </div>
                     <label class="checkbox-label" style="margin:12px 0 16px;font-size:0.78rem;color:var(--text-muted);">
                         <input type="checkbox" id="orderConfirmSkip"> Don't show again for small orders

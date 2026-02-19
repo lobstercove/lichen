@@ -33,6 +33,7 @@
 
 pub mod dex;
 pub mod dex_ws;
+pub mod launchpad;
 pub mod prediction;
 pub mod ws;
 
@@ -980,6 +981,8 @@ pub fn build_rpc_router(
         .nest("/api/v1", dex::build_dex_router())
         // Prediction Market REST API — /api/v1/prediction-market/*
         .nest("/api/v1/prediction-market", prediction::build_prediction_router())
+        // ClawPump Launchpad REST API — /api/v1/launchpad/*
+        .nest("/api/v1/launchpad", launchpad::build_launchpad_router())
         .layer(cors)
         // DDoS protection: limit request bodies to 2MB
         .layer(axum::extract::DefaultBodyLimit::max(2 * 1024 * 1024))

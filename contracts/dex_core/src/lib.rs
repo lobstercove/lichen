@@ -81,6 +81,7 @@ const STATUS_PARTIAL: u8 = 1;
 const STATUS_FILLED: u8 = 2;
 const STATUS_CANCELLED: u8 = 3;
 const STATUS_EXPIRED: u8 = 4;
+const STATUS_DORMANT: u8 = 5; // Task 2.2: Stop-limit waiting for trigger
 
 // Pair status
 const PAIR_ACTIVE: u8 = 0;
@@ -416,7 +417,8 @@ fn decode_pair_daily_volume(data: &[u8]) -> u64 {
 // Bytes 67..75  : created_slot (u64)
 // Bytes 75..83  : expiry_slot (u64, 0=GTC)
 // Bytes 83..91  : order_id (u64)
-// Bytes 91..128 : padding (37 bytes)
+// Bytes 91..99  : trigger_price (u64, for stop-limit orders)
+// Bytes 99..128 : padding (29 bytes)
 
 const ORDER_SIZE: usize = 128;
 
@@ -432,6 +434,7 @@ fn encode_order(
     created_slot: u64,
     expiry_slot: u64,
     order_id: u64,
+    trigger_price: u64,
 ) -> Vec<u8> {
     let mut data = Vec::with_capacity(ORDER_SIZE);
     data.extend_from_slice(trader);
@@ -445,6 +448,7 @@ fn encode_order(
     data.extend_from_slice(&u64_to_bytes(created_slot));
     data.extend_from_slice(&u64_to_bytes(expiry_slot));
     data.extend_from_slice(&u64_to_bytes(order_id));
+    data.extend_from_slice(&u64_to_bytes(trigger_price));
     while data.len() < ORDER_SIZE {
         data.push(0);
     }
@@ -527,6 +531,21 @@ fn decode_order_id(data: &[u8]) -> u64 {
     } else {
         0
     }
+}
+
+// Task 2.2: Decode trigger price for stop-limit orders
+fn decode_order_trigger_price(data: &[u8]) -> u64 {
+    if data.len() >= 99 {
+        bytes_to_u64(&data[91..99])
+    } else {
+        0
+    }
+}
+
+// Task 2.2: Update trigger price on an existing order
+fn update_order_trigger_price(data: &mut Vec<u8>, trigger_price: u64) {
+    while data.len() < 99 { data.push(0); }
+    data[91..99].copy_from_slice(&u64_to_bytes(trigger_price));
 }
 
 fn update_order_filled(data: &mut Vec<u8>, new_filled: u64) {
@@ -960,6 +979,7 @@ pub fn place_order(
     price: u64,
     quantity: u64,
     expiry_slot: u64,
+    trigger_price: u64,
 ) -> u32 {
     if !reentrancy_enter() {
         return 6;
@@ -1170,6 +1190,14 @@ pub fn place_order(
     // Create order
     let order_count = load_u64(ORDER_COUNT_KEY);
     let new_order_id = order_count + 1;
+
+    // Stop-limit orders with a trigger_price go dormant until triggered
+    let initial_status = if order_type == ORDER_STOP_LIMIT && trigger_price > 0 {
+        STATUS_DORMANT
+    } else {
+        STATUS_OPEN
+    };
+
     let order_data = encode_order(
         &t,
         pair_id,
@@ -1178,10 +1206,11 @@ pub fn place_order(
         price,
         quantity,
         0,
-        STATUS_OPEN,
+        initial_status,
         current_slot,
         expiry_slot,
         new_order_id,
+        trigger_price,
     );
     storage_set(&order_key(new_order_id), &order_data);
     save_u64(ORDER_COUNT_KEY, new_order_id);
@@ -1190,6 +1219,12 @@ pub fn place_order(
     let new_user_count = user_count + 1;
     save_u64(&user_order_count_key(&t), new_user_count);
     save_u64(&user_order_key(&t, new_user_count), new_order_id);
+
+    // Dormant orders skip matching — they wait for trigger activation
+    if initial_status == STATUS_DORMANT {
+        reentrancy_exit();
+        return 0;
+    }
 
     // Try matching
     let remaining = match_order(new_order_id, pair_id, side, price, quantity, &t, &pair_data);
@@ -1884,6 +1919,98 @@ pub fn get_preferred_quote() -> u64 {
 }
 
 // ============================================================================
+// STOP-LOSS / TAKE-PROFIT TRIGGER ENGINE
+// ============================================================================
+
+/// Check all dormant (stop-limit) orders for a pair and activate those whose
+/// trigger condition is met. The validator calls this after each block with the
+/// latest trade price for the pair.
+///
+/// Trigger conditions:
+///   - Sell-stop: triggers when last_price <= trigger_price (price falling)
+///   - Buy-stop:  triggers when last_price >= trigger_price (price rising)
+///
+/// When triggered the order is set to STATUS_OPEN and immediately sent through
+/// the matching engine. Any unfilled remainder rests on the order book at the
+/// order's limit price.
+///
+/// Returns the number of orders that were triggered.
+pub fn check_triggers(pair_id: u64, last_price: u64) -> u64 {
+    if last_price == 0 {
+        return 0;
+    }
+
+    // Load pair data for matching
+    let pk = pair_key(pair_id);
+    let pair_data = match storage_get(&pk) {
+        Some(d) if d.len() >= PAIR_SIZE => d,
+        _ => return 0,
+    };
+
+    let order_count = load_u64(ORDER_COUNT_KEY);
+    let mut triggered: u64 = 0;
+
+    for oid in 1..=order_count {
+        let ok = order_key(oid);
+        let data = match storage_get(&ok) {
+            Some(d) if d.len() >= ORDER_SIZE => d,
+            _ => continue,
+        };
+
+        // Only process dormant orders for this pair
+        if decode_order_status(&data) != STATUS_DORMANT {
+            continue;
+        }
+        if decode_order_pair_id(&data) != pair_id {
+            continue;
+        }
+
+        let trigger = decode_order_trigger_price(&data);
+        if trigger == 0 {
+            continue;
+        }
+
+        let side = decode_order_side(&data);
+
+        // Check trigger condition
+        let should_trigger = if side == SIDE_SELL {
+            // Sell-stop: triggers when price falls to or below trigger
+            last_price <= trigger
+        } else {
+            // Buy-stop: triggers when price rises to or above trigger
+            last_price >= trigger
+        };
+
+        if !should_trigger {
+            continue;
+        }
+
+        // Activate the order
+        let mut od = data;
+        update_order_status(&mut od, STATUS_OPEN);
+        storage_set(&ok, &od);
+
+        let price = decode_order_price(&od);
+        let quantity = decode_order_quantity(&od);
+        let filled = decode_order_filled(&od);
+        let remaining_qty = quantity - filled;
+        let trader = decode_order_trader(&od);
+
+        // Run through matching engine
+        let remaining = match_order(oid, pair_id, side, price, remaining_qty, &trader, &pair_data);
+
+        // Rest unfilled portion on book (stop-limit acts as limit once triggered)
+        if remaining > 0 {
+            add_to_book(pair_id, side, price, oid);
+        }
+
+        triggered += 1;
+    }
+
+    triggered
+}
+
+// ============================================================================
 // WASM ENTRY POINT
 // ============================================================================
 
@@ -1918,8 +2045,13 @@ pub extern "C" fn call() {
             }
         }
         2 => {
-            // place_order
+            // place_order (67 bytes min, 75 bytes with trigger_price)
             if args.len() >= 1 + 32 + 8 + 1 + 1 + 8 + 8 + 8 {
+                let trigger_price = if args.len() >= 75 {
+                    bytes_to_u64(&args[67..75])
+                } else {
+                    0u64
+                };
                 let result = place_order(
                     args[1..33].as_ptr(),
                     bytes_to_u64(&args[33..41]),
@@ -1928,6 +2060,7 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[43..51]),
                     bytes_to_u64(&args[51..59]),
                     bytes_to_u64(&args[59..67]),
+                    trigger_price,
                 );
                 moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
             }
@@ -2119,6 +2252,17 @@ pub extern "C" fn call() {
             if args.len() >= 65 {
                 let r = set_analytics_address(args[1..33].as_ptr(), args[33..65].as_ptr());
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        29 => {
+            // check_triggers(pair_id[8], last_price[8])
+            // Called by validator after each block to activate dormant stop-limit orders
+            if args.len() >= 17 {
+                let triggered = check_triggers(
+                    bytes_to_u64(&args[1..9]),
+                    bytes_to_u64(&args[9..17]),
+                );
+                moltchain_sdk::set_return_data(&u64_to_bytes(triggered));
             }
         }
         _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
