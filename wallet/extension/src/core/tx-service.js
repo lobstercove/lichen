@@ -40,7 +40,10 @@ export function serializeMessageForSigning(message) {
   }
 
   // recent_blockhash: Hash([u8; 32]) — parse hex string to 32 bytes
-  const hashHex = message.blockhash || message.recent_blockhash;
+  const hashHex = String(message.blockhash || message.recent_blockhash || '');
+  if (!/^[0-9a-fA-F]{64}$/.test(hashHex)) {
+    throw new Error('Invalid blockhash: must be exactly 64 hex characters');
+  }
   const hashBytes = new Uint8Array(32);
   for (let i = 0; i < 32; i++) {
     hashBytes[i] = parseInt(hashHex.substr(i * 2, 2), 16);

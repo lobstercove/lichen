@@ -3,6 +3,20 @@ import { loadNftDetails } from '../core/nft-service.js';
 
 const MARKETPLACE_URL = 'https://moltchain.network/nft-marketplace';
 
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#x27;');
+}
+
+function safeImageUrl(url) {
+  if (!url) return '';
+  try {
+    const parsed = new URL(String(url));
+    if (parsed.protocol === 'https:' || parsed.protocol === 'http:' || parsed.protocol === 'ipfs:') return parsed.href;
+    return '';
+  } catch { return ''; }
+}
+
 function setHtml(id, html) {
   const node = document.getElementById(id);
   if (node) node.innerHTML = html;
@@ -46,22 +60,30 @@ async function loadNftPage() {
 
   setStatus(`Loaded ${items.length} NFT${items.length === 1 ? '' : 's'}`);
 
-  setHtml('nftsGrid', items.map((nft) => `
-    <article class="nft-card" data-mint="${nft.mint}">
-      <div class="nft-image">${nft.image ? `<img src="${nft.image}" alt="${nft.name}" style="max-width:100%;max-height:100%;object-fit:cover;" />` : 'No Image'}</div>
+  setHtml('nftsGrid', items.map((nft) => {
+    const safeSrc = safeImageUrl(nft.image);
+    const safeName = escapeHtml(nft.name);
+    const safeMint = escapeHtml(nft.mint);
+    const safeStandard = escapeHtml(nft.standard);
+    const safeSymbol = escapeHtml(nft.symbol);
+    const safeAmount = escapeHtml(String(nft.amount));
+    return `
+    <article class="nft-card" data-mint="${safeMint}">
+      <div class="nft-image">${safeSrc ? `<img src="${safeSrc}" alt="${safeName}" style="max-width:100%;max-height:100%;object-fit:cover;" />` : 'No Image'}</div>
       <div class="nft-body">
-        <div class="nft-title">${nft.name}</div>
-        <div><strong>Standard:</strong> ${nft.standard}</div>
-        <div><strong>Symbol:</strong> ${nft.symbol}</div>
-        <div><strong>Amount:</strong> ${nft.amount}</div>
-        <div><strong>Mint:</strong> ${nft.mint}</div>
+        <div class="nft-title">${safeName}</div>
+        <div><strong>Standard:</strong> ${safeStandard}</div>
+        <div><strong>Symbol:</strong> ${safeSymbol}</div>
+        <div><strong>Amount:</strong> ${safeAmount}</div>
+        <div><strong>Mint:</strong> ${safeMint}</div>
         <div class="nft-card-actions">
-          <button class="btn btn-secondary btn-small" data-action="copyMint" data-mint="${nft.mint}">Copy Mint</button>
+          <button class="btn btn-secondary btn-small" data-action="copyMint" data-mint="${safeMint}">Copy Mint</button>
           <button class="btn btn-secondary btn-small" data-action="openMarket">View Market</button>
         </div>
       </div>
     </article>
-  `).join(''));
+  `;
+  }).join(''));
 }
 
 function handleGridClick(event) {

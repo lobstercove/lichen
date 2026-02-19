@@ -325,7 +325,7 @@ async function handleImportSeed() {
 async function handleImportPrivKey() {
   const key = $('importPrivKey').value.trim().replace(/^0x/, '');
   const pw = $('importPasswordPriv').value;
-  if (!key || key.length !== 64) { showToast('Private key must be 64 hex characters', 'error'); return; }
+  if (!key || !/^[0-9a-fA-F]{64}$/.test(key)) { showToast('Private key must be exactly 64 hex characters (0-9, a-f)', 'error'); return; }
   if (!pw || pw.length < 8) { showToast('Password must be at least 8 characters', 'error'); return; }
 
   try {
@@ -898,7 +898,7 @@ async function loadIdentityTab() {
 
     const skillsHtml = skills.length > 0
       ? skills.slice(0, 8).map(s => {
-          const name = String(s.name || s.skill || 'Unnamed');
+          const name = escapeHtmlExt(String(s.name || s.skill || 'Unnamed'));
           const prof = Number(s.proficiency || s.level || 0);
           const level = Math.max(0, Math.min(5, Math.round(prof / 20) || prof));
           const pct = (level / 5) * 100;
@@ -912,14 +912,14 @@ async function loadIdentityTab() {
 
     const vouchChips = vouchesReceived.length > 0
       ? vouchesReceived.slice(0, 12).map(v => {
-          const label = v.voucher_name ? v.voucher_name + '.molt' : fmtAddr(v.voucher, 8);
+          const label = escapeHtmlExt(v.voucher_name ? v.voucher_name + '.molt' : fmtAddr(v.voucher, 8));
           return `<span style="display:inline-block;padding:0.2rem 0.6rem;background:var(--bg-tertiary);border-radius:6px;font-size:0.75rem;margin:0.15rem;">${label}</span>`;
         }).join('')
       : '<span style="color:var(--text-muted);font-size:0.82rem;">None yet</span>';
 
     const allAchievements = ACHIEVEMENT_DEFS.map(def => {
       const earned = achievedIds.has(def.id);
-      return `<span style="display:inline-block;padding:0.25rem 0.6rem;border-radius:6px;font-size:0.75rem;margin:0.15rem;${earned ? 'background:var(--primary)18;color:var(--primary);border:1px solid var(--primary)33;' : 'background:var(--bg-tertiary);color:var(--text-muted);opacity:0.5;'}"><i class="${def.icon}"></i> ${def.name}</span>`;
+      return `<span style="display:inline-block;padding:0.25rem 0.6rem;border-radius:6px;font-size:0.75rem;margin:0.15rem;${earned ? 'background:var(--primary)18;color:var(--primary);border:1px solid var(--primary)33;' : 'background:var(--bg-tertiary);color:var(--text-muted);opacity:0.5;'}"><i class="${escapeHtmlExt(def.icon)}"></i> ${escapeHtmlExt(def.name)}</span>`;
     }).join('');
 
     container.innerHTML = `
@@ -929,7 +929,7 @@ async function loadIdentityTab() {
           <i class="fas fa-fingerprint" style="color:${tier.color};font-size:1.25rem;"></i>
         </div>
         <div style="flex:1;">
-          <div style="font-weight:700;font-size:1.1rem;">${displayName}${moltNameDisplay ? ` <span style="color:var(--primary);">${moltNameDisplay}</span>` : ''}</div>
+          <div style="font-weight:700;font-size:1.1rem;">${escapeHtmlExt(displayName)}${moltNameDisplay ? ` <span style="color:var(--primary);">${escapeHtmlExt(moltNameDisplay)}</span>` : ''}</div>
           <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;margin-top:0.25rem;">
             <span style="display:inline-block;padding:0.15rem 0.5rem;border-radius:6px;font-size:0.72rem;background:${tier.color}18;color:${tier.color};border:1px solid ${tier.color}33;">${tier.name}</span>
             <span style="display:inline-block;padding:0.15rem 0.5rem;border-radius:6px;font-size:0.72rem;background:var(--bg-tertiary);">${agentType}</span>
@@ -962,7 +962,7 @@ async function loadIdentityTab() {
             <span style="font-weight:600;font-size:0.85rem;"><i class="fas fa-at"></i> .molt Name</span>
           </div>
           ${data.name ? `
-            <div style="font-size:1.25rem;font-weight:700;">${data.name.endsWith('.molt') ? data.name : data.name + '.molt'}</div>
+            <div style="font-size:1.25rem;font-weight:700;">${escapeHtmlExt(data.name.endsWith('.molt') ? data.name : data.name + '.molt')}</div>
             <div style="display:flex;gap:0.5rem;margin-top:0.75rem;flex-wrap:wrap;">
               <button class="btn btn-small btn-secondary" id="idRenewNameBtn"><i class="fas fa-redo"></i> Renew</button>
               <button class="btn btn-small btn-secondary" id="idTransferNameBtn"><i class="fas fa-exchange-alt"></i> Transfer</button>
@@ -1017,7 +1017,7 @@ async function loadIdentityTab() {
             <button class="btn btn-small btn-secondary" id="idConfigAgentBtn" style="font-size:0.72rem;"><i class="fas fa-cog"></i> Configure</button>
           </div>
           <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0.75rem;font-size:0.82rem;">
-            <div><span style="color:var(--text-muted);display:block;font-size:0.72rem;">Endpoint</span><span style="font-family:monospace;">${data.endpoint || '<em style="opacity:0.4;">Not set</em>'}</span></div>
+            <div><span style="color:var(--text-muted);display:block;font-size:0.72rem;">Endpoint</span><span style="font-family:monospace;">${escapeHtmlExt(data.endpoint) || '<em style="opacity:0.4;">Not set</em>'}</span></div>
             <div><span style="color:var(--text-muted);display:block;font-size:0.72rem;">Status</span>${data.availability === 'online' ? '<span style="color:#4ade80;">Online</span>' : '<span style="color:var(--text-muted);">Offline</span>'}</div>
             <div><span style="color:var(--text-muted);display:block;font-size:0.72rem;">Rate</span>${data.rate.toLocaleString(undefined, { maximumFractionDigits: 9 })} MOLT/req</div>
           </div>
@@ -1036,7 +1036,7 @@ async function loadIdentityTab() {
     $('idConfigAgentBtn')?.addEventListener('click', () => showIdentityAgentConfigModal(data));
 
   } catch (e) {
-    container.innerHTML = `<div class="empty-state"><p>Failed to load identity: ${e.message}</p></div>`;
+    container.innerHTML = `<div class="empty-state"><p>Failed to load identity: ${escapeHtmlExt(e.message)}</p></div>`;
   }
 }
 
@@ -1401,13 +1401,16 @@ async function loadActivity(reset = true) {
     // Add "Load More" if we got a full page
     if (txs.length >= ACTIVITY_PER_PAGE) {
       _activityPage++;
-      list.insertAdjacentHTML('beforeend', `
-        <div class="activity-load-more" style="text-align:center;padding:1rem;">
-          <button onclick="loadActivity(false)" class="btn btn-small btn-secondary" style="padding:0.5rem 1.5rem;font-size:0.85rem;">
-            Load More
-          </button>
-        </div>
-      `);
+      const loadMoreDiv = document.createElement('div');
+      loadMoreDiv.className = 'activity-load-more';
+      loadMoreDiv.style.cssText = 'text-align:center;padding:1rem;';
+      const loadMoreBtn = document.createElement('button');
+      loadMoreBtn.className = 'btn btn-small btn-secondary';
+      loadMoreBtn.style.cssText = 'padding:0.5rem 1.5rem;font-size:0.85rem;';
+      loadMoreBtn.textContent = 'Load More';
+      loadMoreBtn.addEventListener('click', () => loadActivity(false));
+      loadMoreDiv.appendChild(loadMoreBtn);
+      list.appendChild(loadMoreDiv);
     }
   } catch {
     if (_activityPage === 0) list.innerHTML = '<div class="empty-state"><p>Failed to load activity</p></div>';

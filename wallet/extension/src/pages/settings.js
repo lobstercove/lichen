@@ -4,6 +4,11 @@ import { decryptPrivateKey, encryptPrivateKey, hexToBytes } from '../core/crypto
 
 let state = null;
 
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#x27;');
+}
+
 function setStatus(message) {
   const node = document.getElementById('settingsStatus');
   if (node) node.textContent = message;
@@ -409,12 +414,15 @@ async function loadApprovedOrigins() {
     return;
   }
 
-  setOriginsHtml(origins.map((origin) => `
+  setOriginsHtml(origins.map((origin) => {
+    const safeOrigin = escapeHtml(origin);
+    return `
     <div class="settings-origin-item">
-      <span class="mono">${origin}</span>
-      <button class="btn btn-secondary btn-small" data-action="revokeOrigin" data-origin="${origin}">Revoke</button>
+      <span class="mono">${safeOrigin}</span>
+      <button class="btn btn-secondary btn-small" data-action="revokeOrigin" data-origin="${safeOrigin}">Revoke</button>
     </div>
-  `).join(''));
+  `;
+  }).join(''));
 }
 
 async function onOriginsClick(event) {
