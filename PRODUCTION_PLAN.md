@@ -1078,7 +1078,7 @@ Each contract must be validated for: correct opcode dispatch, proper authority c
 | 11 | Wallet App | 15 | 0 | `[ ]` |
 | 12 | Wallet Extension | 12 | 0 | `[ ]` |
 | 13 | Explorer | 14 | 7 | `[x]` |
-| 14 | Programs Playground | 10 | 0 | `[ ]` |
+| 14 | Programs Playground | 10 | 10 | `[x]` |
 | 15 | Marketplace | 8 | 0 | `[ ]` |
 | 16 | Faucet | 5 | 0 | `[ ]` |
 | 17 | Monitoring | 3 | 0 | `[ ]` |

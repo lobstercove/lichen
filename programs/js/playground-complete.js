@@ -12,6 +12,24 @@ if (typeof MoltChain === 'undefined') {
     console.error('❌ MoltChain SDK not loaded! Include moltchain-sdk.js first');
 }
 
+// AUDIT-FIX F14.1–F14.7: HTML-escape helper to prevent XSS in innerHTML
+function escapeHtml(str) {
+    if (typeof str !== 'string') return String(str ?? '');
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// AUDIT-FIX F14.1: URL scheme whitelist for terminal links
+function sanitizeUrl(url) {
+    if (typeof url !== 'string') return '';
+    try {
+        const parsed = new URL(url, window.location.origin);
+        if (!['http:', 'https:'].includes(parsed.protocol)) return '';
+        return url;
+    } catch {
+        return '';
+    }
+}
+
 // ============================================================================
 // COMPLETE STATE MANAGEMENT
 // ============================================================================
@@ -983,10 +1001,11 @@ const Playground = {
             return;
         }
 
+        // AUDIT-FIX F14.4: escape RPC data in program calls
         container.innerHTML = filtered.map(call => `
             <div class="storage-row">
-                <div class="storage-key monospace">${call.function}</div>
-                <div class="storage-value monospace">${this.truncateAddress(call.caller)}</div>
+                <div class="storage-key monospace">${escapeHtml(call.function)}</div>
+                <div class="storage-value monospace">${escapeHtml(this.truncateAddress(call.caller))}</div>
                 <div class="storage-value">${new Date(call.timestamp * 1000).toLocaleString()}</div>
             </div>
         `).join('');
@@ -3618,10 +3637,11 @@ pub extern "C" fn total_minted() -> u64 {
             return;
         }
 
+        // AUDIT-FIX F14.7: escape wallet name from localStorage
         list.innerHTML = this.wallets.map(item => `
-            <div class="wallet-dropdown-item ${item.id === this.activeWalletId ? 'active' : ''}" data-wallet-id="${item.id}">
-                <span>${item.name}</span>
-                <code class="monospace">${this.truncateAddress(item.address)}</code>
+            <div class="wallet-dropdown-item ${item.id === this.activeWalletId ? 'active' : ''}" data-wallet-id="${escapeHtml(item.id)}">
+                <span>${escapeHtml(item.name)}</span>
+                <code class="monospace">${escapeHtml(this.truncateAddress(item.address))}</code>
             </div>
         `).join('');
 
@@ -3705,6 +3725,12 @@ pub extern "C" fn total_minted() -> u64 {
         
         if (!recipient || !amount) {
             this.addTerminalLine('❌ Recipient and amount required', 'error');
+            return;
+        }
+
+        // AUDIT-FIX F14.8: validate transfer amount
+        if (!Number.isFinite(amount) || amount <= 0 || amount > 1_000_000_000) {
+            this.addTerminalLine('❌ Amount must be between 0 and 1,000,000,000 MOLT', 'error');
             return;
         }
         
@@ -3837,19 +3863,28 @@ pub extern "C" fn total_minted() -> u64 {
                 </div>
             `;
         } else {
+            // AUDIT-FIX F14.2: escape metadata name + use data-attribute instead of onclick interpolation
             listEl.innerHTML = mergedPrograms.map(program => `
                 <div class="deployed-program-item">
                     <div class="program-icon">📦</div>
                     <div class="program-info">
-                        <h4>${program.metadata?.name || 'Unnamed'}</h4>
-                        <code class="program-id">${this.truncateAddress(program.programId)}</code>
+                        <h4>${escapeHtml(program.metadata?.name || 'Unnamed')}</h4>
+                        <code class="program-id">${escapeHtml(this.truncateAddress(program.programId))}</code>
                     </div>
-                    <span class="program-source">${program.sourceLabel}</span>
-                    <button class="btn-icon" onclick="Playground.viewProgram('${program.programId}')">
+                    <span class="program-source">${escapeHtml(program.sourceLabel)}</span>
+                    <button class="btn-icon program-view-btn" data-program-id="${escapeHtml(program.programId)}">
                         <i class="fas fa-external-link-alt"></i>
                     </button>
                 </div>
             `).join('');
+
+            // Wire up click handlers from data-attributes
+            listEl.querySelectorAll('.program-view-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const id = btn.dataset.programId;
+                    if (id) Playground.viewProgram(id);
+                });
+            });
         }
     },
 
@@ -3911,12 +3946,13 @@ pub extern "C" fn total_minted() -> u64 {
                 </div>
             `;
         } else {
+            // AUDIT-FIX F14.3: escape compiler error messages
             problemsList.innerHTML = errors.map(err => `
                 <div class="problem-item error">
                     <i class="fas fa-times-circle"></i>
                     <div class="problem-info">
-                        <div class="problem-message">${err.message}</div>
-                        <div class="problem-location">${err.file}:${err.line}:${err.col}</div>
+                        <div class="problem-message">${escapeHtml(err.message)}</div>
+                        <div class="problem-location">${escapeHtml(err.file)}:${escapeHtml(String(err.line))}:${escapeHtml(String(err.col))}</div>
                     </div>
                 </div>
             `).join('');
@@ -3936,8 +3972,14 @@ pub extern "C" fn total_minted() -> u64 {
         
         const timestamp = new Date().toLocaleTimeString();
         
+        // AUDIT-FIX F14.1: escape text to prevent XSS + validate URL scheme for links
         if (type === 'link') {
-            line.innerHTML = `<span class="terminal-time">[${timestamp}]</span> <a class="terminal-link" href="${text}" target="_blank">${text}</a>`;
+            const safeUrl = sanitizeUrl(text);
+            if (safeUrl) {
+                line.innerHTML = `<span class="terminal-time">[${timestamp}]</span> <a class="terminal-link" href="${escapeHtml(safeUrl)}" target="_blank">${escapeHtml(text)}</a>`;
+            } else {
+                line.innerHTML = `<span class="terminal-time">[${timestamp}]</span> <span class="terminal-normal">${escapeHtml(text)}</span>`;
+            }
         } else {
             const icon = {
                 'success': '✅',
@@ -3946,7 +3988,7 @@ pub extern "C" fn total_minted() -> u64 {
                 'info': 'ℹ️ '
             }[type] || '';
             
-            line.innerHTML = `<span class="terminal-time">[${timestamp}]</span> <span class="terminal-${type}">${icon} ${text}</span>`;
+            line.innerHTML = `<span class="terminal-time">[${timestamp}]</span> <span class="terminal-${escapeHtml(type)}">${icon} ${escapeHtml(text)}</span>`;
         }
         
         linesEl.appendChild(line);
@@ -4441,10 +4483,11 @@ pub extern "C" fn total_minted() -> u64 {
                 return;
             }
 
+            // AUDIT-FIX F14.5: escape RPC storage data
             container.innerHTML = entries.map(entry => `
                 <div class="storage-row">
-                    <div class="storage-key monospace">${entry.key}</div>
-                    <div class="storage-value monospace">${entry.value}</div>
+                    <div class="storage-key monospace">${escapeHtml(entry.key)}</div>
+                    <div class="storage-value monospace">${escapeHtml(entry.value)}</div>
                 </div>
             `).join('');
         } catch (error) {
@@ -4510,31 +4553,32 @@ pub extern "C" fn total_minted() -> u64 {
             return;
         }
 
+        // AUDIT-FIX F14.6: escape all RPC-sourced ABI fields
         const funcRows = abi.functions.map(fn => {
             const params = (fn.params || []).map(p => 
-                `<span class="abi-param" title="${p.description || ''}">${p.name}: <em>${p.type || p.param_type}</em></span>`
+                `<span class="abi-param" title="${escapeHtml(p.description || '')}">${escapeHtml(p.name)}: <em>${escapeHtml(p.type || p.param_type)}</em></span>`
             ).join(', ');
             const ret = fn.returns 
-                ? `<span class="abi-return">&rarr; ${fn.returns.type || fn.returns.return_type}</span>` 
+                ? `<span class="abi-return">&rarr; ${escapeHtml(fn.returns.type || fn.returns.return_type)}</span>` 
                 : '';
             const badge = fn.readonly 
                 ? '<span class="badge badge-info" style="margin-left: 4px; font-size: 9px;">view</span>' 
                 : '';
             return `
                 <div class="abi-function" style="padding: 4px 8px; border-bottom: 1px solid var(--border); font-family: monospace; font-size: 11px;">
-                    <strong>${fn.name}</strong>${badge}(${params}) ${ret}
-                    ${fn.description ? `<div style="color: var(--text-muted); font-size: 10px; margin-top: 2px;">${fn.description}</div>` : ''}
+                    <strong>${escapeHtml(fn.name)}</strong>${badge}(${params}) ${ret}
+                    ${fn.description ? `<div style="color: var(--text-muted); font-size: 10px; margin-top: 2px;">${escapeHtml(fn.description)}</div>` : ''}
                 </div>
             `;
         }).join('');
 
         const eventRows = (abi.events || []).map(ev => {
             const fields = (ev.fields || []).map(f => 
-                `${f.name}: ${f.type || f.field_type}${f.indexed ? ' (indexed)' : ''}`
+                `${escapeHtml(f.name)}: ${escapeHtml(f.type || f.field_type)}${f.indexed ? ' (indexed)' : ''}`
             ).join(', ');
             return `
                 <div style="padding: 4px 8px; font-family: monospace; font-size: 11px; color: var(--text-muted);">
-                    <i class="fas fa-bell" style="font-size: 9px;"></i> ${ev.name}(${fields})
+                    <i class="fas fa-bell" style="font-size: 9px;"></i> ${escapeHtml(ev.name)}(${fields})
                 </div>
             `;
         }).join('');
@@ -4543,8 +4587,8 @@ pub extern "C" fn total_minted() -> u64 {
             <div class="panel-section-header">
                 <i class="fas fa-file-code"></i> ABI / Interface
                 <span style="float: right; font-size: 10px; color: var(--text-muted);">
-                    v${abi.version || '?'} &middot; ${abi.functions.length} functions
-                    ${abi.template ? ` &middot; ${abi.template}` : ''}
+                    v${escapeHtml(String(abi.version || '?'))} &middot; ${abi.functions.length} functions
+                    ${abi.template ? ` &middot; ${escapeHtml(abi.template)}` : ''}
                 </span>
             </div>
             <div class="abi-functions">${funcRows}</div>

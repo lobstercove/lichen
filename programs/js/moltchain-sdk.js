@@ -468,9 +468,7 @@ class MoltChainRPC {
     // ACCOUNT & TRANSACTION HISTORY
     // ========================================================================
 
-    async getAccount(pubkey) {
-        return await this.call('getAccount', [pubkey]);
-    }
+    // AUDIT-FIX F14.9: removed duplicate getAccount() — already defined above (L313)
 
     async getAccountInfo(pubkey) {
         return await this.call('getAccountInfo', [pubkey]);
