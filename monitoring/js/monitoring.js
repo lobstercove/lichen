@@ -75,6 +75,16 @@ function truncAddr(addr) {
     return addr.slice(0, 6) + '...' + addr.slice(-4);
 }
 
+// F17.1 fix: HTML-escape helper to prevent XSS in all innerHTML injections
+function escapeHtml(str) {
+    return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
 function timeAgo(ts) {
     const s = Math.floor((Date.now() / 1000) - ts);
     if (s < 5) return 'just now';
@@ -105,11 +115,12 @@ function addEvent(type, icon, text) {
 
 function renderEvents() {
     const el = document.getElementById('eventFeed');
+    // F17.1 fix: escape all dynamic text in event feed
     el.innerHTML = eventLog.slice(0, 50).map(e => `
-        <div class="event-item ${e.type}">
-            <span class="event-time">${e.time}</span>
-            <span class="event-icon"><i class="fas fa-${e.icon}"></i></span>
-            <span class="event-text">${e.text}</span>
+        <div class="event-item ${escapeHtml(e.type)}">
+            <span class="event-time">${escapeHtml(e.time)}</span>
+            <span class="event-icon"><i class="fas fa-${escapeHtml(e.icon)}"></i></span>
+            <span class="event-text">${escapeHtml(e.text)}</span>
         </div>
     `).join('');
 }
@@ -156,9 +167,10 @@ function flashVital(id, value) {
 
 let tpsRange = 60; // seconds
 
-function setTPSRange(range) {
+// F17.7 fix: accept event parameter explicitly instead of relying on implicit global
+function setTPSRange(range, evt) {
     document.querySelectorAll('.panel-controls .btn-sm').forEach(b => b.classList.remove('active'));
-    event.target.classList.add('active');
+    if (evt && evt.target) evt.target.classList.add('active');
     if (range === '1m') tpsRange = 60;
     else if (range === '5m') tpsRange = 300;
     else tpsRange = 900;
@@ -470,12 +482,13 @@ async function renderValidators() {
     // Update vitals validator count with actual online nodes
     flashVital('vitalValidators', onlineCount);
 
+    // F17.6 fix: escape all RPC-derived values in validator grid
     grid.innerHTML = probes.map(p => `
         <div class="validator-card ${p.online ? '' : 'offline'}">
             <span class="val-status ${p.online ? '' : 'offline'}"></span>
             <div class="val-info">
-                <div class="val-name">${p.name} - Validator</div>
-                <div class="val-addr">${p.pubkey ? truncAddr(p.pubkey) : (p.online ? 'Unstaked' : 'Offline')}</div>
+                <div class="val-name">${escapeHtml(p.name)} - Validator</div>
+                <div class="val-addr">${p.pubkey ? escapeHtml(truncAddr(p.pubkey)) : (p.online ? 'Unstaked' : 'Offline')}</div>
             </div>
             <div class="val-meta">
                 <span><i class="fas fa-cube"></i> ${p.slot !== null ? formatNum(p.slot) : 'N/A'}</span>
@@ -570,10 +583,11 @@ async function updateRecentBlocks(currentSlot) {
 
 function renderBlocks() {
     const el = document.getElementById('blockList');
+    // F17.4 fix: escape RPC-derived block hash
     el.innerHTML = displayedBlocks.map(b => `
         <div class="block-row">
             <span class="block-slot">#${b.slot}</span>
-            <span class="block-hash">${b.hash}</span>
+            <span class="block-hash">${escapeHtml(b.hash)}</span>
             <span class="block-txs">${b.txCount} tx</span>
             <span class="block-time">${b.time ? timeAgo(b.time) : '--'}</span>
         </div>
@@ -603,12 +617,13 @@ async function updateContracts() {
 
     if (rows.length > 0) {
         contractsLoaded = true;
+        // F17.5 fix: escape RPC-derived contract metadata
         list.innerHTML = rows.map(c => `
             <div class="contract-row">
                 <span class="contract-status"></span>
-                <span class="contract-symbol">${c.symbol}</span>
-                <span class="contract-template">${c.template}</span>
-                <span class="contract-addr">${c.program}</span>
+                <span class="contract-symbol">${escapeHtml(c.symbol)}</span>
+                <span class="contract-template">${escapeHtml(c.template)}</span>
+                <span class="contract-addr">${escapeHtml(c.program)}</span>
             </div>
         `).join('');
         addEvent('success', 'file-contract', `Loaded ${rows.length} contracts`);
@@ -661,24 +676,43 @@ function renderThreats() {
     const log = document.getElementById('attackLog');
     if (!log) return;
 
-    log.innerHTML = threats.slice(0, 50).map(t => `
-        <div class="attack-row severity-${t.severity}">
-            <span class="attack-time">${t.time}</span>
-            <span class="attack-severity ${t.severity}">${t.severity.toUpperCase()}</span>
-            <span class="attack-type">${t.type}</span>
-            <span class="attack-source">${t.source}</span>
-            <span class="attack-method">${t.method}</span>
-            <span class="attack-details">${t.details}</span>
+    log.innerHTML = threats.slice(0, 50).map(t => {
+        // F17.2 fix: escape all RPC/user-derived threat data + use data-attributes
+        // instead of interpolating t.source into onclick to prevent quote injection
+        const escaped = {
+            time: escapeHtml(t.time),
+            severity: escapeHtml(t.severity),
+            type: escapeHtml(t.type),
+            source: escapeHtml(t.source),
+            method: escapeHtml(t.method),
+            details: escapeHtml(t.details),
+        };
+        return `
+        <div class="attack-row severity-${escaped.severity}">
+            <span class="attack-time">${escaped.time}</span>
+            <span class="attack-severity ${escaped.severity}">${escaped.severity.toUpperCase()}</span>
+            <span class="attack-type">${escaped.type}</span>
+            <span class="attack-source">${escaped.source}</span>
+            <span class="attack-method">${escaped.method}</span>
+            <span class="attack-details">${escaped.details}</span>
             <span class="attack-actions">
-                <button class="btn-xs danger" onclick="quickBan('${t.source}')" title="Ban Source">
+                <button class="btn-xs danger" data-ban-source="${escaped.source}" title="Ban Source">
                     <i class="fas fa-ban"></i>
                 </button>
-                <button class="btn-xs warning" onclick="quickThrottle('${t.source}')" title="Throttle">
+                <button class="btn-xs warning" data-throttle-source="${escaped.source}" title="Throttle">
                     <i class="fas fa-tachometer-alt"></i>
                 </button>
             </span>
-        </div>
-    `).join('') || '<div class="ir-empty">No threats detected - system clear</div>';
+        </div>`;
+    }).join('') || '<div class="ir-empty">No threats detected - system clear</div>';
+
+    // F17.2 fix: attach click handlers via data-attributes (no inline JS eval)
+    log.querySelectorAll('[data-ban-source]').forEach(btn => {
+        btn.addEventListener('click', () => quickBan(btn.dataset.banSource));
+    });
+    log.querySelectorAll('[data-throttle-source]').forEach(btn => {
+        btn.addEventListener('click', () => quickThrottle(btn.dataset.throttleSource));
+    });
 }
 
 function updateThreatLevel() {
@@ -790,17 +824,21 @@ function renderBans() {
         el.innerHTML = '<div class="ir-empty">No active restrictions</div>';
         return;
     }
+    // F17.3 fix: escape user-supplied ban target/reason + use data-attributes for removeBan
     el.innerHTML = activeBans.map((b, i) => `
         <div class="ban-item">
-            <span class="ban-type ${b.type}">${b.type.toUpperCase()}</span>
-            <span class="ban-target">${b.target}</span>
-            <span class="ban-reason">${b.reason}</span>
-            <span class="ban-time">${b.time}</span>
-            <button class="btn-xs" onclick="removeBan(${i})" title="Remove">
+            <span class="ban-type ${escapeHtml(b.type)}">${escapeHtml(b.type.toUpperCase())}</span>
+            <span class="ban-target">${escapeHtml(b.target)}</span>
+            <span class="ban-reason">${escapeHtml(b.reason)}</span>
+            <span class="ban-time">${escapeHtml(b.time)}</span>
+            <button class="btn-xs" data-remove-ban="${i}" title="Remove">
                 <i class="fas fa-times"></i>
             </button>
         </div>
     `).join('');
+    el.querySelectorAll('[data-remove-ban]').forEach(btn => {
+        btn.addEventListener('click', () => removeBan(parseInt(btn.dataset.removeBan, 10)));
+    });
 }
 
 // ── Threat Detection ────────────────────────────────────────
@@ -1018,7 +1056,7 @@ async function updateDexMonitor() {
                     <span class="sub-badge ${statusClass}" style="background:var(--${statusClass === 'success' ? 'green' : 'yellow'}-bg, ${sub.color}18);color:${statusClass === 'success' ? '#4ade80' : '#f59e0b'};">${statusText}</span>
                 </div>
                 <div class="sub-metrics">${metricsHtml}</div>
-                ${program ? `<div style="font-size:0.65rem;color:var(--text-muted);font-family:var(--font-mono);margin-top:0.25rem;overflow:hidden;text-overflow:ellipsis;">${truncAddr(program)}</div>` : ''}
+                ${program ? `<div style="font-size:0.65rem;color:var(--text-muted);font-family:var(--font-mono);margin-top:0.25rem;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(truncAddr(program))}</div>` : ''}
             </div>
         `);
     }
@@ -1140,7 +1178,7 @@ async function updateContractMonitor() {
                     </div>
                     <span class="cm-badge" style="background:${deployed ? 'rgba(74,222,128,0.12)' : 'rgba(245,158,11,0.12)'};color:${deployed ? '#4ade80' : '#f59e0b'};">${statusText}</span>
                 </div>
-                ${program ? `<div class="cm-addr" title="${program}">${program}</div>` : ''}
+                ${program ? `<div class="cm-addr" title="${escapeHtml(program)}">${escapeHtml(program)}</div>` : ''}
                 ${statsHtml}
             </div>
         `);
