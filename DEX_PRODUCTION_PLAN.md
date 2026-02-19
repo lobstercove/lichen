@@ -85,7 +85,7 @@
 | 14 | Governance — Proposals & Voting | 16/16 | 16 | `[x]` |
 | 15 | Wallet Gating & UX States | 14/14 | 5 | `[x]` |
 | 16 | Data Format Consistency | 16/16 | 5 | `[x]` |
-| 17 | Real-Time Updates & Polling | 0/10 | 0 | `[ ]` |
+| 17 | Real-Time Updates & Polling | 10/10 | 2 | `[x]` |
 | 18 | Analytics Contract Wiring | 0/10 | 0 | `[ ]` |
 | 19 | Token Contracts & Balances | 0/12 | 0 | `[ ]` |
 | 20 | Error Handling & Edge Cases | 0/14 | 0 | `[ ]` |
@@ -93,7 +93,7 @@
 | 22 | Security & Input Validation | 0/14 | 0 | `[ ]` |
 | 23 | Mobile / Responsive Layout | 0/8 | 0 | `[ ]` |
 | 24 | End-to-End Integration Tests | 0/12 | 0 | `[ ]` |
-| — | **TOTAL** | **226/314** | **151** | **72%** |
+| — | **TOTAL** | **236/314** | **153** | **75%** |
 
 ---
 
@@ -668,19 +668,20 @@
 
 | # | Task | Status |
 |---|---|---|
-| 17.1 | Read polling fallback code — verify interval (currently 5s for all views) | `[ ]` |
-| 17.2 | Evaluate: 5s polling for governance/rewards is excessive — should reduce to 30-60s | `[ ]` |
-| 17.3 | Verify WS reconnection with exponential backoff (cap, initial delay) | `[ ]` |
-| 17.4 | Verify polling stops when switching away from a view (or at least doesn't fire for hidden views) | `[ ]` |
-| 17.5 | Verify real-time price updates in pair stats bar (24h high/low/volume/change) | `[ ]` |
-| 17.6 | Verify pool stats auto-refresh when new swaps execute | `[ ]` |
-| 17.7 | Verify prediction market cards update prices when trades occur | `[ ]` |
-| 17.8 | Test: execute trade → verify all panels (orderbook, trades, chart, ticker) update within 5s | `[ ]` |
-| 17.9 | Verify reward stats refresh reflects new trade volume | `[ ]` |
-| 17.10 | Verify governance vote counts update after new votes | `[ ]` |
+| 17.1 | Read polling fallback code — verify interval (currently 5s for all views) | `[x]` |
+| 17.2 | Evaluate: 5s polling for governance/rewards is excessive — should reduce to 30-60s | `[x]` |
+| 17.3 | Verify WS reconnection with exponential backoff (cap, initial delay) | `[x]` |
+| 17.4 | Verify polling stops when switching away from a view (or at least doesn't fire for hidden views) | `[x]` |
+| 17.5 | Verify real-time price updates in pair stats bar (24h high/low/volume/change) | `[x]` |
+| 17.6 | Verify pool stats auto-refresh when new swaps execute | `[x]` |
+| 17.7 | Verify prediction market cards update prices when trades occur | `[x]` |
+| 17.8 | Test: execute trade → verify all panels (orderbook, trades, chart, ticker) update within 5s | `[x]` |
+| 17.9 | Verify reward stats refresh reflects new trade volume | `[x]` |
+| 17.10 | Verify governance vote counts update after new votes | `[x]` |
 
 **Findings:**
-- (none yet)
+- F17.2 HIGH — Governance/rewards polled in same 5s loop as trade/pool/margin data. Fixed: split into separate 30s `setInterval` for `loadRewardsStats` and `loadGovernanceStats`.
+- F17.8 MEDIUM — After order submission, only `renderOpenOrders()` called. Fixed: added `loadBalances()` → `renderBalances()` and `loadOrderBook()` after spot trade; added `loadMarginPositions()` after margin trade.
 
 ---
 

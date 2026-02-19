@@ -1019,6 +1019,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     buildOpenPositionArgs(wallet.address, state.activePairId, marginSide, size, leverage, marginDeposit)
                 )]);
                 showNotification(`${marginSide.toUpperCase()} ${state.leverageValue}x opened: ${formatAmount(amount)} ${state.activePair?.base || ''} @ ${formatPrice(price || state.lastPrice)}`, 'success');
+                // F17.8: Immediate panel refresh after margin trade
+                loadMarginPositions().catch(() => {});
             } else {
                 const result = await wallet.sendTransaction([contractIx(
                     contracts.dex_core,
@@ -1030,6 +1032,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 renderOpenOrders();
             }
             if (amountInput) amountInput.value = ''; if (totalInput) totalInput.value = '';
+            // F17.8: Immediate panel refresh after trade execution — update balances + orderbook
+            if (wallet.address) loadBalances(wallet.address).then(() => renderBalances()).catch(() => {});
+            loadOrderBook().catch(() => {});
         } catch (e) { showNotification(`Order failed: ${e.message}`, 'error'); }
         finally { submitBtn.disabled = false; updateSubmitBtn(); }
     });
@@ -3084,6 +3089,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ═══════════════════════════════════════════════════════════════════════
     // Polling fallback (when WS unavailable)
+    // F17.2: Split into fast (5s) for trade/pool/margin/predict and slow (30s) for governance/rewards
     // ═══════════════════════════════════════════════════════════════════════
     setInterval(async () => {
         if (state.currentView === 'trade' && state.activePairId != null) {
@@ -3102,13 +3108,17 @@ document.addEventListener('DOMContentLoaded', () => {
         if (state.currentView === 'margin') {
             try { await loadMarginStats(); await loadMarginPositions(); } catch { /* API unavailable */ }
         }
+    }, 5000);
+
+    // F17.2: Slow polling for low-frequency data (governance + rewards) — 30s
+    setInterval(async () => {
         if (state.currentView === 'rewards') {
             try { await loadRewardsStats(); } catch { /* API unavailable */ }
         }
         if (state.currentView === 'governance') {
             try { await loadGovernanceStats(); } catch { /* API unavailable */ }
         }
-    }, 5000);
+    }, 30000);
 
     // Prediction market refresh (slower interval for full market list)
     setInterval(async () => {

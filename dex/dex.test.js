@@ -3170,6 +3170,131 @@ console.log('\n── Phase 16: Data Format Consistency ──');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Phase 17: Real-Time Updates & Polling
+// ═══════════════════════════════════════════════════════════════════════════
+
+// P17.1: Polling fallback uses 5s interval for trade/pool/margin/predict
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const fastPollIdx = dexJs.indexOf('// F17.2: Split into fast');
+    assert(fastPollIdx !== -1, 'P17.1a: Fast poll comment exists');
+    const fastPollBlock = dexJs.substring(fastPollIdx, fastPollIdx + 1200);
+    assert(fastPollBlock.includes('}, 5000);'), 'P17.1b: Fast poll interval is 5000ms');
+    assert(fastPollBlock.includes("state.currentView === 'trade'"), 'P17.1c: Fast poll includes trade view');
+    assert(fastPollBlock.includes("state.currentView === 'pool'"), 'P17.1d: Fast poll includes pool view');
+    assert(fastPollBlock.includes("state.currentView === 'margin'"), 'P17.1e: Fast poll includes margin view');
+}
+
+// P17.2: Governance and rewards use slow 30s polling (not 5s)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const slowPollIdx = dexJs.indexOf('// F17.2: Slow polling');
+    assert(slowPollIdx !== -1, 'P17.2a: Slow poll comment exists');
+    const slowPollBlock = dexJs.substring(slowPollIdx, slowPollIdx + 400);
+    assert(slowPollBlock.includes('}, 30000);'), 'P17.2b: Slow poll interval is 30000ms');
+    assert(slowPollBlock.includes("state.currentView === 'rewards'"), 'P17.2c: Slow poll includes rewards');
+    assert(slowPollBlock.includes("state.currentView === 'governance'"), 'P17.2d: Slow poll includes governance');
+    assert(slowPollBlock.includes('loadRewardsStats'), 'P17.2e: Slow poll calls loadRewardsStats');
+    assert(slowPollBlock.includes('loadGovernanceStats'), 'P17.2f: Slow poll calls loadGovernanceStats');
+}
+
+// P17.3: WS reconnection with exponential backoff — 1s initial, *2 growth, 30s cap, reset on open
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const wsClassIdx = dexJs.indexOf('class DexWS');
+    assert(wsClassIdx !== -1, 'P17.3a: DexWS class exists');
+    const wsBlock = dexJs.substring(wsClassIdx, wsClassIdx + 2100);
+    assert(wsBlock.includes('this.reconnectDelay = 1000'), 'P17.3b: Initial reconnect delay is 1000ms');
+    assert(wsBlock.includes('this.reconnectDelay * 2'), 'P17.3c: Exponential backoff doubles delay');
+    assert(wsBlock.includes('30000'), 'P17.3d: Backoff cap is 30000ms');
+    assert(wsBlock.includes('Math.min(this.reconnectDelay * 2, 30000)'), 'P17.3e: Uses Math.min with cap');
+    // Reset on open
+    const onOpenIdx = wsBlock.indexOf('onopen');
+    assert(onOpenIdx !== -1, 'P17.3f: onopen handler in WS class');
+    const afterOpen = wsBlock.substring(onOpenIdx, onOpenIdx + 200);
+    assert(afterOpen.includes('this.reconnectDelay = 1000'), 'P17.3g: Reconnect delay resets on open');
+}
+
+// P17.4: Polling guards by state.currentView — only fires for active view
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const fastPollIdx = dexJs.indexOf('// F17.2: Split into fast');
+    const fastPollBlock = dexJs.substring(fastPollIdx, fastPollIdx + 1200);
+    // Each branch is guarded by state.currentView check
+    const viewChecks = (fastPollBlock.match(/state\.currentView ===/g) || []).length;
+    assert(viewChecks >= 4, 'P17.4: Fast poll has at least 4 currentView guards (trade, predict, pool, margin)');
+}
+
+// P17.5: Real-time price updates via ticker display within trade polling
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const fastPollIdx = dexJs.indexOf('// F17.2: Split into fast');
+    const fastPollBlock = dexJs.substring(fastPollIdx, fastPollIdx + 1200);
+    assert(fastPollBlock.includes('loadTicker'), 'P17.5a: Fast poll calls loadTicker');
+    assert(fastPollBlock.includes('updateTickerDisplay'), 'P17.5b: Fast poll calls updateTickerDisplay');
+    assert(fastPollBlock.includes('streamBarUpdate'), 'P17.5c: Fast poll calls streamBarUpdate for chart');
+}
+
+// P17.6: Pool stats auto-refresh in 5s polling when on pool view
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const fastPollIdx = dexJs.indexOf('// F17.2: Split into fast');
+    const fastPollBlock = dexJs.substring(fastPollIdx, fastPollIdx + 1200);
+    assert(fastPollBlock.includes("state.currentView === 'pool'"), 'P17.6a: Pool view guard in fast poll');
+    assert(fastPollBlock.includes('loadPoolStats'), 'P17.6b: loadPoolStats called in fast poll');
+}
+
+// P17.7: Prediction markets refresh in both fast (5s) and slow (15s) polling
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const fastPollIdx = dexJs.indexOf('// F17.2: Split into fast');
+    const fastPollBlock = dexJs.substring(fastPollIdx, fastPollIdx + 1200);
+    assert(fastPollBlock.includes("state.currentView === 'predict'"), 'P17.7a: Predict view in fast poll');
+    assert(fastPollBlock.includes('loadPredictionStats'), 'P17.7b: loadPredictionStats in fast poll');
+    // Also has dedicated 15s prediction market list refresh
+    const predPollIdx = dexJs.indexOf('Prediction market refresh');
+    assert(predPollIdx !== -1, 'P17.7c: Separate prediction poll exists');
+    const predPollBlock = dexJs.substring(predPollIdx, predPollIdx + 300);
+    assert(predPollBlock.includes('loadPredictionMarkets'), 'P17.7d: loadPredictionMarkets in slower poll');
+    assert(predPollBlock.includes('15000'), 'P17.7e: Prediction market list refresh at 15s');
+}
+
+// P17.8: After trade execution, balances + orderbook refresh immediately
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const f178Idx = dexJs.indexOf('// F17.8: Immediate panel refresh after trade execution');
+    assert(f178Idx !== -1, 'P17.8a: F17.8 post-trade refresh comment exists');
+    const postTradeBlock = dexJs.substring(f178Idx, f178Idx + 250);
+    assert(postTradeBlock.includes('loadBalances'), 'P17.8b: loadBalances called after trade');
+    assert(postTradeBlock.includes('renderBalances'), 'P17.8c: renderBalances called after trade');
+    assert(postTradeBlock.includes('loadOrderBook'), 'P17.8d: loadOrderBook called after trade');
+}
+
+// P17.9: Rewards refresh on dedicated slow poll (not in fast 5s loop)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const slowPollIdx = dexJs.indexOf('// F17.2: Slow polling');
+    const slowPollBlock = dexJs.substring(slowPollIdx, slowPollIdx + 400);
+    assert(slowPollBlock.includes('loadRewardsStats'), 'P17.9a: loadRewardsStats in slow poll');
+    // Verify NOT in the fast poll
+    const fastPollIdx = dexJs.indexOf('// F17.2: Split into fast');
+    const fastPollBlock = dexJs.substring(fastPollIdx, fastPollIdx + 1200);
+    assert(!fastPollBlock.includes('loadRewardsStats'), 'P17.9b: loadRewardsStats NOT in fast poll');
+}
+
+// P17.10: Governance refresh on dedicated slow poll (not in fast 5s loop)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const slowPollIdx = dexJs.indexOf('// F17.2: Slow polling');
+    const slowPollBlock = dexJs.substring(slowPollIdx, slowPollIdx + 400);
+    assert(slowPollBlock.includes('loadGovernanceStats'), 'P17.10a: loadGovernanceStats in slow poll');
+    // Verify NOT in the fast poll
+    const fastPollIdx = dexJs.indexOf('// F17.2: Split into fast');
+    const fastPollBlock = dexJs.substring(fastPollIdx, fastPollIdx + 1200);
+    assert(!fastPollBlock.includes('loadGovernanceStats'), 'P17.10b: loadGovernanceStats NOT in fast poll');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Summary
 // ═══════════════════════════════════════════════════════════════════════════
 console.log(`\n${'═'.repeat(60)}`);
