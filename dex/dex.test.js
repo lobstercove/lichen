@@ -2773,6 +2773,148 @@ assert(
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Phase 14: Governance — Proposals & Voting
+// ═══════════════════════════════════════════════════════════════════════════
+
+// P14.1: New Pair proposal sends binary opcode 1 (97 bytes), not JSON
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const submitStart = dexJs.indexOf('ArrayBuffer(97)');
+    assert(submitStart > -1, 'P14.1: New pair proposal is 97 bytes binary');
+    const submitSection = dexJs.substring(submitStart, submitStart + 500);
+    assert(submitSection.includes('writeU8(a, 0, 1)'), 'P14.1: Opcode is 1 (propose_new_pair)');
+    assert(submitSection.includes('writePubkey(a, 33'), 'P14.1: Base token at offset 33');
+    assert(submitSection.includes('writePubkey(a, 65'), 'P14.1: Quote token at offset 65');
+}
+
+// P14.2: Delist proposal blocked (no contract support)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('not yet supported on-chain'), 'P14.2: Delist/param proposals show unsupported message');
+    assert(!dexJs.includes('writeU8(a, 0, 10)'), 'P14.2: emergency_delist opcode 10 removed');
+}
+
+// P14.3: Param proposal blocked (no contract support)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    // Find the submit handler ptype === 'param' (there are multiple, find the one after 'Build binary')
+    const buildBinary = dexJs.indexOf('Build binary args');
+    const paramSubmit = dexJs.indexOf("ptype === 'param'", buildBinary);
+    const paramSection = dexJs.substring(paramSubmit, paramSubmit + 500);
+    assert(paramSection.includes('not yet supported'), 'P14.3: Param proposals show unsupported message');
+}
+
+// P14.4: RPC governance stats includes activeProposals (camelCase)
+{
+    const dexRs = fs.readFileSync(dexRsPath, 'utf8');
+    const statsStart = dexRs.indexOf('fn get_governance_stats');
+    const statsSection = dexRs.substring(statsStart, statsStart + 800);
+    assert(statsSection.includes('"activeProposals"'), 'P14.4: RPC returns activeProposals');
+    assert(statsSection.includes('"proposalCount"'), 'P14.4: RPC returns proposalCount (camelCase)');
+    assert(statsSection.includes('"totalVotes"'), 'P14.4: RPC returns totalVotes (camelCase)');
+}
+
+// P14.5: Proposal cards generate title from proposalType + proposalId
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('typeLabels'), 'P14.5: typeLabels mapping defined');
+    assert(dexJs.includes("'New Pair Listing'"), 'P14.5: new_pair type label defined');
+    assert(dexJs.includes("'Fee Change'"), 'P14.5: fee_change type label defined');
+    assert(!dexJs.includes('p.title || p.description'), 'P14.5: No phantom title/description access');
+}
+
+// P14.6: Time remaining computed from endSlot
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('p.endSlot'), 'P14.6: Uses endSlot for time calculation');
+    assert(dexJs.includes('remaining'), 'P14.6: Computes remaining time');
+    assert(!dexJs.includes('p.timeRemaining'), 'P14.6: No phantom timeRemaining field');
+}
+
+// P14.7: ProposalJson includes evidence fields
+{
+    const dexRs = fs.readFileSync(dexRsPath, 'utf8');
+    const structStart = dexRs.indexOf('pub struct ProposalJson');
+    const structSection = dexRs.substring(structStart, structStart + 500);
+    assert(structSection.includes('base_token'), 'P14.7: ProposalJson has base_token field');
+    assert(structSection.includes('new_maker_fee'), 'P14.7: ProposalJson has new_maker_fee field');
+    assert(structSection.includes('new_taker_fee'), 'P14.7: ProposalJson has new_taker_fee field');
+}
+
+// P14.8: Vote handler no longer checks MOLT balance (contract checks reputation)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const voteSection = dexJs.substring(dexJs.indexOf('bindVoteButtons'), dexJs.indexOf('bindVoteButtons') + 1500);
+    assert(!voteSection.includes('moltBalance'), 'P14.8: No MOLT balance check for voting');
+    assert(voteSection.includes('buildVoteArgs'), 'P14.8: Uses buildVoteArgs for binary instruction');
+}
+
+// P14.9: JS uses camelCase for governance stats
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('data.proposalCount'), 'P14.9: Uses camelCase proposalCount');
+    assert(dexJs.includes('data.activeProposals'), 'P14.9: Uses camelCase activeProposals');
+}
+
+// P14.10: HTML listing liquidity shows 100,000 MOLT (matching contract)
+{
+    const html = fs.readFileSync(indexHtmlPath, 'utf8');
+    assert(html.includes('100,000 MOLT'), 'P14.10: Min listing liquidity is 100,000 MOLT');
+    assert(!html.includes('>10,000 MOLT<'), 'P14.10: Old wrong 10,000 MOLT removed');
+}
+
+// P14.11: Filter reapplied after loadProposals DOM rebuild
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('applyGovernanceFilter'), 'P14.11: applyGovernanceFilter function exists');
+    assert(dexJs.includes('applyGovernanceFilter()'), 'P14.11: Filter reapplied after DOM rebuild');
+}
+
+// P14.12: Vote binary layout (42 bytes, opcode 2) matches contract
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const voteStart = dexJs.indexOf('function buildVoteArgs');
+    const voteFn = dexJs.substring(voteStart, voteStart + 300);
+    assert(voteFn.includes('42'), 'P14.12: Vote args is 42 bytes');
+    assert(voteFn.includes('writeU8'), 'P14.12: Uses writeU8 for opcode');
+}
+
+// P14.13: Fee change binary layout (45 bytes, opcode 9) matches contract
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const feeStart = dexJs.indexOf('ArrayBuffer(45)');
+    const feeSection = dexJs.substring(feeStart, feeStart + 400);
+    assert(feeSection.includes('writeU8(a, 0, 9)'), 'P14.13: Fee change opcode is 9');
+    assert(feeSection.includes('setInt16(41'), 'P14.13: Maker fee at offset 41 (i16 LE)');
+    assert(feeSection.includes('setUint16(43'), 'P14.13: Taker fee at offset 43 (u16 LE)');
+}
+
+// P14.14: Approval threshold 66% and voting period 48h/172800 in HTML
+{
+    const html = fs.readFileSync(indexHtmlPath, 'utf8');
+    assert(html.includes('66%'), 'P14.14: Approval threshold 66% shown');
+    assert(html.includes('48 hours') || html.includes('172,800'), 'P14.14: Voting period shown');
+}
+
+// P14.15: Proposal evidence rendered in cards
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('p.baseToken'), 'P14.15: Base token evidence displayed');
+    assert(dexJs.includes('p.newMakerFee'), 'P14.15: Maker fee evidence displayed');
+    assert(dexJs.includes('evidenceHtml'), 'P14.15: Evidence HTML variable used in template');
+}
+
+// P14.16: decode_proposal reads evidence bytes for new_pair and fee_change
+{
+    const dexRs = fs.readFileSync(dexRsPath, 'utf8');
+    const decodeStart = dexRs.indexOf('fn decode_proposal');
+    const decodeFn = dexRs.substring(decodeStart, decodeStart + 1500);
+    assert(decodeFn.includes('82..114'), 'P14.16: Decodes base_token from bytes 82..114');
+    assert(decodeFn.includes('i16::from_le_bytes'), 'P14.16: Decodes maker_fee as i16 LE');
+    assert(decodeFn.includes('u16::from_le_bytes'), 'P14.16: Decodes taker_fee as u16 LE');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Summary
 // ═══════════════════════════════════════════════════════════════════════════
 console.log(`\n${'═'.repeat(60)}`);

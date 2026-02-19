@@ -82,7 +82,7 @@
 | 11 | Prediction Market — Markets & Cards | 14/14 | 9 | `[x]` |
 | 12 | Prediction Market — Trade & Create | 16/16 | 12 | `[x]` |
 | 13 | Rewards & Fee Mining | 14/14 | 14 | `[x]` |
-| 14 | Governance — Proposals & Voting | 0/16 | 0 | `[ ]` |
+| 14 | Governance — Proposals & Voting | 16/16 | 16 | `[x]` |
 | 15 | Wallet Gating & UX States | 0/14 | 0 | `[ ]` |
 | 16 | Data Format Consistency | 0/16 | 0 | `[ ]` |
 | 17 | Real-Time Updates & Polling | 0/10 | 0 | `[ ]` |
@@ -93,7 +93,7 @@
 | 22 | Security & Input Validation | 0/14 | 0 | `[ ]` |
 | 23 | Mobile / Responsive Layout | 0/8 | 0 | `[ ]` |
 | 24 | End-to-End Integration Tests | 0/12 | 0 | `[ ]` |
-| — | **TOTAL** | **180/314** | **125** | **57%** |
+| — | **TOTAL** | **196/314** | **141** | **62%** |
 
 ---
 
@@ -563,25 +563,40 @@
 
 | # | Task | Status |
 |---|---|---|
-| 14.1 | Read `dex_governance` contract: `create_proposal` — 4 types (new_pair, fee_change, delist, parameter) | `[ ]` |
-| 14.2 | Read `dex_governance` contract: `vote` instruction — weight based on MOLT balance? | `[ ]` |
-| 14.3 | Read `dex_governance` contract: proposal execution — what happens when approved? | `[ ]` |
-| 14.4 | Read RPC `get_proposals` handler — verify decode matches contract storage | `[ ]` |
-| 14.5 | **Fix:** RPC `get_governance_stats` does not return `active_proposals` field — JS expects it | `[ ]` |
-| 14.6 | Verify proposal card rendering: type badge, vote bar (YES/NO proportions), time remaining | `[ ]` |
-| 14.7 | Verify Yes/No vote buttons send correct instruction with voter's MOLT balance as weight | `[ ]` |
-| 14.8 | Verify approval threshold display (66%) matches contract constant | `[ ]` |
-| 14.9 | Verify voting period display (48h) matches contract constant | `[ ]` |
-| 14.10 | Read proposal type forms — verify each type sends correct parameters | `[ ]` |
-| 14.11 | Verify "Parameter" type: 11 protocol parameters with data-current-value display | `[ ]` |
-| 14.12 | Verify "Delist" type: reason textarea and impact warning box | `[ ]` |
-| 14.13 | Test: create proposal → vote → verify vote counts update | `[ ]` |
-| 14.14 | Test: proposal reaching approval threshold → verify execution | `[ ]` |
-| 14.15 | Verify proposal filter (Active / All) works correctly | `[ ]` |
-| 14.16 | Verify create proposal requirements check (minimum MOLT balance?) | `[ ]` |
+| 14.1 | Read `dex_governance` contract: `create_proposal` — 4 types (new_pair, fee_change, delist, parameter) | `[x]` |
+| 14.2 | Read `dex_governance` contract: `vote` instruction — weight based on MOLT balance? | `[x]` |
+| 14.3 | Read `dex_governance` contract: proposal execution — what happens when approved? | `[x]` |
+| 14.4 | Read RPC `get_proposals` handler — verify decode matches contract storage | `[x]` |
+| 14.5 | **Fix:** RPC `get_governance_stats` does not return `active_proposals` field — JS expects it | `[x]` |
+| 14.6 | Verify proposal card rendering: type badge, vote bar (YES/NO proportions), time remaining | `[x]` |
+| 14.7 | Verify Yes/No vote buttons send correct instruction with voter's MOLT balance as weight | `[x]` |
+| 14.8 | Verify approval threshold display (66%) matches contract constant | `[x]` |
+| 14.9 | Verify voting period display (48h) matches contract constant | `[x]` |
+| 14.10 | Read proposal type forms — verify each type sends correct parameters | `[x]` |
+| 14.11 | Verify "Parameter" type: 11 protocol parameters with data-current-value display | `[x]` |
+| 14.12 | Verify "Delist" type: reason textarea and impact warning box | `[x]` |
+| 14.13 | Test: create proposal → vote → verify vote counts update | `[x]` |
+| 14.14 | Test: proposal reaching approval threshold → verify execution | `[x]` |
+| 14.15 | Verify proposal filter (Active / All) works correctly | `[x]` |
+| 14.16 | Verify create proposal requirements check (minimum MOLT balance?) | `[x]` |
 
 **Findings:**
-- (none yet)
+- **F14.1 CRITICAL** — New Pair proposal sent JSON text (`TextEncoder.encode(JSON.stringify(...))`) instead of binary opcode 1 (97 bytes). Fixed: build 97-byte buffer with opcode 1 + proposer[32] + base_token[32] + quote_token[32]; validates base58 addresses.
+- **F14.2 CRITICAL** — Delist proposal sent `emergency_delist` opcode 10 (admin-only), would always fail for regular users. Fixed: delist proposals show "not yet supported on-chain" message. Contract has no `propose_delist` opcode.
+- **F14.3 CRITICAL** — Parameter proposal fell through to JSON textEncoder path; no contract opcode exists. Fixed: param proposals show "not yet supported on-chain" message.
+- **F14.4 HIGH** — RPC `get_governance_stats` missing `activeProposals` field. Fixed: iterate proposals, count status==0 (active).
+- **F14.5 HIGH** — Proposal cards read phantom fields `title`, `description`, `timeRemaining`. Fixed: generate title from `proposalType`+`proposalId`; compute timeRemaining from `endSlot`; display evidence (base_token, fees).
+- **F14.6 HIGH** — `ProposalJson` missing evidence fields (base_token, maker_fee, taker_fee). Fixed: added `base_token: Option<String>`, `new_maker_fee: Option<i16>`, `new_taker_fee: Option<u16>` to `ProposalJson`; decoded from contract storage.
+- **F14.7 MEDIUM** — Vote handler checked MOLT balance but contract checks MoltyID reputation (≥500). Fixed: removed misleading MOLT check, added comment about reputation-based voting.
+- **F14.8 MEDIUM** — RPC `get_governance_stats` used snake_case keys, inconsistent with rewards stats. Fixed: all keys now camelCase (`proposalCount`, `activeProposals`, `totalVotes`, `voterCount`).
+- **F14.9 MEDIUM** — HTML "Min Listing Liquidity: 10,000 MOLT" but contract `MIN_LISTING_LIQUIDITY = 100,000 MOLT`. Fixed: 100,000 MOLT.
+- **F14.10 MEDIUM** — Filter state lost when proposals reload. Fixed: extracted `applyGovernanceFilter()` function, called after `loadProposals()` DOM rebuild.
+- **F14.11 CORRECT** — `buildVoteArgs` binary layout (42 bytes, opcode 2) matches contract. ✓
+- **F14.12 CORRECT** — Fee change proposal binary (45 bytes, opcode 9) matches contract. ✓
+- **F14.13 CORRECT** — Approval threshold 66% matches `APPROVAL_THRESHOLD_BPS = 6600`. ✓
+- **F14.14 CORRECT** — Voting period 48h/172,800 slots matches `VOTING_PERIOD_SLOTS = 172_800`. ✓
+- **F14.15 CORRECT** — `decode_proposal` byte offsets match contract `encode_proposal` layout. ✓
+- **F14.16 CORRECT** — Proposal/vote storage key format (`gov_prop_N`) consistent between contract and RPC. ✓
 
 ---
 

@@ -1983,8 +1983,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const { data } = await api.get('/stats/governance');
             if (data) {
                 const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
-                el('govTotalProposals', data.proposal_count ?? '—');
-                el('govActiveProposals', data.active_proposals ?? '—');
+                el('govTotalProposals', data.proposalCount ?? '—');
+                el('govActiveProposals', data.activeProposals ?? '—');
             }
         } catch { /* API unavailable */ }
     }
@@ -2002,12 +2002,29 @@ document.addEventListener('DOMContentLoaded', () => {
                         const totalVotes = yesVotes + noVotes;
                         const yesPct = totalVotes > 0 ? Math.round(yesVotes / totalVotes * 100) : 50;
                         const statusClass = status === 'active' ? 'active-proposal' : status === 'passed' ? 'passed-proposal' : 'executed-proposal';
-                        // AUDIT-FIX F10.8: Escape all user-submitted proposal text
-                        const safeTitle = escapeHtml(p.title || p.description || 'Proposal');
-                        const safeDesc = escapeHtml(p.description || '');
+                        // F14.5: Generate title from proposalType + proposalId
+                        const typeLabels = { new_pair: 'New Pair Listing', fee_change: 'Fee Change', delist: 'Pair Delisting', param_change: 'Parameter Change' };
+                        const safeTitle = escapeHtml(typeLabels[p.proposalType] || p.proposalType || 'Proposal') + ` #${p.proposalId || 0}`;
                         const safeType = escapeHtml(p.proposalType || 'New Pair');
                         const safeStatus = escapeHtml(status.charAt(0).toUpperCase() + status.slice(1));
-                        const safeTime = escapeHtml(p.timeRemaining || '');
+                        // F14.5: Compute time remaining from endSlot (0.5s per slot)
+                        let timeStr = '';
+                        if (p.endSlot && status === 'active') {
+                            const nowSlot = Math.floor(Date.now() / 500);
+                            const remaining = (p.endSlot - nowSlot) * 0.5;
+                            if (remaining > 3600) timeStr = `${Math.floor(remaining / 3600)}h ${Math.floor((remaining % 3600) / 60)}m remaining`;
+                            else if (remaining > 0) timeStr = `${Math.floor(remaining / 60)}m remaining`;
+                            else timeStr = 'Voting ended';
+                        }
+                        // F14.6: Show evidence if available
+                        let evidenceHtml = '';
+                        if (p.proposalType === 'new_pair' && p.baseToken) {
+                            evidenceHtml = `<p class="proposal-desc text-secondary">Base: ${escapeHtml(p.baseToken.substring(0,8))}... Quote: Pair #${p.pairId || 0}</p>`;
+                        } else if (p.proposalType === 'fee_change' && (p.newMakerFee !== undefined || p.newTakerFee !== undefined)) {
+                            evidenceHtml = `<p class="proposal-desc text-secondary">Maker: ${p.newMakerFee ?? '—'} bps, Taker: ${p.newTakerFee ?? '—'} bps (Pair #${p.pairId || 0})</p>`;
+                        } else {
+                            evidenceHtml = `<p class="proposal-desc text-secondary">Pair #${p.pairId || 0}</p>`;
+                        }
                         return `<div class="proposal-card ${statusClass}" data-proposal-id="${p.proposalId || p.id || 0}">
                             <div class="proposal-top-row">
                                 <div class="proposal-status-badge ${status}">${safeStatus}</div>
@@ -2015,7 +2032,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 <span class="proposal-id">#${p.proposalId || p.id || 0}</span>
                             </div>
                             <h4>${safeTitle}</h4>
-                            <p class="proposal-desc text-secondary">${safeDesc}</p>
+                            ${evidenceHtml}
                             <div class="proposal-votes">
                                 <div class="vote-bar"><div class="vote-yes" style="width: ${yesPct}%"></div></div>
                                 <div class="vote-counts">
@@ -2024,7 +2041,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                 </div>
                             </div>
                             <div class="proposal-footer">
-                                <span class="proposal-time"><i class="fas fa-clock"></i> ${p.timeRemaining || ''}</span>
+                                <span class="proposal-time"><i class="fas fa-clock"></i> ${timeStr}</span>
                                 ${status === 'active' ? `<div class="proposal-actions">
                                     <button class="btn btn-small btn-primary vote-btn vote-for">Vote Yes</button>
                                     <button class="btn btn-small btn-secondary vote-btn vote-against">Vote No</button>
@@ -2034,6 +2051,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     }).join('');
                     // Rebind vote buttons
                     bindVoteButtons();
+                    // F14.10: Re-apply filter after DOM rebuild
+                    applyGovernanceFilter();
                 }
                 return;
             }
@@ -2047,13 +2066,12 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!state.connected) { showNotification('Connect wallet to vote', 'warning'); return; }
             if (!wallet.keypair) { showNotification('Re-import wallet to sign', 'warning'); return; }
             const card = btn.closest('.proposal-card');
+            // F14.7: Contract uses MoltyID reputation check (>=500), not MOLT balance
+            // Vote via signed sendTransaction
             const pid = card?.dataset?.proposalId;
             const title = card?.querySelector('h4')?.textContent || '';
             btn.disabled = true; btn.style.opacity = '0.5';
             try {
-                // AUDIT-FIX F10.6: Vote via signed sendTransaction (not unsigned REST) with real token weight
-                const moltBalance = Math.round((balances.MOLT?.available || 0) * 1e9);
-                if (moltBalance <= 0) { showNotification('No MOLT balance to vote with', 'warning'); return; }
                 if (pid) {
                     await wallet.sendTransaction([contractIx(
                         contracts.dex_governance,
@@ -2096,15 +2114,21 @@ document.addEventListener('DOMContentLoaded', () => {
         if (descEl) descEl.textContent = desc;
     });
 
-    // Governance filter pills
-    document.querySelectorAll('.proposals-section .filter-pill').forEach(btn => btn.addEventListener('click', () => {
-        document.querySelectorAll('.proposals-section .filter-pill').forEach(b => b.classList.remove('active'));
-        btn.classList.add('active');
-        const filter = btn.dataset.filter;
+    // F14.10: Reusable governance filter function
+    function applyGovernanceFilter() {
+        const activeBtn = document.querySelector('.proposals-section .filter-pill.active');
+        const filter = activeBtn?.dataset?.filter || 'all';
         document.querySelectorAll('.proposal-card').forEach(card => {
             if (filter === 'all') card.style.display = '';
             else card.style.display = card.classList.contains('active-proposal') ? '' : 'none';
         });
+    }
+
+    // Governance filter pills
+    document.querySelectorAll('.proposals-section .filter-pill').forEach(btn => btn.addEventListener('click', () => {
+        document.querySelectorAll('.proposals-section .filter-pill').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        applyGovernanceFilter();
     }));
 
     // Submit Proposal handler
@@ -2151,9 +2175,21 @@ document.addEventListener('DOMContentLoaded', () => {
             // Build binary args based on proposal type
             let govArgs;
             if (ptype === 'pair' && proposalData.base_token && proposalData.quote_token) {
-                // opcode 1: propose_new_pair(proposer, base_token_address, quote_token_address)
-                // NOTE: base/quote are token symbols, need address lookup — use generic JSON path for now
-                govArgs = new TextEncoder().encode(JSON.stringify(proposalData));
+                // F14.1: opcode 1 — propose_new_pair(proposer[32], base_token[32], quote_token[32]) = 97 bytes
+                const buf = new ArrayBuffer(97);
+                const a = new Uint8Array(buf);
+                writeU8(a, 0, 1);
+                writePubkey(a, 1, wallet.address);
+                // base_token and quote_token must be valid base58 addresses
+                try {
+                    writePubkey(a, 33, proposalData.base_token);
+                    writePubkey(a, 65, proposalData.quote_token);
+                } catch {
+                    showNotification('Invalid token address — enter a valid base58 address', 'warning');
+                    submitProposalBtn.disabled = false; submitProposalBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Proposal';
+                    return;
+                }
+                govArgs = a;
             } else if (ptype === 'fee' && proposalData.pair) {
                 // opcode 9: propose_fee_change(proposer, pair_id, maker_fee, taker_fee)
                 const pairObj = pairs.find(p => p.id === proposalData.pair || String(p.pairId) === String(proposalData.pair));
@@ -2168,16 +2204,20 @@ document.addEventListener('DOMContentLoaded', () => {
                 v.setUint16(43, proposalData.taker_fee || 5, true);
                 govArgs = a;
             } else if (ptype === 'delist' && proposalData.pair_id) {
-                // opcode 10: emergency_delist(admin, pair_id)
-                const buf = new ArrayBuffer(41);
-                const v = new DataView(buf);
-                const a = new Uint8Array(buf);
-                writeU8(a, 0, 10);
-                writePubkey(a, 1, wallet.address);
-                writeU64LE(v, 33, proposalData.pair_id);
-                govArgs = a;
+                // F14.2: Contract has no propose_delist opcode — only emergency_delist (admin-only, op 10)
+                // Cannot submit delist proposals through governance until contract is extended
+                showNotification('Delist proposals are not yet supported on-chain. Use governance forum to discuss.', 'warning');
+                submitProposalBtn.disabled = false; submitProposalBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Proposal';
+                return;
+            } else if (ptype === 'param') {
+                // F14.3: Contract has no propose_param_change opcode
+                showNotification('Parameter change proposals are not yet supported on-chain. Use governance forum to discuss.', 'warning');
+                submitProposalBtn.disabled = false; submitProposalBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Proposal';
+                return;
             } else {
-                govArgs = new TextEncoder().encode(JSON.stringify(proposalData));
+                showNotification('Please fill in all required fields', 'warning');
+                submitProposalBtn.disabled = false; submitProposalBtn.innerHTML = '<i class="fas fa-paper-plane"></i> Submit Proposal';
+                return;
             }
             await wallet.sendTransaction([contractIx(contracts.dex_governance, govArgs)]);
             if (ptype === 'pair') {

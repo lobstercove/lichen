@@ -322,6 +322,9 @@ pub struct ProposalJson {
     pub yes_votes: u64,
     pub no_votes: u64,
     pub pair_id: u64,
+    pub base_token: Option<String>,
+    pub new_maker_fee: Option<i16>,
+    pub new_taker_fee: Option<u16>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -856,6 +859,23 @@ fn decode_proposal(data: &[u8]) -> Option<ProposalJson> {
     let no_votes = u64::from_le_bytes(data[66..74].try_into().ok()?);
     let pair_id = u64::from_le_bytes(data[74..82].try_into().ok()?);
 
+    // F14.6: Decode evidence fields based on proposal type
+    let base_token = if data[40] == 0 && data.len() >= 114 {
+        // new_pair: evidence bytes 82..114 contain base_token pubkey
+        Some(hex::encode(&data[82..114]))
+    } else {
+        None
+    };
+    let (new_maker_fee, new_taker_fee) = if data[40] == 1 && data.len() >= 118 {
+        // fee_change: bytes 114..116 = maker_fee (i16 LE), 116..118 = taker_fee (u16 LE)
+        (
+            Some(i16::from_le_bytes([data[114], data[115]])),
+            Some(u16::from_le_bytes([data[116], data[117]])),
+        )
+    } else {
+        (None, None)
+    };
+
     Some(ProposalJson {
         proposal_id,
         proposer,
@@ -866,6 +886,9 @@ fn decode_proposal(data: &[u8]) -> Option<ProposalJson> {
         yes_votes,
         no_votes,
         pair_id,
+        base_token,
+        new_maker_fee,
+        new_taker_fee,
     })
 }
 
@@ -2394,10 +2417,24 @@ async fn get_analytics_stats(State(state): State<Arc<RpcState>>) -> Response {
 
 async fn get_governance_stats(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
+    // F14.4: Count active proposals
+    let count = read_u64(&state, DEX_GOVERNANCE_PROGRAM, "gov_prop_count");
+    let mut active = 0u64;
+    for i in 1..=count {
+        let key = format!("gov_prop_{}", i);
+        if let Some(data) = read_bytes(&state, DEX_GOVERNANCE_PROGRAM, &key) {
+            if data.len() > 41 && data[41] == 0 {
+                // status byte at offset 41, 0 = active
+                active += 1;
+            }
+        }
+    }
+    // F14.8: Use camelCase keys
     ApiResponse::ok(serde_json::json!({
-        "proposal_count": read_u64(&state, DEX_GOVERNANCE_PROGRAM, "gov_prop_count"),
-        "total_votes": read_u64(&state, DEX_GOVERNANCE_PROGRAM, "gov_total_votes"),
-        "voter_count": read_u64(&state, DEX_GOVERNANCE_PROGRAM, "gov_voter_count"),
+        "proposalCount": count,
+        "activeProposals": active,
+        "totalVotes": read_u64(&state, DEX_GOVERNANCE_PROGRAM, "gov_total_votes"),
+        "voterCount": read_u64(&state, DEX_GOVERNANCE_PROGRAM, "gov_voter_count"),
     }), slot).into_response()
 }
 
