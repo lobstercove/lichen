@@ -108,6 +108,7 @@ struct MarketJson {
     created_slot: u64,
     close_slot: u64,
     resolve_slot: u64,
+    unique_traders: u64,
     outcomes: Vec<OutcomeJson>,
 }
 
@@ -128,6 +129,7 @@ struct PlatformStatsJson {
     total_collateral: f64,
     fees_collected: f64,
     total_traders: u64,
+    current_slot: u64,
     paused: bool,
 }
 
@@ -258,8 +260,10 @@ fn decode_market(state: &RpcState, id: u64) -> Option<MarketJson> {
         .and_then(|d| String::from_utf8(d).ok())
         .unwrap_or_default();
 
-    // Read outcomes
-    let mut outcomes = Vec::new();
+    // F11.3 FIX: Read all outcome reserves first, then compute CPMM prices
+    let mut outcome_reserves: Vec<u64> = Vec::new();
+    let mut outcome_shares: Vec<u64> = Vec::new();
+    let mut outcome_names: Vec<String> = Vec::new();
     for oi in 0..outcome_count {
         let o_key = format!("pm_o_{}_{}", id, oi);
         let on_key = format!("pm_on_{}_{}", id, oi);
@@ -268,12 +272,10 @@ fn decode_market(state: &RpcState, id: u64) -> Option<MarketJson> {
             .and_then(|d| String::from_utf8(d).ok())
             .unwrap_or_else(|| if oi == 0 { "Yes".to_string() } else { "No".to_string() });
 
-        let (pool_yes, pool_no) = state.state.get_program_storage(PREDICT_PROGRAM, o_key.as_bytes())
+        let (reserve, shares) = state.state.get_program_storage(PREDICT_PROGRAM, o_key.as_bytes())
             .map(|d| {
                 if d.len() >= 16 {
-                    let y = u64_le(&d, 0);
-                    let n = u64_le(&d, 8);
-                    (y, n)
+                    (u64_le(&d, 0), u64_le(&d, 8))
                 } else if d.len() >= 8 {
                     (u64_le(&d, 0), 0u64)
                 } else {
@@ -282,22 +284,46 @@ fn decode_market(state: &RpcState, id: u64) -> Option<MarketJson> {
             })
             .unwrap_or((0, 0));
 
-        // CPMM price: price_yes = pool_no / (pool_yes + pool_no)
-        let total_pool = pool_yes + pool_no;
-        let price = if total_pool > 0 {
-            pool_no as f64 / total_pool as f64
+        outcome_reserves.push(reserve);
+        outcome_shares.push(shares);
+        outcome_names.push(name);
+    }
+
+    // Compute CPMM prices using cross-outcome reserves
+    let mut outcomes = Vec::new();
+    for oi in 0..outcome_count as usize {
+        let price = if outcome_reserves.len() == 2 {
+            // Binary: price_i = reserve_other / (reserve_self + reserve_other)
+            let self_r = outcome_reserves[oi] as f64;
+            let other_r = outcome_reserves[1 - oi] as f64;
+            let sum = self_r + other_r;
+            if sum > 0.0 { other_r / sum } else { 0.5 }
         } else {
-            0.5
+            // Multi-outcome: price_i = (1/r_i) / sum(1/r_j)
+            let all_nonzero = outcome_reserves.iter().all(|&r| r > 0);
+            if all_nonzero {
+                let recip_sum: f64 = outcome_reserves.iter().map(|&r| 1.0 / r as f64).sum();
+                let recip_i = 1.0 / outcome_reserves[oi] as f64;
+                recip_i / recip_sum
+            } else {
+                1.0 / outcome_count as f64
+            }
         };
 
         outcomes.push(OutcomeJson {
-            index: oi,
-            name,
-            pool_yes: pool_yes as f64 / PRICE_SCALE as f64,
-            pool_no: pool_no as f64 / PRICE_SCALE as f64,
+            index: oi as u8,
+            name: outcome_names[oi].clone(),
+            pool_yes: outcome_reserves[oi] as f64 / PRICE_SCALE as f64,
+            pool_no: outcome_shares[oi] as f64 / PRICE_SCALE as f64,
             price,
         });
     }
+
+    // F11.9 FIX: Include unique_traders to eliminate N+1 queries
+    let trader_count_key = format!("pm_mtc_{}", id);
+    let unique_traders = state.state.get_program_storage(PREDICT_PROGRAM, trader_count_key.as_bytes())
+        .map(|d| if d.len() >= 8 { u64_le(&d, 0) } else { 0 })
+        .unwrap_or(0);
 
     Some(MarketJson {
         id: market_id,
@@ -313,6 +339,7 @@ fn decode_market(state: &RpcState, id: u64) -> Option<MarketJson> {
         created_slot,
         close_slot,
         resolve_slot,
+        unique_traders,
         outcomes,
     })
 }
@@ -340,6 +367,7 @@ async fn get_stats(State(state): State<Arc<RpcState>>) -> Response {
             total_collateral: total_collateral as f64 / PRICE_SCALE as f64,
             fees_collected: fees_collected as f64 / PRICE_SCALE as f64,
             total_traders,
+            current_slot: slot,
             paused,
         },
         slot,

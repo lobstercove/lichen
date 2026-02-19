@@ -437,7 +437,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Opcode 1: create_market(creator, category, close_slot, outcome_count, question_hash, question)
-    function buildCreateMarketArgs(creator, question, category, outcomeCount) {
+    function buildCreateMarketArgs(creator, question, category, outcomeCount, closeSlot) {
         const encoder = new TextEncoder();
         const qBytes = encoder.encode(question);
         const totalLen = 79 + qBytes.length;
@@ -446,10 +446,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const arr = new Uint8Array(buf);
         writeU8(arr, 0, 1); // opcode
         writePubkey(arr, 1, creator);
-        // Category: map string to u8 enum (0=general, 1=crypto, 2=sports, 3=politics, 4=entertainment, 5=science)
-        const catMap = { general: 0, crypto: 1, sports: 2, politics: 3, entertainment: 4, science: 5 };
+        // F11.1 FIX: Category map matches contract (politics=0, sports=1, crypto=2, ...)
+        const catMap = { politics: 0, sports: 1, crypto: 2, science: 3, entertainment: 4, economics: 5, tech: 6, custom: 7 };
         writeU8(arr, 33, catMap[category] ?? 0);
-        writeU64LE(view, 34, 0); // close_slot: 0 = open-ended
+        // F11.2 FIX: close_slot must be > current_slot; caller must provide valid slot
+        writeU64LE(view, 34, closeSlot || 0);
         writeU8(arr, 42, outcomeCount || 2);
         // question_hash: simple hash of question string (fill 32 bytes)
         const hashBytes = new Uint8Array(32);
@@ -2165,26 +2166,19 @@ document.addEventListener('DOMContentLoaded', () => {
                     question: m.question,
                     cat: m.category,
                     yes: m.outcomes?.[0]?.price ?? 0.5,
-                    volume: m.total_volume * 1e9,   // convert to display units
-                    liquidity: m.total_collateral * 1e9,
+                    // F11.4 FIX: RPC already divides by PRICE_SCALE — no *1e9
+                    volume: m.total_volume || 0,
+                    liquidity: m.total_collateral || 0,
+                    // F11.9 FIX: Use unique_traders from market response (no N+1 query)
                     traders: m.unique_traders || 0,
                     status: m.status,
                     multi: (m.outcome_count || 2) > 2,
                     outcomes: m.outcomes || [],
+                    // F11.7 FIX: Map close_slot and creator for time remaining and attribution
+                    closes: m.close_slot || 0,
+                    creator: m.creator || '',
                 }));
                 predictState.live = true;
-                // Fetch per-market analytics for unique trader counts
-                try {
-                    const promises = predictState.markets.map(m =>
-                        api.get(`/prediction-market/markets/${m.id}/analytics`).then(r => r.data).catch(() => null)
-                    );
-                    const analytics = await Promise.all(promises);
-                    analytics.forEach((a, i) => {
-                        if (a) {
-                            predictState.markets[i].traders = a.unique_traders || 0;
-                        }
-                    });
-                } catch { /* no analytics — traders stays at 0 */ }
                 renderPredictionMarkets();
                 return;
             }
@@ -2295,8 +2289,20 @@ document.addEventListener('DOMContentLoaded', () => {
                     </div>`;
             }
 
-            const statusClass = isResolved ? 'resolved' : m.status === 'disputed' ? 'disputed' : 'active';
-            const statusLabel = isResolved ? 'Resolved' : m.status === 'disputed' ? 'Disputed' : 'Active';
+            // F11.8 FIX: Handle all market statuses with appropriate badges
+            const statusMap = {
+                active: { cls: 'active', label: 'Active' },
+                pending: { cls: 'pending', label: 'Pending' },
+                closed: { cls: 'closed', label: 'Closed' },
+                resolving: { cls: 'resolving', label: 'Resolving' },
+                resolved: { cls: 'resolved', label: 'Resolved' },
+                disputed: { cls: 'disputed', label: 'Disputed' },
+                voided: { cls: 'voided', label: 'Voided' },
+            };
+            const statusInfo = statusMap[m.status] || { cls: 'active', label: m.status || 'Active' };
+            if (isResolved) { statusInfo.cls = 'resolved'; statusInfo.label = 'Resolved'; }
+            const statusClass = statusInfo.cls;
+            const statusLabel = statusInfo.label;
             const catTag = catIconsHtml[m.cat] || '<i class="fas fa-chart-pie"></i> ' + escapeHtml(m.cat || 'Other');
             const idTag = m.pm_id || `#PM-${String(m.id).padStart(3, '0')}`;
             const closesLabel = m.closes ? `<span><i class="fas fa-clock"></i> ${escapeHtml(m.closes)}</span>` : '';
@@ -2625,6 +2631,16 @@ document.addEventListener('DOMContentLoaded', () => {
         predictChartState.realData = null;
     }
 
+    // F11.6 FIX: Time range filtering helper
+    function filterByRange(data, range) {
+        if (!data || data.length === 0) return data;
+        const now = Date.now();
+        const rangeMs = { '1h': 3600e3, '6h': 21600e3, '1d': 86400e3, '1w': 604800e3, '30d': 2592000e3 };
+        const cutoff = rangeMs[range];
+        if (!cutoff) return data; // 'all' or unknown → return full dataset
+        return data.filter(d => d.t >= now - cutoff);
+    }
+
     // Time range tab clicks
     document.querySelectorAll('.predict-chart-tab').forEach(tab => tab.addEventListener('click', () => {
         const range = tab.dataset.range;
@@ -2632,11 +2648,12 @@ document.addEventListener('DOMContentLoaded', () => {
         document.querySelectorAll('.predict-chart-tab').forEach(t => t.classList.toggle('active', t === tab));
         const m = predictState.markets.find(x => x.id === predictChartState.marketId);
         if (!m) return;
-        // Use real data if available, otherwise show flat line
-        const chartData = (predictChartState.realData && predictChartState.realData.length > 0) ? predictChartState.realData : generateEmptyPriceHistory(m);
+        // F11.6 FIX: Filter real data by selected time range
+        const raw = (predictChartState.realData && predictChartState.realData.length > 0) ? predictChartState.realData : generateEmptyPriceHistory(m);
+        const chartData = filterByRange(raw, range);
         const canvas = document.getElementById('predictChartCanvas');
-        if (canvas) drawPredictChart(chartData, canvas);
-        renderPredictChartStats(chartData, m);
+        if (canvas) drawPredictChart(chartData.length > 0 ? chartData : raw, canvas);
+        renderPredictChartStats(chartData.length > 0 ? chartData : raw, m);
     }));
 
     // Close handlers
@@ -2748,10 +2765,29 @@ document.addEventListener('DOMContentLoaded', () => {
 
         predictCreateBtn.disabled = true; predictCreateBtn.textContent = 'Creating...';
         try {
-            // AUDIT-FIX F10.4: Create market via signed sendTransaction
-            const catVal = document.getElementById('predictCategory')?.value || 'general';
+            // AUDIT-FIX F10.4 + F11.2: Create market via signed sendTransaction with valid close_slot
+            const catVal = document.getElementById('predictCategory')?.value || 'crypto';
             const ocCount = outcomes.length > 0 ? outcomes.length : 2;
-            await wallet.sendTransaction([contractIx(contracts.prediction_market, buildCreateMarketArgs(wallet.address, q, catVal, ocCount))]);
+            // F11.2 FIX: Compute close_slot from date input or default 7 days
+            const closeDateInput = document.getElementById('predictCloseDate')?.value;
+            let durationSlots = 7 * 24 * 60 * 60 * 2; // default 7 days at 0.5s/slot = 1_209_600
+            if (closeDateInput) {
+                const closeMs = new Date(closeDateInput).getTime();
+                const nowMs = Date.now();
+                if (closeMs > nowMs) {
+                    durationSlots = Math.round((closeMs - nowMs) / 500); // 0.5s per slot
+                }
+            }
+            // Fetch current slot from stats to compute absolute close_slot
+            let currentSlot = 0;
+            try {
+                const statsResp = await api.get('/prediction-market/stats');
+                currentSlot = statsResp?.data?.current_slot || 0;
+            } catch { /* will use fallback */ }
+            // If we couldn't get current slot, use a large estimate
+            if (!currentSlot) currentSlot = Math.round(Date.now() / 500);
+            const closeSlot = currentSlot + durationSlots;
+            await wallet.sendTransaction([contractIx(contracts.prediction_market, buildCreateMarketArgs(wallet.address, q, catVal, ocCount, closeSlot))]);
             showNotification(`Market created: "${escapeHtml(q.slice(0, 50))}..." with $${liq} liquidity`, 'success');
             await loadPredictionMarkets();
         } catch (e) { showNotification(`Create failed: ${e.message}`, 'error'); }
@@ -2795,6 +2831,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (sortBy === 'volume') predictState.markets.sort((a, b) => b.volume - a.volume);
         else if (sortBy === 'liquidity') predictState.markets.sort((a, b) => b.liquidity - a.liquidity);
         else if (sortBy === 'newest') predictState.markets.sort((a, b) => b.id - a.id);
+        // F11.5 FIX: Add "ending" sort by close_slot (soonest first)
+        else if (sortBy === 'ending') predictState.markets.sort((a, b) => (a.closes || Infinity) - (b.closes || Infinity));
+        // F11.5 FIX: Add "traders" sort by unique trader count
+        else if (sortBy === 'traders') predictState.markets.sort((a, b) => b.traders - a.traders);
         renderPredictionMarkets();
         showNotification(`Sorted by ${predictSort.options[predictSort.selectedIndex].text}`, 'info');
     });

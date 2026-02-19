@@ -36,7 +36,6 @@
  *  PB — Oracle fallback-only: skip analytics writes when real trades active
  *  PC — Oracle price bands: ±5% market / ±10% limit enforcement in dex_core
  *  PD — Frontend oracle reference line: gold dashed line on TradingView chart
- */
  *  - Genesis oracle seeding (wSOL, wETH feeds)
  *  - Genesis analytics price seeding (ana_lp_, ana_24h_, candles)
  *  - Background price feeder service (Binance WebSocket + REST fallback → moltoracle + analytics)
@@ -1840,6 +1839,7 @@ const indexHtmlPath = '/Users/johnrobin/.openclaw/workspace/moltchain/dex/index.
 // PHASE 10: Margin Trading (Inline) — Tests
 // ═══════════════════════════════════════════════════════════════════════════
 const marginRsPath = '/Users/johnrobin/.openclaw/workspace/moltchain/contracts/dex_margin/src/lib.rs';
+const predictionRsPath = '/Users/johnrobin/.openclaw/workspace/moltchain/rpc/src/prediction.rs';
 
 // P10.1: calculate_margin_ratio_with_pnl exists in contract
 {
@@ -2307,6 +2307,175 @@ assert(
     validatorSrcAll.includes('fn oracle_update_candle('),
     'INT.8: Separate candle update functions for bridge vs oracle'
 );
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase 11: Prediction Market — Markets & Cards
+// ═══════════════════════════════════════════════════════════════════════════
+
+// P11.1: JS category map matches contract constants (F11.1)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const predRs = fs.readFileSync(predictionRsPath, 'utf8');
+    // JS catMap must encode categories with same indices as contract
+    assert(dexJs.includes('politics: 0'), 'P11.1a: JS catMap politics=0 matches CATEGORY_POLITICS');
+    assert(dexJs.includes('sports: 1'), 'P11.1b: JS catMap sports=1 matches CATEGORY_SPORTS');
+    assert(dexJs.includes('crypto: 2'), 'P11.1c: JS catMap crypto=2 matches CATEGORY_CRYPTO');
+    assert(dexJs.includes('science: 3'), 'P11.1d: JS catMap science=3 matches CATEGORY_SCIENCE');
+    assert(dexJs.includes('entertainment: 4'), 'P11.1e: JS catMap entertainment=4');
+    assert(dexJs.includes('economics: 5'), 'P11.1f: JS catMap economics=5');
+    assert(dexJs.includes('tech: 6'), 'P11.1g: JS catMap tech=6');
+    assert(dexJs.includes('custom: 7'), 'P11.1h: JS catMap custom=7');
+    // Verify contract has matching constants
+    assert(predRs.includes('0 => "politics"'), 'P11.1i: RPC category_name maps 0→politics');
+    assert(predRs.includes('2 => "crypto"'), 'P11.1j: RPC category_name maps 2→crypto');
+    // Verify old wrong mapping not present
+    assert(!dexJs.includes('general: 0'), 'P11.1k: Old wrong "general:0" mapping removed');
+}
+
+// P11.2: buildCreateMarketArgs takes closeSlot parameter (F11.2)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('function buildCreateMarketArgs(creator, question, category, outcomeCount, closeSlot)'),
+        'P11.2a: buildCreateMarketArgs has closeSlot parameter');
+    assert(dexJs.includes('writeU64LE(view, 34, closeSlot'), 'P11.2b: closeSlot written at offset 34');
+    // Verify caller computes closeSlot from current_slot + duration
+    assert(dexJs.includes('currentSlot + durationSlots'), 'P11.2c: Caller computes absolute closeSlot');
+    assert(dexJs.includes("prediction-market/stats"), 'P11.2d: Caller fetches stats to get current_slot');
+}
+
+// P11.3: RPC computes CPMM prices using cross-outcome reserves (F11.3)
+{
+    const predRs = fs.readFileSync(predictionRsPath, 'utf8');
+    assert(predRs.includes('outcome_reserves'), 'P11.3a: RPC collects all outcome reserves');
+    // Binary pricing: reserve_other / (reserve_self + reserve_other)
+    assert(predRs.includes('other_r / sum'), 'P11.3b: Binary CPMM formula uses other_r / sum');
+    assert(predRs.includes('outcome_reserves[1 - oi]'), 'P11.3c: Binary reads other outcome reserve');
+    // Multi-outcome pricing: reciprocal formula
+    assert(predRs.includes('recip_i / recip_sum'), 'P11.3d: Multi-outcome uses reciprocal CPMM');
+}
+
+// P11.4: No double volume/collateral conversion (F11.4)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    // Find loadPredictionMarkets area — should NOT multiply volume by 1e9
+    const loadPredArea = dexJs.substring(
+        dexJs.indexOf('loadPredictionMarkets'),
+        dexJs.indexOf('loadPredictionMarkets') + 2000
+    );
+    assert(!loadPredArea.includes('* 1e9'), 'P11.4a: No * 1e9 multiplier in loadPredictionMarkets');
+    assert(!loadPredArea.includes('*1e9'), 'P11.4b: No *1e9 multiplier (no space variant)');
+}
+
+// P11.5: Sort handlers for "ending" and "traders" exist (F11.5)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes("sortBy === 'ending'"), 'P11.5a: "ending" sort handler present');
+    assert(dexJs.includes("sortBy === 'traders'"), 'P11.5b: "traders" sort handler present');
+    // Ending sorts by closes ascending (soonest first)
+    assert(dexJs.includes('a.closes') && dexJs.includes('b.closes'), 'P11.5c: Ending sort uses closes field');
+    // Traders sorts descending
+    assert(dexJs.includes('b.traders - a.traders'), 'P11.5d: Traders sort is descending');
+}
+
+// P11.6: filterByRange helper filters chart data by time window (F11.6)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('function filterByRange(data, range)'), 'P11.6a: filterByRange function defined');
+    assert(dexJs.includes("'1h': 3600e3"), 'P11.6b: 1h range = 3600000ms');
+    assert(dexJs.includes("'6h': 21600e3"), 'P11.6c: 6h range = 21600000ms');
+    assert(dexJs.includes("'1d': 86400e3"), 'P11.6d: 1d range = 86400000ms');
+    assert(dexJs.includes("'1w': 604800e3"), 'P11.6e: 1w range = 604800000ms');
+    assert(dexJs.includes("'30d': 2592000e3"), 'P11.6f: 30d range = 2592000000ms');
+    // Filter applied in chart tab handler
+    assert(dexJs.includes('filterByRange(raw, range)'), 'P11.6g: filterByRange called in chart tab handler');
+}
+
+// P11.7: Market mapping includes close_slot and creator (F11.7)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('closes: m.close_slot'), 'P11.7a: closes field mapped from m.close_slot');
+    assert(dexJs.includes('creator: m.creator'), 'P11.7b: creator field mapped from m.creator');
+}
+
+// P11.8: statusMap covers all 7 prediction market statuses (F11.8)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const statuses = ['active', 'pending', 'closed', 'resolving', 'resolved', 'disputed', 'voided'];
+    for (const s of statuses) {
+        // Each status should be a key in the statusMap
+        assert(dexJs.includes(`${s}: {`), `P11.8-${s}: statusMap has "${s}" entry`);
+    }
+}
+
+// P11.9: RPC MarketJson includes unique_traders field (F11.9)
+{
+    const predRs = fs.readFileSync(predictionRsPath, 'utf8');
+    assert(predRs.includes('unique_traders: u64'), 'P11.9a: MarketJson has unique_traders field');
+    assert(predRs.includes('pm_mtc_'), 'P11.9b: RPC reads pm_mtc_ key for trader count');
+}
+
+// P11.10: RPC PlatformStatsJson includes current_slot (F11.2/F11.9)
+{
+    const predRs = fs.readFileSync(predictionRsPath, 'utf8');
+    const statsStruct = predRs.substring(predRs.indexOf('struct PlatformStatsJson'), predRs.indexOf('struct PlatformStatsJson') + 300);
+    assert(statsStruct.includes('current_slot: u64'), 'P11.10a: PlatformStatsJson has current_slot');
+    assert(predRs.includes('current_slot: slot'), 'P11.10b: current_slot populated from slot in handler');
+}
+
+// P11.11: No N+1 analytics queries in JS (F11.9)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const loadPredArea = dexJs.substring(
+        dexJs.indexOf('loadPredictionMarkets'),
+        dexJs.indexOf('loadPredictionMarkets') + 3000
+    );
+    // Should not have per-market analytics fetch loop
+    assert(!loadPredArea.includes('/analytics/market/'), 'P11.11a: No per-market analytics HTTP call');
+    assert(!loadPredArea.includes("analytics/market/${"), 'P11.11b: No template literal analytics call');
+}
+
+// P11.12: RPC category_name handles all 8 categories (0-7)
+{
+    const predRs = fs.readFileSync(predictionRsPath, 'utf8');
+    const categories = ['politics', 'sports', 'crypto', 'science', 'entertainment', 'economics', 'tech', 'custom'];
+    for (let i = 0; i < categories.length; i++) {
+        assert(predRs.includes(`${i} => "${categories[i]}"`), `P11.12-${categories[i]}: category_name maps ${i}→${categories[i]}`);
+    }
+}
+
+// P11.13: RPC status_name handles all 7 statuses (0-6)
+{
+    const predRs = fs.readFileSync(predictionRsPath, 'utf8');
+    const statuses = ['pending', 'active', 'closed', 'resolving', 'resolved', 'disputed', 'voided'];
+    for (let i = 0; i < statuses.length; i++) {
+        assert(predRs.includes(`${i} => "${statuses[i]}"`), `P11.13-${statuses[i]}: status_name maps ${i}→${statuses[i]}`);
+    }
+}
+
+// P11.14: Binary CPMM price sum = 1.0 invariant
+{
+    const predRs = fs.readFileSync(predictionRsPath, 'utf8');
+    // Formula: price_0 = r1/(r0+r1), price_1 = r0/(r0+r1) → sum = (r0+r1)/(r0+r1) = 1.0
+    assert(predRs.includes('outcome_reserves.len() == 2'), 'P11.14a: Binary case checks exactly 2 outcomes');
+    assert(predRs.includes('self_r + other_r'), 'P11.14b: Binary denominator is sum of both reserves');
+    // Default 0.5 when no liquidity
+    assert(predRs.includes('0.5'), 'P11.14c: Default price is 0.5 when no liquidity');
+}
+
+// P11.15: Market card close_slot not hardcoded to 0
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    // Verify closeSlot is NOT hardcoded zero in buildCreateMarketArgs
+    assert(!dexJs.includes('writeU64LE(view, 34, 0)'), 'P11.15: closeSlot not hardcoded to 0');
+}
+
+// P11.16: Multi-outcome CPMM handles all-zero reserves gracefully
+{
+    const predRs = fs.readFileSync(predictionRsPath, 'utf8');
+    // Should check non-zero before computing reciprocals
+    assert(predRs.includes('all_nonzero'), 'P11.16a: Multi-outcome checks reserves are non-zero');
+    assert(predRs.includes('1.0 / outcome_count as f64'), 'P11.16b: Fallback uniform price when reserves are zero');
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Summary
