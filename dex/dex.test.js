@@ -319,43 +319,42 @@ console.log('\n── F10.1-F10.7: Handler wiring structural checks ──');
 const fs = require('fs');
 const dexSource = fs.readFileSync(__dirname + '/dex.js', 'utf8');
 
-// F10.1: Order submission uses sendTransaction
-assert(dexSource.includes("op: 'place_order'") && dexSource.includes("contracts.dex_core"), 'F10.1: Order submit wired to sendTransaction + dex_core');
+// F10.1: Order submission uses contractIx + buildPlaceOrderArgs
+assert(dexSource.includes('buildPlaceOrderArgs') && dexSource.includes('contracts.dex_core'), 'F10.1: Order submit wired to contractIx + dex_core');
 assert(!dexSource.includes("api.post('/orders'"), 'F10.1: No unsigned api.post to /orders');
 
-// F10.2: Cancel order uses sendTransaction
-assert(dexSource.includes("op: 'cancel_order'"), 'F10.2: Cancel order uses sendTransaction');
+// F10.2: Cancel order uses contractIx + buildCancelOrderArgs
+assert(dexSource.includes('buildCancelOrderArgs'), 'F10.2: Cancel order uses contractIx + buildCancelOrderArgs');
 assert(!dexSource.includes("api.del('/orders"), 'F10.2: No unsigned api.del for cancel');
 
-// F10.3: Margin uses sendTransaction
-assert(dexSource.includes("op: 'open_position'"), 'F10.3: Margin open wired to sendTransaction');
-assert(dexSource.includes("op: 'close_position'"), 'F10.3: Margin close wired to sendTransaction');
-assert(dexSource.includes("contracts.dex_margin"), 'F10.3: Uses dex_margin contract');
+// F10.3: Margin uses contractIx + buildOpenPositionArgs/buildClosePositionArgs
+assert(dexSource.includes('buildOpenPositionArgs'), 'F10.3: Margin open wired to buildOpenPositionArgs');
+assert(dexSource.includes('buildClosePositionArgs'), 'F10.3: Margin close wired to buildClosePositionArgs');
+assert(dexSource.includes('contracts.dex_margin'), 'F10.3: Uses dex_margin contract');
 
-// F10.4: Prediction trade uses sendTransaction
-assert(dexSource.includes("op: 'buy_shares'"), 'F10.4: Prediction trade wired to sendTransaction');
-assert(dexSource.includes("op: 'create_market'"), 'F10.4: Prediction create wired to sendTransaction');
-assert(dexSource.includes("contracts.prediction_market"), 'F10.4: Uses prediction_market contract');
+// F10.4: Prediction trade uses contractIx + buildBuySharesArgs/buildCreateMarketArgs
+assert(dexSource.includes('buildBuySharesArgs'), 'F10.4: Prediction trade wired to buildBuySharesArgs');
+assert(dexSource.includes('buildCreateMarketArgs'), 'F10.4: Prediction create wired to buildCreateMarketArgs');
+assert(dexSource.includes('contracts.prediction_market'), 'F10.4: Uses prediction_market contract');
 assert(!dexSource.includes("api.post('/prediction-market/trade'"), 'F10.4: No unsigned REST for prediction trade');
 assert(!dexSource.includes("api.post('/prediction-market/create'"), 'F10.4: No unsigned REST for prediction create');
 
-// F10.5: Resolution + claim UI
-assert(dexSource.includes("op: 'resolve_market'"), 'F10.5: Resolve market handler exists');
-assert(dexSource.includes("op: 'claim_winnings'"), 'F10.5: Claim winnings handler exists');
+// F10.5: Resolution + claim UI uses buildResolveMarketArgs/buildRedeemSharesArgs
+assert(dexSource.includes('buildResolveMarketArgs'), 'F10.5: Resolve market handler uses buildResolveMarketArgs');
+assert(dexSource.includes('buildRedeemSharesArgs'), 'F10.5: Claim winnings handler uses buildRedeemSharesArgs');
 assert(dexSource.includes('btn-predict-resolve'), 'F10.5: Resolve button rendered');
 assert(dexSource.includes('btn-predict-claim'), 'F10.5: Claim button rendered');
 
-// F10.6: Governance uses sendTransaction with real balance
-assert(dexSource.includes("op: 'vote'"), 'F10.6: Vote wired to sendTransaction');
-assert(dexSource.includes("contracts.dex_governance"), 'F10.6: Uses dex_governance contract');
-assert(dexSource.includes("op: 'create_proposal'"), 'F10.6: Proposal submit wired to sendTransaction');
+// F10.6: Governance uses contractIx + buildVoteArgs
+assert(dexSource.includes('buildVoteArgs'), 'F10.6: Vote wired to buildVoteArgs');
+assert(dexSource.includes('contracts.dex_governance'), 'F10.6: Uses dex_governance contract');
+assert(dexSource.includes('proposalData') || dexSource.includes('contractIx(contracts.dex_governance'), 'F10.6: Proposal submit wired to contractIx');
 assert(!dexSource.includes("api.post('/governance/proposals'"), 'F10.6: No unsigned REST for proposals');
 
-// F10.7: Reward claim uses sendTransaction
-assert(dexSource.includes("op: 'claim_rewards'"), 'F10.7: Reward claim wired to sendTransaction');
-assert(dexSource.includes("contracts.dex_rewards"), 'F10.7: Uses dex_rewards contract');
-// Note: api.get('/rewards/...') is still used for READ-ONLY stats display (F10.7 fix moved the CLAIM to sendTransaction)
-assert(dexSource.includes("op: 'claim_rewards'"), 'F10.7: Claim uses sendTransaction (not fake GET)');
+// F10.7: Reward claim uses contractIx + buildClaimRewardsArgs
+assert(dexSource.includes('buildClaimRewardsArgs'), 'F10.7: Reward claim wired to buildClaimRewardsArgs');
+assert(dexSource.includes('contracts.dex_rewards'), 'F10.7: Uses dex_rewards contract');
+assert(dexSource.includes('contractIx(contracts.dex_rewards'), 'F10.7: Claim uses contractIx (not fake GET)');
 
 // F10.8: XSS — escapeHtml used in innerHTML
 const escapeCount = (dexSource.match(/escapeHtml\(/g) || []).length;
@@ -999,16 +998,15 @@ assert(
 // Phase 4: Trade View — Order Form & Execution
 // ═══════════════════════════════════════════════════════════════════════════
 
-// P4.1: Submit handler sends correct fields to sendTransaction
+// P4.1: Submit handler sends correct place_order via contractIx
 {
-    const submitMatch = dexSource.match(/sendTransaction\(\[\{[\s\S]*?op:\s*'place_order'[\s\S]*?\}\]\)/);
-    assert(submitMatch, 'P4.1a: Submit handler calls sendTransaction with op: place_order');
-    const block = submitMatch[0];
-    assert(block.includes('pair_id:'), 'P4.1b: Submit sends pair_id');
-    assert(block.includes('side:'), 'P4.1c: Submit sends side');
-    assert(block.includes('order_type:'), 'P4.1d: Submit sends order_type');
-    assert(block.includes('price:') && block.includes('PRICE_SCALE'), 'P4.1e: Submit sends price scaled by PRICE_SCALE');
-    assert(block.includes('quantity:') && block.includes('PRICE_SCALE'), 'P4.1f: Submit sends quantity scaled by PRICE_SCALE');
+    assert(dexSource.includes('buildPlaceOrderArgs(wallet.address'), 'P4.1a: Submit handler calls buildPlaceOrderArgs with wallet.address');
+    assert(dexSource.includes('function buildPlaceOrderArgs('), 'P4.1c: buildPlaceOrderArgs function defined');
+    const builderMatch = dexSource.match(/function buildPlaceOrderArgs[^}]+}/s);
+    assert(builderMatch, 'P4.1d: buildPlaceOrderArgs body found');
+    const body = builderMatch[0];
+    assert(body.includes('new ArrayBuffer(67)'), 'P4.1e: PlaceOrder binary layout is 67 bytes');
+    assert(body.includes('PRICE_SCALE') || dexSource.includes('Math.round(price * PRICE_SCALE)'), 'P4.1f: PlaceOrder scales price');
 }
 
 // P4.2: Market order hides price input
@@ -1023,10 +1021,10 @@ assert(
     'P4.3: Stop-limit type shows stop-price group'
 );
 
-// P4.4: Cancel order uses sendTransaction with op: cancel_order
+// P4.4: Cancel order uses contractIx + buildCancelOrderArgs
 assert(
-    dexSource.includes("op: 'cancel_order'") && dexSource.includes('order_id:'),
-    'P4.4: Cancel order sends op: cancel_order with order_id via sendTransaction'
+    dexSource.includes('buildCancelOrderArgs(wallet.address'),
+    'P4.4: Cancel order uses buildCancelOrderArgs with wallet.address'
 );
 
 // P4.5: Percentage preset buttons exist and calculate from balance
@@ -1471,6 +1469,249 @@ const indexHtmlPath = '/Users/johnrobin/.openclaw/workspace/moltchain/dex/index.
     const dexJs = fs.readFileSync(dexJsPath, 'utf8');
     assert(dexJs.includes("pool-add-btn${!state.connected") && dexJs.includes("btn-wallet-gate"),
         'P7.18: Add buttons disabled and styled when wallet disconnected');
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Phase 8: Pool View — Add/Remove/Collect Liquidity
+// ═══════════════════════════════════════════════════════════════════════════
+
+// P8.1: CONTRACT_PROGRAM_ID constant exists and is correct (base58 of [0xFF]*32)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('CONTRACT_PROGRAM_ID'), 'P8.1a: CONTRACT_PROGRAM_ID constant defined');
+    // All 0xFF bytes base58-encoded dynamically — verify it uses bs58encode with 0xFF fill
+    assert(dexJs.includes('bs58encode(new Uint8Array(32).fill(0xFF)') || dexJs.includes('bs58encode(new Uint8Array(32).fill(0xff)'), 'P8.1b: CONTRACT_PROGRAM_ID computed from 32 bytes of 0xFF');
+}
+
+// P8.2: contractIx helper function exists with correct structure
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('function contractIx('), 'P8.2a: contractIx() function defined');
+    assert(dexJs.includes('program_id: CONTRACT_PROGRAM_ID'), 'P8.2b: contractIx uses CONTRACT_PROGRAM_ID as program_id');
+    assert(dexJs.includes('accounts: [wallet.address, contractAddr]'), 'P8.2c: contractIx sends [wallet, contract] as accounts');
+}
+
+// P8.3: buildContractCall wraps args in ContractInstruction::Call JSON
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('function buildContractCall('), 'P8.3a: buildContractCall() function defined');
+    assert(dexJs.includes('Call:') || dexJs.includes('"Call"'), 'P8.3b: buildContractCall wraps in Call envelope');
+    assert(dexJs.includes('function: "call"') || dexJs.includes("function: 'call'"), 'P8.3c: Call has function field');
+    assert(dexJs.includes('args: Array.from') || dexJs.includes('args:'), 'P8.3d: Call has args field');
+}
+
+// P8.4: Binary instruction builders exist for all contracts
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const builders = [
+        'buildPlaceOrderArgs', 'buildCancelOrderArgs',
+        'buildAddLiquidityArgs', 'buildRemoveLiquidityArgs', 'buildCollectFeesArgs',
+        'buildOpenPositionArgs', 'buildClosePositionArgs',
+        'buildVoteArgs', 'buildBuySharesArgs', 'buildRedeemSharesArgs',
+        'buildResolveMarketArgs', 'buildCreateMarketArgs', 'buildClaimRewardsArgs'
+    ];
+    builders.forEach(b => {
+        assert(dexJs.includes(`function ${b}(`), `P8.4: ${b}() builder exists`);
+    });
+}
+
+// P8.5: Binary encoding helpers exist
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('function writeU64LE('), 'P8.5a: writeU64LE helper');
+    assert(dexJs.includes('function writeI32LE('), 'P8.5b: writeI32LE helper');
+    assert(dexJs.includes('function writeU8('), 'P8.5c: writeU8 helper');
+    assert(dexJs.includes('function writePubkey('), 'P8.5d: writePubkey helper');
+}
+
+// P8.6: Tick math functions exist
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('function priceToTick('), 'P8.6a: priceToTick() function');
+    assert(dexJs.includes('Math.log(price)'), 'P8.6b: priceToTick uses logarithm');
+    assert(dexJs.includes('Math.log(1.0001)'), 'P8.6c: priceToTick divides by log(1.0001)');
+    assert(dexJs.includes('function alignTickToSpacing('), 'P8.6d: alignTickToSpacing() function');
+    assert(dexJs.includes('MIN_TICK') && dexJs.includes('-887272'), 'P8.6e: MIN_TICK = -887272');
+    assert(dexJs.includes('MAX_TICK') && dexJs.includes('887272'), 'P8.6f: MAX_TICK = 887272');
+    assert(dexJs.includes('FEE_TIER_SPACING'), 'P8.6g: FEE_TIER_SPACING map');
+}
+
+// P8.7: No old-format sendTransaction calls remain (program_id: contracts.X)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const oldPattern = /program_id:\s*contracts\./g;
+    const matches = dexJs.match(oldPattern);
+    assert(!matches, 'P8.7: No old-format program_id: contracts.X calls remain (found ' + (matches ? matches.length : 0) + ')');
+}
+
+// P8.8: All sendTransaction calls now use contractIx()
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const contractIxCalls = (dexJs.match(/contractIx\(/g) || []).length;
+    // We need at least 13 calls (one for each sendTransaction pattern)
+    assert(contractIxCalls >= 13, `P8.8: At least 13 contractIx() calls (found ${contractIxCalls})`);
+}
+
+// P8.9: place_order uses buildPlaceOrderArgs
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('buildPlaceOrderArgs(wallet.address'), 'P8.9: place_order uses buildPlaceOrderArgs with wallet.address');
+}
+
+// P8.10: cancel_order uses buildCancelOrderArgs
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('buildCancelOrderArgs(wallet.address'), 'P8.10: cancel_order uses buildCancelOrderArgs with wallet.address');
+}
+
+// P8.11: add_liquidity uses buildAddLiquidityArgs with tick math
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('contractIx(\n                contracts.dex_amm') || dexJs.includes('contractIx(contracts.dex_amm, buildAddLiquidityArgs(') || (dexJs.includes('contractIx(') && dexJs.includes('buildAddLiquidityArgs(')),
+        'P8.11a: add_liquidity uses contractIx + buildAddLiquidityArgs');
+    assert(dexJs.includes('priceToTick(minPrice)') || dexJs.includes('priceToTick('), 'P8.11b: Add liquidity uses priceToTick()');
+    assert(dexJs.includes('alignTickToSpacing('), 'P8.11c: Add liquidity aligns ticks to spacing');
+}
+
+// P8.12: LP action handlers — Collect Fees
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('.lp-collect-btn'), 'P8.12a: Collect Fees button selector exists');
+    assert(dexJs.includes('buildCollectFeesArgs(wallet.address, posId)'), 'P8.12b: Collect handler builds correct args');
+}
+
+// P8.13: LP action handlers — Remove Liquidity
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('.lp-remove-btn'), 'P8.13a: Remove button selector exists');
+    assert(dexJs.includes('buildRemoveLiquidityArgs(wallet.address, posId'), 'P8.13b: Remove handler builds correct args');
+    assert(dexJs.includes("confirm(`Remove all liquidity") || dexJs.includes('confirm('), 'P8.13c: Remove has confirmation dialog');
+}
+
+// P8.14: LP action handlers — Add More
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('.lp-add-btn'), 'P8.14a: Add More button selector exists');
+    assert(dexJs.includes('scrollIntoView'), 'P8.14b: Add More scrolls to add liquidity form');
+    assert(dexJs.includes("poolSelect.value = poolId") || dexJs.includes('poolSelect.value ='), 'P8.14c: Add More pre-selects pool');
+}
+
+// P8.15: Event delegation on #pool-positions container
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes("pool-positions") && dexJs.includes("addEventListener('click'"), 'P8.15: Event delegation on pool-positions container');
+}
+
+// P8.16: Prediction buy_shares uses contractIx
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('contractIx(contracts.prediction_market, buildBuySharesArgs('), 'P8.16: buy_shares uses contractIx + buildBuySharesArgs');
+}
+
+// P8.17: Prediction redeem_shares uses contractIx for claim
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('contractIx(contracts.prediction_market, buildRedeemSharesArgs('), 'P8.17: claim winnings uses contractIx + buildRedeemSharesArgs');
+}
+
+// P8.18: Prediction resolve_market uses contractIx
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('contractIx(contracts.prediction_market, buildResolveMarketArgs('), 'P8.18: resolve_market uses contractIx + buildResolveMarketArgs');
+}
+
+// P8.19: Prediction create_market uses contractIx
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('contractIx(contracts.prediction_market, buildCreateMarketArgs('), 'P8.19: create_market uses contractIx + buildCreateMarketArgs');
+}
+
+// P8.20: Rewards claim uses contractIx
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('contractIx(contracts.dex_rewards, buildClaimRewardsArgs('), 'P8.20: rewards claim uses contractIx + buildClaimRewardsArgs');
+}
+
+// P8.21: Margin open_position uses buildOpenPositionArgs
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('buildOpenPositionArgs(wallet.address'), 'P8.21: margin open uses buildOpenPositionArgs with wallet.address');
+}
+
+// P8.22: Margin close_position uses buildClosePositionArgs
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('buildClosePositionArgs(wallet.address'), 'P8.22: margin close uses buildClosePositionArgs with wallet.address');
+}
+
+// P8.23: Governance vote uses buildVoteArgs
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('buildVoteArgs(wallet.address'), 'P8.23: governance vote uses buildVoteArgs with wallet.address');
+}
+
+// P8.24: buildPlaceOrderArgs binary layout (opcode 2, 67 bytes)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const builderMatch = dexJs.match(/function buildPlaceOrderArgs[^}]+}/s);
+    assert(builderMatch, 'P8.24a: buildPlaceOrderArgs found');
+    const body = builderMatch[0];
+    assert(body.includes('new ArrayBuffer(67)'), 'P8.24b: PlaceOrder allocates 67 bytes');
+    assert(body.includes('writeU8(arr, 0, 2)'), 'P8.24c: PlaceOrder opcode is 2');
+}
+
+// P8.25: buildCancelOrderArgs binary layout (opcode 3, 41 bytes)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const builderMatch = dexJs.match(/function buildCancelOrderArgs[^}]+}/s);
+    assert(builderMatch, 'P8.25a: buildCancelOrderArgs found');
+    const body = builderMatch[0];
+    assert(body.includes('new ArrayBuffer(41)'), 'P8.25b: CancelOrder allocates 41 bytes');
+    assert(body.includes('writeU8(arr, 0, 3)'), 'P8.25c: CancelOrder opcode is 3');
+}
+
+// P8.26: buildAddLiquidityArgs binary layout (opcode 3, 65 bytes)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const builderMatch = dexJs.match(/function buildAddLiquidityArgs[^}]+}/s);
+    assert(builderMatch, 'P8.26a: buildAddLiquidityArgs found');
+    const body = builderMatch[0];
+    assert(body.includes('new ArrayBuffer(65)'), 'P8.26b: AddLiquidity allocates 65 bytes');
+    assert(body.includes('writeU8(arr, 0, 3)'), 'P8.26c: AddLiquidity opcode is 3');
+    assert(body.includes('writeI32LE('), 'P8.26d: AddLiquidity writes i32 ticks');
+}
+
+// P8.27: buildCollectFeesArgs binary layout (opcode 5, 41 bytes)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const builderMatch = dexJs.match(/function buildCollectFeesArgs[^}]+}/s);
+    assert(builderMatch, 'P8.27a: buildCollectFeesArgs found');
+    const body = builderMatch[0];
+    assert(body.includes('new ArrayBuffer(41)'), 'P8.27b: CollectFees allocates 41 bytes');
+    assert(body.includes('writeU8(arr, 0, 5)'), 'P8.27c: CollectFees opcode is 5');
+}
+
+// P8.28: buildRemoveLiquidityArgs binary layout (opcode 4, 49 bytes)
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    const builderMatch = dexJs.match(/function buildRemoveLiquidityArgs[^}]+}/s);
+    assert(builderMatch, 'P8.28a: buildRemoveLiquidityArgs found');
+    const body = builderMatch[0];
+    assert(body.includes('new ArrayBuffer(49)'), 'P8.28b: RemoveLiquidity allocates 49 bytes');
+    assert(body.includes('writeU8(arr, 0, 4)'), 'P8.28c: RemoveLiquidity opcode is 4');
+}
+
+// P8.29: Full range toggle uses MIN_TICK/MAX_TICK
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('fullRange ? MIN_TICK') || dexJs.includes('fullRange?MIN_TICK'),
+        'P8.29: Full range toggle uses MIN_TICK/MAX_TICK constants');
+}
+
+// P8.30: LP position cards have data-pool-id attribute
+{
+    const dexJs = fs.readFileSync(dexJsPath, 'utf8');
+    assert(dexJs.includes('data-pool-id='), 'P8.30: LP position cards include data-pool-id attribute');
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

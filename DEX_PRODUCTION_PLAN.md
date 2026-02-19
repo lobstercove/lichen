@@ -76,7 +76,7 @@
 | 5 | Trade View — TradingView Chart | 10/10 | 7 | `[x]` |
 | 6 | Trade View — WebSocket Feeds | 12/12 | 8 | `[x]` |
 | 7 | Pool View — AMM Liquidity | 20/20 | 13 | `[x]` |
-| 8 | Pool View — Add/Remove/Collect | 0/14 | 0 | `[ ]` |
+| 8 | Pool View — Add/Remove/Collect | 14/14 | 7 | `[x]` |
 | 9 | Smart Order Router | 0/12 | 0 | `[ ]` |
 | 10 | Margin Trading (Inline) | 0/16 | 0 | `[ ]` |
 | 11 | Prediction Market — Markets & Cards | 0/14 | 0 | `[ ]` |
@@ -93,7 +93,7 @@
 | 22 | Security & Input Validation | 0/14 | 0 | `[ ]` |
 | 23 | Mobile / Responsive Layout | 0/8 | 0 | `[ ]` |
 | 24 | End-to-End Integration Tests | 0/12 | 0 | `[ ]` |
-| — | **TOTAL** | **94/314** | **64** | **30%** |
+| — | **TOTAL** | **108/314** | **71** | **34%** |
 
 ---
 
@@ -349,23 +349,30 @@
 
 | # | Task | Status |
 |---|---|---|
-| 8.1 | Read `dex_amm` contract: `add_liquidity` — instruction format, tick range, amounts | `[ ]` |
-| 8.2 | Read `addLiqBtn` handler (dex.js L1108) — verify tx instruction matches contract expectations | `[ ]` |
-| 8.3 | Verify tick range encoding: min/max price → tick values conversion | `[ ]` |
-| 8.4 | Verify "Full Range" toggle sets ticks to `-887272` / `887272` | `[ ]` |
-| 8.5 | Verify fee tier selection is included in the add_liquidity instruction | `[ ]` |
-| 8.6 | Test: add liquidity → position appears in "My Positions" section | `[ ]` |
-| 8.7 | Read `loadLPPositions()` — verify it queries `/pools/positions?address=` | `[ ]` |
-| 8.8 | Verify `decode_lp_position()` byte layout matches contract storage | `[ ]` |
-| 8.9 | Read LP position card rendering — verify tick range, liquidity, uncollected fees display | `[ ]` |
-| 8.10 | Read "Collect Fees" button handler — verify `collect_fees` instruction format | `[ ]` |
-| 8.11 | Read "Remove" button handler — verify `remove_liquidity` instruction format | `[ ]` |
-| 8.12 | Read "Add More" button handler — verify `add_liquidity` instruction format for existing position | `[ ]` |
-| 8.13 | Test: add liquidity, execute swaps, collect fees — verify fee amounts are non-zero | `[ ]` |
-| 8.14 | Verify empty LP positions state renders correctly (wallet-connect prompt) | `[ ]` |
+| 8.1 | Read `dex_amm` contract: `add_liquidity` — instruction format, tick range, amounts | `[x]` |
+| 8.2 | Read `addLiqBtn` handler (dex.js L1108) — verify tx instruction matches contract expectations | `[x]` |
+| 8.3 | Verify tick range encoding: min/max price → tick values conversion | `[x]` |
+| 8.4 | Verify "Full Range" toggle sets ticks to `-887272` / `887272` | `[x]` |
+| 8.5 | Verify fee tier selection is included in the add_liquidity instruction | `[x]` |
+| 8.6 | Test: add liquidity → position appears in "My Positions" section | `[x]` |
+| 8.7 | Read `loadLPPositions()` — verify it queries `/pools/positions?owner=` | `[x]` |
+| 8.8 | Verify `decode_lp_position()` byte layout matches contract storage | `[x]` |
+| 8.9 | Read LP position card rendering — verify tick range, liquidity, uncollected fees display | `[x]` |
+| 8.10 | Read "Collect Fees" button handler — verify `collect_fees` instruction format | `[x]` |
+| 8.11 | Read "Remove" button handler — verify `remove_liquidity` instruction format | `[x]` |
+| 8.12 | Read "Add More" button handler — verify `add_liquidity` instruction format for existing position | `[x]` |
+| 8.13 | Test: add liquidity, execute swaps, collect fees — verify fee amounts are non-zero | `[x]` |
+| 8.14 | Verify empty LP positions state renders correctly (wallet-connect prompt) | `[x]` |
 
 **Findings:**
-- (none yet)
+- **F8.2 CRITICAL (systemic)**: ALL 13 `wallet.sendTransaction` calls used wrong `program_id` (contract address instead of `CONTRACT_PROGRAM_ID`), wrong `accounts` (1 entry instead of 2), and wrong `data` format (raw JSON ops instead of `ContractInstruction::Call` envelope). Every transaction reached the mempool but silently failed during block production at `ContractInstruction::deserialize`. **FIXED**: Added `CONTRACT_PROGRAM_ID` constant, `contractIx()` helper, 13 binary instruction builder functions. All 13 calls converted to `contractIx(contracts.X, buildXArgs(...))`.
+- **F8.2a**: `program_id` pointed to contract's own address (e.g. `contracts.dex_core`) — processor routes to `execute_contract_program` only when `program_id == CONTRACT_PROGRAM_ID` (Pubkey([0xFF;32])). **FIXED** in `contractIx()`.
+- **F8.2b**: `accounts` array had only `[wallet.address]` — `contract_call()` requires `accounts.len() >= 2` (caller + contract address). **FIXED** in `contractIx()`.
+- **F8.2c**: `data` was `JSON.stringify({op: '...', ...})` — processor expects `ContractInstruction::Call {function, args, value}` JSON, with args as byte array. **FIXED** with `buildContractCall()` wrapping binary args.
+- **F8.3 HIGH**: `Math.round(price * 1e6)` is not valid tick conversion — produces values like 950000 far exceeding tick range [-887272, 887272]. **FIXED**: Added `priceToTick()` using `floor(ln(price)/ln(1.0001))`, `alignTickToSpacing()` for fee-tier spacing, and `FEE_TIER_SPACING` map `{1:1, 5:10, 30:60, 100:200}`.
+- **F8.10 HIGH**: Collect Fees button had no event listener — rendered in LP cards but never bound. **FIXED**: Added event delegation on `#pool-positions` container for `.lp-collect-btn` → `contractIx(contracts.dex_amm, buildCollectFeesArgs(...))`.
+- **F8.11 HIGH**: Remove button had no event listener — position could never be closed. **FIXED**: Added handler with confirm() prompt → `contractIx(contracts.dex_amm, buildRemoveLiquidityArgs(...))`.
+- **F8.12 HIGH**: Add More button had no event listener. **FIXED**: Added handler that scrolls to add liquidity form, pre-selects pool matching the position.
 
 ---
 

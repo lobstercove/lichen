@@ -252,6 +252,237 @@ document.addEventListener('DOMContentLoaded', () => {
         result.set(bytes, leadingOnes);
         return result;
     }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // F8.2 SYSTEMIC FIX: Contract call infrastructure
+    // All contract calls must use CONTRACT_PROGRAM_ID (0xFF*32),
+    // include [caller, contract] in accounts, and serialize data as
+    // ContractInstruction::Call { function: "call", args, value: 0 }
+    // ═══════════════════════════════════════════════════════════════════════
+    const CONTRACT_PROGRAM_ID = bs58encode(new Uint8Array(32).fill(0xFF));
+
+    // Build ContractInstruction::Call JSON (matches Rust's serde serialization)
+    function buildContractCall(argsBytes) {
+        return JSON.stringify({ Call: { function: "call", args: Array.from(argsBytes), value: 0 }});
+    }
+
+    // Build a sendTransaction instruction with correct program_id + accounts
+    function contractIx(contractAddr, argsBytes) {
+        return {
+            program_id: CONTRACT_PROGRAM_ID,
+            accounts: [wallet.address, contractAddr],
+            data: buildContractCall(argsBytes),
+        };
+    }
+
+    // Binary encoding helpers
+    function writeU64LE(view, offset, n) {
+        const bn = BigInt(Math.round(n));
+        view.setBigUint64(offset, bn, true);
+    }
+    function writeI32LE(view, offset, n) {
+        view.setInt32(offset, n, true);
+    }
+    function writeU8(arr, offset, n) {
+        arr[offset] = n & 0xFF;
+    }
+    function writePubkey(arr, offset, base58Addr) {
+        const bytes = bs58decode(base58Addr);
+        arr.set(bytes.subarray(0, 32), offset);
+    }
+
+    // ── DEX Core instruction builders ──
+    // Opcode 2: place_order(trader, pair_id, side, type, price, qty, expiry)
+    function buildPlaceOrderArgs(trader, pairId, side, orderType, price, quantity) {
+        const buf = new ArrayBuffer(67);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 2); // opcode
+        writePubkey(arr, 1, trader);
+        writeU64LE(view, 33, pairId);
+        writeU8(arr, 41, side === 'buy' ? 0 : 1);
+        writeU8(arr, 42, orderType === 'market' ? 1 : 0);
+        writeU64LE(view, 43, price);
+        writeU64LE(view, 51, quantity);
+        writeU64LE(view, 59, 0); // expiry: 0 = no expiry
+        return arr;
+    }
+
+    // Opcode 3: cancel_order(trader, order_id)
+    function buildCancelOrderArgs(trader, orderId) {
+        const buf = new ArrayBuffer(41);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 3); // opcode
+        writePubkey(arr, 1, trader);
+        writeU64LE(view, 33, orderId);
+        return arr;
+    }
+
+    // ── DEX AMM instruction builders ──
+    // Opcode 3: add_liquidity(provider, pool_id, lower_tick, upper_tick, amount_a, amount_b)
+    function buildAddLiquidityArgs(provider, poolId, lowerTick, upperTick, amountA, amountB) {
+        const buf = new ArrayBuffer(65);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 3); // opcode
+        writePubkey(arr, 1, provider);
+        writeU64LE(view, 33, poolId);
+        writeI32LE(view, 41, lowerTick);
+        writeI32LE(view, 45, upperTick);
+        writeU64LE(view, 49, amountA);
+        writeU64LE(view, 57, amountB);
+        return arr;
+    }
+
+    // Opcode 4: remove_liquidity(provider, position_id, liquidity_amount)
+    function buildRemoveLiquidityArgs(provider, positionId, liquidityAmount) {
+        const buf = new ArrayBuffer(49);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 4); // opcode
+        writePubkey(arr, 1, provider);
+        writeU64LE(view, 33, positionId);
+        writeU64LE(view, 41, liquidityAmount);
+        return arr;
+    }
+
+    // Opcode 5: collect_fees(provider, position_id)
+    function buildCollectFeesArgs(provider, positionId) {
+        const buf = new ArrayBuffer(41);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 5); // opcode
+        writePubkey(arr, 1, provider);
+        writeU64LE(view, 33, positionId);
+        return arr;
+    }
+
+    // ── DEX Margin instruction builders ──
+    // Opcode 2: open_position(trader, pair_id, side, size, leverage, margin)
+    function buildOpenPositionArgs(trader, pairId, side, size, leverage, margin) {
+        const buf = new ArrayBuffer(66);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 2); // opcode
+        writePubkey(arr, 1, trader);
+        writeU64LE(view, 33, pairId);
+        writeU8(arr, 41, side === 'long' ? 0 : 1);
+        writeU64LE(view, 42, size);
+        writeU64LE(view, 50, leverage);
+        writeU64LE(view, 58, margin);
+        return arr;
+    }
+
+    // Opcode 3: close_position(caller, position_id)
+    function buildClosePositionArgs(caller, positionId) {
+        const buf = new ArrayBuffer(41);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 3); // opcode
+        writePubkey(arr, 1, caller);
+        writeU64LE(view, 33, positionId);
+        return arr;
+    }
+
+    // ── Governance instruction builders ──
+    // Opcode 2: vote(voter, proposal_id, support)
+    function buildVoteArgs(voter, proposalId, support) {
+        const buf = new ArrayBuffer(42);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 2); // opcode
+        writePubkey(arr, 1, voter);
+        writeU64LE(view, 33, proposalId);
+        writeU8(arr, 41, support ? 1 : 0);
+        return arr;
+    }
+
+    // ── Prediction Market instruction builders ──
+    // Opcode 4: buy_shares(buyer, market_id, outcome, amount)
+    function buildBuySharesArgs(buyer, marketId, outcome, amount) {
+        const buf = new ArrayBuffer(50);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 4); // opcode
+        writePubkey(arr, 1, buyer);
+        writeU64LE(view, 33, marketId);
+        writeU8(arr, 41, outcome);
+        writeU64LE(view, 42, amount);
+        return arr;
+    }
+
+    // Opcode 13: redeem_shares(user, market_id, outcome)
+    function buildRedeemSharesArgs(user, marketId, outcome) {
+        const buf = new ArrayBuffer(42);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 13); // opcode
+        writePubkey(arr, 1, user);
+        writeU64LE(view, 33, marketId);
+        writeU8(arr, 41, outcome);
+        return arr;
+    }
+
+    // Opcode 11: dao_resolve(caller, market_id, winning_outcome)
+    function buildResolveMarketArgs(caller, marketId, winningOutcome) {
+        const buf = new ArrayBuffer(42);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 11); // opcode
+        writePubkey(arr, 1, caller);
+        writeU64LE(view, 33, marketId);
+        writeU8(arr, 41, winningOutcome);
+        return arr;
+    }
+
+    // Opcode 1: create_market(creator, category, close_slot, outcome_count, question_hash, question)
+    function buildCreateMarketArgs(creator, question, category, outcomeCount) {
+        const encoder = new TextEncoder();
+        const qBytes = encoder.encode(question);
+        const totalLen = 79 + qBytes.length;
+        const buf = new ArrayBuffer(totalLen);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 1); // opcode
+        writePubkey(arr, 1, creator);
+        // Category: map string to u8 enum (0=general, 1=crypto, 2=sports, 3=politics, 4=entertainment, 5=science)
+        const catMap = { general: 0, crypto: 1, sports: 2, politics: 3, entertainment: 4, science: 5 };
+        writeU8(arr, 33, catMap[category] ?? 0);
+        writeU64LE(view, 34, 0); // close_slot: 0 = open-ended
+        writeU8(arr, 42, outcomeCount || 2);
+        // question_hash: simple hash of question string (fill 32 bytes)
+        const hashBytes = new Uint8Array(32);
+        for (let i = 0; i < qBytes.length; i++) hashBytes[i % 32] ^= qBytes[i];
+        arr.set(hashBytes, 43);
+        view.setUint32(75, qBytes.length, true); // question_len
+        arr.set(qBytes, 79);
+        return arr;
+    }
+
+    // ── Rewards instruction builders ──
+    // Opcode 2: claim_trading_rewards(trader)
+    function buildClaimRewardsArgs(trader) {
+        const buf = new ArrayBuffer(33);
+        const view = new DataView(buf);
+        const arr = new Uint8Array(buf);
+        writeU8(arr, 0, 2); // opcode
+        writePubkey(arr, 1, trader);
+        return arr;
+    }
+
+    // ── Tick math for AMM (Uniswap V3 style) ──
+    const MIN_TICK = -887272;
+    const MAX_TICK = 887272;
+    function priceToTick(price) {
+        if (price <= 0) return MIN_TICK;
+        return Math.floor(Math.log(price) / Math.log(1.0001));
+    }
+    function alignTickToSpacing(tick, spacing) {
+        return Math.floor(tick / spacing) * spacing;
+    }
+    // Fee tier → tick spacing mapping (matches contract)
+    const FEE_TIER_SPACING = { 1: 1, 5: 10, 30: 60, 100: 200 };
     // AUDIT-FIX F10.9: Bincode-compatible message serialization for signing.
     // Must match Rust's bincode::serialize(Message { instructions, recent_blockhash })
     // where Message/Instruction use Vec (u64 LE length prefix) and fixed [u8; 32] arrays.
@@ -720,18 +951,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         submitBtn.disabled = true; submitBtn.textContent = 'Submitting...';
         try {
-            const result = await wallet.sendTransaction([{
-                program_id: contracts.dex_core,
-                accounts: [wallet.address],
-                data: JSON.stringify({
-                    op: 'place_order',
-                    pair_id: state.activePairId,
-                    side: state.orderSide,
-                    order_type: state.orderType,
-                    price: Math.round(price * PRICE_SCALE),
-                    quantity: Math.round(amount * PRICE_SCALE),
-                }),
-            }]);
+            const result = await wallet.sendTransaction([contractIx(
+                contracts.dex_core,
+                buildPlaceOrderArgs(wallet.address, state.activePairId, state.orderSide, state.orderType, Math.round(price * PRICE_SCALE), Math.round(amount * PRICE_SCALE))
+            )]);
             showNotification(`${state.orderSide.toUpperCase()} order placed: ${formatAmount(amount)} ${state.activePair?.base || ''} @ ${state.orderType === 'market' ? 'MARKET' : formatPrice(price)}`, 'success');
             const orderId = result?.order_id || result?.orderId || Math.random().toString(36).slice(2, 8).toUpperCase();
             openOrders.push({ id: String(orderId), pair: state.activePair?.id, side: state.orderSide, type: state.orderType, price: price || state.lastPrice, amount, filled: 0, time: new Date() });
@@ -753,11 +976,10 @@ document.addEventListener('DOMContentLoaded', () => {
             // AUDIT-FIX F10.2: Cancel order via signed sendTransaction (not unsigned DELETE)
             if (!wallet.keypair) { showNotification('Re-import wallet to sign', 'warning'); return; }
             try {
-                await wallet.sendTransaction([{
-                    program_id: contracts.dex_core,
-                    accounts: [wallet.address],
-                    data: JSON.stringify({ op: 'cancel_order', order_id: parseInt(btn.dataset.id) || btn.dataset.id }),
-                }]);
+                await wallet.sendTransaction([contractIx(
+                    contracts.dex_core,
+                    buildCancelOrderArgs(wallet.address, parseInt(btn.dataset.id) || 0)
+                )]);
             } catch { /* fallback — order may already be cancelled/filled */ }
             openOrders = openOrders.filter(o => o.id !== btn.dataset.id); renderOpenOrders(); showNotification('Order cancelled', 'info');
         }));
@@ -1155,6 +1377,66 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch { /* API unavailable */ }
     }
 
+    // F8.10/F8.11/F8.12: LP position action handlers via event delegation
+    const poolPositionsContainer = document.getElementById('pool-positions');
+    if (poolPositionsContainer) poolPositionsContainer.addEventListener('click', async (e) => {
+        const collectBtn = e.target.closest('.lp-collect-btn');
+        const removeBtn = e.target.closest('.lp-remove-btn');
+        const addBtn = e.target.closest('.lp-add-btn');
+        if (!collectBtn && !removeBtn && !addBtn) return;
+        e.stopPropagation();
+        if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
+        if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
+
+        if (collectBtn) {
+            const posId = parseInt(collectBtn.dataset.positionId) || 0;
+            collectBtn.disabled = true; const origText = collectBtn.innerHTML; collectBtn.textContent = 'Collecting...';
+            try {
+                await wallet.sendTransaction([contractIx(contracts.dex_amm, buildCollectFeesArgs(wallet.address, posId))]);
+                showNotification('Fees collected successfully!', 'success');
+                await loadLPPositions();
+            } catch (err) { showNotification(`Collect failed: ${err.message}`, 'error'); }
+            collectBtn.disabled = false; collectBtn.innerHTML = origText;
+        }
+
+        if (removeBtn) {
+            const posId = parseInt(removeBtn.dataset.positionId) || 0;
+            const card = removeBtn.closest('.lp-position-card');
+            const liquidityText = card?.querySelector('.lp-detail:nth-child(2) .mono-value')?.textContent || '0';
+            // Parse displayed liquidity back to raw — formatVolume shows $X.XXM/K etc.
+            let liqAmount = 0;
+            const liqMatch = liquidityText.replace(/[$,]/g, '');
+            if (liqMatch.endsWith('M')) liqAmount = parseFloat(liqMatch) * 1e6;
+            else if (liqMatch.endsWith('K')) liqAmount = parseFloat(liqMatch) * 1e3;
+            else if (liqMatch.endsWith('B')) liqAmount = parseFloat(liqMatch) * 1e9;
+            else liqAmount = parseFloat(liqMatch) || 0;
+            const rawLiq = Math.round(liqAmount * 1e9);
+            if (!confirm(`Remove all liquidity from position #${posId}? This cannot be undone.`)) return;
+            removeBtn.disabled = true; const origText = removeBtn.innerHTML; removeBtn.textContent = 'Removing...';
+            try {
+                await wallet.sendTransaction([contractIx(contracts.dex_amm, buildRemoveLiquidityArgs(wallet.address, posId, rawLiq))]);
+                showNotification('Liquidity removed successfully!', 'success');
+                await loadLPPositions();
+            } catch (err) { showNotification(`Remove failed: ${err.message}`, 'error'); }
+            removeBtn.disabled = false; removeBtn.innerHTML = origText;
+        }
+
+        if (addBtn) {
+            const posId = parseInt(addBtn.dataset.positionId) || 0;
+            const card = addBtn.closest('.lp-position-card');
+            const poolId = parseInt(card?.dataset?.poolId) || 0;
+            // Scroll to add liquidity form and pre-select the pool
+            const poolSelect = document.getElementById('liqPoolSelect');
+            if (poolSelect) {
+                poolSelect.value = poolId;
+                poolSelect.dispatchEvent(new Event('change'));
+            }
+            const addLiqSection = document.getElementById('addLiqBtn')?.closest('.pool-add-section') || document.getElementById('addLiqBtn')?.parentElement;
+            if (addLiqSection) addLiqSection.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            showNotification(`Add more liquidity to pool #${poolId} — fill in amounts below`, 'info');
+        }
+    });
+
     // Add Liquidity submit handler
     const addLiqBtn = document.getElementById('addLiqBtn');
     if (addLiqBtn) addLiqBtn.addEventListener('click', async () => {
@@ -1169,12 +1451,15 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const poolSelect = document.getElementById('liqPoolSelect');
             const poolId = poolSelect ? parseInt(poolSelect.value) || 0 : 0;
+            // F8.3: Convert price to ticks using log(price)/log(1.0001) formula
+            const spacing = FEE_TIER_SPACING[state.selectedFeeTier] || 60;
+            const lt = fullRange ? MIN_TICK : alignTickToSpacing(priceToTick(minPrice), spacing);
+            const ut = fullRange ? MAX_TICK : alignTickToSpacing(priceToTick(maxPrice), spacing);
             // AUDIT-FIX F10.10: Use real contract address from symbol registry (not hardcoded hex placeholder)
-            await wallet.sendTransaction([{
-                program_id: contracts.dex_amm,
-                accounts: [wallet.address],
-                data: JSON.stringify({ op: 'add_liquidity', pool_id: poolId, amount_a: Math.round(amtA * 1e9), amount_b: Math.round(amtB * 1e9), lower_tick: fullRange ? -887272 : Math.round(minPrice * 1e6), upper_tick: fullRange ? 887272 : Math.round(maxPrice * 1e6) })
-            }]);
+            await wallet.sendTransaction([contractIx(
+                contracts.dex_amm,
+                buildAddLiquidityArgs(wallet.address, poolId, lt, ut, Math.round(amtA * 1e9), Math.round(amtB * 1e9))
+            )]);
             showNotification(`Liquidity added: ${formatAmount(amtA)} + ${formatAmount(amtB)}`, 'success');
         } catch (e) { showNotification(`Add liquidity: ${e.message}`, 'error'); }
         finally { addLiqBtn.disabled = false; addLiqBtn.textContent = 'Add Liquidity'; }
@@ -1304,11 +1589,10 @@ document.addEventListener('DOMContentLoaded', () => {
                         if (!wallet.keypair) { showNotification('Re-import wallet to sign', 'warning'); return; }
                         btn.disabled = true;
                         try {
-                            await wallet.sendTransaction([{
-                                program_id: contracts.dex_margin,
-                                accounts: [wallet.address],
-                                data: JSON.stringify({ op: 'close_position', position_id: parseInt(btn.dataset.positionId) }),
-                            }]);
+                            await wallet.sendTransaction([contractIx(
+                                contracts.dex_margin,
+                                buildClosePositionArgs(wallet.address, parseInt(btn.dataset.positionId))
+                            )]);
                             showNotification('Position closed', 'success');
                             await loadMarginPositions();
                         } catch (e) { showNotification(`Close failed: ${e.message}`, 'error'); }
@@ -1377,11 +1661,10 @@ document.addEventListener('DOMContentLoaded', () => {
         marginOpenBtn.disabled = true; marginOpenBtn.textContent = 'Opening...';
         try {
             // AUDIT-FIX F10.3: Open margin position via signed sendTransaction (not unsigned REST)
-            await wallet.sendTransaction([{
-                program_id: contracts.dex_margin,
-                accounts: [wallet.address],
-                data: JSON.stringify({ op: 'open_position', pair_id: pairId, side: state.marginSide, size: Math.round(size * 1e9), leverage: state.leverageValue, margin: Math.round(margin * 1e9) }),
-            }]);
+            await wallet.sendTransaction([contractIx(
+                contracts.dex_margin,
+                buildOpenPositionArgs(wallet.address, pairId, state.marginSide, Math.round(size * 1e9), state.leverageValue, Math.round(margin * 1e9))
+            )]);
             showNotification(`${state.marginSide.toUpperCase()} position opened: ${formatAmount(size)} @ ${state.leverageValue}x`, 'success');
             await loadMarginPositions();
             if (document.getElementById('marginSize')) document.getElementById('marginSize').value = '';
@@ -1516,11 +1799,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 const moltBalance = Math.round((balances.MOLT?.available || 0) * 1e9);
                 if (moltBalance <= 0) { showNotification('No MOLT balance to vote with', 'warning'); return; }
                 if (pid) {
-                    await wallet.sendTransaction([{
-                        program_id: contracts.dex_governance,
-                        accounts: [wallet.address],
-                        data: JSON.stringify({ op: 'vote', proposal_id: parseInt(pid), support: btn.classList.contains('vote-for'), amount: moltBalance }),
-                    }]);
+                    await wallet.sendTransaction([contractIx(
+                        contracts.dex_governance,
+                        buildVoteArgs(wallet.address, parseInt(pid), btn.classList.contains('vote-for'))
+                    )]);
                 }
             } catch (e) { showNotification(`Vote failed: ${e.message}`, 'error'); return; }
             showNotification(`Vote submitted on "${escapeHtml(title)}"`, 'success');
@@ -1610,11 +1892,38 @@ document.addEventListener('DOMContentLoaded', () => {
                 proposalData.current_value = opt?.dataset?.current || '';
                 proposalData.proposed_value = paramValue;
             }
-            await wallet.sendTransaction([{
-                program_id: contracts.dex_governance,
-                accounts: [wallet.address],
-                data: JSON.stringify(proposalData),
-            }]);
+            // Build binary args based on proposal type
+            let govArgs;
+            if (ptype === 'pair' && proposalData.base_token && proposalData.quote_token) {
+                // opcode 1: propose_new_pair(proposer, base_token_address, quote_token_address)
+                // NOTE: base/quote are token symbols, need address lookup — use generic JSON path for now
+                govArgs = new TextEncoder().encode(JSON.stringify(proposalData));
+            } else if (ptype === 'fee' && proposalData.pair) {
+                // opcode 9: propose_fee_change(proposer, pair_id, maker_fee, taker_fee)
+                const pairObj = pairs.find(p => p.id === proposalData.pair || String(p.pairId) === String(proposalData.pair));
+                const pairIdVal = pairObj?.pairId || parseInt(proposalData.pair) || 0;
+                const buf = new ArrayBuffer(45);
+                const v = new DataView(buf);
+                const a = new Uint8Array(buf);
+                writeU8(a, 0, 9);
+                writePubkey(a, 1, wallet.address);
+                writeU64LE(v, 33, pairIdVal);
+                v.setInt16(41, proposalData.maker_fee || -1, true);
+                v.setUint16(43, proposalData.taker_fee || 5, true);
+                govArgs = a;
+            } else if (ptype === 'delist' && proposalData.pair_id) {
+                // opcode 10: emergency_delist(admin, pair_id)
+                const buf = new ArrayBuffer(41);
+                const v = new DataView(buf);
+                const a = new Uint8Array(buf);
+                writeU8(a, 0, 10);
+                writePubkey(a, 1, wallet.address);
+                writeU64LE(v, 33, proposalData.pair_id);
+                govArgs = a;
+            } else {
+                govArgs = new TextEncoder().encode(JSON.stringify(proposalData));
+            }
+            await wallet.sendTransaction([contractIx(contracts.dex_governance, govArgs)]);
             if (ptype === 'pair') {
                 showNotification(`Proposal submitted: List ${escapeHtml(proposalData.base_token)}/${escapeHtml(proposalData.quote_token)}`, 'success');
             } else if (ptype === 'fee') {
@@ -1881,11 +2190,9 @@ document.addEventListener('DOMContentLoaded', () => {
             const mid = parseInt(btn.dataset.market);
             btn.disabled = true; btn.textContent = 'Claiming...';
             try {
-                await wallet.sendTransaction([{
-                    program_id: contracts.prediction_market,
-                    accounts: [wallet.address],
-                    data: JSON.stringify({ op: 'claim_winnings', market_id: mid }),
-                }]);
+                const posData = predictState.positions?.find(p => p.market_id === mid);
+                const outcomeIdx = posData ? posData.outcome : 0;
+                await wallet.sendTransaction([contractIx(contracts.prediction_market, buildRedeemSharesArgs(wallet.address, mid, outcomeIdx))]);
                 showNotification('Prediction winnings claimed!', 'success');
             } catch (err) { showNotification(`Claim failed: ${err.message}`, 'error'); }
             btn.disabled = false; btn.innerHTML = '<i class="fas fa-gift"></i> Claim';
@@ -1953,11 +2260,8 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!outcome || !['yes', 'no'].includes(outcome.toLowerCase())) { showNotification('Invalid outcome — enter "yes" or "no"', 'warning'); return; }
             btn.disabled = true; btn.textContent = 'Resolving...';
             try {
-                await wallet.sendTransaction([{
-                    program_id: contracts.prediction_market,
-                    accounts: [wallet.address],
-                    data: JSON.stringify({ op: 'resolve_market', market_id: mid, outcome: outcome.toLowerCase() === 'yes' ? 0 : 1 }),
-                }]);
+                const winIdx = outcome.toLowerCase() === 'yes' ? 0 : 1;
+                await wallet.sendTransaction([contractIx(contracts.prediction_market, buildResolveMarketArgs(wallet.address, mid, winIdx))]);
                 showNotification(`Market resolved: ${outcome.toUpperCase()} wins`, 'success');
                 await loadPredictionMarkets();
             } catch (err) { showNotification(`Resolve failed: ${err.message}`, 'error'); }
@@ -1971,11 +2275,9 @@ document.addEventListener('DOMContentLoaded', () => {
             const mid = parseInt(btn.dataset.market);
             btn.disabled = true; btn.textContent = 'Claiming...';
             try {
-                await wallet.sendTransaction([{
-                    program_id: contracts.prediction_market,
-                    accounts: [wallet.address],
-                    data: JSON.stringify({ op: 'claim_winnings', market_id: mid }),
-                }]);
+                const cardPos = predictState.positions?.find(p => p.market_id === mid);
+                const cardOutcome = cardPos ? cardPos.outcome : 0;
+                await wallet.sendTransaction([contractIx(contracts.prediction_market, buildRedeemSharesArgs(wallet.address, mid, cardOutcome))]);
                 showNotification('Prediction winnings claimed!', 'success');
             } catch (err) { showNotification(`Claim failed: ${err.message}`, 'error'); }
             btn.disabled = false; btn.innerHTML = '<i class="fas fa-gift"></i> Claim Winnings';
@@ -2231,11 +2533,8 @@ document.addEventListener('DOMContentLoaded', () => {
         predictSubmitBtn.disabled = true; predictSubmitBtn.textContent = 'Submitting...';
         try {
             // AUDIT-FIX F10.4: Prediction trade via signed sendTransaction (not unsigned REST)
-            await wallet.sendTransaction([{
-                program_id: contracts.prediction_market,
-                accounts: [wallet.address],
-                data: JSON.stringify({ op: 'buy_shares', market_id: m.id, outcome: predictState.selectedOutcome === 'yes' ? 0 : 1, amount: Math.round(amt * 1e9) }),
-            }]);
+            const outcomeVal = predictState.selectedOutcome === 'yes' ? 0 : 1;
+            await wallet.sendTransaction([contractIx(contracts.prediction_market, buildBuySharesArgs(wallet.address, m.id, outcomeVal, Math.round(amt * 1e9)))]);
             showNotification(`Bought ${predictState.selectedOutcome.toUpperCase()} on "${escapeHtml(m.question.slice(0, 40))}..." for $${amt.toFixed(2)}`, 'success');
         } catch (e) { showNotification(`Trade failed: ${e.message}`, 'error'); }
         predictSubmitBtn.disabled = false;
@@ -2267,13 +2566,9 @@ document.addEventListener('DOMContentLoaded', () => {
         predictCreateBtn.disabled = true; predictCreateBtn.textContent = 'Creating...';
         try {
             // AUDIT-FIX F10.4: Create market via signed sendTransaction
-            const payload = { op: 'create_market', question: q, category: document.getElementById('predictCategory')?.value || 'general', initial_liquidity: Math.round(liq * 1e9) };
-            if (outcomes.length > 0) payload.outcomes = outcomes;
-            await wallet.sendTransaction([{
-                program_id: contracts.prediction_market,
-                accounts: [wallet.address],
-                data: JSON.stringify(payload),
-            }]);
+            const catVal = document.getElementById('predictCategory')?.value || 'general';
+            const ocCount = outcomes.length > 0 ? outcomes.length : 2;
+            await wallet.sendTransaction([contractIx(contracts.prediction_market, buildCreateMarketArgs(wallet.address, q, catVal, ocCount))]);
             showNotification(`Market created: "${escapeHtml(q.slice(0, 50))}..." with $${liq} liquidity`, 'success');
             await loadPredictionMarkets();
         } catch (e) { showNotification(`Create failed: ${e.message}`, 'error'); }
@@ -2330,11 +2625,7 @@ document.addEventListener('DOMContentLoaded', () => {
         btn.disabled = true; const origText = btn.innerHTML; btn.textContent = 'Claiming...';
         try {
             // AUDIT-FIX F10.7: Reward claim via signed sendTransaction (not fake GET)
-            await wallet.sendTransaction([{
-                program_id: contracts.dex_rewards,
-                accounts: [wallet.address],
-                data: JSON.stringify({ op: 'claim_rewards' }),
-            }]);
+            await wallet.sendTransaction([contractIx(contracts.dex_rewards, buildClaimRewardsArgs(wallet.address))]);
             showNotification('Rewards claimed successfully!', 'success');
         } catch (e) { showNotification(`Claim failed: ${e.message}`, 'error'); }
         btn.disabled = false; btn.innerHTML = origText;
