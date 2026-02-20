@@ -25,9 +25,11 @@ fn setup_large_market() -> ([u8; 32], u64) {
     let qh = [42u8; 32];
     let q = b"Will BTC reach 100k?";
     moltchain_sdk::test_mock::set_caller(admin);
+    moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
     let mid = create_market(admin.as_ptr(), 2, 101_000, 2, qh.as_ptr(), q.as_ptr(), q.len() as u32) as u64;
     assert!(mid > 0);
     moltchain_sdk::test_mock::set_caller(admin);
+    moltchain_sdk::test_mock::set_value(100_000_000);
     assert_eq!(add_initial_liquidity(admin.as_ptr(), mid, 100_000_000, core::ptr::null(), 0), 1);
     (admin, mid)
 }
@@ -38,9 +40,11 @@ fn setup_multi_market() -> ([u8; 32], u64) {
     let qh = [55u8; 32];
     let q = b"Which party wins?";
     moltchain_sdk::test_mock::set_caller(admin);
+    moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
     let mid = create_market(admin.as_ptr(), 1, 201_000, 4, qh.as_ptr(), q.as_ptr(), q.len() as u32) as u64;
     assert!(mid > 0);
     moltchain_sdk::test_mock::set_caller(admin);
+    moltchain_sdk::test_mock::set_value(40_000_000);
     assert_eq!(add_initial_liquidity(admin.as_ptr(), mid, 40_000_000, core::ptr::null(), 0), 1);
     (admin, mid)
 }
@@ -562,6 +566,7 @@ fn test_multi_outcome_resolution_and_redemption() {
     let resolver = [3u8; 32];
     let att_hash = [99u8; 32];
     moltchain_sdk::test_mock::set_caller(resolver);
+    moltchain_sdk::test_mock::set_value(100_000_000); // DISPUTE_BOND
     assert_eq!(submit_resolution(resolver.as_ptr(), mid, 2, att_hash.as_ptr(), 100_000_000), 1);
 
     moltchain_sdk::test_mock::set_slot(201_001 + 172_801);

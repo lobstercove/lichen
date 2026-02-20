@@ -50,7 +50,7 @@ use alloc::vec::Vec;
 
 use moltchain_sdk::{
     bytes_to_u64, get_slot, log_info, storage_get, storage_set, u64_to_bytes,
-    Address, CrossCall, call_contract, call_token_transfer,
+    Address, CrossCall, call_contract, call_token_transfer, get_value,
 };
 
 // ============================================================================
@@ -1362,6 +1362,13 @@ pub fn create_market(
         return 0;
     }
 
+    // G21-01: Verify attached value covers market creation fee
+    if get_value() < MARKET_CREATION_FEE {
+        log_info("Insufficient value for market creation fee");
+        reentrancy_exit();
+        return 0;
+    }
+
     // Validate outcome_count
     if !(2..=MAX_OUTCOMES).contains(&outcome_count) {
         reentrancy_exit();
@@ -1503,6 +1510,13 @@ pub fn add_initial_liquidity(
     // Validate caller
     let caller = moltchain_sdk::get_caller();
     if caller.0[..] != provider[..] {
+        reentrancy_exit();
+        return 0;
+    }
+
+    // G21-01: Verify attached value covers liquidity deposit
+    if get_value() < amount_musd {
+        log_info("Insufficient value for initial liquidity");
         reentrancy_exit();
         return 0;
     }
@@ -1683,6 +1697,13 @@ pub fn add_liquidity(
         return 0;
     }
 
+    // G21-01: Verify attached value covers liquidity deposit
+    if get_value() < amount_musd {
+        log_info("Insufficient value for liquidity");
+        reentrancy_exit();
+        return 0;
+    }
+
     let mut record = match load_market(market_id) {
         Some(r) => r,
         None => { log_info("Market not found"); reentrancy_exit(); return 0; }
@@ -1779,6 +1800,13 @@ pub fn buy_shares(
 
     let caller = moltchain_sdk::get_caller();
     if caller.0[..] != trader[..] {
+        reentrancy_exit();
+        return 0;
+    }
+
+    // G21-01: Verify attached value covers share purchase
+    if get_value() < amount_musd {
+        log_info("Insufficient value for share purchase");
         reentrancy_exit();
         return 0;
     }
@@ -2077,6 +2105,13 @@ pub fn sell_shares(
     let total_fees = load_u64(FEES_COLLECTED_KEY);
     save_u64(FEES_COLLECTED_KEY, total_fees + protocol_fee);
 
+    // G21-01: Transfer mUSD to trader
+    if !transfer_musd_out(trader, musd_returned) {
+        log_info("sell_shares: mUSD transfer to trader failed");
+        reentrancy_exit();
+        return 0;
+    }
+
     log_info("Shares sold!");
     reentrancy_exit();
     musd_returned as u32
@@ -2097,6 +2132,13 @@ pub fn mint_complete_set(
     let user = &user[..];
     let caller = moltchain_sdk::get_caller();
     if caller.0[..] != user[..] {
+        reentrancy_exit();
+        return 0;
+    }
+
+    // G21-01: Verify attached value covers complete set mint
+    if get_value() < amount_musd {
+        log_info("Insufficient value for complete set mint");
         reentrancy_exit();
         return 0;
     }
@@ -2250,6 +2292,13 @@ pub fn redeem_complete_set(
     let total_coll = load_u64(TOTAL_COLLATERAL_KEY);
     save_u64(TOTAL_COLLATERAL_KEY, total_coll.saturating_sub(musd_returned));
 
+    // G21-01: Transfer mUSD to user
+    if !transfer_musd_out(user, musd_returned) {
+        log_info("redeem_complete_set: mUSD transfer to user failed");
+        reentrancy_exit();
+        return 0;
+    }
+
     reentrancy_exit();
     musd_returned as u32
 }
@@ -2317,6 +2366,13 @@ pub fn submit_resolution(
 
     let caller = moltchain_sdk::get_caller();
     if caller.0[..] != resolver[..] {
+        reentrancy_exit();
+        return 0;
+    }
+
+    // G21-01: Verify attached value covers resolution bond
+    if get_value() < bond {
+        log_info("Insufficient value for resolution bond");
         reentrancy_exit();
         return 0;
     }
@@ -2434,6 +2490,13 @@ pub fn challenge_resolution(
         return 0;
     }
 
+    // G21-01: Verify attached value covers dispute bond
+    if get_value() < bond {
+        log_info("Insufficient value for dispute bond");
+        reentrancy_exit();
+        return 0;
+    }
+
     let mut record = match load_market(market_id) {
         Some(r) => r,
         None => { reentrancy_exit(); return 0; }
@@ -2529,11 +2592,7 @@ pub fn finalize_resolution(
     // Pay resolver reward: 0.5% of total collateral
     let total_coll = market_total_collateral(&record);
     let reward = (total_coll as u128 * RESOLUTION_REWARD_BPS as u128 / 10_000) as u64;
-    // Reward would be credited to resolver's mUSD balance in a production system.
-    // For now, record it in fees_collected and the resolver can claim it.
     let resolver = market_resolver(&record);
-    let (res_shares, res_cost) = load_position(market_id, &resolver, 0);
-    // Note: we don't actually give them prediction shares. In production, we'd credit mUSD.
     // Store resolver reward in a dedicated key
     let reward_key = {
         let mut k = Vec::from(&b"pm_rw_"[..]);
@@ -2541,6 +2600,13 @@ pub fn finalize_resolution(
         k
     };
     save_u64(&reward_key, reward);
+
+    // G21-01: Transfer reward to resolver
+    if reward > 0 {
+        if !transfer_musd_out(&resolver, reward) {
+            log_info("finalize_resolution: resolver reward transfer failed");
+        }
+    }
 
     reentrancy_exit();
     1
@@ -2920,6 +2986,13 @@ pub fn withdraw_liquidity(
 
     let platform_coll = load_u64(TOTAL_COLLATERAL_KEY);
     save_u64(TOTAL_COLLATERAL_KEY, platform_coll.saturating_sub(musd_returned));
+
+    // G21-01: Transfer mUSD to LP provider
+    if !transfer_musd_out(provider, musd_returned) {
+        log_info("withdraw_liquidity: mUSD transfer to provider failed");
+        reentrancy_exit();
+        return 0;
+    }
 
     reentrancy_exit();
     musd_returned as u32
@@ -3689,6 +3762,8 @@ mod tests {
     fn create_binary_market(creator: &[u8; 32], close_slot: u64) -> u64 {
         test_mock::set_caller(*creator);
         test_mock::set_slot(1000);
+        // G21-01: Attach value covering creation fee
+        test_mock::set_value(MARKET_CREATION_FEE);
         let qhash = [0x42u8; 32];
         let question = b"Will ETH hit $10K?";
         let result = create_market(
@@ -3707,6 +3782,8 @@ mod tests {
     /// Add initial liquidity to transition market from PENDING → ACTIVE.
     fn activate_market(creator: &[u8; 32], market_id: u64, amount: u64) {
         test_mock::set_caller(*creator);
+        // G21-01: Attach value covering liquidity deposit
+        test_mock::set_value(amount);
         let result = add_initial_liquidity(
             creator.as_ptr(),
             market_id,
@@ -4035,6 +4112,7 @@ mod tests {
         // Submit resolution — no oracle, should succeed
         let resolver = [5u8; 32];
         test_mock::set_caller(resolver);
+        test_mock::set_value(DISPUTE_BOND);
         let att_hash = [0xCC; 32];
         let result = submit_resolution(
             resolver.as_ptr(), mid, 0, att_hash.as_ptr(), DISPUTE_BOND,
@@ -4122,6 +4200,7 @@ mod tests {
 
         let resolver = [5u8; 32];
         test_mock::set_caller(resolver);
+        test_mock::set_value(DISPUTE_BOND);
         let att_hash = [0xCC; 32];
         submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), DISPUTE_BOND);
 
@@ -4506,6 +4585,7 @@ mod tests {
         // 5. Resolve: YES wins
         let resolver = [5u8; 32];
         test_mock::set_caller(resolver);
+        test_mock::set_value(DISPUTE_BOND);
         let att_hash = [0xDD; 32];
         assert_eq!(submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), DISPUTE_BOND), 1);
 
@@ -4577,5 +4657,132 @@ mod tests {
         assert!(p_no > 600_000, "NO should be expensive");
         // Sum should be ~MUSD_UNIT
         assert!((p_yes + p_no).abs_diff(MUSD_UNIT) < 2, "Prices should sum to ~$1");
+    }
+
+    // ========================================================================
+    // G21-01 FINANCIAL WIRING TESTS
+    // ========================================================================
+
+    #[test]
+    fn test_create_market_insufficient_fee() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_value(MARKET_CREATION_FEE - 1); // 1 short
+        let q = b"Will it rain tomorrow?";
+        let qh = [0xEE; 32];
+        let r = create_market(creator.as_ptr(), 0, 200_000, 2, qh.as_ptr(), q.as_ptr(), q.len() as u32);
+        assert_eq!(r, 0, "Should reject insufficient creation fee");
+    }
+
+    #[test]
+    fn test_buy_shares_insufficient_value() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        let trader = [3u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(5000);
+        test_mock::set_value(999_999); // less than 1_000_000
+        let r = buy_shares(trader.as_ptr(), mid, 0, 1_000_000);
+        assert_eq!(r, 0, "Should reject insufficient value for buy_shares");
+    }
+
+    #[test]
+    fn test_mint_complete_set_insufficient_value() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        let user = [3u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_value(4_999_999); // less than 5_000_000
+        let r = mint_complete_set(user.as_ptr(), mid, 5_000_000);
+        assert_eq!(r, 0, "Should reject insufficient value for mint_complete_set");
+    }
+
+    #[test]
+    fn test_submit_resolution_insufficient_bond() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        // Close the market
+        test_mock::set_caller(creator);
+        test_mock::set_slot(100_001);
+        close_market(creator.as_ptr(), mid);
+
+        let resolver = [5u8; 32];
+        test_mock::set_caller(resolver);
+        test_mock::set_value(DISPUTE_BOND - 1); // 1 short
+        let att_hash = [0xCC; 32];
+        let r = submit_resolution(resolver.as_ptr(), mid, 0, att_hash.as_ptr(), DISPUTE_BOND);
+        assert_eq!(r, 0, "Should reject insufficient bond value");
+    }
+
+    #[test]
+    fn test_sell_shares_transfers_musd_out() {
+        setup();
+        init_contract();
+        configure_escrow();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        // Buy some shares first
+        let trader = [3u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(5000);
+        test_mock::set_value(2_000_000);
+        let shares = buy_shares(trader.as_ptr(), mid, 0, 2_000_000);
+        assert!(shares > 0);
+
+        // Sell shares — should trigger transfer_musd_out
+        test_mock::set_caller(trader);
+        let sold = sell_shares(trader.as_ptr(), mid, 0, shares as u64);
+        assert!(sold > 0, "sell_shares should return mUSD amount with escrow configured");
+    }
+
+    #[test]
+    fn test_withdraw_liquidity_transfers_musd_out() {
+        setup();
+        init_contract();
+        configure_escrow();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        // Add additional liquidity
+        test_mock::set_caller(creator);
+        test_mock::set_value(5_000_000);
+        let r = add_liquidity(creator.as_ptr(), mid, 5_000_000);
+        assert!(r > 0, "add_liquidity should return LP shares");
+
+        // Withdraw — should trigger transfer_musd_out
+        test_mock::set_caller(creator);
+        let w = withdraw_liquidity(creator.as_ptr(), mid, 2_000_000);
+        assert!(w > 0, "withdraw_liquidity should return mUSD amount with escrow configured");
+    }
+
+    #[test]
+    fn test_add_liquidity_insufficient_value() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        test_mock::set_caller(creator);
+        test_mock::set_value(4_999_999); // less than 5_000_000
+        let r = add_liquidity(creator.as_ptr(), mid, 5_000_000);
+        assert_eq!(r, 0, "Should reject insufficient value for add_liquidity");
     }
 }

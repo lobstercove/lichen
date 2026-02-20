@@ -30,6 +30,7 @@ fn setup_with_market() -> ([u8; 32], u64) {
     let close_slot: u64 = 1000 + 100_000;
 
     moltchain_sdk::test_mock::set_caller(admin);
+    moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
     let market_id = create_market(
         admin.as_ptr(),
         2,  // CRYPTO category
@@ -49,6 +50,7 @@ fn setup_active_market() -> ([u8; 32], u64) {
     let amount: u64 = 10_000_000; // 10 mUSD
 
     moltchain_sdk::test_mock::set_caller(admin);
+    moltchain_sdk::test_mock::set_value(amount);
     let result = add_initial_liquidity(
         admin.as_ptr(),
         market_id,
@@ -68,6 +70,7 @@ fn setup_multi_outcome_market() -> ([u8; 32], u64) {
     let close_slot: u64 = 1000 + 200_000;
 
     moltchain_sdk::test_mock::set_caller(admin);
+    moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
     let market_id = create_market(
         admin.as_ptr(),
         1,  // SPORTS
@@ -82,6 +85,7 @@ fn setup_multi_outcome_market() -> ([u8; 32], u64) {
 
     let amount: u64 = 40_000_000; // 40 mUSD
     moltchain_sdk::test_mock::set_caller(admin);
+    moltchain_sdk::test_mock::set_value(amount);
     let result = add_initial_liquidity(admin.as_ptr(), mid, amount, core::ptr::null(), 0);
     assert_eq!(result, 1);
     (admin, mid)
@@ -194,6 +198,7 @@ fn test_create_market_multiple() {
         qh[0] = i + 10;
         let q = b"Test question";
         moltchain_sdk::test_mock::set_caller(admin);
+        moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
         let mid = create_market(
             admin.as_ptr(), 0, 1000 + 100_000, 2,
             qh.as_ptr(), q.as_ptr(), q.len() as u32,
@@ -303,6 +308,7 @@ fn test_create_market_all_valid_categories() {
         qh[0] = cat + 200;
         let q = b"Category test";
         moltchain_sdk::test_mock::set_caller(admin);
+        moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
         let r = create_market(admin.as_ptr(), cat, 1000 + 100_000, 2, qh.as_ptr(), q.as_ptr(), q.len() as u32);
         assert!(r > 0, "Category {} should be accepted", cat);
     }
@@ -314,6 +320,7 @@ fn test_create_multi_outcome_market() {
     let qh = [42u8; 32];
     let q = b"Multi outcome test";
     moltchain_sdk::test_mock::set_caller(admin);
+    moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
     let mid = create_market(admin.as_ptr(), 0, 1000 + 100_000, 5, qh.as_ptr(), q.as_ptr(), q.len() as u32);
     assert!(mid > 0);
     assert_eq!(get_market(mid as u64), 1);
@@ -941,6 +948,7 @@ fn test_max_outcomes_8_accepted() {
     let qh = [88u8; 32];
     let q = b"8 outcome market";
     moltchain_sdk::test_mock::set_caller(admin);
+    moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
     assert!(create_market(admin.as_ptr(), 0, 1000 + 100_000, 8, qh.as_ptr(), q.as_ptr(), q.len() as u32) > 0);
 }
 

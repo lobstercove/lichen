@@ -23,9 +23,11 @@ fn setup_active_market() -> ([u8; 32], u64) {
     let qh = [42u8; 32];
     let q = b"Test market?";
     moltchain_sdk::test_mock::set_caller(admin);
+    moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
     let mid = create_market(admin.as_ptr(), 2, 1000 + 100_000, 2, qh.as_ptr(), q.as_ptr(), q.len() as u32) as u64;
     assert!(mid > 0);
     moltchain_sdk::test_mock::set_caller(admin);
+    moltchain_sdk::test_mock::set_value(10_000_000);
     assert_eq!(add_initial_liquidity(admin.as_ptr(), mid, 10_000_000, core::ptr::null(), 0), 1);
     (admin, mid)
 }
@@ -35,10 +37,12 @@ fn setup_active_market_large() -> ([u8; 32], u64) {
     let qh = [42u8; 32];
     let q = b"Large pool market?";
     moltchain_sdk::test_mock::set_caller(admin);
+    moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
     let mid = create_market(admin.as_ptr(), 0, 1000 + 100_000, 2, qh.as_ptr(), q.as_ptr(), q.len() as u32) as u64;
     assert!(mid > 0);
     // 100 mUSD - larger pool so trades don't trigger circuit breaker as easily
     moltchain_sdk::test_mock::set_caller(admin);
+    moltchain_sdk::test_mock::set_value(100_000_000);
     assert_eq!(add_initial_liquidity(admin.as_ptr(), mid, 100_000_000, core::ptr::null(), 0), 1);
     (admin, mid)
 }
@@ -381,9 +385,11 @@ fn test_minimum_collateral_accepted() {
     let qh = [42u8; 32];
     let q = b"Min test";
     moltchain_sdk::test_mock::set_caller(admin);
+    moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
     let mid = create_market(admin.as_ptr(), 0, 1000 + 100_000, 2, qh.as_ptr(), q.as_ptr(), q.len() as u32) as u64;
     // MIN_COLLATERAL = 1_000_000 (1 mUSD)
     moltchain_sdk::test_mock::set_caller(admin);
+    moltchain_sdk::test_mock::set_value(1_000_000);
     let r = add_initial_liquidity(admin.as_ptr(), mid, 1_000_000, core::ptr::null(), 0);
     assert_eq!(r, 1, "minimum collateral should be accepted");
 }
@@ -407,6 +413,7 @@ fn test_min_duration_boundary() {
     let q = b"Duration test";
     // MIN_DURATION = 7200 slots
     moltchain_sdk::test_mock::set_caller(admin);
+    moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
     let r = create_market(admin.as_ptr(), 0, 1000 + 7200, 2, qh.as_ptr(), q.as_ptr(), q.len() as u32);
     assert!(r > 0, "Exactly MIN_DURATION should be accepted");
 }
@@ -427,6 +434,7 @@ fn test_outcome_count_boundary_2_accepted() {
     let qh = [42u8; 32];
     let q = b"Two outcomes";
     moltchain_sdk::test_mock::set_caller(admin);
+    moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
     assert!(create_market(admin.as_ptr(), 0, 1000 + 100_000, 2, qh.as_ptr(), q.as_ptr(), q.len() as u32) > 0);
 }
 
@@ -436,6 +444,7 @@ fn test_outcome_count_boundary_8_accepted() {
     let qh = [43u8; 32];
     let q = b"Eight outcomes";
     moltchain_sdk::test_mock::set_caller(admin);
+    moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
     assert!(create_market(admin.as_ptr(), 0, 1000 + 100_000, 8, qh.as_ptr(), q.as_ptr(), q.len() as u32) > 0);
 }
 
@@ -525,14 +534,17 @@ fn test_multi_outcome_buy_all_outcomes() {
     let qh = [99u8; 32];
     let q = b"Multi test";
     moltchain_sdk::test_mock::set_caller(admin);
+    moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
     let mid = create_market(admin.as_ptr(), 0, 1000 + 200_000, 4, qh.as_ptr(), q.as_ptr(), q.len() as u32) as u64;
     moltchain_sdk::test_mock::set_caller(admin);
+    moltchain_sdk::test_mock::set_value(40_000_000);
     add_initial_liquidity(admin.as_ptr(), mid, 40_000_000, core::ptr::null(), 0);
 
     let t = [2u8; 32];
     for outcome in 0..4u8 {
         moltchain_sdk::test_mock::set_slot(1000 + (outcome as u64) * 200); // advance slot each time
         moltchain_sdk::test_mock::set_caller(t);
+        moltchain_sdk::test_mock::set_value(1_000_000);
         let r = buy_shares(t.as_ptr(), mid, outcome, 1_000_000);
         assert!(r > 0, "Should be able to buy outcome {}", outcome);
     }
@@ -550,12 +562,15 @@ fn test_multi_outcome_mint_complete_set() {
     let qh = [45u8; 32];
     let q = b"Mint multi test";
     moltchain_sdk::test_mock::set_caller(admin);
+    moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
     let mid = create_market(admin.as_ptr(), 0, 1000 + 200_000, 4, qh.as_ptr(), q.as_ptr(), q.len() as u32) as u64;
     moltchain_sdk::test_mock::set_caller(admin);
+    moltchain_sdk::test_mock::set_value(40_000_000);
     add_initial_liquidity(admin.as_ptr(), mid, 40_000_000, core::ptr::null(), 0);
 
     let t = [2u8; 32];
     moltchain_sdk::test_mock::set_caller(t);
+    moltchain_sdk::test_mock::set_value(5_000_000);
     assert_eq!(mint_complete_set(t.as_ptr(), mid, 5_000_000), 1);
 
     // Should have 5M shares in each of 4 outcomes
@@ -686,12 +701,14 @@ fn test_market_count_consistency_across_voids() {
         qh[0] = i + 10;
         let q = b"Market";
         moltchain_sdk::test_mock::set_caller(admin);
+        moltchain_sdk::test_mock::set_value(10_000_000); // MARKET_CREATION_FEE
         create_market(admin.as_ptr(), 0, 1000 + 100_000, 2, qh.as_ptr(), q.as_ptr(), q.len() as u32);
     }
     assert_eq!(get_market_count(), 3);
 
     // Activate and void market 1
     moltchain_sdk::test_mock::set_caller(admin);
+    moltchain_sdk::test_mock::set_value(5_000_000);
     add_initial_liquidity(admin.as_ptr(), 1, 5_000_000, core::ptr::null(), 0);
     moltchain_sdk::test_mock::set_caller(admin);
     dao_void(admin.as_ptr(), 1);
