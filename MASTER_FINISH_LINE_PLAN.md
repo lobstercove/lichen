@@ -755,7 +755,7 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| I8-01 | HIGH | Security | `[NEW]` Admin kill switch accessible without authentication — any visitor can restart validator | Add authentication to admin endpoints | [ ] |
+| I8-01 | HIGH | Security | `[NEW]` Admin kill switch accessible without authentication — any visitor can restart validator | Add authentication to admin endpoints | [x] |
 | I8-02 | MEDIUM | Mock data | Dashboard shows simulated metrics — not connected to real Prometheus/Grafana | Wire to actual metrics endpoints | [ ] |
 | I8-03 | MEDIUM | Missing | No alerting — only display, no notifications on critical events | Integrate with alertmanager/PagerDuty | [ ] |
 
@@ -1118,7 +1118,7 @@ After cross_contract_call works:
 48. I1-01   Deduplicate explorer code ✅ escapeHtml/formatHash/rpcCall/bs58/formatTimeFull consolidated in shared/utils.js
 49. I4-01   Remove key storage from DEX ✅ Replaced embedded Ed25519 wallet with MoltWallet extension delegation; removed private key import/create UI; updated 21 error messages; no nacl/secretKey/keyPair references remain
 50. I5-01   Wire marketplace to live data ✅ Already wired — all 6 JS files call real RPC endpoints (getMarketListings, getNFT, etc.), zero mock data
-51. I8-01   Add monitoring authentication
+51. I8-01   Add monitoring authentication ✅ All 8 kill switch functions require admin_token via prompt; token passed in RPC params matching verify_admin_auth() pattern; session-scoped via sessionStorage
 ```
 
 ### Phase 7: Testing (Day 6-8, parallel with Phase 6)
