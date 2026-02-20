@@ -21,7 +21,7 @@ pub mod updater;
 use moltchain_core::nft::decode_token_state;
 use moltchain_core::{
     evm_tx_hash, Account, Block, ContractAccount, ContractContext, ContractInstruction,
-    ContractRuntime, FeeConfig, FinalityTracker, GenesisConfig, GenesisWallet, Hash, Instruction,
+    ContractRuntime, FeeConfig, FinalityTracker, ForkChoice, GenesisConfig, GenesisWallet, Hash, Instruction,
     Keypair, MarketActivity, MarketActivityKind, Mempool, Message, NftActivity, NftActivityKind,
     ProgramCallActivity, Pubkey, SlashingEvidence, SlashingOffense, StakePool,
     StateStore, SymbolRegistryEntry, Transaction, TxProcessor, ValidatorInfo, ValidatorSet, Vote,
@@ -6110,6 +6110,10 @@ async fn run_validator() {
             info!("🔄 Block receiver started");
             // 1.7: Track (slot, validator) → block_hash to detect double-block equivocation
             let mut seen_blocks: HashMap<(u64, [u8; 32]), Hash> = HashMap::new();
+            // A5-02: Fork choice oracle — tracks competing chain heads by
+            // cumulative stake weight. Used to break ties when multiple valid
+            // blocks exist for the same slot.
+            let mut fork_choice = ForkChoice::new();
             // Periodically prune old entries (keep last 1000 slots)
             let mut prune_below_slot: u64 = 0;
             while let Some(block) = block_rx.recv().await {
@@ -6476,6 +6480,18 @@ async fn run_validator() {
                                 std::time::Instant::now();
                             info!("✅ Applied block {} from network", block_slot);
 
+                            // A5-02: Record this head in fork choice oracle with the
+                            // proposer's stake weight so competing forks are compared
+                            // by cumulative attestation weight.
+                            {
+                                let pool = stake_pool_for_blocks.read().await;
+                                let proposer = Pubkey(block.header.validator);
+                                let weight = pool.get_stake(&proposer)
+                                    .map(|s| s.total_stake())
+                                    .unwrap_or(1);
+                                fork_choice.add_head(block_slot, block.hash(), weight);
+                            }
+
                             // PERF-OPT 1: Notify production loop that tip advanced
                             // BEFORE casting vote or applying effects — lets the next
                             // leader start preparing immediately.
@@ -6654,18 +6670,26 @@ async fn run_validator() {
                 } else if block_slot <= current_slot {
                     if let Ok(Some(existing)) = state_for_blocks.get_block_by_slot(block_slot) {
                         if existing.hash() != block.hash() {
-                            // Fork choice: prefer block with higher vote weight,
-                            // OR prefer incoming block when we're significantly behind
-                            // the network (longest-chain-wins for fork resolution).
-                            // FIX-FORK-2: Also force adoption when pending blocks
-                            // exist — they chain from the incoming block's fork and
-                            // prove the network has a longer chain than ours.
+                            // A5-02: Fork choice — use cumulative stake weight from
+                            // ForkChoice oracle + vote weight + network position.
+                            // 1. Record both competing blocks in the oracle
+                            // 2. Combine oracle weight + per-block vote weight
+                            // 3. Also force adoption when behind or pending blocks exist
                             let highest_seen = sync_mgr.get_highest_seen().await;
                             let we_are_behind = highest_seen > current_slot;
                             let has_pending = sync_mgr.pending_count().await > 0;
 
+                            // Record incoming block in fork choice oracle
+                            {
+                                let pool = stake_pool_for_blocks.read().await;
+                                let proposer = Pubkey(block.header.validator);
+                                let weight = pool.get_stake(&proposer)
+                                    .map(|s| s.total_stake())
+                                    .unwrap_or(1);
+                                fork_choice.add_head(block_slot, block.hash(), weight);
+                            }
+
                             // PERF-OPT 6: Single lock acquisition for both fork-choice weights.
-                            // Previously acquired + dropped 3 locks twice. Now holds once for both.
                             let (existing_weight, incoming_weight) = {
                                 let agg = vote_agg_for_blocks.read().await;
                                 let vs = validator_set_for_blocks.read().await;
@@ -6682,7 +6706,14 @@ async fn run_validator() {
                                 (ew, iw)
                             };
 
-                            if incoming_weight > existing_weight || we_are_behind || has_pending {
+                            // A5-02: Also consult fork choice oracle — if it has
+                            // accumulated more cumulative weight on the incoming
+                            // block, prefer it even if per-block votes are equal.
+                            let fc_existing = fork_choice.get_weight(&existing.hash());
+                            let fc_incoming = fork_choice.get_weight(&block.hash());
+                            let oracle_prefers_incoming = fc_incoming > fc_existing;
+
+                            if incoming_weight > existing_weight || oracle_prefers_incoming || we_are_behind || has_pending {
                                 // Revert old block's financial effects before replacing
                                 revert_block_effects(&state_for_blocks, &existing);
                                 // C7 fix: Also revert user transaction effects
@@ -6693,6 +6724,8 @@ async fn run_validator() {
                                     state_for_blocks.set_last_slot(current_slot).ok();
                                     *last_block_time_for_blocks.lock().await =
                                         std::time::Instant::now();
+                                    // A5-02: Update fork choice after successful replacement
+                                    fork_choice.add_head(block_slot, block.hash(), incoming_weight.max(fc_incoming));
                                     if we_are_behind || has_pending {
                                         info!(
                                             "🔗 Chain adoption: replaced block at slot {} (behind network by {} slots, {} pending)",

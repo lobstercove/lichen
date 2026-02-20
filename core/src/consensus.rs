@@ -2796,6 +2796,30 @@ mod tests {
         assert_eq!(best, Some(h2));
     }
 
+    /// A5-02: Fork choice prefers block with higher cumulative stake weight
+    /// even when competing blocks are at the same slot.
+    #[test]
+    fn test_fork_choice_cumulative_weight_resolution() {
+        let mut fc = ForkChoice::new();
+        let block_a = Hash::new([0xAA; 32]);
+        let block_b = Hash::new([0xBB; 32]);
+
+        // Block A gets 3 attestations (total weight 60)
+        fc.add_head(100, block_a, 20);
+        fc.add_head(100, block_a, 15);
+        fc.add_head(100, block_a, 25);
+
+        // Block B gets 2 attestations (total weight 80)
+        fc.add_head(100, block_b, 50);
+        fc.add_head(100, block_b, 30);
+
+        // Block B should win despite fewer attestations (80 > 60)
+        let (_, selected) = fc.select_head().unwrap();
+        assert_eq!(selected, block_b, "Fork choice must prefer higher cumulative weight");
+        assert_eq!(fc.get_weight(&block_a), 60);
+        assert_eq!(fc.get_weight(&block_b), 80);
+    }
+
     // ================================================================
     // T4.2 — Epoch boundary tests
     // ================================================================
