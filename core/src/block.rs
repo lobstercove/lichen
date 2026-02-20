@@ -187,7 +187,7 @@ fn compute_tx_root(transactions: &[Transaction]) -> Hash {
     Hash::hash(&data)
 }
 
-/// Get current Unix timestamp
+/// Get current Unix timestamp (wall clock — only used as fallback)
 fn current_timestamp() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -196,7 +196,54 @@ fn current_timestamp() -> u64 {
         .as_secs()
 }
 
+/// AUDIT-FIX A2-01: Derive deterministic block timestamp from slot number.
+/// All validators produce the same timestamp for a given slot:
+///   `genesis_time_secs + (slot * slot_duration_ms / 1000)`
+/// This eliminates the non-determinism of `SystemTime::now()`.
+pub fn derive_slot_timestamp(genesis_time_secs: u64, slot: u64, slot_duration_ms: u64) -> u64 {
+    genesis_time_secs + (slot * slot_duration_ms / 1000)
+}
+
+/// AUDIT-FIX A2-01: Check if a block's timestamp is within the allowed window
+/// of the expected slot-derived timestamp.
+/// Returns Ok(()) if timestamp is within `max_drift_secs`, Err with drift otherwise.
+pub fn validate_timestamp(
+    block_timestamp: u64,
+    genesis_time_secs: u64,
+    slot: u64,
+    slot_duration_ms: u64,
+    max_drift_secs: u64,
+) -> Result<(), u64> {
+    let expected = derive_slot_timestamp(genesis_time_secs, slot, slot_duration_ms);
+    let drift = if block_timestamp > expected {
+        block_timestamp - expected
+    } else {
+        expected - block_timestamp
+    };
+    if drift > max_drift_secs {
+        Err(drift)
+    } else {
+        Ok(())
+    }
+}
+
 impl Block {
+    /// AUDIT-FIX A2-01: Derive deterministic block timestamp from slot number (associated fn).
+    pub fn derive_slot_timestamp(genesis_time_secs: u64, slot: u64, slot_duration_ms: u64) -> u64 {
+        derive_slot_timestamp(genesis_time_secs, slot, slot_duration_ms)
+    }
+
+    /// AUDIT-FIX A2-01: Validate block timestamp against expected (associated fn).
+    pub fn validate_timestamp(
+        block_timestamp: u64,
+        genesis_time_secs: u64,
+        slot: u64,
+        slot_duration_ms: u64,
+        max_drift_secs: u64,
+    ) -> Result<(), u64> {
+        validate_timestamp(block_timestamp, genesis_time_secs, slot, slot_duration_ms, max_drift_secs)
+    }
+
     /// Validate block structure: size limits, tx count, etc. (T1.7)
     pub fn validate_structure(&self) -> Result<(), String> {
         if self.transactions.len() > MAX_TX_PER_BLOCK {
@@ -412,5 +459,85 @@ mod tests {
         let result = block.validate_structure();
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("data too large"));
+    }
+
+    // ── AUDIT-FIX A2-01: Deterministic timestamp tests ──
+
+    #[test]
+    fn test_derive_slot_timestamp_basic() {
+        // genesis_time = 1700000000, slot_duration = 400ms
+        let genesis = 1_700_000_000u64;
+        let slot_ms = 400u64;
+
+        assert_eq!(derive_slot_timestamp(genesis, 0, slot_ms), genesis);
+        // slot 1: +0.4s → +0s (integer division)
+        assert_eq!(derive_slot_timestamp(genesis, 1, slot_ms), genesis);
+        // slot 2: 2*400/1000 = 0 → still genesis (sub-second)
+        assert_eq!(derive_slot_timestamp(genesis, 2, slot_ms), genesis);
+        // slot 3: 3*400/1000 = 1 → genesis + 1
+        assert_eq!(derive_slot_timestamp(genesis, 3, slot_ms), genesis + 1);
+        // slot 2500: 2500*400/1000 = 1000 → genesis + 1000
+        assert_eq!(derive_slot_timestamp(genesis, 2500, slot_ms), genesis + 1000);
+    }
+
+    #[test]
+    fn test_derive_slot_timestamp_deterministic() {
+        // Two calls with same inputs produce identical results
+        let genesis = 1_700_000_000u64;
+        let ts1 = derive_slot_timestamp(genesis, 100, 400);
+        let ts2 = derive_slot_timestamp(genesis, 100, 400);
+        assert_eq!(ts1, ts2, "Must be deterministic");
+    }
+
+    #[test]
+    fn test_derive_slot_timestamp_monotonic() {
+        let genesis = 1_700_000_000u64;
+        let slot_ms = 400u64;
+        let mut prev = 0u64;
+        for slot in 0..10000 {
+            let ts = derive_slot_timestamp(genesis, slot, slot_ms);
+            assert!(ts >= prev, "Timestamp must be monotonically non-decreasing");
+            prev = ts;
+        }
+    }
+
+    #[test]
+    fn test_validate_timestamp_within_window() {
+        let genesis = 1_700_000_000u64;
+        let slot_ms = 400u64;
+        let slot = 2500u64; // expected = genesis + 1000
+
+        // Exact match
+        assert!(validate_timestamp(genesis + 1000, genesis, slot, slot_ms, 60).is_ok());
+        // +59 seconds (within window)
+        assert!(validate_timestamp(genesis + 1059, genesis, slot, slot_ms, 60).is_ok());
+        // -30 seconds (within window)
+        assert!(validate_timestamp(genesis + 970, genesis, slot, slot_ms, 60).is_ok());
+    }
+
+    #[test]
+    fn test_validate_timestamp_outside_window() {
+        let genesis = 1_700_000_000u64;
+        let slot_ms = 400u64;
+        let slot = 2500u64; // expected = genesis + 1000
+
+        // +61 seconds (outside window)
+        let result = validate_timestamp(genesis + 1061, genesis, slot, slot_ms, 60);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), 61);
+
+        // -100 seconds (outside window)
+        let result = validate_timestamp(genesis + 900, genesis, slot, slot_ms, 60);
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), 100);
+    }
+
+    #[test]
+    fn test_new_with_timestamp_uses_provided_value() {
+        let ts = 1_700_001_000u64;
+        let block = Block::new_with_timestamp(
+            100, Hash::default(), Hash::default(), [0u8; 32], vec![], ts,
+        );
+        assert_eq!(block.header.timestamp, ts);
     }
 }

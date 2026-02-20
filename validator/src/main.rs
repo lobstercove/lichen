@@ -5936,6 +5936,64 @@ async fn run_validator() {
     let tip_notify_for_producer = tip_notify.clone();
 
     let slot_duration_ms = genesis_config.consensus.slot_duration_ms.max(1);
+
+    // AUDIT-FIX A2-01: Derive genesis_time as Unix seconds for deterministic
+    // block timestamp derivation: timestamp = genesis_time + slot * slot_duration / 1000.
+    // Read from the stored genesis block (slot 0) which has the authoritative timestamp.
+    let genesis_time_secs: u64 = match state.get_block_by_slot(0) {
+        Ok(Some(genesis_block)) => genesis_block.header.timestamp,
+        _ => {
+            // Fallback: parse from genesis config (RFC 3339 string)
+            // Manual RFC 3339 parsing to avoid adding chrono dependency.
+            // Format: "2025-02-20T12:00:00Z" or "2025-02-20T12:00:00+00:00"
+            let gt = &genesis_config.genesis_time;
+            if gt.len() >= 19 {
+                // Try to parse YYYY-MM-DDTHH:MM:SS (ignore timezone, assume UTC)
+                let parts: Vec<&str> = gt.split('T').collect();
+                if parts.len() == 2 {
+                    let date_parts: Vec<u64> = parts[0].split('-').filter_map(|s| s.parse().ok()).collect();
+                    let time_str = parts[1].trim_end_matches('Z').split('+').next().unwrap_or("");
+                    let time_parts: Vec<u64> = time_str.split(':').filter_map(|s| s.parse().ok()).collect();
+                    if date_parts.len() == 3 && time_parts.len() >= 2 {
+                        // Approximate Unix timestamp (good enough for bounded-window checks)
+                        let year = date_parts[0];
+                        let month = date_parts[1];
+                        let day = date_parts[2];
+                        let hour = time_parts[0];
+                        let minute = time_parts[1];
+                        let second = if time_parts.len() >= 3 { time_parts[2] } else { 0 };
+                        // Days from 1970 to year (approximate, ignoring leap seconds)
+                        let mut days: u64 = 0;
+                        for y in 1970..year {
+                            days += if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+                        }
+                        let month_days = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+                        if (month as usize) >= 1 && (month as usize) <= 12 {
+                            days += month_days[(month - 1) as usize];
+                            // Leap day adjustment
+                            if month > 2 && year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
+                                days += 1;
+                            }
+                        }
+                        days += day.saturating_sub(1);
+                        days * 86400 + hour * 3600 + minute * 60 + second
+                    } else {
+                        warn!("⚠️  Cannot parse genesis_time '{}' — timestamps will be slot-relative", gt);
+                        0
+                    }
+                } else {
+                    gt.parse::<u64>().unwrap_or(0)
+                }
+            } else {
+                gt.parse::<u64>().unwrap_or(0)
+            }
+        }
+    };
+    info!(
+        "⏱  Deterministic timestamps: genesis_time={}s, slot_duration={}ms",
+        genesis_time_secs, slot_duration_ms
+    );
+
     // view_timeout is no longer used for leader election (replaced by
     // deterministic slot-based view in FIX-FORK-1), but keep the value
     // available for future watchdog/diagnostic use.
@@ -6040,6 +6098,8 @@ async fn run_validator() {
         let local_addr = p2p_config.listen_addr;
         let last_block_time_for_blocks = last_block_time_for_blocks.clone();
         let genesis_config_for_blocks = genesis_config.clone();
+        let genesis_time_secs_for_blocks = genesis_time_secs;
+        let slot_duration_ms_for_blocks = slot_duration_ms;
         let slashing_for_blocks = slashing_tracker.clone();
         let validator_pubkey_for_block_slash = validator_pubkey;
         let received_slots_for_rx = received_network_slots_for_blocks.clone();
@@ -6069,6 +6129,31 @@ async fn run_validator() {
                 if let Err(e) = block.validate_structure() {
                     warn!("⚠️  Rejecting block {} — {}", block_slot, e);
                     continue;
+                }
+
+                // AUDIT-FIX A2-01: Timestamp bounded-window validation.
+                // Expected timestamp = genesis_time + slot * slot_duration / 1000.
+                // Allow ±60 seconds tolerance for clock drift / view rotation delays.
+                if block_slot > 0 {
+                    if let Err(drift) = Block::validate_timestamp(
+                        block.header.timestamp,
+                        genesis_time_secs_for_blocks,
+                        block_slot,
+                        slot_duration_ms_for_blocks,
+                        60, // max drift seconds
+                    ) {
+                        let expected_ts = Block::derive_slot_timestamp(
+                            genesis_time_secs_for_blocks,
+                            block_slot,
+                            slot_duration_ms_for_blocks,
+                        );
+                        warn!(
+                            "⚠️  Rejecting block {} — timestamp {} deviates {}s from expected {} \
+                             (slot-based: genesis_time + slot * slot_duration)",
+                            block_slot, block.header.timestamp, drift, expected_ts
+                        );
+                        continue;
+                    }
                 }
 
                 // AUDIT-FIX C5: Reject blocks from non-member validators BEFORE
@@ -8924,13 +9009,18 @@ async fn run_validator() {
         // (Previous test code was incorrectly signing transfers from genesis with validator key)
 
         // Create block
+        // AUDIT-FIX A2-01: Use deterministic slot-based timestamp instead of
+        // SystemTime::now(). All validators derive the same timestamp for a
+        // given slot: genesis_time + (slot * slot_duration_ms / 1000).
         let state_root = state.compute_state_root();
-        let mut block = Block::new(
+        let deterministic_timestamp = Block::derive_slot_timestamp(genesis_time_secs, slot, slot_duration_ms);
+        let mut block = Block::new_with_timestamp(
             slot,
             parent_hash,
             state_root,
             validator_pubkey.0,
             transactions.clone(),
+            deterministic_timestamp,
         );
 
         // Sign block so receiving validators can verify authenticity (T2.2)
