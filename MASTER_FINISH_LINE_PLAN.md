@@ -837,7 +837,7 @@
 |----|----------|----------|---------|-------------|--------|
 | K3-01 | HIGH | Coverage | E2E tests exist but many test mock endpoints rather than actual chain | Rewrite to test against running validator | [ ] |
 | K3-02 | HIGH | Coverage | No multi-validator consensus E2E test | Add 3-validator boot + block production + finality test | [x] |
-| K3-03 | MEDIUM | Coverage | No E2E test for full DEX trading flow (deposit → trade → withdraw) | Add complete trading lifecycle test | [ ] |
+| K3-03 | MEDIUM | Coverage | No E2E test for full DEX trading flow (deposit → trade → withdraw) | Add complete trading lifecycle test | [x] |
 | K3-04 | MEDIUM | Coverage | No E2E test for custody operations (deposit → sweep → credit) | Add custody lifecycle test | [ ] |
 | K3-05 | MEDIUM | Coverage | Frontend E2E tests (test_wallet_audit.js etc.) check HTML structure, not functionality | Add Playwright/Cypress tests for user flows | [ ] |
 
@@ -1129,7 +1129,7 @@ After cross_contract_call works:
 54. K1-02   Test fork handling ✅ 6 tests in consensus.rs: real Block objects, slot/weight/hash tiebreak, finality
 55. K3-02   Multi-validator E2E test ✅ tests/multi-validator-e2e.sh: 3 validators, 7 checks (health/registration/blocks/sync/finality/consistency/metrics)
 56. K4-02   Cross-SDK compatibility test ✅ Golden vector tests in Rust/JS/Python — all 3 SDKs produce identical bincode 1.3 bytes
-57. K3-03   Full DEX trading E2E test
+57. K3-03   Full DEX trading E2E test ✅ 4 lifecycle tests: CLOB deposit→trade→withdraw + partial fills, AMM liquidity→swap→fees→withdraw + volume accumulation. Fixed place_order 8th arg (trigger_price) across 73 test calls + modify_order forwarding. 53 dex_core + 33 adversarial + 24 dex_amm all pass
 ```
 
 ### Phase 8: Feature Completion (Day 7-10, as time allows)
