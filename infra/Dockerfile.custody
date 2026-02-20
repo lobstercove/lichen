@@ -27,4 +27,7 @@ COPY --from=builder /build/target/release/custody-bridge /app/
 
 USER custody
 
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD pgrep -f custody-bridge || exit 1
+
 ENTRYPOINT ["/app/custody-bridge"]
