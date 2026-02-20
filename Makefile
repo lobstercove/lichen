@@ -29,12 +29,16 @@ build-node:
 
 build-contracts:
 	@echo "🔨 Building contracts (native, for testing)..."
-	@for d in contracts/*/; do \
+	@FAIL=0; \
+	for d in contracts/*/; do \
 		if [ -f "$$d/Cargo.toml" ]; then \
 			echo "  Building $$(basename $$d)..."; \
-			(cd "$$d" && cargo build --release 2>&1) || true; \
+			if ! (cd "$$d" && cargo build --release 2>&1); then \
+				echo "  ❌ FAILED: $$(basename $$d)"; FAIL=1; \
+			fi; \
 		fi; \
-	done
+	done; \
+	if [ $$FAIL -ne 0 ]; then echo "❌ Contract build failed"; exit 1; fi
 
 build-contracts-wasm:
 	@echo "🔨 Building contracts to WASM..."
@@ -44,7 +48,9 @@ build-contracts-wasm:
 		for d in contracts/*/; do \
 			if [ -f "$$d/Cargo.toml" ] && grep -q 'cdylib' "$$d/Cargo.toml" 2>/dev/null; then \
 				echo "  Building $$(basename $$d) → WASM..."; \
-				(cd "$$d" && cargo build --target wasm32-unknown-unknown --release 2>&1) || true; \
+				if ! (cd "$$d" && cargo build --target wasm32-unknown-unknown --release 2>&1); then \
+					echo "  ❌ FAILED: $$(basename $$d)"; exit 1; \
+				fi; \
 			fi; \
 		done; \
 	fi
@@ -55,8 +61,8 @@ build-cli:
 
 build-sdk:
 	@echo "🔨 Building TypeScript SDKs..."
-	@if [ -d sdk/js ] && [ -f sdk/js/package.json ]; then (cd sdk/js && npm run build 2>/dev/null || npx tsc 2>/dev/null || true); fi
-	@if [ -d dex/sdk ] && [ -f dex/sdk/package.json ]; then (cd dex/sdk && npm run build 2>/dev/null || npx tsc 2>/dev/null || true); fi
+	@if [ -d sdk/js ] && [ -f sdk/js/package.json ]; then (cd sdk/js && npm run build 2>/dev/null || npx tsc 2>/dev/null || echo "❌ SDK js build failed" && exit 1); fi
+	@if [ -d dex/sdk ] && [ -f dex/sdk/package.json ]; then (cd dex/sdk && npm run build 2>/dev/null || npx tsc 2>/dev/null || echo "❌ DEX SDK build failed" && exit 1); fi
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Test
@@ -88,20 +94,28 @@ test-contracts:
 
 test-e2e:
 	@echo "🧪 Running E2E cross-contract tests..."
-	@for d in contracts/*/; do \
+	@FAIL=0; \
+	for d in contracts/*/; do \
 		if [ -d "$$d/tests" ] && ls "$$d/tests/"*.rs >/dev/null 2>&1; then \
 			name=$$(basename "$$d"); \
 			echo "  E2E: $$name"; \
-			(cd "$$d" && cargo test --release -- --test-threads=1 2>&1 | tail -3) || true; \
+			if ! (cd "$$d" && cargo test --release -- --test-threads=1 2>&1 | tail -3); then \
+				FAIL=1; \
+			fi; \
 		fi; \
-	done
+	done; \
+	if [ $$FAIL -ne 0 ]; then echo "❌ E2E tests failed"; exit 1; fi
 
 test-dex:
 	@echo "🧪 Running DEX-specific tests..."
-	@for c in dex_core dex_amm dex_router dex_margin dex_rewards dex_governance dex_analytics; do \
+	@FAIL=0; \
+	for c in dex_core dex_amm dex_router dex_margin dex_rewards dex_governance dex_analytics; do \
 		echo "  Testing $$c..."; \
-		(cd contracts/$$c && cargo test --release 2>&1 | tail -1) || true; \
-	done
+		if ! (cd contracts/$$c && cargo test --release 2>&1 | tail -1); then \
+			FAIL=1; \
+		fi; \
+	done; \
+	if [ $$FAIL -ne 0 ]; then echo "❌ DEX tests failed"; exit 1; fi
 
 test-prediction-market:
 	@echo "🧪 Running prediction market contract tests..."
@@ -196,11 +210,23 @@ clean:
 
 lint:
 	cargo clippy --workspace -- -D warnings
-	@for d in contracts/*/; do (cd "$$d" && cargo clippy -- -D warnings 2>/dev/null) || true; done
+	@FAIL=0; \
+	for d in contracts/*/; do \
+		if ! (cd "$$d" && cargo clippy -- -D warnings 2>/dev/null); then \
+			FAIL=1; \
+		fi; \
+	done; \
+	if [ $$FAIL -ne 0 ]; then echo "❌ Contract lint failed"; exit 1; fi
 
 fmt:
 	cargo fmt --all
-	@for d in contracts/*/; do (cd "$$d" && cargo fmt 2>/dev/null) || true; done
+	@FAIL=0; \
+	for d in contracts/*/; do \
+		if ! (cd "$$d" && cargo fmt 2>/dev/null); then \
+			FAIL=1; \
+		fi; \
+	done; \
+	if [ $$FAIL -ne 0 ]; then echo "❌ Contract fmt failed"; exit 1; fi
 
 health:
 	@echo "Checking node health at $(RPC_URL)..."
@@ -211,12 +237,16 @@ check:
 	@echo "🔍 Checking workspace..."
 	cargo check --workspace
 	@echo "🔍 Checking contracts..."
-	@for d in contracts/*/; do \
+	@FAIL=0; \
+	for d in contracts/*/; do \
 		if [ -f "$$d/Cargo.toml" ]; then \
 			echo "  Checking $$(basename $$d)..."; \
-			(cd "$$d" && cargo check 2>&1 | tail -1) || true; \
+			if ! (cd "$$d" && cargo check 2>&1 | tail -1); then \
+				FAIL=1; \
+			fi; \
 		fi; \
-	done
+	done; \
+	if [ $$FAIL -ne 0 ]; then echo "❌ Contract check failed"; exit 1; fi
 
 check-expected-contracts:
 	@echo "🔍 Verifying expected contract lockfile..."
