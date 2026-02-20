@@ -583,7 +583,7 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| G23-01 | HIGH | Financial | `[FLP H11]` `cancel_stream` calculates refund but never returns funds | Wire actual token transfer for refund | [ ] |
+| G23-01 | HIGH | Financial | `[FLP H11]` `cancel_stream` calculates refund but never returns funds | Wire actual token transfer for refund | [x] |
 | G23-02 | HIGH | Security | `[FLP H10]` Missing reentrancy guard — exploitable once transfers are wired | Add reentrancy protection flag | [ ] |
 | G23-03 | MEDIUM | Financial | Stream claim calculates owed amount but never transfers | Wire actual token transfer | [ ] |
 
@@ -1178,13 +1178,13 @@ After cross_contract_call works:
 Phase 0 (Fatal):     [x] [x] [x] [x]                    4/4
 Phase 1 (Security):  [x] [x] [x] [x] [x] [x]            6/6  ✅ COMPLETE
 Phase 2 (Core):      [x] [x] [x] [x] [x] [x] [x] [x]    8/8  ✅ COMPLETE
-Phase 3 (Contracts): [x] [x] [x] [x] [x] [x] [x] [ ] [ ] [ ] [ ]  7/11
+Phase 3 (Contracts): [x] [x] [x] [x] [x] [x] [x] [x] [ ] [ ] [ ]  8/11
 Phase 4 (Infra):     [ ] [ ] [ ] [ ] [ ] [ ] [ ]        0/7
 Phase 5 (Quality):   [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]  0/10
 Phase 6 (Frontend):  [ ] [ ] [ ] [ ] [ ]                0/5
 Phase 7 (Testing):   [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
-                                              TOTAL:    25/63 phases
+                                              TOTAL:    26/63 phases
 ```
 
 ---
@@ -1219,6 +1219,7 @@ Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 | 3.23 | G17-02 | be9d5b7 | Feb 20 | Wired all moltswap AMM financial operations to actual token transfers. add_liquidity: get_value() >= amount_a + amount_b check for incoming deposits. remove_liquidity: transfer_out() for both token A and B to provider via pool's self-custody. swap_a_for_b/swap_b_for_a: get_value() for incoming + transfer_out() for output token to swapper. flash_loan_borrow: transfer_out() to borrower. flash_loan_repay: get_value() >= repay_amount check. Pool's token_a/token_b addresses used directly as token contract targets (no separate MOLTCOIN_ADDRESS_KEY needed). 8 new tests: add_liquidity_insufficient_value, swap_a/b_insufficient_value, remove_liquidity_transfers_out, flash_loan_borrow_transfers, flash_loan_repay_insufficient_value, flash_loan_borrow_repay_cycle, self_custody_transfer_pattern. 30 moltswap tests (up from 22), 465 workspace tests, 0 regressions. |
 | 3.24 | G21-01 | f5aafdd | Feb 20 | Wired all 11 prediction_market financial functions to actual mUSD transfers. Inbound (7 functions): get_value() checks for create_market (MARKET_CREATION_FEE=10M), add_initial_liquidity, add_liquidity, buy_shares, mint_complete_set, submit_resolution (DISPUTE_BOND=100M), challenge_resolution (DISPUTE_BOND). Outbound (4 functions): transfer_musd_out() for sell_shares, redeem_complete_set, withdraw_liquidity, finalize_resolution (resolver reward). Uses pre-existing transfer_musd_out() helper with graceful degradation. Updated all test helpers across 4 test files (lib.rs unit tests, core_tests.rs, adversarial_tests.rs, resolution_tests.rs) with set_value(). 7 new G21-01 tests: create_market_insufficient_fee, buy_shares_insufficient_value, mint_complete_set_insufficient_value, submit_resolution_insufficient_bond, sell_shares_transfers_musd_out, withdraw_liquidity_transfers_musd_out, add_liquidity_insufficient_value. 208 prediction_market tests (up from 197), 465 workspace tests, 0 regressions. |
 | 3.25 | G22-01 | 27d4770 | Feb 20 | Wired bountyboard payment transfers with 3 bug fixes. (1) create_bounty: Added get_value() >= reward_amount inbound check (return 11 on insufficient value) — bounties were previously backed by nothing. (2) approve_work: Changed transfer from creator→worker to contract→worker using get_contract_address() (self-custody pattern) — previously assumed creator pre-approved the contract. (3) cancel_bounty: Fixed wrong storage key (b"bb_token_address" → TOKEN_ADDRESS_KEY b"bounty_token_addr"), replaced get_caller() with get_contract_address() for source address, and added proper transfer failure handling with revert (was `let _ = call_token_transfer`). Added get_value + get_contract_address imports. 5 new tests. 21 bountyboard tests (up from 16), 465 workspace tests, 0 regressions. |
+| 3.26 | G23-01 | (already fixed) | Feb 20 | Already fixed in prior session. cancel_stream fully wires call_token_transfer for both refund-to-sender (L631) and earned-to-recipient (L643). create_stream and create_stream_with_cliff wire inbound escrow lock. withdraw_from_stream wires outbound disburse. All 5 transfer points present. 32 clawpay tests pass, 0 failures. No code changes needed. |
 | 2.12 | G3-01 | 36d9084 | Feb 20 | Replaced linear tick approximation with correct exponential formula in contracts/dex_amm/src/lib.rs. (1) Precomputed 19 Q64.64 constants for 1.00005^(2^k) with 80-decimal-digit precision. (2) Implemented `mul_q64()` — 256-bit intermediate multiplication via hi/lo u64 decomposition with carry tracking and wrapping arithmetic. (3) New `tick_to_sqrt_price()` uses bit-decomposition of |tick|, multiplying accumulator by precomputed constants for each set bit; negative ticks use reciprocal. (4) New `sqrt_price_to_tick()` uses binary search for exact inversion. (5) Adjusted MAX_TICK/MIN_TICK from ±887,272 (Uniswap V3 uint160) to ±443,636 (matching u64 Q32.32 representable range). Verified against 80-digit precision reference values: tick 0,±1,±100,±600,±10000,±100000 all within ±1 ULP. 8 new tests: exponential accuracy (9 test vectors), large values, monotonicity (2001 ticks), roundtrip range, mul_q64 unit tests. Fixed 12 previously failing dex_amm tests that depended on correct pricing. 446 Rust + 52 JS tests, 0 regressions. |
 
 *Last updated: February 20, 2026*
