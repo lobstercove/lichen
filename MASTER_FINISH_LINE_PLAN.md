@@ -287,7 +287,7 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| D1-01 | HIGH | Security | CORS is set to `*` (allow all origins) — any website can make RPC calls | Restrict to known frontend origins in production | [ ] |
+| D1-01 | HIGH | Security | CORS is set to `*` (allow all origins) — any website can make RPC calls | Restrict to known frontend origins in production | [x] |
 | D1-02 | HIGH | Wiring | `[FLP M20]` MoltyID reputation RPC reads stale `ContractAccount.storage` instead of `CF_CONTRACT_STORAGE` — returns wrong reputation values | Change handlers to read from `CF_CONTRACT_STORAGE` via `state.get_contract_storage()` | [ ] |
 | D1-03 | MEDIUM | Performance | No request rate limiting on RPC server — vulnerable to DoS | Add per-IP rate limiting (e.g., 100 req/s) | [ ] |
 | D1-04 | MEDIUM | Missing | No API versioning — breaking changes affect all clients | Add `/v1/` prefix to all endpoints | [ ] |
@@ -1102,7 +1102,7 @@ After cross_contract_call works:
 37. A5-01   Improve leader selection (add randomness) ✅ mix parent_hash into SHA-256 seed
 38. A5-02   Implement fork choice rule ✅ wired ForkChoice cumulative weight into validator
 39. C2-01   Add gossip deduplication ✅ bounded SeenMessageCache (20K, SHA-256 hash)
-40. D1-01   Restrict CORS origins
+40. D1-01   Restrict CORS origins ✅ configurable via MOLTCHAIN_CORS_ORIGINS env var
 41. D3-01   Fix async mutex usage
 42. F2-01   Per-chain HD derivation for custody
 43. G6-01   Implement collateral locking
@@ -1180,11 +1180,11 @@ Phase 1 (Security):  [x] [x] [x] [x] [x] [x]            6/6  ✅ COMPLETE
 Phase 2 (Core):      [x] [x] [x] [x] [x] [x] [x] [x]    8/8  ✅ COMPLETE
 Phase 3 (Contracts): [x] [x] [x] [x] [x] [x] [x] [x] [x] [x] [x]  11/11 ✅ COMPLETE
 Phase 4 (Infra):     [x] [x] [x] [x] [x] [x] [x]        7/7 ✅ COMPLETE
-Phase 5 (Quality):   [x] [x] [x] [ ] [ ] [ ] [ ] [ ] [ ] [ ]  3/10
+Phase 5 (Quality):   [x] [x] [x] [x] [ ] [ ] [ ] [ ] [ ] [ ]  4/10
 Phase 6 (Frontend):  [ ] [ ] [ ] [ ] [ ]                0/5
 Phase 7 (Testing):   [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
-                                              TOTAL:    39/63 phases
+                                              TOTAL:    40/63 phases
 ```
 
 ---
