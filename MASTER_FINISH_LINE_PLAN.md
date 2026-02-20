@@ -447,7 +447,7 @@
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
 | G5-01 | HIGH | Security | `[FLP M18]` Accepts caller-provided reputation score — any user can claim arbitrary reputation to bypass voting thresholds | Read reputation from MoltyID contract on-chain via cross-contract call | [ ] |
-| G5-02 | HIGH | Stub | `[FLP H2]` `execute_proposal()` sets status to "executed" but performs no on-chain action — governance votes have no effect | Implement proposal execution that actually changes parameters, lists tokens, disburses funds | [ ] |
+| G5-02 | HIGH | Stub | `[FLP H2]` `execute_proposal()` sets status to "executed" but performs no on-chain action — governance votes have no effect | Implement proposal execution that actually changes parameters, lists tokens, disburses funds | [x] |
 
 ### G.6 — contracts/dex_margin/src/lib.rs
 
@@ -1135,7 +1135,7 @@ After cross_contract_call works:
 ### Phase 8: Feature Completion (Day 7-10, as time allows)
 
 ```
-58. G5-02   Governance execution (H2)
+58. G5-02   Governance execution (H2) ✅ Real cross-contract dispatch: NEW_PAIR→create_pair, FEE_CHANGE→update_pair_fees (+audit record), DELIST→pause_pair, PARAM_CHANGE→stored config. 4 new tests, 37 total pass
 59. G6-03   Oracle fallback handling (H8)
 60. H7 params   Tokenomics parameter adjustment
 61. G2-04   Wire Post-Only/Reduce-Only flags
