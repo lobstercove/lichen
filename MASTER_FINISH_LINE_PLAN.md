@@ -304,7 +304,7 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| D3-01 | MEDIUM | Security | `std::sync::Mutex` used in async WebSocket context — can deadlock under load | Use `tokio::sync::Mutex` for async compatibility | [ ] |
+| D3-01 | MEDIUM | Security | `std::sync::Mutex` used in async WebSocket context — can deadlock under load | Use `tokio::sync::Mutex` for async compatibility | [x] |
 | D3-02 | MEDIUM | Missing | No WebSocket heartbeat/ping-pong — stale connections are never detected | Implement periodic ping-pong with 30s timeout | [ ] |
 | D3-03 | LOW | Performance | Each new WS subscription clones full state — memory-intensive for many subscribers | Use `Arc<RwLock<State>>` with shared reads | [ ] |
 
@@ -326,7 +326,7 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| D6-01 | MEDIUM | Security | `std::sync::Mutex` in async WS handler — same deadlock risk as D3-01 | Use `tokio::sync::Mutex` | [ ] |
+| D6-01 | MEDIUM | Security | `std::sync::Mutex` in async WS handler — same deadlock risk as D3-01 | Use `tokio::sync::Mutex` | [x] |
 | D6-02 | MEDIUM | Missing | No subscription management — can't unsubscribe from specific topics | Implement unsubscribe mechanism with subscription IDs | [ ] |
 | D6-03 | LOW | Missing | No max subscriptions per client limit | Add per-connection subscription limit | [ ] |
 
@@ -1103,7 +1103,7 @@ After cross_contract_call works:
 38. A5-02   Implement fork choice rule ✅ wired ForkChoice cumulative weight into validator
 39. C2-01   Add gossip deduplication ✅ bounded SeenMessageCache (20K, SHA-256 hash)
 40. D1-01   Restrict CORS origins ✅ configurable via MOLTCHAIN_CORS_ORIGINS env var
-41. D3-01   Fix async mutex usage
+41. D3-01   Fix async mutex usage ✅ verified: all guards scoped before .await (D6-01 also clear)
 42. F2-01   Per-chain HD derivation for custody
 43. G6-01   Implement collateral locking
 44. G6-02   Implement funding rates
@@ -1180,11 +1180,11 @@ Phase 1 (Security):  [x] [x] [x] [x] [x] [x]            6/6  ✅ COMPLETE
 Phase 2 (Core):      [x] [x] [x] [x] [x] [x] [x] [x]    8/8  ✅ COMPLETE
 Phase 3 (Contracts): [x] [x] [x] [x] [x] [x] [x] [x] [x] [x] [x]  11/11 ✅ COMPLETE
 Phase 4 (Infra):     [x] [x] [x] [x] [x] [x] [x]        7/7 ✅ COMPLETE
-Phase 5 (Quality):   [x] [x] [x] [x] [ ] [ ] [ ] [ ] [ ] [ ]  4/10
+Phase 5 (Quality):   [x] [x] [x] [x] [x] [ ] [ ] [ ] [ ] [ ]  5/10
 Phase 6 (Frontend):  [ ] [ ] [ ] [ ] [ ]                0/5
 Phase 7 (Testing):   [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
-                                              TOTAL:    40/63 phases
+                                              TOTAL:    41/63 phases
 ```
 
 ---
