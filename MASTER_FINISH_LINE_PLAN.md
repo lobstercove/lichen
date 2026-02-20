@@ -547,7 +547,7 @@
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
 | G18-01 | MEDIUM | Data loss | Social recovery replaces auth data — original credentials are lost if recovery is triggered maliciously | Keep backup of original auth, require cool-down period | [ ] |
-| G18-02 | MEDIUM | Security | Missing reentrancy guard on auction functions | Add reentrancy flag check | [ ] |
+| G18-02 | MEDIUM | Security | Missing reentrancy guard on auction functions | Add reentrancy flag check | [x] ✅ All 42 moltyid state-mutating functions now guarded with reentrancy_enter/exit. bid_name_auction CEI violation fixed (state before external call). |
 | G18-03 | LOW | Naming | 37 exports — some have inconsistent naming (camelCase vs snake_case in ABI) | Standardize all exports to snake_case | [ ] |
 
 ### G.19 — contracts/musd_token/src/lib.rs
@@ -584,7 +584,7 @@
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
 | G23-01 | HIGH | Financial | `[FLP H11]` `cancel_stream` calculates refund but never returns funds | Wire actual token transfer for refund | [x] |
-| G23-02 | HIGH | Security | `[FLP H10]` Missing reentrancy guard — exploitable once transfers are wired | Add reentrancy protection flag | [ ] |
+| G23-02 | HIGH | Security | `[FLP H10]` Missing reentrancy guard — exploitable once transfers are wired | Add reentrancy protection flag | [x] ✅ Already complete: clawpay has CP_REENTRANCY_KEY on all 5 exports |
 | G23-03 | MEDIUM | Financial | Stream claim calculates owed amount but never transfers | Wire actual token transfer | [ ] |
 
 ### G.24 — contracts/clawpump/src/lib.rs
@@ -1108,7 +1108,7 @@ After cross_contract_call works:
 43. G6-01   Implement collateral locking ✅ add_margin/remove_margin lock/unlock + open_position checks result
 44. G6-02   Implement funding rates ✅ apply_funding crank, set_index_price, per-pair interval tracking
 45. All overflow fixes (L6-01) ✅ 24 locations across 8 crates: u128 intermediates for HIGH/MEDIUM, saturating_add for all accumulators
-46. All reentrancy guards (G23-02, G18-02)
+46. All reentrancy guards (G23-02, G18-02) ✅ clawpay already complete; moltyid: 42 functions guarded + bid_name_auction CEI fix
 ```
 
 ### Phase 6: Frontend Consolidation (Day 5-7)
