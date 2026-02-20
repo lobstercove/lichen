@@ -635,10 +635,20 @@ async fn post_trade(
 
 /// POST /prediction-market/create — Create a new market
 /// Persists the market into contract storage so it can be traded against.
+///
+/// L3-01/D5-01 fix: Guarded with require_single_validator to prevent
+/// state divergence in multi-validator mode. This handler writes directly
+/// to CF_CONTRACT_STORAGE, which is a consensus bypass. In multi-validator
+/// mode, market creation must go through sendTransaction.
 async fn post_create(
     State(state): State<Arc<RpcState>>,
     Json(req): Json<CreateMarketRequest>,
 ) -> Response {
+    // L3-01: Block in multi-validator mode — direct writes bypass consensus
+    if let Err(e) = crate::require_single_validator(&state, "prediction/create") {
+        return api_err(&e.message);
+    }
+
     let slot = current_slot(&state);
 
     // FIX F13: Require admin authentication for market creation
