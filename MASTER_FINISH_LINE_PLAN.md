@@ -78,7 +78,7 @@
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
 | A5-01 | HIGH | Security | Leader selection uses `hash(slot + validator_set_hash) % validator_count` — predictable and manipulable if a validator can influence the validator set | Use VRF (Verifiable Random Function) for leader election, or at minimum add a randomness beacon | [x] |
-| A5-02 | HIGH | Missing | No fork choice rule — if two valid blocks exist for the same slot, there's no defined resolution | Implement longest-chain or heaviest-subtree fork choice with finality gadget | [ ] |
+| A5-02 | HIGH | Missing | No fork choice rule — if two valid blocks exist for the same slot, there's no defined resolution | Implement longest-chain or heaviest-subtree fork choice with finality gadget | [x] |
 | A5-03 | MEDIUM | Inconsistency | `[FLP M21]` Slashing: genesis.rs defines 5% flat downtime penalty; consensus.rs implements 1% per 100 missed slots, max 10% | Align to graduated approach in consensus.rs, remove flat penalty from genesis.rs | [x] |
 | A5-04 | MEDIUM | Security | Equivocation detection compares block hashes only — a malicious validator can produce two different blocks with different transactions but same hash if they control the hash function | Compare full block content, not just hashes, for equivocation detection | [ ] |
 | A5-05 | LOW | Missing | No vote/attestation mechanism — blocks are accepted from the leader without supermajority confirmation | Implement 2/3+1 attestation requirement for block finality | [ ] |
@@ -1100,7 +1100,7 @@ After cross_contract_call works:
 
 ```
 37. A5-01   Improve leader selection (add randomness) ✅ mix parent_hash into SHA-256 seed
-38. A5-02   Implement fork choice rule
+38. A5-02   Implement fork choice rule ✅ wired ForkChoice cumulative weight into validator
 39. C2-01   Add gossip deduplication
 40. D1-01   Restrict CORS origins
 41. D3-01   Fix async mutex usage
@@ -1180,11 +1180,11 @@ Phase 1 (Security):  [x] [x] [x] [x] [x] [x]            6/6  ✅ COMPLETE
 Phase 2 (Core):      [x] [x] [x] [x] [x] [x] [x] [x]    8/8  ✅ COMPLETE
 Phase 3 (Contracts): [x] [x] [x] [x] [x] [x] [x] [x] [x] [x] [x]  11/11 ✅ COMPLETE
 Phase 4 (Infra):     [x] [x] [x] [x] [x] [x] [x]        7/7 ✅ COMPLETE
-Phase 5 (Quality):   [x] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]  1/10
+Phase 5 (Quality):   [x] [x] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]  2/10
 Phase 6 (Frontend):  [ ] [ ] [ ] [ ] [ ]                0/5
 Phase 7 (Testing):   [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
-                                              TOTAL:    37/63 phases
+                                              TOTAL:    38/63 phases
 ```
 
 ---
