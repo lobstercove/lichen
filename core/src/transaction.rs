@@ -60,34 +60,119 @@ pub struct Transaction {
     pub message: Message,
 }
 
-// Helper functions for signature serialization
+// Helper functions for signature serialization.
+//
+// L2-01 fix: Use `is_human_readable()` to branch between formats:
+// - Human-readable (JSON, TOML): serialize as hex strings for readability
+// - Non-human-readable (bincode): serialize as raw bytes for efficiency
+//   and compatibility with JS/Python SDK manual bincode encoders
+//
+// Since serde doesn't impl Serialize/Deserialize for [T; 64] (only up to 32),
+// we use helper newtypes that manually encode/decode via serialize_tuple(64).
+
+/// Newtype wrapper to serialize `[u8; 64]` as a fixed-size tuple (no length prefix in bincode).
+struct Sig64Ser<'a>(&'a [u8; 64]);
+
+impl serde::Serialize for Sig64Ser<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeTuple;
+        let mut tup = serializer.serialize_tuple(64)?;
+        for b in self.0 {
+            tup.serialize_element(b)?;
+        }
+        tup.end()
+    }
+}
+
+/// DeserializeSeed for reading a single [u8; 64] from a bincode tuple.
+struct Sig64De;
+
+impl<'de> serde::de::DeserializeSeed<'de> for Sig64De {
+    type Value = [u8; 64];
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = [u8; 64];
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("64 bytes")
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let mut arr = [0u8; 64];
+                for (i, slot) in arr.iter_mut().enumerate() {
+                    *slot = seq
+                        .next_element::<u8>()?
+                        .ok_or_else(|| serde::de::Error::invalid_length(i, &self))?;
+                }
+                Ok(arr)
+            }
+        }
+        deserializer.deserialize_tuple(64, V)
+    }
+}
+
 fn serialize_signatures<S>(sigs: &[[u8; 64]], serializer: S) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
-    use serde::Serialize;
-    let hex_sigs: Vec<String> = sigs.iter().map(hex::encode).collect();
-    hex_sigs.serialize(serializer)
+    if serializer.is_human_readable() {
+        // JSON: hex strings for readability
+        use serde::Serialize;
+        let hex_sigs: Vec<String> = sigs.iter().map(hex::encode).collect();
+        hex_sigs.serialize(serializer)
+    } else {
+        // bincode: raw Vec<[u8; 64]> — each signature is 64 flat bytes,
+        // prefixed by a u64 vec length. Matches JS/Python SDK encoding.
+        use serde::ser::SerializeSeq;
+        let mut seq = serializer.serialize_seq(Some(sigs.len()))?;
+        for sig in sigs {
+            seq.serialize_element(&Sig64Ser(sig))?;
+        }
+        seq.end()
+    }
 }
 
 fn deserialize_signatures<'de, D>(deserializer: D) -> Result<Vec<[u8; 64]>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    use serde::Deserialize;
-    let hex_sigs: Vec<String> = Vec::deserialize(deserializer)?;
-    hex_sigs
-        .iter()
-        .map(|s| {
-            let bytes = hex::decode(s).map_err(serde::de::Error::custom)?;
-            if bytes.len() != 64 {
-                return Err(serde::de::Error::custom("Invalid signature length"));
+    if deserializer.is_human_readable() {
+        // JSON: parse hex strings
+        use serde::Deserialize;
+        let hex_sigs: Vec<String> = Vec::deserialize(deserializer)?;
+        hex_sigs
+            .iter()
+            .map(|s| {
+                let bytes = hex::decode(s).map_err(serde::de::Error::custom)?;
+                if bytes.len() != 64 {
+                    return Err(serde::de::Error::custom("Invalid signature length"));
+                }
+                let mut sig = [0u8; 64];
+                sig.copy_from_slice(&bytes);
+                Ok(sig)
+            })
+            .collect()
+    } else {
+        // bincode: read Vec<[u8; 64]> as sequence of 64-byte tuples
+        struct SigsVisitor;
+        impl<'de> serde::de::Visitor<'de> for SigsVisitor {
+            type Value = Vec<[u8; 64]>;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a sequence of 64-byte signatures")
             }
-            let mut sig = [0u8; 64];
-            sig.copy_from_slice(&bytes);
-            Ok(sig)
-        })
-        .collect()
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut sigs = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+                while let Some(sig) = seq.next_element_seed(Sig64De)? {
+                    sigs.push(sig);
+                }
+                Ok(sigs)
+            }
+        }
+        deserializer.deserialize_seq(SigsVisitor)
+    }
 }
 
 /// Maximum instructions per transaction (T1.7)
