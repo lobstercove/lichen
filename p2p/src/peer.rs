@@ -6,7 +6,11 @@ use crate::peer_store::PeerStore;
 use dashmap::DashMap;
 use quinn::{Connection, Endpoint, ServerConfig};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
+use std::fs;
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
@@ -70,6 +74,15 @@ pub struct PeerManager {
 
     /// Persistent ban list
     ban_list: Arc<Mutex<PeerBanList>>,
+
+    /// AUDIT-FIX C1-01: Persistent node certificate chain for mutual TLS
+    node_cert_chain: Vec<CertificateDer<'static>>,
+
+    /// AUDIT-FIX C1-01: Raw node private key bytes for client cert auth
+    node_key_bytes: Vec<u8>,
+
+    /// AUDIT-FIX C1-01: TOFU fingerprint store for certificate pinning
+    fingerprint_store: Arc<PeerFingerprintStore>,
 }
 
 impl PeerManager {
@@ -84,18 +97,24 @@ impl PeerManager {
             .install_default()
             .ok(); // Ignore error if already installed
 
-        // Generate self-signed certificate for QUIC
-        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
-            .map_err(|e| format!("Failed to generate certificate: {}", e))?;
+        // AUDIT-FIX C1-01: Load or generate persistent node identity
+        // Replaces ephemeral per-startup certificate with persistent cert+key
+        // stored at ~/.moltchain/node_cert.der + ~/.moltchain/node_key.der
+        let identity = NodeIdentity::load_or_generate()?;
 
-        let cert_der = CertificateDer::from(cert.cert);
-        let key_der = PrivateKeyDer::try_from(cert.key_pair.serialize_der())
-            .map_err(|e| format!("Failed to serialize key: {}", e))?;
+        // Clone cert chain + key bytes for client connections (mutual TLS)
+        let node_cert_chain = vec![identity.cert_der.clone()];
+        let node_key_bytes = identity.key_bytes.clone();
 
-        // Configure rustls with ALPN
+        // AUDIT-FIX C1-01: Server config with mutual TLS
+        // Replaces .with_no_client_auth() — server now validates connecting peers'
+        // certificates using MoltClientCertVerifier (self-signature verification).
+        // client_auth_mandatory=false for backwards compatibility with un-upgraded nodes.
+        let server_key = PrivateKeyDer::try_from(identity.key_bytes)
+            .map_err(|e| format!("Failed to parse node key: {}", e))?;
         let mut server_crypto = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(vec![cert_der], key_der)
+            .with_client_cert_verifier(Arc::new(MoltClientCertVerifier))
+            .with_single_cert(vec![identity.cert_der], server_key)
             .map_err(|e| format!("Failed to create rustls config: {}", e))?;
 
         server_crypto.alpn_protocols = vec![b"molt".to_vec()];
@@ -116,6 +135,12 @@ impl PeerManager {
             .unwrap_or_else(|| std::path::PathBuf::from("."))
             .join(".moltchain/peer-banlist.json");
 
+        // AUDIT-FIX C1-01: TOFU fingerprint store for certificate pinning
+        let fp_path = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".moltchain/peer_fingerprints.json");
+        let fingerprint_store = Arc::new(PeerFingerprintStore::new(fp_path));
+
         Ok(PeerManager {
             peers: Arc::new(DashMap::new()),
             endpoint,
@@ -123,6 +148,9 @@ impl PeerManager {
             message_tx,
             peer_store,
             ban_list: Arc::new(Mutex::new(PeerBanList::new(ban_list_path))),
+            node_cert_chain,
+            node_key_bytes,
+            fingerprint_store,
         })
     }
 
@@ -152,11 +180,16 @@ impl PeerManager {
 
         info!("🦞 P2P: Connecting to peer {}", peer_addr);
 
-        // Skip TLS verification for local development
+        // AUDIT-FIX C1-01: Proper TLS certificate verification + mutual TLS
+        // Replaces SkipServerVerification with MoltCertVerifier (validates self-signatures).
+        // Client now presents its own certificate for mutual authentication.
+        let client_key = PrivateKeyDer::try_from(self.node_key_bytes.clone())
+            .map_err(|e| format!("Failed to parse node key: {}", e))?;
         let mut rustls_config = rustls::ClientConfig::builder()
             .dangerous()
-            .with_custom_certificate_verifier(Arc::new(SkipServerVerification))
-            .with_no_client_auth();
+            .with_custom_certificate_verifier(Arc::new(MoltCertVerifier))
+            .with_client_auth_cert(self.node_cert_chain.clone(), client_key)
+            .map_err(|e| format!("Failed to create TLS client config: {}", e))?;
 
         // Configure ALPN
         rustls_config.alpn_protocols = vec![b"molt".to_vec()];
@@ -174,6 +207,28 @@ impl PeerManager {
             .map_err(|e| format!("Failed to connect: {}", e))?
             .await
             .map_err(|e| format!("Connection failed: {}", e))?;
+
+        // AUDIT-FIX C1-01: TOFU fingerprint check after connection
+        // Extract peer certificate and verify fingerprint against known peers.
+        // Rejects connections if a known peer's certificate fingerprint changes
+        // (potential MITM attack or unauthorized identity change).
+        if let Some(identity) = connection.peer_identity() {
+            if let Some(certs) = identity.downcast_ref::<Vec<CertificateDer<'static>>>() {
+                if let Some(cert) = certs.first() {
+                    let fp = NodeIdentity::compute_fingerprint(cert.as_ref());
+                    match self.fingerprint_store.check_or_store(&peer_addr, &fp) {
+                        Ok(true) => info!("P2P TOFU: New peer {} registered (fingerprint: {})",
+                            peer_addr, NodeIdentity::fingerprint_hex(&fp)),
+                        Ok(false) => info!("P2P TOFU: Peer {} identity verified", peer_addr),
+                        Err(e) => {
+                            warn!("{}", e);
+                            connection.close(quinn::VarInt::from_u32(1), b"fingerprint_mismatch");
+                            return Err(e);
+                        }
+                    }
+                }
+            }
+        }
 
         // Store peer info
         let mut peer_info = PeerInfo::new(peer_addr);
@@ -348,6 +403,7 @@ impl PeerManager {
         let message_tx = self.message_tx.clone();
         let peer_store = self.peer_store.clone();
         let ban_list = self.ban_list.clone();
+        let fingerprint_store = self.fingerprint_store.clone();
 
         tokio::spawn(async move {
             while let Some(connecting) = endpoint.accept().await {
@@ -355,6 +411,7 @@ impl PeerManager {
                 let message_tx = message_tx.clone();
                 let peer_store = peer_store.clone();
                 let ban_list = ban_list.clone();
+                let fingerprint_store = fingerprint_store.clone();
 
                 tokio::spawn(async move {
                     match connecting.await {
@@ -378,6 +435,25 @@ impl PeerManager {
                                 return;
                             }
                             info!("🦞 P2P: Accepted connection from {}", peer_addr);
+
+                            // AUDIT-FIX C1-01: TOFU fingerprint check for inbound connections
+                            if let Some(identity) = connection.peer_identity() {
+                                if let Some(certs) = identity.downcast_ref::<Vec<CertificateDer<'static>>>() {
+                                    if let Some(cert) = certs.first() {
+                                        let fp = NodeIdentity::compute_fingerprint(cert.as_ref());
+                                        match fingerprint_store.check_or_store(&peer_addr, &fp) {
+                                            Ok(true) => info!("P2P TOFU: New inbound peer {} registered (fingerprint: {})",
+                                                peer_addr, NodeIdentity::fingerprint_hex(&fp)),
+                                            Ok(false) => {},
+                                            Err(e) => {
+                                                warn!("{}", e);
+                                                connection.close(quinn::VarInt::from_u32(1), b"fingerprint_mismatch");
+                                                return;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
 
                             // Store peer
                             let mut peer_info = PeerInfo::new(peer_addr);
@@ -498,11 +574,200 @@ async fn handle_connection(
     }
 }
 
-/// Skip TLS server verification (for local development)
-#[derive(Debug)]
-struct SkipServerVerification;
+// ============================================================================
+// AUDIT-FIX C1-01: Proper TLS certificate validation infrastructure
+// Replaces SkipServerVerification with cryptographic self-signature verification,
+// persistent node identity, TOFU fingerprint pinning, and mutual TLS.
+// ============================================================================
 
-impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
+/// Persistent node identity — generates or loads a certificate + private key
+/// from ~/.moltchain/node_cert.der and ~/.moltchain/node_key.der.
+/// Provides stable cryptographic identity across node restarts.
+struct NodeIdentity {
+    cert_der: CertificateDer<'static>,
+    key_bytes: Vec<u8>,
+    #[allow(dead_code)]
+    fingerprint: [u8; 32],
+}
+
+impl NodeIdentity {
+    fn load_or_generate() -> Result<Self, String> {
+        let moltchain_dir = dirs::home_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join(".moltchain");
+
+        let cert_path = moltchain_dir.join("node_cert.der");
+        let key_path = moltchain_dir.join("node_key.der");
+
+        if cert_path.exists() && key_path.exists() {
+            let cert_bytes = fs::read(&cert_path)
+                .map_err(|e| format!("Failed to read {}: {}", cert_path.display(), e))?;
+            let key_bytes = fs::read(&key_path)
+                .map_err(|e| format!("Failed to read {}: {}", key_path.display(), e))?;
+
+            let fingerprint = Self::compute_fingerprint(&cert_bytes);
+            let cert_der = CertificateDer::from(cert_bytes);
+
+            info!(
+                "🔑 P2P: Loaded persistent node identity (fingerprint: {})",
+                Self::fingerprint_hex(&fingerprint)
+            );
+            Ok(NodeIdentity {
+                cert_der,
+                key_bytes,
+                fingerprint,
+            })
+        } else {
+            fs::create_dir_all(&moltchain_dir)
+                .map_err(|e| format!("Failed to create {}: {}", moltchain_dir.display(), e))?;
+
+            let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+                .map_err(|e| format!("Failed to generate certificate: {}", e))?;
+
+            let cert_der = CertificateDer::from(cert.cert);
+            let cert_bytes = cert_der.as_ref().to_vec();
+            let key_bytes = cert.key_pair.serialize_der();
+
+            // Save to disk with fsync for durability
+            Self::write_file(&cert_path, &cert_bytes)?;
+            Self::write_file(&key_path, &key_bytes)?;
+
+            let fingerprint = Self::compute_fingerprint(&cert_bytes);
+
+            info!(
+                "🔑 P2P: Generated new persistent node identity (fingerprint: {})",
+                Self::fingerprint_hex(&fingerprint)
+            );
+            Ok(NodeIdentity {
+                cert_der,
+                key_bytes,
+                fingerprint,
+            })
+        }
+    }
+
+    fn compute_fingerprint(cert_der: &[u8]) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(cert_der);
+        hasher.finalize().into()
+    }
+
+    fn fingerprint_hex(fp: &[u8; 32]) -> String {
+        fp.iter().map(|b| format!("{:02x}", b)).collect()
+    }
+
+    fn write_file(path: &Path, data: &[u8]) -> Result<(), String> {
+        use std::io::Write;
+        let mut file = fs::File::create(path)
+            .map_err(|e| format!("Failed to create {}: {}", path.display(), e))?;
+        file.write_all(data)
+            .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
+        file.sync_all()
+            .map_err(|e| format!("Failed to sync {}: {}", path.display(), e))?;
+        Ok(())
+    }
+}
+
+/// AUDIT-FIX C1-01: TOFU (Trust On First Use) peer certificate fingerprint store.
+/// Tracks known peer certificate fingerprints to detect identity changes.
+/// Persists to ~/.moltchain/peer_fingerprints.json for durability across restarts.
+struct PeerFingerprintStore {
+    /// Map from peer address string to hex-encoded SHA-256 certificate fingerprint
+    fingerprints: Mutex<HashMap<String, String>>,
+    path: PathBuf,
+}
+
+impl PeerFingerprintStore {
+    fn new(path: PathBuf) -> Self {
+        let fingerprints: HashMap<String, String> = match fs::read_to_string(&path) {
+            Ok(data) => serde_json::from_str(&data).unwrap_or_default(),
+            Err(_) => HashMap::new(),
+        };
+        PeerFingerprintStore {
+            fingerprints: Mutex::new(fingerprints),
+            path,
+        }
+    }
+
+    /// Check a peer's certificate fingerprint against the TOFU store.
+    /// Returns Ok(true) for new peers, Ok(false) for known peers with matching fingerprint,
+    /// and Err for known peers with changed fingerprints (potential MITM/impersonation).
+    fn check_or_store(&self, addr: &SocketAddr, fingerprint: &[u8; 32]) -> Result<bool, String> {
+        let hex_fp = NodeIdentity::fingerprint_hex(fingerprint);
+        let addr_str = addr.to_string();
+        let mut store = self.fingerprints.lock().unwrap_or_else(|e| e.into_inner());
+
+        match store.get(&addr_str) {
+            Some(known) if *known == hex_fp => Ok(false), // known, matches
+            Some(known) => Err(format!(
+                "TOFU VIOLATION: Peer {} certificate fingerprint changed! Known: {}, Got: {}. \
+                 This may indicate a MITM attack or unauthorized identity change.",
+                addr, known, hex_fp
+            )),
+            None => {
+                store.insert(addr_str, hex_fp);
+                drop(store); // release lock before I/O
+                self.save();
+                Ok(true) // new peer registered
+            }
+        }
+    }
+
+    fn save(&self) {
+        let store = self.fingerprints.lock().unwrap_or_else(|e| e.into_inner());
+        if let Ok(json) = serde_json::to_string_pretty(&*store) {
+            if let Some(parent) = self.path.parent() {
+                let _ = fs::create_dir_all(parent);
+            }
+            if let Ok(mut file) = fs::File::create(&self.path) {
+                use std::io::Write;
+                let _ = file.write_all(json.as_bytes());
+                let _ = file.sync_all();
+            }
+        }
+    }
+}
+
+/// AUDIT-FIX C1-01: Verify a certificate is properly self-signed and return its SHA-256 fingerprint.
+/// Uses x509-parser for robust X.509 parsing and ring for cryptographic signature verification.
+/// This replaces the old SkipServerVerification which only checked DER tag formatting.
+fn verify_self_signed_cert(cert_der: &[u8]) -> Result<[u8; 32], String> {
+    use x509_parser::prelude::*;
+
+    if cert_der.is_empty() {
+        return Err("Empty certificate".to_string());
+    }
+
+    // Parse the X.509 certificate structure
+    let (_, cert) = X509Certificate::from_der(cert_der)
+        .map_err(|e| format!("Invalid X.509 certificate: {}", e))?;
+
+    // Verify the certificate is self-signed: the signature on the certificate
+    // must validate against the certificate's own public key. This prevents
+    // attackers from presenting arbitrary certificates they cannot prove ownership of.
+    // (None = verify against the certificate's own public key, i.e., self-signature check)
+    cert.verify_signature(None)
+        .map_err(|e| format!("Certificate self-signature verification failed: {:?}", e))?;
+
+    // Compute SHA-256 fingerprint of the full certificate DER
+    let fingerprint: [u8; 32] = {
+        let mut hasher = Sha256::new();
+        hasher.update(cert_der);
+        hasher.finalize().into()
+    };
+
+    Ok(fingerprint)
+}
+
+/// AUDIT-FIX C1-01: Proper TLS server certificate verifier replacing SkipServerVerification.
+/// Validates that peer certificates are properly self-signed X.509 certificates using
+/// x509-parser + ring for cryptographic verification, instead of blindly accepting any
+/// DER-formatted data. Combined with TOFU fingerprint pinning (done after connection
+/// establishment in connect_peer/start_accepting) for complete peer identity verification.
+#[derive(Debug)]
+struct MoltCertVerifier;
+
+impl rustls::client::danger::ServerCertVerifier for MoltCertVerifier {
     fn verify_server_cert(
         &self,
         end_entity: &CertificateDer,
@@ -511,66 +776,27 @@ impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
         _ocsp_response: &[u8],
         _now: rustls::pki_types::UnixTime,
     ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        // T2.1 fix: Validate certificate is well-formed DER/X.509 instead of
-        // blindly accepting anything. This prevents trivial MITM with garbage
-        // data while still allowing self-signed certs (permissionless network).
         let cert_data = end_entity.as_ref();
-        if cert_data.is_empty() {
-            warn!("P2P: Rejecting empty certificate from peer");
-            return Err(rustls::Error::InvalidCertificate(
-                rustls::CertificateError::BadEncoding,
-            ));
+
+        // AUDIT-FIX C1-01: Cryptographic self-signature verification
+        // Replaces the old verify_server_cert which only checked DER tag (0x30)
+        // and length encoding. Now performs full X.509 parsing and verifies the
+        // certificate's self-signature using the certificate's own public key.
+        match verify_self_signed_cert(cert_data) {
+            Ok(fingerprint) => {
+                info!(
+                    "P2P TLS: Verified peer certificate (fingerprint: {})",
+                    NodeIdentity::fingerprint_hex(&fingerprint)
+                );
+                Ok(rustls::client::danger::ServerCertVerified::assertion())
+            }
+            Err(e) => {
+                warn!("P2P TLS: Server certificate verification FAILED: {}", e);
+                Err(rustls::Error::InvalidCertificate(
+                    rustls::CertificateError::BadEncoding,
+                ))
+            }
         }
-        // X.509 certificates must start with ASN.1 SEQUENCE tag (0x30)
-        if cert_data[0] != 0x30 {
-            warn!(
-                "P2P: Rejecting certificate with invalid DER tag: 0x{:02x}",
-                cert_data[0]
-            );
-            return Err(rustls::Error::InvalidCertificate(
-                rustls::CertificateError::BadEncoding,
-            ));
-        }
-        // Minimum viable DER: tag + length + content needs at least 4 bytes
-        if cert_data.len() < 4 {
-            warn!(
-                "P2P: Rejecting certificate too short ({} bytes)",
-                cert_data.len()
-            );
-            return Err(rustls::Error::InvalidCertificate(
-                rustls::CertificateError::BadEncoding,
-            ));
-        }
-        // Validate DER length encoding is consistent with actual data length
-        let len_byte = cert_data[1];
-        let (claimed_len, header_size) = if len_byte < 0x80 {
-            // Short form: length is directly in the byte
-            (len_byte as usize, 2usize)
-        } else if len_byte == 0x81 && cert_data.len() > 2 {
-            (cert_data[2] as usize, 3usize)
-        } else if len_byte == 0x82 && cert_data.len() > 3 {
-            (
-                ((cert_data[2] as usize) << 8) | cert_data[3] as usize,
-                4usize,
-            )
-        } else {
-            // For very large certs (0x83/0x84) or truncated length, just accept
-            // since parsing the content is beyond minimal validation
-            (0, 0)
-        };
-        if header_size > 0 && header_size + claimed_len != cert_data.len() {
-            warn!(
-                "P2P: Certificate DER length mismatch: header {} + claimed {} != actual {}",
-                header_size,
-                claimed_len,
-                cert_data.len()
-            );
-            return Err(rustls::Error::InvalidCertificate(
-                rustls::CertificateError::BadEncoding,
-            ));
-        }
-        // Accept self-signed certificates (permissionless network)
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
     }
 
     fn verify_tls12_signature(
@@ -612,9 +838,94 @@ impl rustls::client::danger::ServerCertVerifier for SkipServerVerification {
     }
 }
 
+/// AUDIT-FIX C1-01: Server-side client certificate verifier for mutual TLS.
+/// Validates that connecting peers present properly self-signed certificates.
+/// client_auth_mandatory=false for backwards compatibility with un-upgraded nodes.
+#[derive(Debug)]
+struct MoltClientCertVerifier;
+
+impl rustls::server::danger::ClientCertVerifier for MoltClientCertVerifier {
+    fn offer_client_auth(&self) -> bool {
+        true
+    }
+
+    fn client_auth_mandatory(&self) -> bool {
+        // Permissionless network: accept peers without client certs during transition.
+        // Once all nodes are upgraded, this can be set to true for full mutual TLS.
+        false
+    }
+
+    fn root_hint_subjects(&self) -> &[rustls::DistinguishedName] {
+        // No CA root hints — self-signed certs in a permissionless network
+        &[]
+    }
+
+    fn verify_client_cert(
+        &self,
+        end_entity: &CertificateDer,
+        _intermediates: &[CertificateDer],
+        _now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::server::danger::ClientCertVerified, rustls::Error> {
+        let cert_data = end_entity.as_ref();
+
+        match verify_self_signed_cert(cert_data) {
+            Ok(fingerprint) => {
+                info!(
+                    "P2P TLS: Verified client certificate (fingerprint: {})",
+                    NodeIdentity::fingerprint_hex(&fingerprint)
+                );
+                Ok(rustls::server::danger::ClientCertVerified::assertion())
+            }
+            Err(e) => {
+                warn!("P2P TLS: Client certificate verification FAILED: {}", e);
+                Err(rustls::Error::InvalidCertificate(
+                    rustls::CertificateError::BadEncoding,
+                ))
+            }
+        }
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer,
+        dss: &rustls::DigitallySignedStruct,
+    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        vec![
+            rustls::SignatureScheme::RSA_PKCS1_SHA256,
+            rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+            rustls::SignatureScheme::ED25519,
+        ]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rustls::client::danger::ServerCertVerifier;
 
     #[test]
     fn test_peer_info_new() {
@@ -701,5 +1012,262 @@ mod tests {
         peer.score = i64::MIN + 5;
         peer.adjust_score(-100);
         assert_eq!(peer.score, -20); // clamped to min -20
+    }
+
+    // =========================================================================
+    // AUDIT-FIX C1-01 Tests: TLS certificate validation
+    // =========================================================================
+
+    /// Test that a genuine self-signed certificate passes verification
+    #[test]
+    fn test_c1_01_verify_self_signed_valid() {
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .ok();
+
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+            .expect("Failed to generate cert");
+        let cert_der = CertificateDer::from(cert.cert);
+        let result = verify_self_signed_cert(cert_der.as_ref());
+        assert!(result.is_ok(), "Valid self-signed cert should pass: {:?}", result);
+
+        // Fingerprint should be 32 bytes (SHA-256)
+        let fp = result.unwrap();
+        assert_eq!(fp.len(), 32);
+        // Non-zero fingerprint
+        assert!(fp.iter().any(|&b| b != 0));
+    }
+
+    /// Test that an empty certificate is rejected
+    #[test]
+    fn test_c1_01_verify_self_signed_empty() {
+        let result = verify_self_signed_cert(&[]);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Empty certificate"));
+    }
+
+    /// Test that random garbage bytes are rejected
+    #[test]
+    fn test_c1_01_verify_self_signed_garbage() {
+        let garbage = vec![0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04];
+        let result = verify_self_signed_cert(&garbage);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Invalid X.509"));
+    }
+
+    /// Test that a valid cert with a flipped bit in the signature fails
+    #[test]
+    fn test_c1_01_verify_self_signed_modified() {
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .ok();
+
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+            .expect("Failed to generate cert");
+        let cert_der = CertificateDer::from(cert.cert);
+        let mut modified = cert_der.as_ref().to_vec();
+        // Flip bit in last byte (part of the signature)
+        if let Some(last) = modified.last_mut() {
+            *last ^= 0x01;
+        }
+        let result = verify_self_signed_cert(&modified);
+        // Should fail because self-signature no longer matches
+        assert!(result.is_err(), "Modified cert should fail verification");
+    }
+
+    /// Test that same cert data produces same fingerprint (deterministic)
+    #[test]
+    fn test_c1_01_fingerprint_deterministic() {
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .ok();
+
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+            .expect("Failed to generate cert");
+        let cert_der = CertificateDer::from(cert.cert);
+        let fp1 = verify_self_signed_cert(cert_der.as_ref()).unwrap();
+        let fp2 = verify_self_signed_cert(cert_der.as_ref()).unwrap();
+        assert_eq!(fp1, fp2, "Same cert should produce same fingerprint");
+    }
+
+    /// Test that different certs produce different fingerprints
+    #[test]
+    fn test_c1_01_fingerprint_unique() {
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .ok();
+
+        let cert1 = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+            .expect("Failed to generate cert 1");
+        let cert2 = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+            .expect("Failed to generate cert 2");
+        let fp1 = verify_self_signed_cert(CertificateDer::from(cert1.cert).as_ref()).unwrap();
+        let fp2 = verify_self_signed_cert(CertificateDer::from(cert2.cert).as_ref()).unwrap();
+        assert_ne!(fp1, fp2, "Different certs should produce different fingerprints");
+    }
+
+    /// Test TOFU fingerprint store: new peer is accepted
+    #[test]
+    fn test_c1_01_tofu_new_peer() {
+        let path = std::env::temp_dir().join(format!(
+            "moltchain_tofu_new_{}_{}.json",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let store = PeerFingerprintStore::new(path.clone());
+        let addr: SocketAddr = "10.0.0.1:8000".parse().unwrap();
+        let fp = [42u8; 32];
+
+        let result = store.check_or_store(&addr, &fp);
+        assert!(result.is_ok());
+        assert!(result.unwrap(), "New peer should return true");
+
+        let _ = fs::remove_file(&path);
+    }
+
+    /// Test TOFU fingerprint store: known peer with same fingerprint is accepted
+    #[test]
+    fn test_c1_01_tofu_known_peer_match() {
+        let path = std::env::temp_dir().join(format!(
+            "moltchain_tofu_match_{}_{}.json",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let store = PeerFingerprintStore::new(path.clone());
+        let addr: SocketAddr = "10.0.0.1:8000".parse().unwrap();
+        let fp = [42u8; 32];
+
+        // First connection: register
+        assert!(store.check_or_store(&addr, &fp).unwrap());
+        // Second connection: verify match
+        let result = store.check_or_store(&addr, &fp);
+        assert!(result.is_ok());
+        assert!(!result.unwrap(), "Known peer should return false (not new)");
+
+        let _ = fs::remove_file(&path);
+    }
+
+    /// Test TOFU fingerprint store: known peer with changed fingerprint is rejected
+    #[test]
+    fn test_c1_01_tofu_fingerprint_changed() {
+        let path = std::env::temp_dir().join(format!(
+            "moltchain_tofu_changed_{}_{}.json",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let store = PeerFingerprintStore::new(path.clone());
+        let addr: SocketAddr = "10.0.0.1:8000".parse().unwrap();
+        let fp1 = [42u8; 32];
+        let fp2 = [99u8; 32];
+
+        // First connection: register with fp1
+        assert!(store.check_or_store(&addr, &fp1).unwrap());
+        // Second connection: different fingerprint → TOFU violation
+        let result = store.check_or_store(&addr, &fp2);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("TOFU VIOLATION"));
+
+        let _ = fs::remove_file(&path);
+    }
+
+    /// Test TOFU fingerprint store: persistence across reloads
+    #[test]
+    fn test_c1_01_tofu_persistence() {
+        let path = std::env::temp_dir().join(format!(
+            "moltchain_tofu_persist_{}_{}.json",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        let addr: SocketAddr = "10.0.0.1:8000".parse().unwrap();
+        let fp = [42u8; 32];
+
+        // Register peer in first store instance
+        {
+            let store = PeerFingerprintStore::new(path.clone());
+            assert!(store.check_or_store(&addr, &fp).unwrap());
+        }
+        // Reload from disk — peer should still be known
+        {
+            let store = PeerFingerprintStore::new(path.clone());
+            let result = store.check_or_store(&addr, &fp);
+            assert!(result.is_ok());
+            assert!(!result.unwrap(), "Peer should be known after reload");
+        }
+        // Reload — changed fingerprint should still be rejected
+        {
+            let store = PeerFingerprintStore::new(path.clone());
+            let fp2 = [99u8; 32];
+            let result = store.check_or_store(&addr, &fp2);
+            assert!(result.is_err());
+            assert!(result.unwrap_err().contains("TOFU VIOLATION"));
+        }
+
+        let _ = fs::remove_file(&path);
+    }
+
+    /// Test fingerprint hex encoding
+    #[test]
+    fn test_c1_01_fingerprint_hex_encoding() {
+        let fp = [0x00, 0x01, 0x0a, 0xff, 0xab, 0xcd, 0xef, 0x12,
+                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let hex = NodeIdentity::fingerprint_hex(&fp);
+        assert_eq!(hex.len(), 64, "SHA-256 hex should be 64 chars");
+        assert!(hex.starts_with("00010aff"));
+    }
+
+    /// Test NodeIdentity::compute_fingerprint is SHA-256
+    #[test]
+    fn test_c1_01_compute_fingerprint_sha256() {
+        // SHA-256 of empty input is known
+        let fp_empty = NodeIdentity::compute_fingerprint(&[]);
+        // SHA-256("") = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+        assert_eq!(fp_empty[0], 0xe3);
+        assert_eq!(fp_empty[1], 0xb0);
+        assert_eq!(fp_empty[2], 0xc4);
+
+        // Different input → different fingerprint
+        let fp_data = NodeIdentity::compute_fingerprint(&[1, 2, 3]);
+        assert_ne!(fp_empty, fp_data);
+    }
+
+    /// Test MoltCertVerifier accepts valid self-signed certificates
+    #[test]
+    fn test_c1_01_molt_cert_verifier_accepts_valid() {
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .ok();
+
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+            .expect("Failed to generate cert");
+        let cert_der = CertificateDer::from(cert.cert);
+
+        let verifier = MoltCertVerifier;
+        let server_name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+        let result = verifier.verify_server_cert(
+            &cert_der,
+            &[],
+            &server_name,
+            &[],
+            rustls::pki_types::UnixTime::now(),
+        );
+        assert!(result.is_ok(), "Valid self-signed cert should be accepted by MoltCertVerifier");
+    }
+
+    /// Test MoltCertVerifier rejects garbage data
+    #[test]
+    fn test_c1_01_molt_cert_verifier_rejects_garbage() {
+        let garbage = CertificateDer::from(vec![0xDE, 0xAD, 0xBE, 0xEF]);
+        let verifier = MoltCertVerifier;
+        let server_name = rustls::pki_types::ServerName::try_from("localhost").unwrap();
+        let result = verifier.verify_server_cert(
+            &garbage,
+            &[],
+            &server_name,
+            &[],
+            rustls::pki_types::UnixTime::now(),
+        );
+        assert!(result.is_err(), "Garbage data should be rejected by MoltCertVerifier");
     }
 }

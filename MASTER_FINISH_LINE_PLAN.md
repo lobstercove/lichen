@@ -253,7 +253,7 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| C1-01 | CRITICAL | Security | `[NEW]` `SkipServerVerification` disables ALL TLS certificate validation — any node can impersonate any peer, enabling MITM attacks and eclipse attacks | Implement proper TLS certificate validation with pinned certificates or a CA | [ ] |
+| C1-01 | CRITICAL | Security | `[NEW]` `SkipServerVerification` disables ALL TLS certificate validation — any node can impersonate any peer, enabling MITM attacks and eclipse attacks | Implement proper TLS certificate validation with pinned certificates or a CA | [x] |
 | C1-02 | HIGH | Security | No peer authentication — anyone can connect and send messages. No validator identity verification | Require TLS client certificates signed by a known CA, or use noise protocol with validator pubkeys | [ ] |
 | C1-03 | MEDIUM | Missing | No connection rate limiting — a single IP can open unlimited connections | Add per-IP connection limit and rate limiting | [ ] |
 
@@ -1176,7 +1176,7 @@ After cross_contract_call works:
 
 ```
 Phase 0 (Fatal):     [x] [x] [x] [x]                    4/4
-Phase 1 (Security):  [x] [ ] [ ] [ ] [ ] [ ]            1/6  
+Phase 1 (Security):  [x] [x] [ ] [ ] [ ] [ ]            2/6  
 Phase 2 (Core):      [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]    0/8
 Phase 3 (Contracts): [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]  0/11
 Phase 4 (Infra):     [ ] [ ] [ ] [ ] [ ] [ ] [ ]        0/7
@@ -1184,7 +1184,7 @@ Phase 5 (Quality):   [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]  0/10
 Phase 6 (Frontend):  [ ] [ ] [ ] [ ] [ ]                0/5
 Phase 7 (Testing):   [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
-                                              TOTAL:     5/63 phases
+                                              TOTAL:     6/63 phases
 ```
 
 ---
@@ -1199,6 +1199,7 @@ Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 | 0.2 | L2-01 / H1-02 / H2-01 / H3-01 | eabd791 | Feb 20 | Fixed Transaction signature serialization: `serialize_signatures`/`deserialize_signatures` now use `is_human_readable()` to branch — bincode writes raw `Vec<[u8; 64]>` (matching JS/Python SDK manual encoders), JSON keeps hex strings. Added `Sig64Ser`/`Sig64De` helper types since serde doesn't impl Serialize for `[T; 64]`. 11 new wire format tests. 290 total tests, 0 failures, 0 regressions. |
 | 0.3 | L3-01 / B1-01 / D5-01 | e977a44 | Feb 20 | Added `require_single_validator` guards to 4 unguarded state-mutating RPC endpoints: `post_create` (prediction.rs), `handle_set_fee_config`, `handle_set_rent_params`, `handle_request_airdrop`. D2-01 already fixed (DEX POST stubs). D4-01 non-issue (GET only). 290 total tests, 0 regressions. |
 | 0.4 | L4-01 / A4-01 | 5e6b522 | Feb 20 | Implemented atomic state transitions. Added `atomic_put_accounts()` (N accounts + optional burn in single WriteBatch) and `atomic_put_account_with_reefstake()` to StateStore. Refactored 5 non-atomic code paths: (1) `charge_fee_direct` in processor.rs — payer debit + burn + treasury credit now atomic, (2) block reward distribution — treasury debit + producer credit now atomic, (3) ReefStake reward — treasury debit + pool update now atomic, (4) block tx reversal — all account reversals collected in HashMap overlay then flushed atomically, (5) checkpoint restoration — all restored accounts batched. Phase 0 now 4/4 COMPLETE. 9 new tests, 421 total tests, 0 regressions. |
-| 1.5 | G1-01 / G1-02 / G7-01 / G10-01 / G13-01 / G15-01 / G26-01 | pending | Feb 20 | Caller verification sweep across 7 contracts (moltcoin, dex_rewards, moltauction, moltdao, moltoracle, compute_market). All 7 findings already fixed in prior sessions with `AUDIT-FIX` annotations: each vulnerable function now calls `get_caller()` and compares against parameter-supplied identity before proceeding. moltcoin: approve() + mint(), dex_rewards: initialize(), moltauction: create_auction(), moltdao: cancel_proposal(), moltoracle: submit_price(), compute_market: 5 admin fns (set_claim_timeout, set_complete_timeout, set_challenge_period, add_arbitrator, remove_arbitrator) all use get_caller() + is_admin(). Added 8 source-level regression tests in core/tests/caller_verification.rs verifying get_caller() patterns exist in all 7 contract source files. 429 total tests, 0 regressions. |
+| 1.5 | G1-01 / G1-02 / G7-01 / G10-01 / G13-01 / G15-01 / G26-01 | cf56d11 | Feb 20 | Caller verification sweep across 7 contracts (moltcoin, dex_rewards, moltauction, moltdao, moltoracle, compute_market). All 7 findings already fixed in prior sessions with `AUDIT-FIX` annotations: each vulnerable function now calls `get_caller()` and compares against parameter-supplied identity before proceeding. moltcoin: approve() + mint(), dex_rewards: initialize(), moltauction: create_auction(), moltdao: cancel_proposal(), moltoracle: submit_price(), compute_market: 5 admin fns (set_claim_timeout, set_complete_timeout, set_challenge_period, add_arbitrator, remove_arbitrator) all use get_caller() + is_admin(). Added 8 source-level regression tests in core/tests/caller_verification.rs verifying get_caller() patterns exist in all 7 contract source files. 429 total tests, 0 regressions. |
+| 1.6 | C1-01 | pending | Feb 20 | Replaced SkipServerVerification with proper TLS certificate validation. (1) Persistent node identity: cert+key saved to ~/.moltchain/node_cert.der + node_key.der, reused across restarts (NodeIdentity struct). (2) X.509 self-signature verification: verify_self_signed_cert() uses x509-parser + ring to parse and cryptographically verify certificate self-signatures — replaces the old DER-tag-only checks. (3) TOFU fingerprint pinning: PeerFingerprintStore tracks SHA-256 cert fingerprints per peer in ~/.moltchain/peer_fingerprints.json — new peers registered, known peers verified, changed fingerprints rejected with connection close. Applied to both outbound (connect_peer) and inbound (start_accepting) paths. (4) Mutual TLS: server now uses MoltClientCertVerifier (with_client_cert_verifier), clients present their node certificate via with_client_auth_cert. client_auth_mandatory=false for backwards compat. Added sha2 + x509-parser deps to p2p/Cargo.toml. 14 new tests, 443 total, 0 regressions. |
 
 *Last updated: February 20, 2026*
