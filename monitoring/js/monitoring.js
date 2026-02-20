@@ -75,16 +75,6 @@ function truncAddr(addr) {
     return addr.slice(0, 6) + '...' + addr.slice(-4);
 }
 
-// F17.1 fix: HTML-escape helper to prevent XSS in all innerHTML injections
-function escapeHtml(str) {
-    return String(str ?? '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-}
-
 function timeAgo(ts) {
     const s = Math.floor((Date.now() / 1000) - ts);
     if (s < 5) return 'just now';

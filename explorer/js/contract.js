@@ -365,11 +365,6 @@ function updateStoragePagination() {
         '</div>';
 }
 
-function escapeHtml(str) {
-    if (!str) return '';
-    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-}
-
 // ── Calls rendering (paginated) ──────────────────────────────────
 
 const CALLS_PAGE_SIZE = 25;

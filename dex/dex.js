@@ -241,12 +241,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // AUDIT-FIX F10.8: Sanitize all API-sourced data before innerHTML injection
-    function escapeHtml(str) {
-        if (typeof str !== 'string') return String(str ?? '');
-        return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-    }
-
     // AUDIT-FIX DEX-1/DEX-2: Base58 encoding for addresses (must match wallet/RPC format)
     const BS58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
     function bs58encode(bytes) {
