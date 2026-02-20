@@ -413,8 +413,8 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| G1-01 | CRITICAL | Security | `[FLP C3]` `approve()` has no `get_caller()` verification — any account can set allowances for any other account | Add `let caller = get_caller();` and verify caller is the token owner | [ ] |
-| G1-02 | CRITICAL | Security | `[FLP C3]` `mint()` uses parameter as caller identity instead of `get_caller()` — owner is spoofable. Combined with G1-01, allows total token theft | Use `get_caller()` to verify mint authority | [ ] |
+| G1-01 | CRITICAL | Security | `[FLP C3]` `approve()` has no `get_caller()` verification — any account can set allowances for any other account | Add `let caller = get_caller();` and verify caller is the token owner | [x] |
+| G1-02 | CRITICAL | Security | `[FLP C3]` `mint()` uses parameter as caller identity instead of `get_caller()` — owner is spoofable. Combined with G1-01, allows total token theft | Use `get_caller()` to verify mint authority | [x] |
 | G1-03 | MEDIUM | Missing | No `burn()` function — tokens can never be destroyed | Add `burn()` with caller verification | [ ] |
 
 ### G.2 — contracts/dex_core/src/lib.rs
@@ -463,7 +463,7 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| G7-01 | CRITICAL | Security | `[FLP C12]` `initialize()` can be called by anyone — attacker seizes admin control of rewards emissions | Add `get_caller()` check in `initialize()` or only allow genesis block initialization | [ ] |
+| G7-01 | CRITICAL | Security | `[FLP C12]` `initialize()` can be called by anyone — attacker seizes admin control of rewards emissions | Add `get_caller()` check in `initialize()` or only allow genesis block initialization | [x] |
 | G7-02 | HIGH | Missing | `[FLP C11]` Reward claims update bookkeeping but never transfer MOLT tokens — no source wallet defined | Wire to builder_grants wallet (250M MOLT) for actual token transfers | [ ] |
 | G7-03 | MEDIUM | Missing | No epoch-based distribution — rewards are calculated per-claim with no time boundaries | Implement epoch-based reward distribution with snapshots | [ ] |
 
@@ -488,7 +488,7 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| G10-01 | HIGH | Security | `[FLP H13]` `create_auction` uses parameter-provided creator without `get_caller()` — spoofable ownership | Use `get_caller()` for creator identity | [ ] |
+| G10-01 | HIGH | Security | `[FLP H13]` `create_auction` uses parameter-provided creator without `get_caller()` — spoofable ownership | Use `get_caller()` for creator identity | [x] |
 | G10-02 | HIGH | Atomicity | Auction settlement is non-atomic — bid refunds and winner payment are separate operations | Batch all settlement operations atomically | [ ] |
 | G10-03 | MEDIUM | Inconsistency | `[FLP M11]` Mixed return code conventions — some functions return 0 for success, others return 1 | Standardize to 1=success across all functions | [ ] |
 
@@ -508,7 +508,7 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| G13-01 | HIGH | Security | `[FLP H12]` `cancel_proposal` has no `get_caller()` verification — anyone can cancel any proposal | Add caller verification — only proposer or admin can cancel | [ ] |
+| G13-01 | HIGH | Security | `[FLP H12]` `cancel_proposal` has no `get_caller()` verification — anyone can cancel any proposal | Add caller verification — only proposer or admin can cancel | [x] |
 | G13-02 | HIGH | Stub | `[FLP H2]` `execute_proposal` is placeholder — sets status but performs no action | Implement cross-contract execution of proposal actions | [ ] |
 | G13-03 | MEDIUM | Security | Caller-provided reputation accepted for vote weight — self-reported | Read from MoltyID contract | [ ] |
 
@@ -523,7 +523,7 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| G15-01 | CRITICAL | Security | `[FLP C8]` `submit_price` accepts feeder address as parameter without `get_caller()` — anyone can submit prices as any authorized feeder | Use `get_caller()` to verify feeder identity | [ ] |
+| G15-01 | CRITICAL | Security | `[FLP C8]` `submit_price` accepts feeder address as parameter without `get_caller()` — anyone can submit prices as any authorized feeder | Use `get_caller()` to verify feeder identity | [x] |
 | G15-02 | HIGH | Security | Single-feeder model with no price deviation guard — one compromised feeder poisons all consumers (DEX, margin, prediction) | Implement multi-feeder median with deviation threshold and circuit breaker | [ ] |
 | G15-03 | MEDIUM | Security | `simple_hash` is not cryptographic — VRF is forgeable | Use proper cryptographic hash for VRF | [ ] |
 
@@ -605,7 +605,7 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| G26-01 | CRITICAL | Security | `[FLP C7]` 5 admin functions accept caller parameter without `get_caller()` — anyone can modify config or pause contract | Use `get_caller()` in all admin functions | [ ] |
+| G26-01 | CRITICAL | Security | `[FLP C7]` 5 admin functions accept caller parameter without `get_caller()` — anyone can modify config or pause contract | Use `get_caller()` in all admin functions | [x] |
 | G26-02 | HIGH | Bug | `[FLP H19]` Paused state returns 0 (success) instead of error — callers think operations succeeded | Return error code when paused | [ ] |
 | G26-03 | HIGH | Financial | `[FLP H18]` `resolve_dispute` uses wrong transfer source | Fix source account for dispute resolution transfers | [ ] |
 | G26-04 | MEDIUM | Bug | `[FLP M19]` Job cancellation timeout calculated from `created_slot` instead of `claim_slot` | Use `claim_slot` for timeout calculation | [ ] |
@@ -1176,7 +1176,7 @@ After cross_contract_call works:
 
 ```
 Phase 0 (Fatal):     [x] [x] [x] [x]                    4/4
-Phase 1 (Security):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6  
+Phase 1 (Security):  [x] [ ] [ ] [ ] [ ] [ ]            1/6  
 Phase 2 (Core):      [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]    0/8
 Phase 3 (Contracts): [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]  0/11
 Phase 4 (Infra):     [ ] [ ] [ ] [ ] [ ] [ ] [ ]        0/7
@@ -1184,7 +1184,7 @@ Phase 5 (Quality):   [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]  0/10
 Phase 6 (Frontend):  [ ] [ ] [ ] [ ] [ ]                0/5
 Phase 7 (Testing):   [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
-                                              TOTAL:     4/63 phases
+                                              TOTAL:     5/63 phases
 ```
 
 ---
@@ -1198,6 +1198,7 @@ Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 | 0.1 | L1-01 / A7-01 / A9-01 | 0f0fd6b | Feb 20 | Full re-entrant cross-contract call. Replaced stub `host_cross_contract_call` with ~180-line implementation: loads target WASM, invokes function, propagates state changes atomically. `call_token_transfer` now debits/credits in StateStore. Added CCC constants (MAX_DEPTH=8, MAX_COMPUTE=5000). `processor.rs` applies cross_call_changes after execution. 7 new tests (unit + integration with WAT contracts). 279 total tests, 0 failures, 0 regressions. |
 | 0.2 | L2-01 / H1-02 / H2-01 / H3-01 | eabd791 | Feb 20 | Fixed Transaction signature serialization: `serialize_signatures`/`deserialize_signatures` now use `is_human_readable()` to branch — bincode writes raw `Vec<[u8; 64]>` (matching JS/Python SDK manual encoders), JSON keeps hex strings. Added `Sig64Ser`/`Sig64De` helper types since serde doesn't impl Serialize for `[T; 64]`. 11 new wire format tests. 290 total tests, 0 failures, 0 regressions. |
 | 0.3 | L3-01 / B1-01 / D5-01 | e977a44 | Feb 20 | Added `require_single_validator` guards to 4 unguarded state-mutating RPC endpoints: `post_create` (prediction.rs), `handle_set_fee_config`, `handle_set_rent_params`, `handle_request_airdrop`. D2-01 already fixed (DEX POST stubs). D4-01 non-issue (GET only). 290 total tests, 0 regressions. |
-| 0.4 | L4-01 / A4-01 | PENDING | Feb 20 | Implemented atomic state transitions. Added `atomic_put_accounts()` (N accounts + optional burn in single WriteBatch) and `atomic_put_account_with_reefstake()` to StateStore. Refactored 5 non-atomic code paths: (1) `charge_fee_direct` in processor.rs — payer debit + burn + treasury credit now atomic, (2) block reward distribution — treasury debit + producer credit now atomic, (3) ReefStake reward — treasury debit + pool update now atomic, (4) block tx reversal — all account reversals collected in HashMap overlay then flushed atomically, (5) checkpoint restoration — all restored accounts batched. Phase 0 now 4/4 COMPLETE. 9 new tests, 421 total tests, 0 regressions. |
+| 0.4 | L4-01 / A4-01 | 5e6b522 | Feb 20 | Implemented atomic state transitions. Added `atomic_put_accounts()` (N accounts + optional burn in single WriteBatch) and `atomic_put_account_with_reefstake()` to StateStore. Refactored 5 non-atomic code paths: (1) `charge_fee_direct` in processor.rs — payer debit + burn + treasury credit now atomic, (2) block reward distribution — treasury debit + producer credit now atomic, (3) ReefStake reward — treasury debit + pool update now atomic, (4) block tx reversal — all account reversals collected in HashMap overlay then flushed atomically, (5) checkpoint restoration — all restored accounts batched. Phase 0 now 4/4 COMPLETE. 9 new tests, 421 total tests, 0 regressions. |
+| 1.5 | G1-01 / G1-02 / G7-01 / G10-01 / G13-01 / G15-01 / G26-01 | pending | Feb 20 | Caller verification sweep across 7 contracts (moltcoin, dex_rewards, moltauction, moltdao, moltoracle, compute_market). All 7 findings already fixed in prior sessions with `AUDIT-FIX` annotations: each vulnerable function now calls `get_caller()` and compares against parameter-supplied identity before proceeding. moltcoin: approve() + mint(), dex_rewards: initialize(), moltauction: create_auction(), moltdao: cancel_proposal(), moltoracle: submit_price(), compute_market: 5 admin fns (set_claim_timeout, set_complete_timeout, set_challenge_period, add_arbitrator, remove_arbitrator) all use get_caller() + is_admin(). Added 8 source-level regression tests in core/tests/caller_verification.rs verifying get_caller() patterns exist in all 7 contract source files. 429 total tests, 0 regressions. |
 
 *Last updated: February 20, 2026*
