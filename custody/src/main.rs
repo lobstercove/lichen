@@ -2,6 +2,7 @@ use axum::{extract::State, routing::get, routing::post, routing::put, routing::d
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
 use base64::Engine;
 use ed25519_dalek::{Signer, VerifyingKey};
+use hmac::Mac;
 use frost_ed25519 as frost;
 use moltchain_core::{Hash, Instruction, Keypair, Message, Pubkey, Transaction, SYSTEM_PROGRAM_ID};
 use rocksdb::{ColumnFamilyDescriptor, Options, DB};
@@ -637,7 +638,8 @@ async fn create_deposit(
     let index = next_deposit_index(&state.db, &payload.user_id, &chain, &asset)
         .map_err(|e| Json(ErrorResponse::db(&e)))?;
 
-    let derivation_path = format!("molt/{}/{}/{}/{}", chain, asset, payload.user_id, index);
+    let derivation_path = bip44_derivation_path(&chain, &payload.user_id, index as u64)
+        .map_err(|e| Json(ErrorResponse::invalid(&e)))?;
     let address = if chain == "solana" || chain == "sol" {
         if is_solana_stablecoin(&asset) {
             let mint = solana_mint_for_asset(&state.config, &asset)
@@ -977,6 +979,33 @@ fn derive_deposit_address(
         ("eth", _) | ("ethereum", _) => derive_evm_address(path, master_seed),
         _ => Err(format!("Unsupported chain: {}", chain)),
     }
+}
+
+/// F2-01: Map chain name to BIP-44 registered coin type integer.
+/// See <https://github.com/satoshilabs/slips/blob/master/slip-0044.md>
+fn bip44_coin_type(chain: &str) -> Result<u32, String> {
+    match chain {
+        "sol" | "solana" => Ok(501),
+        "eth" | "ethereum" => Ok(60),
+        "btc" | "bitcoin" => Ok(0),
+        "ltc" | "litecoin" => Ok(2),
+        "molt" | "moltchain" => Ok(9999), // unregistered — use high range
+        _ => Err(format!("Unknown coin type for chain: {}", chain)),
+    }
+}
+
+/// F2-01: Build BIP-44-structured derivation path.
+/// Format: `m/44'/{coin_type}'/{user_hash}'/0/{index}`
+/// The user_id is hashed to a u32 account index for BIP-44 compliance.
+fn bip44_derivation_path(chain: &str, user_id: &str, index: u64) -> Result<String, String> {
+    let coin_type = bip44_coin_type(chain)?;
+    // Hash user_id to a deterministic 31-bit account index (BIP-32 max is 2^31-1 for non-hardened)
+    let mut hasher = hmac::Hmac::<sha2::Sha256>::new_from_slice(b"bip44-account")
+        .map_err(|_| "HMAC init failed".to_string())?;
+    hasher.update(user_id.as_bytes());
+    let result = hasher.finalize().into_bytes();
+    let account = u32::from_le_bytes([result[0], result[1], result[2], result[3]]) & 0x7FFF_FFFF;
+    Ok(format!("m/44'/{}'/{}'/{}/{}", coin_type, account, 0, index))
 }
 
 fn derive_solana_owner_pubkey(path: &str, master_seed: &str) -> Result<String, String> {
@@ -6980,6 +7009,46 @@ mod tests {
     fn test_derive_deposit_address_unsupported_chain() {
         let result = derive_deposit_address("bitcoin", "btc", "m/44'/0'/0'/0/0", "test_seed");
         assert!(result.is_err());
+    }
+
+    /// F2-01: BIP-44 coin type mapping test
+    #[test]
+    fn test_bip44_coin_type() {
+        assert_eq!(bip44_coin_type("sol").unwrap(), 501);
+        assert_eq!(bip44_coin_type("solana").unwrap(), 501);
+        assert_eq!(bip44_coin_type("eth").unwrap(), 60);
+        assert_eq!(bip44_coin_type("ethereum").unwrap(), 60);
+        assert_eq!(bip44_coin_type("btc").unwrap(), 0);
+        assert_eq!(bip44_coin_type("bitcoin").unwrap(), 0);
+        assert_eq!(bip44_coin_type("molt").unwrap(), 9999);
+        assert!(bip44_coin_type("unknown").is_err());
+    }
+
+    /// F2-01: BIP-44 derivation path format test
+    #[test]
+    fn test_bip44_derivation_path() {
+        let path_sol = bip44_derivation_path("solana", "user123", 0).unwrap();
+        assert!(path_sol.starts_with("m/44'/501'/"), "Solana path must use coin_type 501: {}", path_sol);
+        assert!(path_sol.ends_with("/0/0"), "Index 0: {}", path_sol);
+
+        let path_eth = bip44_derivation_path("eth", "user123", 5).unwrap();
+        assert!(path_eth.starts_with("m/44'/60'/"), "ETH path must use coin_type 60: {}", path_eth);
+        assert!(path_eth.ends_with("/0/5"), "Index 5: {}", path_eth);
+
+        // Same user on different chains gets different paths (different coin types)
+        assert_ne!(path_sol, path_eth);
+
+        // Same user, different index
+        let path_sol_1 = bip44_derivation_path("solana", "user123", 1).unwrap();
+        assert_ne!(path_sol, path_sol_1);
+
+        // Different user, same chain
+        let path_other = bip44_derivation_path("solana", "other_user", 0).unwrap();
+        assert_ne!(path_sol, path_other);
+
+        // Deterministic
+        let path_again = bip44_derivation_path("solana", "user123", 0).unwrap();
+        assert_eq!(path_sol, path_again);
     }
 
     #[test]
