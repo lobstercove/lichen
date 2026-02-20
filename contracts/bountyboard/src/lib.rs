@@ -19,7 +19,7 @@ use alloc::vec::Vec;
 
 use moltchain_sdk::{
     log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_slot, get_caller,
-    Address, CrossCall, call_contract, call_token_transfer,
+    Address, CrossCall, call_contract, call_token_transfer, get_value, get_contract_address,
 };
 
 // ============================================================================
@@ -191,6 +191,13 @@ pub extern "C" fn create_bounty(
         log_info("Reward must be > 0");
         reentrancy_exit();
         return 1;
+    }
+
+    // AUDIT-FIX G22-01: Verify creator attached sufficient value for reward escrow
+    if get_value() < reward_amount {
+        log_info("Insufficient value attached for bounty reward");
+        reentrancy_exit();
+        return 11;
     }
 
     // MoltyID reputation gate
@@ -410,20 +417,20 @@ pub extern "C" fn approve_work(
     bounty_data[90] = submission_idx;
     storage_set(&bk, &bounty_data);
 
-    // Transfer reward tokens from creator to worker via cross-contract call
+    // Transfer reward tokens from contract to worker via self-custody
+    // AUDIT-FIX G22-01: Use contract's own address as source (self-custody pattern)
     let reward_amount = bytes_to_u64(&bounty_data[64..72]);
     if let Some(token_bytes) = storage_get(TOKEN_ADDRESS_KEY) {
         if token_bytes.len() == 32 && token_bytes.iter().any(|&b| b != 0) {
             let mut token_addr = [0u8; 32];
             token_addr.copy_from_slice(&token_bytes);
-            let mut creator_addr = [0u8; 32];
-            creator_addr.copy_from_slice(&bounty_data[0..32]);
+            let self_addr = get_contract_address();
             let mut worker_addr = [0u8; 32];
             worker_addr.copy_from_slice(&sub_data[0..32]);
 
             match call_token_transfer(
                 Address(token_addr),
-                Address(creator_addr),
+                self_addr,
                 Address(worker_addr),
                 reward_amount,
             ) {
@@ -527,22 +534,34 @@ pub extern "C" fn cancel_bounty(
 
     let reward = bytes_to_u64(&bounty_data[64..72]);
 
-    // AUDIT-FIX: Actually transfer refund back to bounty creator
+    // AUDIT-FIX G22-01: Transfer refund from contract to creator (self-custody)
     let mut creator_addr = [0u8; 32];
     creator_addr.copy_from_slice(&bounty_data[0..32]);
     if reward > 0 {
         // Transfer from contract back to creator via the configured token
-        if let Some(token_bytes) = storage_get(b"bb_token_address") {
+        if let Some(token_bytes) = storage_get(TOKEN_ADDRESS_KEY) {
             if token_bytes.len() == 32 {
                 let mut token_addr = [0u8; 32];
                 token_addr.copy_from_slice(&token_bytes);
-                let contract_addr = get_caller(); // contract itself during execution
-                let _ = call_token_transfer(
+                let self_addr = get_contract_address();
+                match call_token_transfer(
                     Address(token_addr),
-                    contract_addr,
+                    self_addr,
                     Address(creator_addr),
                     reward,
-                );
+                ) {
+                    Ok(true) => {
+                        log_info("Refund transferred successfully");
+                    }
+                    Ok(false) | Err(_) => {
+                        // Revert cancellation on transfer failure
+                        bounty_data[80] = BOUNTY_OPEN;
+                        storage_set(&bk, &bounty_data);
+                        log_info("Refund transfer failed, cancellation reverted");
+                        reentrancy_exit();
+                        return 8;
+                    }
+                }
             }
         }
     }
@@ -890,6 +909,7 @@ mod tests {
 
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(creator);
+        test_mock::set_value(500_000);
         let result = create_bounty(
             creator.as_ptr(),
             title_hash.as_ptr(),
@@ -919,6 +939,7 @@ mod tests {
         let title_hash = [0xAA; 32];
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(creator);
+        test_mock::set_value(500_000);
         create_bounty(creator.as_ptr(), title_hash.as_ptr(), 500_000, 1000);
 
         // Submit work
@@ -960,6 +981,7 @@ mod tests {
         let title_hash = [0xAA; 32];
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(creator);
+        test_mock::set_value(300_000);
         create_bounty(creator.as_ptr(), title_hash.as_ptr(), 300_000, 1000);
 
         let result = cancel_bounty(creator.as_ptr(), 0);
@@ -989,6 +1011,7 @@ mod tests {
         let title_hash = [0xAA; 32];
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(creator);
+        test_mock::set_value(100_000);
         create_bounty(creator.as_ptr(), title_hash.as_ptr(), 100_000, 500);
 
         let result = get_bounty(0);
@@ -1018,6 +1041,7 @@ mod tests {
         let title_hash = [0xAA; 32];
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(creator);
+        test_mock::set_value(500_000);
         let result = create_bounty(creator.as_ptr(), title_hash.as_ptr(), 500_000, 1000);
         assert_eq!(result, 10);
     }
@@ -1032,6 +1056,7 @@ mod tests {
         let title_hash = [0xAA; 32];
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(creator);
+        test_mock::set_value(500_000);
         create_bounty(creator.as_ptr(), title_hash.as_ptr(), 500_000, 1000);
 
         // Now configure gate
@@ -1060,6 +1085,7 @@ mod tests {
         let title_hash = [0xAA; 32];
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(creator);
+        test_mock::set_value(500_000);
         let result = create_bounty(creator.as_ptr(), title_hash.as_ptr(), 500_000, 1000);
         assert_eq!(result, 0);
 
@@ -1158,6 +1184,7 @@ mod tests {
         let title_hash = [0xAA; 32];
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(creator);
+        test_mock::set_value(500_000);
         create_bounty(creator.as_ptr(), title_hash.as_ptr(), 500_000, 1000);
 
         let worker = [2u8; 32];
@@ -1188,6 +1215,7 @@ mod tests {
         let title_hash = [0xAA; 32];
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(creator);
+        test_mock::set_value(500_000);
         create_bounty(creator.as_ptr(), title_hash.as_ptr(), 500_000, 1000);
 
         let worker = [2u8; 32];
@@ -1236,6 +1264,7 @@ mod tests {
         let creator = [1u8; 32];
         let title_hash = [0xAA; 32];
         test_mock::set_caller(creator);
+        test_mock::set_value(500_000);
         create_bounty(creator.as_ptr(), title_hash.as_ptr(), 500_000, 1000);
 
         // Set up admin and pause the contract
@@ -1250,5 +1279,111 @@ mod tests {
         test_mock::set_caller(worker);
         let result = submit_work(0, worker.as_ptr(), proof_hash.as_ptr());
         assert_eq!(result, 0);
+    }
+
+    // ========================================================================
+    // G22-01 FINANCIAL WIRING TESTS
+    // ========================================================================
+
+    #[test]
+    fn test_create_bounty_insufficient_value() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let creator = [1u8; 32];
+        let title_hash = [0xAA; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_value(499_999); // 1 short of 500_000
+        let result = create_bounty(creator.as_ptr(), title_hash.as_ptr(), 500_000, 1000);
+        assert_eq!(result, 11, "Should reject insufficient value for bounty reward");
+    }
+
+    #[test]
+    fn test_create_bounty_exact_value() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let creator = [1u8; 32];
+        let title_hash = [0xAA; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_value(500_000); // exact amount
+        let result = create_bounty(creator.as_ptr(), title_hash.as_ptr(), 500_000, 1000);
+        assert_eq!(result, 0, "Exact value should be accepted");
+    }
+
+    #[test]
+    fn test_cancel_bounty_uses_correct_token_key() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        // Configure token address via set_token_address (writes TOKEN_ADDRESS_KEY)
+        let admin = [5u8; 32];
+        test_mock::set_caller(admin);
+        set_identity_admin(admin.as_ptr());
+        let token = [0xDD; 32];
+        set_token_address(admin.as_ptr(), token.as_ptr());
+
+        // Create bounty
+        let creator = [1u8; 32];
+        let title_hash = [0xAA; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_value(300_000);
+        create_bounty(creator.as_ptr(), title_hash.as_ptr(), 300_000, 1000);
+
+        // Cancel — should use TOKEN_ADDRESS_KEY (not the old wrong key)
+        test_mock::set_caller(creator);
+        let result = cancel_bounty(creator.as_ptr(), 0);
+        // call_token_transfer returns Ok(false) in test mock → cancel reverts
+        assert_eq!(result, 8, "Cancel should attempt transfer and revert on failure");
+    }
+
+    #[test]
+    fn test_approve_uses_self_custody() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let admin = [5u8; 32];
+        test_mock::set_caller(admin);
+        set_identity_admin(admin.as_ptr());
+        let token = [0xDD; 32];
+        set_token_address(admin.as_ptr(), token.as_ptr());
+
+        let creator = [1u8; 32];
+        let title_hash = [0xAA; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_value(500_000);
+        create_bounty(creator.as_ptr(), title_hash.as_ptr(), 500_000, 1000);
+
+        let worker = [2u8; 32];
+        let proof_hash = [0xBB; 32];
+        test_mock::set_caller(worker);
+        submit_work(0, worker.as_ptr(), proof_hash.as_ptr());
+
+        // Approve — in test mock call_token_transfer returns Ok(false),
+        // so bounty reverts to OPEN (proves transfer was attempted)
+        test_mock::set_caller(creator);
+        let result = approve_work(creator.as_ptr(), 0, 0);
+        assert_eq!(result, 8, "Approve should attempt self-custody transfer");
+    }
+
+    #[test]
+    fn test_cancel_without_token_succeeds() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        // No token configured — cancel should still succeed (no transfer attempted)
+        let creator = [1u8; 32];
+        let title_hash = [0xAA; 32];
+        test_mock::set_caller(creator);
+        test_mock::set_value(300_000);
+        create_bounty(creator.as_ptr(), title_hash.as_ptr(), 300_000, 1000);
+
+        test_mock::set_caller(creator);
+        let result = cancel_bounty(creator.as_ptr(), 0);
+        assert_eq!(result, 0, "Cancel without token should succeed");
+
+        let bk = bounty_key(0);
+        let bounty = test_mock::get_storage(&bk).unwrap();
+        assert_eq!(bounty[80], BOUNTY_CANCELLED);
     }
 }
