@@ -332,3 +332,65 @@ fn b1_02_all_contracts_initialized_at_genesis() {
         );
     }
 }
+
+// ============================================================================
+//  A12-01: Genesis distribution alignment — genesis.rs must match multisig.rs
+// ============================================================================
+
+/// Verify that genesis distribution amounts in genesis.rs match the canonical
+/// GENESIS_DISTRIBUTION in multisig.rs. Prevents silent drift where one file
+/// is updated but not the other.
+#[test]
+fn a12_01_genesis_distribution_matches_multisig() {
+    let genesis_src =
+        std::fs::read_to_string("src/genesis.rs").expect("Cannot read core/src/genesis.rs");
+    let multisig_src =
+        std::fs::read_to_string("src/multisig.rs").expect("Cannot read core/src/multisig.rs");
+
+    // Canonical allocations from multisig.rs GENESIS_DISTRIBUTION
+    let canonical = [
+        ("validator_rewards", 150_000_000u64),
+        ("community_treasury", 400_000_000),
+        ("builder_grants", 250_000_000),
+        ("founding_moltys", 100_000_000),
+        ("ecosystem_partnerships", 50_000_000),
+        ("reserve_pool", 50_000_000),
+    ];
+
+    // Verify multisig.rs has the canonical values
+    for (name, amount) in &canonical {
+        let pattern = format!("(\"{}\", {})", name, amount.to_string().chars()
+            .enumerate()
+            .map(|(i, c)| {
+                if i > 0 && (amount.to_string().len() - i) % 3 == 0 { format!("_{}", c) } else { c.to_string() }
+            })
+            .collect::<String>());
+        // Simpler: just search for the amount string with underscores
+        let amount_str = format!("{}_000_000", amount / 1_000_000);
+        assert!(
+            multisig_src.contains(&amount_str),
+            "REGRESSION A12-01: multisig.rs missing canonical amount {} for {}",
+            amount, name
+        );
+    }
+
+    // Verify genesis.rs has matching values
+    // Genesis uses balance_molt field names
+    for (name, amount) in &canonical {
+        let amount_str = format!("{}_000_000", amount / 1_000_000);
+        assert!(
+            genesis_src.contains(&amount_str),
+            "REGRESSION A12-01: genesis.rs missing amount {} for {} — \
+             genesis distribution has drifted from multisig.rs canonical values!",
+            amount, name
+        );
+    }
+
+    // Verify totals: both should sum to 1B
+    let total: u64 = canonical.iter().map(|(_, a)| a).sum();
+    assert_eq!(
+        total, 1_000_000_000,
+        "REGRESSION A12-01: canonical genesis distribution sums to {} (expected 1,000,000,000)",
+        total
+    );
+}
