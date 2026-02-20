@@ -569,9 +569,9 @@
                     </div>
                 </div>
 
-                <!-- Kill Switch Controls -->
+                <!-- Kill Switch Controls (AUDIT-FIX I8-01: Requires admin token authentication) -->
                 <div class="ir-section">
-                    <h4 class="ir-section-title"><i class="fas fa-skull-crossbones"></i> Kill Switches</h4>
+                    <h4 class="ir-section-title"><i class="fas fa-skull-crossbones"></i> Kill Switches <span style="font-size:0.7rem;opacity:0.6;margin-left:8px;"><i class="fas fa-lock"></i> Admin auth required</span></h4>
                     <div class="killswitch-grid">
                         <button class="killswitch" onclick="killswitchBanIP()">
                             <i class="fas fa-ban"></i>
@@ -598,6 +598,10 @@
                             <span>Deny All</span>
                         </button>
                     </div>
+                    <button class="killswitch" onclick="clearAdminSession()" style="margin-top:8px;width:100%;opacity:0.6;font-size:0.75rem;">
+                        <i class="fas fa-sign-out-alt"></i>
+                        <span>Clear Admin Session</span>
+                    </button>
                 </div>
             </div>
         </div>
