@@ -1771,7 +1771,22 @@ impl ValidatorSet {
     /// Select leader using stake-weighted contribution
     /// Reputation influence uses sqrt() to prevent snowball: rep 1000 gets ~3.16x weight
     /// vs rep 100 (instead of 10x with linear).  Ensures fairer block distribution.
+    ///
+    /// A5-01: Mixes optional `randomness_seed` (previous block hash) into the
+    /// selection hash to prevent predictability beyond one slot ahead. Without
+    /// a seed, falls back to SHA-256(slot) for backward compatibility.
     pub fn select_leader_weighted(&self, slot: u64, stake_pool: &StakePool) -> Option<Pubkey> {
+        self.select_leader_weighted_with_seed(slot, stake_pool, &[])
+    }
+
+    /// Select leader with explicit randomness seed (e.g., previous block hash).
+    /// This is the primary entry point for production validators.
+    pub fn select_leader_weighted_with_seed(
+        &self,
+        slot: u64,
+        stake_pool: &StakePool,
+        randomness_seed: &[u8],
+    ) -> Option<Pubkey> {
         if self.validators.is_empty() {
             return None;
         }
@@ -1802,7 +1817,14 @@ impl ValidatorSet {
             return self.select_leader(slot);
         }
 
-        let hash = Hash::hash(&slot.to_le_bytes());
+        // A5-01: Mix slot + randomness_seed (previous block hash) for
+        // unpredictable-beyond-one-slot leader selection.  When randomness_seed
+        // is empty, degrades to SHA-256(slot) for backward compatibility.
+        let slot_bytes = slot.to_le_bytes();
+        let mut preimage = Vec::with_capacity(slot_bytes.len() + randomness_seed.len());
+        preimage.extend_from_slice(&slot_bytes);
+        preimage.extend_from_slice(randomness_seed);
+        let hash = Hash::hash(&preimage);
         let mut seed_bytes = [0u8; 8];
         seed_bytes.copy_from_slice(&hash.0[..8]);
         let mut target = u64::from_le_bytes(seed_bytes) % total_weight;
@@ -2632,6 +2654,55 @@ mod tests {
         pool.stake(pk1, 100_000_000_000_000, 0).unwrap(); // 100k MOLT
 
         assert!(set.is_leader_weighted(0, &pk1, &pool));
+    }
+
+    /// A5-01: Verify that mixing a randomness seed (previous block hash)
+    /// changes leader selection output and that the same seed is deterministic.
+    #[test]
+    fn test_weighted_leader_selection_with_seed() {
+        let mut set = ValidatorSet::new();
+        let mut pool = StakePool::new();
+        let pk1 = Pubkey::new([1u8; 32]);
+        let pk2 = Pubkey::new([2u8; 32]);
+        let pk3 = Pubkey::new([3u8; 32]);
+
+        set.add_validator(ValidatorInfo::new(pk1, 0));
+        set.add_validator(ValidatorInfo::new(pk2, 0));
+        set.add_validator(ValidatorInfo::new(pk3, 0));
+
+        pool.stake(pk1, 100_000_000_000_000, 0).unwrap();
+        pool.stake(pk2, 150_000_000_000_000, 0).unwrap();
+        pool.stake(pk3, 120_000_000_000_000, 0).unwrap();
+
+        let seed_a = [0xAA; 32];
+        let seed_b = [0xBB; 32];
+
+        // Same slot + same seed → deterministic
+        let r1 = set.select_leader_weighted_with_seed(42, &pool, &seed_a);
+        let r2 = set.select_leader_weighted_with_seed(42, &pool, &seed_a);
+        assert_eq!(r1, r2, "Same slot and seed must produce same leader");
+
+        // Different seeds may produce different leader distribution
+        // Run over many slots — with different seeds, distributions should differ
+        let mut results_a = std::collections::HashMap::new();
+        let mut results_b = std::collections::HashMap::new();
+        for slot in 0..200 {
+            if let Some(pk) = set.select_leader_weighted_with_seed(slot, &pool, &seed_a) {
+                *results_a.entry(pk).or_insert(0u32) += 1;
+            }
+            if let Some(pk) = set.select_leader_weighted_with_seed(slot, &pool, &seed_b) {
+                *results_b.entry(pk).or_insert(0u32) += 1;
+            }
+        }
+        // Seeds should produce different distributions (extremely unlikely to be identical)
+        assert_ne!(results_a, results_b, "Different seeds must produce different leader distributions");
+
+        // Empty seed should match select_leader_weighted (backward compat)
+        for slot in 0..50 {
+            let no_seed = set.select_leader_weighted(slot, &pool);
+            let empty_seed = set.select_leader_weighted_with_seed(slot, &pool, &[]);
+            assert_eq!(no_seed, empty_seed, "Empty seed must match no-seed variant at slot {}", slot);
+        }
     }
 
     #[test]

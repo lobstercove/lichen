@@ -8892,7 +8892,8 @@ async fn run_validator() {
                 } else {
                     slot.saturating_mul(16).saturating_add(view)
                 };
-                let leader = vs.select_leader_weighted(leader_slot, &pool);
+                // A5-01: Mix parent_hash for unpredictable leader selection
+                let leader = vs.select_leader_weighted_with_seed(leader_slot, &pool, &parent_hash.0);
                 let sp = leader
                     .map(|pubkey| pubkey == validator_pubkey)
                     .unwrap_or(false);
@@ -8909,7 +8910,8 @@ async fn run_validator() {
             } else {
                 slot.saturating_mul(16).saturating_add(view)
             };
-            let leader = vs.select_leader_weighted(leader_slot, &pool);
+            // A5-01: Mix parent_hash for unpredictable leader selection
+            let leader = vs.select_leader_weighted_with_seed(leader_slot, &pool, &parent_hash.0);
             let sp = leader
                 .map(|pubkey| pubkey == validator_pubkey)
                 .unwrap_or(false);
