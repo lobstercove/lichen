@@ -15,6 +15,7 @@ RPC_URL="${MOLTCHAIN_RPC_URL:-http://localhost:8899}"
 SKIP_BUILD=false
 SEED_PAIRS=false
 SEED_POOLS=false
+ADMIN_PUBKEY="${MOLTCHAIN_ADMIN_PUBKEY:-}"
 MANIFEST="$ROOT_DIR/deploy/deploy-manifest.json"
 DEPLOY_LOG="$ROOT_DIR/deploy/testnet-deploy-$(date +%Y%m%d-%H%M%S).log"
 
@@ -25,8 +26,13 @@ while [[ $# -gt 0 ]]; do
         --skip-build) SKIP_BUILD=true; shift ;;
         --seed-pairs) SEED_PAIRS=true; shift ;;
         --seed-pools) SEED_POOLS=true; shift ;;
+        --admin) ADMIN_PUBKEY="$2"; shift 2 ;;
         --help)
-            echo "Usage: $0 [--rpc URL] [--skip-build] [--seed-pairs] [--seed-pools]"
+            echo "Usage: $0 [--rpc URL] [--skip-build] [--seed-pairs] [--seed-pools] [--admin PUBKEY]"
+            echo ""
+            echo "  --admin PUBKEY   Multisig admin address for all contracts"
+            echo "                   (defaults to deployer keypair for testnet)"
+            echo "                   Set MOLTCHAIN_ADMIN_PUBKEY env var as alternative"
             exit 0 ;;
         *) echo "Unknown flag: $1"; exit 1 ;;
     esac
@@ -42,6 +48,14 @@ mkdir -p "$(dirname "$DEPLOY_LOG")"
 log "═══ Phase 1: Environment validation ═══"
 log "RPC endpoint: $RPC_URL"
 log "Root directory: $ROOT_DIR"
+if [[ -n "$ADMIN_PUBKEY" ]]; then
+    log "Admin (multisig): $ADMIN_PUBKEY"
+    ADMIN_FLAG="--admin $ADMIN_PUBKEY"
+else
+    log "⚠️  Admin: deployer keypair (single-key — testnet only)"
+    log "   For production, use: --admin <MULTISIG_PUBKEY>"
+    ADMIN_FLAG=""
+fi
 
 # Check RPC health
 HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$RPC_URL" \
@@ -102,7 +116,7 @@ for contract in "${DEX_CONTRACTS[@]}"; do
     WASM_PATH="$ROOT_DIR/contracts/$contract/target/wasm32-unknown-unknown/release/${contract}.wasm"
     if [[ -f "$WASM_PATH" ]]; then
         log "  Deploying $contract..."
-        python3 "$ROOT_DIR/tools/deploy_dex.py" --rpc "$RPC_URL" --contract "$contract" --wasm "$WASM_PATH" 2>&1 | tee -a "$DEPLOY_LOG" || true
+        python3 "$ROOT_DIR/tools/deploy_dex.py" --rpc "$RPC_URL" $ADMIN_FLAG --contract "$contract" --wasm "$WASM_PATH" 2>&1 | tee -a "$DEPLOY_LOG" || true
     else
         log "  ⚠️  WASM not found for $contract: $WASM_PATH"
     fi
