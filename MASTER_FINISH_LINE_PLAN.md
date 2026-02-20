@@ -576,7 +576,7 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| G22-01 | HIGH | Financial | `[FLP H9]` `cancel_bounty` ignores transfer failure; `approve_work` records payment but never transfers tokens | Wire actual token transfers; fail on transfer failure | [ ] |
+| G22-01 | HIGH | Financial | `[FLP H9]` `cancel_bounty` ignores transfer failure; `approve_work` records payment but never transfers tokens | Wire actual token transfers; fail on transfer failure | [x] |
 | G22-02 | MEDIUM | Security | `[FLP L8]` First-caller-wins admin init — mitigated if genesis init (B1-02) is implemented | Ensure genesis initialization is done before user transactions | [x] mitigated by B1-02 |
 
 ### G.23 — contracts/clawpay/src/lib.rs
@@ -1178,13 +1178,13 @@ After cross_contract_call works:
 Phase 0 (Fatal):     [x] [x] [x] [x]                    4/4
 Phase 1 (Security):  [x] [x] [x] [x] [x] [x]            6/6  ✅ COMPLETE
 Phase 2 (Core):      [x] [x] [x] [x] [x] [x] [x] [x]    8/8  ✅ COMPLETE
-Phase 3 (Contracts): [x] [x] [x] [x] [x] [x] [ ] [ ] [ ] [ ] [ ]  6/11
+Phase 3 (Contracts): [x] [x] [x] [x] [x] [x] [x] [ ] [ ] [ ] [ ]  7/11
 Phase 4 (Infra):     [ ] [ ] [ ] [ ] [ ] [ ] [ ]        0/7
 Phase 5 (Quality):   [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]  0/10
 Phase 6 (Frontend):  [ ] [ ] [ ] [ ] [ ]                0/5
 Phase 7 (Testing):   [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
-                                              TOTAL:    24/63 phases
+                                              TOTAL:    25/63 phases
 ```
 
 ---
@@ -1218,6 +1218,7 @@ Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 | 3.22 | G11-01 | 301c9d6 | Feb 20 | Wired all 5 moltbridge financial functions to actual token transfers. lock_tokens: get_value() verification for incoming shells. submit_mint/confirm_mint: transfer_out() to recipient on threshold completion, with CANCELLED/PENDING revert on failure. submit_unlock/confirm_unlock: transfer_out() to recipient with locked amount revert on failure. Added set_token_address() admin function (owner-only, zero rejected), load_molt_addr()/transfer_out() helpers. Also fixed all 43 pre-existing test failures (missing set_caller calls from prior caller verification phase). Added setup() with MOLT_ADDR+CONTRACT_ADDR, setup_no_molt(). 7 new tests: lock_insufficient_value, mint_without_molt, unlock_without_molt, set_token_address (happy+non-owner+zero), self_custody_transfer_pattern. 50 moltbridge tests (up from 43), 465 workspace tests, 0 regressions. |
 | 3.23 | G17-02 | be9d5b7 | Feb 20 | Wired all moltswap AMM financial operations to actual token transfers. add_liquidity: get_value() >= amount_a + amount_b check for incoming deposits. remove_liquidity: transfer_out() for both token A and B to provider via pool's self-custody. swap_a_for_b/swap_b_for_a: get_value() for incoming + transfer_out() for output token to swapper. flash_loan_borrow: transfer_out() to borrower. flash_loan_repay: get_value() >= repay_amount check. Pool's token_a/token_b addresses used directly as token contract targets (no separate MOLTCOIN_ADDRESS_KEY needed). 8 new tests: add_liquidity_insufficient_value, swap_a/b_insufficient_value, remove_liquidity_transfers_out, flash_loan_borrow_transfers, flash_loan_repay_insufficient_value, flash_loan_borrow_repay_cycle, self_custody_transfer_pattern. 30 moltswap tests (up from 22), 465 workspace tests, 0 regressions. |
 | 3.24 | G21-01 | f5aafdd | Feb 20 | Wired all 11 prediction_market financial functions to actual mUSD transfers. Inbound (7 functions): get_value() checks for create_market (MARKET_CREATION_FEE=10M), add_initial_liquidity, add_liquidity, buy_shares, mint_complete_set, submit_resolution (DISPUTE_BOND=100M), challenge_resolution (DISPUTE_BOND). Outbound (4 functions): transfer_musd_out() for sell_shares, redeem_complete_set, withdraw_liquidity, finalize_resolution (resolver reward). Uses pre-existing transfer_musd_out() helper with graceful degradation. Updated all test helpers across 4 test files (lib.rs unit tests, core_tests.rs, adversarial_tests.rs, resolution_tests.rs) with set_value(). 7 new G21-01 tests: create_market_insufficient_fee, buy_shares_insufficient_value, mint_complete_set_insufficient_value, submit_resolution_insufficient_bond, sell_shares_transfers_musd_out, withdraw_liquidity_transfers_musd_out, add_liquidity_insufficient_value. 208 prediction_market tests (up from 197), 465 workspace tests, 0 regressions. |
+| 3.25 | G22-01 | 27d4770 | Feb 20 | Wired bountyboard payment transfers with 3 bug fixes. (1) create_bounty: Added get_value() >= reward_amount inbound check (return 11 on insufficient value) — bounties were previously backed by nothing. (2) approve_work: Changed transfer from creator→worker to contract→worker using get_contract_address() (self-custody pattern) — previously assumed creator pre-approved the contract. (3) cancel_bounty: Fixed wrong storage key (b"bb_token_address" → TOKEN_ADDRESS_KEY b"bounty_token_addr"), replaced get_caller() with get_contract_address() for source address, and added proper transfer failure handling with revert (was `let _ = call_token_transfer`). Added get_value + get_contract_address imports. 5 new tests. 21 bountyboard tests (up from 16), 465 workspace tests, 0 regressions. |
 | 2.12 | G3-01 | 36d9084 | Feb 20 | Replaced linear tick approximation with correct exponential formula in contracts/dex_amm/src/lib.rs. (1) Precomputed 19 Q64.64 constants for 1.00005^(2^k) with 80-decimal-digit precision. (2) Implemented `mul_q64()` — 256-bit intermediate multiplication via hi/lo u64 decomposition with carry tracking and wrapping arithmetic. (3) New `tick_to_sqrt_price()` uses bit-decomposition of |tick|, multiplying accumulator by precomputed constants for each set bit; negative ticks use reciprocal. (4) New `sqrt_price_to_tick()` uses binary search for exact inversion. (5) Adjusted MAX_TICK/MIN_TICK from ±887,272 (Uniswap V3 uint160) to ±443,636 (matching u64 Q32.32 representable range). Verified against 80-digit precision reference values: tick 0,±1,±100,±600,±10000,±100000 all within ±1 ULP. 8 new tests: exponential accuracy (9 test vectors), large values, monotonicity (2001 ticks), roundtrip range, mul_q64 unit tests. Fixed 12 previously failing dex_amm tests that depended on correct pricing. 446 Rust + 52 JS tests, 0 regressions. |
 
 *Last updated: February 20, 2026*
