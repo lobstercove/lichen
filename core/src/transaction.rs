@@ -90,14 +90,20 @@ struct Sig64De;
 impl<'de> serde::de::DeserializeSeed<'de> for Sig64De {
     type Value = [u8; 64];
 
-    fn deserialize<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        self,
+        deserializer: D,
+    ) -> Result<Self::Value, D::Error> {
         struct V;
         impl<'de> serde::de::Visitor<'de> for V {
             type Value = [u8; 64];
             fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
                 f.write_str("64 bytes")
             }
-            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(
+                self,
+                mut seq: A,
+            ) -> Result<Self::Value, A::Error> {
                 let mut arr = [0u8; 64];
                 for (i, slot) in arr.iter_mut().enumerate() {
                     *slot = seq
@@ -463,11 +469,11 @@ mod tests {
         // recent_blockhash: [u8; 32] → 32 raw bytes (0xAA repeated)
         let expected = format!(
             "{}{}{}{}{}{}",
-            "0100000000000000",                                          // Vec<Ix> len = 1
+            "0100000000000000", // Vec<Ix> len = 1
             "0101010101010101010101010101010101010101010101010101010101010101", // program_id
-            "0100000000000000",                                          // Vec<Pubkey> len = 1
+            "0100000000000000", // Vec<Pubkey> len = 1
             "0202020202020202020202020202020202020202020202020202020202020202", // accounts[0]
-            "040000000000000000010203",                                  // Vec<u8> len=4 + data
+            "040000000000000000010203", // Vec<u8> len=4 + data
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", // blockhash
         );
 
@@ -506,14 +512,14 @@ mod tests {
         let sig_hex = "bb".repeat(64); // 64 bytes = 128 hex chars
         let expected = format!(
             "{}{}{}{}{}{}{}{}",
-            "0100000000000000",                                          // Vec<[u8;64]> len = 1
-            sig_hex,                                                     // sig (64 bytes)
+            "0100000000000000", // Vec<[u8;64]> len = 1
+            sig_hex,            // sig (64 bytes)
             // -- Message bytes (same as golden vector above) --
-            "0100000000000000",                                          // Vec<Ix> len = 1
+            "0100000000000000", // Vec<Ix> len = 1
             "0101010101010101010101010101010101010101010101010101010101010101", // program_id
-            "0100000000000000",                                          // Vec<Pubkey> len = 1
+            "0100000000000000", // Vec<Pubkey> len = 1
             "0202020202020202020202020202020202020202020202020202020202020202", // accounts[0]
-            "040000000000000000010203",                                  // Vec<u8> len=4 + data
+            "040000000000000000010203", // Vec<u8> len=4 + data
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", // blockhash
         );
 

@@ -85,7 +85,8 @@ fn test_bincode_matches_sdk_layout() {
     let expected = build_expected_bincode(&tx);
 
     assert_eq!(
-        rust_bincode, expected,
+        rust_bincode,
+        expected,
         "Rust bincode output does not match JS/Python SDK byte layout.\n\
          Rust bincode ({} bytes): {:?}\n\
          Expected     ({} bytes): {:?}",
@@ -104,10 +105,22 @@ fn test_bincode_round_trip() {
 
     assert_eq!(tx.signatures.len(), tx2.signatures.len());
     assert_eq!(tx.signatures[0], tx2.signatures[0]);
-    assert_eq!(tx.message.instructions.len(), tx2.message.instructions.len());
-    assert_eq!(tx.message.instructions[0].program_id, tx2.message.instructions[0].program_id);
-    assert_eq!(tx.message.instructions[0].accounts, tx2.message.instructions[0].accounts);
-    assert_eq!(tx.message.instructions[0].data, tx2.message.instructions[0].data);
+    assert_eq!(
+        tx.message.instructions.len(),
+        tx2.message.instructions.len()
+    );
+    assert_eq!(
+        tx.message.instructions[0].program_id,
+        tx2.message.instructions[0].program_id
+    );
+    assert_eq!(
+        tx.message.instructions[0].accounts,
+        tx2.message.instructions[0].accounts
+    );
+    assert_eq!(
+        tx.message.instructions[0].data,
+        tx2.message.instructions[0].data
+    );
     assert_eq!(tx.message.recent_blockhash, tx2.message.recent_blockhash);
 }
 
@@ -122,7 +135,11 @@ fn test_json_round_trip_with_hex_signatures() {
     assert_eq!(sigs.len(), 1);
     assert!(sigs[0].is_string(), "JSON signature should be a hex string");
     let sig_hex = sigs[0].as_str().unwrap();
-    assert_eq!(sig_hex.len(), 128, "Hex-encoded 64-byte signature should be 128 chars");
+    assert_eq!(
+        sig_hex.len(),
+        128,
+        "Hex-encoded 64-byte signature should be 128 chars"
+    );
     assert_eq!(sig_hex, "ab".repeat(64));
 
     // Deserialize back
@@ -254,7 +271,7 @@ fn test_simulated_js_sdk_bytes_deserialize() {
     js_bytes.extend_from_slice(&sig);
     // instructions: Vec<Instruction>
     js_bytes.extend(encode_u64_le(1)); // 1 instruction
-    // instruction.program_id
+                                       // instruction.program_id
     js_bytes.extend_from_slice(&program_id.0);
     // instruction.accounts: Vec<Pubkey>
     js_bytes.extend(encode_u64_le(1)); // 1 account
@@ -266,8 +283,8 @@ fn test_simulated_js_sdk_bytes_deserialize() {
     js_bytes.extend_from_slice(&blockhash.0);
 
     // This must deserialize successfully
-    let tx: Transaction = bincode::deserialize(&js_bytes)
-        .expect("Failed to deserialize JS SDK bincode bytes");
+    let tx: Transaction =
+        bincode::deserialize(&js_bytes).expect("Failed to deserialize JS SDK bincode bytes");
 
     assert_eq!(tx.signatures.len(), 1);
     assert_eq!(tx.signatures[0], sig);
@@ -284,7 +301,8 @@ fn test_json_backward_compat_hex_signatures() {
     // (used by browser wallets)
     // 64 bytes = 128 hex chars of "ab" repeated
     let sig_hex = "ab".repeat(64);
-    let json = format!(r#"{{
+    let json = format!(
+        r#"{{
         "signatures": ["{}"],
         "message": {{
             "instructions": [{{
@@ -294,7 +312,9 @@ fn test_json_backward_compat_hex_signatures() {
             }}],
             "recent_blockhash": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]
         }}
-    }}"#, sig_hex);
+    }}"#,
+        sig_hex
+    );
 
     let tx: Transaction = serde_json::from_str(&json).unwrap();
     assert_eq!(tx.signatures.len(), 1);

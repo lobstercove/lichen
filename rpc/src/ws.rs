@@ -1,6 +1,7 @@
 // MoltChain WebSocket Server
 // Real-time event subscriptions for blocks, transactions, accounts, and logs
 
+use crate::dex_ws::{DexChannel, DexEventBroadcaster};
 use axum::{
     extract::{
         connect_info::ConnectInfo,
@@ -12,7 +13,6 @@ use axum::{
     Router,
 };
 use moltchain_core::{Block, MarketActivity, Pubkey, StateStore, Transaction};
-use crate::dex_ws::{DexChannel, DexEventBroadcaster};
 use serde::{Deserialize, Serialize};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -23,10 +23,28 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Serialize)]
 #[serde(tag = "type")]
 pub enum PredictionEvent {
-    MarketCreated { market_id: u64, question: String, slot: u64 },
-    TradeExecuted { market_id: u64, outcome: String, shares: u64, price: f64, slot: u64 },
-    MarketResolved { market_id: u64, winning_outcome: String, slot: u64 },
-    PriceUpdate { market_id: u64, outcomes: Vec<OutcomePrice>, slot: u64 },
+    MarketCreated {
+        market_id: u64,
+        question: String,
+        slot: u64,
+    },
+    TradeExecuted {
+        market_id: u64,
+        outcome: String,
+        shares: u64,
+        price: f64,
+        slot: u64,
+    },
+    MarketResolved {
+        market_id: u64,
+        winning_outcome: String,
+        slot: u64,
+    },
+    PriceUpdate {
+        market_id: u64,
+        outcomes: Vec<OutcomePrice>,
+        slot: u64,
+    },
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -290,12 +308,12 @@ enum SubscriptionType {
     BridgeLocks,
     BridgeMints,
     // ─── New subscription types ───
-    SignatureStatus(String),     // track one tx signature hex
-    Validators,                  // validator set changes
+    SignatureStatus(String), // track one tx signature hex
+    Validators,              // validator set changes
     TokenBalance { owner: Pubkey, mint: Option<Pubkey> },
-    Epochs,                      // epoch boundary notifications
-    Governance,                  // on-chain governance events
-    Dex(DexChannel),             // DEX real-time channels (orderbook, trades, ticker, candles, orders, positions)
+    Epochs,                        // epoch boundary notifications
+    Governance,                    // on-chain governance events
+    Dex(DexChannel), // DEX real-time channels (orderbook, trades, ticker, candles, orders, positions)
     Prediction(PredictionChannel), // Prediction market real-time channels
 }
 
@@ -351,7 +369,14 @@ pub struct WsState {
 }
 
 impl WsState {
-    pub fn new(state: StateStore) -> (Self, broadcast::Sender<Event>, Arc<DexEventBroadcaster>, Arc<PredictionEventBroadcaster>) {
+    pub fn new(
+        state: StateStore,
+    ) -> (
+        Self,
+        broadcast::Sender<Event>,
+        Arc<DexEventBroadcaster>,
+        Arc<PredictionEventBroadcaster>,
+    ) {
         let (event_tx, _) = broadcast::channel(1000);
         let dex_broadcaster = Arc::new(DexEventBroadcaster::new(2048));
         let prediction_broadcaster = Arc::new(PredictionEventBroadcaster::new(1024));
@@ -370,7 +395,15 @@ impl WsState {
 pub async fn start_ws_server(
     state: StateStore,
     port: u16,
-) -> Result<(broadcast::Sender<Event>, Arc<DexEventBroadcaster>, Arc<PredictionEventBroadcaster>, tokio::task::JoinHandle<()>), Box<dyn std::error::Error>> {
+) -> Result<
+    (
+        broadcast::Sender<Event>,
+        Arc<DexEventBroadcaster>,
+        Arc<PredictionEventBroadcaster>,
+        tokio::task::JoinHandle<()>,
+    ),
+    Box<dyn std::error::Error>,
+> {
     let (ws_state, event_tx, dex_broadcaster, prediction_broadcaster) = WsState::new(state);
 
     let app = Router::new()
@@ -384,7 +417,12 @@ pub async fn start_ws_server(
     info!("🦞 WebSocket server listening on {}", addr);
 
     let handle = tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await {
+        if let Err(e) = axum::serve(
+            listener,
+            app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        )
+        .await
+        {
             error!("WebSocket server error: {}", e);
         }
     });
@@ -527,11 +565,22 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
                     (Event::BridgeLock { .. }, SubscriptionType::BridgeLocks) => true,
                     (Event::BridgeMint { .. }, SubscriptionType::BridgeMints) => true,
                     // ─── New subscription matching ───
-                    (Event::SignatureStatus { ref signature, .. }, SubscriptionType::SignatureStatus(ref sub_sig)) => signature == sub_sig,
+                    (
+                        Event::SignatureStatus { ref signature, .. },
+                        SubscriptionType::SignatureStatus(ref sub_sig),
+                    ) => signature == sub_sig,
                     (Event::ValidatorUpdate { .. }, SubscriptionType::Validators) => true,
-                    (Event::TokenBalanceChange { ref owner, ref mint, .. }, SubscriptionType::TokenBalance { owner: ref sub_owner, mint: ref sub_mint }) => {
-                        owner == sub_owner && sub_mint.as_ref().map_or(true, |m| m == mint)
-                    },
+                    (
+                        Event::TokenBalanceChange {
+                            ref owner,
+                            ref mint,
+                            ..
+                        },
+                        SubscriptionType::TokenBalance {
+                            owner: ref sub_owner,
+                            mint: ref sub_mint,
+                        },
+                    ) => owner == sub_owner && sub_mint.as_ref().is_none_or(|m| m == mint),
                     (Event::EpochChange { .. }, SubscriptionType::Epochs) => true,
                     (Event::GovernanceEvent { .. }, SubscriptionType::Governance) => true,
                     _ => false,
@@ -590,7 +639,10 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
             let pred_event = match prediction_event_rx.recv().await {
                 Ok(event) => event,
                 Err(broadcast::error::RecvError::Lagged(n)) => {
-                    warn!("Prediction WebSocket subscriber lagged, skipped {} events", n);
+                    warn!(
+                        "Prediction WebSocket subscriber lagged, skipped {} events",
+                        n
+                    );
                     continue;
                 }
                 Err(broadcast::error::RecvError::Closed) => break,
@@ -1077,21 +1129,35 @@ async fn handle_subscription_request(
                         .await
                         .map(|sub_id| serde_json::json!(sub_id))
                 } else {
-                    Err(WsError { code: -32602, message: "Expected signature string".to_string() })
+                    Err(WsError {
+                        code: -32602,
+                        message: "Expected signature string".to_string(),
+                    })
                 }
             } else {
-                Err(WsError { code: -32602, message: "Missing params: signature string".to_string() })
+                Err(WsError {
+                    code: -32602,
+                    message: "Missing params: signature string".to_string(),
+                })
             }
         }
         "unsubscribeSignatureStatus" | "signatureUnsubscribe" => {
             if let Some(params) = req.params {
                 if let Some(sub_id) = params.as_u64() {
-                    Ok(serde_json::json!(subscription_manager.unsubscribe(sub_id).await))
+                    Ok(serde_json::json!(
+                        subscription_manager.unsubscribe(sub_id).await
+                    ))
                 } else {
-                    Err(WsError { code: -32602, message: "Invalid params: expected subscription ID".to_string() })
+                    Err(WsError {
+                        code: -32602,
+                        message: "Invalid params: expected subscription ID".to_string(),
+                    })
                 }
             } else {
-                Err(WsError { code: -32602, message: "Missing params".to_string() })
+                Err(WsError {
+                    code: -32602,
+                    message: "Missing params".to_string(),
+                })
             }
         }
 
@@ -1102,12 +1168,20 @@ async fn handle_subscription_request(
         "unsubscribeValidators" | "validatorUnsubscribe" => {
             if let Some(params) = req.params {
                 if let Some(sub_id) = params.as_u64() {
-                    Ok(serde_json::json!(subscription_manager.unsubscribe(sub_id).await))
+                    Ok(serde_json::json!(
+                        subscription_manager.unsubscribe(sub_id).await
+                    ))
                 } else {
-                    Err(WsError { code: -32602, message: "Invalid params".to_string() })
+                    Err(WsError {
+                        code: -32602,
+                        message: "Invalid params".to_string(),
+                    })
                 }
             } else {
-                Err(WsError { code: -32602, message: "Missing params".to_string() })
+                Err(WsError {
+                    code: -32602,
+                    message: "Missing params".to_string(),
+                })
             }
         }
 
@@ -1124,24 +1198,41 @@ async fn handle_subscription_request(
                                 .await
                                 .map(|sub_id| serde_json::json!(sub_id))
                         }
-                        Err(_) => Err(WsError { code: -32602, message: "Invalid owner pubkey".to_string() }),
+                        Err(_) => Err(WsError {
+                            code: -32602,
+                            message: "Invalid owner pubkey".to_string(),
+                        }),
                     }
                 } else {
-                    Err(WsError { code: -32602, message: "Expected object with 'owner' field".to_string() })
+                    Err(WsError {
+                        code: -32602,
+                        message: "Expected object with 'owner' field".to_string(),
+                    })
                 }
             } else {
-                Err(WsError { code: -32602, message: "Missing params".to_string() })
+                Err(WsError {
+                    code: -32602,
+                    message: "Missing params".to_string(),
+                })
             }
         }
         "unsubscribeTokenBalance" | "tokenBalanceUnsubscribe" => {
             if let Some(params) = req.params {
                 if let Some(sub_id) = params.as_u64() {
-                    Ok(serde_json::json!(subscription_manager.unsubscribe(sub_id).await))
+                    Ok(serde_json::json!(
+                        subscription_manager.unsubscribe(sub_id).await
+                    ))
                 } else {
-                    Err(WsError { code: -32602, message: "Invalid params".to_string() })
+                    Err(WsError {
+                        code: -32602,
+                        message: "Invalid params".to_string(),
+                    })
                 }
             } else {
-                Err(WsError { code: -32602, message: "Missing params".to_string() })
+                Err(WsError {
+                    code: -32602,
+                    message: "Missing params".to_string(),
+                })
             }
         }
 
@@ -1152,12 +1243,20 @@ async fn handle_subscription_request(
         "unsubscribeEpochs" | "epochUnsubscribe" => {
             if let Some(params) = req.params {
                 if let Some(sub_id) = params.as_u64() {
-                    Ok(serde_json::json!(subscription_manager.unsubscribe(sub_id).await))
+                    Ok(serde_json::json!(
+                        subscription_manager.unsubscribe(sub_id).await
+                    ))
                 } else {
-                    Err(WsError { code: -32602, message: "Invalid params".to_string() })
+                    Err(WsError {
+                        code: -32602,
+                        message: "Invalid params".to_string(),
+                    })
                 }
             } else {
-                Err(WsError { code: -32602, message: "Missing params".to_string() })
+                Err(WsError {
+                    code: -32602,
+                    message: "Missing params".to_string(),
+                })
             }
         }
 
@@ -1168,67 +1267,102 @@ async fn handle_subscription_request(
         "unsubscribeGovernance" | "governanceUnsubscribe" => {
             if let Some(params) = req.params {
                 if let Some(sub_id) = params.as_u64() {
-                    Ok(serde_json::json!(subscription_manager.unsubscribe(sub_id).await))
+                    Ok(serde_json::json!(
+                        subscription_manager.unsubscribe(sub_id).await
+                    ))
                 } else {
-                    Err(WsError { code: -32602, message: "Invalid params".to_string() })
+                    Err(WsError {
+                        code: -32602,
+                        message: "Invalid params".to_string(),
+                    })
                 }
             } else {
-                Err(WsError { code: -32602, message: "Missing params".to_string() })
+                Err(WsError {
+                    code: -32602,
+                    message: "Missing params".to_string(),
+                })
             }
         }
 
         // ─── DEX real-time channels ───
         "subscribeDex" => {
             if let Some(params) = req.params {
-                let channel_str = params.get("channel")
+                let channel_str = params
+                    .get("channel")
                     .and_then(|v| v.as_str())
                     .or_else(|| params.as_str());
                 if let Some(ch) = channel_str {
                     if let Some(dex_channel) = DexChannel::parse(ch) {
-                        subscription_manager.subscribe(SubscriptionType::Dex(dex_channel))
+                        subscription_manager
+                            .subscribe(SubscriptionType::Dex(dex_channel))
                             .await
                             .map(|sub_id| serde_json::json!(sub_id))
                     } else {
-                        Err(WsError { code: -32602, message: format!("Invalid DEX channel: {}", ch) })
+                        Err(WsError {
+                            code: -32602,
+                            message: format!("Invalid DEX channel: {}", ch),
+                        })
                     }
                 } else {
-                    Err(WsError { code: -32602, message: "Missing 'channel' param for subscribeDex".to_string() })
+                    Err(WsError {
+                        code: -32602,
+                        message: "Missing 'channel' param for subscribeDex".to_string(),
+                    })
                 }
             } else {
-                Err(WsError { code: -32602, message: "Missing params for subscribeDex".to_string() })
+                Err(WsError {
+                    code: -32602,
+                    message: "Missing params for subscribeDex".to_string(),
+                })
             }
         }
         "unsubscribeDex" => {
             if let Some(params) = req.params {
                 if let Some(sub_id) = params.as_u64() {
-                    Ok(serde_json::json!(subscription_manager.unsubscribe(sub_id).await))
+                    Ok(serde_json::json!(
+                        subscription_manager.unsubscribe(sub_id).await
+                    ))
                 } else if let Some(sub_id) = params.get("subscription").and_then(|v| v.as_u64()) {
-                    Ok(serde_json::json!(subscription_manager.unsubscribe(sub_id).await))
+                    Ok(serde_json::json!(
+                        subscription_manager.unsubscribe(sub_id).await
+                    ))
                 } else {
-                    Err(WsError { code: -32602, message: "Invalid params".to_string() })
+                    Err(WsError {
+                        code: -32602,
+                        message: "Invalid params".to_string(),
+                    })
                 }
             } else {
-                Err(WsError { code: -32602, message: "Missing params".to_string() })
+                Err(WsError {
+                    code: -32602,
+                    message: "Missing params".to_string(),
+                })
             }
         }
 
         // ─── Prediction market real-time channels ───
         "subscribePrediction" | "subscribePredictionMarket" => {
             if let Some(params) = req.params {
-                let channel_str = params.get("channel")
+                let channel_str = params
+                    .get("channel")
                     .and_then(|v| v.as_str())
                     .or_else(|| params.as_str())
                     .unwrap_or("all");
                 if let Some(pred_channel) = PredictionChannel::parse(channel_str) {
-                    subscription_manager.subscribe(SubscriptionType::Prediction(pred_channel))
+                    subscription_manager
+                        .subscribe(SubscriptionType::Prediction(pred_channel))
                         .await
                         .map(|sub_id| serde_json::json!(sub_id))
                 } else {
-                    Err(WsError { code: -32602, message: format!("Invalid prediction channel: {}", channel_str) })
+                    Err(WsError {
+                        code: -32602,
+                        message: format!("Invalid prediction channel: {}", channel_str),
+                    })
                 }
             } else {
                 // No params → subscribe to all markets
-                subscription_manager.subscribe(SubscriptionType::Prediction(PredictionChannel::AllMarkets))
+                subscription_manager
+                    .subscribe(SubscriptionType::Prediction(PredictionChannel::AllMarkets))
                     .await
                     .map(|sub_id| serde_json::json!(sub_id))
             }
@@ -1236,14 +1370,24 @@ async fn handle_subscription_request(
         "unsubscribePrediction" | "unsubscribePredictionMarket" => {
             if let Some(params) = req.params {
                 if let Some(sub_id) = params.as_u64() {
-                    Ok(serde_json::json!(subscription_manager.unsubscribe(sub_id).await))
+                    Ok(serde_json::json!(
+                        subscription_manager.unsubscribe(sub_id).await
+                    ))
                 } else if let Some(sub_id) = params.get("subscription").and_then(|v| v.as_u64()) {
-                    Ok(serde_json::json!(subscription_manager.unsubscribe(sub_id).await))
+                    Ok(serde_json::json!(
+                        subscription_manager.unsubscribe(sub_id).await
+                    ))
                 } else {
-                    Err(WsError { code: -32602, message: "Invalid params".to_string() })
+                    Err(WsError {
+                        code: -32602,
+                        message: "Invalid params".to_string(),
+                    })
                 }
             } else {
-                Err(WsError { code: -32602, message: "Missing params".to_string() })
+                Err(WsError {
+                    code: -32602,
+                    message: "Missing params".to_string(),
+                })
             }
         }
 
@@ -1363,14 +1507,24 @@ fn create_notification(sub_id: u64, event: &Event) -> Notification {
             "tx_hash": tx_hash,
         }),
         // ─── New event notifications ───
-        Event::SignatureStatus { signature, status, slot, err } => serde_json::json!({
+        Event::SignatureStatus {
+            signature,
+            status,
+            slot,
+            err,
+        } => serde_json::json!({
             "event": "SignatureStatus",
             "signature": signature,
             "status": status,
             "slot": slot,
             "error": err,
         }),
-        Event::ValidatorUpdate { pubkey, event_kind, stake, slot } => serde_json::json!({
+        Event::ValidatorUpdate {
+            pubkey,
+            event_kind,
+            stake,
+            slot,
+        } => serde_json::json!({
             "event": "ValidatorUpdate",
             "pubkey": pubkey.to_base58(),
             "kind": event_kind,
@@ -1378,7 +1532,13 @@ fn create_notification(sub_id: u64, event: &Event) -> Notification {
             "stake_display": *stake as f64 / 1_000_000_000.0,
             "slot": slot,
         }),
-        Event::TokenBalanceChange { owner, mint, old_balance, new_balance, slot } => serde_json::json!({
+        Event::TokenBalanceChange {
+            owner,
+            mint,
+            old_balance,
+            new_balance,
+            slot,
+        } => serde_json::json!({
             "event": "TokenBalanceChange",
             "owner": owner.to_base58(),
             "mint": mint.to_base58(),
@@ -1387,7 +1547,12 @@ fn create_notification(sub_id: u64, event: &Event) -> Notification {
             "delta": (*new_balance as i128 - *old_balance as i128),
             "slot": slot,
         }),
-        Event::EpochChange { epoch, slot, total_stake, validator_count } => serde_json::json!({
+        Event::EpochChange {
+            epoch,
+            slot,
+            total_stake,
+            validator_count,
+        } => serde_json::json!({
             "event": "EpochChange",
             "epoch": epoch,
             "slot": slot,
@@ -1395,7 +1560,13 @@ fn create_notification(sub_id: u64, event: &Event) -> Notification {
             "total_stake_display": *total_stake as f64 / 1_000_000_000.0,
             "validator_count": validator_count,
         }),
-        Event::GovernanceEvent { proposal_id, event_kind, voter, vote_weight, slot } => serde_json::json!({
+        Event::GovernanceEvent {
+            proposal_id,
+            event_kind,
+            voter,
+            vote_weight,
+            slot,
+        } => serde_json::json!({
             "event": "GovernanceEvent",
             "proposal_id": proposal_id,
             "kind": event_kind,

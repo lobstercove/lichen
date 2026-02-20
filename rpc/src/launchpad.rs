@@ -141,8 +141,8 @@ struct TokenJson {
 
 #[derive(Deserialize)]
 struct TokenListQuery {
-    sort: Option<String>,     // "newest", "raised", "graduation", "price"
-    filter: Option<String>,   // "active", "graduated", "all"
+    sort: Option<String>,   // "newest", "raised", "graduation", "price"
+    filter: Option<String>, // "active", "graduated", "all"
     limit: Option<usize>,
     offset: Option<usize>,
 }
@@ -253,10 +253,26 @@ async fn get_tokens(
 
     // Sort
     match sort_by {
-        "raised" => tokens.sort_by(|a, b| b.molt_raised.partial_cmp(&a.molt_raised).unwrap_or(std::cmp::Ordering::Equal)),
-        "graduation" => tokens.sort_by(|a, b| b.graduation_pct.partial_cmp(&a.graduation_pct).unwrap_or(std::cmp::Ordering::Equal)),
-        "price" => tokens.sort_by(|a, b| b.current_price.partial_cmp(&a.current_price).unwrap_or(std::cmp::Ordering::Equal)),
-        "mcap" => tokens.sort_by(|a, b| b.market_cap.partial_cmp(&a.market_cap).unwrap_or(std::cmp::Ordering::Equal)),
+        "raised" => tokens.sort_by(|a, b| {
+            b.molt_raised
+                .partial_cmp(&a.molt_raised)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }),
+        "graduation" => tokens.sort_by(|a, b| {
+            b.graduation_pct
+                .partial_cmp(&a.graduation_pct)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }),
+        "price" => tokens.sort_by(|a, b| {
+            b.current_price
+                .partial_cmp(&a.current_price)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }),
+        "mcap" => tokens.sort_by(|a, b| {
+            b.market_cap
+                .partial_cmp(&a.market_cap)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }),
         _ => tokens.sort_by(|a, b| b.id.cmp(&a.id)), // newest first
     }
 
@@ -284,10 +300,7 @@ async fn get_tokens(
 }
 
 /// GET /tokens/:id — Get single token info
-async fn get_token(
-    State(state): State<Arc<RpcState>>,
-    Path(id): Path<u64>,
-) -> Response {
+async fn get_token(State(state): State<Arc<RpcState>>, Path(id): Path<u64>) -> Response {
     let slot = current_slot(&state);
     match decode_token(&state, id) {
         Some(t) => ApiResponse::ok(t, slot).into_response(),

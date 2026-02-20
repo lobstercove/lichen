@@ -201,12 +201,20 @@ impl Account {
     /// AUDIT-FIX 1.1a: checked arithmetic, compute-before-mutate
     pub fn stake(&mut self, amount: u64) -> Result<(), String> {
         // AUDIT-FIX 3.1: Skip no-op zero-amount operations
-        if amount == 0 { return Ok(()); }
+        if amount == 0 {
+            return Ok(());
+        }
         let new_spendable = self.spendable.checked_sub(amount).ok_or_else(|| {
-            format!("Insufficient spendable balance: {} < {}", self.spendable, amount)
+            format!(
+                "Insufficient spendable balance: {} < {}",
+                self.spendable, amount
+            )
         })?;
         let new_staked = self.staked.checked_add(amount).ok_or_else(|| {
-            format!("Overflow adding {} to staked balance {}", amount, self.staked)
+            format!(
+                "Overflow adding {} to staked balance {}",
+                amount, self.staked
+            )
         })?;
         self.spendable = new_spendable;
         self.staked = new_staked;
@@ -220,12 +228,18 @@ impl Account {
     /// AUDIT-FIX 1.1b: checked arithmetic, compute-before-mutate
     pub fn unstake(&mut self, amount: u64) -> Result<(), String> {
         // AUDIT-FIX 3.1: Skip no-op zero-amount operations
-        if amount == 0 { return Ok(()); }
-        let new_staked = self.staked.checked_sub(amount).ok_or_else(|| {
-            format!("Insufficient staked balance: {} < {}", self.staked, amount)
-        })?;
+        if amount == 0 {
+            return Ok(());
+        }
+        let new_staked = self
+            .staked
+            .checked_sub(amount)
+            .ok_or_else(|| format!("Insufficient staked balance: {} < {}", self.staked, amount))?;
         let new_spendable = self.spendable.checked_add(amount).ok_or_else(|| {
-            format!("Overflow adding {} to spendable balance {}", amount, self.spendable)
+            format!(
+                "Overflow adding {} to spendable balance {}",
+                amount, self.spendable
+            )
         })?;
         self.staked = new_staked;
         self.spendable = new_spendable;
@@ -239,12 +253,20 @@ impl Account {
     /// AUDIT-FIX 1.1c: checked arithmetic, compute-before-mutate
     pub fn lock(&mut self, amount: u64) -> Result<(), String> {
         // AUDIT-FIX 3.1: Skip no-op zero-amount operations
-        if amount == 0 { return Ok(()); }
+        if amount == 0 {
+            return Ok(());
+        }
         let new_spendable = self.spendable.checked_sub(amount).ok_or_else(|| {
-            format!("Insufficient spendable balance: {} < {}", self.spendable, amount)
+            format!(
+                "Insufficient spendable balance: {} < {}",
+                self.spendable, amount
+            )
         })?;
         let new_locked = self.locked.checked_add(amount).ok_or_else(|| {
-            format!("Overflow adding {} to locked balance {}", amount, self.locked)
+            format!(
+                "Overflow adding {} to locked balance {}",
+                amount, self.locked
+            )
         })?;
         self.spendable = new_spendable;
         self.locked = new_locked;
@@ -258,12 +280,18 @@ impl Account {
     /// AUDIT-FIX 1.1d: checked arithmetic, compute-before-mutate
     pub fn unlock(&mut self, amount: u64) -> Result<(), String> {
         // AUDIT-FIX 3.1: Skip no-op zero-amount operations
-        if amount == 0 { return Ok(()); }
-        let new_locked = self.locked.checked_sub(amount).ok_or_else(|| {
-            format!("Insufficient locked balance: {} < {}", self.locked, amount)
-        })?;
+        if amount == 0 {
+            return Ok(());
+        }
+        let new_locked = self
+            .locked
+            .checked_sub(amount)
+            .ok_or_else(|| format!("Insufficient locked balance: {} < {}", self.locked, amount))?;
         let new_spendable = self.spendable.checked_add(amount).ok_or_else(|| {
-            format!("Overflow adding {} to spendable balance {}", amount, self.spendable)
+            format!(
+                "Overflow adding {} to spendable balance {}",
+                amount, self.spendable
+            )
         })?;
         self.locked = new_locked;
         self.spendable = new_spendable;
@@ -296,10 +324,16 @@ impl Account {
     /// AUDIT-FIX 1.1e: checked arithmetic, compute-before-mutate
     pub fn deduct_spendable(&mut self, amount: u64) -> Result<(), String> {
         let new_spendable = self.spendable.checked_sub(amount).ok_or_else(|| {
-            format!("Insufficient spendable balance: {} < {}", self.spendable, amount)
+            format!(
+                "Insufficient spendable balance: {} < {}",
+                self.spendable, amount
+            )
         })?;
         let new_shells = self.shells.checked_sub(amount).ok_or_else(|| {
-            format!("Underflow subtracting {} from shells balance {}", amount, self.shells)
+            format!(
+                "Underflow subtracting {} from shells balance {}",
+                amount, self.shells
+            )
         })?;
         self.spendable = new_spendable;
         self.shells = new_shells;

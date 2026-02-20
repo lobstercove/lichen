@@ -363,11 +363,11 @@ impl GenesisConfig {
             consensus: ConsensusParams {
                 slot_duration_ms: 400,
                 // AUDIT-FIX 1.3: match SLOTS_PER_EPOCH constant (432_000)
-                epoch_slots: 432000,                      // ~2 days at 400ms
+                epoch_slots: 432000, // ~2 days at 400ms
                 // AUDIT-FIX 3.22: Lower stake requirement for testnet (100 MOLT vs 100k)
-                min_validator_stake: 100_000_000_000,     // 100 MOLT (testnet)
+                min_validator_stake: 100_000_000_000, // 100 MOLT (testnet)
                 // AUDIT-FIX 1.3: match TRANSACTION_BLOCK_REWARD constant (0.9 MOLT)
-                validator_reward_per_block: 900_000_000,   // 0.9 MOLT
+                validator_reward_per_block: 900_000_000, // 0.9 MOLT
                 slashing_percentage_double_sign: 50,
                 // AUDIT-FIX A5-03: graduated downtime (1% per 100 missed, max 10%)
                 slashing_downtime_per_100_missed: 1,

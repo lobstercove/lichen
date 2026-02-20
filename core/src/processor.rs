@@ -8,8 +8,8 @@ use crate::evm::{
     EvmReceipt, EvmTxRecord, EVM_PROGRAM_ID,
 };
 use crate::state::{StateBatch, StateStore, SymbolRegistryEntry};
-use crate::Hash;
 use crate::transaction::{Instruction, Transaction};
+use crate::Hash;
 use alloy_primitives::U256;
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -148,7 +148,13 @@ impl TxProcessor {
     /// Build a TxResult, draining any accumulated contract metadata.
     fn make_result(&self, success: bool, fee_paid: u64, error: Option<String>) -> TxResult {
         let (return_code, contract_logs) = self.drain_contract_meta();
-        TxResult { success, fee_paid, error, return_code, contract_logs }
+        TxResult {
+            success,
+            fee_paid,
+            error,
+            return_code,
+            contract_logs,
+        }
     }
 
     /// Calculate total fees for a transaction (base + program-specific)
@@ -178,10 +184,13 @@ impl TxProcessor {
                 // at simulation time we don't know gas_used yet, so we estimate
                 // with gas_price * gas_limit (the maximum possible charge).
                 if let Ok(evm_tx) = decode_evm_transaction(&first_ix.data) {
-                    let estimated = u256_to_shells(
-                        &(evm_tx.gas_price * U256::from(evm_tx.gas_limit)),
-                    );
-                    return if estimated > 0 { estimated } else { fee_config.base_fee };
+                    let estimated =
+                        u256_to_shells(&(evm_tx.gas_price * U256::from(evm_tx.gas_limit)));
+                    return if estimated > 0 {
+                        estimated
+                    } else {
+                        fee_config.base_fee
+                    };
                 }
                 return fee_config.base_fee;
             }
@@ -485,11 +494,7 @@ impl TxProcessor {
     }
 
     /// AUDIT-FIX 1.15: Check token_id uniqueness against batch overlay + committed state
-    fn b_nft_token_id_exists(
-        &self,
-        collection: &Pubkey,
-        token_id: u64,
-    ) -> Result<bool, String> {
+    fn b_nft_token_id_exists(&self, collection: &Pubkey, token_id: u64) -> Result<bool, String> {
         let guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(batch) = guard.as_ref() {
             batch.nft_token_id_exists(collection, token_id)
@@ -581,12 +586,20 @@ impl TxProcessor {
 
         // T1.7: Validate transaction structure (size limits)
         if let Err(e) = tx.validate_structure() {
-            return self.make_result(false, 0, Some(format!("Invalid transaction structure: {}", e)));
+            return self.make_result(
+                false,
+                0,
+                Some(format!("Invalid transaction structure: {}", e)),
+            );
         }
 
         // T1.3: Reject transactions with zero blockhash (no bypass)
         if tx.message.recent_blockhash == crate::hash::Hash::default() {
-            return self.make_result(false, 0, Some("Zero blockhash is not valid for replay protection".to_string()));
+            return self.make_result(
+                false,
+                0,
+                Some("Zero blockhash is not valid for replay protection".to_string()),
+            );
         }
 
         // Reject replayed transactions
@@ -605,7 +618,11 @@ impl TxProcessor {
                 recent.contains(&tx.message.recent_blockhash)
             };
             if !valid {
-                return self.make_result(false, 0, Some("Blockhash not found or too old".to_string()));
+                return self.make_result(
+                    false,
+                    0,
+                    Some("Blockhash not found or too old".to_string()),
+                );
             }
         }
 
@@ -634,16 +651,20 @@ impl TxProcessor {
 
         // We need at least as many signatures as unique signers
         if tx.signatures.len() < required_signers.len() {
-            return self.make_result(false, 0, Some(format!(
-                "Insufficient signatures: got {}, need {}",
-                tx.signatures.len(),
-                required_signers.len()
-            )));
+            return self.make_result(
+                false,
+                0,
+                Some(format!(
+                    "Insufficient signatures: got {}, need {}",
+                    tx.signatures.len(),
+                    required_signers.len()
+                )),
+            );
         }
 
         // Verify all signatures against the transaction message and build verified set
         let message_bytes = tx.message.serialize();
-        use ed25519_dalek::{Verifier, VerifyingKey, Signature as EdSignature};
+        use ed25519_dalek::{Signature as EdSignature, Verifier, VerifyingKey};
         let mut verified_signers: HashSet<Pubkey> = HashSet::new();
 
         // PERF-FIX 3: Pre-decompress all verifying keys once to avoid redundant
@@ -686,10 +707,14 @@ impl TxProcessor {
         // Ensure all required signers have a valid signature
         for signer in &required_signers {
             if !verified_signers.contains(signer) {
-                return self.make_result(false, 0, Some(format!(
-                    "Missing or invalid signature for account {}",
-                    signer
-                )));
+                return self.make_result(
+                    false,
+                    0,
+                    Some(format!(
+                        "Missing or invalid signature for account {}",
+                        signer
+                    )),
+                );
             }
         }
 
@@ -734,12 +759,20 @@ impl TxProcessor {
 
         if let Err(e) = self.b_put_transaction(tx) {
             self.rollback_batch();
-            return self.make_result(false, total_fee, Some(format!("Transaction storage error: {}", e)));
+            return self.make_result(
+                false,
+                total_fee,
+                Some(format!("Transaction storage error: {}", e)),
+            );
         }
 
         if let Err(e) = self.commit_batch() {
             self.rollback_batch();
-            return self.make_result(false, total_fee, Some(format!("Atomic commit failed: {}", e)));
+            return self.make_result(
+                false,
+                total_fee,
+                Some(format!("Atomic commit failed: {}", e)),
+            );
         }
 
         self.make_result(true, total_fee, None)
@@ -759,7 +792,12 @@ impl TxProcessor {
         validator: &Pubkey,
     ) -> Vec<TxResult> {
         // PERF-FIX 10: Cache blockhashes ONCE for the entire batch
-        let cached_blockhashes: HashSet<Hash> = self.state.get_recent_blockhashes(300).unwrap_or_default().into_iter().collect();
+        let cached_blockhashes: HashSet<Hash> = self
+            .state
+            .get_recent_blockhashes(300)
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
 
         if txs.len() <= 1 {
             return txs
@@ -801,7 +839,7 @@ impl TxProcessor {
         // Conflicting TXs are merged into the same group.
         let mut parent: Vec<usize> = (0..n).collect();
 
-        fn uf_find(parent: &mut Vec<usize>, x: usize) -> usize {
+        fn uf_find(parent: &mut [usize], x: usize) -> usize {
             let mut r = x;
             while parent[r] != r {
                 r = parent[r];
@@ -816,7 +854,7 @@ impl TxProcessor {
             r
         }
 
-        fn uf_union(parent: &mut Vec<usize>, a: usize, b: usize) {
+        fn uf_union(parent: &mut [usize], a: usize, b: usize) {
             let ra = uf_find(parent, a);
             let rb = uf_find(parent, b);
             if ra != rb {
@@ -876,7 +914,11 @@ impl TxProcessor {
             let group_proc = TxProcessor::new(self.state.clone());
             let mut group_results: Vec<(usize, TxResult)> = Vec::with_capacity(group.len());
             for &idx in group {
-                let result = group_proc.process_transaction_inner(&txs[idx], validator, Some(&cached_blockhashes));
+                let result = group_proc.process_transaction_inner(
+                    &txs[idx],
+                    validator,
+                    Some(&cached_blockhashes),
+                );
                 group_results.push((idx, result));
             }
             let mut r = results_mu.lock().unwrap();
@@ -1027,12 +1069,12 @@ impl TxProcessor {
                                             let exec_result = runtime
                                                 .execute(&contract, &function, &args, context);
                                             runtime.return_to_pool();
-                                            match exec_result
-                                            {
+                                            match exec_result {
                                                 Ok(result) => {
                                                     total_compute += result.compute_used;
                                                     last_return_code = result.return_code;
-                                                    total_state_changes += result.storage_changes.len();
+                                                    total_state_changes +=
+                                                        result.storage_changes.len();
                                                     for log in &result.logs {
                                                         logs.push(format!("[ix{}] {}", idx, log));
                                                     }
@@ -1153,7 +1195,11 @@ impl TxProcessor {
         };
 
         if !u256_is_multiple_of_shell(&evm_tx.value) {
-            return self.make_result(false, 0, Some("EVM value must be multiple of 1e9 wei".to_string()));
+            return self.make_result(
+                false,
+                0,
+                Some("EVM value must be multiple of 1e9 wei".to_string()),
+            );
         }
 
         let from_address: [u8; 20] = evm_tx.from.into();
@@ -1221,16 +1267,28 @@ impl TxProcessor {
 
         if let Err(e) = self.b_put_evm_tx(&record) {
             self.rollback_batch();
-            return self.make_result(false, fee_paid, Some(format!("EVM tx storage error: {}", e)));
+            return self.make_result(
+                false,
+                fee_paid,
+                Some(format!("EVM tx storage error: {}", e)),
+            );
         }
         if let Err(e) = self.b_put_evm_receipt(&receipt) {
             self.rollback_batch();
-            return self.make_result(false, fee_paid, Some(format!("EVM receipt storage error: {}", e)));
+            return self.make_result(
+                false,
+                fee_paid,
+                Some(format!("EVM receipt storage error: {}", e)),
+            );
         }
 
         if let Err(e) = self.b_put_transaction(tx) {
             self.rollback_batch();
-            return self.make_result(false, fee_paid, Some(format!("Transaction storage error: {}", e)));
+            return self.make_result(
+                false,
+                fee_paid,
+                Some(format!("Transaction storage error: {}", e)),
+            );
         }
 
         // Fee already charged via charge_fee_direct before batch (AUDIT-FIX 0.7)
@@ -1239,19 +1297,31 @@ impl TxProcessor {
         // through the same atomic batch. This guarantees all-or-nothing commit.
         if let Err(e) = self.b_apply_evm_state_changes(&evm_state_changes) {
             self.rollback_batch();
-            return self.make_result(false, fee_paid, Some(format!("EVM state apply error: {}", e)));
+            return self.make_result(
+                false,
+                fee_paid,
+                Some(format!("EVM state apply error: {}", e)),
+            );
         }
 
         if let Err(e) = self.commit_batch() {
             self.rollback_batch();
-            return self.make_result(false, fee_paid, Some(format!("Atomic commit failed: {}", e)));
+            return self.make_result(
+                false,
+                fee_paid,
+                Some(format!("Atomic commit failed: {}", e)),
+            );
         }
 
-        self.make_result(result.success, fee_paid, if result.success {
-            None
-        } else {
-            Some("EVM execution reverted".to_string())
-        })
+        self.make_result(
+            result.success,
+            fee_paid,
+            if result.success {
+                None
+            } else {
+                Some("EVM execution reverted".to_string())
+            },
+        )
     }
 
     /// Charge transaction fee from spendable balance only (not staked/locked)
@@ -1281,7 +1351,9 @@ impl TxProcessor {
         let producer_amount = (fee as u128 * fee_config.fee_producer_percent as u128 / 100) as u64;
         let voters_amount = (fee as u128 * fee_config.fee_voters_percent as u128 / 100) as u64;
         // AUDIT-FIX 0.8: Use saturating_sub to prevent underflow if percentages exceed 100
-        let allocated = burn_amount.saturating_add(producer_amount).saturating_add(voters_amount);
+        let allocated = burn_amount
+            .saturating_add(producer_amount)
+            .saturating_add(voters_amount);
         let treasury_amount = fee.saturating_sub(allocated);
 
         // Burn portion: permanently remove from circulation (via batch — atomic)
@@ -1292,7 +1364,9 @@ impl TxProcessor {
         // Producer and voters portions go to treasury for now
         // (block producer/voter identities are not available in this scope;
         //  validator/src/main.rs distribute_fees handles the actual split at block level)
-        let total_to_treasury = treasury_amount.saturating_add(producer_amount).saturating_add(voters_amount);
+        let total_to_treasury = treasury_amount
+            .saturating_add(producer_amount)
+            .saturating_add(voters_amount);
 
         if total_to_treasury > 0 {
             let treasury_pubkey = self
@@ -1334,10 +1408,14 @@ impl TxProcessor {
         let producer_amount = (fee as u128 * fee_config.fee_producer_percent as u128 / 100) as u64;
         let voters_amount = (fee as u128 * fee_config.fee_voters_percent as u128 / 100) as u64;
         // AUDIT-FIX 0.8: Use saturating_sub to prevent underflow if percentages exceed 100
-        let allocated = burn_amount.saturating_add(producer_amount).saturating_add(voters_amount);
+        let allocated = burn_amount
+            .saturating_add(producer_amount)
+            .saturating_add(voters_amount);
         let treasury_amount = fee.saturating_sub(allocated);
 
-        let total_to_treasury = treasury_amount.saturating_add(producer_amount).saturating_add(voters_amount);
+        let total_to_treasury = treasury_amount
+            .saturating_add(producer_amount)
+            .saturating_add(voters_amount);
 
         // Build the atomic account set: payer is always included,
         // treasury only when there is something to credit.
@@ -2317,9 +2395,17 @@ impl TxProcessor {
         // The contract's existing code (load_u64("rep:{hex}")) will find the
         // injected data in ctx.storage after the merge in execute().
         {
-            let moltyid_program = contract.storage.get(b"pm_moltyid_addr" as &[u8])
+            let moltyid_program = contract
+                .storage
+                .get(b"pm_moltyid_addr" as &[u8])
                 .or_else(|| contract.storage.get(b"gov_moltyid_addr" as &[u8]))
-                .and_then(|v| if v.len() == 32 && v.iter().any(|&x| x != 0) { Some(v) } else { None });
+                .and_then(|v| {
+                    if v.len() == 32 && v.iter().any(|&x| x != 0) {
+                        Some(v)
+                    } else {
+                        None
+                    }
+                });
 
             if let Some(moltyid_addr_bytes) = moltyid_program {
                 let mut moltyid_pubkey = Pubkey([0u8; 32]);
@@ -2333,7 +2419,9 @@ impl TxProcessor {
                     rep_key.push(hex_chars[(b & 0x0f) as usize]);
                 }
                 // Read from MoltyID's storage in CF_CONTRACT_STORAGE
-                if let Ok(Some(rep_data)) = self.state.get_contract_storage(&moltyid_pubkey, &rep_key) {
+                if let Ok(Some(rep_data)) =
+                    self.state.get_contract_storage(&moltyid_pubkey, &rep_key)
+                {
                     context.cross_contract_storage.insert(rep_key, rep_data);
                 }
             }
@@ -2360,7 +2448,10 @@ impl TxProcessor {
         // Diagnostic: log when a contract call produces no storage changes despite
         // returning success — this helps diagnose "silent failure" issues where the
         // contract returns a non-zero error code but doesn't trap.
-        if result.success && result.storage_changes.is_empty() && result.cross_call_changes.is_empty() {
+        if result.success
+            && result.storage_changes.is_empty()
+            && result.cross_call_changes.is_empty()
+        {
             if let Some(rc) = result.return_code {
                 if rc != 0 {
                     eprintln!(
@@ -2425,9 +2516,8 @@ impl TxProcessor {
             let target_account = self
                 .b_get_account(target_addr)?
                 .ok_or_else(|| format!("Cross-call target {} not found", target_addr))?;
-            let mut target_contract: ContractAccount =
-                serde_json::from_slice(&target_account.data)
-                    .map_err(|e| format!("Failed to deserialize cross-call target: {}", e))?;
+            let mut target_contract: ContractAccount = serde_json::from_slice(&target_account.data)
+                .map_err(|e| format!("Failed to deserialize cross-call target: {}", e))?;
 
             for (key, value_opt) in changes {
                 match value_opt {
@@ -3403,7 +3493,11 @@ mod tests {
         // A fee of 1e18 (~1 billion MOLT) times percent 50 would overflow u64 multiply
         let large_fee: u64 = 1_000_000_000_000_000_000; // 1e18 shells
         let result = processor.charge_fee_direct(&alice, large_fee);
-        assert!(result.is_ok(), "Large fee should not overflow: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Large fee should not overflow: {:?}",
+            result.err()
+        );
 
         // Verify payer was debited
         let a_after = state.get_account(&alice).unwrap().unwrap();
@@ -3482,8 +3576,16 @@ mod tests {
 
         let results = processor.process_transactions_parallel(&[tx1, tx2], &validator);
         assert_eq!(results.len(), 2);
-        assert!(results[0].success, "tx1 (alice→bob) should succeed: {:?}", results[0].error);
-        assert!(results[1].success, "tx2 (alice→carol) should succeed: {:?}", results[1].error);
+        assert!(
+            results[0].success,
+            "tx1 (alice→bob) should succeed: {:?}",
+            results[0].error
+        );
+        assert!(
+            results[1].success,
+            "tx2 (alice→carol) should succeed: {:?}",
+            results[1].error
+        );
     }
 
     #[test]
@@ -3503,11 +3605,22 @@ mod tests {
         let treasury = Pubkey([3u8; 32]);
 
         state.set_treasury_pubkey(&treasury).unwrap();
-        state.put_account(&treasury, &Account::new(0, treasury)).unwrap();
-        state.put_account(&alice, &Account::new(500, alice)).unwrap();
+        state
+            .put_account(&treasury, &Account::new(0, treasury))
+            .unwrap();
+        state
+            .put_account(&alice, &Account::new(500, alice))
+            .unwrap();
         state.put_account(&bob, &Account::new(500, bob)).unwrap();
 
-        let genesis = crate::Block::new_with_timestamp(0, Hash::default(), Hash::default(), [0u8; 32], Vec::new(), 0);
+        let genesis = crate::Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            Vec::new(),
+            0,
+        );
         state.put_block(&genesis).unwrap();
         state.set_last_slot(0).unwrap();
         let genesis_hash = genesis.hash();
@@ -3518,8 +3631,16 @@ mod tests {
 
         let results = processor.process_transactions_parallel(&[tx1, tx2], &validator);
         assert_eq!(results.len(), 2);
-        assert!(results[0].success, "alice→carol should succeed: {:?}", results[0].error);
-        assert!(results[1].success, "bob→dave should succeed: {:?}", results[1].error);
+        assert!(
+            results[0].success,
+            "alice→carol should succeed: {:?}",
+            results[0].error
+        );
+        assert!(
+            results[1].success,
+            "bob→dave should succeed: {:?}",
+            results[1].error
+        );
     }
 
     #[test]
@@ -3539,11 +3660,22 @@ mod tests {
         let treasury = Pubkey([3u8; 32]);
 
         state.set_treasury_pubkey(&treasury).unwrap();
-        state.put_account(&treasury, &Account::new(0, treasury)).unwrap();
-        state.put_account(&alice, &Account::new(500, alice)).unwrap();
+        state
+            .put_account(&treasury, &Account::new(0, treasury))
+            .unwrap();
+        state
+            .put_account(&alice, &Account::new(500, alice))
+            .unwrap();
         state.put_account(&bob, &Account::new(500, bob)).unwrap();
 
-        let genesis = crate::Block::new_with_timestamp(0, Hash::default(), Hash::default(), [0u8; 32], Vec::new(), 0);
+        let genesis = crate::Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            Vec::new(),
+            0,
+        );
         state.put_block(&genesis).unwrap();
         state.set_last_slot(0).unwrap();
         let genesis_hash = genesis.hash();
@@ -3554,14 +3686,25 @@ mod tests {
 
         let results = processor.process_transactions_parallel(&[tx1, tx2], &validator);
         assert_eq!(results.len(), 2);
-        assert!(results[0].success, "tx1 should succeed in sequential group: {:?}", results[0].error);
-        assert!(results[1].success, "tx2 should succeed in sequential group: {:?}", results[1].error);
+        assert!(
+            results[0].success,
+            "tx1 should succeed in sequential group: {:?}",
+            results[0].error
+        );
+        assert!(
+            results[1].success,
+            "tx2 should succeed in sequential group: {:?}",
+            results[1].error
+        );
 
         // Verify both actually transferred
         let r = state.get_account(&shared_recipient).unwrap().unwrap();
         let alice_sent = Account::molt_to_shells(10);
         let bob_sent = Account::molt_to_shells(10);
-        assert!(r.spendable >= alice_sent + bob_sent, "Recipient should have both transfers");
+        assert!(
+            r.spendable >= alice_sent + bob_sent,
+            "Recipient should have both transfers"
+        );
     }
 
     #[test]
@@ -3574,9 +3717,18 @@ mod tests {
 
         let treasury = Pubkey([3u8; 32]);
         state.set_treasury_pubkey(&treasury).unwrap();
-        state.put_account(&treasury, &Account::new(0, treasury)).unwrap();
+        state
+            .put_account(&treasury, &Account::new(0, treasury))
+            .unwrap();
 
-        let genesis = crate::Block::new_with_timestamp(0, Hash::default(), Hash::default(), [0u8; 32], Vec::new(), 0);
+        let genesis = crate::Block::new_with_timestamp(
+            0,
+            Hash::default(),
+            Hash::default(),
+            [0u8; 32],
+            Vec::new(),
+            0,
+        );
         state.put_block(&genesis).unwrap();
         state.set_last_slot(0).unwrap();
         let genesis_hash = genesis.hash();
@@ -3610,7 +3762,11 @@ mod tests {
         let tx = make_transfer_tx(&alice_kp, alice, bob, 10, genesis_hash);
         let results = processor.process_transactions_parallel(&[tx], &validator);
         assert_eq!(results.len(), 1);
-        assert!(results[0].success, "Single tx should succeed: {:?}", results[0].error);
+        assert!(
+            results[0].success,
+            "Single tx should succeed: {:?}",
+            results[0].error
+        );
     }
 
     #[test]

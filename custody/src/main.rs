@@ -1,9 +1,11 @@
-use axum::{extract::State, routing::get, routing::post, routing::put, routing::delete, Json, Router};
 use axum::extract::ws::{Message as WsMessage, WebSocket, WebSocketUpgrade};
+use axum::{
+    extract::State, routing::delete, routing::get, routing::post, routing::put, Json, Router,
+};
 use base64::Engine;
 use ed25519_dalek::{Signer, VerifyingKey};
-use hmac::Mac;
 use frost_ed25519 as frost;
+use hmac::Mac;
 use moltchain_core::{Hash, Instruction, Keypair, Message, Pubkey, Transaction, SYSTEM_PROGRAM_ID};
 use rocksdb::{ColumnFamilyDescriptor, Options, DB};
 use serde::{Deserialize, Serialize};
@@ -173,7 +175,7 @@ struct CustodyConfig {
     /// Swaps exceeding this are rejected; unverifiable outputs are not credited.
     /// Set via CUSTODY_REBALANCE_MAX_SLIPPAGE_BPS (default: 50 = 0.5%).
     rebalance_max_slippage_bps: u64,
-    deposit_ttl_secs: i64,        // Expire unfunded deposits after this many seconds (default: 24h)
+    deposit_ttl_secs: i64, // Expire unfunded deposits after this many seconds (default: 24h)
     /// C8 fix: Secret master seed for key derivation (HMAC-SHA256 instead of plain SHA256).
     /// Load from CUSTODY_MASTER_SEED env var. Required for production.
     master_seed: String,
@@ -618,12 +620,19 @@ async fn create_deposit(
         }
         dr.count_this_minute += 1;
         if dr.count_this_minute > 60 {
-            tracing::warn!("⚠️  Deposit rate limit exceeded: {} this minute", dr.count_this_minute);
-            return Err(Json(ErrorResponse::invalid("rate_limited: too many deposit requests, try again later")));
+            tracing::warn!(
+                "⚠️  Deposit rate limit exceeded: {} this minute",
+                dr.count_this_minute
+            );
+            return Err(Json(ErrorResponse::invalid(
+                "rate_limited: too many deposit requests, try again later",
+            )));
         }
         if let Some(last) = dr.per_user.get(&payload.user_id) {
             if now.duration_since(*last).as_secs() < 10 {
-                return Err(Json(ErrorResponse::invalid("rate_limited: wait 10s between deposit requests")));
+                return Err(Json(ErrorResponse::invalid(
+                    "rate_limited: wait 10s between deposit requests",
+                )));
             }
         }
         dr.per_user.insert(payload.user_id.clone(), now);
@@ -1316,7 +1325,11 @@ fn load_config() -> CustodyConfig {
                     .split(',')
                     .map(|t| {
                         let t = t.trim();
-                        if t.is_empty() { None } else { Some(t.to_string()) }
+                        if t.is_empty() {
+                            None
+                        } else {
+                            Some(t.to_string())
+                        }
                     })
                     .collect()
             })
@@ -1995,7 +2008,9 @@ async fn evm_estimate_gas(
                     let buffered = estimate.saturating_add(estimate / 5);
                     tracing::debug!(
                         "eth_estimateGas: {} → buffered to {} (fallback was {})",
-                        estimate, buffered, fallback
+                        estimate,
+                        buffered,
+                        fallback
                     );
                     buffered
                 }
@@ -2006,7 +2021,11 @@ async fn evm_estimate_gas(
             }
         }
         Err(e) => {
-            tracing::debug!("eth_estimateGas failed ({}), using fallback {}", e, fallback);
+            tracing::debug!(
+                "eth_estimateGas failed ({}), using fallback {}",
+                e,
+                fallback
+            );
             fallback
         }
     }
@@ -2203,7 +2222,14 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
     for mut job in queued_jobs {
         job.status = "signing".to_string();
         store_sweep_job(&state.db, &job)?;
-        emit_custody_event(state, "sweep.signing", &job.job_id, Some(&job.deposit_id), None, None);
+        emit_custody_event(
+            state,
+            "sweep.signing",
+            &job.job_id,
+            Some(&job.deposit_id),
+            None,
+            None,
+        );
     }
 
     if state.config.signer_endpoints.is_empty() || state.config.signer_threshold == 0 {
@@ -2234,7 +2260,14 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
                 job.last_error = None;
                 job.next_attempt_at = None;
                 store_sweep_job(&state.db, job)?;
-                emit_custody_event(state, "sweep.submitted", &job.job_id, Some(&job.deposit_id), job.sweep_tx_hash.as_deref(), None);
+                emit_custody_event(
+                    state,
+                    "sweep.submitted",
+                    &job.job_id,
+                    Some(&job.deposit_id),
+                    job.sweep_tx_hash.as_deref(),
+                    None,
+                );
 
                 // AUDIT-FIX C2: Credit job (wrapped token mint) is now created AFTER
                 // sweep confirmation, not here. Minting before sweep is confirmed risks
@@ -2244,7 +2277,14 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
                 let _ = clear_tx_intent(&state.db, "sweep", &job.job_id);
                 mark_sweep_failed(job, "broadcast returned empty".to_string());
                 store_sweep_job(&state.db, job)?;
-                emit_custody_event(state, "sweep.failed", &job.job_id, Some(&job.deposit_id), job.sweep_tx_hash.as_deref(), None);
+                emit_custody_event(
+                    state,
+                    "sweep.failed",
+                    &job.job_id,
+                    Some(&job.deposit_id),
+                    job.sweep_tx_hash.as_deref(),
+                    None,
+                );
             }
             Err(err) => {
                 let _ = clear_tx_intent(&state.db, "sweep", &job.job_id);
@@ -2267,10 +2307,22 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
                 // P0-FIX: Update the deposit record to "swept" so polling clients
                 // see the status progression (issued → confirmed → swept → credited)
                 let _ = update_deposit_status(&state.db, &job.deposit_id, "swept");
-                let _ = update_status_index(&state.db, "deposits", "sweep_queued", "swept", &job.deposit_id);
+                let _ = update_status_index(
+                    &state.db,
+                    "deposits",
+                    "sweep_queued",
+                    "swept",
+                    &job.deposit_id,
+                );
 
-                emit_custody_event(state, "sweep.confirmed", &job.job_id, Some(&job.deposit_id), job.sweep_tx_hash.as_deref(),
-                    Some(&json!({ "chain": job.chain, "asset": job.asset, "amount": job.amount })));
+                emit_custody_event(
+                    state,
+                    "sweep.confirmed",
+                    &job.job_id,
+                    Some(&job.deposit_id),
+                    job.sweep_tx_hash.as_deref(),
+                    Some(&json!({ "chain": job.chain, "asset": job.asset, "amount": job.amount })),
+                );
 
                 // Track stablecoin reserves: when a sweep is confirmed, the treasury
                 // now holds the deposited asset. Update the reserve ledger.
@@ -2284,7 +2336,9 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
                                 &asset_lower,
                                 amount,
                                 true,
-                            ).await {
+                            )
+                            .await
+                            {
                                 tracing::warn!("reserve ledger update failed: {}", e);
                             }
                         }
@@ -2297,8 +2351,16 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
                 match build_credit_job(state, job)? {
                     Some(credit_job) => {
                         store_credit_job(&state.db, &credit_job)?;
-                        emit_custody_event(state, "credit.queued", &credit_job.job_id, Some(&credit_job.deposit_id), None,
-                            Some(&json!({ "amount_shells": credit_job.amount_shells, "to_address": credit_job.to_address })));
+                        emit_custody_event(
+                            state,
+                            "credit.queued",
+                            &credit_job.job_id,
+                            Some(&credit_job.deposit_id),
+                            None,
+                            Some(
+                                &json!({ "amount_shells": credit_job.amount_shells, "to_address": credit_job.to_address }),
+                            ),
+                        );
                     }
                     None => {
                         // AUDIT-FIX R-H1: Log when credit job cannot be built
@@ -2308,9 +2370,17 @@ async fn process_sweep_jobs(state: &CustodyState) -> Result<(), String> {
                             "🚨 CREDIT JOB NOT CREATED for sweep {} (deposit {}). \
                              Treasury received funds but no wrapped tokens will be minted. \
                              Manual operator intervention required to credit the user.",
-                            job.job_id, job.deposit_id
+                            job.job_id,
+                            job.deposit_id
                         );
-                        emit_custody_event(state, "credit.build_failed", &job.job_id, Some(&job.deposit_id), None, None);
+                        emit_custody_event(
+                            state,
+                            "credit.build_failed",
+                            &job.job_id,
+                            Some(&job.deposit_id),
+                            None,
+                            None,
+                        );
                     }
                 }
             }
@@ -2349,7 +2419,14 @@ async fn process_credit_jobs(state: &CustodyState) -> Result<(), String> {
                 job.last_error = None;
                 job.next_attempt_at = None;
                 store_credit_job(&state.db, &job)?;
-                emit_custody_event(state, "credit.submitted", &job.job_id, Some(&job.deposit_id), job.tx_signature.as_deref(), None);
+                emit_custody_event(
+                    state,
+                    "credit.submitted",
+                    &job.job_id,
+                    Some(&job.deposit_id),
+                    job.tx_signature.as_deref(),
+                    None,
+                );
             }
             Err(err) => {
                 let _ = clear_tx_intent(&state.db, "credit", &job.job_id);
@@ -2371,10 +2448,24 @@ async fn process_credit_jobs(state: &CustodyState) -> Result<(), String> {
                 // P0-FIX: Update the deposit record to "credited" so polling clients
                 // see the terminal state and can stop polling.
                 let _ = update_deposit_status(&state.db, &job.deposit_id, "credited");
-                let _ = update_status_index(&state.db, "deposits", "swept", "credited", &job.deposit_id);
+                let _ = update_status_index(
+                    &state.db,
+                    "deposits",
+                    "swept",
+                    "credited",
+                    &job.deposit_id,
+                );
 
-                emit_custody_event(state, "credit.confirmed", &job.job_id, Some(&job.deposit_id), job.tx_signature.as_deref(),
-                    Some(&json!({ "amount_shells": job.amount_shells, "to_address": job.to_address })));
+                emit_custody_event(
+                    state,
+                    "credit.confirmed",
+                    &job.job_id,
+                    Some(&job.deposit_id),
+                    job.tx_signature.as_deref(),
+                    Some(
+                        &json!({ "amount_shells": job.amount_shells, "to_address": job.to_address }),
+                    ),
+                );
             }
         }
     }
@@ -2474,8 +2565,8 @@ struct FrostCommitRequest {
 #[derive(Debug, Deserialize)]
 struct FrostCommitResponse {
     status: String,
-    signer_id_hex: String,      // FROST Identifier (hex-encoded serialized)
-    commitment_hex: String,     // SigningCommitments (hex-encoded serialized)
+    signer_id_hex: String,  // FROST Identifier (hex-encoded serialized)
+    commitment_hex: String, // SigningCommitments (hex-encoded serialized)
 }
 
 #[allow(dead_code)]
@@ -2498,7 +2589,7 @@ struct FrostCommitmentEntry {
 struct FrostSignResponse {
     status: String,
     signer_id_hex: String,
-    share_hex: String,          // SignatureShare (hex-encoded serialized)
+    share_hex: String, // SignatureShare (hex-encoded serialized)
 }
 
 /// Execute FROST two-round threshold signing protocol for Solana transactions.
@@ -2540,10 +2631,16 @@ async fn collect_frost_signatures(
                     commitments.push((resp.signer_id_hex, resp.commitment_hex));
                 }
                 Ok(resp) => {
-                    warn!("FROST commit: signer {} returned status={}", idx, resp.status);
+                    warn!(
+                        "FROST commit: signer {} returned status={}",
+                        idx, resp.status
+                    );
                 }
                 Err(e) => {
-                    warn!("FROST commit: failed to parse response from signer {}: {}", idx, e);
+                    warn!(
+                        "FROST commit: failed to parse response from signer {}: {}",
+                        idx, e
+                    );
                 }
             },
             Err(e) => {
@@ -2611,7 +2708,10 @@ async fn collect_frost_signatures(
                     warn!("FROST sign: signer {} returned status={}", idx, resp.status);
                 }
                 Err(e) => {
-                    warn!("FROST sign: failed to parse response from signer {}: {}", idx, e);
+                    warn!(
+                        "FROST sign: failed to parse response from signer {}: {}",
+                        idx, e
+                    );
                 }
             },
             Err(e) => {
@@ -2925,8 +3025,15 @@ async fn broadcast_evm_sweep(
     let gas_price = evm_get_gas_price(&state.http, url).await?;
     // AUDIT-FIX M6: Dynamic gas estimation with fallback to 21000 (simple transfer)
     let gas_limit = evm_estimate_gas(
-        &state.http, url, &from_address, &to_address, amount, None, 21_000,
-    ).await;
+        &state.http,
+        url,
+        &from_address,
+        &to_address,
+        amount,
+        None,
+        21_000,
+    )
+    .await;
     let fee = gas_price.saturating_mul(gas_limit);
     if amount <= fee {
         return Ok(None);
@@ -2979,8 +3086,15 @@ async fn broadcast_evm_token_sweep(
     let gas_price = evm_get_gas_price(&state.http, url).await?;
     // Dynamic gas estimation with fallback to 100000 (ERC-20 transfer)
     let gas_limit = evm_estimate_gas(
-        &state.http, url, &from_address, &contract, 0, Some(&transfer_data), 100_000,
-    ).await;
+        &state.http,
+        url,
+        &from_address,
+        &contract,
+        0,
+        Some(&transfer_data),
+        100_000,
+    )
+    .await;
     let fee = gas_price.saturating_mul(gas_limit);
     let native_balance = evm_get_balance(&state.http, url, &from_address).await?;
 
@@ -3086,8 +3200,15 @@ async fn fund_evm_gas_for_sweep(
 
     // AUDIT-FIX M6: Dynamic gas estimation for treasury gas funding transfer
     let gas_limit = evm_estimate_gas(
-        &state.http, url, treasury_addr, to_address, amount_wei, None, 21_000,
-    ).await;
+        &state.http,
+        url,
+        treasury_addr,
+        to_address,
+        amount_wei,
+        None,
+        21_000,
+    )
+    .await;
     let tx_fee = gas_price.saturating_mul(gas_limit);
 
     // Verify treasury can afford the grant
@@ -3132,7 +3253,8 @@ fn mark_sweep_failed(job: &mut SweepJob, err: String) {
         tracing::error!(
             "AUDIT-FIX H2: sweep job {} exceeded {} attempts — moved to permanently_failed. \
              Manual intervention required.",
-            job.job_id, MAX_JOB_ATTEMPTS
+            job.job_id,
+            MAX_JOB_ATTEMPTS
         );
     } else {
         job.next_attempt_at = Some(next_retry_timestamp(job.attempts));
@@ -3148,7 +3270,8 @@ fn mark_credit_failed(job: &mut CreditJob, err: String) {
         tracing::error!(
             "AUDIT-FIX H2: credit job {} exceeded {} attempts — moved to permanently_failed. \
              Manual intervention required.",
-            job.job_id, MAX_JOB_ATTEMPTS
+            job.job_id,
+            MAX_JOB_ATTEMPTS
         );
     } else {
         job.next_attempt_at = Some(next_retry_timestamp(job.attempts));
@@ -3470,7 +3593,15 @@ fn count_sweep_jobs(db: &DB) -> Result<StatusCounts, String> {
         total: 0,
         by_status: BTreeMap::new(),
     };
-    for status in &["queued", "signing", "signed", "sweep_submitted", "sweep_confirmed", "permanently_failed", "failed"] {
+    for status in &[
+        "queued",
+        "signing",
+        "signed",
+        "sweep_submitted",
+        "sweep_confirmed",
+        "permanently_failed",
+        "failed",
+    ] {
         let ids = list_ids_by_status_index(db, "sweep", status)?;
         let count = ids.len();
         if count > 0 {
@@ -3501,7 +3632,13 @@ fn count_credit_jobs(db: &DB) -> Result<StatusCounts, String> {
         total: 0,
         by_status: BTreeMap::new(),
     };
-    for status in &["queued", "submitted", "confirmed", "permanently_failed", "failed"] {
+    for status in &[
+        "queued",
+        "submitted",
+        "confirmed",
+        "permanently_failed",
+        "failed",
+    ] {
         let ids = list_ids_by_status_index(db, "credit", status)?;
         let count = ids.len();
         if count > 0 {
@@ -3562,12 +3699,8 @@ fn record_audit_event_ext(
         "timestamp": timestamp,
     });
     let bytes = serde_json::to_vec(&payload).map_err(|e| format!("encode: {}", e))?;
-    db.put_cf(
-        cf,
-        event_id.as_bytes(),
-        bytes,
-    )
-    .map_err(|e| format!("db put: {}", e))?;
+    db.put_cf(cf, event_id.as_bytes(), bytes)
+        .map_err(|e| format!("db put: {}", e))?;
 
     // Emit to broadcast channel for webhooks + WebSocket subscribers
     if let Some(tx) = event_tx {
@@ -4146,10 +4279,11 @@ async fn create_withdrawal(
             .and_then(|v| v.strip_prefix("Bearer "));
         match provided {
             // AUDIT-FIX 0.12: constant-time comparison to prevent timing attacks
-            Some(token) if {
-                use subtle::ConstantTimeEq;
-                token.as_bytes().ct_eq(expected_token.as_bytes()).into()
-            } => {} // OK
+            Some(token)
+                if {
+                    use subtle::ConstantTimeEq;
+                    token.as_bytes().ct_eq(expected_token.as_bytes()).into()
+                } => {} // OK
             _ => {
                 return Json(json!({
                     "error": "unauthorized: missing or invalid API auth token"
@@ -4177,14 +4311,20 @@ async fn create_withdrawal(
         // Global: max 20 withdrawals per minute
         const MAX_WITHDRAWALS_PER_MIN: u64 = 20;
         if rl.count_this_minute >= MAX_WITHDRAWALS_PER_MIN {
-            tracing::warn!("⚠️  Withdrawal rate limit exceeded: {} this minute", rl.count_this_minute);
+            tracing::warn!(
+                "⚠️  Withdrawal rate limit exceeded: {} this minute",
+                rl.count_this_minute
+            );
             return Json(json!({ "error": "rate_limited: too many withdrawals, try again later" }));
         }
 
         // Global: max 10M value per hour (in smallest units)
         const MAX_VALUE_PER_HOUR: u64 = 10_000_000_000_000_000; // 10M with 9 decimals
         if rl.value_this_hour.saturating_add(req.amount) > MAX_VALUE_PER_HOUR {
-            tracing::warn!("⚠️  Withdrawal value limit exceeded: {} this hour", rl.value_this_hour);
+            tracing::warn!(
+                "⚠️  Withdrawal value limit exceeded: {} this hour",
+                rl.value_this_hour
+            );
             return Json(json!({ "error": "rate_limited: hourly withdrawal value limit reached" }));
         }
 
@@ -4206,7 +4346,12 @@ async fn create_withdrawal(
     // Invalid addresses would waste signer resources and only fail at broadcast time.
     match req.dest_chain.as_str() {
         "solana" => {
-            if bs58::decode(&req.dest_address).into_vec().map(|v| v.len()).unwrap_or(0) != 32 {
+            if bs58::decode(&req.dest_address)
+                .into_vec()
+                .map(|v| v.len())
+                .unwrap_or(0)
+                != 32
+            {
                 return Json(json!({
                     "error": format!("invalid Solana destination address: {}", req.dest_address)
                 }));
@@ -4332,8 +4477,16 @@ async fn create_withdrawal(
         return Json(json!({"error": format!("failed to store withdrawal: {}", e)}));
     }
 
-    emit_custody_event(&state, "withdrawal.requested", &job.job_id, None, None,
-        Some(&json!({ "user_id": job.user_id, "asset": job.asset, "amount": job.amount, "dest_chain": job.dest_chain, "dest_address": job.dest_address })));
+    emit_custody_event(
+        &state,
+        "withdrawal.requested",
+        &job.job_id,
+        None,
+        None,
+        Some(
+            &json!({ "user_id": job.user_id, "asset": job.asset, "amount": job.amount, "dest_chain": job.dest_chain, "dest_address": job.dest_address }),
+        ),
+    );
 
     info!(
         "withdrawal requested: {} {} → {} on {} (preferred_stablecoin={}, job={})",
@@ -4369,7 +4522,8 @@ fn store_withdrawal_job(db: &DB, job: &WithdrawalJob) -> Result<(), String> {
     // AUDIT-FIX M1: Update status index on every store
     if let Ok(Some(old_bytes)) = db.get_cf(cf, job.job_id.as_bytes()) {
         if let Ok(old_job) = serde_json::from_slice::<WithdrawalJob>(&old_bytes) {
-            let _ = update_status_index(db, "withdrawal", &old_job.status, &job.status, &job.job_id);
+            let _ =
+                update_status_index(db, "withdrawal", &old_job.status, &job.status, &job.job_id);
         }
     } else {
         let _ = set_status_index(db, "withdrawal", &job.status, &job.job_id);
@@ -4419,7 +4573,7 @@ async fn submit_burn_signature(
     // "burn_tx_signature is None" check and one overwrites the other.
     // F8.7: Prune map when it exceeds 10,000 entries to prevent unbounded growth.
     static BURN_LOCKS: std::sync::LazyLock<
-        std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>
+        std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
     > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
     let lock = {
@@ -4429,7 +4583,8 @@ async fn submit_burn_signature(
             // Retain only entries with active references (Arc strong_count > 1)
             locks.retain(|_, v| std::sync::Arc::strong_count(v) > 1);
         }
-        locks.entry(job_id.clone())
+        locks
+            .entry(job_id.clone())
             .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
             .clone()
     };
@@ -4447,12 +4602,13 @@ async fn submit_burn_signature(
     }
 
     if job.burn_tx_signature.is_some() {
-        return Err(Json(ErrorResponse::invalid("burn_tx_signature already set")));
+        return Err(Json(ErrorResponse::invalid(
+            "burn_tx_signature already set",
+        )));
     }
 
     job.burn_tx_signature = Some(payload.burn_tx_signature.clone());
-    store_withdrawal_job(&state.db, &job)
-        .map_err(|e| Json(ErrorResponse::db(&e)))?;
+    store_withdrawal_job(&state.db, &job).map_err(|e| Json(ErrorResponse::db(&e)))?;
 
     record_audit_event(
         &state.db,
@@ -4463,7 +4619,14 @@ async fn submit_burn_signature(
     )
     .ok();
     // Also emit to webhooks/WS
-    emit_custody_event(&state, "withdrawal.burn_submitted", &job.job_id, None, Some(&payload.burn_tx_signature), None);
+    emit_custody_event(
+        &state,
+        "withdrawal.burn_submitted",
+        &job.job_id,
+        None,
+        Some(&payload.burn_tx_signature),
+        None,
+    );
 
     info!(
         "burn signature submitted for withdrawal {}: {}",
@@ -4550,7 +4713,9 @@ async fn adjust_reserve_balance(
 ) -> Result<(), String> {
     static RESERVE_LOCK: tokio::sync::OnceCell<tokio::sync::Mutex<()>> =
         tokio::sync::OnceCell::const_new();
-    let mutex = RESERVE_LOCK.get_or_init(|| async { tokio::sync::Mutex::new(()) }).await;
+    let mutex = RESERVE_LOCK
+        .get_or_init(|| async { tokio::sync::Mutex::new(()) })
+        .await;
     let _guard = mutex.lock().await;
 
     let cf = db
@@ -4809,7 +4974,11 @@ async fn deposit_cleanup_loop(state: CustodyState) {
                             let _ = state.db.put_cf(&cf, deposit_id.as_bytes(), &json);
                             // AUDIT-FIX R-M1: Maintain status index during cleanup
                             let _ = update_status_index(
-                                &state.db, "deposits", &old_status, "expired", deposit_id,
+                                &state.db,
+                                "deposits",
+                                &old_status,
+                                "expired",
+                                deposit_id,
                             );
                         }
                     }
@@ -4841,7 +5010,9 @@ async fn deposit_cleanup_loop(state: CustodyState) {
             if let Some(evt_cf) = state.db.cf_handle(CF_DEPOSIT_EVENTS) {
                 // Delete dedup markers (keyed as "dedup:{deposit_id}:{tx_hash}")
                 let dedup_prefix = format!("dedup:{}:", deposit_id);
-                let iter = state.db.prefix_iterator_cf(&evt_cf, dedup_prefix.as_bytes());
+                let iter = state
+                    .db
+                    .prefix_iterator_cf(&evt_cf, dedup_prefix.as_bytes());
                 for (key, _) in iter.flatten() {
                     if key.starts_with(dedup_prefix.as_bytes()) {
                         let _ = state.db.delete_cf(&evt_cf, &key);
@@ -5248,7 +5419,8 @@ async fn process_rebalance_jobs(state: &CustodyState) -> Result<(), String> {
             let credit_amount = match actual_output {
                 Some(output) => {
                     if job.amount > 0 {
-                        let slippage_bps = (job.amount.saturating_sub(output) as u128 * 10_000 / job.amount as u128) as u64;
+                        let slippage_bps = (job.amount.saturating_sub(output) as u128 * 10_000
+                            / job.amount as u128) as u64;
                         if slippage_bps > state.config.rebalance_max_slippage_bps {
                             tracing::error!(
                                 "rebalance slippage {}bps exceeds max {}bps: input={} output={} (job={})",
@@ -5307,8 +5479,10 @@ async fn process_rebalance_jobs(state: &CustodyState) -> Result<(), String> {
             store_rebalance_job(&state.db, &job)?;
 
             // Update reserve ledger: debit input amount, credit actual output
-            adjust_reserve_balance(&state.db, &job.chain, &job.from_asset, job.amount, false).await?;
-            adjust_reserve_balance(&state.db, &job.chain, &job.to_asset, credit_amount, true).await?;
+            adjust_reserve_balance(&state.db, &job.chain, &job.from_asset, job.amount, false)
+                .await?;
+            adjust_reserve_balance(&state.db, &job.chain, &job.to_asset, credit_amount, true)
+                .await?;
 
             emit_custody_event(
                 state,
@@ -5678,19 +5852,12 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                                 "musd" => state.config.musd_contract_addr.as_deref(),
                                 _ => None,
                             };
-                            let tx_contract = result
-                                .get("contract_address")
-                                .and_then(|v| v.as_str());
-                            let tx_caller = result
-                                .get("caller")
-                                .and_then(|v| v.as_str());
-                            let tx_method = result
-                                .get("method")
-                                .and_then(|v| v.as_str());
-                            let tx_amount = result
-                                .get("amount")
-                                .and_then(|v| v.as_u64())
-                                .unwrap_or(0);
+                            let tx_contract =
+                                result.get("contract_address").and_then(|v| v.as_str());
+                            let tx_caller = result.get("caller").and_then(|v| v.as_str());
+                            let tx_method = result.get("method").and_then(|v| v.as_str());
+                            let tx_amount =
+                                result.get("amount").and_then(|v| v.as_u64()).unwrap_or(0);
 
                             // Validate contract address matches
                             if let Some(expected) = expected_contract {
@@ -5698,7 +5865,9 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                                     tracing::error!(
                                         "🚨 BURN VERIFICATION FAILED for {}: expected contract {} \
                                          but tx called {:?}. Possible attack!",
-                                        job.job_id, expected, tx_contract
+                                        job.job_id,
+                                        expected,
+                                        tx_contract
                                     );
                                     continue;
                                 }
@@ -5706,7 +5875,8 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                                 tracing::error!(
                                     "🚨 BURN VERIFICATION FAILED for {}: no contract configured \
                                      for asset {}. Cannot verify burn.",
-                                    job.job_id, job.asset
+                                    job.job_id,
+                                    job.asset
                                 );
                                 continue;
                             }
@@ -5716,7 +5886,8 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                                 tracing::error!(
                                     "🚨 BURN VERIFICATION FAILED for {}: expected method 'burn' \
                                      but tx called {:?}. Possible attack!",
-                                    job.job_id, tx_method
+                                    job.job_id,
+                                    tx_method
                                 );
                                 continue;
                             }
@@ -5726,7 +5897,9 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                                 tracing::error!(
                                     "🚨 BURN VERIFICATION FAILED for {}: expected amount {} \
                                      but tx burned {}. Amount mismatch!",
-                                    job.job_id, job.amount, tx_amount
+                                    job.job_id,
+                                    job.amount,
+                                    tx_amount
                                 );
                                 continue;
                             }
@@ -5736,7 +5909,9 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                                 tracing::error!(
                                     "🚨 BURN VERIFICATION FAILED for {}: expected caller {} \
                                      but tx caller was {:?}. Possible attack!",
-                                    job.job_id, job.user_id, tx_caller
+                                    job.job_id,
+                                    job.user_id,
+                                    tx_caller
                                 );
                                 continue;
                             }
@@ -5906,7 +6081,9 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                     store_withdrawal_job(&state.db, &job)?;
                     tracing::error!(
                         "🚨 withdrawal {} permanently failed after {} attempts: {}",
-                        job.job_id, MAX_JOB_ATTEMPTS, e
+                        job.job_id,
+                        MAX_JOB_ATTEMPTS,
+                        e
                     );
                     emit_custody_event(
                         state,
@@ -5998,7 +6175,9 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                     stablecoin,
                     job.amount,
                     false,
-                ).await {
+                )
+                .await
+                {
                     tracing::warn!("reserve ledger decrement failed: {}", e);
                 }
             }
@@ -6101,8 +6280,7 @@ fn assemble_signed_solana_tx(
     if state.config.signer_threshold <= 1 || state.config.signer_endpoints.len() <= 1 {
         // Single-signer mode: signer returns fully assembled signed transaction
         let first_sig = &job.signatures[0];
-        return hex::decode(&first_sig.signature)
-            .map_err(|e| format!("decode signature: {}", e));
+        return hex::decode(&first_sig.signature).map_err(|e| format!("decode signature: {}", e));
     }
 
     // ── Multi-signer FROST Ed25519 aggregation ──
@@ -6170,8 +6348,8 @@ fn assemble_signed_solana_tx(
         // Note: for the signing package reconstruction, we need the original commitments
         // that were distributed in round 2. These are stored alongside each share.
         if let Some(commitment_hex) = sig_entry.message_hash.strip_prefix("frost_commitment:") {
-            let commitment_bytes = hex::decode(commitment_hex)
-                .map_err(|e| format!("decode commitment: {}", e))?;
+            let commitment_bytes =
+                hex::decode(commitment_hex).map_err(|e| format!("decode commitment: {}", e))?;
             let commitment = frost::round1::SigningCommitments::deserialize(&commitment_bytes)
                 .map_err(|e| format!("deserialize commitment: {:?}", e))?;
             commitments_map.insert(identifier, commitment);
@@ -6194,7 +6372,8 @@ fn assemble_signed_solana_tx(
 
     // Build a Solana transaction with the FROST group signature
     // The group verifying key is the treasury's on-chain Ed25519 key
-    let group_sig_bytes = group_signature.serialize()
+    let group_sig_bytes = group_signature
+        .serialize()
         .map_err(|e| format!("serialize FROST group signature: {:?}", e))?;
 
     // Return the assembled transaction:
@@ -6231,8 +6410,7 @@ fn assemble_signed_evm_tx(
     if state.config.signer_threshold <= 1 || state.config.signer_endpoints.len() <= 1 {
         // Single-signer mode: signer returns fully signed RLP tx
         let first_sig = &job.signatures[0];
-        return hex::decode(&first_sig.signature)
-            .map_err(|e| format!("decode signature: {}", e));
+        return hex::decode(&first_sig.signature).map_err(|e| format!("decode signature: {}", e));
     }
 
     // ── Multi-signer EVM: pack ECDSA signatures for Gnosis Safe ──
@@ -6305,12 +6483,8 @@ fn assemble_signed_evm_tx(
     calldata.extend_from_slice(&hex::decode("6a761202").unwrap()); // execTransaction selector
 
     // Encode destination address (to) — padded to 32 bytes
-    let dest_addr = hex::decode(
-        inner_to
-            .strip_prefix("0x")
-            .unwrap_or(&inner_to),
-    )
-    .map_err(|e| format!("decode dest address: {}", e))?;
+    let dest_addr = hex::decode(inner_to.strip_prefix("0x").unwrap_or(&inner_to))
+        .map_err(|e| format!("decode dest address: {}", e))?;
     calldata.extend_from_slice(&[0u8; 12]); // left-pad to 32 bytes
     calldata.extend_from_slice(&dest_addr);
 
@@ -6379,12 +6553,8 @@ fn assemble_signed_evm_tx(
     // The final transaction is: target = multisig_addr, data = calldata
     // Return as: [multisig_addr_20][calldata]
     let mut result = Vec::new();
-    let addr_bytes = hex::decode(
-        multisig_addr
-            .strip_prefix("0x")
-            .unwrap_or(multisig_addr),
-    )
-    .map_err(|e| format!("decode multisig address: {}", e))?;
+    let addr_bytes = hex::decode(multisig_addr.strip_prefix("0x").unwrap_or(multisig_addr))
+        .map_err(|e| format!("decode multisig address: {}", e))?;
     result.extend_from_slice(&addr_bytes);
     result.extend_from_slice(&calldata);
 
@@ -6487,10 +6657,14 @@ async fn create_webhook(
         return Err(Json(ErrorResponse::invalid("url is required")));
     }
     if payload.secret.is_empty() {
-        return Err(Json(ErrorResponse::invalid("secret is required (used for HMAC-SHA256 signatures)")));
+        return Err(Json(ErrorResponse::invalid(
+            "secret is required (used for HMAC-SHA256 signatures)",
+        )));
     }
     if !payload.url.starts_with("https://") && !payload.url.starts_with("http://localhost") {
-        return Err(Json(ErrorResponse::invalid("webhook url must use HTTPS (http://localhost allowed for dev)")));
+        return Err(Json(ErrorResponse::invalid(
+            "webhook url must use HTTPS (http://localhost allowed for dev)",
+        )));
     }
 
     let webhook = WebhookRegistration {
@@ -6669,13 +6843,20 @@ async fn ws_events(
     if !auth_ok {
         return axum::response::Response::builder()
             .status(401)
-            .body(axum::body::Body::from("Unauthorized: provide ?token=<api_auth_token>"))
+            .body(axum::body::Body::from(
+                "Unauthorized: provide ?token=<api_auth_token>",
+            ))
             .unwrap_or_default();
     }
 
     let event_filter: Vec<String> = params
         .get("filter")
-        .map(|f| f.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect())
+        .map(|f| {
+            f.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
         .unwrap_or_default();
 
     let event_rx = state.event_tx.subscribe();
@@ -6688,7 +6869,10 @@ async fn handle_ws_events(
     mut event_rx: broadcast::Receiver<CustodyWebhookEvent>,
     event_filter: Vec<String>,
 ) {
-    info!("WebSocket event subscriber connected (filter: {:?})", event_filter);
+    info!(
+        "WebSocket event subscriber connected (filter: {:?})",
+        event_filter
+    );
 
     loop {
         tokio::select! {
@@ -6867,8 +7051,8 @@ fn compute_webhook_signature(payload: &[u8], secret: &str) -> String {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
 
-    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())
-        .expect("HMAC accepts any key length");
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
     mac.update(payload);
     let result = mac.finalize().into_bytes();
     hex::encode(result)
@@ -7028,11 +7212,19 @@ mod tests {
     #[test]
     fn test_bip44_derivation_path() {
         let path_sol = bip44_derivation_path("solana", "user123", 0).unwrap();
-        assert!(path_sol.starts_with("m/44'/501'/"), "Solana path must use coin_type 501: {}", path_sol);
+        assert!(
+            path_sol.starts_with("m/44'/501'/"),
+            "Solana path must use coin_type 501: {}",
+            path_sol
+        );
         assert!(path_sol.ends_with("/0/0"), "Index 0: {}", path_sol);
 
         let path_eth = bip44_derivation_path("eth", "user123", 5).unwrap();
-        assert!(path_eth.starts_with("m/44'/60'/"), "ETH path must use coin_type 60: {}", path_eth);
+        assert!(
+            path_eth.starts_with("m/44'/60'/"),
+            "ETH path must use coin_type 60: {}",
+            path_eth
+        );
         assert!(path_eth.ends_with("/0/5"), "Index 5: {}", path_eth);
 
         // Same user on different chains gets different paths (different coin types)
@@ -7107,10 +7299,14 @@ mod tests {
         let _ = DB::destroy(&Options::default(), "/tmp/test_custody_reserve_1");
         let db = open_db("/tmp/test_custody_reserve_1").unwrap();
         // Increment from zero
-        adjust_reserve_balance(&db, "solana", "usdt", 500_000, true).await.unwrap();
+        adjust_reserve_balance(&db, "solana", "usdt", 500_000, true)
+            .await
+            .unwrap();
         assert_eq!(get_reserve_balance(&db, "solana", "usdt").unwrap(), 500_000);
         // Increment again
-        adjust_reserve_balance(&db, "solana", "usdt", 300_000, true).await.unwrap();
+        adjust_reserve_balance(&db, "solana", "usdt", 300_000, true)
+            .await
+            .unwrap();
         assert_eq!(get_reserve_balance(&db, "solana", "usdt").unwrap(), 800_000);
         // Different asset on same chain
         assert_eq!(get_reserve_balance(&db, "solana", "usdc").unwrap(), 0);
@@ -7120,14 +7316,20 @@ mod tests {
     #[tokio::test]
     async fn test_reserve_ledger_adjust_decrement() {
         let db = open_db("/tmp/test_custody_reserve_2").unwrap();
-        adjust_reserve_balance(&db, "ethereum", "usdc", 1_000_000, true).await.unwrap();
-        adjust_reserve_balance(&db, "ethereum", "usdc", 400_000, false).await.unwrap();
+        adjust_reserve_balance(&db, "ethereum", "usdc", 1_000_000, true)
+            .await
+            .unwrap();
+        adjust_reserve_balance(&db, "ethereum", "usdc", 400_000, false)
+            .await
+            .unwrap();
         assert_eq!(
             get_reserve_balance(&db, "ethereum", "usdc").unwrap(),
             600_000
         );
         // Decrement past zero clamps to 0
-        adjust_reserve_balance(&db, "ethereum", "usdc", 999_999, false).await.unwrap();
+        adjust_reserve_balance(&db, "ethereum", "usdc", 999_999, false)
+            .await
+            .unwrap();
         assert_eq!(get_reserve_balance(&db, "ethereum", "usdc").unwrap(), 0);
         let _ = DB::destroy(&Options::default(), "/tmp/test_custody_reserve_2");
     }
@@ -7136,10 +7338,18 @@ mod tests {
     async fn test_reserve_ledger_multi_chain() {
         let _ = DB::destroy(&Options::default(), "/tmp/test_custody_reserve_3");
         let db = open_db("/tmp/test_custody_reserve_3").unwrap();
-        adjust_reserve_balance(&db, "solana", "usdt", 500_000, true).await.unwrap();
-        adjust_reserve_balance(&db, "solana", "usdc", 200_000, true).await.unwrap();
-        adjust_reserve_balance(&db, "ethereum", "usdt", 300_000, true).await.unwrap();
-        adjust_reserve_balance(&db, "ethereum", "usdc", 100_000, true).await.unwrap();
+        adjust_reserve_balance(&db, "solana", "usdt", 500_000, true)
+            .await
+            .unwrap();
+        adjust_reserve_balance(&db, "solana", "usdc", 200_000, true)
+            .await
+            .unwrap();
+        adjust_reserve_balance(&db, "ethereum", "usdt", 300_000, true)
+            .await
+            .unwrap();
+        adjust_reserve_balance(&db, "ethereum", "usdc", 100_000, true)
+            .await
+            .unwrap();
         assert_eq!(get_reserve_balance(&db, "solana", "usdt").unwrap(), 500_000);
         assert_eq!(get_reserve_balance(&db, "solana", "usdc").unwrap(), 200_000);
         assert_eq!(
@@ -7513,7 +7723,7 @@ mod tests {
         let secret = "test_webhook_secret";
         let sig = compute_webhook_signature(payload, secret);
         assert_eq!(sig.len(), 64); // hex-encoded SHA256 = 64 chars
-        // Same input should produce same output (deterministic)
+                                   // Same input should produce same output (deterministic)
         let sig2 = compute_webhook_signature(payload, secret);
         assert_eq!(sig, sig2);
         // Different secret should produce different output

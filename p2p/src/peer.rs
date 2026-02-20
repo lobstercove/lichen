@@ -91,6 +91,10 @@ impl SeenMessageCache {
     pub fn len(&self) -> usize {
         self.hashes.len()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.hashes.is_empty()
+    }
 }
 
 /// Manages peer connections
@@ -263,8 +267,11 @@ impl PeerManager {
                 if let Some(cert) = certs.first() {
                     let fp = NodeIdentity::compute_fingerprint(cert.as_ref());
                     match self.fingerprint_store.check_or_store(&peer_addr, &fp) {
-                        Ok(true) => info!("P2P TOFU: New peer {} registered (fingerprint: {})",
-                            peer_addr, NodeIdentity::fingerprint_hex(&fp)),
+                        Ok(true) => info!(
+                            "P2P TOFU: New peer {} registered (fingerprint: {})",
+                            peer_addr,
+                            NodeIdentity::fingerprint_hex(&fp)
+                        ),
                         Ok(false) => info!("P2P TOFU: Peer {} identity verified", peer_addr),
                         Err(e) => {
                             warn!("{}", e);
@@ -291,14 +298,25 @@ impl PeerManager {
         let message_tx = self.message_tx.clone();
         let seen_messages = self.seen_messages.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(connection, peer_addr, peers.clone(), message_tx, seen_messages).await {
+            if let Err(e) = handle_connection(
+                connection,
+                peer_addr,
+                peers.clone(),
+                message_tx,
+                seen_messages,
+            )
+            .await
+            {
                 error!("P2P: Connection error with {}: {}", peer_addr, e);
             }
             // AUDIT-FIX H2: Remove peer from DashMap when connection drops.
             // Without this, dead peers linger until cleanup_stale_peers runs,
             // causing failed sends and inflated peer counts.
             peers.remove(&peer_addr);
-            info!("P2P: Peer {} disconnected, removed from peer map", peer_addr);
+            info!(
+                "P2P: Peer {} disconnected, removed from peer map",
+                peer_addr
+            );
         });
 
         Ok(())
@@ -359,7 +377,8 @@ impl PeerManager {
         };
 
         // Extract connection handles upfront (drop DashMap guards before async)
-        let mut conn_tasks: Vec<(SocketAddr, Option<quinn::Connection>)> = Vec::with_capacity(peers.len());
+        let mut conn_tasks: Vec<(SocketAddr, Option<quinn::Connection>)> =
+            Vec::with_capacity(peers.len());
         for addr in &peers {
             let conn = self.peers.get(addr).and_then(|p| p.connection.clone());
             conn_tasks.push((*addr, conn));
@@ -487,7 +506,9 @@ impl PeerManager {
 
                             // AUDIT-FIX C1-01: TOFU fingerprint check for inbound connections
                             if let Some(identity) = connection.peer_identity() {
-                                if let Some(certs) = identity.downcast_ref::<Vec<CertificateDer<'static>>>() {
+                                if let Some(certs) =
+                                    identity.downcast_ref::<Vec<CertificateDer<'static>>>()
+                                {
                                     if let Some(cert) = certs.first() {
                                         let fp = NodeIdentity::compute_fingerprint(cert.as_ref());
                                         match fingerprint_store.check_or_store(&peer_addr, &fp) {
@@ -513,14 +534,23 @@ impl PeerManager {
                             }
 
                             // Handle connection
-                            if let Err(e) =
-                                handle_connection(connection, peer_addr, peers.clone(), message_tx, seen_messages).await
+                            if let Err(e) = handle_connection(
+                                connection,
+                                peer_addr,
+                                peers.clone(),
+                                message_tx,
+                                seen_messages,
+                            )
+                            .await
                             {
                                 error!("P2P: Connection error with {}: {}", peer_addr, e);
                             }
                             // AUDIT-FIX H2: Remove peer on disconnect (inbound path)
                             peers.remove(&peer_addr);
-                            info!("P2P: Inbound peer {} disconnected, removed from peer map", peer_addr);
+                            info!(
+                                "P2P: Inbound peer {} disconnected, removed from peer map",
+                                peer_addr
+                            );
                         }
                         Err(e) => {
                             error!("P2P: Failed to accept connection: {}", e);
@@ -1104,7 +1134,11 @@ mod tests {
             .expect("Failed to generate cert");
         let cert_der = CertificateDer::from(cert.cert);
         let result = verify_self_signed_cert(cert_der.as_ref());
-        assert!(result.is_ok(), "Valid self-signed cert should pass: {:?}", result);
+        assert!(
+            result.is_ok(),
+            "Valid self-signed cert should pass: {:?}",
+            result
+        );
 
         // Fingerprint should be 32 bytes (SHA-256)
         let fp = result.unwrap();
@@ -1178,7 +1212,10 @@ mod tests {
             .expect("Failed to generate cert 2");
         let fp1 = verify_self_signed_cert(CertificateDer::from(cert1.cert).as_ref()).unwrap();
         let fp2 = verify_self_signed_cert(CertificateDer::from(cert2.cert).as_ref()).unwrap();
-        assert_ne!(fp1, fp2, "Different certs should produce different fingerprints");
+        assert_ne!(
+            fp1, fp2,
+            "Different certs should produce different fingerprints"
+        );
     }
 
     /// Test TOFU fingerprint store: new peer is accepted
@@ -1187,7 +1224,10 @@ mod tests {
         let path = std::env::temp_dir().join(format!(
             "moltchain_tofu_new_{}_{}.json",
             std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         let store = PeerFingerprintStore::new(path.clone());
         let addr: SocketAddr = "10.0.0.1:8000".parse().unwrap();
@@ -1206,7 +1246,10 @@ mod tests {
         let path = std::env::temp_dir().join(format!(
             "moltchain_tofu_match_{}_{}.json",
             std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         let store = PeerFingerprintStore::new(path.clone());
         let addr: SocketAddr = "10.0.0.1:8000".parse().unwrap();
@@ -1228,7 +1271,10 @@ mod tests {
         let path = std::env::temp_dir().join(format!(
             "moltchain_tofu_changed_{}_{}.json",
             std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         let store = PeerFingerprintStore::new(path.clone());
         let addr: SocketAddr = "10.0.0.1:8000".parse().unwrap();
@@ -1251,7 +1297,10 @@ mod tests {
         let path = std::env::temp_dir().join(format!(
             "moltchain_tofu_persist_{}_{}.json",
             std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         let addr: SocketAddr = "10.0.0.1:8000".parse().unwrap();
         let fp = [42u8; 32];
@@ -1283,10 +1332,11 @@ mod tests {
     /// Test fingerprint hex encoding
     #[test]
     fn test_c1_01_fingerprint_hex_encoding() {
-        let fp = [0x00, 0x01, 0x0a, 0xff, 0xab, 0xcd, 0xef, 0x12,
-                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let fp = [
+            0x00, 0x01, 0x0a, 0xff, 0xab, 0xcd, 0xef, 0x12, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00,
+        ];
         let hex = NodeIdentity::fingerprint_hex(&fp);
         assert_eq!(hex.len(), 64, "SHA-256 hex should be 64 chars");
         assert!(hex.starts_with("00010aff"));
@@ -1327,7 +1377,10 @@ mod tests {
             &[],
             rustls::pki_types::UnixTime::now(),
         );
-        assert!(result.is_ok(), "Valid self-signed cert should be accepted by MoltCertVerifier");
+        assert!(
+            result.is_ok(),
+            "Valid self-signed cert should be accepted by MoltCertVerifier"
+        );
     }
 
     /// Test MoltCertVerifier rejects garbage data
@@ -1343,7 +1396,10 @@ mod tests {
             &[],
             rustls::pki_types::UnixTime::now(),
         );
-        assert!(result.is_err(), "Garbage data should be rejected by MoltCertVerifier");
+        assert!(
+            result.is_err(),
+            "Garbage data should be rejected by MoltCertVerifier"
+        );
     }
 
     /// C2-01: SeenMessageCache correctly deduplicates and evicts

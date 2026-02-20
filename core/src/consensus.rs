@@ -90,9 +90,7 @@ impl PriceOracle for StateOracle {
 
 /// Read the raw MOLT price feed from moltoracle contract storage.
 /// Returns (price_raw, decimals, timestamp) or None if unavailable.
-pub fn read_molt_price_feed_from_state(
-    state: &crate::state::StateStore,
-) -> Option<(u64, u8, u64)> {
+pub fn read_molt_price_feed_from_state(state: &crate::state::StateStore) -> Option<(u64, u8, u64)> {
     // Resolve moltoracle program address via symbol registry
     let entry = state.get_symbol_registry("moltoracle").ok()??;
     let account = state.get_account(&entry.program).ok()??;
@@ -135,7 +133,7 @@ pub fn molt_price_from_state(state: &crate::state::StateStore) -> f64 {
             let price = price_raw as f64 / divisor;
 
             // Sanity bounds: reject obviously wrong prices
-            if price < 0.000001 || price > 1_000_000.0 {
+            if !(0.000001..=1_000_000.0).contains(&price) {
                 return 0.10;
             }
 
@@ -272,7 +270,7 @@ pub fn epoch_start_slot(epoch: u64) -> u64 {
 /// Check if a slot is the first slot of a new epoch
 /// AUDIT-FIX 3.21: Use modulo instead of nightly-only is_multiple_of
 pub fn is_epoch_boundary(slot: u64) -> bool {
-    slot > 0 && slot % SLOTS_PER_EPOCH == 0
+    slot > 0 && slot.is_multiple_of(SLOTS_PER_EPOCH)
 }
 
 /// Summary of an epoch's parameters
@@ -367,8 +365,8 @@ impl StakeInfo {
         bootstrap_index: u64,
     ) -> Self {
         // Only bootstrap if this is one of the first 200 AND amount matches MIN_VALIDATOR_STAKE
-        let is_bootstrap = bootstrap_index < MAX_BOOTSTRAP_VALIDATORS
-            && amount == MIN_VALIDATOR_STAKE;
+        let is_bootstrap =
+            bootstrap_index < MAX_BOOTSTRAP_VALIDATORS && amount == MIN_VALIDATOR_STAKE;
         let bootstrap_debt = if is_bootstrap { amount } else { 0 };
 
         Self {
@@ -472,14 +470,15 @@ impl StakeInfo {
             // ── Performance bonus: 95%+ uptime → accelerated repayment ──
             // PERFORMANCE_BONUS_BPS = 15000 → 1.5× multiplier on the 50% debt portion.
             // Effective split: debt = 50% × 1.5 = 75%, liquid = 25%.
-            let debt_fraction = if self.uptime_bps(current_slot, num_validators) >= UPTIME_BONUS_THRESHOLD_BPS {
-                // Accelerated: debt_portion = base_50% × (PERFORMANCE_BONUS_BPS / 10000)
-                let base_half = total_reward / 2;
-                (base_half as u128 * PERFORMANCE_BONUS_BPS as u128 / 10000) as u64
-            } else {
-                // Standard 50% to debt repayment
-                total_reward / 2
-            };
+            let debt_fraction =
+                if self.uptime_bps(current_slot, num_validators) >= UPTIME_BONUS_THRESHOLD_BPS {
+                    // Accelerated: debt_portion = base_50% × (PERFORMANCE_BONUS_BPS / 10000)
+                    let base_half = total_reward / 2;
+                    (base_half as u128 * PERFORMANCE_BONUS_BPS as u128 / 10000) as u64
+                } else {
+                    // Standard 50% to debt repayment
+                    total_reward / 2
+                };
 
             // Apply debt payment (capped at remaining debt)
             let paid = debt_fraction.min(self.bootstrap_debt);
@@ -617,10 +616,7 @@ mod fingerprint_serde {
     use serde::ser::{SerializeMap, Serializer};
     use std::fmt;
 
-    pub fn serialize<S>(
-        map: &HashMap<[u8; 32], Pubkey>,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error>
+    pub fn serialize<S>(map: &HashMap<[u8; 32], Pubkey>, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
@@ -631,9 +627,7 @@ mod fingerprint_serde {
         ser_map.end()
     }
 
-    pub fn deserialize<'de, D>(
-        deserializer: D,
-    ) -> Result<HashMap<[u8; 32], Pubkey>, D::Error>
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<HashMap<[u8; 32], Pubkey>, D::Error>
     where
         D: Deserializer<'de>,
     {
@@ -685,7 +679,11 @@ pub struct StakePool {
     delegations: HashMap<Pubkey, HashMap<Pubkey, u64>>,
     /// Machine fingerprint registry: fingerprint → validator pubkey.
     /// Prevents the same physical machine from running multiple validators.
-    #[serde(default, serialize_with = "fingerprint_serde::serialize", deserialize_with = "fingerprint_serde::deserialize")]
+    #[serde(
+        default,
+        serialize_with = "fingerprint_serde::serialize",
+        deserialize_with = "fingerprint_serde::deserialize"
+    )]
     fingerprint_registry: HashMap<[u8; 32], Pubkey>,
     /// Number of bootstrap grants issued so far (monotonically increasing, 0..200)
     #[serde(default)]
@@ -799,7 +797,8 @@ impl StakePool {
             let validator = entry.validator;
             // Sync fingerprint registry
             if entry.machine_fingerprint != [0u8; 32] {
-                self.fingerprint_registry.insert(entry.machine_fingerprint, validator);
+                self.fingerprint_registry
+                    .insert(entry.machine_fingerprint, validator);
             }
             // Track bootstrap grants
             if entry.bootstrap_index != u64::MAX
@@ -925,11 +924,7 @@ impl StakePool {
     pub fn claim_rewards(&mut self, validator: &Pubkey, current_slot: u64) -> (u64, u64) {
         // Count active validators for uptime formula:
         // expected_blocks = slots_active / num_active_validators
-        let num_active: u64 = self
-            .stakes
-            .values()
-            .filter(|info| info.is_active)
-            .count() as u64;
+        let num_active: u64 = self.stakes.values().filter(|info| info.is_active).count() as u64;
         let num_active = num_active.max(1); // floor at 1
         if let Some(stake_info) = self.stakes.get_mut(validator) {
             stake_info.claim_rewards(current_slot, num_active)
@@ -1118,7 +1113,8 @@ impl StakePool {
     /// Get unstake request for validator+staker pair
     pub fn get_unstake_request(&self, validator: &Pubkey) -> Option<&UnstakeRequest> {
         // Backward-compat: search for any request matching this validator
-        self.unstake_requests.iter()
+        self.unstake_requests
+            .iter()
             .find(|((v, _), _)| v == validator)
             .map(|(_, req)| req)
     }
@@ -1385,7 +1381,8 @@ impl StakePool {
         }
 
         // Register new fingerprint
-        self.fingerprint_registry.insert(new_fingerprint, *validator);
+        self.fingerprint_registry
+            .insert(new_fingerprint, *validator);
 
         // Update StakeInfo
         if let Some(stake_info) = self.stakes.get_mut(validator) {
@@ -1458,10 +1455,14 @@ impl StakePool {
             if bootstrap_index < MAX_BOOTSTRAP_VALIDATORS {
                 self.bootstrap_grants_issued -= 1;
             }
-            return Err(format!("Stake {} is below minimum {}", amount, MIN_VALIDATOR_STAKE));
+            return Err(format!(
+                "Stake {} is below minimum {}",
+                amount, MIN_VALIDATOR_STAKE
+            ));
         }
 
-        let stake_info = StakeInfo::with_bootstrap_index(validator, amount, current_slot, bootstrap_index);
+        let stake_info =
+            StakeInfo::with_bootstrap_index(validator, amount, current_slot, bootstrap_index);
         self.stakes.insert(validator, stake_info);
         self.total_staked = self.total_staked.saturating_add(amount);
 
@@ -1505,7 +1506,10 @@ impl StakePool {
 
         // Sort by start_slot for deterministic ordering
         to_migrate.sort_by_key(|pk| {
-            self.stakes.get(pk).map(|s| s.start_slot).unwrap_or(u64::MAX)
+            self.stakes
+                .get(pk)
+                .map(|s| s.start_slot)
+                .unwrap_or(u64::MAX)
         });
 
         let mut migrated = 0u64;
@@ -1850,7 +1854,7 @@ fn integer_sqrt(value: u64) -> u64 {
         return 0;
     }
     let mut x = value;
-    let mut y = (x + 1) / 2;
+    let mut y = x.div_ceil(2);
     while y < x {
         x = y;
         y = (x + value / x) / 2;
@@ -1910,7 +1914,10 @@ impl VoteAggregator {
         // H8 fix: Prevent equivocation — reject second vote from same validator
         // at the same slot, regardless of block hash.
         // PERF-OPT 5: O(1) lookup via secondary index instead of full scan.
-        if self.voted_in_slot.contains_key(&(vote.slot, vote.validator)) {
+        if self
+            .voted_in_slot
+            .contains_key(&(vote.slot, vote.validator))
+        {
             return false; // equivocation attempt
         }
 
@@ -1988,7 +1995,8 @@ impl VoteAggregator {
         let cutoff_slot = current_slot.saturating_sub(keep_slots);
         self.votes.retain(|(slot, _), _| *slot >= cutoff_slot);
         // PERF-OPT 5: Keep secondary equivocation index in sync with pruning
-        self.voted_in_slot.retain(|(slot, _), _| *slot >= cutoff_slot);
+        self.voted_in_slot
+            .retain(|(slot, _), _| *slot >= cutoff_slot);
     }
 }
 
@@ -2035,7 +2043,8 @@ impl FinalityTracker {
         if slot > prev {
             // Advance finalized slot: any confirmed slot >= FINALITY_DEPTH behind tip
             let new_finalized = slot.saturating_sub(FINALITY_DEPTH);
-            self.finalized_slot.fetch_max(new_finalized, Ordering::Relaxed);
+            self.finalized_slot
+                .fetch_max(new_finalized, Ordering::Relaxed);
             true
         } else {
             false
@@ -2044,12 +2053,14 @@ impl FinalityTracker {
 
     /// Get the current confirmed slot (2/3 supermajority reached)
     pub fn confirmed_slot(&self) -> u64 {
-        self.confirmed_slot.load(std::sync::atomic::Ordering::Relaxed)
+        self.confirmed_slot
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Get the current finalized slot (confirmed + FINALITY_DEPTH deep)
     pub fn finalized_slot(&self) -> u64 {
-        self.finalized_slot.load(std::sync::atomic::Ordering::Relaxed)
+        self.finalized_slot
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Determine the commitment level of a transaction in a given slot.
@@ -2493,8 +2504,8 @@ impl SlashingTracker {
                     SlashingOffense::Downtime { missed_slots, .. } => {
                         // AUDIT-FIX A5-03: Graduated downtime from genesis config
                         // (per_100_missed% per 100 slots missed, capped at max_percent%)
-                        let downtime_penalty = (missed_slots / 100)
-                            .min(params.slashing_downtime_max_percent);
+                        let downtime_penalty =
+                            (missed_slots / 100).min(params.slashing_downtime_max_percent);
                         (original_stake as u128
                             * downtime_penalty as u128
                             * params.slashing_downtime_per_100_missed as u128
@@ -2502,8 +2513,7 @@ impl SlashingTracker {
                     }
                     SlashingOffense::InvalidStateTransition { .. } => {
                         // Slash configured % of stake for invalid state transition
-                        (original_stake as u128
-                            * params.slashing_percentage_invalid_state as u128
+                        (original_stake as u128 * params.slashing_percentage_invalid_state as u128
                             / 100) as u64
                     }
                     SlashingOffense::Censorship { .. } => {
@@ -2695,13 +2705,20 @@ mod tests {
             }
         }
         // Seeds should produce different distributions (extremely unlikely to be identical)
-        assert_ne!(results_a, results_b, "Different seeds must produce different leader distributions");
+        assert_ne!(
+            results_a, results_b,
+            "Different seeds must produce different leader distributions"
+        );
 
         // Empty seed should match select_leader_weighted (backward compat)
         for slot in 0..50 {
             let no_seed = set.select_leader_weighted(slot, &pool);
             let empty_seed = set.select_leader_weighted_with_seed(slot, &pool, &[]);
-            assert_eq!(no_seed, empty_seed, "Empty seed must match no-seed variant at slot {}", slot);
+            assert_eq!(
+                no_seed, empty_seed,
+                "Empty seed must match no-seed variant at slot {}",
+                slot
+            );
         }
     }
 
@@ -2815,7 +2832,10 @@ mod tests {
 
         // Block B should win despite fewer attestations (80 > 60)
         let (_, selected) = fc.select_head().unwrap();
-        assert_eq!(selected, block_b, "Fork choice must prefer higher cumulative weight");
+        assert_eq!(
+            selected, block_b,
+            "Fork choice must prefer higher cumulative weight"
+        );
         assert_eq!(fc.get_weight(&block_a), 60);
         assert_eq!(fc.get_weight(&block_b), 80);
     }
@@ -3152,8 +3172,7 @@ mod tests {
     fn test_time_cap_before_debt_repayment() {
         let pk = Pubkey::new([1u8; 32]);
         let start_slot = 1000;
-        let mut stake =
-            StakeInfo::with_bootstrap_index(pk, MIN_VALIDATOR_STAKE, start_slot, 0);
+        let mut stake = StakeInfo::with_bootstrap_index(pk, MIN_VALIDATOR_STAKE, start_slot, 0);
 
         // Add a small reward — nowhere near enough to repay debt
         stake.add_reward(1_000_000_000, start_slot + 100); // 1 MOLT
@@ -3166,8 +3185,7 @@ mod tests {
 
         // Now add another small reward and claim PAST the time cap
         stake.add_reward(2_000_000_000, start_slot + MAX_BOOTSTRAP_SLOTS + 1);
-        let (liquid2, debt2) =
-            stake.claim_rewards(start_slot + MAX_BOOTSTRAP_SLOTS + 1, 1);
+        let (liquid2, debt2) = stake.claim_rewards(start_slot + MAX_BOOTSTRAP_SLOTS + 1, 1);
 
         // Time cap reached: debt forgiven, full reward is liquid
         assert_eq!(liquid2, 2_000_000_000);
@@ -3182,8 +3200,10 @@ mod tests {
         let pk1 = Pubkey::new([1u8; 32]);
         let pk2 = Pubkey::new([2u8; 32]);
 
-        pool.stake_with_index(pk1, MIN_VALIDATOR_STAKE, 0, 0).unwrap();
-        pool.stake_with_index(pk2, MIN_VALIDATOR_STAKE, 0, 1).unwrap();
+        pool.stake_with_index(pk1, MIN_VALIDATOR_STAKE, 0, 0)
+            .unwrap();
+        pool.stake_with_index(pk2, MIN_VALIDATOR_STAKE, 0, 1)
+            .unwrap();
 
         let fingerprint = [0xABu8; 32];
 
@@ -3204,8 +3224,10 @@ mod tests {
         let pk1 = Pubkey::new([1u8; 32]);
         let pk2 = Pubkey::new([2u8; 32]);
 
-        pool.stake_with_index(pk1, MIN_VALIDATOR_STAKE, 0, 0).unwrap();
-        pool.stake_with_index(pk2, MIN_VALIDATOR_STAKE, 0, 1).unwrap();
+        pool.stake_with_index(pk1, MIN_VALIDATOR_STAKE, 0, 0)
+            .unwrap();
+        pool.stake_with_index(pk2, MIN_VALIDATOR_STAKE, 0, 1)
+            .unwrap();
 
         let zero_fp = [0u8; 32];
 
@@ -3218,7 +3240,8 @@ mod tests {
     fn test_machine_migration() {
         let mut pool = StakePool::new();
         let pk = Pubkey::new([1u8; 32]);
-        pool.stake_with_index(pk, MIN_VALIDATOR_STAKE, 0, 0).unwrap();
+        pool.stake_with_index(pk, MIN_VALIDATOR_STAKE, 0, 0)
+            .unwrap();
 
         let old_fp = [0xAAu8; 32];
         let new_fp = [0xBBu8; 32];
@@ -3288,7 +3311,11 @@ mod tests {
         // A validator producing 20,520 blocks (95%) should get 9500 bps.
         stake.blocks_produced = 20_520;
         let uptime_95 = stake.uptime_bps(SLOTS_PER_EPOCH * 10, 200);
-        assert!(uptime_95 >= 9500, "uptime {} should be >= 9500 at 95%", uptime_95);
+        assert!(
+            uptime_95 >= 9500,
+            "uptime {} should be >= 9500 at 95%",
+            uptime_95
+        );
 
         // Saturates at 10000
         stake.blocks_produced = 100_000;
@@ -3342,7 +3369,8 @@ mod tests {
                 b
             });
             let idx = pool.next_bootstrap_index().unwrap();
-            pool.stake_with_index(pk, MIN_VALIDATOR_STAKE, 0, idx).unwrap();
+            pool.stake_with_index(pk, MIN_VALIDATOR_STAKE, 0, idx)
+                .unwrap();
         }
         assert_eq!(pool.bootstrap_grants_issued(), 5);
 
@@ -3360,7 +3388,8 @@ mod tests {
         // Bincode roundtrip WITH fingerprint (tests fingerprint_registry serialization)
         let pk_with_fp = Pubkey::new([0xAA; 32]);
         let next_idx = pool.next_bootstrap_index().unwrap();
-        pool.stake_with_index(pk_with_fp, MIN_VALIDATOR_STAKE, 0, next_idx).unwrap();
+        pool.stake_with_index(pk_with_fp, MIN_VALIDATOR_STAKE, 0, next_idx)
+            .unwrap();
         pool.register_fingerprint(&pk_with_fp, [0xFF; 32]).unwrap();
         let bytes2 = bincode::serialize(&pool).unwrap();
         let pool3: StakePool = bincode::deserialize(&bytes2).unwrap();
@@ -3377,11 +3406,13 @@ mod tests {
         let shared_fp = [0xAA; 32];
 
         // pk1 is bootstrap (index 0) with fingerprint
-        pool.stake_with_index(pk1, MIN_VALIDATOR_STAKE, 0, 0).unwrap();
+        pool.stake_with_index(pk1, MIN_VALIDATOR_STAKE, 0, 0)
+            .unwrap();
         pool.register_fingerprint(&pk1, shared_fp).unwrap();
 
         // pk2 is self-funded (index u64::MAX) — same fingerprint
-        pool.stake_with_index(pk2, MIN_VALIDATOR_STAKE, 0, u64::MAX).unwrap();
+        pool.stake_with_index(pk2, MIN_VALIDATOR_STAKE, 0, u64::MAX)
+            .unwrap();
         // register_fingerprint should fail (fingerprint taken by pk1)
         let err = pool.register_fingerprint(&pk2, shared_fp).unwrap_err();
         assert!(err.contains("already registered"));
@@ -3493,10 +3524,20 @@ mod tests {
         let validator_b = [0xBBu8; 32];
 
         let block_a = crate::Block::new_with_timestamp(
-            10, Hash::default(), Hash::default(), validator_a, Vec::new(), 1000,
+            10,
+            Hash::default(),
+            Hash::default(),
+            validator_a,
+            Vec::new(),
+            1000,
         );
         let block_b = crate::Block::new_with_timestamp(
-            10, Hash::default(), Hash::default(), validator_b, Vec::new(), 1001,
+            10,
+            Hash::default(),
+            Hash::default(),
+            validator_b,
+            Vec::new(),
+            1001,
         );
         let hash_a = block_a.hash();
         let hash_b = block_b.hash();
@@ -3517,10 +3558,20 @@ mod tests {
         let mut fc = ForkChoice::new();
 
         let block_low = crate::Block::new_with_timestamp(
-            10, Hash::default(), Hash::default(), [1u8; 32], Vec::new(), 1000,
+            10,
+            Hash::default(),
+            Hash::default(),
+            [1u8; 32],
+            Vec::new(),
+            1000,
         );
         let block_high = crate::Block::new_with_timestamp(
-            11, Hash::default(), Hash::default(), [2u8; 32], Vec::new(), 1001,
+            11,
+            Hash::default(),
+            Hash::default(),
+            [2u8; 32],
+            Vec::new(),
+            1001,
         );
 
         // Low slot has much more weight
@@ -3538,10 +3589,20 @@ mod tests {
         let mut fc = ForkChoice::new();
 
         let block_a = crate::Block::new_with_timestamp(
-            5, Hash::default(), Hash::new([1u8; 32]), [0xAA; 32], Vec::new(), 100,
+            5,
+            Hash::default(),
+            Hash::new([1u8; 32]),
+            [0xAA; 32],
+            Vec::new(),
+            100,
         );
         let block_b = crate::Block::new_with_timestamp(
-            5, Hash::default(), Hash::new([2u8; 32]), [0xBB; 32], Vec::new(), 101,
+            5,
+            Hash::default(),
+            Hash::new([2u8; 32]),
+            [0xBB; 32],
+            Vec::new(),
+            101,
         );
 
         let hash_a = block_a.hash();
@@ -3554,7 +3615,10 @@ mod tests {
         let (_, selected) = fc.select_head().unwrap();
         // Tiebreak: deterministic — same every time
         let expected = if hash_a.0 > hash_b.0 { hash_a } else { hash_b };
-        assert_eq!(selected, expected, "Deterministic tiebreak should pick consistently");
+        assert_eq!(
+            selected, expected,
+            "Deterministic tiebreak should pick consistently"
+        );
 
         // Run again — same result
         let (_, selected2) = fc.select_head().unwrap();

@@ -74,8 +74,8 @@ fn xor_cipher(data: &[u8], key: &[u8; 32]) -> Vec<u8> {
 
 /// AES-256-GCM encryption: returns nonce (12) || ciphertext || tag (16).
 fn encrypt_aes_gcm(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>> {
-    let cipher = Aes256Gcm::new_from_slice(key)
-        .map_err(|_| anyhow::anyhow!("Invalid AES key length"))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(key).map_err(|_| anyhow::anyhow!("Invalid AES key length"))?;
     let mut nonce_bytes = [0u8; 12];
     getrandom::fill(&mut nonce_bytes)
         .map_err(|e| anyhow::anyhow!("Failed to generate random nonce: {}", e))?;

@@ -23,7 +23,14 @@ fn create_test_state() -> (StateStore, TempDir) {
         .put_account(&treasury.pubkey(), &treasury_account)
         .unwrap();
     state.set_treasury_pubkey(&treasury.pubkey()).unwrap();
-    let genesis = Block::new_with_timestamp(0, Hash::default(), Hash::default(), [0u8; 32], Vec::new(), 0);
+    let genesis = Block::new_with_timestamp(
+        0,
+        Hash::default(),
+        Hash::default(),
+        [0u8; 32],
+        Vec::new(),
+        0,
+    );
     state.put_block(&genesis).unwrap();
     state.set_last_slot(0).unwrap();
     (state, temp_dir)
@@ -43,12 +50,7 @@ fn account_with_shells(owner: Pubkey, shells: u64) -> Account {
 }
 
 /// Deploy a WASM contract into the state store at the given address.
-fn deploy_wasm_contract(
-    state: &StateStore,
-    address: &Pubkey,
-    owner: &Pubkey,
-    wasm_bytes: &[u8],
-) {
+fn deploy_wasm_contract(state: &StateStore, address: &Pubkey, owner: &Pubkey, wasm_bytes: &[u8]) {
     let contract = ContractAccount::new(wasm_bytes.to_vec(), *owner);
     let mut account = account_with_shells(*address, 0);
     account.executable = true;
@@ -136,12 +138,7 @@ fn caller_ccc_wat() -> &'static str {
 
 #[test]
 fn test_context_new_initializes_ccc_fields() {
-    let ctx = ContractContext::new(
-        Pubkey::new([1u8; 32]),
-        Pubkey::new([2u8; 32]),
-        0,
-        0,
-    );
+    let ctx = ContractContext::new(Pubkey::new([1u8; 32]), Pubkey::new([2u8; 32]), 0, 0);
     assert!(ctx.state_store.is_none());
     assert_eq!(ctx.call_depth, 0);
     assert!(ctx.pending_ccc_changes.lock().unwrap().is_empty());
@@ -166,12 +163,7 @@ fn test_context_with_args_initializes_ccc_fields() {
 
 #[test]
 fn test_pending_ccc_changes_shared_via_arc() {
-    let ctx = ContractContext::new(
-        Pubkey::new([1u8; 32]),
-        Pubkey::new([2u8; 32]),
-        0,
-        0,
-    );
+    let ctx = ContractContext::new(Pubkey::new([1u8; 32]), Pubkey::new([2u8; 32]), 0, 0);
 
     // Clone shares the same Arc — mutations visible on both sides
     let ctx2 = ctx.clone();
@@ -211,8 +203,7 @@ fn test_cross_contract_call_executes_target() {
 
     // Load the caller contract
     let caller_account = state.get_account(&caller_addr).unwrap().unwrap();
-    let caller_contract: ContractAccount =
-        serde_json::from_slice(&caller_account.data).unwrap();
+    let caller_contract: ContractAccount = serde_json::from_slice(&caller_account.data).unwrap();
 
     // Build context with state_store set (enables CCC)
     // Args = target address (32 bytes) — the caller WASM loads this into memory
@@ -234,7 +225,11 @@ fn test_cross_contract_call_executes_target() {
     let result = result.expect("Execution should not error");
 
     // The call succeeded
-    assert!(result.success, "CCC call should succeed: {:?}", result.error);
+    assert!(
+        result.success,
+        "CCC call should succeed: {:?}",
+        result.error
+    );
 
     // The target's ping function wrote "ping_key" → "pong" to its storage.
     // This should appear in cross_call_changes under the target's address.
@@ -273,8 +268,7 @@ fn test_cross_contract_call_without_state_store_returns_zero() {
     deploy_wasm_contract(&state, &caller_addr, &owner, caller_wat.as_bytes());
 
     let caller_account = state.get_account(&caller_addr).unwrap().unwrap();
-    let caller_contract: ContractAccount =
-        serde_json::from_slice(&caller_account.data).unwrap();
+    let caller_contract: ContractAccount = serde_json::from_slice(&caller_account.data).unwrap();
 
     // Build context WITHOUT state_store (simulating test mode)
     let args = target_addr.0.to_vec();
@@ -296,7 +290,11 @@ fn test_cross_contract_call_without_state_store_returns_zero() {
     // Execution succeeds but CCC returns 0 (no state_store)
     assert!(result.success);
     // Return code should be 0 (CCC failed due to no state store)
-    assert_eq!(result.return_code, Some(0), "CCC should return 0 when no state_store");
+    assert_eq!(
+        result.return_code,
+        Some(0),
+        "CCC should return 0 when no state_store"
+    );
     // No cross-call changes
     assert!(result.cross_call_changes.is_empty());
 }
@@ -312,8 +310,7 @@ fn test_cross_contract_call_target_not_found() {
     deploy_wasm_contract(&state, &caller_addr, &owner, caller_wat.as_bytes());
 
     let caller_account = state.get_account(&caller_addr).unwrap().unwrap();
-    let caller_contract: ContractAccount =
-        serde_json::from_slice(&caller_account.data).unwrap();
+    let caller_contract: ContractAccount = serde_json::from_slice(&caller_account.data).unwrap();
 
     let args = nonexistent_target.0.to_vec();
     let mut ctx = ContractContext::with_args(
@@ -358,10 +355,20 @@ fn test_processor_applies_cross_call_changes() {
         .unwrap();
 
     // Deploy target (ping)
-    deploy_wasm_contract(&state, &target_addr, &deployer.pubkey(), target_ping_wat().as_bytes());
+    deploy_wasm_contract(
+        &state,
+        &target_addr,
+        &deployer.pubkey(),
+        target_ping_wat().as_bytes(),
+    );
 
     // Deploy caller (calls CCC)
-    deploy_wasm_contract(&state, &caller_addr, &deployer.pubkey(), caller_ccc_wat().as_bytes());
+    deploy_wasm_contract(
+        &state,
+        &caller_addr,
+        &deployer.pubkey(),
+        caller_ccc_wat().as_bytes(),
+    );
 
     // Build a contract call transaction: call the caller's "call" function
     // with args = target_addr (32 bytes)
@@ -406,8 +413,7 @@ fn test_processor_applies_cross_call_changes() {
 
     // Also verify the target's ContractAccount embedded storage was updated
     let target_account = state.get_account(&target_addr).unwrap().unwrap();
-    let target_contract: ContractAccount =
-        serde_json::from_slice(&target_account.data).unwrap();
+    let target_contract: ContractAccount = serde_json::from_slice(&target_account.data).unwrap();
     assert_eq!(
         target_contract.get_storage(b"ping_key"),
         Some(b"pong".to_vec()),

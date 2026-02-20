@@ -411,9 +411,7 @@ impl RpcClient {
 
         let recent_blockhash = self.get_recent_blockhash().await?;
 
-        let contract_ix = ContractInstruction::Upgrade {
-            code: wasm_code,
-        };
+        let contract_ix = ContractInstruction::Upgrade { code: wasm_code };
 
         let instruction = Instruction {
             program_id: Pubkey::new([0xFFu8; 32]), // Contract program

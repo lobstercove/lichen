@@ -916,10 +916,7 @@ async fn main() -> Result<()> {
                         } else {
                             0.0
                         };
-                        println!(
-                            "   Success rate: {:.2}%",
-                            success_rate
-                        );
+                        println!("   Success rate: {:.2}%", success_rate);
                         println!("   Average block time: {}ms", perf.avg_block_time_ms);
                         println!();
                         println!("⏰ Uptime: {:.2}%", perf.uptime_percent);
@@ -1375,7 +1372,11 @@ async fn main() -> Result<()> {
             println!("🔗 Address: {}", contract_addr.to_base58());
         }
 
-        Commands::Upgrade { address, contract, keypair } => {
+        Commands::Upgrade {
+            address,
+            contract,
+            keypair,
+        } => {
             let path = keypair.unwrap_or_else(|| keypair_mgr.default_keypair_path());
             let owner = keypair_mgr.load_keypair(&path)?;
 
@@ -1566,7 +1567,8 @@ async fn main() -> Result<()> {
                 let data = addr.as_bytes().to_vec();
                 match client
                     .call_contract(
-                        &keypair_mgr.load_keypair(&keypair_mgr.default_keypair_path())
+                        &keypair_mgr
+                            .load_keypair(&keypair_mgr.default_keypair_path())
                             .unwrap_or_else(|_| Keypair::new()),
                         &contract_addr,
                         "balance_of".to_string(),
@@ -1642,7 +1644,11 @@ async fn main() -> Result<()> {
                     println!(
                         "   Description: {}{}",
                         desc_preview,
-                        if description.len() > desc_preview.len() { "..." } else { "" }
+                        if description.len() > desc_preview.len() {
+                            "..."
+                        } else {
+                            ""
+                        }
                     );
                     println!("   Proposer: {}", proposer.pubkey().to_base58());
                     println!("   Stake: 1000 MOLT required");
@@ -1715,7 +1721,8 @@ async fn main() -> Result<()> {
 
                     match client
                         .call_contract(
-                            &keypair_mgr.load_keypair(&keypair_mgr.default_keypair_path())
+                            &keypair_mgr
+                                .load_keypair(&keypair_mgr.default_keypair_path())
                                 .unwrap_or_else(|_| Keypair::new()),
                             &dao_addr,
                             "get_proposals".to_string(),
@@ -1744,7 +1751,8 @@ async fn main() -> Result<()> {
 
                     match client
                         .call_contract(
-                            &keypair_mgr.load_keypair(&keypair_mgr.default_keypair_path())
+                            &keypair_mgr
+                                .load_keypair(&keypair_mgr.default_keypair_path())
                                 .unwrap_or_else(|_| Keypair::new()),
                             &dao_addr,
                             "get_proposal".to_string(),

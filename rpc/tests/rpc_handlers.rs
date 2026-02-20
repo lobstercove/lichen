@@ -4,7 +4,8 @@
 use axum::body::{to_bytes, Body};
 use axum::http::Request;
 use moltchain_core::{
-    contract::ContractAccount, Account, Pubkey, StateStore, SymbolRegistryEntry, CONTRACT_PROGRAM_ID,
+    contract::ContractAccount, Account, Pubkey, StateStore, SymbolRegistryEntry,
+    CONTRACT_PROGRAM_ID,
 };
 use moltchain_rpc::build_rpc_router;
 use serde_json::json;
@@ -159,26 +160,53 @@ fn create_test_app_with_moltyid() -> (axum::Router, String, String) {
 
     contract.storage.insert(
         format!("id:{}", alice_hex).into_bytes(),
-        make_identity_record(alice, 1, "Alice", 742, 1_700_000_000, 1_700_100_000, 1, 1, true),
+        make_identity_record(
+            alice,
+            1,
+            "Alice",
+            742,
+            1_700_000_000,
+            1_700_100_000,
+            1,
+            1,
+            true,
+        ),
     );
     contract.storage.insert(
         format!("id:{}", bob_hex).into_bytes(),
-        make_identity_record(bob, 7, "Bob", 1200, 1_700_000_100, 1_700_200_000, 0, 1, true),
+        make_identity_record(
+            bob,
+            7,
+            "Bob",
+            1200,
+            1_700_000_100,
+            1_700_200_000,
+            0,
+            1,
+            true,
+        ),
     );
 
-    contract
-        .storage
-        .insert(format!("rep:{}", alice_hex).into_bytes(), 742u64.to_le_bytes().to_vec());
-    contract
-        .storage
-        .insert(format!("rep:{}", bob_hex).into_bytes(), 1200u64.to_le_bytes().to_vec());
+    contract.storage.insert(
+        format!("rep:{}", alice_hex).into_bytes(),
+        742u64.to_le_bytes().to_vec(),
+    );
+    contract.storage.insert(
+        format!("rep:{}", bob_hex).into_bytes(),
+        1200u64.to_le_bytes().to_vec(),
+    );
 
     contract.storage.insert(
         format!("skill:{}:0", alice_hex).into_bytes(),
         make_skill_record("rust", 95, 1_700_100_100),
     );
     contract.storage.insert(
-        format!("attest_count_{}_{}", alice_hex, hex::encode(skill_hash("rust"))).into_bytes(),
+        format!(
+            "attest_count_{}_{}",
+            alice_hex,
+            hex::encode(skill_hash("rust"))
+        )
+        .into_bytes(),
         3u64.to_le_bytes().to_vec(),
     );
 
@@ -197,9 +225,7 @@ fn create_test_app_with_moltyid() -> (axum::Router, String, String) {
     name_record[0..32].copy_from_slice(&alice.0);
     name_record[32..40].copy_from_slice(&100u64.to_le_bytes());
     name_record[40..48].copy_from_slice(&9_999_999_999u64.to_le_bytes());
-    contract
-        .storage
-        .insert(b"name:alice".to_vec(), name_record);
+    contract.storage.insert(b"name:alice".to_vec(), name_record);
 
     contract.storage.insert(
         format!("endpoint:{}", alice_hex).into_bytes(),
@@ -209,23 +235,21 @@ fn create_test_app_with_moltyid() -> (axum::Router, String, String) {
         format!("metadata:{}", alice_hex).into_bytes(),
         br#"{"model":"gpt"}"#.to_vec(),
     );
-    contract.storage.insert(
-        format!("availability:{}", alice_hex).into_bytes(),
-        vec![1],
-    );
+    contract
+        .storage
+        .insert(format!("availability:{}", alice_hex).into_bytes(), vec![1]);
     contract.storage.insert(
         format!("rate:{}", alice_hex).into_bytes(),
         500_000_000u64.to_le_bytes().to_vec(),
     );
 
-    contract.storage.insert(
-        format!("ach:{}:04", alice_hex).into_bytes(),
-        {
+    contract
+        .storage
+        .insert(format!("ach:{}:04", alice_hex).into_bytes(), {
             let mut data = vec![4u8];
             data.extend_from_slice(&1_700_200_200u64.to_le_bytes());
             data
-        },
-    );
+        });
 
     contract
         .storage
@@ -507,7 +531,10 @@ async fn test_molt_name_resolution_endpoints() {
     )
     .await
     .unwrap();
-    assert_eq!(batch["result"]["11111111111111111111111111111111"], serde_json::Value::Null);
+    assert_eq!(
+        batch["result"]["11111111111111111111111111111111"],
+        serde_json::Value::Null
+    );
 }
 
 #[tokio::test]

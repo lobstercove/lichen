@@ -236,7 +236,9 @@ fn u64_le(data: &[u8], offset: usize) -> u64 {
 /// Decode a 192-byte market record
 fn decode_market(state: &RpcState, id: u64) -> Option<MarketJson> {
     let key = format!("pm_m_{}", id);
-    let data = state.state.get_program_storage(PREDICT_PROGRAM, key.as_bytes())?;
+    let data = state
+        .state
+        .get_program_storage(PREDICT_PROGRAM, key.as_bytes())?;
     if data.len() < 192 {
         return None;
     }
@@ -254,11 +256,17 @@ fn decode_market(state: &RpcState, id: u64) -> Option<MarketJson> {
     let total_volume = u64_le(&data, 76);
     let fees_collected = u64_le(&data, 164);
 
-    let winning_outcome = if winning_raw == 0xFF { None } else { Some(winning_raw) };
+    let winning_outcome = if winning_raw == 0xFF {
+        None
+    } else {
+        Some(winning_raw)
+    };
 
     // Read question text
     let q_key = format!("pm_q_{}", id);
-    let question = state.state.get_program_storage(PREDICT_PROGRAM, q_key.as_bytes())
+    let question = state
+        .state
+        .get_program_storage(PREDICT_PROGRAM, q_key.as_bytes())
         .and_then(|d| String::from_utf8(d).ok())
         .unwrap_or_default();
 
@@ -270,11 +278,21 @@ fn decode_market(state: &RpcState, id: u64) -> Option<MarketJson> {
         let o_key = format!("pm_o_{}_{}", id, oi);
         let on_key = format!("pm_on_{}_{}", id, oi);
 
-        let name = state.state.get_program_storage(PREDICT_PROGRAM, on_key.as_bytes())
+        let name = state
+            .state
+            .get_program_storage(PREDICT_PROGRAM, on_key.as_bytes())
             .and_then(|d| String::from_utf8(d).ok())
-            .unwrap_or_else(|| if oi == 0 { "Yes".to_string() } else { "No".to_string() });
+            .unwrap_or_else(|| {
+                if oi == 0 {
+                    "Yes".to_string()
+                } else {
+                    "No".to_string()
+                }
+            });
 
-        let (reserve, shares) = state.state.get_program_storage(PREDICT_PROGRAM, o_key.as_bytes())
+        let (reserve, shares) = state
+            .state
+            .get_program_storage(PREDICT_PROGRAM, o_key.as_bytes())
             .map(|d| {
                 if d.len() >= 16 {
                     (u64_le(&d, 0), u64_le(&d, 8))
@@ -299,7 +317,11 @@ fn decode_market(state: &RpcState, id: u64) -> Option<MarketJson> {
             let self_r = outcome_reserves[oi] as f64;
             let other_r = outcome_reserves[1 - oi] as f64;
             let sum = self_r + other_r;
-            if sum > 0.0 { other_r / sum } else { 0.5 }
+            if sum > 0.0 {
+                other_r / sum
+            } else {
+                0.5
+            }
         } else {
             // Multi-outcome: price_i = (1/r_i) / sum(1/r_j)
             let all_nonzero = outcome_reserves.iter().all(|&r| r > 0);
@@ -323,7 +345,9 @@ fn decode_market(state: &RpcState, id: u64) -> Option<MarketJson> {
 
     // F11.9 FIX: Include unique_traders to eliminate N+1 queries
     let trader_count_key = format!("pm_mtc_{}", id);
-    let unique_traders = state.state.get_program_storage(PREDICT_PROGRAM, trader_count_key.as_bytes())
+    let unique_traders = state
+        .state
+        .get_program_storage(PREDICT_PROGRAM, trader_count_key.as_bytes())
         .map(|d| if d.len() >= 8 { u64_le(&d, 0) } else { 0 })
         .unwrap_or(0);
 
@@ -359,7 +383,9 @@ async fn get_stats(State(state): State<Arc<RpcState>>) -> Response {
     let total_collateral = read_u64_key(&state, b"pm_total_collateral");
     let fees_collected = read_u64_key(&state, b"pm_fees_collected");
     let total_traders = read_u64_key(&state, b"pm_total_traders");
-    let paused = read_bytes(&state, b"pm_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false);
+    let paused = read_bytes(&state, b"pm_paused")
+        .map(|d| d.first().copied().unwrap_or(0) != 0)
+        .unwrap_or(false);
 
     ApiResponse::ok(
         PlatformStatsJson {
@@ -437,10 +463,7 @@ async fn get_markets(
 }
 
 /// GET /prediction-market/markets/:id — Single market detail
-async fn get_market(
-    State(state): State<Arc<RpcState>>,
-    Path(id): Path<u64>,
-) -> Response {
+async fn get_market(State(state): State<Arc<RpcState>>, Path(id): Path<u64>) -> Response {
     let slot = current_slot(&state);
 
     match decode_market(&state, id) {
@@ -519,7 +542,11 @@ async fn get_price_history(
     let count = read_u64_key(&state, count_key.as_bytes());
 
     let offset = q.offset.unwrap_or(0) as u64;
-    let start = if offset > 0 { offset.min(count) } else { count.saturating_sub(limit as u64) };
+    let start = if offset > 0 {
+        offset.min(count)
+    } else {
+        count.saturating_sub(limit as u64)
+    };
     let end = count.min(start + limit as u64);
 
     let mut snapshots = Vec::new();
@@ -560,10 +587,7 @@ async fn get_price_history(
 
 /// POST /prediction-market/trade — Submit a trade (buy/sell outcome shares)
 /// In production this would create a transaction. For now returns the trade preview.
-async fn post_trade(
-    State(state): State<Arc<RpcState>>,
-    Json(req): Json<TradeRequest>,
-) -> Response {
+async fn post_trade(State(state): State<Arc<RpcState>>, Json(req): Json<TradeRequest>) -> Response {
     let slot = current_slot(&state);
 
     // Validate market exists and is active
@@ -575,12 +599,19 @@ async fn post_trade(
 
     let status = mkt_data[64];
     if status != 1 {
-        return api_err(&format!("Market {} is not active (status={})", req.market_id, status_name(status)));
+        return api_err(&format!(
+            "Market {} is not active (status={})",
+            req.market_id,
+            status_name(status)
+        ));
     }
 
     let outcome_count = mkt_data[65];
     if req.outcome >= outcome_count {
-        return api_err(&format!("Invalid outcome {} (market has {} outcomes)", req.outcome, outcome_count));
+        return api_err(&format!(
+            "Invalid outcome {} (market has {} outcomes)",
+            req.outcome, outcome_count
+        ));
     }
 
     // Read current pool for the outcome
@@ -597,10 +628,18 @@ async fn post_trade(
 
     // CPMM trade calculation
     let total_pool = pool_yes + pool_no;
-    let price = if total_pool > 0 { pool_no as f64 / total_pool as f64 } else { 0.5 };
+    let price = if total_pool > 0 {
+        pool_no as f64 / total_pool as f64
+    } else {
+        0.5
+    };
     let fee_rate = 0.02; // 2% fee
     let net_amount = req.amount as f64 * (1.0 - fee_rate);
-    let shares = if price > 0.0 && price < 1.0 { net_amount / price } else { net_amount };
+    let shares = if price > 0.0 && price < 1.0 {
+        net_amount / price
+    } else {
+        net_amount
+    };
     let fee = req.amount as f64 * fee_rate;
 
     #[derive(Serialize)]
@@ -661,11 +700,20 @@ async fn post_create(
             Some(provided) => {
                 let a = provided.as_bytes();
                 let b = required.as_bytes();
-                if a.len() != b.len() || a.iter().zip(b.iter()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) != 0 {
+                if a.len() != b.len()
+                    || a.iter()
+                        .zip(b.iter())
+                        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+                        != 0
+                {
                     return api_err("Invalid admin_token");
                 }
             }
-            None => return api_err("Missing admin_token — market creation requires admin authentication"),
+            None => {
+                return api_err(
+                    "Missing admin_token — market creation requires admin authentication",
+                )
+            }
         },
         None => return api_err("Admin endpoints disabled: no admin_token configured"),
     }
@@ -714,31 +762,42 @@ async fn post_create(
 
     // ── Build 192-byte market record ─────────────────────────────────────
     let mut record = vec![0u8; 192];
-    record[0..8].copy_from_slice(&new_id.to_le_bytes());         // market_id
-    // [8..40] creator — leave zeroed (REST preview creator)
-    record[40..48].copy_from_slice(&slot.to_le_bytes());          // created_slot
+    record[0..8].copy_from_slice(&new_id.to_le_bytes()); // market_id
+                                                         // [8..40] creator — leave zeroed (REST preview creator)
+    record[40..48].copy_from_slice(&slot.to_le_bytes()); // created_slot
     record[48..56].copy_from_slice(&(slot + 100_000).to_le_bytes()); // close_slot
-    record[56..64].copy_from_slice(&0u64.to_le_bytes());          // resolve_slot
-    record[64] = 1;                                               // status = active
-    record[65] = outcome_count;                                   // outcome_count (2-8)
-    record[66] = 0xFF;                                            // winning_outcome = none
-    record[67] = cat_id;                                          // category
-    let init_liq = req.initial_liquidity as u64;
-    record[68..76].copy_from_slice(&init_liq.to_le_bytes());      // total_collateral
-    // [76..84] total_volume = 0, [164..172] fees_collected = 0 (already zeroed)
+    record[56..64].copy_from_slice(&0u64.to_le_bytes()); // resolve_slot
+    record[64] = 1; // status = active
+    record[65] = outcome_count; // outcome_count (2-8)
+    record[66] = 0xFF; // winning_outcome = none
+    record[67] = cat_id; // category
+    let init_liq = req.initial_liquidity;
+    record[68..76].copy_from_slice(&init_liq.to_le_bytes()); // total_collateral
+                                                             // [76..84] total_volume = 0, [164..172] fees_collected = 0 (already zeroed)
 
     // ── Persist directly to CF_CONTRACT_STORAGE (avoids full ContractAccount deser) ─
     let mkt_key = format!("pm_m_{}", new_id);
-    if let Err(e) = state.state.put_contract_storage(&program_pubkey, mkt_key.as_bytes(), &record) {
+    if let Err(e) = state
+        .state
+        .put_contract_storage(&program_pubkey, mkt_key.as_bytes(), &record)
+    {
         return api_err(&format!("Failed to persist market: {}", e));
     }
-    if let Err(e) = state.state.put_contract_storage(&program_pubkey, b"pm_market_count", &new_id.to_le_bytes()) {
+    if let Err(e) =
+        state
+            .state
+            .put_contract_storage(&program_pubkey, b"pm_market_count", &new_id.to_le_bytes())
+    {
         return api_err(&format!("Failed to persist market count: {}", e));
     }
 
     // Question text
     let q_key = format!("pm_q_{}", new_id);
-    let _ = state.state.put_contract_storage(&program_pubkey, q_key.as_bytes(), req.question.as_bytes());
+    let _ = state.state.put_contract_storage(
+        &program_pubkey,
+        q_key.as_bytes(),
+        req.question.as_bytes(),
+    );
 
     // Outcome pools — split liquidity equally across all outcomes
     let per_outcome = init_liq / outcome_count as u64;
@@ -748,10 +807,15 @@ async fn post_create(
         pool_data[8..16].copy_from_slice(&per_outcome.to_le_bytes());
 
         let o_key = format!("pm_o_{}_{}", new_id, i);
-        let _ = state.state.put_contract_storage(&program_pubkey, o_key.as_bytes(), &pool_data);
+        let _ = state
+            .state
+            .put_contract_storage(&program_pubkey, o_key.as_bytes(), &pool_data);
 
         let on_key = format!("pm_on_{}_{}", new_id, i);
-        let _ = state.state.put_contract_storage(&program_pubkey, on_key.as_bytes(), name.as_bytes());
+        let _ =
+            state
+                .state
+                .put_contract_storage(&program_pubkey, on_key.as_bytes(), name.as_bytes());
     }
 
     #[derive(Serialize)]
@@ -765,11 +829,9 @@ async fn post_create(
     }
 
     // Emit prediction market WS event
-    state.prediction_broadcaster.emit_market_created(
-        new_id,
-        &req.question,
-        slot,
-    );
+    state
+        .prediction_broadcaster
+        .emit_market_created(new_id, &req.question, slot);
 
     ApiResponse::ok(
         CreateResult {
@@ -965,7 +1027,11 @@ async fn get_trending(State(state): State<Arc<RpcState>>) -> Response {
     }
 
     // Sort by 24h volume descending
-    markets.sort_by(|a, b| b.volume_24h.partial_cmp(&a.volume_24h).unwrap_or(std::cmp::Ordering::Equal));
+    markets.sort_by(|a, b| {
+        b.volume_24h
+            .partial_cmp(&a.volume_24h)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     markets.truncate(10);
 
     ApiResponse::ok(markets, slot).into_response()
@@ -979,10 +1045,7 @@ struct MarketAnalyticsJson {
 }
 
 /// GET /prediction-market/markets/:id/analytics — Per-market analytics
-async fn get_market_analytics(
-    State(state): State<Arc<RpcState>>,
-    Path(id): Path<u64>,
-) -> Response {
+async fn get_market_analytics(State(state): State<Arc<RpcState>>, Path(id): Path<u64>) -> Response {
     let slot = current_slot(&state);
     let tc_key = format!("pm_mtc_{}", id);
     let traders = read_u64_key(&state, tc_key.as_bytes());

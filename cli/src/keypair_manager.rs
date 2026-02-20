@@ -112,7 +112,10 @@ impl KeypairManager {
 
         // --- Format 4: secretKey (browser wallet / extension export, 64-byte ed25519) ---
         if let Some(arr) = json.get("secretKey").and_then(|v| v.as_array()) {
-            let bytes: Vec<u8> = arr.iter().filter_map(|v| v.as_u64().map(|n| n as u8)).collect();
+            let bytes: Vec<u8> = arr
+                .iter()
+                .filter_map(|v| v.as_u64().map(|n| n as u8))
+                .collect();
             if bytes.len() >= 32 {
                 let mut seed = [0u8; 32];
                 seed.copy_from_slice(&bytes[..32]);
@@ -122,7 +125,10 @@ impl KeypairManager {
 
         // --- Format 3: flat byte array [172, 31, 143, ...] ---
         if let Some(arr) = json.as_array() {
-            let bytes: Vec<u8> = arr.iter().filter_map(|v| v.as_u64().map(|n| n as u8)).collect();
+            let bytes: Vec<u8> = arr
+                .iter()
+                .filter_map(|v| v.as_u64().map(|n| n as u8))
+                .collect();
             if bytes.len() >= 32 {
                 let mut seed = [0u8; 32];
                 seed.copy_from_slice(&bytes[..32]);
