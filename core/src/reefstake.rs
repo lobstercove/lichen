@@ -1,8 +1,8 @@
 // MoltChain ReefStake - Liquid Staking Protocol
 // Stake MOLT, receive stMOLT (liquid receipt token)
 
-use crate::Pubkey;
 use crate::consensus::UNSTAKE_COOLDOWN_SLOTS;
+use crate::Pubkey;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -122,16 +122,13 @@ impl StMoltToken {
 }
 
 /// Staking lock tier — determines APY bonus and lock duration
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum LockTier {
-    Flexible = 0,  // No lock, 7-day unstake cooldown, 1.0x multiplier
-    Lock30   = 1,  // 30-day lock, 1.5x multiplier
-    Lock90   = 2,  // 90-day lock, 2.0x multiplier
-    Lock365  = 3,  // 365-day lock, 3.0x multiplier
-}
-
-impl Default for LockTier {
-    fn default() -> Self { Self::Flexible }
+    #[default]
+    Flexible = 0, // No lock, 7-day unstake cooldown, 1.0x multiplier
+    Lock30 = 1,  // 30-day lock, 1.5x multiplier
+    Lock90 = 2,  // 90-day lock, 2.0x multiplier
+    Lock365 = 3, // 365-day lock, 3.0x multiplier
 }
 
 impl LockTier {
@@ -149,9 +146,9 @@ impl LockTier {
     pub fn reward_multiplier_bp(&self) -> u64 {
         match self {
             Self::Flexible => 10_000, // 1.0x
-            Self::Lock30   => 15_000, // 1.5x
-            Self::Lock90   => 20_000, // 2.0x
-            Self::Lock365  => 30_000, // 3.0x
+            Self::Lock30 => 15_000,   // 1.5x
+            Self::Lock90 => 20_000,   // 2.0x
+            Self::Lock365 => 30_000,  // 3.0x
         }
     }
 
@@ -160,19 +157,19 @@ impl LockTier {
     /// Locked tiers: funds are locked for this many slots after deposit
     pub fn lock_duration_slots(&self) -> u64 {
         match self {
-            Self::Flexible => 0,         // No lock (7-day unstake cooldown applies separately)
-            Self::Lock30   => 6_480_000, // 30 days
-            Self::Lock90   => 19_440_000, // 90 days
-            Self::Lock365  => 78_840_000, // 365 days
+            Self::Flexible => 0,       // No lock (7-day unstake cooldown applies separately)
+            Self::Lock30 => 6_480_000, // 30 days
+            Self::Lock90 => 19_440_000, // 90 days
+            Self::Lock365 => 78_840_000, // 365 days
         }
     }
 
     pub fn display_name(&self) -> &'static str {
         match self {
             Self::Flexible => "Flexible",
-            Self::Lock30   => "30-Day Lock",
-            Self::Lock90   => "90-Day Lock",
-            Self::Lock365  => "365-Day Lock",
+            Self::Lock30 => "30-Day Lock",
+            Self::Lock90 => "90-Day Lock",
+            Self::Lock365 => "365-Day Lock",
         }
     }
 }
@@ -188,7 +185,7 @@ pub struct StakingPosition {
     #[serde(default)]
     pub lock_tier: LockTier, // Staking tier (Flexible, 30d, 90d, 365d)
     #[serde(default)]
-    pub lock_until: u64,     // Slot until which funds are locked (0 = no lock)
+    pub lock_until: u64, // Slot until which funds are locked (0 = no lock)
 }
 
 /// Unstaking request (7-day cooldown)
@@ -318,7 +315,9 @@ impl ReefStakePool {
             let remaining_days = remaining_slots / 216_000; // slots per day
             return Err(format!(
                 "Position locked for {} more days ({} tier). Unlock at slot {}",
-                remaining_days, position.lock_tier.display_name(), position.lock_until
+                remaining_days,
+                position.lock_tier.display_name(),
+                position.lock_until
             ));
         }
 
@@ -490,11 +489,17 @@ impl ReefStakePool {
         self.st_molt_token.exchange_rate_fp = self.st_molt_token.calculate_exchange_rate_fp();
 
         // Calculate total weighted stMOLT across all positions
-        let total_weighted: u128 = self.positions.values().map(|p| {
-            (p.st_molt_amount as u128 * p.lock_tier.reward_multiplier_bp() as u128) / 10_000
-        }).sum();
+        let total_weighted: u128 = self
+            .positions
+            .values()
+            .map(|p| {
+                (p.st_molt_amount as u128 * p.lock_tier.reward_multiplier_bp() as u128) / 10_000
+            })
+            .sum();
 
-        if total_weighted == 0 { return; }
+        if total_weighted == 0 {
+            return;
+        }
 
         // Distribute rewards proportionally to weighted stake
         // AUDIT-FIX CP-5: Track distributed sum and assign remainder dust to last position
@@ -504,7 +509,8 @@ impl ReefStakePool {
         for position in self.positions.values_mut() {
             idx += 1;
             let weighted = (position.st_molt_amount as u128
-                * position.lock_tier.reward_multiplier_bp() as u128) / 10_000;
+                * position.lock_tier.reward_multiplier_bp() as u128)
+                / 10_000;
             let reward_share = if idx == position_count {
                 // Last position gets remainder to avoid dust loss
                 total_rewards.saturating_sub(distributed)

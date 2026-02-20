@@ -96,11 +96,7 @@ impl PeerBanList {
         const BASE_BAN_SECS: u64 = 600;
         const MAX_BAN_SECS: u64 = 86400;
 
-        let previous_count = self
-            .entries
-            .get(&addr)
-            .map(|e| e.ban_count)
-            .unwrap_or(0);
+        let previous_count = self.entries.get(&addr).map(|e| e.ban_count).unwrap_or(0);
 
         let ban_count = previous_count + 1;
         let ban_duration = if score <= -10 {
@@ -112,7 +108,11 @@ impl PeerBanList {
         } else {
             0
         };
-        let banned_until = if ban_duration > 0 { now + ban_duration } else { 0 };
+        let banned_until = if ban_duration > 0 {
+            now + ban_duration
+        } else {
+            0
+        };
 
         self.entries.insert(
             addr,
@@ -262,7 +262,10 @@ mod tests {
 
         // Simulate 20 repeated bans — should cap at 86400s
         for _ in 0..20 {
-            ban_list.entries.entry(addr).and_modify(|e| e.banned_until = 0);
+            ban_list
+                .entries
+                .entry(addr)
+                .and_modify(|e| e.banned_until = 0);
             ban_list.record_score(addr, -10);
         }
 

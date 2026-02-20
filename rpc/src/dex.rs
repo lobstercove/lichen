@@ -656,8 +656,8 @@ fn decode_trade(data: &[u8]) -> Option<TradeJson> {
         taker,
         maker_order_id,
         slot,
-        side: "buy",      // default; overridden in get_trades
-        timestamp: 0,     // default; overridden in get_trades
+        side: "buy",  // default; overridden in get_trades
+        timestamp: 0, // default; overridden in get_trades
     })
 }
 
@@ -753,10 +753,14 @@ fn decode_margin_position(data: &[u8]) -> Option<MarginPositionJson> {
     // Decode V2 fields (SL/TP) if present (>= 122 bytes)
     let sl_price = if data.len() >= 114 {
         u64::from_le_bytes(data[106..114].try_into().unwrap_or([0; 8]))
-    } else { 0 };
+    } else {
+        0
+    };
     let tp_price = if data.len() >= 122 {
         u64::from_le_bytes(data[114..122].try_into().unwrap_or([0; 8]))
-    } else { 0 };
+    } else {
+        0
+    };
 
     Some(MarginPositionJson {
         position_id,
@@ -934,10 +938,7 @@ fn decode_proposal(data: &[u8]) -> Option<ProposalJson> {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// GET /api/v1/pairs — All trading pairs (enriched with symbols + last price)
-async fn get_pairs(
-    State(state): State<Arc<RpcState>>,
-    Query(q): Query<PairsQuery>,
-) -> Response {
+async fn get_pairs(State(state): State<Arc<RpcState>>, Query(q): Query<PairsQuery>) -> Response {
     let count = read_u64(&state, DEX_CORE_PROGRAM, "dex_pair_count");
     let limit = q.limit.unwrap_or(100).min(500) as u64;
     let effective_count = count.min(limit);
@@ -978,7 +979,8 @@ async fn get_pairs(
                             let oracle_key = format!("price_{}", asset_name);
                             if let Some(feed) = read_bytes(&state, ORACLE_PROGRAM, &oracle_key) {
                                 if feed.len() >= 8 {
-                                    let raw = u64::from_le_bytes(feed[0..8].try_into().unwrap_or([0; 8]));
+                                    let raw =
+                                        u64::from_le_bytes(feed[0..8].try_into().unwrap_or([0; 8]));
                                     if raw > 0 {
                                         // Oracle uses 8 decimals; convert to f64 USD
                                         let oracle_price = raw as f64 / 100_000_000.0;
@@ -987,11 +989,26 @@ async fn get_pairs(
                                         let final_price = match pair.quote_symbol.as_deref() {
                                             Some("MOLT") => {
                                                 let molt_key = "price_MOLT";
-                                                let molt_raw = read_bytes(&state, ORACLE_PROGRAM, molt_key)
-                                                    .and_then(|f| if f.len() >= 8 { Some(u64::from_le_bytes(f[0..8].try_into().unwrap_or([0; 8]))) } else { None })
-                                                    .unwrap_or(10_000_000); // $0.10 default
+                                                let molt_raw =
+                                                    read_bytes(&state, ORACLE_PROGRAM, molt_key)
+                                                        .and_then(|f| {
+                                                            if f.len() >= 8 {
+                                                                Some(u64::from_le_bytes(
+                                                                    f[0..8]
+                                                                        .try_into()
+                                                                        .unwrap_or([0; 8]),
+                                                                ))
+                                                            } else {
+                                                                None
+                                                            }
+                                                        })
+                                                        .unwrap_or(10_000_000); // $0.10 default
                                                 let molt_usd = molt_raw as f64 / 100_000_000.0;
-                                                if molt_usd > 0.0 { oracle_price / molt_usd } else { 0.0 }
+                                                if molt_usd > 0.0 {
+                                                    oracle_price / molt_usd
+                                                } else {
+                                                    0.0
+                                                }
                                             }
                                             _ => oracle_price,
                                         };
@@ -1010,9 +1027,11 @@ async fn get_pairs(
                 if let Some(stats_data) = read_bytes(&state, DEX_ANALYTICS_PROGRAM, &stats_key) {
                     if stats_data.len() >= 48 {
                         // F18.6: Contract layout: [16..24]=low, [24..32]=open (was reading low as open)
-                        let open = u64::from_le_bytes(stats_data[24..32].try_into().unwrap_or([0; 8]));
+                        let open =
+                            u64::from_le_bytes(stats_data[24..32].try_into().unwrap_or([0; 8]));
                         if open > 0 && lp_raw > 0 {
-                            pair.change_24h = Some(((lp_raw as f64 - open as f64) / open as f64) * 100.0);
+                            pair.change_24h =
+                                Some(((lp_raw as f64 - open as f64) / open as f64) * 100.0);
                         }
                     }
                 }
@@ -1041,10 +1060,16 @@ async fn get_pair(State(state): State<Arc<RpcState>>, Path(pair_id): Path<u64>) 
                 }
                 pair.base_symbol = base_sym;
                 pair.quote_symbol = quote_sym;
-                let lp_raw = read_u64(&state, DEX_ANALYTICS_PROGRAM, &format!("ana_lp_{}", pair.pair_id));
-                if lp_raw > 0 { pair.last_price = Some(lp_raw as f64 / PRICE_SCALE as f64); }
+                let lp_raw = read_u64(
+                    &state,
+                    DEX_ANALYTICS_PROGRAM,
+                    &format!("ana_lp_{}", pair.pair_id),
+                );
+                if lp_raw > 0 {
+                    pair.last_price = Some(lp_raw as f64 / PRICE_SCALE as f64);
+                }
                 ApiResponse::ok(pair, slot).into_response()
-            },
+            }
             None => api_err("invalid pair data"),
         },
         None => api_not_found(&format!("pair {} not found", pair_id)),
@@ -1256,11 +1281,7 @@ async fn get_candles(
 
     let mut candles = Vec::new();
     // Candle IDs are 0-based; candle_count is the number of stored candles
-    let start = if candle_count > limit as u64 {
-        candle_count - limit as u64
-    } else {
-        0
-    };
+    let start = candle_count.saturating_sub(limit as u64);
 
     for i in start..candle_count {
         let key = format!("ana_c_{}_{}_{}", pair_id, interval, i);
@@ -1278,10 +1299,14 @@ async fn get_candles(
                 }
                 // F5.2: Filter by from/to (seconds) if provided
                 if let Some(from) = q.from {
-                    if candle.timestamp < from { continue; }
+                    if candle.timestamp < from {
+                        continue;
+                    }
                 }
                 if let Some(to) = q.to {
-                    if candle.timestamp > to { continue; }
+                    if candle.timestamp > to {
+                        continue;
+                    }
                 }
                 candles.push(candle);
             }
@@ -1362,11 +1387,24 @@ async fn get_pair_ticker(State(state): State<Arc<RpcState>>, Path(pair_id): Path
                                 let oracle_usd = raw as f64 / 100_000_000.0;
                                 last_price = match quote_sym.map(|s| s.as_str()) {
                                     Some("MOLT") => {
-                                        let molt_raw = read_bytes(&state, ORACLE_PROGRAM, "price_MOLT")
-                                            .and_then(|f| if f.len() >= 8 { Some(u64::from_le_bytes(f[0..8].try_into().unwrap_or([0; 8]))) } else { None })
-                                            .unwrap_or(10_000_000);
+                                        let molt_raw =
+                                            read_bytes(&state, ORACLE_PROGRAM, "price_MOLT")
+                                                .and_then(|f| {
+                                                    if f.len() >= 8 {
+                                                        Some(u64::from_le_bytes(
+                                                            f[0..8].try_into().unwrap_or([0; 8]),
+                                                        ))
+                                                    } else {
+                                                        None
+                                                    }
+                                                })
+                                                .unwrap_or(10_000_000);
                                         let molt_usd = molt_raw as f64 / 100_000_000.0;
-                                        if molt_usd > 0.0 { oracle_usd / molt_usd } else { 0.0 }
+                                        if molt_usd > 0.0 {
+                                            oracle_usd / molt_usd
+                                        } else {
+                                            0.0
+                                        }
                                     }
                                     _ => oracle_usd,
                                 };
@@ -1390,25 +1428,44 @@ async fn get_pair_ticker(State(state): State<Arc<RpcState>>, Path(pair_id): Path
     );
 
     let stats_key = format!("ana_24h_{}", pair_id);
-    let (volume_24h, change_24h, high_24h, low_24h, trades_24h) = match read_bytes(&state, DEX_ANALYTICS_PROGRAM, &stats_key) {
-        Some(data) if data.len() >= 48 => {
-            let vol = u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]));
-            let high_raw = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
-            // F18.6: Contract layout: [16..24]=low, [24..32]=open (was swapped)
-            let low_raw = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
-            let open_raw = u64::from_le_bytes(data[24..32].try_into().unwrap_or([0; 8]));
-            let _close_raw = u64::from_le_bytes(data[32..40].try_into().unwrap_or([0; 8]));
-            let tcount = u64::from_le_bytes(data[40..48].try_into().unwrap_or([0; 8]));
-            let open_f = open_raw as f64 / PRICE_SCALE as f64;
-            let change = if open_f > 0.0 { ((last_price - open_f) / open_f) * 100.0 } else { 0.0 };
-            (vol, change, high_raw as f64 / PRICE_SCALE as f64, low_raw as f64 / PRICE_SCALE as f64, tcount)
-        }
-        _ => (0, 0.0, 0.0, 0.0, 0),
-    };
+    let (volume_24h, change_24h, high_24h, low_24h, trades_24h) =
+        match read_bytes(&state, DEX_ANALYTICS_PROGRAM, &stats_key) {
+            Some(data) if data.len() >= 48 => {
+                let vol = u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]));
+                let high_raw = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
+                // F18.6: Contract layout: [16..24]=low, [24..32]=open (was swapped)
+                let low_raw = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
+                let open_raw = u64::from_le_bytes(data[24..32].try_into().unwrap_or([0; 8]));
+                let _close_raw = u64::from_le_bytes(data[32..40].try_into().unwrap_or([0; 8]));
+                let tcount = u64::from_le_bytes(data[40..48].try_into().unwrap_or([0; 8]));
+                let open_f = open_raw as f64 / PRICE_SCALE as f64;
+                let change = if open_f > 0.0 {
+                    ((last_price - open_f) / open_f) * 100.0
+                } else {
+                    0.0
+                };
+                (
+                    vol,
+                    change,
+                    high_raw as f64 / PRICE_SCALE as f64,
+                    low_raw as f64 / PRICE_SCALE as f64,
+                    tcount,
+                )
+            }
+            _ => (0, 0.0, 0.0, 0.0, 0),
+        };
 
     // Clamp sentinel values: u64::MAX means "no bid/ask on book"
-    let bid = if best_bid_raw == u64::MAX { 0.0 } else { best_bid_raw as f64 / PRICE_SCALE as f64 };
-    let ask = if best_ask_raw == u64::MAX || best_ask_raw == 0 { 0.0 } else { best_ask_raw as f64 / PRICE_SCALE as f64 };
+    let bid = if best_bid_raw == u64::MAX {
+        0.0
+    } else {
+        best_bid_raw as f64 / PRICE_SCALE as f64
+    };
+    let ask = if best_ask_raw == u64::MAX || best_ask_raw == 0 {
+        0.0
+    } else {
+        best_ask_raw as f64 / PRICE_SCALE as f64
+    };
 
     ApiResponse::ok(
         TickerJson {
@@ -1464,26 +1521,45 @@ async fn get_all_tickers(State(state): State<Arc<RpcState>>) -> Response {
 
         // Read 24h stats
         let stats_key = format!("ana_24h_{}", pair_id);
-        let (volume_24h, change_24h, high_24h, low_24h, trades_24h) = match read_bytes(&state, DEX_ANALYTICS_PROGRAM, &stats_key) {
-            Some(data) if data.len() >= 48 => {
-                let vol = u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]));
-                let high_raw = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
-                // F18.6: Contract layout: [16..24]=low, [24..32]=open (was swapped)
-                let low_raw = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
-                let open_raw = u64::from_le_bytes(data[24..32].try_into().unwrap_or([0; 8]));
-                let tcount = u64::from_le_bytes(data[40..48].try_into().unwrap_or([0; 8]));
-                let open_f = open_raw as f64 / PRICE_SCALE as f64;
-                let change = if open_f > 0.0 { ((last_price - open_f) / open_f) * 100.0 } else { 0.0 };
-                (vol, change, high_raw as f64 / PRICE_SCALE as f64, low_raw as f64 / PRICE_SCALE as f64, tcount)
-            }
-            _ => (0, 0.0, 0.0, 0.0, 0),
-        };
+        let (volume_24h, change_24h, high_24h, low_24h, trades_24h) =
+            match read_bytes(&state, DEX_ANALYTICS_PROGRAM, &stats_key) {
+                Some(data) if data.len() >= 48 => {
+                    let vol = u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]));
+                    let high_raw = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
+                    // F18.6: Contract layout: [16..24]=low, [24..32]=open (was swapped)
+                    let low_raw = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
+                    let open_raw = u64::from_le_bytes(data[24..32].try_into().unwrap_or([0; 8]));
+                    let tcount = u64::from_le_bytes(data[40..48].try_into().unwrap_or([0; 8]));
+                    let open_f = open_raw as f64 / PRICE_SCALE as f64;
+                    let change = if open_f > 0.0 {
+                        ((last_price - open_f) / open_f) * 100.0
+                    } else {
+                        0.0
+                    };
+                    (
+                        vol,
+                        change,
+                        high_raw as f64 / PRICE_SCALE as f64,
+                        low_raw as f64 / PRICE_SCALE as f64,
+                        tcount,
+                    )
+                }
+                _ => (0, 0.0, 0.0, 0.0, 0),
+            };
 
         tickers.push(TickerJson {
             pair_id,
             last_price,
-            bid: if best_bid_raw == u64::MAX { 0.0 } else { best_bid_raw as f64 / PRICE_SCALE as f64 },
-            ask: if best_ask_raw == u64::MAX || best_ask_raw == 0 { 0.0 } else { best_ask_raw as f64 / PRICE_SCALE as f64 },
+            bid: if best_bid_raw == u64::MAX {
+                0.0
+            } else {
+                best_bid_raw as f64 / PRICE_SCALE as f64
+            },
+            ask: if best_ask_raw == u64::MAX || best_ask_raw == 0 {
+                0.0
+            } else {
+                best_ask_raw as f64 / PRICE_SCALE as f64
+            },
             volume_24h,
             change_24h,
             high_24h,
@@ -1658,8 +1734,8 @@ fn compute_swap_output_rpc(
         // Swapping A for B: price decreases
         // new_sqrt = L * sqrt_p / (L + amount * sqrt_p / 2^32)
         let numerator = liquidity as u128 * sqrt_price as u128;
-        let denominator = liquidity as u128
-            + (amount_after_fee as u128 * sqrt_price as u128 / (1u128 << 32));
+        let denominator =
+            liquidity as u128 + (amount_after_fee as u128 * sqrt_price as u128 / (1u128 << 32));
         if denominator == 0 {
             return (0, sqrt_price);
         }
@@ -1909,14 +1985,18 @@ async fn post_router_swap(
                     let mut total_impact = 0.0f64;
                     let mut legs = 0u32;
                     if clob_amount > 0 {
-                        if let Some((out, imp)) = quote_clob_swap(&state, route.pool_or_pair_id, &token_in, clob_amount) {
+                        if let Some((out, imp)) =
+                            quote_clob_swap(&state, route.pool_or_pair_id, &token_in, clob_amount)
+                        {
                             total_out += out;
                             total_impact += imp;
                             legs += 1;
                         }
                     }
                     if amm_amount > 0 {
-                        if let Some((out, imp)) = quote_amm_swap(&state, route.secondary_id, &token_in, amm_amount) {
+                        if let Some((out, imp)) =
+                            quote_amm_swap(&state, route.secondary_id, &token_in, amm_amount)
+                        {
                             total_out += out;
                             total_impact += imp;
                             legs += 1;
@@ -1924,7 +2004,11 @@ async fn post_router_swap(
                     }
                     if total_out > best_output {
                         best_output = total_out;
-                        best_impact = if legs > 0 { total_impact / legs as f64 } else { 0.0 };
+                        best_impact = if legs > 0 {
+                            total_impact / legs as f64
+                        } else {
+                            0.0
+                        };
                         best_route = Some(route);
                     }
                 } else {
@@ -1956,9 +2040,7 @@ async fn post_router_swap(
                     let ta = hex::encode(&data[0..32]);
                     let tb = hex::encode(&data[32..64]);
                     let body_out = body.token_out.to_lowercase();
-                    if (ta == token_in && tb == body_out)
-                        || (tb == token_in && ta == body_out)
-                    {
+                    if (ta == token_in && tb == body_out) || (tb == token_in && ta == body_out) {
                         if let Some((amount_out, impact)) =
                             quote_amm_swap(&state, pid, &token_in, body.amount_in)
                         {
@@ -1995,9 +2077,17 @@ async fn post_router_swap(
                 if let Some(data) = read_bytes(&state, DEX_AMM_PROGRAM, &pk) {
                     if data.len() >= 93 {
                         let idx = data[92] as usize;
-                        if idx < AMM_FEE_BPS.len() { AMM_FEE_BPS[idx] } else { 30 }
-                    } else { 30 }
-                } else { 30 }
+                        if idx < AMM_FEE_BPS.len() {
+                            AMM_FEE_BPS[idx]
+                        } else {
+                            30
+                        }
+                    } else {
+                        30
+                    }
+                } else {
+                    30
+                }
             } else if route.route_type == "split" {
                 // Blended fee: weighted average of CLOB taker (5bps) and AMM fee
                 let clob_pct = route.split_percent as u64;
@@ -2007,9 +2097,17 @@ async fn post_router_swap(
                     if let Some(data) = read_bytes(&state, DEX_AMM_PROGRAM, &pk) {
                         if data.len() >= 93 {
                             let idx = data[92] as usize;
-                            if idx < AMM_FEE_BPS.len() { AMM_FEE_BPS[idx] } else { 30 }
-                        } else { 30 }
-                    } else { 30 }
+                            if idx < AMM_FEE_BPS.len() {
+                                AMM_FEE_BPS[idx]
+                            } else {
+                                30
+                            }
+                        } else {
+                            30
+                        }
+                    } else {
+                        30
+                    }
                 };
                 (5 * clob_pct + amm_fee * amm_pct) / 100
             } else {
@@ -2110,7 +2208,8 @@ async fn get_margin_positions(
                     let lp_key = format!("ana_lp_{}", pos.pair_id);
                     if let Some(lp_data) = read_bytes(&state, DEX_ANALYTICS_PROGRAM, &lp_key) {
                         if lp_data.len() >= 8 {
-                            let close_raw = u64::from_le_bytes(lp_data[0..8].try_into().unwrap_or([0u8; 8]));
+                            let close_raw =
+                                u64::from_le_bytes(lp_data[0..8].try_into().unwrap_or([0u8; 8]));
                             if close_raw > 0 {
                                 pos.mark_price = close_raw as f64 / PRICE_SCALE as f64;
                             }
@@ -2153,7 +2252,11 @@ async fn get_margin_info(State(state): State<Arc<RpcState>>) -> Response {
         position_count: read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_pos_count"),
         max_leverage: {
             let v = read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_max_lev");
-            if v > 0 { v } else { 20 } // default 20x
+            if v > 0 {
+                v
+            } else {
+                20
+            } // default 20x
         },
     };
 
@@ -2185,13 +2288,41 @@ async fn get_margin_funding_rate(State(state): State<Arc<RpcState>>) -> Response
 
     // Tier table mirrors contract's get_tier_params funding_rate_mult_x10
     let tiers = vec![
-        FundingTierJson { max_leverage: 2, multiplier_x10: 10, effective_rate_bps: base_rate_bps as f64 * 10.0 / 10.0 },
-        FundingTierJson { max_leverage: 3, multiplier_x10: 10, effective_rate_bps: base_rate_bps as f64 * 10.0 / 10.0 },
-        FundingTierJson { max_leverage: 5, multiplier_x10: 15, effective_rate_bps: base_rate_bps as f64 * 15.0 / 10.0 },
-        FundingTierJson { max_leverage: 10, multiplier_x10: 20, effective_rate_bps: base_rate_bps as f64 * 20.0 / 10.0 },
-        FundingTierJson { max_leverage: 25, multiplier_x10: 30, effective_rate_bps: base_rate_bps as f64 * 30.0 / 10.0 },
-        FundingTierJson { max_leverage: 50, multiplier_x10: 50, effective_rate_bps: base_rate_bps as f64 * 50.0 / 10.0 },
-        FundingTierJson { max_leverage: 100, multiplier_x10: 100, effective_rate_bps: base_rate_bps as f64 * 100.0 / 10.0 },
+        FundingTierJson {
+            max_leverage: 2,
+            multiplier_x10: 10,
+            effective_rate_bps: base_rate_bps as f64 * 10.0 / 10.0,
+        },
+        FundingTierJson {
+            max_leverage: 3,
+            multiplier_x10: 10,
+            effective_rate_bps: base_rate_bps as f64 * 10.0 / 10.0,
+        },
+        FundingTierJson {
+            max_leverage: 5,
+            multiplier_x10: 15,
+            effective_rate_bps: base_rate_bps as f64 * 15.0 / 10.0,
+        },
+        FundingTierJson {
+            max_leverage: 10,
+            multiplier_x10: 20,
+            effective_rate_bps: base_rate_bps as f64 * 20.0 / 10.0,
+        },
+        FundingTierJson {
+            max_leverage: 25,
+            multiplier_x10: 30,
+            effective_rate_bps: base_rate_bps as f64 * 30.0 / 10.0,
+        },
+        FundingTierJson {
+            max_leverage: 50,
+            multiplier_x10: 50,
+            effective_rate_bps: base_rate_bps as f64 * 50.0 / 10.0,
+        },
+        FundingTierJson {
+            max_leverage: 100,
+            multiplier_x10: 100,
+            effective_rate_bps: base_rate_bps as f64 * 100.0 / 10.0,
+        },
     ];
 
     let info = FundingRateJson {
@@ -2417,10 +2548,14 @@ async fn get_oracle_prices(State(state): State<Arc<RpcState>>) -> Response {
         }
     }
 
-    ApiResponse::ok(serde_json::json!({
-        "oracleActive": true,
-        "feeds": feeds,
-    }), slot).into_response()
+    ApiResponse::ok(
+        serde_json::json!({
+            "oracleActive": true,
+            "feeds": feeds,
+        }),
+        slot,
+    )
+    .into_response()
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2465,7 +2600,10 @@ pub(crate) fn build_dex_router() -> Router<Arc<RpcState>> {
         // Rewards
         .route("/rewards/:addr", get(get_rewards))
         // Governance
-        .route("/governance/proposals", get(get_proposals).post(post_create_proposal))
+        .route(
+            "/governance/proposals",
+            get(get_proposals).post(post_create_proposal),
+        )
         .route("/governance/proposals/:id", get(get_proposal))
         .route("/governance/proposals/:id/vote", post(post_vote))
         // Platform Stats
@@ -2487,62 +2625,86 @@ pub(crate) fn build_dex_router() -> Router<Arc<RpcState>> {
 
 async fn get_core_stats(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
-    ApiResponse::ok(serde_json::json!({
-        "pairCount": read_u64(&state, DEX_CORE_PROGRAM, "dex_pair_count"),
-        "orderCount": read_u64(&state, DEX_CORE_PROGRAM, "dex_order_count"),
-        "tradeCount": read_u64(&state, DEX_CORE_PROGRAM, "dex_trade_count"),
-        "totalVolume": read_u64(&state, DEX_CORE_PROGRAM, "dex_total_volume"),
-        "feeTreasury": read_u64(&state, DEX_CORE_PROGRAM, "dex_fee_treasury"),
-    }), slot).into_response()
+    ApiResponse::ok(
+        serde_json::json!({
+            "pairCount": read_u64(&state, DEX_CORE_PROGRAM, "dex_pair_count"),
+            "orderCount": read_u64(&state, DEX_CORE_PROGRAM, "dex_order_count"),
+            "tradeCount": read_u64(&state, DEX_CORE_PROGRAM, "dex_trade_count"),
+            "totalVolume": read_u64(&state, DEX_CORE_PROGRAM, "dex_total_volume"),
+            "feeTreasury": read_u64(&state, DEX_CORE_PROGRAM, "dex_fee_treasury"),
+        }),
+        slot,
+    )
+    .into_response()
 }
 
 async fn get_amm_stats(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
-    ApiResponse::ok(serde_json::json!({
-        "poolCount": read_u64(&state, DEX_AMM_PROGRAM, "amm_pool_count"),
-        "positionCount": read_u64(&state, DEX_AMM_PROGRAM, "amm_pos_count"),
-        "swapCount": read_u64(&state, DEX_AMM_PROGRAM, "amm_swap_count"),
-        "totalVolume": read_u64(&state, DEX_AMM_PROGRAM, "amm_total_volume"),
-        "totalFees": read_u64(&state, DEX_AMM_PROGRAM, "amm_total_fees"),
-    }), slot).into_response()
+    ApiResponse::ok(
+        serde_json::json!({
+            "poolCount": read_u64(&state, DEX_AMM_PROGRAM, "amm_pool_count"),
+            "positionCount": read_u64(&state, DEX_AMM_PROGRAM, "amm_pos_count"),
+            "swapCount": read_u64(&state, DEX_AMM_PROGRAM, "amm_swap_count"),
+            "totalVolume": read_u64(&state, DEX_AMM_PROGRAM, "amm_total_volume"),
+            "totalFees": read_u64(&state, DEX_AMM_PROGRAM, "amm_total_fees"),
+        }),
+        slot,
+    )
+    .into_response()
 }
 
 async fn get_margin_stats_rest(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
-    ApiResponse::ok(serde_json::json!({
-        "positionCount": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_pos_count"),
-        "totalVolume": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_total_volume"),
-        "liquidationCount": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_liq_count"),
-        "insuranceFund": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_insurance"),
-    }), slot).into_response()
+    ApiResponse::ok(
+        serde_json::json!({
+            "positionCount": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_pos_count"),
+            "totalVolume": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_total_volume"),
+            "liquidationCount": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_liq_count"),
+            "insuranceFund": read_u64(&state, DEX_MARGIN_PROGRAM, "mrg_insurance"),
+        }),
+        slot,
+    )
+    .into_response()
 }
 
 async fn get_router_stats(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
-    ApiResponse::ok(serde_json::json!({
-        "routeCount": read_u64(&state, DEX_ROUTER_PROGRAM, "rtr_route_count"),
-        "swapCount": read_u64(&state, DEX_ROUTER_PROGRAM, "rtr_swap_count"),
-        "totalVolume": read_u64(&state, DEX_ROUTER_PROGRAM, "rtr_total_volume"),
-    }), slot).into_response()
+    ApiResponse::ok(
+        serde_json::json!({
+            "routeCount": read_u64(&state, DEX_ROUTER_PROGRAM, "rtr_route_count"),
+            "swapCount": read_u64(&state, DEX_ROUTER_PROGRAM, "rtr_swap_count"),
+            "totalVolume": read_u64(&state, DEX_ROUTER_PROGRAM, "rtr_total_volume"),
+        }),
+        slot,
+    )
+    .into_response()
 }
 
 async fn get_rewards_stats(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
-    ApiResponse::ok(serde_json::json!({
-        "tradeCount": read_u64(&state, DEX_REWARDS_PROGRAM, "rew_trade_count"),
-        "traderCount": read_u64(&state, DEX_REWARDS_PROGRAM, "rew_trader_count"),
-        "totalVolume": read_u64(&state, DEX_REWARDS_PROGRAM, "rew_total_volume"),
-        "totalDistributed": read_u64(&state, DEX_REWARDS_PROGRAM, "rew_total_dist"),
-    }), slot).into_response()
+    ApiResponse::ok(
+        serde_json::json!({
+            "tradeCount": read_u64(&state, DEX_REWARDS_PROGRAM, "rew_trade_count"),
+            "traderCount": read_u64(&state, DEX_REWARDS_PROGRAM, "rew_trader_count"),
+            "totalVolume": read_u64(&state, DEX_REWARDS_PROGRAM, "rew_total_volume"),
+            "totalDistributed": read_u64(&state, DEX_REWARDS_PROGRAM, "rew_total_dist"),
+        }),
+        slot,
+    )
+    .into_response()
 }
 
 async fn get_analytics_stats(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
-    ApiResponse::ok(serde_json::json!({
-        "recordCount": read_u64(&state, DEX_ANALYTICS_PROGRAM, "ana_rec_count"),
-        "traderCount": read_u64(&state, DEX_ANALYTICS_PROGRAM, "ana_trader_count"),
-        "totalVolume": read_u64(&state, DEX_ANALYTICS_PROGRAM, "ana_total_volume"),
-    }), slot).into_response()
+    ApiResponse::ok(
+        serde_json::json!({
+            "recordCount": read_u64(&state, DEX_ANALYTICS_PROGRAM, "ana_rec_count"),
+            "traderCount": read_u64(&state, DEX_ANALYTICS_PROGRAM, "ana_trader_count"),
+            "totalVolume": read_u64(&state, DEX_ANALYTICS_PROGRAM, "ana_total_volume"),
+        }),
+        slot,
+    )
+    .into_response()
 }
 
 async fn get_governance_stats(State(state): State<Arc<RpcState>>) -> Response {
@@ -2560,19 +2722,27 @@ async fn get_governance_stats(State(state): State<Arc<RpcState>>) -> Response {
         }
     }
     // F14.8: Use camelCase keys
-    ApiResponse::ok(serde_json::json!({
-        "proposalCount": count,
-        "activeProposals": active,
-        "totalVotes": read_u64(&state, DEX_GOVERNANCE_PROGRAM, "gov_total_votes"),
-        "voterCount": read_u64(&state, DEX_GOVERNANCE_PROGRAM, "gov_voter_count"),
-    }), slot).into_response()
+    ApiResponse::ok(
+        serde_json::json!({
+            "proposalCount": count,
+            "activeProposals": active,
+            "totalVotes": read_u64(&state, DEX_GOVERNANCE_PROGRAM, "gov_total_votes"),
+            "voterCount": read_u64(&state, DEX_GOVERNANCE_PROGRAM, "gov_voter_count"),
+        }),
+        slot,
+    )
+    .into_response()
 }
 
 async fn get_moltswap_stats(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
-    ApiResponse::ok(serde_json::json!({
-        "swapCount": read_u64(&state, "MOLTSWAP", "ms_swap_count"),
-        "volumeA": read_u64(&state, "MOLTSWAP", "ms_volume_a"),
-        "volumeB": read_u64(&state, "MOLTSWAP", "ms_volume_b"),
-    }), slot).into_response()
+    ApiResponse::ok(
+        serde_json::json!({
+            "swapCount": read_u64(&state, "MOLTSWAP", "ms_swap_count"),
+            "volumeA": read_u64(&state, "MOLTSWAP", "ms_volume_a"),
+            "volumeB": read_u64(&state, "MOLTSWAP", "ms_volume_b"),
+        }),
+        slot,
+    )
+    .into_response()
 }

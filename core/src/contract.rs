@@ -5,9 +5,13 @@ use crate::{Hash, Pubkey, StateStore};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
+
+/// Type alias for cross-contract call pending storage changes.
+type CccChanges = HashMap<Pubkey, HashMap<Vec<u8>, Option<Vec<u8>>>>;
+
 use wasmer::{
-    imports, CompilerConfig, Function, FunctionEnv, FunctionEnvMut, Instance, Memory, Module, Store,
-    Type, Value,
+    imports, CompilerConfig, Function, FunctionEnv, FunctionEnvMut, Instance, Memory, Module,
+    Store, Type, Value,
 };
 use wasmer_compiler_cranelift::Cranelift;
 use wasmer_middlewares::metering::get_remaining_points;
@@ -410,7 +414,7 @@ pub struct ContractContext {
     /// Accumulated storage changes from cross-contract calls, keyed by contract
     /// address. Shared via Arc<Mutex<>> so nested calls all contribute to the
     /// same collection. Applied atomically by the processor after execution.
-    pub pending_ccc_changes: Arc<Mutex<HashMap<Pubkey, HashMap<Vec<u8>, Option<Vec<u8>>>>>>,
+    pub pending_ccc_changes: Arc<Mutex<CccChanges>>,
     /// Events collected from cross-contract sub-calls.
     pub pending_ccc_events: Arc<Mutex<Vec<ContractEvent>>>,
     /// Logs collected from cross-contract sub-calls.
@@ -580,9 +584,9 @@ const COMPUTE_LOG: u64 = 10;
 const COMPUTE_EVENT: u64 = 50;
 // AUDIT-FIX 2.1: Additional compute constants for previously uncharged host functions
 const COMPUTE_GET_CALLER: u64 = 100;
-const COMPUTE_GET_ARGS: u64 = 50;  // + per-byte cost
-const COMPUTE_SET_RETURN_DATA: u64 = 50;  // + per-byte cost
-const COMPUTE_READ_RESULT: u64 = 50;  // + per-byte cost
+const COMPUTE_GET_ARGS: u64 = 50; // + per-byte cost
+const COMPUTE_SET_RETURN_DATA: u64 = 50; // + per-byte cost
+const COMPUTE_READ_RESULT: u64 = 50; // + per-byte cost
 const COMPUTE_BYTE_COST: u64 = 1;
 /// Compute cost for initiating a cross-contract call (base cost before callee's compute)
 const COMPUTE_CROSS_CALL: u64 = 5_000;
@@ -648,9 +652,7 @@ impl ContractRuntime {
     /// This avoids constructing a new Cranelift compiler + Store on every contract call,
     /// saving ~1-5ms per invocation. The runtime is returned to the pool after use.
     pub fn get_pooled() -> Self {
-        RUNTIME_POOL.with(|cell| {
-            cell.borrow_mut().take().unwrap_or_else(Self::new)
-        })
+        RUNTIME_POOL.with(|cell| cell.borrow_mut().take().unwrap_or_else(Self::new))
     }
 
     /// PERF-FIX 7: Return a runtime to the thread-local pool for reuse.
@@ -756,7 +758,9 @@ impl ContractRuntime {
                     .map_err(|e| format!("Failed to compile contract: {}", e))?;
                 if let Ok(serialized) = m.serialize() {
                     let mut cache_w = MODULE_CACHE.write().unwrap_or_else(|e| e.into_inner());
-                    cache_w.entry(code_hash.0).or_insert_with(|| serialized.to_vec());
+                    cache_w
+                        .entry(code_hash.0)
+                        .or_insert_with(|| serialized.to_vec());
                 }
                 m
             }
@@ -840,20 +844,17 @@ impl ContractRuntime {
             // auto-encode them to binary with a layout descriptor so the WASM
             // function receives correctly laid-out memory (base58 → 32 bytes,
             // strings → pointer data, integers → raw bytes).
-            let args = if !args.is_empty()
-                && args[0] == b'['
-                && !params.is_empty()
-                && args[0] != 0xAB
-            {
-                if let Ok(json_vals) = serde_json::from_slice::<Vec<serde_json::Value>>(args) {
-                    encode_json_args_to_binary(&json_vals, &params)
-                        .unwrap_or_else(|_| args.to_vec())
+            let args =
+                if !args.is_empty() && args[0] == b'[' && !params.is_empty() && args[0] != 0xAB {
+                    if let Ok(json_vals) = serde_json::from_slice::<Vec<serde_json::Value>>(args) {
+                        encode_json_args_to_binary(&json_vals, &params)
+                            .unwrap_or_else(|_| args.to_vec())
+                    } else {
+                        args.to_vec()
+                    }
                 } else {
                     args.to_vec()
-                }
-            } else {
-                args.to_vec()
-            };
+                };
             let args = &args;
 
             let view = memory.view(&self.store);
@@ -885,13 +886,18 @@ impl ContractRuntime {
             } else {
                 Vec::new()
             };
-            let data_start: u32 = if has_layout { (1 + params.len()) as u32 } else { 0 };
+            let data_start: u32 = if has_layout {
+                (1 + params.len()) as u32
+            } else {
+                0
+            };
 
             // Re-write only the data portion into WASM memory if using layout mode
             if has_layout {
                 let data_slice = &args[data_start as usize..];
                 let view2 = memory.view(&self.store);
-                view2.write(args_base as u64, data_slice)
+                view2
+                    .write(args_base as u64, data_slice)
                     .map_err(|e| format!("Failed to write args data to WASM memory: {}", e))?;
             }
 
@@ -914,16 +920,29 @@ impl ContractRuntime {
                                 let val: i32 = match stride {
                                     4 => {
                                         if off + 4 <= data.len() {
-                                            i32::from_le_bytes([data[off], data[off+1], data[off+2], data[off+3]])
-                                        } else { 0 }
+                                            i32::from_le_bytes([
+                                                data[off],
+                                                data[off + 1],
+                                                data[off + 2],
+                                                data[off + 3],
+                                            ])
+                                        } else {
+                                            0
+                                        }
                                     }
                                     2 => {
                                         if off + 2 <= data.len() {
-                                            i16::from_le_bytes([data[off], data[off+1]]) as i32
-                                        } else { 0 }
+                                            i16::from_le_bytes([data[off], data[off + 1]]) as i32
+                                        } else {
+                                            0
+                                        }
                                     }
                                     1 => {
-                                        if off < data.len() { data[off] as i32 } else { 0 }
+                                        if off < data.len() {
+                                            data[off] as i32
+                                        } else {
+                                            0
+                                        }
                                     }
                                     _ => 0,
                                 };
@@ -939,7 +958,9 @@ impl ContractRuntime {
                                 let mut buf = [0u8; 8];
                                 buf[..end - start].copy_from_slice(&data[start..end]);
                                 u64::from_le_bytes(buf)
-                            } else { 0 };
+                            } else {
+                                0
+                            };
                             wasm_args.push(Value::I64(val as i64));
                             byte_offset += 8;
                         }
@@ -961,7 +982,9 @@ impl ContractRuntime {
                                 let mut buf = [0u8; 8];
                                 buf[..end - start].copy_from_slice(&args[start..end]);
                                 u64::from_le_bytes(buf)
-                            } else { 0 };
+                            } else {
+                                0
+                            };
                             wasm_args.push(Value::I64(val as i64));
                             byte_offset += 8;
                         }
@@ -1047,20 +1070,27 @@ impl ContractRuntime {
                 // the code but do NOT use it to override success/failure:
                 // the JSON arg encoding fix ensures args arrive correctly,
                 // and a WASM trap is the only true execution failure.
-                let ret_code = values
-                    .first()
-                    .and_then(|v| match v {
-                        Value::I32(n) => Some(*n),
-                        _ => None,
-                    });
+                let ret_code = values.first().and_then(|v| match v {
+                    Value::I32(n) => Some(*n),
+                    _ => None,
+                });
 
                 // Extract accumulated cross-contract call state
-                let ccc_changes = final_ctx.pending_ccc_changes
-                    .lock().unwrap_or_else(|e| e.into_inner()).clone();
-                let ccc_events = final_ctx.pending_ccc_events
-                    .lock().unwrap_or_else(|e| e.into_inner()).clone();
-                let ccc_logs = final_ctx.pending_ccc_logs
-                    .lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let ccc_changes = final_ctx
+                    .pending_ccc_changes
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                let ccc_events = final_ctx
+                    .pending_ccc_events
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                let ccc_logs = final_ctx
+                    .pending_ccc_logs
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
 
                 Ok(ContractResult {
                     return_data: final_ctx.return_data.clone(),
@@ -1598,10 +1628,8 @@ fn host_cross_contract_call(
 
         // Args
         let mut args_buf = vec![0u8; args_len as usize];
-        if args_len > 0 {
-            if view.read(args_ptr as u64, &mut args_buf).is_err() {
-                return 0;
-            }
+        if args_len > 0 && view.read(args_ptr as u64, &mut args_buf).is_err() {
+            return 0;
         }
 
         (Pubkey(target_bytes), function_name, args_buf)
@@ -1754,13 +1782,13 @@ fn host_cross_contract_call(
     // ── Collect events and logs from callee ──────────────────────────
     if !result.events.is_empty() || !result.cross_call_events.is_empty() {
         let mut events = pending_events.lock().unwrap_or_else(|e| e.into_inner());
-        events.extend(result.events.into_iter());
-        events.extend(result.cross_call_events.into_iter());
+        events.extend(result.events);
+        events.extend(result.cross_call_events);
     }
     if !result.logs.is_empty() || !result.cross_call_logs.is_empty() {
         let mut logs = pending_logs.lock().unwrap_or_else(|e| e.into_inner());
-        logs.extend(result.logs.into_iter());
-        logs.extend(result.cross_call_logs.into_iter());
+        logs.extend(result.logs);
+        logs.extend(result.cross_call_logs);
     }
 
     // ── Determine result data to write back to caller ────────────────
@@ -1795,7 +1823,11 @@ fn host_cross_contract_call(
 
     // Return bytes written (>0 = success per SDK convention).
     // If write_len is 0 but call succeeded, return 1 as a success signal.
-    if write_len == 0 { 1 } else { write_len as u32 }
+    if write_len == 0 {
+        1
+    } else {
+        write_len as u32
+    }
 }
 
 // ============================================================================
@@ -1841,7 +1873,7 @@ fn encode_json_args_to_binary(
                             // layout descriptors for very large payloads.
                             let bytes = s.as_bytes();
                             let usable = bytes.len().min(224);
-                            let padded_len = ((usable + 31) / 32) * 32;
+                            let padded_len = usable.div_ceil(32) * 32;
                             let mut padded = bytes[..usable].to_vec();
                             padded.resize(padded_len.max(32), 0);
                             parts.push((padded.len() as u8, padded));
@@ -1872,7 +1904,7 @@ fn encode_json_args_to_binary(
                             .filter_map(|v| v.as_u64().map(|n| n as u8))
                             .collect();
                         let usable = bytes.len().min(224);
-                        let padded_len = ((usable + 31) / 32) * 32;
+                        let padded_len = usable.div_ceil(32) * 32;
                         let mut padded = bytes[..usable].to_vec();
                         padded.resize(padded_len.max(32), 0);
                         parts.push((padded.len() as u8, padded));
@@ -1883,7 +1915,10 @@ fn encode_json_args_to_binary(
                 }
             }
             wasmer::Type::I64 => {
-                let v = val.as_u64().or_else(|| val.as_i64().map(|i| i as u64)).unwrap_or(0);
+                let v = val
+                    .as_u64()
+                    .or_else(|| val.as_i64().map(|i| i as u64))
+                    .unwrap_or(0);
                 parts.push((8, v.to_le_bytes().to_vec()));
             }
             wasmer::Type::F32 => {
@@ -2053,10 +2088,9 @@ mod tests {
     fn test_encode_json_pubkey_and_integers() {
         // Simulates: register_identity(owner_ptr: I32, agent_type: I32, name_ptr: I32, name_len: I32)
         // JSON:      ["11111111111111111111111111111111", 1, "agent-demo", 10]
-        let json: Vec<serde_json::Value> = serde_json::from_str(
-            r#"["11111111111111111111111111111111", 1, "agent-demo", 10]"#,
-        )
-        .unwrap();
+        let json: Vec<serde_json::Value> =
+            serde_json::from_str(r#"["11111111111111111111111111111111", 1, "agent-demo", 10]"#)
+                .unwrap();
         let params = vec![
             wasmer::Type::I32,
             wasmer::Type::I32,
@@ -2071,15 +2105,15 @@ mod tests {
         assert_eq!(buf[2], 1); // agent_type stride
         assert_eq!(buf[3], 32); // name string stride
         assert_eq!(buf[4], 1); // name_len stride
-        // Data starts at offset 5
-        // 32-byte pubkey (all zeros for "1111...1")
+                               // Data starts at offset 5
+                               // 32-byte pubkey (all zeros for "1111...1")
         assert_eq!(&buf[5..37], &[0u8; 32]);
         // agent_type = 1
         assert_eq!(buf[37], 1);
         // name string starts at offset 38, "agent-demo" = 10 bytes + 22 padding
         assert_eq!(&buf[38..48], b"agent-demo");
         assert_eq!(&buf[48..70], &[0u8; 22]); // padding
-        // name_len = 10
+                                              // name_len = 10
         assert_eq!(buf[70], 10);
         assert_eq!(buf.len(), 71);
     }
@@ -2098,7 +2132,7 @@ mod tests {
         assert_eq!(buf[1], 32); // from pubkey
         assert_eq!(buf[2], 32); // to pubkey
         assert_eq!(buf[3], 8); // amount i64
-        // Data: 32 + 32 + 8 = 72 bytes, total = 1 + 3 + 72 = 76
+                               // Data: 32 + 32 + 8 = 72 bytes, total = 1 + 3 + 72 = 76
         assert_eq!(buf.len(), 76);
         // amount at offset 4+32+32 = 68
         let amount = u64::from_le_bytes(buf[68..76].try_into().unwrap());
@@ -2114,15 +2148,14 @@ mod tests {
 
     #[test]
     fn test_encode_json_u16_u32_numbers() {
-        let json: Vec<serde_json::Value> =
-            serde_json::from_str(r#"[300, 70000]"#).unwrap();
+        let json: Vec<serde_json::Value> = serde_json::from_str(r#"[300, 70000]"#).unwrap();
         let params = vec![wasmer::Type::I32, wasmer::Type::I32];
         let buf = encode_json_args_to_binary(&json, &params).unwrap();
 
         assert_eq!(buf[0], 0xAB);
         assert_eq!(buf[1], 2); // 300 fits in u16
         assert_eq!(buf[2], 4); // 70000 needs u32
-        // Data: 2 + 4 = 6 bytes
+                               // Data: 2 + 4 = 6 bytes
         let v16 = u16::from_le_bytes([buf[3], buf[4]]);
         assert_eq!(v16, 300);
         let v32 = u32::from_le_bytes([buf[5], buf[6], buf[7], buf[8]]);
@@ -2131,8 +2164,7 @@ mod tests {
 
     #[test]
     fn test_encode_json_bool_param() {
-        let json: Vec<serde_json::Value> =
-            serde_json::from_str(r#"[true, false]"#).unwrap();
+        let json: Vec<serde_json::Value> = serde_json::from_str(r#"[true, false]"#).unwrap();
         let params = vec![wasmer::Type::I32, wasmer::Type::I32];
         let buf = encode_json_args_to_binary(&json, &params).unwrap();
 
@@ -2153,7 +2185,7 @@ mod tests {
 
         assert_eq!(buf[0], 0xAB);
         assert_eq!(buf[1], 224); // capped stride
-        // Data: 224 bytes (truncated from 250, padded to 224)
+                                 // Data: 224 bytes (truncated from 250, padded to 224)
         assert_eq!(buf.len(), 1 + 1 + 224);
         // First bytes should be 'x'
         assert_eq!(buf[2], b'x');

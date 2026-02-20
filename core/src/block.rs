@@ -215,11 +215,7 @@ pub fn validate_timestamp(
     max_drift_secs: u64,
 ) -> Result<(), u64> {
     let expected = derive_slot_timestamp(genesis_time_secs, slot, slot_duration_ms);
-    let drift = if block_timestamp > expected {
-        block_timestamp - expected
-    } else {
-        expected - block_timestamp
-    };
+    let drift = block_timestamp.abs_diff(expected);
     if drift > max_drift_secs {
         Err(drift)
     } else {
@@ -241,7 +237,13 @@ impl Block {
         slot_duration_ms: u64,
         max_drift_secs: u64,
     ) -> Result<(), u64> {
-        validate_timestamp(block_timestamp, genesis_time_secs, slot, slot_duration_ms, max_drift_secs)
+        validate_timestamp(
+            block_timestamp,
+            genesis_time_secs,
+            slot,
+            slot_duration_ms,
+            max_drift_secs,
+        )
     }
 
     /// Validate block structure: size limits, tx count, etc. (T1.7)
@@ -477,7 +479,10 @@ mod tests {
         // slot 3: 3*400/1000 = 1 → genesis + 1
         assert_eq!(derive_slot_timestamp(genesis, 3, slot_ms), genesis + 1);
         // slot 2500: 2500*400/1000 = 1000 → genesis + 1000
-        assert_eq!(derive_slot_timestamp(genesis, 2500, slot_ms), genesis + 1000);
+        assert_eq!(
+            derive_slot_timestamp(genesis, 2500, slot_ms),
+            genesis + 1000
+        );
     }
 
     #[test]
@@ -535,9 +540,8 @@ mod tests {
     #[test]
     fn test_new_with_timestamp_uses_provided_value() {
         let ts = 1_700_001_000u64;
-        let block = Block::new_with_timestamp(
-            100, Hash::default(), Hash::default(), [0u8; 32], vec![], ts,
-        );
+        let block =
+            Block::new_with_timestamp(100, Hash::default(), Hash::default(), [0u8; 32], vec![], ts);
         assert_eq!(block.header.timestamp, ts);
     }
 }

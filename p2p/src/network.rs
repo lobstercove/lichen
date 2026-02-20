@@ -96,6 +96,7 @@ pub struct SnapshotResponseMsg {
     pub validator_set: Option<ValidatorSet>,
     pub stake_pool: Option<StakePool>,
     /// For StateSnapshotResponse: (category, chunk_index, total_chunks, snapshot_slot, state_root, entries)
+    #[allow(clippy::type_complexity)]
     pub state_snapshot_data: Option<(String, u64, u64, u64, [u8; 32], Vec<u8>)>,
     /// For CheckpointMetaResponse: (slot, state_root, total_accounts)
     pub checkpoint_meta: Option<(u64, [u8; 32], u64)>,
@@ -371,11 +372,7 @@ impl P2PNetwork {
             }
 
             MessageType::BlockRangeResponse { blocks } => {
-                debug!(
-                    "P2P: Received {} blocks from {}",
-                    blocks.len(),
-                    peer_addr
-                );
+                debug!("P2P: Received {} blocks from {}", blocks.len(), peer_addr);
                 for block in blocks {
                     self.block_tx
                         .send(block)
@@ -491,7 +488,14 @@ impl P2PNetwork {
                     kind: SnapshotKind::StateCheckpoint,
                     validator_set: None,
                     stake_pool: None,
-                    state_snapshot_data: Some((category, chunk_index, total_chunks, snapshot_slot, state_root, entries)),
+                    state_snapshot_data: Some((
+                        category,
+                        chunk_index,
+                        total_chunks,
+                        snapshot_slot,
+                        state_root,
+                        entries,
+                    )),
                     checkpoint_meta: None,
                 };
                 self.snapshot_response_tx

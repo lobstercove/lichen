@@ -317,7 +317,10 @@ fn test_contract_upgrade_lifecycle() {
     }
 
     // Check version == 1 before upgrade
-    let acct = state.get_account(&contract_address.pubkey()).unwrap().unwrap();
+    let acct = state
+        .get_account(&contract_address.pubkey())
+        .unwrap()
+        .unwrap();
     let contract: contract::ContractAccount = serde_json::from_slice(&acct.data).unwrap();
     assert_eq!(contract.version, 1, "initial version should be 1");
     assert!(contract.previous_code_hash.is_none());
@@ -336,9 +339,15 @@ fn test_contract_upgrade_lifecycle() {
     let result = processor.process_transaction(&tx, &validator.pubkey());
 
     if result.success {
-        let acct = state.get_account(&contract_address.pubkey()).unwrap().unwrap();
+        let acct = state
+            .get_account(&contract_address.pubkey())
+            .unwrap()
+            .unwrap();
         let contract: contract::ContractAccount = serde_json::from_slice(&acct.data).unwrap();
-        assert_eq!(contract.version, 2, "version should bump to 2 after upgrade");
+        assert_eq!(
+            contract.version, 2,
+            "version should bump to 2 after upgrade"
+        );
         assert!(
             contract.previous_code_hash.is_some(),
             "previous_code_hash should be set after upgrade"
@@ -398,10 +407,7 @@ fn test_upgrade_non_owner_rejected() {
     let tx = build_signed_tx(&attacker, instruction, genesis_hash);
     let result = processor.process_transaction(&tx, &validator.pubkey());
 
-    assert!(
-        !result.success,
-        "Non-owner upgrade should be rejected"
-    );
+    assert!(!result.success, "Non-owner upgrade should be rejected");
 }
 
 #[test]
@@ -457,7 +463,10 @@ fn test_upgrade_version_increments_correctly() {
             return;
         }
 
-        let acct = state.get_account(&contract_address.pubkey()).unwrap().unwrap();
+        let acct = state
+            .get_account(&contract_address.pubkey())
+            .unwrap()
+            .unwrap();
         let contract: contract::ContractAccount = serde_json::from_slice(&acct.data).unwrap();
         assert_eq!(
             contract.version, expected_version,

@@ -772,7 +772,11 @@ mod tests {
         );
         // Must be valid 32-byte hex
         let bytes = hex::decode(RELEASE_SIGNING_PUBKEY_HEX).expect("Invalid hex in release pubkey");
-        assert_eq!(bytes.len(), 32, "Release signing public key must be 32 bytes");
+        assert_eq!(
+            bytes.len(),
+            32,
+            "Release signing public key must be 32 bytes"
+        );
         // Must not be all zeros even after decode
         assert!(
             bytes.iter().any(|&b| b != 0),

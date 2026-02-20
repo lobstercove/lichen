@@ -4,8 +4,8 @@
 // persist multiple mutations in a single RocksDB WriteBatch — either all
 // succeed or none are visible.
 
-use moltchain_core::*;
 use moltchain_core::reefstake::ReefStakePool;
+use moltchain_core::*;
 use tempfile::TempDir;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -171,10 +171,7 @@ fn test_atomic_put_accounts_fee_charging_pattern() {
 
     // Atomic: payer debit + treasury credit + burn
     state
-        .atomic_put_accounts(
-            &[(&payer, &payer_acct), (&treasury, &treasury_acct)],
-            burn,
-        )
+        .atomic_put_accounts(&[(&payer, &payer_acct), (&treasury, &treasury_acct)], burn)
         .unwrap();
 
     let p = state.get_account(&payer).unwrap().unwrap();
@@ -231,11 +228,16 @@ fn test_atomic_put_accounts_marks_dirty() {
 
     let alice = Keypair::new().pubkey();
     let alice_acct = make_account(alice, 777);
-    state.atomic_put_accounts(&[(&alice, &alice_acct)], 0).unwrap();
+    state
+        .atomic_put_accounts(&[(&alice, &alice_acct)], 0)
+        .unwrap();
 
     // State root should change (account marked dirty)
     let root2 = state.compute_state_root();
-    assert_ne!(root1, root2, "state root should change after atomic_put_accounts");
+    assert_ne!(
+        root1, root2,
+        "state root should change after atomic_put_accounts"
+    );
 }
 
 #[test]
@@ -254,16 +256,14 @@ fn test_charge_fee_direct_uses_atomic_write() {
         .unwrap();
 
     let treasury = state.get_treasury_pubkey().unwrap().unwrap();
-    let _treasury_bal_before = state
-        .get_account(&treasury)
-        .unwrap()
-        .unwrap()
-        .shells;
+    let _treasury_bal_before = state.get_account(&treasury).unwrap().unwrap().shells;
 
     // Create and process a minimal transaction (fee will be charged atomically)
     let receiver = Keypair::new().pubkey();
     // Create receiver so transfer succeeds
-    state.put_account(&receiver, &make_account(receiver, 0)).unwrap();
+    state
+        .put_account(&receiver, &make_account(receiver, 0))
+        .unwrap();
 
     let ix = Instruction {
         program_id: SYSTEM_PROGRAM_ID,

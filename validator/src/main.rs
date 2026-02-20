@@ -18,16 +18,17 @@ mod sync;
 mod threshold_signer;
 pub mod updater;
 
+use futures_util::{SinkExt, StreamExt};
 use moltchain_core::nft::decode_token_state;
 use moltchain_core::{
     evm_tx_hash, Account, Block, ContractAccount, ContractContext, ContractInstruction,
-    ContractRuntime, FeeConfig, FinalityTracker, ForkChoice, GenesisConfig, GenesisWallet, Hash, Instruction,
-    Keypair, MarketActivity, MarketActivityKind, Mempool, Message, NftActivity, NftActivityKind,
-    ProgramCallActivity, Pubkey, SlashingEvidence, SlashingOffense, StakePool,
+    ContractRuntime, FeeConfig, FinalityTracker, ForkChoice, GenesisConfig, GenesisWallet, Hash,
+    Instruction, Keypair, MarketActivity, MarketActivityKind, Mempool, Message, NftActivity,
+    NftActivityKind, ProgramCallActivity, Pubkey, SlashingEvidence, SlashingOffense, StakePool,
     StateStore, SymbolRegistryEntry, Transaction, TxProcessor, ValidatorInfo, ValidatorSet, Vote,
     VoteAggregator, BASE_FEE, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID,
-    MIN_VALIDATOR_STAKE, NFT_COLLECTION_FEE, NFT_MINT_FEE,
-    SLOTS_PER_EPOCH, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
+    MIN_VALIDATOR_STAKE, NFT_COLLECTION_FEE, NFT_MINT_FEE, SLOTS_PER_EPOCH,
+    SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
 };
 use moltchain_p2p::{
     ConsistencyReportMsg, MessageType, P2PConfig, P2PMessage, P2PNetwork, SnapshotKind,
@@ -45,11 +46,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use futures_util::{SinkExt, StreamExt};
-use tokio_tungstenite::tungstenite;
 use sync::SyncManager;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::time;
+use tokio_tungstenite::tungstenite;
 use tracing::{debug, error, info, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -121,10 +121,7 @@ fn collect_machine_fingerprint() -> [u8; 32] {
     // ── Primary MAC address ────────────────────────────────────────
     #[cfg(target_os = "macos")]
     {
-        if let Ok(output) = std::process::Command::new("ifconfig")
-            .arg("en0")
-            .output()
-        {
+        if let Ok(output) = std::process::Command::new("ifconfig").arg("en0").output() {
             let stdout = String::from_utf8_lossy(&output.stdout);
             for line in stdout.lines() {
                 let trimmed = line.trim();
@@ -658,12 +655,21 @@ fn emit_dex_events(
                 // Infer side from maker order
                 let side = {
                     let maker_key = format!("dex_order_{}", maker_order_id);
-                    if let Some(order_data) = state.get_program_storage("DEX", maker_key.as_bytes()) {
+                    if let Some(order_data) = state.get_program_storage("DEX", maker_key.as_bytes())
+                    {
                         if order_data.len() > 40 {
                             // Byte 40 = side (0=buy, 1=sell); taker is opposite
-                            if order_data[40] == 0 { "sell" } else { "buy" }
-                        } else { "buy" }
-                    } else { "buy" }
+                            if order_data[40] == 0 {
+                                "sell"
+                            } else {
+                                "buy"
+                            }
+                        } else {
+                            "buy"
+                        }
+                    } else {
+                        "buy"
+                    }
                 };
 
                 dex_broadcaster.emit_trade(trade_id, pair_id, price, quantity, side, slot);
@@ -685,21 +691,33 @@ fn emit_dex_events(
 
                 // Read 24h stats for volume/change
                 let stats_key = format!("ana_24h_{}", pair_id);
-                let (volume_24h, change_24h) = if let Some(stats_data) = state.get_program_storage("ANALYTICS", stats_key.as_bytes()) {
+                let (volume_24h, change_24h) = if let Some(stats_data) =
+                    state.get_program_storage("ANALYTICS", stats_key.as_bytes())
+                {
                     if stats_data.len() >= 48 {
                         let vol = u64::from_le_bytes(stats_data[0..8].try_into().unwrap_or([0; 8]));
-                        let open_raw = u64::from_le_bytes(stats_data[24..32].try_into().unwrap_or([0; 8]));
+                        let open_raw =
+                            u64::from_le_bytes(stats_data[24..32].try_into().unwrap_or([0; 8]));
                         let open = open_raw as f64 / PRICE_SCALE;
-                        let change = if open > 0.0 { ((last_price - open) / open) * 100.0 } else { 0.0 };
+                        let change = if open > 0.0 {
+                            ((last_price - open) / open) * 100.0
+                        } else {
+                            0.0
+                        };
                         (vol, change)
-                    } else { (0, 0.0) }
-                } else { (0, 0.0) };
+                    } else {
+                        (0, 0.0)
+                    }
+                } else {
+                    (0, 0.0)
+                };
 
-                dex_broadcaster.emit_ticker(*pair_id, last_price, last_price, last_price, volume_24h, change_24h);
+                dex_broadcaster.emit_ticker(
+                    *pair_id, last_price, last_price, last_price, volume_24h, change_24h,
+                );
             }
         }
     }
-
 }
 
 // ========================================================================
@@ -745,11 +763,8 @@ fn reset_24h_stats_if_expired(state: &StateStore) {
 
         // If never reset, seed the timestamp but don't clear stats (first boot)
         if last_reset == 0 {
-            let _ = state.put_contract_storage(
-                &analytics_pk,
-                ts_key.as_bytes(),
-                &now_ts.to_le_bytes(),
-            );
+            let _ =
+                state.put_contract_storage(&analytics_pk, ts_key.as_bytes(), &now_ts.to_le_bytes());
             continue;
         }
 
@@ -768,7 +783,9 @@ fn reset_24h_stats_if_expired(state: &StateStore) {
                 // Fallback: try ana_lp_ (last traded price)
                 let lp_key = format!("ana_lp_{}", pair_id);
                 match state.get_contract_storage(&analytics_pk, lp_key.as_bytes()) {
-                    Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
+                    Ok(Some(d)) if d.len() >= 8 => {
+                        u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8]))
+                    }
                     _ => 0,
                 }
             }
@@ -776,24 +793,16 @@ fn reset_24h_stats_if_expired(state: &StateStore) {
 
         // Reset: open = current close, volume = 0, trades = 0, high = close, low = close
         let mut stats = Vec::with_capacity(48);
-        stats.extend_from_slice(&0u64.to_le_bytes());              // volume = 0
-        stats.extend_from_slice(&current_close.to_le_bytes());     // high = close
-        stats.extend_from_slice(&current_close.to_le_bytes());     // low = close
-        stats.extend_from_slice(&current_close.to_le_bytes());     // open = close
-        stats.extend_from_slice(&current_close.to_le_bytes());     // close = close
-        stats.extend_from_slice(&0u64.to_le_bytes());              // trades = 0
-        let _ = state.put_contract_storage(
-            &analytics_pk,
-            stats_key.as_bytes(),
-            &stats,
-        );
+        stats.extend_from_slice(&0u64.to_le_bytes()); // volume = 0
+        stats.extend_from_slice(&current_close.to_le_bytes()); // high = close
+        stats.extend_from_slice(&current_close.to_le_bytes()); // low = close
+        stats.extend_from_slice(&current_close.to_le_bytes()); // open = close
+        stats.extend_from_slice(&current_close.to_le_bytes()); // close = close
+        stats.extend_from_slice(&0u64.to_le_bytes()); // trades = 0
+        let _ = state.put_contract_storage(&analytics_pk, stats_key.as_bytes(), &stats);
 
         // Update reset timestamp
-        let _ = state.put_contract_storage(
-            &analytics_pk,
-            ts_key.as_bytes(),
-            &now_ts.to_le_bytes(),
-        );
+        let _ = state.put_contract_storage(&analytics_pk, ts_key.as_bytes(), &now_ts.to_le_bytes());
 
         debug!("📊 24h stats reset for pair {} (window expired)", pair_id);
     }
@@ -806,11 +815,7 @@ fn reset_24h_stats_if_expired(state: &StateStore) {
 // levels. If conditions are met, activate orders and close positions by directly
 // modifying contract storage (deterministic, all validators produce same result).
 
-fn run_sltp_trigger_engine(
-    state: &StateStore,
-    from_trade: u64,
-    to_trade: u64,
-) {
+fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
     if from_trade >= to_trade {
         return;
     }
@@ -821,7 +826,8 @@ fn run_sltp_trigger_engine(
     };
 
     // Collect latest trade price per pair from new trades
-    let mut pair_last_prices: std::collections::HashMap<u64, u64> = std::collections::HashMap::new();
+    let mut pair_last_prices: std::collections::HashMap<u64, u64> =
+        std::collections::HashMap::new();
     for trade_id in (from_trade + 1)..=to_trade {
         let key = format!("dex_trade_{}", trade_id);
         if let Some(data) = state.get_program_storage("DEX", key.as_bytes()) {
@@ -903,21 +909,32 @@ fn run_sltp_trigger_engine(
             updated.extend_from_slice(&oid.to_le_bytes());
             let _ = state.put_contract_storage(&dex_pk, book_side_key.as_bytes(), &updated);
         } else {
-            let _ = state.put_contract_storage(&dex_pk, book_side_key.as_bytes(), &oid.to_le_bytes());
+            let _ =
+                state.put_contract_storage(&dex_pk, book_side_key.as_bytes(), &oid.to_le_bytes());
         }
 
         // Update best bid/ask if needed
         if side == 0 {
             // Buy order: update best bid if higher
-            let best_bid = state.get_program_storage_u64("DEX", format!("dex_best_bid_{}", pair_id).as_bytes());
+            let best_bid = state
+                .get_program_storage_u64("DEX", format!("dex_best_bid_{}", pair_id).as_bytes());
             if price > best_bid {
-                let _ = state.put_contract_storage(&dex_pk, format!("dex_best_bid_{}", pair_id).as_bytes(), &price.to_le_bytes());
+                let _ = state.put_contract_storage(
+                    &dex_pk,
+                    format!("dex_best_bid_{}", pair_id).as_bytes(),
+                    &price.to_le_bytes(),
+                );
             }
         } else {
             // Sell order: update best ask if lower
-            let best_ask = state.get_program_storage_u64("DEX", format!("dex_best_ask_{}", pair_id).as_bytes());
+            let best_ask = state
+                .get_program_storage_u64("DEX", format!("dex_best_ask_{}", pair_id).as_bytes());
             if best_ask == 0 || best_ask == u64::MAX || price < best_ask {
-                let _ = state.put_contract_storage(&dex_pk, format!("dex_best_ask_{}", pair_id).as_bytes(), &price.to_le_bytes());
+                let _ = state.put_contract_storage(
+                    &dex_pk,
+                    format!("dex_best_ask_{}", pair_id).as_bytes(),
+                    &price.to_le_bytes(),
+                );
             }
         }
 
@@ -925,7 +942,10 @@ fn run_sltp_trigger_engine(
     }
 
     if triggered_count > 0 {
-        info!("🎯 Trigger engine: activated {} dormant stop-limit order(s)", triggered_count);
+        info!(
+            "🎯 Trigger engine: activated {} dormant stop-limit order(s)",
+            triggered_count
+        );
     }
 
     // --- Part 2: Check margin position SL/TP ---
@@ -958,10 +978,14 @@ fn run_sltp_trigger_engine(
         // Read SL/TP from position data (bytes 106..114 = sl, 114..122 = tp)
         let sl_price = if data.len() >= 114 {
             u64::from_le_bytes(data[106..114].try_into().unwrap_or([0; 8]))
-        } else { 0 };
+        } else {
+            0
+        };
         let tp_price = if data.len() >= 122 {
             u64::from_le_bytes(data[114..122].try_into().unwrap_or([0; 8]))
-        } else { 0 };
+        } else {
+            0
+        };
 
         if sl_price == 0 && tp_price == 0 {
             continue;
@@ -1041,26 +1065,29 @@ fn run_sltp_trigger_engine(
             &(current_bal + return_amount).to_le_bytes(),
         );
 
-        let trigger_type = if sl_price > 0 && ((side == 0 && last_price <= sl_price) || (side == 1 && last_price >= sl_price)) {
+        let trigger_type = if sl_price > 0
+            && ((side == 0 && last_price <= sl_price) || (side == 1 && last_price >= sl_price))
+        {
             "SL"
         } else {
             "TP"
         };
-        info!("🎯 Margin {} triggered: position {} closed at price {} (entry {})", trigger_type, pid, last_price, entry_price);
+        info!(
+            "🎯 Margin {} triggered: position {} closed at price {} (entry {})",
+            trigger_type, pid, last_price, entry_price
+        );
         sltp_closed += 1;
     }
 
     if sltp_closed > 0 {
-        info!("🎯 Trigger engine: closed {} margin position(s) via SL/TP", sltp_closed);
+        info!(
+            "🎯 Trigger engine: closed {} margin position(s) via SL/TP",
+            sltp_closed
+        );
     }
 }
 
-fn bridge_dex_trades_to_analytics(
-    state: &StateStore,
-    from_trade: u64,
-    to_trade: u64,
-    slot: u64,
-) {
+fn bridge_dex_trades_to_analytics(state: &StateStore, from_trade: u64, to_trade: u64, slot: u64) {
     const PRICE_SCALE: f64 = 1_000_000_000.0;
 
     // Resolve ANALYTICS pubkey via symbol registry
@@ -1096,11 +1123,15 @@ fn bridge_dex_trades_to_analytics(
                 let notional = (price as u128 * quantity as u128 / 1_000_000_000) as u64;
 
                 let entry = pair_trades.entry(pair_id).or_insert((0, 0, 0, 0, u64::MAX));
-                entry.0 = price;                              // last price
-                entry.1 = entry.1.saturating_add(notional);   // cumulative volume
-                entry.2 += 1;                                 // trade count
-                if price > entry.3 { entry.3 = price; }       // high
-                if price < entry.4 { entry.4 = price; }       // low
+                entry.0 = price; // last price
+                entry.1 = entry.1.saturating_add(notional); // cumulative volume
+                entry.2 += 1; // trade count
+                if price > entry.3 {
+                    entry.3 = price;
+                } // high
+                if price < entry.4 {
+                    entry.4 = price;
+                } // low
             }
         }
     }
@@ -1109,19 +1140,12 @@ fn bridge_dex_trades_to_analytics(
     for (pair_id, (last_price, volume, new_trades, high, low)) in &pair_trades {
         // ── ana_lp_{pair_id}: last trade price ──
         let lp_key = format!("ana_lp_{}", pair_id);
-        let _ = state.put_contract_storage(
-            &analytics_pk,
-            lp_key.as_bytes(),
-            &last_price.to_le_bytes(),
-        );
+        let _ =
+            state.put_contract_storage(&analytics_pk, lp_key.as_bytes(), &last_price.to_le_bytes());
 
         // ── ana_last_trade_ts_{pair_id}: unix timestamp for oracle fallback ──
         let ts_key = format!("ana_last_trade_ts_{}", pair_id);
-        let _ = state.put_contract_storage(
-            &analytics_pk,
-            ts_key.as_bytes(),
-            &now_ts.to_le_bytes(),
-        );
+        let _ = state.put_contract_storage(&analytics_pk, ts_key.as_bytes(), &now_ts.to_le_bytes());
 
         // ── ana_24h_{pair_id}: read-modify-write 24h stats ──
         // Layout: volume(8) + high(8) + low(8) + open(8) + close(8) + trades(8) = 48
@@ -1139,24 +1163,28 @@ fn bridge_dex_trades_to_analytics(
                 _ => (0, 0, u64::MAX, *last_price, *last_price, 0),
             };
 
-        if *high > prev_high { prev_high = *high; }
-        if *low < prev_low { prev_low = *low; }
+        if *high > prev_high {
+            prev_high = *high;
+        }
+        if *low < prev_low {
+            prev_low = *low;
+        }
 
         // If open was zero (fresh 24h window), set it from first trade
-        let open = if prev_open == 0 { *last_price } else { prev_open };
+        let open = if prev_open == 0 {
+            *last_price
+        } else {
+            prev_open
+        };
 
         let mut stats = Vec::with_capacity(48);
         stats.extend_from_slice(&prev_vol.saturating_add(*volume).to_le_bytes()); // volume
-        stats.extend_from_slice(&prev_high.to_le_bytes());                        // high
-        stats.extend_from_slice(&prev_low.to_le_bytes());                         // low
-        stats.extend_from_slice(&open.to_le_bytes());                             // open
-        stats.extend_from_slice(&last_price.to_le_bytes());                       // close = last trade
+        stats.extend_from_slice(&prev_high.to_le_bytes()); // high
+        stats.extend_from_slice(&prev_low.to_le_bytes()); // low
+        stats.extend_from_slice(&open.to_le_bytes()); // open
+        stats.extend_from_slice(&last_price.to_le_bytes()); // close = last trade
         stats.extend_from_slice(&prev_trades.saturating_add(*new_trades).to_le_bytes()); // trades
-        let _ = state.put_contract_storage(
-            &analytics_pk,
-            stats_key.as_bytes(),
-            &stats,
-        );
+        let _ = state.put_contract_storage(&analytics_pk, stats_key.as_bytes(), &stats);
 
         // ── Candles: update all 9 intervals with real trade data ──
         for &interval in &CANDLE_INTERVALS {
@@ -1185,6 +1213,7 @@ fn bridge_dex_trades_to_analytics(
 /// Update a candle for trade-bridged data.
 /// Unlike oracle_update_candle which has volume=0, this writes real volume
 /// and properly updates OHLC from actual trade price ranges.
+#[allow(clippy::too_many_arguments)]
 fn bridge_update_candle(
     state: &StateStore,
     analytics_pk: &Pubkey,
@@ -1204,7 +1233,9 @@ fn bridge_update_candle(
     // Read current candle's start slot
     let cur_key = format!("ana_cur_{}_{}", pair_id, interval);
     let stored_start = match state.get_contract_storage(analytics_pk, cur_key.as_bytes()) {
-        Ok(Some(d)) if d.len() >= 8 => Some(u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8]))),
+        Ok(Some(d)) if d.len() >= 8 => {
+            Some(u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])))
+        }
         _ => None,
     };
 
@@ -1222,7 +1253,8 @@ fn bridge_update_candle(
         let idx = candle_count - 1;
         let candle_key = format!("ana_c_{}_{}_{}", pair_id, interval, idx);
 
-        if let Ok(Some(mut data)) = state.get_contract_storage(analytics_pk, candle_key.as_bytes()) {
+        if let Ok(Some(mut data)) = state.get_contract_storage(analytics_pk, candle_key.as_bytes())
+        {
             if data.len() >= 48 {
                 // Candle layout: open(8)+high(8)+low(8)+close(8)+volume(8)+slot(8)
                 let existing_high = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
@@ -1255,10 +1287,10 @@ fn bridge_update_candle(
         // open = close_price (first trade of new period)
         let mut candle = Vec::with_capacity(48);
         candle.extend_from_slice(&close_price.to_le_bytes()); // open = first trade price in period
-        candle.extend_from_slice(&high_price.to_le_bytes());  // high
-        candle.extend_from_slice(&low_price.to_le_bytes());   // low
+        candle.extend_from_slice(&high_price.to_le_bytes()); // high
+        candle.extend_from_slice(&low_price.to_le_bytes()); // low
         candle.extend_from_slice(&close_price.to_le_bytes()); // close
-        candle.extend_from_slice(&volume.to_le_bytes());      // real trade volume
+        candle.extend_from_slice(&volume.to_le_bytes()); // real trade volume
         candle.extend_from_slice(&candle_start.to_le_bytes()); // period-start time (aligned)
 
         let new_idx = candle_count;
@@ -1758,7 +1790,9 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
             // AUDIT-FIX C7: Collect all accounts from non-revertible instructions
             // for checkpoint-based restoration instead of best-effort field reversal.
             for ix in &tx.message.instructions {
-                if ix.program_id != SYSTEM_PROGRAM_ID || (!ix.data.is_empty() && !matches!(ix.data[0], 0 | 2 | 3 | 4 | 5)) {
+                if ix.program_id != SYSTEM_PROGRAM_ID
+                    || (!ix.data.is_empty() && !matches!(ix.data[0], 0 | 2 | 3 | 4 | 5))
+                {
                     for acct in &ix.accounts {
                         non_revertible_accounts.push(*acct);
                     }
@@ -1796,22 +1830,24 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
 
                     // Reverse: credit sender, debit receiver
                     if amount > 0 {
-                        let receiver = overlay
-                            .entry(to)
-                            .or_insert_with(|| {
-                                state.get_account(&to).ok().flatten()
-                                    .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER))
-                            });
+                        let receiver = overlay.entry(to).or_insert_with(|| {
+                            state
+                                .get_account(&to)
+                                .ok()
+                                .flatten()
+                                .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER))
+                        });
                         let debit = amount.min(receiver.spendable);
                         receiver.shells = receiver.shells.saturating_sub(debit);
                         receiver.spendable = receiver.spendable.saturating_sub(debit);
 
-                        let sender = overlay
-                            .entry(from)
-                            .or_insert_with(|| {
-                                state.get_account(&from).ok().flatten()
-                                    .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER))
-                            });
+                        let sender = overlay.entry(from).or_insert_with(|| {
+                            state
+                                .get_account(&from)
+                                .ok()
+                                .flatten()
+                                .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER))
+                        });
                         sender.shells = sender.shells.saturating_add(debit);
                         sender.spendable = sender.spendable.saturating_add(debit);
                     }
@@ -1824,12 +1860,13 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
             if let Some(&fee_payer) = first_ix.accounts.first() {
                 let fee = TxProcessor::compute_transaction_fee(tx, &fee_config);
                 if fee > 0 {
-                    let payer = overlay
-                        .entry(fee_payer)
-                        .or_insert_with(|| {
-                            state.get_account(&fee_payer).ok().flatten()
-                                .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER))
-                        });
+                    let payer = overlay.entry(fee_payer).or_insert_with(|| {
+                        state
+                            .get_account(&fee_payer)
+                            .ok()
+                            .flatten()
+                            .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER))
+                    });
                     payer.shells = payer.shells.saturating_add(fee);
                     payer.spendable = payer.spendable.saturating_add(fee);
                 }
@@ -1838,8 +1875,7 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
 
         // Flush all modified accounts atomically
         if !overlay.is_empty() {
-            let batch_accounts: Vec<(&moltchain_core::Pubkey, &Account)> =
-                overlay.iter().map(|(k, v)| (k, v)).collect();
+            let batch_accounts: Vec<(&moltchain_core::Pubkey, &Account)> = overlay.iter().collect();
             if let Err(e) = state.atomic_put_accounts(&batch_accounts, 0) {
                 warn!("⚠️  Failed to atomically revert tx accounts: {}", e);
             }
@@ -1893,7 +1929,8 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
                             Err(e) => {
                                 warn!(
                                     "⚠️  Failed to read account {} from checkpoint: {}",
-                                    acct_key.to_base58(), e
+                                    acct_key.to_base58(),
+                                    e
                                 );
                                 skipped += 1;
                             }
@@ -1911,10 +1948,7 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
                                 );
                             }
                             Err(e) => {
-                                error!(
-                                    "🚨 CRITICAL: Atomic checkpoint restore failed: {}",
-                                    e
-                                );
+                                error!("🚨 CRITICAL: Atomic checkpoint restore failed: {}", e);
                             }
                         }
                     }
@@ -1930,7 +1964,8 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
             error!(
                 "🚨 CRITICAL: No checkpoint available before slot {} for fork-switch restoration. \
                  {} accounts may have inconsistent state from non-revertible instructions.",
-                old_block.header.slot, non_revertible_accounts.len()
+                old_block.header.slot,
+                non_revertible_accounts.len()
             );
         }
     }
@@ -1939,8 +1974,13 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
         "⚖️  Reverted {} user transactions for slot {}{}",
         old_block.transactions.len(),
         old_block.header.slot,
-        if non_revertible_accounts.is_empty() { String::new() } else {
-            format!(" (restored {} accounts from checkpoint)", non_revertible_accounts.len())
+        if non_revertible_accounts.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " (restored {} accounts from checkpoint)",
+                non_revertible_accounts.len()
+            )
         }
     );
 }
@@ -2124,7 +2164,10 @@ async fn apply_block_effects(
                             ],
                             0,
                         ) {
-                            warn!("⚠️  Failed to persist block reward (treasury→producer): {}", e);
+                            warn!(
+                                "⚠️  Failed to persist block reward (treasury→producer): {}",
+                                e
+                            );
                         }
                     }
 
@@ -2153,14 +2196,15 @@ async fn apply_block_effects(
                                 if reef_pool.st_molt_token.total_supply > 0 {
                                     // Fund reef_share from treasury
                                     if let Some(ref tpk) = treasury_pubkey {
-                                        let mut t_acct = state
-                                            .get_account(tpk)
-                                            .ok()
-                                            .flatten()
-                                            .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
+                                        let mut t_acct =
+                                            state.get_account(tpk).ok().flatten().unwrap_or_else(
+                                                || Account::new(0, SYSTEM_ACCOUNT_OWNER),
+                                            );
                                         if t_acct.shells >= reef_share {
-                                            t_acct.shells = t_acct.shells.saturating_sub(reef_share);
-                                            t_acct.spendable = t_acct.spendable.saturating_sub(reef_share);
+                                            t_acct.shells =
+                                                t_acct.shells.saturating_sub(reef_share);
+                                            t_acct.spendable =
+                                                t_acct.spendable.saturating_sub(reef_share);
                                             reef_pool.distribute_rewards(reef_share);
                                             // L4-01 fix: treasury debit + pool update in single atomic WriteBatch
                                             if let Err(e) = state.atomic_put_account_with_reefstake(
@@ -2404,7 +2448,9 @@ async fn maybe_create_checkpoint(
         Ok(meta) => {
             info!(
                 "📸 Checkpoint created at slot {} ({} accounts, interval: every {} slots)",
-                meta.slot, meta.total_accounts, SyncManager::checkpoint_interval()
+                meta.slot,
+                meta.total_accounts,
+                SyncManager::checkpoint_interval()
             );
             // Record the checkpoint in SyncManager for fast bootstrapping
             sync_manager.set_checkpoint(slot).await;
@@ -3044,7 +3090,10 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
     if let Some(predict_pk) = address_map.get("prediction_market") {
         let oracle_addr = address_map.get("moltoracle").map(|p| p.0).unwrap_or(admin);
         let moltyid_addr = address_map.get("moltyid").map(|p| p.0).unwrap_or(admin);
-        let dex_gov_addr = address_map.get("dex_governance").map(|p| p.0).unwrap_or(admin);
+        let dex_gov_addr = address_map
+            .get("dex_governance")
+            .map(|p| p.0)
+            .unwrap_or(admin);
 
         // NOTE: MoltyID address IS set here. The processor's cross-contract
         // storage injection reads the caller's MoltyID reputation from
@@ -3079,7 +3128,14 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
         args.push(14u8);
         args.extend_from_slice(&admin);
         args.extend_from_slice(&moltyid_addr);
-        if genesis_exec_contract(state, dex_gov_pk, deployer_pubkey, "call", &args, "dex_governance(moltyid)") {
+        if genesis_exec_contract(
+            state,
+            dex_gov_pk,
+            deployer_pubkey,
+            "call",
+            &args,
+            "dex_governance(moltyid)",
+        ) {
             info!("  SET dex_governance(moltyid)");
         } else {
             warn!("  WARN: Failed to set dex_governance(moltyid)");
@@ -3103,7 +3159,10 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
         if let Err(e) = state.put_contract_storage(moltyid_pk, &rep_key, &admin_rep.to_le_bytes()) {
             warn!("  WARN: Failed to set admin reputation in MoltyID: {}", e);
         } else {
-            info!("  SET admin MoltyID reputation = {} (Elite tier)", admin_rep);
+            info!(
+                "  SET admin MoltyID reputation = {} (Elite tier)",
+                admin_rep
+            );
         }
     }
 
@@ -3116,52 +3175,180 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
         // System wallets get their canonical names
         struct GenesisName {
             label: &'static str,
-            owner_key: &'static str,      // address_map key or "admin" for deployer
-            agent_type: u8,                // 0=system
+            owner_key: &'static str, // address_map key or "admin" for deployer
+            agent_type: u8,          // 0=system
         }
 
         let genesis_names: &[GenesisName] = &[
             // ── System / Admin wallets ──
-            GenesisName { label: "moltchain", owner_key: "admin", agent_type: 0 },
-            GenesisName { label: "treasury", owner_key: "admin", agent_type: 0 },
-            GenesisName { label: "validator", owner_key: "admin", agent_type: 0 },
-            GenesisName { label: "system", owner_key: "admin", agent_type: 0 },
-            GenesisName { label: "admin", owner_key: "admin", agent_type: 0 },
+            GenesisName {
+                label: "moltchain",
+                owner_key: "admin",
+                agent_type: 0,
+            },
+            GenesisName {
+                label: "treasury",
+                owner_key: "admin",
+                agent_type: 0,
+            },
+            GenesisName {
+                label: "validator",
+                owner_key: "admin",
+                agent_type: 0,
+            },
+            GenesisName {
+                label: "system",
+                owner_key: "admin",
+                agent_type: 0,
+            },
+            GenesisName {
+                label: "admin",
+                owner_key: "admin",
+                agent_type: 0,
+            },
             // ── Core token ──
-            GenesisName { label: "moltcoin", owner_key: "moltcoin", agent_type: 0 },
+            GenesisName {
+                label: "moltcoin",
+                owner_key: "moltcoin",
+                agent_type: 0,
+            },
             // ── Wrapped tokens ──
-            GenesisName { label: "musd", owner_key: "musd_token", agent_type: 0 },
-            GenesisName { label: "wsol", owner_key: "wsol_token", agent_type: 0 },
-            GenesisName { label: "weth", owner_key: "weth_token", agent_type: 0 },
+            GenesisName {
+                label: "musd",
+                owner_key: "musd_token",
+                agent_type: 0,
+            },
+            GenesisName {
+                label: "wsol",
+                owner_key: "wsol_token",
+                agent_type: 0,
+            },
+            GenesisName {
+                label: "weth",
+                owner_key: "weth_token",
+                agent_type: 0,
+            },
             // ── DEX ──
-            GenesisName { label: "dex", owner_key: "dex_core", agent_type: 0 },
-            GenesisName { label: "amm", owner_key: "dex_amm", agent_type: 0 },
-            GenesisName { label: "router", owner_key: "dex_router", agent_type: 0 },
-            GenesisName { label: "margin", owner_key: "dex_margin", agent_type: 0 },
-            GenesisName { label: "rewards", owner_key: "dex_rewards", agent_type: 0 },
-            GenesisName { label: "governance", owner_key: "dex_governance", agent_type: 0 },
-            GenesisName { label: "analytics", owner_key: "dex_analytics", agent_type: 0 },
+            GenesisName {
+                label: "dex",
+                owner_key: "dex_core",
+                agent_type: 0,
+            },
+            GenesisName {
+                label: "amm",
+                owner_key: "dex_amm",
+                agent_type: 0,
+            },
+            GenesisName {
+                label: "router",
+                owner_key: "dex_router",
+                agent_type: 0,
+            },
+            GenesisName {
+                label: "margin",
+                owner_key: "dex_margin",
+                agent_type: 0,
+            },
+            GenesisName {
+                label: "rewards",
+                owner_key: "dex_rewards",
+                agent_type: 0,
+            },
+            GenesisName {
+                label: "governance",
+                owner_key: "dex_governance",
+                agent_type: 0,
+            },
+            GenesisName {
+                label: "analytics",
+                owner_key: "dex_analytics",
+                agent_type: 0,
+            },
             // ── DeFi protocols ──
-            GenesisName { label: "moltswap", owner_key: "moltswap", agent_type: 0 },
-            GenesisName { label: "bridge", owner_key: "moltbridge", agent_type: 0 },
-            GenesisName { label: "oracle", owner_key: "moltoracle", agent_type: 0 },
-            GenesisName { label: "dao", owner_key: "moltdao", agent_type: 0 },
-            GenesisName { label: "lending", owner_key: "lobsterlend", agent_type: 0 },
+            GenesisName {
+                label: "moltswap",
+                owner_key: "moltswap",
+                agent_type: 0,
+            },
+            GenesisName {
+                label: "bridge",
+                owner_key: "moltbridge",
+                agent_type: 0,
+            },
+            GenesisName {
+                label: "oracle",
+                owner_key: "moltoracle",
+                agent_type: 0,
+            },
+            GenesisName {
+                label: "dao",
+                owner_key: "moltdao",
+                agent_type: 0,
+            },
+            GenesisName {
+                label: "lending",
+                owner_key: "lobsterlend",
+                agent_type: 0,
+            },
             // ── Marketplaces ──
-            GenesisName { label: "marketplace", owner_key: "moltmarket", agent_type: 0 },
-            GenesisName { label: "auction", owner_key: "moltauction", agent_type: 0 },
-            GenesisName { label: "moltpunks", owner_key: "moltpunks", agent_type: 0 },
+            GenesisName {
+                label: "marketplace",
+                owner_key: "moltmarket",
+                agent_type: 0,
+            },
+            GenesisName {
+                label: "auction",
+                owner_key: "moltauction",
+                agent_type: 0,
+            },
+            GenesisName {
+                label: "moltpunks",
+                owner_key: "moltpunks",
+                agent_type: 0,
+            },
             // ── Identity ──
-            GenesisName { label: "moltyid", owner_key: "moltyid", agent_type: 0 },
+            GenesisName {
+                label: "moltyid",
+                owner_key: "moltyid",
+                agent_type: 0,
+            },
             // ── Infrastructure ──
-            GenesisName { label: "clawpay", owner_key: "clawpay", agent_type: 0 },
-            GenesisName { label: "clawpump", owner_key: "clawpump", agent_type: 0 },
-            GenesisName { label: "clawvault", owner_key: "clawvault", agent_type: 0 },
-            GenesisName { label: "bountyboard", owner_key: "bountyboard", agent_type: 0 },
-            GenesisName { label: "compute", owner_key: "compute_market", agent_type: 0 },
-            GenesisName { label: "reefstake", owner_key: "reef_storage", agent_type: 0 },
+            GenesisName {
+                label: "clawpay",
+                owner_key: "clawpay",
+                agent_type: 0,
+            },
+            GenesisName {
+                label: "clawpump",
+                owner_key: "clawpump",
+                agent_type: 0,
+            },
+            GenesisName {
+                label: "clawvault",
+                owner_key: "clawvault",
+                agent_type: 0,
+            },
+            GenesisName {
+                label: "bountyboard",
+                owner_key: "bountyboard",
+                agent_type: 0,
+            },
+            GenesisName {
+                label: "compute",
+                owner_key: "compute_market",
+                agent_type: 0,
+            },
+            GenesisName {
+                label: "reefstake",
+                owner_key: "reef_storage",
+                agent_type: 0,
+            },
             // ── Prediction Markets ──
-            GenesisName { label: "predict", owner_key: "prediction_market", agent_type: 0 },
+            GenesisName {
+                label: "predict",
+                owner_key: "prediction_market",
+                agent_type: 0,
+            },
         ];
 
         for gn in genesis_names {
@@ -3189,8 +3376,15 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
                 &args,
                 &format!("moltyid(name:{})", gn.label),
             ) {
-                info!("  NAME {}.molt → {}", gn.label,
-                    if gn.owner_key == "admin" { "deployer" } else { gn.owner_key });
+                info!(
+                    "  NAME {}.molt → {}",
+                    gn.label,
+                    if gn.owner_key == "admin" {
+                        "deployer"
+                    } else {
+                        gn.owner_key
+                    }
+                );
             } else {
                 warn!("  WARN: Failed to register {}.molt", gn.label);
             }
@@ -3355,11 +3549,11 @@ fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey, la
     let fee_tier: u8 = 2; // FEE_TIER_30BPS
 
     let pool_configs: [(&str, [u8; 32], [u8; 32], u64); 5] = [
-        ("MOLT/mUSD",  molt_addr, musd_addr,    1_358_187_913),   // $0.10
-        ("wSOL/mUSD",  wsol_addr, musd_addr,   38_892_583_020),   // $82
-        ("wETH/mUSD",  weth_addr, musd_addr,  191_065_712_575),   // $1,979
-        ("wSOL/MOLT",  wsol_addr, molt_addr,  122_989_146_433),   // 820 MOLT
-        ("wETH/MOLT",  weth_addr, molt_addr,  604_202_834_500),   // 19,790 MOLT
+        ("MOLT/mUSD", molt_addr, musd_addr, 1_358_187_913), // $0.10
+        ("wSOL/mUSD", wsol_addr, musd_addr, 38_892_583_020), // $82
+        ("wETH/mUSD", weth_addr, musd_addr, 191_065_712_575), // $1,979
+        ("wSOL/MOLT", wsol_addr, molt_addr, 122_989_146_433), // 820 MOLT
+        ("wETH/MOLT", weth_addr, molt_addr, 604_202_834_500), // 19,790 MOLT
     ];
 
     for (label, token_a, token_b, sqrt_price) in &pool_configs {
@@ -3466,15 +3660,15 @@ fn genesis_seed_oracle(state: &StateStore, deployer_pubkey: &Pubkey, label: &str
     // Prices are approximate current market values; the background
     // WebSocket price feeder will update them to live prices immediately.
     let external_feeds: [(&[u8], u64, &str); 2] = [
-        (b"wSOL", 8_200_000_000,           "$82.00"),      // $82 at 8 decimals
-        (b"wETH", 197_900_000_000,         "$1,979.00"),   // $1,979 at 8 decimals
+        (b"wSOL", 8_200_000_000, "$82.00"),      // $82 at 8 decimals
+        (b"wETH", 197_900_000_000, "$1,979.00"), // $1,979 at 8 decimals
     ];
 
     for (ext_asset, ext_price, display_price) in &external_feeds {
         // Authorize genesis admin as feeder for this asset
         let mut ext_feeder_args = Vec::with_capacity(32 + ext_asset.len() + 4);
         ext_feeder_args.extend_from_slice(&admin);
-        ext_feeder_args.extend_from_slice(*ext_asset);
+        ext_feeder_args.extend_from_slice(ext_asset);
         ext_feeder_args.extend_from_slice(&(ext_asset.len() as u32).to_le_bytes());
 
         let asset_name = core::str::from_utf8(ext_asset).unwrap_or("?");
@@ -3495,7 +3689,7 @@ fn genesis_seed_oracle(state: &StateStore, deployer_pubkey: &Pubkey, label: &str
         // Submit initial price
         let mut ext_price_args = Vec::with_capacity(32 + ext_asset.len() + 4 + 8 + 1);
         ext_price_args.extend_from_slice(&admin);
-        ext_price_args.extend_from_slice(*ext_asset);
+        ext_price_args.extend_from_slice(ext_asset);
         ext_price_args.extend_from_slice(&(ext_asset.len() as u32).to_le_bytes());
         ext_price_args.extend_from_slice(&ext_price.to_le_bytes());
         ext_price_args.push(decimals); // 8 decimals
@@ -3508,7 +3702,10 @@ fn genesis_seed_oracle(state: &StateStore, deployer_pubkey: &Pubkey, label: &str
             &ext_price_args,
             &format!("moltoracle.submit_price({}={})", asset_name, display_price),
         ) {
-            info!("  PRICE submitted: {} = {} (launch price)", asset_name, display_price);
+            info!(
+                "  PRICE submitted: {} = {} (launch price)",
+                asset_name, display_price
+            );
         } else {
             warn!("  SKIP initial {} price submission failed", asset_name);
         }
@@ -3549,11 +3746,11 @@ fn genesis_seed_analytics_prices(state: &StateStore, deployer_pubkey: &Pubkey) {
     let weth_usd: f64 = 1979.0;
 
     let pair_prices: [(u64, f64); 5] = [
-        (1, molt_usd),                    // MOLT/mUSD = $0.10
-        (2, wsol_usd),                    // wSOL/mUSD = $82
-        (3, weth_usd),                    // wETH/mUSD = $1,979
-        (4, wsol_usd / molt_usd),         // wSOL/MOLT = 820
-        (5, weth_usd / molt_usd),         // wETH/MOLT = 19,790
+        (1, molt_usd),            // MOLT/mUSD = $0.10
+        (2, wsol_usd),            // wSOL/mUSD = $82
+        (3, weth_usd),            // wETH/mUSD = $1,979
+        (4, wsol_usd / molt_usd), // wSOL/MOLT = 820
+        (5, weth_usd / molt_usd), // wETH/MOLT = 19,790
     ];
 
     for (pair_id, price_f64) in &pair_prices {
@@ -3570,18 +3767,14 @@ fn genesis_seed_analytics_prices(state: &StateStore, deployer_pubkey: &Pubkey) {
         // Write 24h stats: ana_24h_{pair_id} (48 bytes)
         // Layout: volume(8) + high(8) + low(8) + open(8) + close(8) + trades(8)
         let mut stats = Vec::with_capacity(48);
-        stats.extend_from_slice(&0u64.to_le_bytes());            // volume = 0
-        stats.extend_from_slice(&price_scaled.to_le_bytes());    // high = price
-        stats.extend_from_slice(&price_scaled.to_le_bytes());    // low = price (not u64::MAX for new pair)
-        stats.extend_from_slice(&price_scaled.to_le_bytes());    // open = price
-        stats.extend_from_slice(&price_scaled.to_le_bytes());    // close = price
-        stats.extend_from_slice(&0u64.to_le_bytes());            // trades = 0
+        stats.extend_from_slice(&0u64.to_le_bytes()); // volume = 0
+        stats.extend_from_slice(&price_scaled.to_le_bytes()); // high = price
+        stats.extend_from_slice(&price_scaled.to_le_bytes()); // low = price (not u64::MAX for new pair)
+        stats.extend_from_slice(&price_scaled.to_le_bytes()); // open = price
+        stats.extend_from_slice(&price_scaled.to_le_bytes()); // close = price
+        stats.extend_from_slice(&0u64.to_le_bytes()); // trades = 0
         let stats_key = format!("ana_24h_{}", pair_id);
-        let _ = state.put_contract_storage(
-            &analytics_pk,
-            stats_key.as_bytes(),
-            &stats,
-        );
+        let _ = state.put_contract_storage(&analytics_pk, stats_key.as_bytes(), &stats);
 
         info!("  ANA seeded: pair {} → price {:.4}", pair_id, price_f64);
     }
@@ -3603,8 +3796,8 @@ fn genesis_seed_analytics_prices(state: &StateStore, deployer_pubkey: &Pubkey) {
         candle.extend_from_slice(&price_scaled.to_le_bytes()); // high
         candle.extend_from_slice(&price_scaled.to_le_bytes()); // low
         candle.extend_from_slice(&price_scaled.to_le_bytes()); // close
-        candle.extend_from_slice(&0u64.to_le_bytes());         // volume
-        // timestamp placeholder — overwritten per-interval below
+        candle.extend_from_slice(&0u64.to_le_bytes()); // volume
+                                                       // timestamp placeholder — overwritten per-interval below
         candle.extend_from_slice(&0u64.to_le_bytes());
 
         for interval in &all_intervals {
@@ -3612,11 +3805,7 @@ fn genesis_seed_analytics_prices(state: &StateStore, deployer_pubkey: &Pubkey) {
             // Store period-start time so TradingView bars align to boundaries
             candle[40..48].copy_from_slice(&candle_start.to_le_bytes());
             let candle_key = format!("ana_c_{}_{}_{}", pair_id, interval, 0);
-            let _ = state.put_contract_storage(
-                &analytics_pk,
-                candle_key.as_bytes(),
-                &candle,
-            );
+            let _ = state.put_contract_storage(&analytics_pk, candle_key.as_bytes(), &candle);
             // Set candle count to 1
             let count_key = format!("ana_cc_{}_{}", pair_id, interval);
             let _ = state.put_contract_storage(
@@ -3657,7 +3846,8 @@ const MICRO_SCALE: f64 = 1_000_000.0;
 const BINANCE_WS_URL: &str = "wss://stream.binance.com:9443/ws/solusdt@aggTrade/ethusdt@aggTrade";
 
 /// Binance REST fallback URL
-const BINANCE_REST_URL: &str = "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22]";
+const BINANCE_REST_URL: &str =
+    "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22]";
 
 /// REST ticker response
 #[derive(Deserialize)]
@@ -3722,7 +3912,8 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
 
         info!("🔮 Oracle price feeder started (WebSocket real-time + 1s storage writes)");
 
-        let candle_intervals: [u64; 9] = [60, 300, 900, 3600, 14400, 86400, 259200, 604800, 31536000];
+        let candle_intervals: [u64; 9] =
+            [60, 300, 900, 3600, 14400, 86400, 259200, 604800, 31536000];
 
         // Track last-written prices to skip no-op writes
         let mut prev_wsol: u64 = 0;
@@ -3744,7 +3935,9 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
                     if let Ok(tickers) = resp.json::<Vec<BinanceTicker>>().await {
                         for t in &tickers {
                             let p: f64 = t.price.parse().unwrap_or(0.0);
-                            if p <= 0.0 { continue; }
+                            if p <= 0.0 {
+                                continue;
+                            }
                             let micro = (p * MICRO_SCALE) as u64;
                             match t.symbol.as_str() {
                                 "SOLUSDT" => {
@@ -3788,20 +3981,23 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
             let molt_usd = match state.get_contract_storage(&oracle_pk, b"price_MOLT") {
                 Ok(Some(feed)) if feed.len() >= 8 => {
                     let raw = u64::from_le_bytes(feed[0..8].try_into().unwrap_or([0; 8]));
-                    if raw > 0 { raw as f64 / 100_000_000.0 } else { molt_usd_default }
+                    if raw > 0 {
+                        raw as f64 / 100_000_000.0
+                    } else {
+                        molt_usd_default
+                    }
                 }
                 _ => molt_usd_default,
             };
 
             // Write oracle prices for each external asset — only when changed
             if prices_changed {
-                let oracle_feeds: [(&[u8], f64); 2] = [
-                    (b"wSOL", wsol_usd),
-                    (b"wETH", weth_usd),
-                ];
+                let oracle_feeds: [(&[u8], f64); 2] = [(b"wSOL", wsol_usd), (b"wETH", weth_usd)];
 
                 for (asset, price_usd) in &oracle_feeds {
-                    if *price_usd <= 0.0 { continue; }
+                    if *price_usd <= 0.0 {
+                        continue;
+                    }
                     let price_raw = (*price_usd * 10f64.powi(ORACLE_DECIMALS as i32)) as u64;
 
                     // Build 49-byte oracle feed: price(8)+timestamp(8)+decimals(1)+feeder(32)
@@ -3823,11 +4019,25 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
             // Update dex_analytics for oracle-priced pairs
             // Pair 1=MOLT/mUSD, 2=wSOL/mUSD, 3=wETH/mUSD, 4=wSOL/MOLT, 5=wETH/MOLT
             let pair_prices: [(u64, f64); 5] = [
-                (1, molt_usd),                        // MOLT/mUSD (fixed oracle price)
-                (2, wsol_usd),                        // wSOL/mUSD
-                (3, weth_usd),                        // wETH/mUSD
-                (4, if molt_usd > 0.0 { wsol_usd / molt_usd } else { 0.0 }), // wSOL/MOLT
-                (5, if molt_usd > 0.0 { weth_usd / molt_usd } else { 0.0 }), // wETH/MOLT
+                (1, molt_usd), // MOLT/mUSD (fixed oracle price)
+                (2, wsol_usd), // wSOL/mUSD
+                (3, weth_usd), // wETH/mUSD
+                (
+                    4,
+                    if molt_usd > 0.0 {
+                        wsol_usd / molt_usd
+                    } else {
+                        0.0
+                    },
+                ), // wSOL/MOLT
+                (
+                    5,
+                    if molt_usd > 0.0 {
+                        weth_usd / molt_usd
+                    } else {
+                        0.0
+                    },
+                ), // wETH/MOLT
             ];
 
             // ── Phase C: Write oracle price bands to dex_core storage ──
@@ -3838,22 +4048,22 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
             // returns the block slot number.
             if prices_changed && dex_pk.0 != [0u8; 32] {
                 for (pair_id, price_f64) in &pair_prices {
-                    if *price_f64 <= 0.0 { continue; }
+                    if *price_f64 <= 0.0 {
+                        continue;
+                    }
                     let price_scaled = (*price_f64 * PRICE_SCALE as f64) as u64;
                     let band_key = format!("dex_band_{}", pair_id);
                     let mut band_data = Vec::with_capacity(16);
                     band_data.extend_from_slice(&price_scaled.to_le_bytes());
                     band_data.extend_from_slice(&current_slot.to_le_bytes());
-                    let _ = state.put_contract_storage(
-                        &dex_pk,
-                        band_key.as_bytes(),
-                        &band_data,
-                    );
+                    let _ = state.put_contract_storage(&dex_pk, band_key.as_bytes(), &band_data);
                 }
             }
 
             for (pair_id, price_f64) in &pair_prices {
-                if *price_f64 <= 0.0 { continue; }
+                if *price_f64 <= 0.0 {
+                    continue;
+                }
                 let price_scaled = (*price_f64 * PRICE_SCALE as f64) as u64;
 
                 // ── Phase B: Trade-driven fallback ──
@@ -3862,15 +4072,13 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
                 // displayed price and candles. Oracle still writes to
                 // moltoracle storage (reference index) unconditionally.
                 let ts_key = format!("ana_last_trade_ts_{}", pair_id);
-                let last_trade_ts: u64 = match state.get_contract_storage(
-                    &analytics_pk,
-                    ts_key.as_bytes(),
-                ) {
-                    Ok(Some(d)) if d.len() >= 8 => {
-                        u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8]))
-                    }
-                    _ => 0,
-                };
+                let last_trade_ts: u64 =
+                    match state.get_contract_storage(&analytics_pk, ts_key.as_bytes()) {
+                        Ok(Some(d)) if d.len() >= 8 => {
+                            u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8]))
+                        }
+                        _ => 0,
+                    };
                 let trade_active = last_trade_ts > 0 && now_ts.saturating_sub(last_trade_ts) < 60;
 
                 if trade_active {
@@ -3903,8 +4111,12 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
                             _ => (0, 0, u64::MAX, price_scaled, price_scaled, 0),
                         };
 
-                    if price_scaled > high { high = price_scaled; }
-                    if price_scaled < low { low = price_scaled; }
+                    if price_scaled > high {
+                        high = price_scaled;
+                    }
+                    if price_scaled < low {
+                        low = price_scaled;
+                    }
 
                     let mut stats = Vec::with_capacity(48);
                     stats.extend_from_slice(&vol.to_le_bytes());
@@ -3913,19 +4125,20 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
                     stats.extend_from_slice(&open.to_le_bytes());
                     stats.extend_from_slice(&price_scaled.to_le_bytes()); // close = current
                     stats.extend_from_slice(&trades.to_le_bytes());
-                    let _ = state.put_contract_storage(
-                        &analytics_pk,
-                        stats_key.as_bytes(),
-                        &stats,
-                    );
+                    let _ = state.put_contract_storage(&analytics_pk, stats_key.as_bytes(), &stats);
                 }
 
                 // ALWAYS update candles — even when prices haven't changed,
                 // so new candle periods are created at correct time boundaries.
                 for &ci in &candle_intervals {
                     oracle_update_candle(
-                        &state, &analytics_pk,
-                        *pair_id, ci, price_scaled, current_slot, now_ts,
+                        &state,
+                        &analytics_pk,
+                        *pair_id,
+                        ci,
+                        price_scaled,
+                        current_slot,
+                        now_ts,
                     );
                 }
             }
@@ -3941,11 +4154,7 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
 /// Binance WebSocket reader loop with auto-reconnect.
 /// Connects to aggTrade streams, parses prices, stores in atomics.
 /// On disconnect, retries with exponential backoff (1s → 30s max).
-async fn binance_ws_loop(
-    wsol: Arc<AtomicU64>,
-    weth: Arc<AtomicU64>,
-    healthy: Arc<AtomicBool>,
-) {
+async fn binance_ws_loop(wsol: Arc<AtomicU64>, weth: Arc<AtomicU64>, healthy: Arc<AtomicBool>) {
     let mut backoff_secs: u64 = 1;
 
     loop {
@@ -3965,10 +4174,9 @@ async fn binance_ws_loop(
                         Ok(tungstenite::Message::Text(ref text)) => {
                             // aggTrade format: {"e":"aggTrade","s":"SOLUSDT","p":"82.30",...}
                             if let Ok(trade) = serde_json::from_str::<serde_json::Value>(text) {
-                                if let (Some(sym), Some(price_str)) = (
-                                    trade["s"].as_str(),
-                                    trade["p"].as_str(),
-                                ) {
+                                if let (Some(sym), Some(price_str)) =
+                                    (trade["s"].as_str(), trade["p"].as_str())
+                                {
                                     let price: f64 = price_str.parse().unwrap_or(0.0);
                                     if price > 0.0 {
                                         let micro = (price * MICRO_SCALE) as u64;
@@ -4034,7 +4242,9 @@ fn oracle_update_candle(
     // Read current candle's start slot (use Option to distinguish missing from 0)
     let cur_key = format!("ana_cur_{}_{}", pair_id, interval);
     let stored_start = match state.get_contract_storage(analytics_pk, cur_key.as_bytes()) {
-        Ok(Some(d)) if d.len() >= 8 => Some(u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8]))),
+        Ok(Some(d)) if d.len() >= 8 => {
+            Some(u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])))
+        }
         _ => None,
     };
 
@@ -4046,11 +4256,14 @@ fn oracle_update_candle(
             Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
             _ => 0,
         };
-        if candle_count == 0 { return; }
+        if candle_count == 0 {
+            return;
+        }
         let idx = candle_count - 1;
         let candle_key = format!("ana_c_{}_{}_{}", pair_id, interval, idx);
 
-        if let Ok(Some(mut data)) = state.get_contract_storage(analytics_pk, candle_key.as_bytes()) {
+        if let Ok(Some(mut data)) = state.get_contract_storage(analytics_pk, candle_key.as_bytes())
+        {
             if data.len() >= 48 {
                 let high = u64::from_le_bytes(data[8..16].try_into().unwrap_or([0; 8]));
                 let low = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
@@ -4079,7 +4292,7 @@ fn oracle_update_candle(
         candle.extend_from_slice(&price.to_le_bytes()); // high
         candle.extend_from_slice(&price.to_le_bytes()); // low
         candle.extend_from_slice(&price.to_le_bytes()); // close
-        candle.extend_from_slice(&0u64.to_le_bytes());  // volume (oracle updates have 0 volume)
+        candle.extend_from_slice(&0u64.to_le_bytes()); // volume (oracle updates have 0 volume)
         candle.extend_from_slice(&candle_start.to_le_bytes()); // period-start time (aligned)
 
         let new_idx = candle_count;
@@ -4115,8 +4328,8 @@ fn spawn_log_cleanup_task(log_dir: PathBuf, max_age_days: u64) {
     tokio::spawn(async move {
         let sweep_interval = tokio::time::Duration::from_secs(3 * 3600); // 3 hours
         loop {
-            let cutoff = std::time::SystemTime::now()
-                - std::time::Duration::from_secs(max_age_days * 86400);
+            let cutoff =
+                std::time::SystemTime::now() - std::time::Duration::from_secs(max_age_days * 86400);
             if let Ok(entries) = fs::read_dir(&log_dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
@@ -4337,10 +4550,7 @@ async fn run_validator() {
 
     // Layered subscriber: stdout (with ANSI colors) + rolling file (plain text)
     let _ = tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_ansi(true),
-        )
+        .with(tracing_subscriber::fmt::layer().with_ansi(true))
         .with(
             tracing_subscriber::fmt::layer()
                 .with_ansi(false)
@@ -5326,9 +5536,7 @@ async fn run_validator() {
             }
 
             // Check if oracle price feeds are present (price_MOLT)
-            let molt_price_exists = state
-                .get_program_storage("ORACLE", b"price_MOLT")
-                .is_some();
+            let molt_price_exists = state.get_program_storage("ORACLE", b"price_MOLT").is_some();
 
             if !molt_price_exists {
                 info!("🔄 RECONCILE: Oracle price feeds missing — seeding initial prices");
@@ -5337,9 +5545,9 @@ async fn run_validator() {
                 if let Some(oracle_pk) = derive_contract_address(&genesis_pk, "moltoracle") {
                     const ORACLE_DECIMALS: u8 = 8;
                     let oracle_feeds: &[(&str, u64)] = &[
-                        ("MOLT",  10_000_000),          // $0.10
-                        ("wSOL",  8_200_000_000),       // $82
-                        ("wETH",  197_900_000_000),     // $1,979
+                        ("MOLT", 10_000_000),      // $0.10
+                        ("wSOL", 8_200_000_000),   // $82
+                        ("wETH", 197_900_000_000), // $1,979
                     ];
                     let now_secs = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -5371,7 +5579,10 @@ async fn run_validator() {
                             &[ORACLE_DECIMALS],
                         );
 
-                        info!("  ✓ Oracle price seeded: {} = {} ({}dec)", asset, price, ORACLE_DECIMALS);
+                        info!(
+                            "  ✓ Oracle price seeded: {} = {} ({}dec)",
+                            asset, price, ORACLE_DECIMALS
+                        );
                     }
                 }
             }
@@ -5463,19 +5674,24 @@ async fn run_validator() {
     let machine_fingerprint = if dev_mode {
         // Dev mode: SHA-256(pubkey) — unique per key, not per machine.
         // This allows multi-validator on one machine while still tracking per-key.
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
-        hasher.update(&validator_pubkey.0);
+        hasher.update(validator_pubkey.0);
         let result = hasher.finalize();
         let mut fp = [0u8; 32];
         fp.copy_from_slice(&result);
-        info!("🔧 Dev mode: fingerprint = SHA-256(pubkey) — {}..{}",
-            hex::encode(&fp[..4]), hex::encode(&fp[28..]));
+        info!(
+            "🔧 Dev mode: fingerprint = SHA-256(pubkey) — {}..{}",
+            hex::encode(&fp[..4]),
+            hex::encode(&fp[28..])
+        );
         fp
     } else {
         let fp = collect_machine_fingerprint();
         if fp == [0u8; 32] {
-            warn!("⚠️  Could not collect machine fingerprint — running without anti-Sybil protection");
+            warn!(
+                "⚠️  Could not collect machine fingerprint — running without anti-Sybil protection"
+            );
         } else {
             info!(
                 "🔒 Machine fingerprint: {}..{}",
@@ -5680,7 +5896,10 @@ async fn run_validator() {
             if let Err(e) = state.put_account(&validator_pubkey, &empty_account) {
                 eprintln!("Failed to create validator account: {e}");
             }
-            info!("✓ Validator account created (empty — requires {} MOLT deposit)", MIN_VALIDATOR_STAKE / 1_000_000_000);
+            info!(
+                "✓ Validator account created (empty — requires {} MOLT deposit)",
+                MIN_VALIDATOR_STAKE / 1_000_000_000
+            );
         }
     } else if let Some(account) = validator_account {
         info!(
@@ -5714,7 +5933,10 @@ async fn run_validator() {
         let tracker = slashing_tracker.lock().await;
         let evidence_count: usize = tracker.evidence_count();
         if evidence_count > 0 {
-            info!("⚔️  Slashing system initialized — loaded {} evidence records from disk", evidence_count);
+            info!(
+                "⚔️  Slashing system initialized — loaded {} evidence records from disk",
+                evidence_count
+            );
         } else {
             info!("⚔️  Slashing system initialized (clean)");
         }
@@ -5814,7 +6036,10 @@ async fn run_validator() {
         // Migrate legacy validators that were staked before bootstrap system existed
         let migrated = pool.migrate_legacy_bootstrap_indices();
         if migrated > 0 {
-            info!("🔄 Migrated {} validator(s) to bootstrap debt system", migrated);
+            info!(
+                "🔄 Migrated {} validator(s) to bootstrap debt system",
+                migrated
+            );
             if let Err(e) = state.put_stake_pool(&pool) {
                 warn!("⚠️  Failed to persist bootstrap migration: {}", e);
             }
@@ -5917,8 +6142,7 @@ async fn run_validator() {
     // network.  The block-receiver task inserts here; the production loop checks
     // before creating its own block, closing the TOCTOU race between the early
     // `get_block_by_slot` guard and the actual `Block::new` call.
-    let received_network_slots: Arc<Mutex<HashSet<u64>>> =
-        Arc::new(Mutex::new(HashSet::new()));
+    let received_network_slots: Arc<Mutex<HashSet<u64>>> = Arc::new(Mutex::new(HashSet::new()));
     let received_network_slots_for_blocks = received_network_slots.clone();
     let received_network_slots_for_producer = received_network_slots.clone();
 
@@ -5951,9 +6175,15 @@ async fn run_validator() {
                 // Try to parse YYYY-MM-DDTHH:MM:SS (ignore timezone, assume UTC)
                 let parts: Vec<&str> = gt.split('T').collect();
                 if parts.len() == 2 {
-                    let date_parts: Vec<u64> = parts[0].split('-').filter_map(|s| s.parse().ok()).collect();
-                    let time_str = parts[1].trim_end_matches('Z').split('+').next().unwrap_or("");
-                    let time_parts: Vec<u64> = time_str.split(':').filter_map(|s| s.parse().ok()).collect();
+                    let date_parts: Vec<u64> =
+                        parts[0].split('-').filter_map(|s| s.parse().ok()).collect();
+                    let time_str = parts[1]
+                        .trim_end_matches('Z')
+                        .split('+')
+                        .next()
+                        .unwrap_or("");
+                    let time_parts: Vec<u64> =
+                        time_str.split(':').filter_map(|s| s.parse().ok()).collect();
                     if date_parts.len() == 3 && time_parts.len() >= 2 {
                         // Approximate Unix timestamp (good enough for bounded-window checks)
                         let year = date_parts[0];
@@ -5961,24 +6191,38 @@ async fn run_validator() {
                         let day = date_parts[2];
                         let hour = time_parts[0];
                         let minute = time_parts[1];
-                        let second = if time_parts.len() >= 3 { time_parts[2] } else { 0 };
+                        let second = if time_parts.len() >= 3 {
+                            time_parts[2]
+                        } else {
+                            0
+                        };
                         // Days from 1970 to year (approximate, ignoring leap seconds)
                         let mut days: u64 = 0;
                         for y in 1970..year {
-                            days += if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) { 366 } else { 365 };
+                            days += if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+                                366
+                            } else {
+                                365
+                            };
                         }
                         let month_days = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
                         if (month as usize) >= 1 && (month as usize) <= 12 {
                             days += month_days[(month - 1) as usize];
                             // Leap day adjustment
-                            if month > 2 && year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
+                            if month > 2
+                                && year.is_multiple_of(4)
+                                && (!year.is_multiple_of(100) || year.is_multiple_of(400))
+                            {
                                 days += 1;
                             }
                         }
                         days += day.saturating_sub(1);
                         days * 86400 + hour * 3600 + minute * 60 + second
                     } else {
-                        warn!("⚠️  Cannot parse genesis_time '{}' — timestamps will be slot-relative", gt);
+                        warn!(
+                            "⚠️  Cannot parse genesis_time '{}' — timestamps will be slot-relative",
+                            gt
+                        );
                         0
                     }
                 } else {
@@ -6456,7 +6700,13 @@ async fn run_validator() {
                                     false,
                                 )
                                 .await;
-                                maybe_create_checkpoint(&state_for_blocks, pending_slot, &data_dir_for_blocks, &sync_mgr).await;
+                                maybe_create_checkpoint(
+                                    &state_for_blocks,
+                                    pending_slot,
+                                    &data_dir_for_blocks,
+                                    &sync_mgr,
+                                )
+                                .await;
                             }
                         }
                     }
@@ -6476,8 +6726,7 @@ async fn run_validator() {
                         replay_block_transactions(&processor_for_blocks, &block);
                         if state_for_blocks.put_block(&block).is_ok() {
                             state_for_blocks.set_last_slot(block_slot).ok();
-                            *last_block_time_for_blocks.lock().await =
-                                std::time::Instant::now();
+                            *last_block_time_for_blocks.lock().await = std::time::Instant::now();
                             info!("✅ Applied block {} from network", block_slot);
 
                             // A5-02: Record this head in fork choice oracle with the
@@ -6486,7 +6735,8 @@ async fn run_validator() {
                             {
                                 let pool = stake_pool_for_blocks.read().await;
                                 let proposer = Pubkey(block.header.validator);
-                                let weight = pool.get_stake(&proposer)
+                                let weight = pool
+                                    .get_stake(&proposer)
                                     .map(|s| s.total_stake())
                                     .unwrap_or(1);
                                 fork_choice.add_head(block_slot, block.hash(), weight);
@@ -6532,8 +6782,12 @@ async fn run_validator() {
                                         info!("🔒 Block {} FINALIZED with stake-weighted supermajority!", block_slot);
                                         // Update finality tracker + persist to StateStore
                                         if finality_for_blocks.mark_confirmed(block_slot) {
-                                            let _ = state_for_blocks.set_last_confirmed_slot(finality_for_blocks.confirmed_slot());
-                                            let _ = state_for_blocks.set_last_finalized_slot(finality_for_blocks.finalized_slot());
+                                            let _ = state_for_blocks.set_last_confirmed_slot(
+                                                finality_for_blocks.confirmed_slot(),
+                                            );
+                                            let _ = state_for_blocks.set_last_finalized_slot(
+                                                finality_for_blocks.finalized_slot(),
+                                            );
                                         }
                                     }
                                     drop(pool);
@@ -6545,10 +6799,11 @@ async fn run_validator() {
                             // Don't await the broadcast — let QUIC sends happen
                             // concurrently while we proceed to apply_block_effects.
                             {
-                                let vote_msg =
-                                    P2PMessage::new(MessageType::Vote(vote), local_addr);
+                                let vote_msg = P2PMessage::new(MessageType::Vote(vote), local_addr);
                                 let pm = peer_mgr_for_sync.clone();
-                                tokio::spawn(async move { pm.broadcast(vote_msg).await; });
+                                tokio::spawn(async move {
+                                    pm.broadcast(vote_msg).await;
+                                });
                             }
 
                             // Now apply block effects (rewards, fees) — safe to run
@@ -6562,7 +6817,13 @@ async fn run_validator() {
                                 false,
                             )
                             .await;
-                            maybe_create_checkpoint(&state_for_blocks, block_slot, &data_dir_for_blocks, &sync_mgr).await;
+                            maybe_create_checkpoint(
+                                &state_for_blocks,
+                                block_slot,
+                                &data_dir_for_blocks,
+                                &sync_mgr,
+                            )
+                            .await;
 
                             // Try to apply any pending blocks (gap-aware).
                             // After each applied block the chain tip advances,
@@ -6589,10 +6850,7 @@ async fn run_validator() {
                                     sync_mgr.add_pending_block(pending_block).await;
                                     continue;
                                 }
-                                replay_block_transactions(
-                                    &processor_for_blocks,
-                                    &pending_block,
-                                );
+                                replay_block_transactions(&processor_for_blocks, &pending_block);
                                 if state_for_blocks.put_block(&pending_block).is_ok() {
                                     state_for_blocks.set_last_slot(pending_slot).ok();
                                     *last_block_time_for_blocks.lock().await =
@@ -6607,7 +6865,13 @@ async fn run_validator() {
                                         false,
                                     )
                                     .await;
-                                    maybe_create_checkpoint(&state_for_blocks, pending_slot, &data_dir_for_blocks, &sync_mgr).await;
+                                    maybe_create_checkpoint(
+                                        &state_for_blocks,
+                                        pending_slot,
+                                        &data_dir_for_blocks,
+                                        &sync_mgr,
+                                    )
+                                    .await;
                                 }
                             }
                         }
@@ -6683,7 +6947,8 @@ async fn run_validator() {
                             {
                                 let pool = stake_pool_for_blocks.read().await;
                                 let proposer = Pubkey(block.header.validator);
-                                let weight = pool.get_stake(&proposer)
+                                let weight = pool
+                                    .get_stake(&proposer)
                                     .map(|s| s.total_stake())
                                     .unwrap_or(1);
                                 fork_choice.add_head(block_slot, block.hash(), weight);
@@ -6713,11 +6978,19 @@ async fn run_validator() {
                             let fc_incoming = fork_choice.get_weight(&block.hash());
                             let oracle_prefers_incoming = fc_incoming > fc_existing;
 
-                            if incoming_weight > existing_weight || oracle_prefers_incoming || we_are_behind || has_pending {
+                            if incoming_weight > existing_weight
+                                || oracle_prefers_incoming
+                                || we_are_behind
+                                || has_pending
+                            {
                                 // Revert old block's financial effects before replacing
                                 revert_block_effects(&state_for_blocks, &existing);
                                 // C7 fix: Also revert user transaction effects
-                                revert_block_transactions(&state_for_blocks, &existing, &data_dir_for_blocks);
+                                revert_block_transactions(
+                                    &state_for_blocks,
+                                    &existing,
+                                    &data_dir_for_blocks,
+                                );
                                 // Replace slot index with the higher-weight block
                                 replay_block_transactions(&processor_for_blocks, &block);
                                 if state_for_blocks.put_block(&block).is_ok() {
@@ -6725,7 +6998,11 @@ async fn run_validator() {
                                     *last_block_time_for_blocks.lock().await =
                                         std::time::Instant::now();
                                     // A5-02: Update fork choice after successful replacement
-                                    fork_choice.add_head(block_slot, block.hash(), incoming_weight.max(fc_incoming));
+                                    fork_choice.add_head(
+                                        block_slot,
+                                        block.hash(),
+                                        incoming_weight.max(fc_incoming),
+                                    );
                                     if we_are_behind || has_pending {
                                         info!(
                                             "🔗 Chain adoption: replaced block at slot {} (behind network by {} slots, {} pending)",
@@ -6747,7 +7024,13 @@ async fn run_validator() {
                                         false,
                                     )
                                     .await;
-                                    maybe_create_checkpoint(&state_for_blocks, block_slot, &data_dir_for_blocks, &sync_mgr).await;
+                                    maybe_create_checkpoint(
+                                        &state_for_blocks,
+                                        block_slot,
+                                        &data_dir_for_blocks,
+                                        &sync_mgr,
+                                    )
+                                    .await;
 
                                     // After replacing a block (fork adoption), try
                                     // applying pending blocks that now chain correctly.
@@ -6794,7 +7077,13 @@ async fn run_validator() {
                                                 false,
                                             )
                                             .await;
-                                            maybe_create_checkpoint(&state_for_blocks, pending_slot, &data_dir_for_blocks, &sync_mgr).await;
+                                            maybe_create_checkpoint(
+                                                &state_for_blocks,
+                                                pending_slot,
+                                                &data_dir_for_blocks,
+                                                &sync_mgr,
+                                            )
+                                            .await;
                                         }
                                     }
                                 }
@@ -6820,7 +7109,12 @@ async fn run_validator() {
                 info!("📥 Received transaction from P2P");
                 // AUDIT-FIX 1.6: Validate transaction before adding to mempool
                 // 1. Verify signature — fee payer signs the serialized message
-                let sender_pubkey = tx.message.instructions.first().and_then(|ix| ix.accounts.first()).copied();
+                let sender_pubkey = tx
+                    .message
+                    .instructions
+                    .first()
+                    .and_then(|ix| ix.accounts.first())
+                    .copied();
                 let sig_valid = match (&sender_pubkey, tx.signatures.first()) {
                     (Some(sender), Some(sig)) => {
                         let msg_bytes = tx.message.serialize();
@@ -6962,8 +7256,10 @@ async fn run_validator() {
                         );
                         // Update finality tracker + persist to StateStore
                         if finality_for_votes.mark_confirmed(vote.slot) {
-                            let _ = state_for_votes.set_last_confirmed_slot(finality_for_votes.confirmed_slot());
-                            let _ = state_for_votes.set_last_finalized_slot(finality_for_votes.finalized_slot());
+                            let _ = state_for_votes
+                                .set_last_confirmed_slot(finality_for_votes.confirmed_slot());
+                            let _ = state_for_votes
+                                .set_last_finalized_slot(finality_for_votes.finalized_slot());
                         }
                     } else {
                         info!(
@@ -6995,8 +7291,10 @@ async fn run_validator() {
             // 1.5c+d: Rate limiting — per-epoch bootstrap cap and per-minute announcement limit
             let mut bootstrap_epoch: u64 = 0;
             let mut bootstrap_count: u64 = 0;
-            let mut last_announce_times: std::collections::HashMap<moltchain_core::account::Pubkey, std::time::Instant> =
-                std::collections::HashMap::new();
+            let mut last_announce_times: std::collections::HashMap<
+                moltchain_core::account::Pubkey,
+                std::time::Instant,
+            > = std::collections::HashMap::new();
             while let Some(announcement) = validator_announce_rx.recv().await {
                 // Skip our own announcements
                 if announcement.pubkey == validator_pubkey_for_announce_handler {
@@ -7050,8 +7348,15 @@ async fn run_validator() {
                                     announcement.machine_fingerprint,
                                     announcement.current_slot,
                                 ) {
-                                    Ok(()) => info!("✅ Fingerprint migrated for {}", announcement.pubkey.to_base58()),
-                                    Err(e) => warn!("⚠️  Fingerprint migration failed for {}: {}", announcement.pubkey.to_base58(), e),
+                                    Ok(()) => info!(
+                                        "✅ Fingerprint migrated for {}",
+                                        announcement.pubkey.to_base58()
+                                    ),
+                                    Err(e) => warn!(
+                                        "⚠️  Fingerprint migration failed for {}: {}",
+                                        announcement.pubkey.to_base58(),
+                                        e
+                                    ),
                                 }
                             } else if current_fp == [0u8; 32] {
                                 // Legacy validator — register fingerprint for the first time
@@ -7059,8 +7364,15 @@ async fn run_validator() {
                                     &announcement.pubkey,
                                     announcement.machine_fingerprint,
                                 ) {
-                                    Ok(()) => info!("🔒 Late fingerprint registered for {}", announcement.pubkey.to_base58()),
-                                    Err(e) => debug!("Fingerprint registration skipped for {}: {}", announcement.pubkey.to_base58(), e),
+                                    Ok(()) => info!(
+                                        "🔒 Late fingerprint registered for {}",
+                                        announcement.pubkey.to_base58()
+                                    ),
+                                    Err(e) => debug!(
+                                        "Fingerprint registration skipped for {}: {}",
+                                        announcement.pubkey.to_base58(),
+                                        e
+                                    ),
                                 }
                             }
                         }
@@ -7104,10 +7416,7 @@ async fn run_validator() {
                     let existing_account = state_for_validators
                         .get_account(&announcement.pubkey)
                         .unwrap_or(None);
-                    let already_staked = existing_account
-                        .as_ref()
-                        .map(|a| a.staked)
-                        .unwrap_or(0);
+                    let already_staked = existing_account.as_ref().map(|a| a.staked).unwrap_or(0);
 
                     // 1.5c: Per-epoch cap on bootstrap grants (max 10 per epoch)
                     const MAX_BOOTSTRAPS_PER_EPOCH: u64 = 10;
@@ -7245,10 +7554,17 @@ async fn run_validator() {
                                                     e
                                                 );
                                                 // Reverse treasury debit since stake failed
-                                                if let Ok(Some(tpk)) = state_for_validators.get_treasury_pubkey() {
-                                                    if let Ok(Some(mut treasury)) = state_for_validators.get_account(&tpk) {
-                                                        treasury.add_spendable(MIN_VALIDATOR_STAKE).ok();
-                                                        let _ = state_for_validators.put_account(&tpk, &treasury);
+                                                if let Ok(Some(tpk)) =
+                                                    state_for_validators.get_treasury_pubkey()
+                                                {
+                                                    if let Ok(Some(mut treasury)) =
+                                                        state_for_validators.get_account(&tpk)
+                                                    {
+                                                        treasury
+                                                            .add_spendable(MIN_VALIDATOR_STAKE)
+                                                            .ok();
+                                                        let _ = state_for_validators
+                                                            .put_account(&tpk, &treasury);
                                                     }
                                                 }
                                             }
@@ -7617,41 +7933,45 @@ async fn run_validator() {
                 }
 
                 // Handle StateSnapshotRequest (chunked state transfer)
-                if let Some((ref category, chunk_index, chunk_size)) = request.state_snapshot_params {
+                if let Some((ref category, chunk_index, chunk_size)) = request.state_snapshot_params
+                {
                     // Find latest checkpoint and serve from it
-                    let checkpoint_store = match StateStore::latest_checkpoint(&data_dir_for_snapshot) {
-                        Some((meta, path)) => {
-                            match StateStore::open_checkpoint(&path) {
+                    let checkpoint_store =
+                        match StateStore::latest_checkpoint(&data_dir_for_snapshot) {
+                            Some((meta, path)) => match StateStore::open_checkpoint(&path) {
                                 Ok(store) => Some((store, meta)),
                                 Err(e) => {
                                     warn!("⚠️  Failed to open checkpoint for snapshot: {}", e);
                                     None
                                 }
+                            },
+                            None => {
+                                // No checkpoint — serve from live state (less ideal but functional)
+                                let meta = moltchain_core::CheckpointMeta {
+                                    slot: state_for_snapshot_serve.get_last_slot().unwrap_or(0),
+                                    state_root: state_for_snapshot_serve.compute_state_root().0,
+                                    created_at: 0,
+                                    total_accounts: state_for_snapshot_serve
+                                        .count_accounts()
+                                        .unwrap_or(0),
+                                };
+                                Some((state_for_snapshot_serve.clone(), meta))
                             }
-                        }
-                        None => {
-                            // No checkpoint — serve from live state (less ideal but functional)
-                            let meta = moltchain_core::CheckpointMeta {
-                                slot: state_for_snapshot_serve.get_last_slot().unwrap_or(0),
-                                state_root: state_for_snapshot_serve.compute_state_root().0,
-                                created_at: 0,
-                                total_accounts: state_for_snapshot_serve.count_accounts().unwrap_or(0),
-                            };
-                            Some((state_for_snapshot_serve.clone(), meta))
-                        }
-                    };
+                        };
 
                     if let Some((store, meta)) = checkpoint_store {
                         let all_entries = match category.as_str() {
                             "accounts" => store.export_accounts_iter().unwrap_or_default(),
-                            "contract_storage" => store.export_contract_storage_iter().unwrap_or_default(),
+                            "contract_storage" => {
+                                store.export_contract_storage_iter().unwrap_or_default()
+                            }
                             "programs" => store.export_programs_iter().unwrap_or_default(),
                             _ => Vec::new(),
                         };
 
                         let total_entries = all_entries.len() as u64;
                         let chunk_sz = chunk_size.max(1) as usize;
-                        let total_chunks = (total_entries + chunk_sz as u64 - 1) / chunk_sz as u64;
+                        let total_chunks = total_entries.div_ceil(chunk_sz as u64);
                         let start = (chunk_index as usize) * chunk_sz;
                         let end = ((chunk_index as usize + 1) * chunk_sz).min(all_entries.len());
                         let chunk: Vec<(Vec<u8>, Vec<u8>)> = if start < all_entries.len() {
@@ -7680,7 +8000,10 @@ async fn run_validator() {
                         } else {
                             info!(
                                 "📤 Sent {} snapshot chunk {}/{} to {}",
-                                category, chunk_index + 1, total_chunks, request.requester
+                                category,
+                                chunk_index + 1,
+                                total_chunks,
+                                request.requester
                             );
                         }
                     }
@@ -7715,7 +8038,9 @@ async fn run_validator() {
                         // Generic StateCheckpoint request — respond with meta
                         let (slot, state_root, total_accounts) =
                             match StateStore::latest_checkpoint(&data_dir_for_snapshot) {
-                                Some((meta, _)) => (meta.slot, meta.state_root, meta.total_accounts),
+                                Some((meta, _)) => {
+                                    (meta.slot, meta.state_root, meta.total_accounts)
+                                }
                                 None => (0, [0u8; 32], 0),
                             };
                         P2PMessage::new(
@@ -7778,10 +8103,22 @@ async fn run_validator() {
                 }
 
                 // Handle StateSnapshotResponse (chunked state data)
-                if let Some((ref category, chunk_index, total_chunks, snapshot_slot, _state_root, ref entries_bytes)) = response.state_snapshot_data {
+                if let Some((
+                    ref category,
+                    chunk_index,
+                    total_chunks,
+                    snapshot_slot,
+                    _state_root,
+                    ref entries_bytes,
+                )) = response.state_snapshot_data
+                {
                     info!(
                         "📥 Received {} snapshot chunk {}/{} from {} (slot {})",
-                        category, chunk_index + 1, total_chunks, response.requester, snapshot_slot
+                        category,
+                        chunk_index + 1,
+                        total_chunks,
+                        response.requester,
+                        snapshot_slot
                     );
 
                     // Deserialize and import entries
@@ -7789,7 +8126,9 @@ async fn run_validator() {
                         Ok(entries) => {
                             let import_result = match category.as_str() {
                                 "accounts" => state_for_snapshot_apply.import_accounts(&entries),
-                                "contract_storage" => state_for_snapshot_apply.import_contract_storage(&entries),
+                                "contract_storage" => {
+                                    state_for_snapshot_apply.import_contract_storage(&entries)
+                                }
                                 "programs" => state_for_snapshot_apply.import_programs(&entries),
                                 _ => {
                                     warn!("⚠️  Unknown snapshot category: {}", category);
@@ -7798,7 +8137,13 @@ async fn run_validator() {
                             };
                             match import_result {
                                 Ok(count) => {
-                                    info!("✅ Imported {} {} entries (chunk {}/{})", count, category, chunk_index + 1, total_chunks);
+                                    info!(
+                                        "✅ Imported {} {} entries (chunk {}/{})",
+                                        count,
+                                        category,
+                                        chunk_index + 1,
+                                        total_chunks
+                                    );
                                 }
                                 Err(e) => {
                                     warn!("⚠️  Failed to import {} entries: {}", category, e);
@@ -7806,30 +8151,55 @@ async fn run_validator() {
                             }
                         }
                         Err(e) => {
-                            warn!("⚠️  Failed to deserialize {} snapshot chunk: {}", category, e);
+                            warn!(
+                                "⚠️  Failed to deserialize {} snapshot chunk: {}",
+                                category, e
+                            );
                         }
                     }
 
                     // Track progress
-                    let progress = state_snap_progress.entry(category.clone()).or_insert((0, total_chunks));
+                    let progress = state_snap_progress
+                        .entry(category.clone())
+                        .or_insert((0, total_chunks));
                     progress.0 = chunk_index + 1;
                     progress.1 = total_chunks;
 
                     // Check if all categories are complete
-                    let accounts_done = state_snap_progress.get("accounts").map(|(r, t)| r >= t).unwrap_or(false);
-                    let storage_done = state_snap_progress.get("contract_storage").map(|(r, t)| r >= t).unwrap_or(false);
-                    let programs_done = state_snap_progress.get("programs").map(|(r, t)| r >= t).unwrap_or(false);
+                    let accounts_done = state_snap_progress
+                        .get("accounts")
+                        .map(|(r, t)| r >= t)
+                        .unwrap_or(false);
+                    let storage_done = state_snap_progress
+                        .get("contract_storage")
+                        .map(|(r, t)| r >= t)
+                        .unwrap_or(false);
+                    let programs_done = state_snap_progress
+                        .get("programs")
+                        .map(|(r, t)| r >= t)
+                        .unwrap_or(false);
 
                     if accounts_done && storage_done && programs_done {
                         info!("✅ State snapshot sync complete — all categories imported");
                         // Update last_slot to the checkpoint slot
                         if let Err(e) = state_for_snapshot_apply.set_last_slot(snapshot_slot) {
-                            warn!("⚠️  Failed to set last_slot to snapshot slot {}: {}", snapshot_slot, e);
+                            warn!(
+                                "⚠️  Failed to set last_slot to snapshot slot {}: {}",
+                                snapshot_slot, e
+                            );
                         }
                         // Create a local checkpoint from the imported state
-                        let checkpoint_path = format!("{}/checkpoints/slot-{}", data_dir_for_snapshot_apply, snapshot_slot);
-                        match state_for_snapshot_apply.create_checkpoint(&checkpoint_path, snapshot_slot) {
-                            Ok(meta) => info!("✅ Created local checkpoint at slot {} ({} accounts)", meta.slot, meta.total_accounts),
+                        let checkpoint_path = format!(
+                            "{}/checkpoints/slot-{}",
+                            data_dir_for_snapshot_apply, snapshot_slot
+                        );
+                        match state_for_snapshot_apply
+                            .create_checkpoint(&checkpoint_path, snapshot_slot)
+                        {
+                            Ok(meta) => info!(
+                                "✅ Created local checkpoint at slot {} ({} accounts)",
+                                meta.slot, meta.total_accounts
+                            ),
                             Err(e) => warn!("⚠️  Failed to create local checkpoint: {}", e),
                         }
                     }
@@ -7961,8 +8331,10 @@ async fn run_validator() {
                                     None => true,
                                     Some(local_entry) => {
                                         entry_amount > local_entry.amount
-                                            || entry.total_debt_repaid > local_entry.total_debt_repaid
-                                            || (local_entry.bootstrap_index == u64::MAX && entry.bootstrap_index != u64::MAX)
+                                            || entry.total_debt_repaid
+                                                > local_entry.total_debt_repaid
+                                            || (local_entry.bootstrap_index == u64::MAX
+                                                && entry.bootstrap_index != u64::MAX)
                                     }
                                 };
                                 if should_upsert {
@@ -8062,7 +8434,10 @@ async fn run_validator() {
                     SnapshotKind::StateCheckpoint => {
                         // Handled above via checkpoint_meta / state_snapshot_data fields
                         // This arm handles a generic StateCheckpoint response via SnapshotResponse
-                        info!("📋 Received StateCheckpoint snapshot response from {}", response.requester);
+                        info!(
+                            "📋 Received StateCheckpoint snapshot response from {}",
+                            response.requester
+                        );
                     }
                 }
             }
@@ -8141,7 +8516,10 @@ async fn run_validator() {
 
             // AUDIT-FIX V5.2: Look up on-chain MoltyID reputation so
             // high-reputation agents get express-lane mempool priority.
-            let reputation = tx.message.instructions.first()
+            let reputation = tx
+                .message
+                .instructions
+                .first()
                 .and_then(|ix| ix.accounts.first())
                 .and_then(|sender| state_for_rpc_lookup.get_reputation(sender).ok())
                 .unwrap_or(0);
@@ -8207,8 +8585,10 @@ async fn run_validator() {
                 // Create a dummy broadcast channel so the rest of the code can send events
                 // without checking — receivers simply don't exist.
                 let (dummy_tx, _) = tokio::sync::broadcast::channel::<moltchain_rpc::ws::Event>(1);
-                let dummy_broadcaster = std::sync::Arc::new(moltchain_rpc::dex_ws::DexEventBroadcaster::new(1));
-                let dummy_pred = std::sync::Arc::new(moltchain_rpc::ws::PredictionEventBroadcaster::new(1));
+                let dummy_broadcaster =
+                    std::sync::Arc::new(moltchain_rpc::dex_ws::DexEventBroadcaster::new(1));
+                let dummy_pred =
+                    std::sync::Arc::new(moltchain_rpc::ws::PredictionEventBroadcaster::new(1));
                 let dummy_handle = tokio::spawn(async {});
                 (dummy_tx, dummy_broadcaster, dummy_pred, dummy_handle)
             }
@@ -8417,7 +8797,8 @@ async fn run_validator() {
                             Some(local) => {
                                 entry.amount > local.amount
                                     || entry.total_debt_repaid > local.total_debt_repaid
-                                    || (local.bootstrap_index == u64::MAX && entry.bootstrap_index != u64::MAX)
+                                    || (local.bootstrap_index == u64::MAX
+                                        && entry.bootstrap_index != u64::MAX)
                             }
                         };
                         if should_upsert {
@@ -8713,7 +9094,10 @@ async fn run_validator() {
             if !has_genesis {
                 // Still waiting for genesis sync — sleep 200ms instead of spinning at 2ms
                 if slot_start.elapsed().as_secs() >= 5 {
-                    info!("⏳ Waiting for genesis sync from network (tip: {})", tip_slot);
+                    info!(
+                        "⏳ Waiting for genesis sync from network (tip: {})",
+                        tip_slot
+                    );
                     slot_start = std::time::Instant::now();
                     last_attempted_slot = slot;
                 }
@@ -8766,7 +9150,9 @@ async fn run_validator() {
                         .map(|t| t.elapsed())
                         .unwrap_or_default();
                     if elapsed < validator_set_stabilization {
-                        if elapsed.as_secs() % 5 == 0 && slot_start.elapsed().as_secs() >= 2 {
+                        if elapsed.as_secs().is_multiple_of(5)
+                            && slot_start.elapsed().as_secs() >= 2
+                        {
                             info!(
                                 "⏳ ValidatorSet stabilizing... ({:.0}s / {}s, {} validators)",
                                 elapsed.as_secs(),
@@ -8800,7 +9186,8 @@ async fn run_validator() {
                 // Fully synced!
                 info!(
                     "✅ READY! Found {} validators, fully synced. Starting consensus from slot {}",
-                    validator_count, tip_slot + 1
+                    validator_count,
+                    tip_slot + 1
                 );
                 is_joining_network = false; // Exit joining mode - we're caught up!
             }
@@ -8856,8 +9243,10 @@ async fn run_validator() {
                     // Also apply reputation penalty (floor 50 — prevents death spiral)
                     let reputation_penalty = slasher.calculate_penalty(&validator_info.pubkey);
                     let old_reputation = validator_info.reputation;
-                    validator_info.reputation =
-                        validator_info.reputation.saturating_sub(reputation_penalty).max(50);
+                    validator_info.reputation = validator_info
+                        .reputation
+                        .saturating_sub(reputation_penalty)
+                        .max(50);
 
                     if slashed_amount > 0 {
                         warn!(
@@ -8926,7 +9315,8 @@ async fn run_validator() {
                     slot.saturating_mul(16).saturating_add(view)
                 };
                 // A5-01: Mix parent_hash for unpredictable leader selection
-                let leader = vs.select_leader_weighted_with_seed(leader_slot, &pool, &parent_hash.0);
+                let leader =
+                    vs.select_leader_weighted_with_seed(leader_slot, &pool, &parent_hash.0);
                 let sp = leader
                     .map(|pubkey| pubkey == validator_pubkey)
                     .unwrap_or(false);
@@ -8983,7 +9373,8 @@ async fn run_validator() {
         // Process transactions in parallel where possible (FIX-2: rayon)
         // Non-conflicting TXs (disjoint account sets) run on separate threads.
         let processed_hashes: Vec<Hash> = pending_transactions.iter().map(|tx| tx.hash()).collect();
-        let results = processor.process_transactions_parallel(&pending_transactions, &validator_pubkey);
+        let results =
+            processor.process_transactions_parallel(&pending_transactions, &validator_pubkey);
 
         let mut transactions: Vec<Transaction> = Vec::new();
         for (tx, result) in pending_transactions.into_iter().zip(results.into_iter()) {
@@ -9013,7 +9404,10 @@ async fn run_validator() {
         // receiver task may have written a network block for this slot.
         // Re-check both RocksDB and the shared received_network_slots set.
         {
-            let already_received = received_network_slots_for_producer.lock().await.contains(&slot);
+            let already_received = received_network_slots_for_producer
+                .lock()
+                .await
+                .contains(&slot);
             let already_stored = state.get_block_by_slot(slot).ok().flatten().is_some();
             if already_received || already_stored {
                 debug!(
@@ -9052,7 +9446,8 @@ async fn run_validator() {
         // SystemTime::now(). All validators derive the same timestamp for a
         // given slot: genesis_time + (slot * slot_duration_ms / 1000).
         let state_root = state.compute_state_root();
-        let deterministic_timestamp = Block::derive_slot_timestamp(genesis_time_secs, slot, slot_duration_ms);
+        let deterministic_timestamp =
+            Block::derive_slot_timestamp(genesis_time_secs, slot, slot_duration_ms);
         let mut block = Block::new_with_timestamp(
             slot,
             parent_hash,
@@ -9097,7 +9492,9 @@ async fn run_validator() {
                 p2p_config.listen_addr,
             );
             let pm_block = peer_mgr.clone();
-            tokio::spawn(async move { pm_block.broadcast(block_msg).await; });
+            tokio::spawn(async move {
+                pm_block.broadcast(block_msg).await;
+            });
         }
 
         if rewards_applied {
@@ -9194,7 +9591,9 @@ async fn run_validator() {
         if let Some(ref peer_mgr) = p2p_peer_manager {
             let vote_msg = P2PMessage::new(MessageType::Vote(vote), p2p_config.listen_addr);
             let pm_vote = peer_mgr.clone();
-            tokio::spawn(async move { pm_vote.broadcast(vote_msg).await; });
+            tokio::spawn(async move {
+                pm_vote.broadcast(vote_msg).await;
+            });
             info!("📡 Broadcasted block {} + vote to network", slot);
         }
 
@@ -9224,14 +9623,19 @@ async fn run_validator() {
             let checkpoint_slot = sync_manager.get_checkpoint().await;
             info!(
                 "📊 Sync stats [slot {}]: pending={}, syncing={}, network_tip={}, checkpoint={}",
-                slot, sync_stats.pending_blocks, sync_stats.is_syncing,
-                sync_stats.highest_seen, checkpoint_slot,
+                slot,
+                sync_stats.pending_blocks,
+                sync_stats.is_syncing,
+                sync_stats.highest_seen,
+                checkpoint_slot,
             );
             if let Some(progress) = sync_manager.get_sync_progress(slot).await {
                 info!(
                     "📊 Sync progress: {}/{} slots (batch: {:?}, behind: {})",
-                    progress.current_slot, progress.target_slot,
-                    progress.current_batch, progress.blocks_behind,
+                    progress.current_slot,
+                    progress.target_slot,
+                    progress.current_batch,
+                    progress.blocks_behind,
                 );
             }
         }

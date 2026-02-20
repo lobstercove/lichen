@@ -20,6 +20,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+/// Type alias for bulk key-value export results to satisfy clippy::type_complexity.
+pub type KvEntries = Vec<(Vec<u8>, Vec<u8>)>;
+
 /// Detect number of CPU cores for RocksDB parallelism
 fn num_cpus() -> i32 {
     std::thread::available_parallelism()
@@ -390,7 +393,10 @@ impl MetricsStore {
         if let Ok(Some(data)) = db.get_cf(&cf, b"validator_count") {
             if let Ok(bytes) = data.as_slice().try_into() {
                 let count = u64::from_le_bytes(bytes);
-                *self.validator_count.lock().unwrap_or_else(|e| e.into_inner()) = count;
+                *self
+                    .validator_count
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = count;
             }
         }
 
@@ -487,18 +493,27 @@ impl MetricsStore {
 
     /// Increment validator counter
     pub fn increment_validators(&self) {
-        *self.validator_count.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+        *self
+            .validator_count
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) += 1;
     }
 
     /// Decrement validator counter
     pub fn decrement_validators(&self) {
-        let mut c = self.validator_count.lock().unwrap_or_else(|e| e.into_inner());
+        let mut c = self
+            .validator_count
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         *c = c.saturating_sub(1);
     }
 
     /// Get validator count (no DB scan)
     pub fn get_validator_count(&self) -> u64 {
-        *self.validator_count.lock().unwrap_or_else(|e| e.into_inner())
+        *self
+            .validator_count
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     /// Save metrics to database
@@ -542,7 +557,10 @@ impl MetricsStore {
             .map_err(|e| format!("Failed to save program count: {}", e))?;
 
         // Save validator count
-        let vc = *self.validator_count.lock().unwrap_or_else(|e| e.into_inner());
+        let vc = *self
+            .validator_count
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         db.put_cf(&cf, b"validator_count", vc.to_le_bytes())
             .map_err(|e| format!("Failed to save validator count: {}", e))?;
 
@@ -1134,8 +1152,9 @@ impl StateStore {
         match self.db.get_cf(&cf, sig.0) {
             Ok(Some(data)) => {
                 let tx: Transaction = if data.first() == Some(&0xBC) {
-                    bincode::deserialize(&data[1..])
-                        .map_err(|e| format!("Failed to deserialize transaction (bincode): {}", e))?
+                    bincode::deserialize(&data[1..]).map_err(|e| {
+                        format!("Failed to deserialize transaction (bincode): {}", e)
+                    })?
                 } else {
                     serde_json::from_slice(&data)
                         .map_err(|e| format!("Failed to deserialize transaction (json): {}", e))?
@@ -1230,7 +1249,10 @@ impl StateStore {
                     .map(|a| a.shells)
                     .unwrap_or(0);
                 let new_flag = old_account.is_none();
-                (is_new_hint.unwrap_or(new_flag), old_balance_hint.unwrap_or(old_bal))
+                (
+                    is_new_hint.unwrap_or(new_flag),
+                    old_balance_hint.unwrap_or(old_bal),
+                )
             }
         };
         let new_balance = account.shells;
@@ -1341,7 +1363,7 @@ impl StateStore {
             let mut dirty_key = [0u8; 43]; // 11 ("dirty_acct:") + 32 (pubkey)
             dirty_key[..11].copy_from_slice(dirty_prefix);
             dirty_key[11..43].copy_from_slice(pk);
-            batch.delete_cf(&cf_stats, &dirty_key);
+            batch.delete_cf(&cf_stats, dirty_key);
         }
         // Reset dirty count
         batch.put_cf(&cf_stats, b"dirty_account_count", 0u64.to_le_bytes());
@@ -1506,7 +1528,11 @@ impl StateStore {
             use_a = !use_a;
         }
 
-        if use_a { buf_a[0] } else { buf_b[0] }
+        if use_a {
+            buf_a[0]
+        } else {
+            buf_b[0]
+        }
     }
 
     /// Fast state root check: returns cached root if no accounts modified since last computation
@@ -1547,7 +1573,7 @@ impl StateStore {
             let mut key = [0u8; 43]; // 11 ("dirty_acct:") + 32 (pubkey)
             key[..11].copy_from_slice(b"dirty_acct:");
             key[11..43].copy_from_slice(&pubkey.0);
-            let _ = self.db.put_cf(&cf, &key, []);
+            let _ = self.db.put_cf(&cf, key, []);
 
             // PERF-OPT 9: Write a non-zero marker instead of read-modify-write.
             // compute_state_root_cached() only checks dirty == 0 vs non-zero,
@@ -2154,8 +2180,9 @@ impl StateStore {
             }
 
             let slot = u64::from_be_bytes(
-                key[0..8].try_into()
-                    .map_err(|_| "Corrupt slot key in block hashes".to_string())?
+                key[0..8]
+                    .try_into()
+                    .map_err(|_| "Corrupt slot key in block hashes".to_string())?,
             );
 
             if let Some(bs) = before_slot {
@@ -2203,12 +2230,10 @@ impl StateStore {
                 prog_bytes.copy_from_slice(&key[32..64]);
                 let program = Pubkey(prog_bytes);
                 // AUDIT-FIX CP-13: safe conversion with length guard above
-                let balance = u64::from_le_bytes(
-                    match (*value).try_into() {
-                        Ok(b) => b,
-                        Err(_) => continue,
-                    }
-                );
+                let balance = u64::from_le_bytes(match (*value).try_into() {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                });
                 tokens.push((program, balance));
                 if tokens.len() >= limit {
                     break;
@@ -3276,11 +3301,7 @@ impl StateBatch {
     }
 
     /// AUDIT-FIX 1.15: Check if a token_id exists in the batch overlay OR committed state
-    pub fn nft_token_id_exists(
-        &self,
-        collection: &Pubkey,
-        token_id: u64,
-    ) -> Result<bool, String> {
+    pub fn nft_token_id_exists(&self, collection: &Pubkey, token_id: u64) -> Result<bool, String> {
         let mut key = Vec::with_capacity(44);
         key.extend_from_slice(b"tid:");
         key.extend_from_slice(&collection.0);
@@ -3481,7 +3502,10 @@ impl StateBatch {
         }
         // AUDIT-FIX CP-7: Also check the in-batch overlay for duplicate symbols
         if self.symbol_overlay.contains(&normalized) {
-            return Err(format!("Symbol already registered in this batch: {}", normalized));
+            return Err(format!(
+                "Symbol already registered in this batch: {}",
+                normalized
+            ));
         }
         let mut entry_copy = entry.clone();
         entry_copy.symbol = normalized.clone();
@@ -3651,7 +3675,11 @@ impl StateStore {
             .map_err(|e| format!("Failed to save validator set: {}", e))?;
 
         // Update counter
-        *self.metrics.validator_count.lock().unwrap_or_else(|e| e.into_inner()) = set.validators().len() as u64;
+        *self
+            .metrics
+            .validator_count
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = set.validators().len() as u64;
         Ok(())
     }
 
@@ -3682,7 +3710,11 @@ impl StateStore {
             .map_err(|e| format!("Failed to clear validators: {}", e))?;
 
         // Reset the validator counter
-        *self.metrics.validator_count.lock().unwrap_or_else(|e| e.into_inner()) = 0;
+        *self
+            .metrics
+            .validator_count
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = 0;
         Ok(())
     }
 
@@ -3850,7 +3882,11 @@ impl StateStore {
             .ok_or_else(|| "Stats CF not found".to_string())?;
 
         let mut batch = rocksdb::WriteBatch::default();
-        batch.put_cf(&cf, b"rent_rate_shells_per_kb_month", rate_shells_per_kb_month.to_le_bytes());
+        batch.put_cf(
+            &cf,
+            b"rent_rate_shells_per_kb_month",
+            rate_shells_per_kb_month.to_le_bytes(),
+        );
         batch.put_cf(&cf, b"rent_free_kb", free_kb.to_le_bytes());
 
         self.db
@@ -3922,14 +3958,46 @@ impl StateStore {
 
         let mut batch = rocksdb::WriteBatch::default();
         batch.put_cf(&cf, b"fee_base_shells", config.base_fee.to_le_bytes());
-        batch.put_cf(&cf, b"fee_contract_deploy_shells", config.contract_deploy_fee.to_le_bytes());
-        batch.put_cf(&cf, b"fee_contract_upgrade_shells", config.contract_upgrade_fee.to_le_bytes());
-        batch.put_cf(&cf, b"fee_nft_mint_shells", config.nft_mint_fee.to_le_bytes());
-        batch.put_cf(&cf, b"fee_nft_collection_shells", config.nft_collection_fee.to_le_bytes());
-        batch.put_cf(&cf, b"fee_burn_percent", config.fee_burn_percent.to_le_bytes());
-        batch.put_cf(&cf, b"fee_producer_percent", config.fee_producer_percent.to_le_bytes());
-        batch.put_cf(&cf, b"fee_voters_percent", config.fee_voters_percent.to_le_bytes());
-        batch.put_cf(&cf, b"fee_treasury_percent", config.fee_treasury_percent.to_le_bytes());
+        batch.put_cf(
+            &cf,
+            b"fee_contract_deploy_shells",
+            config.contract_deploy_fee.to_le_bytes(),
+        );
+        batch.put_cf(
+            &cf,
+            b"fee_contract_upgrade_shells",
+            config.contract_upgrade_fee.to_le_bytes(),
+        );
+        batch.put_cf(
+            &cf,
+            b"fee_nft_mint_shells",
+            config.nft_mint_fee.to_le_bytes(),
+        );
+        batch.put_cf(
+            &cf,
+            b"fee_nft_collection_shells",
+            config.nft_collection_fee.to_le_bytes(),
+        );
+        batch.put_cf(
+            &cf,
+            b"fee_burn_percent",
+            config.fee_burn_percent.to_le_bytes(),
+        );
+        batch.put_cf(
+            &cf,
+            b"fee_producer_percent",
+            config.fee_producer_percent.to_le_bytes(),
+        );
+        batch.put_cf(
+            &cf,
+            b"fee_voters_percent",
+            config.fee_voters_percent.to_le_bytes(),
+        );
+        batch.put_cf(
+            &cf,
+            b"fee_treasury_percent",
+            config.fee_treasury_percent.to_le_bytes(),
+        );
 
         self.db
             .write(batch)
@@ -3987,8 +4055,8 @@ impl StateStore {
             .db
             .cf_handle(CF_STATS)
             .ok_or_else(|| "Stats CF not found".to_string())?;
-        let data =
-            bincode::serialize(tracker).map_err(|e| format!("Failed to serialize slashing tracker: {}", e))?;
+        let data = bincode::serialize(tracker)
+            .map_err(|e| format!("Failed to serialize slashing tracker: {}", e))?;
         self.db
             .put_cf(&cf, b"slashing_tracker", &data)
             .map_err(|e| format!("Failed to persist slashing tracker: {}", e))
@@ -4002,12 +4070,13 @@ impl StateStore {
             None => return crate::consensus::SlashingTracker::new(),
         };
         match self.db.get_cf(&cf, b"slashing_tracker") {
-            Ok(Some(data)) => {
-                bincode::deserialize(&data).unwrap_or_else(|e| {
-                    eprintln!("⚠️  Failed to deserialize slashing tracker, starting fresh: {}", e);
-                    crate::consensus::SlashingTracker::new()
-                })
-            }
+            Ok(Some(data)) => bincode::deserialize(&data).unwrap_or_else(|e| {
+                eprintln!(
+                    "⚠️  Failed to deserialize slashing tracker, starting fresh: {}",
+                    e
+                );
+                crate::consensus::SlashingTracker::new()
+            }),
             _ => crate::consensus::SlashingTracker::new(),
         }
     }
@@ -4763,11 +4832,7 @@ impl StateStore {
     }
 
     /// O(1) point-read of a u64 from contract storage.
-    pub fn get_contract_storage_u64(
-        &self,
-        program: &Pubkey,
-        storage_key: &[u8],
-    ) -> u64 {
+    pub fn get_contract_storage_u64(&self, program: &Pubkey, storage_key: &[u8]) -> u64 {
         match self.get_contract_storage(program, storage_key) {
             Ok(Some(data)) if data.len() >= 8 => {
                 u64::from_le_bytes(data[..8].try_into().unwrap_or([0; 8]))
@@ -4779,21 +4844,14 @@ impl StateStore {
     /// Resolve a symbol name → program Pubkey via the symbol registry, then
     /// read a single storage key from CF_CONTRACT_STORAGE. This is the fast
     /// path that avoids deserializing the ContractAccount (no WASM bytecode).
-    pub fn get_program_storage(
-        &self,
-        symbol: &str,
-        storage_key: &[u8],
-    ) -> Option<Vec<u8>> {
+    pub fn get_program_storage(&self, symbol: &str, storage_key: &[u8]) -> Option<Vec<u8>> {
         let entry = self.get_symbol_registry(symbol).ok()??;
-        self.get_contract_storage(&entry.program, storage_key).ok()?
+        self.get_contract_storage(&entry.program, storage_key)
+            .ok()?
     }
 
     /// Resolve symbol → program Pubkey, then read a u64 storage value.
-    pub fn get_program_storage_u64(
-        &self,
-        symbol: &str,
-        storage_key: &[u8],
-    ) -> u64 {
+    pub fn get_program_storage_u64(&self, symbol: &str, storage_key: &[u8]) -> u64 {
         match self.get_symbol_registry(symbol) {
             Ok(Some(entry)) => self.get_contract_storage_u64(&entry.program, storage_key),
             _ => 0,
@@ -4808,7 +4866,7 @@ impl StateStore {
         program: &Pubkey,
         limit: usize,
         after_key: Option<Vec<u8>>,
-    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
+    ) -> Result<KvEntries, String> {
         let cf = self
             .db
             .cf_handle(CF_CONTRACT_STORAGE)
@@ -4824,10 +4882,9 @@ impl StateStore {
             prefix.clone()
         };
 
-        let iter = self.db.iterator_cf(
-            &cf,
-            rocksdb::IteratorMode::From(&start, Direction::Forward),
-        );
+        let iter = self
+            .db
+            .iterator_cf(&cf, rocksdb::IteratorMode::From(&start, Direction::Forward));
 
         let mut results = Vec::new();
         for item in iter {
@@ -4943,7 +5000,10 @@ impl StateStore {
     /// AUDIT-FIX H6: Protected by event_seq_lock to prevent duplicate sequence
     /// numbers when called concurrently (e.g., parallel contract execution).
     fn next_event_seq(&self, program: &Pubkey, slot: u64) -> Result<u64, String> {
-        let _guard = self.event_seq_lock.lock().map_err(|e| format!("Event seq lock poisoned: {}", e))?;
+        let _guard = self
+            .event_seq_lock
+            .lock()
+            .map_err(|e| format!("Event seq lock poisoned: {}", e))?;
 
         let cf = self
             .db
@@ -5166,8 +5226,11 @@ impl StateStore {
     /// Atomic transfer sequence counter per token+slot
     /// AUDIT-FIX CP-8: Protected by Mutex to prevent read-modify-write race conditions
     fn next_transfer_seq(&self, token_program: &Pubkey, slot: u64) -> Result<u64, String> {
-        let _lock = self.transfer_seq_lock.lock().unwrap_or_else(|e| e.into_inner());
-        
+        let _lock = self
+            .transfer_seq_lock
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
         let cf = self
             .db
             .cf_handle(CF_STATS)
@@ -5278,7 +5341,10 @@ impl StateStore {
     /// PHASE1-FIX S-2: Protected by tx_slot_seq_lock to prevent duplicate
     /// sequence numbers under concurrent access (mirrors event_seq_lock pattern).
     fn next_tx_slot_seq(&self, slot: u64) -> Result<u64, String> {
-        let _guard = self.tx_slot_seq_lock.lock().map_err(|e| format!("TX slot seq lock poisoned: {}", e))?;
+        let _guard = self
+            .tx_slot_seq_lock
+            .lock()
+            .map_err(|e| format!("TX slot seq lock poisoned: {}", e))?;
 
         let cf = self
             .db
@@ -5494,7 +5560,7 @@ impl StateStore {
 
     /// Export all accounts from this store as an iterator of (pubkey_bytes, account_bytes).
     /// Used to stream account state to a joining validator.
-    pub fn export_accounts_iter(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
+    pub fn export_accounts_iter(&self) -> Result<KvEntries, String> {
         let cf = self
             .db
             .cf_handle(CF_ACCOUNTS)
@@ -5510,7 +5576,7 @@ impl StateStore {
     }
 
     /// Export contract storage entries as (key_bytes, value_bytes).
-    pub fn export_contract_storage_iter(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
+    pub fn export_contract_storage_iter(&self) -> Result<KvEntries, String> {
         let cf = self
             .db
             .cf_handle(CF_CONTRACT_STORAGE)
@@ -5526,7 +5592,7 @@ impl StateStore {
     }
 
     /// Export programs (WASM bytecode) as (pubkey_bytes, program_bytes).
-    pub fn export_programs_iter(&self) -> Result<Vec<(Vec<u8>, Vec<u8>)>, String> {
+    pub fn export_programs_iter(&self) -> Result<KvEntries, String> {
         let cf = self
             .db
             .cf_handle(CF_PROGRAMS)

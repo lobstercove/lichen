@@ -15,8 +15,7 @@ use std::path::PathBuf;
 
 /// Get the workspace root (parent of core/)
 fn workspace_root() -> PathBuf {
-    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR")
-        .unwrap_or_else(|_| ".".to_string());
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(manifest_dir)
         .parent()
         .expect("core/ should have a parent directory")
@@ -279,8 +278,8 @@ fn g20_01_wsol_token_has_no_mangle_exports() {
 /// first-caller-wins admin vulnerability (G22-02).
 #[test]
 fn b1_02_all_contracts_initialized_at_genesis() {
-    let source =
-        std::fs::read_to_string("../validator/src/main.rs").expect("Cannot read validator/src/main.rs");
+    let source = std::fs::read_to_string("../validator/src/main.rs")
+        .expect("Cannot read validator/src/main.rs");
 
     // All 27 contracts from GENESIS_CONTRACT_CATALOG
     let all_contracts = [
@@ -359,18 +358,29 @@ fn a12_01_genesis_distribution_matches_multisig() {
 
     // Verify multisig.rs has the canonical values
     for (name, amount) in &canonical {
-        let pattern = format!("(\"{}\", {})", name, amount.to_string().chars()
-            .enumerate()
-            .map(|(i, c)| {
-                if i > 0 && (amount.to_string().len() - i) % 3 == 0 { format!("_{}", c) } else { c.to_string() }
-            })
-            .collect::<String>());
+        let pattern = format!(
+            "(\"{}\", {})",
+            name,
+            amount
+                .to_string()
+                .chars()
+                .enumerate()
+                .map(|(i, c)| {
+                    if i > 0 && (amount.to_string().len() - i) % 3 == 0 {
+                        format!("_{}", c)
+                    } else {
+                        c.to_string()
+                    }
+                })
+                .collect::<String>()
+        );
         // Simpler: just search for the amount string with underscores
         let amount_str = format!("{}_000_000", amount / 1_000_000);
         assert!(
             multisig_src.contains(&amount_str),
             "REGRESSION A12-01: multisig.rs missing canonical amount {} for {}",
-            amount, name
+            amount,
+            name
         );
     }
 
@@ -382,7 +392,8 @@ fn a12_01_genesis_distribution_matches_multisig() {
             genesis_src.contains(&amount_str),
             "REGRESSION A12-01: genesis.rs missing amount {} for {} — \
              genesis distribution has drifted from multisig.rs canonical values!",
-            amount, name
+            amount,
+            name
         );
     }
 
@@ -403,10 +414,9 @@ fn a12_01_genesis_distribution_matches_multisig() {
 /// field, and instead uses graduated fields matching consensus.rs.
 #[test]
 fn a5_03_genesis_uses_graduated_downtime_slashing() {
-    let genesis_src = fs::read_to_string(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/genesis.rs"),
-    )
-    .expect("Failed to read genesis.rs");
+    let genesis_src =
+        fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/genesis.rs"))
+            .expect("Failed to read genesis.rs");
 
     // Must NOT contain the old flat downtime field as a struct field
     // (comments referencing the old name are OK)
@@ -431,10 +441,9 @@ fn a5_03_genesis_uses_graduated_downtime_slashing() {
 /// (not hardcoded percentages) for downtime, double-sign, and invalid-state.
 #[test]
 fn a5_03_consensus_reads_from_genesis_params() {
-    let consensus_src = fs::read_to_string(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/consensus.rs"),
-    )
-    .expect("Failed to read consensus.rs");
+    let consensus_src =
+        fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/consensus.rs"))
+            .expect("Failed to read consensus.rs");
 
     // Find the apply_economic_slashing_with_params function
     let fn_start = consensus_src
@@ -518,8 +527,7 @@ fn a5_03_graduated_slashing_math() {
         );
         tracker.add_evidence(downtime);
 
-        let slashed =
-            tracker.apply_economic_slashing_with_params(&v1.pubkey(), &mut pool, &params);
+        let slashed = tracker.apply_economic_slashing_with_params(&v1.pubkey(), &mut pool, &params);
         // DoubleBlock = 50% (500B) + Downtime 300/100=3 × 1% = 3% (30B) = 53% (530B)
         let expected = (stake as u128 * 50 / 100 + stake as u128 * 3 / 100) as u64;
         assert_eq!(
@@ -561,8 +569,7 @@ fn a5_03_graduated_slashing_math() {
         );
         tracker.add_evidence(downtime);
 
-        let slashed =
-            tracker.apply_economic_slashing_with_params(&v2.pubkey(), &mut pool, &params);
+        let slashed = tracker.apply_economic_slashing_with_params(&v2.pubkey(), &mut pool, &params);
         // DoubleBlock = 50% + Downtime capped at max 10% = 60%
         let expected = (stake as u128 * 50 / 100 + stake as u128 * 10 / 100) as u64;
         assert_eq!(
@@ -596,9 +603,11 @@ mod get_contract_address_tests {
         let ctx = ContractContext::new(caller, contract, 0, 100);
         assert_eq!(ctx.caller, caller);
         assert_eq!(ctx.contract, contract);
-        assert_ne!(ctx.caller, ctx.contract,
+        assert_ne!(
+            ctx.caller, ctx.contract,
             "REGRESSION G7-02: caller and contract must be distinct so that \
-             get_contract_address() returns the contract's own address, not the caller's");
+             get_contract_address() returns the contract's own address, not the caller's"
+        );
     }
 
     /// Verify that ContractContext::new stores the contract address correctly
@@ -619,7 +628,9 @@ mod get_contract_address_tests {
         // Level 1: contract_a calls contract_b
         let ctx_b = ContractContext::new(contract_a, contract_b, 0, 100);
         assert_eq!(ctx_b.contract, contract_b);
-        assert_eq!(ctx_b.caller, contract_a,
-            "REGRESSION G7-02: In CCC, callee's caller must be the calling contract");
+        assert_eq!(
+            ctx_b.caller, contract_a,
+            "REGRESSION G7-02: In CCC, callee's caller must be the calling contract"
+        );
     }
 }

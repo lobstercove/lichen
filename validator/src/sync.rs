@@ -253,11 +253,7 @@ impl SyncManager {
         let mut tip_slot = current_slot;
         loop {
             // Find the pending block with the smallest slot that is > tip_slot.
-            let next_slot = pending
-                .keys()
-                .filter(|&&s| s > tip_slot)
-                .min()
-                .copied();
+            let next_slot = pending.keys().filter(|&&s| s > tip_slot).min().copied();
 
             match next_slot {
                 Some(slot) => {
@@ -293,7 +289,7 @@ impl SyncManager {
     /// Check if a checkpoint should be created at this slot.
     /// Returns true every CHECKPOINT_INTERVAL slots (10K blocks).
     pub fn should_checkpoint(slot: u64) -> bool {
-        CHECKPOINT_INTERVAL > 0 && slot > 0 && slot % CHECKPOINT_INTERVAL == 0
+        CHECKPOINT_INTERVAL > 0 && slot > 0 && slot.is_multiple_of(CHECKPOINT_INTERVAL)
     }
 
     /// Get the checkpoint interval constant.

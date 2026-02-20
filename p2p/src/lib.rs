@@ -9,7 +9,7 @@ pub mod peer_ban;
 pub mod peer_store;
 
 pub use gossip::GossipManager;
-pub use message::{MessageType, P2PMessage, P2P_PROTOCOL_VERSION, PeerInfoMsg, SnapshotKind};
+pub use message::{MessageType, P2PMessage, PeerInfoMsg, SnapshotKind, P2P_PROTOCOL_VERSION};
 pub use network::{
     BlockRangeRequestMsg, ConsistencyReportMsg, P2PConfig, P2PNetwork, SnapshotRequestMsg,
     SnapshotResponseMsg, StatusRequestMsg, StatusResponseMsg, ValidatorAnnouncement,
