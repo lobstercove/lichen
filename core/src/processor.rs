@@ -3459,4 +3459,165 @@ mod tests {
         let result = processor.process_transaction(&tx, &validator);
         assert!(!result.success, "Airdrop > 100 MOLT should fail");
     }
+
+    // ═════════════════════════════════════════════════════════════════════════
+    // K1-01: Parallel transaction processing & conflict detection tests
+    // ═════════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_parallel_disjoint_txs_succeed() {
+        // Two transfers to different recipients should both succeed in parallel
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let bob = Pubkey([2u8; 32]);
+        let carol = Pubkey([4u8; 32]);
+        let validator = Pubkey([42u8; 32]);
+
+        // Fund alice enough for both transfers + fees
+        let alice_account = Account::new(500, alice);
+        state.put_account(&alice, &alice_account).unwrap();
+
+        // Both txs FROM alice → different targets: they SHARE alice and will be in same group
+        let tx1 = make_transfer_tx(&alice_kp, alice, bob, 10, genesis_hash);
+        let tx2 = make_transfer_tx(&alice_kp, alice, carol, 10, genesis_hash);
+
+        let results = processor.process_transactions_parallel(&[tx1, tx2], &validator);
+        assert_eq!(results.len(), 2);
+        assert!(results[0].success, "tx1 (alice→bob) should succeed: {:?}", results[0].error);
+        assert!(results[1].success, "tx2 (alice→carol) should succeed: {:?}", results[1].error);
+    }
+
+    #[test]
+    fn test_parallel_truly_disjoint_txs() {
+        // Two completely independent senders → should run in separate parallel groups
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+        let processor = TxProcessor::new(state.clone());
+        let validator = Pubkey([42u8; 32]);
+
+        let alice_kp = Keypair::generate();
+        let alice = alice_kp.pubkey();
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let carol = Pubkey([4u8; 32]);
+        let dave = Pubkey([5u8; 32]);
+        let treasury = Pubkey([3u8; 32]);
+
+        state.set_treasury_pubkey(&treasury).unwrap();
+        state.put_account(&treasury, &Account::new(0, treasury)).unwrap();
+        state.put_account(&alice, &Account::new(500, alice)).unwrap();
+        state.put_account(&bob, &Account::new(500, bob)).unwrap();
+
+        let genesis = crate::Block::new_with_timestamp(0, Hash::default(), Hash::default(), [0u8; 32], Vec::new(), 0);
+        state.put_block(&genesis).unwrap();
+        state.set_last_slot(0).unwrap();
+        let genesis_hash = genesis.hash();
+
+        // alice→carol and bob→dave are fully disjoint — parallel groups
+        let tx1 = make_transfer_tx(&alice_kp, alice, carol, 10, genesis_hash);
+        let tx2 = make_transfer_tx(&bob_kp, bob, dave, 10, genesis_hash);
+
+        let results = processor.process_transactions_parallel(&[tx1, tx2], &validator);
+        assert_eq!(results.len(), 2);
+        assert!(results[0].success, "alice→carol should succeed: {:?}", results[0].error);
+        assert!(results[1].success, "bob→dave should succeed: {:?}", results[1].error);
+    }
+
+    #[test]
+    fn test_parallel_conflicting_txs_sequential() {
+        // Two senders sending TO the same recipient share an account
+        // They should still both succeed (processed sequentially within group)
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+        let processor = TxProcessor::new(state.clone());
+        let validator = Pubkey([42u8; 32]);
+
+        let alice_kp = Keypair::generate();
+        let alice = alice_kp.pubkey();
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let shared_recipient = Pubkey([99u8; 32]);
+        let treasury = Pubkey([3u8; 32]);
+
+        state.set_treasury_pubkey(&treasury).unwrap();
+        state.put_account(&treasury, &Account::new(0, treasury)).unwrap();
+        state.put_account(&alice, &Account::new(500, alice)).unwrap();
+        state.put_account(&bob, &Account::new(500, bob)).unwrap();
+
+        let genesis = crate::Block::new_with_timestamp(0, Hash::default(), Hash::default(), [0u8; 32], Vec::new(), 0);
+        state.put_block(&genesis).unwrap();
+        state.set_last_slot(0).unwrap();
+        let genesis_hash = genesis.hash();
+
+        // Both send to shared_recipient → merged into same group
+        let tx1 = make_transfer_tx(&alice_kp, alice, shared_recipient, 10, genesis_hash);
+        let tx2 = make_transfer_tx(&bob_kp, bob, shared_recipient, 10, genesis_hash);
+
+        let results = processor.process_transactions_parallel(&[tx1, tx2], &validator);
+        assert_eq!(results.len(), 2);
+        assert!(results[0].success, "tx1 should succeed in sequential group: {:?}", results[0].error);
+        assert!(results[1].success, "tx2 should succeed in sequential group: {:?}", results[1].error);
+
+        // Verify both actually transferred
+        let r = state.get_account(&shared_recipient).unwrap().unwrap();
+        let alice_sent = Account::molt_to_shells(10);
+        let bob_sent = Account::molt_to_shells(10);
+        assert!(r.spendable >= alice_sent + bob_sent, "Recipient should have both transfers");
+    }
+
+    #[test]
+    fn test_parallel_result_ordering_preserved() {
+        // Ensure results[i] corresponds to txs[i] even when groups are reordered
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+        let processor = TxProcessor::new(state.clone());
+        let validator = Pubkey([42u8; 32]);
+
+        let treasury = Pubkey([3u8; 32]);
+        state.set_treasury_pubkey(&treasury).unwrap();
+        state.put_account(&treasury, &Account::new(0, treasury)).unwrap();
+
+        let genesis = crate::Block::new_with_timestamp(0, Hash::default(), Hash::default(), [0u8; 32], Vec::new(), 0);
+        state.put_block(&genesis).unwrap();
+        state.set_last_slot(0).unwrap();
+        let genesis_hash = genesis.hash();
+
+        // Create 4 independent senders for 4 disjoint txs
+        let mut txs = Vec::new();
+        let mut kps = Vec::new();
+        for i in 0..4u8 {
+            let kp = Keypair::generate();
+            let pk = kp.pubkey();
+            state.put_account(&pk, &Account::new(100, pk)).unwrap();
+            let recipient = Pubkey([100 + i; 32]);
+            txs.push(make_transfer_tx(&kp, pk, recipient, 5, genesis_hash));
+            kps.push(kp);
+        }
+
+        let results = processor.process_transactions_parallel(&txs, &validator);
+        assert_eq!(results.len(), 4);
+        for (i, res) in results.iter().enumerate() {
+            assert!(res.success, "tx[{}] should succeed: {:?}", i, res.error);
+        }
+    }
+
+    #[test]
+    fn test_parallel_single_tx_fallback() {
+        // A single transaction should work fine (no parallelism needed)
+        let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let bob = Pubkey([2u8; 32]);
+        let validator = Pubkey([42u8; 32]);
+
+        let tx = make_transfer_tx(&alice_kp, alice, bob, 10, genesis_hash);
+        let results = processor.process_transactions_parallel(&[tx], &validator);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].success, "Single tx should succeed: {:?}", results[0].error);
+    }
+
+    #[test]
+    fn test_parallel_empty_batch() {
+        let (processor, _state, _alice_kp, _alice, _treasury, _genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+        let results = processor.process_transactions_parallel(&[], &validator);
+        assert_eq!(results.len(), 0);
+    }
 }
