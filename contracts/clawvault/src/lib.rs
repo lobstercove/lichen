@@ -256,7 +256,8 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u64 {
     let cap = get_deposit_cap();
     if cap > 0 {
         let total_assets = load_u64(b"cv_total_assets");
-        if total_assets + amount > cap {
+        // AUDIT-FIX L6-01: Overflow-safe cap check
+        if amount > cap.saturating_sub(total_assets) {
             log_info("Deposit cap exceeded");
             return 0;
         }
@@ -271,7 +272,7 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u64 {
     // Track fees
     if fee > 0 {
         let prev_fees = load_u64(b"cv_protocol_fees");
-        store_u64(b"cv_protocol_fees", prev_fees + fee);
+        store_u64(b"cv_protocol_fees", prev_fees.saturating_add(fee));
     }
 
     let mut depositor = [0u8; 32];

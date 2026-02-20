@@ -537,8 +537,8 @@ pub extern "C" fn liquidate(
     let actual_repay = if repay_amount > max_repay { max_repay } else { repay_amount };
 
     // Collateral seized = repay_amount * (1 + bonus)
-    // Use u128 to prevent overflow on large repay amounts
-    let collateral_seized = actual_repay + ((actual_repay as u128 * LIQUIDATION_BONUS_PERCENT as u128 / 100) as u64);
+    // AUDIT-FIX L6-01: Use u128 throughout to prevent overflow on large repay amounts
+    let collateral_seized = (actual_repay as u128 + (actual_repay as u128 * LIQUIDATION_BONUS_PERCENT as u128 / 100)) as u64;
     let actual_seized = if collateral_seized > deposit { deposit } else { collateral_seized };
 
     // Update borrower
@@ -634,7 +634,7 @@ fn accrue_interest() {
         store_u64(b"ll_total_deposits", total_deposits.saturating_add(depositor_interest));
         // Track protocol reserves
         let reserves = load_u64(b"ll_reserves");
-        store_u64(b"ll_reserves", reserves + reserve_amount);
+        store_u64(b"ll_reserves", reserves.saturating_add(reserve_amount));
     }
 
     store_u64(b"ll_last_update", now);
@@ -787,7 +787,7 @@ pub extern "C" fn flash_repay(borrower_ptr: *const u8, repay_amount: u64) -> u32
 
     // Fee goes to protocol reserves
     let reserves = load_u64(b"ll_reserves");
-    store_u64(b"ll_reserves", reserves + fee);
+    store_u64(b"ll_reserves", reserves.saturating_add(fee));
 
     // Clear flash loan state
     store_u64(FLASH_BORROWED_KEY, 0);

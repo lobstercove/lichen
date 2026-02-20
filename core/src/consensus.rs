@@ -574,7 +574,7 @@ impl StakeInfo {
             return Err("Must be fully vested to add additional stake".to_string());
         }
 
-        if self.amount + additional > MAX_VALIDATOR_STAKE {
+        if additional > MAX_VALIDATOR_STAKE.saturating_sub(self.amount) {
             return Err(format!(
                 "Cannot exceed maximum stake of {} MOLT",
                 MAX_VALIDATOR_STAKE / 1_000_000_000
@@ -816,7 +816,7 @@ impl StakePool {
         if let Some(stake_info) = self.stakes.get_mut(validator) {
             let slashed = stake_info.slash(amount);
             self.total_staked = self.total_staked.saturating_sub(slashed);
-            self.total_slashed += slashed;
+            self.total_slashed = self.total_slashed.saturating_add(slashed);
             slashed
         } else {
             0

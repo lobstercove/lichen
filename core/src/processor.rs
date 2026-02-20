@@ -1276,9 +1276,10 @@ impl TxProcessor {
             .get_fee_config()
             .unwrap_or_else(|_| FeeConfig::default_from_constants());
 
-        let burn_amount = fee * fee_config.fee_burn_percent / 100;
-        let producer_amount = fee * fee_config.fee_producer_percent / 100;
-        let voters_amount = fee * fee_config.fee_voters_percent / 100;
+        // AUDIT-FIX L6-01: Use u128 intermediates to prevent overflow on fee split
+        let burn_amount = (fee as u128 * fee_config.fee_burn_percent as u128 / 100) as u64;
+        let producer_amount = (fee as u128 * fee_config.fee_producer_percent as u128 / 100) as u64;
+        let voters_amount = (fee as u128 * fee_config.fee_voters_percent as u128 / 100) as u64;
         // AUDIT-FIX 0.8: Use saturating_sub to prevent underflow if percentages exceed 100
         let allocated = burn_amount.saturating_add(producer_amount).saturating_add(voters_amount);
         let treasury_amount = fee.saturating_sub(allocated);
@@ -1291,7 +1292,7 @@ impl TxProcessor {
         // Producer and voters portions go to treasury for now
         // (block producer/voter identities are not available in this scope;
         //  validator/src/main.rs distribute_fees handles the actual split at block level)
-        let total_to_treasury = treasury_amount + producer_amount + voters_amount;
+        let total_to_treasury = treasury_amount.saturating_add(producer_amount).saturating_add(voters_amount);
 
         if total_to_treasury > 0 {
             let treasury_pubkey = self
@@ -1328,14 +1329,15 @@ impl TxProcessor {
             .get_fee_config()
             .unwrap_or_else(|_| FeeConfig::default_from_constants());
 
-        let burn_amount = fee * fee_config.fee_burn_percent / 100;
-        let producer_amount = fee * fee_config.fee_producer_percent / 100;
-        let voters_amount = fee * fee_config.fee_voters_percent / 100;
+        // AUDIT-FIX L6-01: Use u128 intermediates to prevent overflow on fee split
+        let burn_amount = (fee as u128 * fee_config.fee_burn_percent as u128 / 100) as u64;
+        let producer_amount = (fee as u128 * fee_config.fee_producer_percent as u128 / 100) as u64;
+        let voters_amount = (fee as u128 * fee_config.fee_voters_percent as u128 / 100) as u64;
         // AUDIT-FIX 0.8: Use saturating_sub to prevent underflow if percentages exceed 100
         let allocated = burn_amount.saturating_add(producer_amount).saturating_add(voters_amount);
         let treasury_amount = fee.saturating_sub(allocated);
 
-        let total_to_treasury = treasury_amount + producer_amount + voters_amount;
+        let total_to_treasury = treasury_amount.saturating_add(producer_amount).saturating_add(voters_amount);
 
         // Build the atomic account set: payer is always included,
         // treasury only when there is something to credit.
@@ -3385,6 +3387,35 @@ mod tests {
         let r = state.get_account(&recipient).unwrap();
         assert!(r.is_some());
         assert_eq!(r.unwrap().spendable, amount);
+    }
+
+    #[test]
+    fn test_fee_split_no_overflow_large_values() {
+        // L6-01: Verify u128 intermediate prevents overflow when fee * percent > u64::MAX
+        let (processor, state, _alice_kp, alice, treasury, _genesis_hash) = setup();
+
+        // Give alice a huge balance
+        let mut a = state.get_account(&alice).unwrap().unwrap();
+        let initial_spendable = a.spendable;
+        a.add_spendable(u64::MAX / 2).unwrap();
+        state.put_account(&alice, &a).unwrap();
+
+        // A fee of 1e18 (~1 billion MOLT) times percent 50 would overflow u64 multiply
+        let large_fee: u64 = 1_000_000_000_000_000_000; // 1e18 shells
+        let result = processor.charge_fee_direct(&alice, large_fee);
+        assert!(result.is_ok(), "Large fee should not overflow: {:?}", result.err());
+
+        // Verify payer was debited
+        let a_after = state.get_account(&alice).unwrap().unwrap();
+        assert_eq!(
+            a_after.spendable,
+            initial_spendable + u64::MAX / 2 - large_fee,
+            "Payer should be debited exactly the fee amount"
+        );
+
+        // Verify treasury received the non-burned portion
+        let t = state.get_account(&treasury).unwrap().unwrap();
+        assert!(t.spendable > 0, "Treasury should have received fee portion");
     }
 
     #[test]

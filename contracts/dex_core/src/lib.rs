@@ -1449,7 +1449,8 @@ fn fill_at_price_level(
         let maker_rebate = calculate_maker_rebate(notional, maker_fee_bps);
 
         // Record protocol fees
-        let protocol_fee = taker_fee * FEE_PROTOCOL_SHARE / 100;
+        // AUDIT-FIX L6-01: u128 intermediate to prevent overflow on large trades
+        let protocol_fee = (taker_fee as u128 * FEE_PROTOCOL_SHARE as u128 / 100) as u64;
         let current_treasury = load_u64(FEE_TREASURY_KEY);
         save_u64(FEE_TREASURY_KEY, current_treasury.saturating_add(protocol_fee));
 
@@ -1521,7 +1522,7 @@ fn fill_at_price_level(
                     pd[101..109].copy_from_slice(&u64_to_bytes(notional));
                     save_u64(&day_key, current_slot);
                 } else {
-                    let vol = decode_pair_daily_volume(&pd) + notional;
+                    let vol = decode_pair_daily_volume(&pd).saturating_add(notional);
                     pd[101..109].copy_from_slice(&u64_to_bytes(vol));
                 }
                 storage_set(&pk, &pd);

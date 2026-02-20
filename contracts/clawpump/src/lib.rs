@@ -293,7 +293,7 @@ pub extern "C" fn create_token(creator_ptr: *const u8, fee_paid: u64) -> u64 {
 
     // Collect creation fee
     let fees = load_u64(b"cp_fees_collected");
-    store_u64(b"cp_fees_collected", fees + fee_paid);
+    store_u64(b"cp_fees_collected", fees.saturating_add(fee_paid));
 
     log_info("🪙 New token created on bonding curve");
     token_id
@@ -475,11 +475,11 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, molt_amount: u64) -> 
     bal_key.push(b':');
     bal_key.extend_from_slice(&buyer_hex);
     let prev_bal = load_u64(&bal_key);
-    store_u64(&bal_key, prev_bal + tokens_bought);
+    store_u64(&bal_key, prev_bal.saturating_add(tokens_bought));
 
     // Collect platform fee
     let fees = load_u64(b"cp_fees_collected");
-    store_u64(b"cp_fees_collected", fees + fee);
+    store_u64(b"cp_fees_collected", fees.saturating_add(fee));
 
     // v2: Creator royalty
     let royalty_bps = get_creator_royalty();
@@ -493,7 +493,7 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, molt_amount: u64) -> 
             cr_key.push(b':');
             cr_key.extend_from_slice(&creator_hex);
             let prev_royalty = load_u64(&cr_key);
-            store_u64(&cr_key, prev_royalty + royalty);
+            store_u64(&cr_key, prev_royalty.saturating_add(royalty));
         }
     }
 
@@ -562,7 +562,7 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, molt_amount: u64) -> 
 
             // Track platform revenue from graduation
             let prev_revenue = load_u64(b"cp_graduation_revenue");
-            store_u64(b"cp_graduation_revenue", prev_revenue + platform_molt);
+            store_u64(b"cp_graduation_revenue", prev_revenue.saturating_add(platform_molt));
 
             if pair_ok && pool_ok && seed_ok {
                 log_info("Token graduated! DEX pair created, pool seeded with liquidity");
@@ -678,7 +678,7 @@ pub extern "C" fn sell(seller_ptr: *const u8, token_id: u64, token_amount: u64) 
 
     // Collect fee
     let fees = load_u64(b"cp_fees_collected");
-    store_u64(b"cp_fees_collected", fees + fee);
+    store_u64(b"cp_fees_collected", fees.saturating_add(fee));
 
     // G24-01: Transfer MOLT refund to seller (self-custody)
     if !transfer_molt_out(&seller, net_refund) {

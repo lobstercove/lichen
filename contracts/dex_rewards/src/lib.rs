@@ -281,10 +281,10 @@ pub fn claim_trading_rewards(trader: *const u8) -> u32 {
 
     save_u64(&trader_pending_key(&t), 0);
     let claimed = load_u64(&trader_claimed_key(&t));
-    save_u64(&trader_claimed_key(&t), claimed + pending);
+    save_u64(&trader_claimed_key(&t), claimed.saturating_add(pending));
 
     let total = load_u64(TOTAL_DISTRIBUTED_KEY);
-    save_u64(TOTAL_DISTRIBUTED_KEY, total + pending);
+    save_u64(TOTAL_DISTRIBUTED_KEY, total.saturating_add(pending));
 
     moltchain_sdk::set_return_data(&u64_to_bytes(pending));
     log_info("Trading rewards claimed");
@@ -330,7 +330,7 @@ pub fn claim_lp_rewards(provider: *const u8, position_id: u64) -> u32 {
 
     save_u64(&lp_k, 0);
     let total = load_u64(TOTAL_DISTRIBUTED_KEY);
-    save_u64(TOTAL_DISTRIBUTED_KEY, total + pending);
+    save_u64(TOTAL_DISTRIBUTED_KEY, total.saturating_add(pending));
 
     moltchain_sdk::set_return_data(&u64_to_bytes(pending));
     log_info("LP rewards claimed");
@@ -410,7 +410,7 @@ pub fn claim_referral_rewards(referrer: *const u8) -> u32 {
 
     save_u64(&referrer_earnings_key(&r), 0);
     let total = load_u64(TOTAL_DISTRIBUTED_KEY);
-    save_u64(TOTAL_DISTRIBUTED_KEY, total + earnings);
+    save_u64(TOTAL_DISTRIBUTED_KEY, total.saturating_add(earnings));
 
     moltchain_sdk::set_return_data(&u64_to_bytes(earnings));
     log_info("Referral rewards claimed");
@@ -444,7 +444,7 @@ pub fn accrue_lp_rewards(position_id: u64, liquidity: u64, pair_id: u64) -> u32 
     let reward = liquidity * rate / 1_000_000_000;
     let lp_k = lp_pending_key(position_id);
     let current = load_u64(&lp_k);
-    save_u64(&lp_k, current + reward);
+    save_u64(&lp_k, current.saturating_add(reward));
     0
 }
 

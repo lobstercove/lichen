@@ -666,15 +666,15 @@ pub fn add_liquidity(
     let current_tick = decode_pool_tick(&pool_data);
     if current_tick >= lower_tick && current_tick < upper_tick {
         let pool_liq = decode_pool_liquidity(&pool_data);
-        update_pool_liquidity(&mut pool_data, pool_liq + liquidity);
+        update_pool_liquidity(&mut pool_data, pool_liq.saturating_add(liquidity));
         storage_set(&pk, &pool_data);
     }
 
     // Update tick data
     let lower_net = load_u64(&tick_data_key(pool_id, lower_tick));
-    save_u64(&tick_data_key(pool_id, lower_tick), lower_net + liquidity);
+    save_u64(&tick_data_key(pool_id, lower_tick), lower_net.saturating_add(liquidity));
     let upper_net = load_u64(&tick_data_key(pool_id, upper_tick));
-    save_u64(&tick_data_key(pool_id, upper_tick), upper_net + liquidity);
+    save_u64(&tick_data_key(pool_id, upper_tick), upper_net.saturating_add(liquidity));
 
     log_info("Liquidity added");
     reentrancy_exit();
@@ -909,10 +909,10 @@ fn accrue_fees_to_positions(pool_id: u64, fee: u64, is_token_a: bool) {
                     let share = (fee as u128 * pos_liq as u128 / pool_liq as u128) as u64;
                     if is_token_a {
                         let current = decode_pos_fee_a(&pos_data);
-                        update_pos_fee_a(&mut pos_data, current + share);
+                        update_pos_fee_a(&mut pos_data, current.saturating_add(share));
                     } else {
                         let current = decode_pos_fee_b(&pos_data);
-                        update_pos_fee_b(&mut pos_data, current + share);
+                        update_pos_fee_b(&mut pos_data, current.saturating_add(share));
                     }
                     storage_set(&pk, &pos_data);
                 }

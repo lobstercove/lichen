@@ -886,7 +886,7 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| L6-01 | MEDIUM | Systemic | `[FLP M1]` Fee accumulators, volume trackers, reward counters across all 27 contracts use unchecked u64 arithmetic — overflow possible under high volume | Global find-replace: use `saturating_add()`/`checked_add()` for all counter and accumulator operations | [ ] |
+| L6-01 | MEDIUM | Systemic | `[FLP M1]` Fee accumulators, volume trackers, reward counters across all 27 contracts use unchecked u64 arithmetic — overflow possible under high volume | Global find-replace: use `saturating_add()`/`checked_add()` for all counter and accumulator operations | [x] ✅ 24 overflow fixes across 8 crates: processor.rs (u128 fee split + saturating treasury), lobsterlend (u128 collateral_seized + saturating reserves), clawvault (saturating_sub cap check + saturating fees), consensus (saturating_sub stake check + saturating slashed), dex_core (u128 protocol_fee + saturating volume), dex_rewards (4 saturating_add), dex_amm (5 saturating_add), clawpump (6 saturating_add). Regression test added. 471 tests pass. |
 
 ### L.7 — Systemic: No Structured Event/Log System
 
@@ -1107,7 +1107,7 @@ After cross_contract_call works:
 42. F2-01   Per-chain HD derivation for custody ✅ BIP-44 coin types (501/60/0)
 43. G6-01   Implement collateral locking ✅ add_margin/remove_margin lock/unlock + open_position checks result
 44. G6-02   Implement funding rates ✅ apply_funding crank, set_index_price, per-pair interval tracking
-45. All overflow fixes (L6-01)
+45. All overflow fixes (L6-01) ✅ 24 locations across 8 crates: u128 intermediates for HIGH/MEDIUM, saturating_add for all accumulators
 46. All reentrancy guards (G23-02, G18-02)
 ```
 
