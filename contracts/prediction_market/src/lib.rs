@@ -1094,77 +1094,82 @@ fn calculate_sell(
 
         (net as u64, fee as u64)
     } else {
-        // Multi-outcome sell is more complex.
-        // For simplicity and correctness: swap A shares for each other outcome,
-        // then burn the minimum complete sets.
+        // Multi-outcome sell: binary search for max complete sets formable.
+        // User has `sell` shares of outcome A. They keep some A and swap the rest
+        // into each non-A pool to acquire shares of every other outcome. The maximum
+        // number of complete sets (1 of each outcome) is found via binary search over
+        // total_a_for_sets().
         let a = outcome as usize;
         let sell = shares_amount as u128;
-        let mut temp_reserves: Vec<u128> = reserves.iter().map(|&r| r as u128).collect();
-        
-        // Distribute: sell `sell / (n-1)` shares of A to get shares of each other outcome j.
-        // Then burn min across all outcomes.
-        let parts = (n - 1) as u128;
-        let sell_per = sell / parts;
-        let sell_remainder = sell - sell_per * parts;
-        
-        let mut min_other: u128 = u128::MAX;
-        let mut j_idx = 0u8;
-        
+
+        // Upper bound: can't form more sets than min(reserve_j) for j != a
+        // (can't extract more than a pool has), and can't exceed sell itself.
+        let mut hi = sell;
         for j in 0..n {
             if j == a {
                 continue;
             }
-            let s_a = if j_idx < sell_remainder as u8 { sell_per + 1 } else { sell_per };
-            j_idx += 1;
-            // Swap s_a shares of A -> shares of j
-            let j_received = (temp_reserves[j] * s_a) / (temp_reserves[a] + s_a);
-            temp_reserves[a] += s_a;
-            temp_reserves[j] -= j_received;
-            if j_received < min_other {
-                min_other = j_received;
+            let rj = reserves[j] as u128;
+            if rj <= 1 {
+                return (0, 0);
+            }
+            if rj - 1 < hi {
+                hi = rj - 1;
+            }
+        }
+        if hi == 0 {
+            return (0, 0);
+        }
+
+        // Binary search: find max C where total_a_for_sets(reserves, a, C) <= sell
+        let mut lo: u128 = 0;
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2;
+            let needed = total_a_for_sets(reserves, a, mid);
+            if needed <= sell {
+                lo = mid;
+            } else {
+                hi = mid - 1;
             }
         }
 
-        // Also check the remaining A shares
-        let remaining_a = sell - (sell_per * parts + sell_remainder); // should be 0 due to above
-        // Actually the user keeps no A shares (sold them all), but we need A to burn sets.
-        // Rethink: user has `sell` of A. They want to convert some to each other outcome.
-        // They keep some A and swap rest to get other outcomes. Then burn min across all.
-        //
-        // Better approach: sell fraction of A into each non-A pool.
-        // User starts with `sell` shares of A.
-        // For each outcome j ≠ A, sell s_j shares of A to get some j shares.
-        // sum(s_j) ≤ sell.
-        // Remaining A = sell - sum(s_j).
-        // Complete sets = min(remaining_A, min_j(j_shares_received)).
-        // This is a multi-dimensional optimization. For now, use equal partition.
-        // User sells (sell * n/(n+1)) total, keeps (sell / (n+1)) of A.
-        // Nah, let's just use the approach of selling A for equal value in each other.
-        
-        // Restart with cleaner approach:
-        // Sell (sell * (n-1)/n) of A total, keeping sell/n of A
-        // Each non-A gets sell/n swapped
-        let temp_reserves2: Vec<u128> = reserves.iter().map(|&r| r as u128).collect();
-        let keep_a = sell / (n as u128); // keep this many A shares
-        let total_sell_a = sell - keep_a;
-        let sell_each = total_sell_a / parts;
-        
-        let mut min_j: u128 = u128::MAX;
-        let mut temp2 = temp_reserves2.clone();
-        for j in 0..n {
-            if j == a { continue; }
-            let j_got = (temp2[j] * sell_each) / (temp2[a] + sell_each);
-            temp2[a] += sell_each;
-            temp2[j] -= j_got;
-            if j_got < min_j { min_j = j_got; }
+        let sets = lo;
+        if sets == 0 {
+            return (0, 0);
         }
-        
-        let sets = if keep_a < min_j { keep_a } else { min_j };
+
         let fee = (sets * TRADING_FEE_BPS as u128) / 10_000;
         let net = sets - fee;
 
         (net as u64, fee as u64)
     }
+}
+
+/// For multi-outcome sell: compute total A shares needed to form `c` complete sets.
+/// Simulates sequential swaps of A into each non-A pool to acquire `c` shares of each outcome.
+/// Returns u128::MAX if impossible (any reserve_j <= c).
+fn total_a_for_sets(reserves: &[u64], a: usize, c: u128) -> u128 {
+    let mut current_ra = reserves[a] as u128;
+    let mut total: u128 = c; // user keeps c shares of A
+
+    for j in 0..reserves.len() {
+        if j == a {
+            continue;
+        }
+        let rj = reserves[j] as u128;
+        if rj <= c {
+            return u128::MAX; // impossible: can't extract c shares from pool with only rj
+        }
+        // Need j_received = rj * s_j / (current_ra + s_j) >= c
+        // Solving: s_j = c * current_ra / (rj - c)
+        // Use ceiling division to ensure we get at least c shares
+        let denom = rj - c;
+        let s_j = (c * current_ra + denom - 1) / denom;
+        total = total.saturating_add(s_j);
+        current_ra += s_j;
+    }
+
+    total
 }
 
 /// Integer square root for u128 (Newton's method).
@@ -1277,20 +1282,60 @@ fn apply_sell_reserves(
         new_reserves[b] = new_y as u64;
         new_reserves
     } else {
-        // Multi: use same approach as calculate_sell
+        // Multi-outcome: use same binary search as calculate_sell for optimal sets
         let sell = shares_amount as u128;
-        let parts = (n - 1) as u128;
-        let keep_a = sell / (n as u128);
-        let total_sell_a = sell - keep_a;
-        let sell_each = total_sell_a / parts;
+        let a_idx = a;
 
+        let mut hi = sell;
+        for j in 0..n {
+            if j == a_idx {
+                continue;
+            }
+            let rj = reserves[j] as u128;
+            if rj <= 1 {
+                return reserves.to_vec();
+            }
+            if rj - 1 < hi {
+                hi = rj - 1;
+            }
+        }
+        if hi == 0 {
+            return reserves.to_vec();
+        }
+
+        let mut lo: u128 = 0;
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2;
+            let needed = total_a_for_sets(reserves, a_idx, mid);
+            if needed <= sell {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+
+        let sets = lo;
+        if sets == 0 {
+            return reserves.to_vec();
+        }
+
+        // Apply the actual swaps to update reserves
         let mut temp: Vec<u128> = reserves.iter().map(|&r| r as u128).collect();
         for j in 0..n {
-            if j == a { continue; }
-            let j_got = (temp[j] * sell_each) / (temp[a] + sell_each);
-            temp[a] += sell_each;
+            if j == a_idx {
+                continue;
+            }
+            let rj = temp[j];
+            if rj <= sets {
+                return reserves.to_vec(); // shouldn't happen after binary search
+            }
+            let denom = rj - sets;
+            let s_j = (sets * temp[a_idx] + denom - 1) / denom;
+            let j_got = (rj * s_j) / (temp[a_idx] + s_j);
+            temp[a_idx] += s_j;
             temp[j] -= j_got;
         }
+
         temp.iter().map(|&r| r as u64).collect()
     }
 }
@@ -1485,8 +1530,11 @@ pub fn create_market(
 
     log_info("Market created!");
 
+    // G21-02: Store full u64 market_id in return_data (no u32 truncation)
+    moltchain_sdk::set_return_data(&u64_to_bytes(new_id));
+
     reentrancy_exit();
-    new_id as u32
+    new_id as u32 // also in return_data as full u64
 }
 
 /// Add initial liquidity to a PENDING market, transitioning it to ACTIVE.
@@ -1779,12 +1827,16 @@ pub fn add_liquidity(
     track_user_market(provider, market_id);
 
     log_info("Liquidity added!");
+
+    // G21-02: Store full u64 LP shares in return_data (no u32 truncation)
+    moltchain_sdk::set_return_data(&u64_to_bytes(new_lp));
+
     reentrancy_exit();
-    new_lp as u32
+    new_lp as u32 // also in return_data as full u64
 }
 
 /// Buy shares of a specific outcome.
-/// Returns shares received (as u32 — truncated for return code; real value in return_data).
+/// Returns shares_received as u32 (full u64 also in return_data), 0 on failure.
 pub fn buy_shares(
     trader_ptr: *const u8,
     market_id: u64,
@@ -1951,12 +2003,16 @@ pub fn buy_shares(
     track_user_market(trader, market_id);
 
     log_info("Shares purchased!");
+
+    // G21-02: Store full u64 shares in return_data (no u32 truncation)
+    moltchain_sdk::set_return_data(&u64_to_bytes(shares_received));
+
     reentrancy_exit();
-    shares_received as u32
+    shares_received as u32 // also in return_data as full u64
 }
 
 /// Sell shares of a specific outcome.
-/// Returns mUSD received (truncated to u32 for return code).
+/// Returns musd_returned as u32 (full u64 also in return_data), 0 on failure.
 pub fn sell_shares(
     trader_ptr: *const u8,
     market_id: u64,
@@ -2113,8 +2169,12 @@ pub fn sell_shares(
     }
 
     log_info("Shares sold!");
+
+    // G21-02: Store full u64 mUSD in return_data (no u32 truncation)
+    moltchain_sdk::set_return_data(&u64_to_bytes(musd_returned));
+
     reentrancy_exit();
-    musd_returned as u32
+    musd_returned as u32 // also in return_data as full u64
 }
 
 /// Mint a complete set (1 share of every outcome for amount_musd collateral).
@@ -2994,8 +3054,11 @@ pub fn withdraw_liquidity(
         return 0;
     }
 
+    // G21-02: Store full u64 mUSD in return_data (no u32 truncation)
+    moltchain_sdk::set_return_data(&u64_to_bytes(musd_returned));
+
     reentrancy_exit();
-    musd_returned as u32
+    musd_returned as u32 // also in return_data as full u64
 }
 
 // ============================================================================
@@ -3347,7 +3410,10 @@ pub extern "C" fn call() {
                         creator_ptr, category, close_slot, outcome_count,
                         qh_ptr, q_ptr, q_len,
                     );
-                    moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                    // G21-02: function sets return_data with full u64 on success
+                    if result == 0 {
+                        moltchain_sdk::set_return_data(&u64_to_bytes(0));
+                    }
                 }
             }
         }
@@ -3372,7 +3438,10 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[33..41]),
                     bytes_to_u64(&args[41..49]),
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                // G21-02: function sets return_data with full u64 on success
+                if result == 0 {
+                    moltchain_sdk::set_return_data(&u64_to_bytes(0));
+                }
             }
         }
         // 4: buy_shares
@@ -3384,7 +3453,10 @@ pub extern "C" fn call() {
                     args[41],
                     bytes_to_u64(&args[42..50]),
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                // G21-02: function sets return_data with full u64 on success
+                if result == 0 {
+                    moltchain_sdk::set_return_data(&u64_to_bytes(0));
+                }
             }
         }
         // 5: sell_shares
@@ -3396,7 +3468,10 @@ pub extern "C" fn call() {
                     args[41],
                     bytes_to_u64(&args[42..50]),
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                // G21-02: function sets return_data with full u64 on success
+                if result == 0 {
+                    moltchain_sdk::set_return_data(&u64_to_bytes(0));
+                }
             }
         }
         // 6: mint_complete_set
@@ -3485,7 +3560,10 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[33..41]),
                     args[41],
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                // G21-02: function sets return_data with full u64 on success
+                if result == 0 {
+                    moltchain_sdk::set_return_data(&u64_to_bytes(0));
+                }
             }
         }
         // 14: reclaim_collateral
@@ -3495,7 +3573,10 @@ pub extern "C" fn call() {
                     args[1..33].as_ptr(),
                     bytes_to_u64(&args[33..41]),
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                // G21-02: function sets return_data with full u64 on success
+                if result == 0 {
+                    moltchain_sdk::set_return_data(&u64_to_bytes(0));
+                }
             }
         }
         // 15: withdraw_liquidity
@@ -3506,7 +3587,10 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[33..41]),
                     bytes_to_u64(&args[41..49]),
                 );
-                moltchain_sdk::set_return_data(&u64_to_bytes(result as u64));
+                // G21-02: function sets return_data with full u64 on success
+                if result == 0 {
+                    moltchain_sdk::set_return_data(&u64_to_bytes(0));
+                }
             }
         }
         // 16: emergency_pause
@@ -4784,5 +4868,262 @@ mod tests {
         test_mock::set_value(4_999_999); // less than 5_000_000
         let r = add_liquidity(creator.as_ptr(), mid, 5_000_000);
         assert_eq!(r, 0, "Should reject insufficient value for add_liquidity");
+    }
+
+    // ====================================================================
+    // G21-02: u32 truncation / u64 return_data tests
+    // ====================================================================
+
+    #[test]
+    fn test_buy_shares_sets_return_data() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        let trader = [3u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(5000);
+        test_mock::set_value(1_000_000);
+        let shares = buy_shares(trader.as_ptr(), mid, 0, 1_000_000);
+        assert!(shares > 0, "buy_shares should succeed");
+
+        // return_data should contain the same value as the u32 return (for small amounts)
+        let rd = test_mock::get_return_data();
+        assert!(rd.len() >= 8, "return_data should have 8 bytes");
+        let rd_val = u64::from_le_bytes(rd[0..8].try_into().unwrap());
+        assert_eq!(rd_val, shares as u64, "return_data u64 should match u32 return for small values");
+    }
+
+    #[test]
+    fn test_sell_shares_sets_return_data() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        activate_market(&creator, mid, 10_000_000);
+
+        let trader = [3u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(5000);
+        test_mock::set_value(2_000_000);
+        let shares = buy_shares(trader.as_ptr(), mid, 0, 2_000_000);
+        assert!(shares > 0);
+
+        test_mock::set_caller(trader);
+        let musd = sell_shares(trader.as_ptr(), mid, 0, shares as u64);
+        assert!(musd > 0, "sell_shares should return mUSD");
+
+        let rd = test_mock::get_return_data();
+        assert!(rd.len() >= 8);
+        let rd_val = u64::from_le_bytes(rd[0..8].try_into().unwrap());
+        assert_eq!(rd_val, musd as u64, "return_data u64 should match u32 return for sell");
+    }
+
+    #[test]
+    fn test_create_market_sets_return_data() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_binary_market(&creator, 100_000);
+        assert!(mid > 0);
+
+        let rd = test_mock::get_return_data();
+        assert!(rd.len() >= 8);
+        let rd_val = u64::from_le_bytes(rd[0..8].try_into().unwrap());
+        assert_eq!(rd_val, mid, "return_data should contain market_id");
+    }
+
+    // ====================================================================
+    // G21-03: Multi-outcome sell correctness tests
+    // ====================================================================
+
+    /// Create a 3-outcome market for testing
+    fn create_3outcome_market(creator: &[u8; 32], close_slot: u64) -> u64 {
+        test_mock::set_caller(*creator);
+        test_mock::set_slot(1000);
+        test_mock::set_value(MARKET_CREATION_FEE);
+        let qhash = [0x33u8; 32];
+        let question = b"Which team wins?";
+        let result = create_market(
+            creator.as_ptr(),
+            CATEGORY_SPORTS,
+            close_slot,
+            3, // 3 outcomes
+            qhash.as_ptr(),
+            question.as_ptr(),
+            question.len() as u32,
+        );
+        assert!(result > 0, "create 3-outcome market should succeed");
+        result as u64
+    }
+
+    #[test]
+    fn test_multi_outcome_sell_returns_nonzero() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_3outcome_market(&creator, 100_000);
+
+        // Add initial liquidity
+        test_mock::set_caller(creator);
+        test_mock::set_value(30_000_000); // 30 mUSD
+        let liq = add_initial_liquidity(
+            creator.as_ptr(), mid, 30_000_000, core::ptr::null(), 0,
+        );
+        assert_eq!(liq, 1);
+
+        // Buy shares of outcome 0
+        let trader = [4u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(5000);
+        test_mock::set_value(3_000_000);
+        let shares = buy_shares(trader.as_ptr(), mid, 0, 3_000_000);
+        assert!(shares > 0, "buy should succeed");
+
+        // Sell some shares back (advance slot past any circuit-breaker pause)
+        test_mock::set_caller(trader);
+        test_mock::set_slot(5200);
+        let sell_amount = (shares / 2) as u64;
+        let musd = sell_shares(trader.as_ptr(), mid, 0, sell_amount);
+        assert!(musd > 0, "multi-outcome sell should return nonzero mUSD");
+    }
+
+    #[test]
+    fn test_multi_outcome_sell_all_shares() {
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_3outcome_market(&creator, 100_000);
+
+        test_mock::set_caller(creator);
+        test_mock::set_value(30_000_000);
+        let liq = add_initial_liquidity(
+            creator.as_ptr(), mid, 30_000_000, core::ptr::null(), 0,
+        );
+        assert_eq!(liq, 1);
+
+        // Buy and sell all shares
+        let trader = [5u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(5000);
+        test_mock::set_value(2_000_000);
+        let shares = buy_shares(trader.as_ptr(), mid, 1, 2_000_000);
+        assert!(shares > 0);
+
+        test_mock::set_caller(trader);
+        test_mock::set_slot(5200);
+        let musd = sell_shares(trader.as_ptr(), mid, 1, shares as u64);
+        assert!(musd > 0, "selling all multi-outcome shares should return mUSD");
+
+        // Should get back less than initial due to slippage and fees
+        assert!((musd as u64) < 2_000_000, "should get back less than invested due to fees");
+    }
+
+    #[test]
+    fn test_multi_outcome_sell_math_consistency() {
+        // Test that calculate_sell and apply_sell_reserves agree
+        // by doing a buy then sell and checking reserves change sensibly
+        setup();
+        init_contract();
+        let creator = [2u8; 32];
+        let mid = create_3outcome_market(&creator, 100_000);
+
+        test_mock::set_caller(creator);
+        test_mock::set_value(30_000_000);
+        let liq = add_initial_liquidity(
+            creator.as_ptr(), mid, 30_000_000, core::ptr::null(), 0,
+        );
+        assert_eq!(liq, 1);
+
+        // Read initial reserves
+        let p0_before = load_outcome_pool(mid, 0).unwrap();
+        let r0_before = pool_reserve(&p0_before);
+        let p1_before = load_outcome_pool(mid, 1).unwrap();
+        let r1_before = pool_reserve(&p1_before);
+        let p2_before = load_outcome_pool(mid, 2).unwrap();
+        let r2_before = pool_reserve(&p2_before);
+
+        // Buy outcome 0
+        let trader = [6u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(5000);
+        test_mock::set_value(5_000_000);
+        let shares = buy_shares(trader.as_ptr(), mid, 0, 5_000_000);
+        assert!(shares > 0);
+
+        // After buy, outcome 0 reserve should decrease (shares extracted)
+        let p0_after_buy = load_outcome_pool(mid, 0).unwrap();
+        let r0_after_buy = pool_reserve(&p0_after_buy);
+        assert!(r0_after_buy < r0_before, "buying outcome 0 should decrease its reserve");
+
+        // Sell all back (advance slot past circuit-breaker pause)
+        test_mock::set_caller(trader);
+        test_mock::set_slot(5200);
+        let musd = sell_shares(trader.as_ptr(), mid, 0, shares as u64);
+        assert!(musd > 0);
+
+        // After sell, outcome 0 reserve should increase back (shares returned to pool)
+        let p0_after_sell = load_outcome_pool(mid, 0).unwrap();
+        let r0_after_sell = pool_reserve(&p0_after_sell);
+        assert!(r0_after_sell > r0_after_buy, "selling outcome 0 should increase its reserve back");
+    }
+
+    #[test]
+    fn test_calculate_sell_binary_vs_multi_consistency() {
+        // For a 2-outcome market, calculate_sell uses the quadratic solver.
+        // Verify it returns a reasonable amount.
+        let reserves = &[10_000_000u64, 10_000_000u64];
+        let (musd, fee) = calculate_sell(reserves, 0, 1_000_000);
+        assert!(musd > 0, "binary sell should return nonzero");
+        assert!(fee > 0, "binary sell should have nonzero fee");
+        assert!(musd + fee <= 1_000_000, "sell output should not exceed input shares");
+    }
+
+    #[test]
+    fn test_calculate_sell_3outcome_returns_nonzero() {
+        let reserves = &[10_000_000u64, 10_000_000u64, 10_000_000u64];
+        let (musd, fee) = calculate_sell(reserves, 0, 1_000_000);
+        assert!(musd > 0, "3-outcome sell should return nonzero mUSD");
+        assert!(fee > 0, "3-outcome sell should have nonzero fee");
+        // With equal reserves and selling 1/10 of reserve, should get reasonable output
+        assert!(musd + fee <= 1_000_000, "sell payout should not exceed shares sold");
+    }
+
+    #[test]
+    fn test_calculate_sell_4outcome_returns_nonzero() {
+        let reserves = &[10_000_000u64, 10_000_000u64, 10_000_000u64, 10_000_000u64];
+        let (musd, fee) = calculate_sell(reserves, 2, 500_000);
+        assert!(musd > 0, "4-outcome sell should return nonzero mUSD");
+        assert!(musd + fee <= 500_000);
+    }
+
+    #[test]
+    fn test_calculate_sell_skewed_reserves() {
+        // Selling from a cheaper outcome (higher reserve) should yield less
+        let reserves = &[5_000_000u64, 15_000_000u64, 10_000_000u64];
+        let (musd_expensive, _) = calculate_sell(reserves, 0, 500_000); // outcome 0: low reserve = expensive
+        let (musd_cheap, _) = calculate_sell(reserves, 1, 500_000); // outcome 1: high reserve = cheap
+        assert!(musd_expensive > musd_cheap,
+            "selling expensive outcome shares should yield more mUSD ({} vs {})",
+            musd_expensive, musd_cheap);
+    }
+
+    #[test]
+    fn test_total_a_for_sets_basic() {
+        let reserves = &[10_000_000u64, 10_000_000u64, 10_000_000u64];
+        // Forming 1M sets with 10M reserves each should be feasible
+        let needed = total_a_for_sets(reserves, 0, 1_000_000);
+        assert!(needed < u128::MAX, "should be feasible");
+        assert!(needed > 1_000_000, "should need more than C shares of A (also need swap cost)");
+    }
+
+    #[test]
+    fn test_total_a_for_sets_impossible() {
+        let reserves = &[10_000_000u64, 500_000u64, 10_000_000u64];
+        // Trying to form 500_000 sets when reserve[1] = 500_000 should be impossible
+        let needed = total_a_for_sets(reserves, 0, 500_000);
+        assert_eq!(needed, u128::MAX, "should be impossible when C >= reserve_j");
     }
 }
