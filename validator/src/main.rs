@@ -2967,7 +2967,15 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
             function: "initialize",
             args: named_init_args(&admin),
         },
-        // bountyboard: no initialization needed (stateless bootstrap)
+        // ── Layer 5d: BountyBoard ──
+        // bountyboard.initialize() sets identity_admin which is required by
+        // verify_identity, update_reputation, and issue_credential.
+        // Without this, first-caller-wins vulnerability (see G22-02).
+        InitSpec {
+            dir_name: "bountyboard",
+            function: "initialize",
+            args: named_init_args(&admin),
+        },
     ];
 
     for spec in &specs {

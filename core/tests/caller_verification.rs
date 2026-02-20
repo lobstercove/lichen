@@ -265,3 +265,70 @@ fn g20_01_wsol_token_has_no_mangle_exports() {
         no_mangle_count, extern_c_count
     );
 }
+
+// ============================================================================
+//  B1-02: Genesis contract initialization — all contracts must be initialized
+// ============================================================================
+
+/// Verify that every contract in GENESIS_CONTRACT_CATALOG is either:
+/// (a) included in the `InitSpec` list inside `genesis_initialize_contracts()`, or
+/// (b) handled as a special case (e.g. moltauction's two-step init).
+///
+/// This is a source-level regression test: it reads validator/src/main.rs and
+/// checks that all 27 contracts are initialized at genesis, preventing the
+/// first-caller-wins admin vulnerability (G22-02).
+#[test]
+fn b1_02_all_contracts_initialized_at_genesis() {
+    let source =
+        std::fs::read_to_string("../validator/src/main.rs").expect("Cannot read validator/src/main.rs");
+
+    // All 27 contracts from GENESIS_CONTRACT_CATALOG
+    let all_contracts = [
+        "moltcoin",
+        "musd_token",
+        "wsol_token",
+        "weth_token",
+        "dex_core",
+        "dex_amm",
+        "dex_router",
+        "dex_margin",
+        "dex_rewards",
+        "dex_governance",
+        "dex_analytics",
+        "moltswap",
+        "moltbridge",
+        "moltmarket",
+        "moltoracle",
+        "moltauction",
+        "moltdao",
+        "lobsterlend",
+        "moltpunks",
+        "moltyid",
+        "clawpay",
+        "clawpump",
+        "clawvault",
+        "bountyboard",
+        "compute_market",
+        "reef_storage",
+        "prediction_market",
+    ];
+
+    // Extract the genesis_initialize_contracts function body
+    let init_fn_start = source
+        .find("fn genesis_initialize_contracts(")
+        .expect("genesis_initialize_contracts function not found");
+    // Take a generous slice — the function is ~450 lines
+    let init_body = &source[init_fn_start..std::cmp::min(init_fn_start + 20000, source.len())];
+
+    for contract in &all_contracts {
+        // Each contract must appear as a dir_name in an InitSpec or in a special-case block
+        let pattern = format!("\"{}\"", contract);
+        assert!(
+            init_body.contains(&pattern),
+            "REGRESSION B1-02: contract '{}' is NOT initialized at genesis! \
+             All contracts must have an InitSpec or special-case init in \
+             genesis_initialize_contracts() to prevent first-caller-wins admin vulnerability.",
+            contract
+        );
+    }
+}
