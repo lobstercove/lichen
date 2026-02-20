@@ -794,7 +794,7 @@
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
 | J2-01 | CRITICAL | Security | `[NEW]` Genesis has placeholder validator pubkeys — mainnet would launch with fake validators | Replace with real validator public keys before launch | [x] |
-| J2-02 | CRITICAL | Security | `[NEW]` Deployer keypair used as contract admin instead of multisig | Switch to multisig-controlled admin addresses | [ ] |
+| J2-02 | CRITICAL | Security | `[NEW]` Deployer keypair used as contract admin instead of multisig | Switch to multisig-controlled admin addresses | [x] |
 | J2-03 | HIGH | Missing | `[NEW]` No CI/CD pipeline exists anywhere in the repo | Create GitHub Actions workflow: lint → test → build → deploy | [ ] |
 | J2-04 | HIGH | Reliability | Several scripts have hardcoded paths (e.g., `/Users/johnrobin/...`) | Use relative paths or environment variables | [ ] |
 | J2-05 | MEDIUM | Missing | No automated genesis generation from config — manual process | Script to generate genesis from validated config file | [ ] |
@@ -1179,12 +1179,12 @@ Phase 0 (Fatal):     [x] [x] [x] [x]                    4/4
 Phase 1 (Security):  [x] [x] [x] [x] [x] [x]            6/6  ✅ COMPLETE
 Phase 2 (Core):      [x] [x] [x] [x] [x] [x] [x] [x]    8/8  ✅ COMPLETE
 Phase 3 (Contracts): [x] [x] [x] [x] [x] [x] [x] [x] [x] [x] [x]  11/11 ✅ COMPLETE
-Phase 4 (Infra):     [x] [x] [x] [ ] [ ] [ ] [ ]        3/7
+Phase 4 (Infra):     [x] [x] [x] [x] [ ] [ ] [ ]        4/7
 Phase 5 (Quality):   [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]  0/10
 Phase 6 (Frontend):  [ ] [ ] [ ] [ ] [ ]                0/5
 Phase 7 (Testing):   [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
-                                              TOTAL:    32/63 phases
+                                              TOTAL:    33/63 phases
 ```
 
 ---
