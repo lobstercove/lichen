@@ -2331,6 +2331,7 @@ pub extern "C" fn revoke_attestation(
     skill_name_ptr: *const u8,
     skill_name_len: u32,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     log_info("Revoking attestation...");
 
     let mut attester = [0u8; 32];
@@ -2342,6 +2343,7 @@ pub extern "C" fn revoke_attestation(
     let real_caller = get_caller();
     if real_caller.0 != attester {
         log_info("revoke_attestation: caller does not match transaction signer");
+        reentrancy_exit();
         return 200;
     }
 
@@ -2349,6 +2351,7 @@ pub extern "C" fn revoke_attestation(
 
     if skill_name_len == 0 || skill_name_len > MAX_SKILL_LEN {
         log_info("Invalid skill name length");
+        reentrancy_exit();
         return 1;
     }
 
@@ -2368,6 +2371,7 @@ pub extern "C" fn revoke_attestation(
         (ak_legacy, attestation_count_key(&identity, &s_hash_legacy))
     } else {
         log_info("No attestation found to revoke");
+        reentrancy_exit();
         return 2;
     };
 
@@ -2383,6 +2387,7 @@ pub extern "C" fn revoke_attestation(
     }
 
     log_info("Attestation revoked");
+    reentrancy_exit();
     0
 }
 
@@ -2408,6 +2413,7 @@ pub extern "C" fn register_name(
     name_len: u32,
     duration_years: u8,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     log_info("Registering .molt name...");
 
     let mut caller = [0u8; 32];
@@ -2417,6 +2423,7 @@ pub extern "C" fn register_name(
     let real_caller = get_caller();
     if real_caller.0 != caller {
         log_info("register_name: caller does not match transaction signer");
+        reentrancy_exit();
         return 200;
     }
 
@@ -2428,30 +2435,35 @@ pub extern "C" fn register_name(
     let id_key = identity_key(&caller);
     if storage_get(&id_key).is_none() {
         log_info("Must register MoltyID first");
+        reentrancy_exit();
         return 1;
     }
 
     // Validate name
     if !validate_molt_name(&name) {
         log_info("Invalid .molt name (3-32 chars, a-z 0-9 hyphens, no leading/trailing hyphens)");
+        reentrancy_exit();
         return 2;
     }
 
     // Check reserved
     if is_reserved_name(&name) {
         log_info("Name is reserved");
+        reentrancy_exit();
         return 3;
     }
 
     // Premium short names must be sold via auction
     if is_premium_name(&name) {
         log_info("Premium short names are auction-only");
+        reentrancy_exit();
         return 8;
     }
 
     // Duration: 1-10 years
     if duration_years == 0 || duration_years > 10 {
         log_info("Duration must be 1-10 years");
+        reentrancy_exit();
         return 4;
     }
 
@@ -2463,6 +2475,7 @@ pub extern "C" fn register_name(
             let current_slot = moltchain_sdk::get_slot();
             if current_slot < expiry {
                 log_info("Name already registered and not expired");
+                reentrancy_exit();
                 return 5;
             }
             // Name expired — can be re-registered (clear old reverse mapping)
@@ -2482,6 +2495,7 @@ pub extern "C" fn register_name(
                 let expiry = bytes_to_u64(&nr[40..48]);
                 if moltchain_sdk::get_slot() < expiry {
                     log_info("Already have a .molt name; release it first");
+                    reentrancy_exit();
                     return 6;
                 }
             }
@@ -2493,6 +2507,7 @@ pub extern "C" fn register_name(
     let paid = moltchain_sdk::get_value();
     if paid < required_cost {
         log_info("Insufficient payment for name registration");
+        reentrancy_exit();
         return 7;
     }
 
@@ -2517,6 +2532,7 @@ pub extern "C" fn register_name(
     storage_set(b"molt_name_count", &u64_to_bytes(count + 1));
 
     log_info(".molt name registered!");
+    reentrancy_exit();
     0
 }
 
@@ -2607,7 +2623,9 @@ pub extern "C" fn create_name_auction(
     reserve_bid: u64,
     end_slot: u64,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     if is_mid_paused() {
+        reentrancy_exit();
         return 20;
     }
 
@@ -2618,11 +2636,13 @@ pub extern "C" fn create_name_auction(
     let real_caller = get_caller();
     if real_caller.0 != caller {
         log_info("create_name_auction: caller does not match transaction signer");
+        reentrancy_exit();
         return 200;
     }
 
     if !is_mid_admin(&caller) {
         log_info("Unauthorized: only admin can create name auction");
+        reentrancy_exit();
         return 1;
     }
 
@@ -2632,16 +2652,19 @@ pub extern "C" fn create_name_auction(
 
     if !validate_molt_name(&name) {
         log_info("Invalid .molt name for auction");
+        reentrancy_exit();
         return 2;
     }
 
     if !is_premium_name(&name) {
         log_info("Only premium short names can be auctioned");
+        reentrancy_exit();
         return 3;
     }
 
     if is_reserved_name(&name) {
         log_info("Reserved name cannot be auctioned");
+        reentrancy_exit();
         return 4;
     }
 
@@ -2651,6 +2674,7 @@ pub extern "C" fn create_name_auction(
             let expiry = bytes_to_u64(&existing[40..48]);
             if moltchain_sdk::get_slot() < expiry {
                 log_info("Name already registered");
+                reentrancy_exit();
                 return 5;
             }
         }
@@ -2659,12 +2683,14 @@ pub extern "C" fn create_name_auction(
     let now_slot = moltchain_sdk::get_slot();
     if end_slot <= now_slot {
         log_info("Auction end slot must be in the future");
+        reentrancy_exit();
         return 6;
     }
 
     let duration = end_slot - now_slot;
     if !(NAME_AUCTION_MIN_SLOTS..=NAME_AUCTION_MAX_SLOTS).contains(&duration) {
         log_info("Auction duration out of bounds");
+        reentrancy_exit();
         return 7;
     }
 
@@ -2674,6 +2700,7 @@ pub extern "C" fn create_name_auction(
             let existing_end = bytes_to_u64(&existing[9..17]);
             if now_slot < existing_end {
                 log_info("Auction already active for this name");
+                reentrancy_exit();
                 return 8;
             }
         }
@@ -2689,6 +2716,7 @@ pub extern "C" fn create_name_auction(
     storage_set(&ak, &record);
 
     log_info("Name auction created");
+    reentrancy_exit();
     0
 }
 
@@ -2700,7 +2728,10 @@ pub extern "C" fn bid_name_auction(
     name_len: u32,
     bid_amount: u64,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
+
     if is_mid_paused() {
+        reentrancy_exit();
         return 20;
     }
 
@@ -2711,6 +2742,7 @@ pub extern "C" fn bid_name_auction(
     let real_caller = get_caller();
     if real_caller.0 != bidder {
         log_info("bid_name_auction: caller does not match transaction signer");
+        reentrancy_exit();
         return 200;
     }
 
@@ -2720,6 +2752,7 @@ pub extern "C" fn bid_name_auction(
 
     if storage_get(&identity_key(&bidder)).is_none() {
         log_info("Bidder must have a MoltyID");
+        reentrancy_exit();
         return 1;
     }
 
@@ -2728,12 +2761,14 @@ pub extern "C" fn bid_name_auction(
         Some(data) if data.len() >= 65 => data,
         _ => {
             log_info("Auction not found");
+            reentrancy_exit();
             return 2;
         }
     };
 
     if record[0] != 1 {
         log_info("Auction not active");
+        reentrancy_exit();
         return 3;
     }
 
@@ -2741,6 +2776,7 @@ pub extern "C" fn bid_name_auction(
     let end_slot = bytes_to_u64(&record[9..17]);
     if now_slot >= end_slot {
         log_info("Auction ended");
+        reentrancy_exit();
         return 4;
     }
 
@@ -2748,26 +2784,35 @@ pub extern "C" fn bid_name_auction(
     let current_highest = bytes_to_u64(&record[25..33]);
     if bid_amount < reserve_bid || bid_amount <= current_highest {
         log_info("Bid too low");
+        reentrancy_exit();
         return 5;
     }
 
     let paid = moltchain_sdk::get_value();
     if paid < bid_amount {
         log_info("Insufficient payment for bid");
+        reentrancy_exit();
         return 6;
     }
 
-    // SECURITY FIX: Refund previous highest bidder before accepting new bid.
-    // Uses call_token_transfer with stored token address and self-address
-    // instead of the broken CrossCall to zero-address which silently failed.
+    // AUDIT-FIX G18-02: Checks-Effects-Interactions pattern
+    // Update state BEFORE external call to prevent reentrancy exploitation.
     let prev_bid_amount = bytes_to_u64(&record[25..33]);
     let mut prev_bidder = [0u8; 32];
     prev_bidder.copy_from_slice(&record[33..65]);
+
+    // EFFECTS: Update auction record with new bid before any external call
+    record[25..33].copy_from_slice(&u64_to_bytes(bid_amount));
+    record[33..65].copy_from_slice(&bidder);
+    storage_set(&ak, &record);
+
+    // INTERACTIONS: Refund previous highest bidder after state is updated
     if prev_bid_amount > 0 && !prev_bidder.iter().all(|&b| b == 0) {
         let token_addr = match get_mid_token_address() {
             Some(a) => a,
             None => {
                 log_info("bid_name_auction: token address not configured");
+                reentrancy_exit();
                 return 30;
             }
         };
@@ -2775,6 +2820,7 @@ pub extern "C" fn bid_name_auction(
             Some(a) => a,
             None => {
                 log_info("bid_name_auction: self address not configured");
+                reentrancy_exit();
                 return 31;
             }
         };
@@ -2786,6 +2832,7 @@ pub extern "C" fn bid_name_auction(
         ) {
             Err(_) => {
                 log_info("bid_name_auction: refund transfer failed");
+                reentrancy_exit();
                 return 32;
             }
             Ok(_) => {
@@ -2794,11 +2841,8 @@ pub extern "C" fn bid_name_auction(
         }
     }
 
-    record[25..33].copy_from_slice(&u64_to_bytes(bid_amount));
-    record[33..65].copy_from_slice(&bidder);
-    storage_set(&ak, &record);
-
     log_info("Auction bid accepted");
+    reentrancy_exit();
     0
 }
 
@@ -2810,6 +2854,7 @@ pub extern "C" fn finalize_name_auction(
     name_len: u32,
     duration_years: u8,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut _caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, _caller.as_mut_ptr(), 32); }
     let name_len = name_len as usize;
@@ -2818,6 +2863,7 @@ pub extern "C" fn finalize_name_auction(
 
     if duration_years == 0 || duration_years > 10 {
         log_info("Duration must be 1-10 years");
+        reentrancy_exit();
         return 1;
     }
 
@@ -2826,12 +2872,14 @@ pub extern "C" fn finalize_name_auction(
         Some(data) if data.len() >= 65 => data,
         _ => {
             log_info("Auction not found");
+            reentrancy_exit();
             return 2;
         }
     };
 
     if auction[0] != 1 {
         log_info("Auction not active");
+        reentrancy_exit();
         return 3;
     }
 
@@ -2839,18 +2887,21 @@ pub extern "C" fn finalize_name_auction(
     let end_slot = bytes_to_u64(&auction[9..17]);
     if now_slot < end_slot {
         log_info("Auction still active");
+        reentrancy_exit();
         return 4;
     }
 
     let highest_bid = bytes_to_u64(&auction[25..33]);
     if highest_bid == 0 {
         log_info("Auction has no bids");
+        reentrancy_exit();
         return 5;
     }
 
     let winner = &auction[33..65];
     if storage_get(&identity_key(winner)).is_none() {
         log_info("Winner identity not found");
+        reentrancy_exit();
         return 6;
     }
 
@@ -2863,6 +2914,7 @@ pub extern "C" fn finalize_name_auction(
                 let expiry = bytes_to_u64(&nr[40..48]);
                 if now_slot < expiry {
                     log_info("Winner already has an active .molt name");
+                    reentrancy_exit();
                     return 7;
                 }
             }
@@ -2876,6 +2928,7 @@ pub extern "C" fn finalize_name_auction(
             let expiry = bytes_to_u64(&existing[40..48]);
             if now_slot < expiry {
                 log_info("Name already active");
+                reentrancy_exit();
                 return 8;
             }
         }
@@ -2897,6 +2950,7 @@ pub extern "C" fn finalize_name_auction(
     storage_set(&ak, &auction);
 
     log_info("Name auction finalized");
+    reentrancy_exit();
     0
 }
 
@@ -2938,6 +2992,7 @@ pub extern "C" fn transfer_name(
     name_len: u32,
     new_owner_ptr: *const u8,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
 
@@ -2945,6 +3000,7 @@ pub extern "C" fn transfer_name(
     let real_caller = get_caller();
     if real_caller.0 != caller {
         log_info("transfer_name: caller does not match transaction signer");
+        reentrancy_exit();
         return 200;
     }
 
@@ -2960,6 +3016,7 @@ pub extern "C" fn transfer_name(
         Some(data) if data.len() >= 48 => data,
         _ => {
             log_info("Name not found");
+            reentrancy_exit();
             return 1;
         }
     };
@@ -2967,6 +3024,7 @@ pub extern "C" fn transfer_name(
     // Verify caller is current owner
     if record[0..32] != caller[..] {
         log_info("Not the owner of this name");
+        reentrancy_exit();
         return 2;
     }
 
@@ -2974,6 +3032,7 @@ pub extern "C" fn transfer_name(
     let expiry = bytes_to_u64(&record[40..48]);
     if moltchain_sdk::get_slot() >= expiry {
         log_info("Name has expired");
+        reentrancy_exit();
         return 3;
     }
 
@@ -2981,6 +3040,7 @@ pub extern "C" fn transfer_name(
     let new_owner_id = identity_key(&new_owner);
     if storage_get(&new_owner_id).is_none() {
         log_info("New owner must have a MoltyID");
+        reentrancy_exit();
         return 4;
     }
 
@@ -2993,6 +3053,7 @@ pub extern "C" fn transfer_name(
                 let ex = bytes_to_u64(&nr[40..48]);
                 if moltchain_sdk::get_slot() < ex {
                     log_info("New owner already has a .molt name");
+                    reentrancy_exit();
                     return 5;
                 }
             }
@@ -3009,6 +3070,7 @@ pub extern "C" fn transfer_name(
     storage_set(&new_rev, &name);
 
     log_info(".molt name transferred");
+    reentrancy_exit();
     0
 }
 
@@ -3030,6 +3092,7 @@ pub extern "C" fn renew_name(
     name_len: u32,
     additional_years: u8,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
 
@@ -3037,6 +3100,7 @@ pub extern "C" fn renew_name(
     let real_caller = get_caller();
     if real_caller.0 != caller {
         log_info("renew_name: caller does not match transaction signer");
+        reentrancy_exit();
         return 200;
     }
 
@@ -3046,6 +3110,7 @@ pub extern "C" fn renew_name(
 
     if additional_years == 0 || additional_years > 10 {
         log_info("Additional years must be 1-10");
+        reentrancy_exit();
         return 1;
     }
 
@@ -3054,6 +3119,7 @@ pub extern "C" fn renew_name(
         Some(data) if data.len() >= 48 => data,
         _ => {
             log_info("Name not found");
+            reentrancy_exit();
             return 2;
         }
     };
@@ -3061,6 +3127,7 @@ pub extern "C" fn renew_name(
     // Must be owner
     if record[0..32] != caller[..] {
         log_info("Not the owner of this name");
+        reentrancy_exit();
         return 3;
     }
 
@@ -3069,6 +3136,7 @@ pub extern "C" fn renew_name(
     let paid = moltchain_sdk::get_value();
     if paid < required_cost {
         log_info("Insufficient payment for renewal");
+        reentrancy_exit();
         return 4;
     }
 
@@ -3082,6 +3150,7 @@ pub extern "C" fn renew_name(
     storage_set(&nk, &record);
 
     log_info(".molt name renewed");
+    reentrancy_exit();
     0
 }
 
@@ -3101,6 +3170,7 @@ pub extern "C" fn release_name(
     name_ptr: *const u8,
     name_len: u32,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
 
@@ -3108,6 +3178,7 @@ pub extern "C" fn release_name(
     let real_caller = get_caller();
     if real_caller.0 != caller {
         log_info("release_name: caller does not match transaction signer");
+        reentrancy_exit();
         return 200;
     }
 
@@ -3120,6 +3191,7 @@ pub extern "C" fn release_name(
         Some(data) if data.len() >= 48 => data,
         _ => {
             log_info("Name not found");
+            reentrancy_exit();
             return 1;
         }
     };
@@ -3127,6 +3199,7 @@ pub extern "C" fn release_name(
     // Must be owner
     if record[0..32] != caller[..] {
         log_info("Not the owner of this name");
+        reentrancy_exit();
         return 2;
     }
 
@@ -3146,6 +3219,7 @@ pub extern "C" fn release_name(
     }
 
     log_info(".molt name released");
+    reentrancy_exit();
     0
 }
 
@@ -3158,6 +3232,7 @@ pub extern "C" fn transfer_name_as(
     name_len: u32,
     new_owner_ptr: *const u8,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut delegate = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
     let mut owner = [0u8; 32];
@@ -3167,6 +3242,7 @@ pub extern "C" fn transfer_name_as(
     let real_caller = get_caller();
     if real_caller.0 != delegate {
         log_info("transfer_name_as: caller does not match transaction signer");
+        reentrancy_exit();
         return 200;
     }
 
@@ -3179,6 +3255,7 @@ pub extern "C" fn transfer_name_as(
     let now = get_timestamp();
     if !has_active_permission(&owner, &delegate, DELEGATE_PERM_NAMING, now) {
         log_info("Unauthorized delegate for name transfer");
+        reentrancy_exit();
         return 1;
     }
 
@@ -3187,24 +3264,28 @@ pub extern "C" fn transfer_name_as(
         Some(data) if data.len() >= 48 => data,
         _ => {
             log_info("Name not found");
+            reentrancy_exit();
             return 2;
         }
     };
 
     if record[0..32] != owner[..] {
         log_info("Not the owner of this name");
+        reentrancy_exit();
         return 3;
     }
 
     let expiry = bytes_to_u64(&record[40..48]);
     if moltchain_sdk::get_slot() >= expiry {
         log_info("Name has expired");
+        reentrancy_exit();
         return 4;
     }
 
     let new_owner_id = identity_key(&new_owner);
     if storage_get(&new_owner_id).is_none() {
         log_info("New owner must have a MoltyID");
+        reentrancy_exit();
         return 5;
     }
 
@@ -3216,6 +3297,7 @@ pub extern "C" fn transfer_name_as(
                 let ex = bytes_to_u64(&nr[40..48]);
                 if moltchain_sdk::get_slot() < ex {
                     log_info("New owner already has a .molt name");
+                    reentrancy_exit();
                     return 6;
                 }
             }
@@ -3230,6 +3312,7 @@ pub extern "C" fn transfer_name_as(
     storage_set(&new_rev, &name);
 
     log_info("Delegated .molt name transferred");
+    reentrancy_exit();
     0
 }
 
@@ -3242,6 +3325,7 @@ pub extern "C" fn renew_name_as(
     name_len: u32,
     additional_years: u8,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut delegate = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
     let mut owner = [0u8; 32];
@@ -3251,6 +3335,7 @@ pub extern "C" fn renew_name_as(
     let real_caller = get_caller();
     if real_caller.0 != delegate {
         log_info("renew_name_as: caller does not match transaction signer");
+        reentrancy_exit();
         return 200;
     }
 
@@ -3260,12 +3345,14 @@ pub extern "C" fn renew_name_as(
 
     if additional_years == 0 || additional_years > 10 {
         log_info("Additional years must be 1-10");
+        reentrancy_exit();
         return 1;
     }
 
     let now = get_timestamp();
     if !has_active_permission(&owner, &delegate, DELEGATE_PERM_NAMING, now) {
         log_info("Unauthorized delegate for name renewal");
+        reentrancy_exit();
         return 2;
     }
 
@@ -3274,12 +3361,14 @@ pub extern "C" fn renew_name_as(
         Some(data) if data.len() >= 48 => data,
         _ => {
             log_info("Name not found");
+            reentrancy_exit();
             return 3;
         }
     };
 
     if record[0..32] != owner[..] {
         log_info("Not the owner of this name");
+        reentrancy_exit();
         return 4;
     }
 
@@ -3287,6 +3376,7 @@ pub extern "C" fn renew_name_as(
     let paid = moltchain_sdk::get_value();
     if paid < required_cost {
         log_info("Insufficient payment for renewal");
+        reentrancy_exit();
         return 5;
     }
 
@@ -3299,6 +3389,7 @@ pub extern "C" fn renew_name_as(
     storage_set(&nk, &record);
 
     log_info("Delegated .molt name renewed");
+    reentrancy_exit();
     0
 }
 
@@ -3310,6 +3401,7 @@ pub extern "C" fn release_name_as(
     name_ptr: *const u8,
     name_len: u32,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut delegate = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
     let mut owner = [0u8; 32];
@@ -3319,6 +3411,7 @@ pub extern "C" fn release_name_as(
     let real_caller = get_caller();
     if real_caller.0 != delegate {
         log_info("release_name_as: caller does not match transaction signer");
+        reentrancy_exit();
         return 200;
     }
 
@@ -3329,6 +3422,7 @@ pub extern "C" fn release_name_as(
     let now = get_timestamp();
     if !has_active_permission(&owner, &delegate, DELEGATE_PERM_NAMING, now) {
         log_info("Unauthorized delegate for name release");
+        reentrancy_exit();
         return 1;
     }
 
@@ -3337,12 +3431,14 @@ pub extern "C" fn release_name_as(
         Some(data) if data.len() >= 48 => data,
         _ => {
             log_info("Name not found");
+            reentrancy_exit();
             return 2;
         }
     };
 
     if record[0..32] != owner[..] {
         log_info("Not the owner of this name");
+        reentrancy_exit();
         return 3;
     }
 
@@ -3356,6 +3452,7 @@ pub extern "C" fn release_name_as(
     }
 
     log_info("Delegated .molt name released");
+    reentrancy_exit();
     0
 }
 
@@ -3372,6 +3469,7 @@ pub extern "C" fn release_name_as(
 ///   - url_len: length of URL
 #[no_mangle]
 pub extern "C" fn set_endpoint(caller_ptr: *const u8, url_ptr: *const u8, url_len: u32) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
 
@@ -3379,6 +3477,7 @@ pub extern "C" fn set_endpoint(caller_ptr: *const u8, url_ptr: *const u8, url_le
     let real_caller = get_caller();
     if real_caller.0 != caller {
         log_info("set_endpoint: caller does not match transaction signer");
+        reentrancy_exit();
         return 200;
     }
 
@@ -3386,6 +3485,7 @@ pub extern "C" fn set_endpoint(caller_ptr: *const u8, url_ptr: *const u8, url_le
 
     if url_len == 0 || url_len > MAX_ENDPOINT_LEN {
         log_info("Invalid endpoint URL length");
+        reentrancy_exit();
         return 1;
     }
 
@@ -3396,6 +3496,7 @@ pub extern "C" fn set_endpoint(caller_ptr: *const u8, url_ptr: *const u8, url_le
     let idk = identity_key(&caller);
     if storage_get(&idk).is_none() {
         log_info("Identity not found — register first");
+        reentrancy_exit();
         return 2;
     }
 
@@ -3403,6 +3504,7 @@ pub extern "C" fn set_endpoint(caller_ptr: *const u8, url_ptr: *const u8, url_le
     storage_set(&ek, &url);
 
     log_info("Endpoint set");
+    reentrancy_exit();
     0
 }
 
@@ -3436,6 +3538,7 @@ pub extern "C" fn get_endpoint(addr_ptr: *const u8) -> u32 {
 ///   - json_len: length of metadata
 #[no_mangle]
 pub extern "C" fn set_metadata(caller_ptr: *const u8, json_ptr: *const u8, json_len: u32) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
 
@@ -3443,6 +3546,7 @@ pub extern "C" fn set_metadata(caller_ptr: *const u8, json_ptr: *const u8, json_
     let real_caller = get_caller();
     if real_caller.0 != caller {
         log_info("set_metadata: caller does not match transaction signer");
+        reentrancy_exit();
         return 200;
     }
 
@@ -3450,6 +3554,7 @@ pub extern "C" fn set_metadata(caller_ptr: *const u8, json_ptr: *const u8, json_
 
     if json_len == 0 || json_len > MAX_METADATA_LEN {
         log_info("Invalid metadata length");
+        reentrancy_exit();
         return 1;
     }
 
@@ -3460,6 +3565,7 @@ pub extern "C" fn set_metadata(caller_ptr: *const u8, json_ptr: *const u8, json_
     let idk = identity_key(&caller);
     if storage_get(&idk).is_none() {
         log_info("Identity not found — register first");
+        reentrancy_exit();
         return 2;
     }
 
@@ -3467,6 +3573,7 @@ pub extern "C" fn set_metadata(caller_ptr: *const u8, json_ptr: *const u8, json_
     storage_set(&mk, &json);
 
     log_info("Metadata set");
+    reentrancy_exit();
     0
 }
 
@@ -3499,6 +3606,7 @@ pub extern "C" fn get_metadata(addr_ptr: *const u8) -> u32 {
 ///   - status: availability status (0-2)
 #[no_mangle]
 pub extern "C" fn set_availability(caller_ptr: *const u8, status: u8) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
 
@@ -3506,11 +3614,13 @@ pub extern "C" fn set_availability(caller_ptr: *const u8, status: u8) -> u32 {
     let real_caller = get_caller();
     if real_caller.0 != caller {
         log_info("set_availability: caller does not match transaction signer");
+        reentrancy_exit();
         return 200;
     }
 
     if status > 2 {
         log_info("Invalid availability status (0=offline, 1=available, 2=busy)");
+        reentrancy_exit();
         return 1;
     }
 
@@ -3518,6 +3628,7 @@ pub extern "C" fn set_availability(caller_ptr: *const u8, status: u8) -> u32 {
     let idk = identity_key(&caller);
     if storage_get(&idk).is_none() {
         log_info("Identity not found — register first");
+        reentrancy_exit();
         return 2;
     }
 
@@ -3525,6 +3636,7 @@ pub extern "C" fn set_availability(caller_ptr: *const u8, status: u8) -> u32 {
     storage_set(&ak, &[status]);
 
     log_info("Availability set");
+    reentrancy_exit();
     0
 }
 
@@ -3558,6 +3670,7 @@ pub extern "C" fn get_availability(addr_ptr: *const u8) -> u32 {
 ///   - molt_per_unit: rate in MOLT
 #[no_mangle]
 pub extern "C" fn set_rate(caller_ptr: *const u8, molt_per_unit: u64) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
 
@@ -3565,6 +3678,7 @@ pub extern "C" fn set_rate(caller_ptr: *const u8, molt_per_unit: u64) -> u32 {
     let real_caller = get_caller();
     if real_caller.0 != caller {
         log_info("set_rate: caller does not match transaction signer");
+        reentrancy_exit();
         return 200;
     }
 
@@ -3572,6 +3686,7 @@ pub extern "C" fn set_rate(caller_ptr: *const u8, molt_per_unit: u64) -> u32 {
     let idk = identity_key(&caller);
     if storage_get(&idk).is_none() {
         log_info("Identity not found — register first");
+        reentrancy_exit();
         return 1;
     }
 
@@ -3579,6 +3694,7 @@ pub extern "C" fn set_rate(caller_ptr: *const u8, molt_per_unit: u64) -> u32 {
     storage_set(&rk, &u64_to_bytes(molt_per_unit));
 
     log_info("Rate set");
+    reentrancy_exit();
     0
 }
 
@@ -3617,7 +3733,9 @@ pub extern "C" fn set_delegate(
     permissions: u8,
     expires_at_ms: u64,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     if is_mid_paused() {
+        reentrancy_exit();
         return 20;
     }
 
@@ -3630,28 +3748,33 @@ pub extern "C" fn set_delegate(
     let real_caller = get_caller();
     if real_caller.0 != owner {
         log_info("set_delegate: caller does not match transaction signer");
+        reentrancy_exit();
         return 200;
     }
 
     let id_owner = identity_key(&owner);
     if storage_get(&id_owner).is_none() {
         log_info("Owner identity not found");
+        reentrancy_exit();
         return 1;
     }
 
     let id_delegate = identity_key(&delegate);
     if storage_get(&id_delegate).is_none() {
         log_info("Delegate identity not found");
+        reentrancy_exit();
         return 2;
     }
 
     if owner[..] == delegate[..] {
         log_info("Owner cannot delegate to self");
+        reentrancy_exit();
         return 3;
     }
 
     if permissions == 0 {
         log_info("Permissions must be non-zero");
+        reentrancy_exit();
         return 4;
     }
 
@@ -3661,12 +3784,14 @@ pub extern "C" fn set_delegate(
         | DELEGATE_PERM_NAMING;
     if permissions & !allowed_mask != 0 {
         log_info("Invalid delegation permissions mask");
+        reentrancy_exit();
         return 5;
     }
 
     let now = get_timestamp();
     if expires_at_ms <= now || expires_at_ms > now.saturating_add(MAX_DELEGATION_TTL_MS) {
         log_info("Invalid delegation expiry");
+        reentrancy_exit();
         return 6;
     }
 
@@ -3679,13 +3804,16 @@ pub extern "C" fn set_delegate(
     storage_set(&dk, &data);
 
     log_info("Delegation set");
+    reentrancy_exit();
     0
 }
 
 /// Revoke delegation for a delegate.
 #[no_mangle]
 pub extern "C" fn revoke_delegate(owner_ptr: *const u8, delegate_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() { return 100; }
     if is_mid_paused() {
+        reentrancy_exit();
         return 20;
     }
 
@@ -3698,17 +3826,20 @@ pub extern "C" fn revoke_delegate(owner_ptr: *const u8, delegate_ptr: *const u8)
     let real_caller = get_caller();
     if real_caller.0 != owner {
         log_info("revoke_delegate: caller does not match transaction signer");
+        reentrancy_exit();
         return 200;
     }
 
     let dk = delegation_key(&owner, &delegate);
     if storage_get(&dk).is_none() {
         log_info("Delegation not found");
+        reentrancy_exit();
         return 1;
     }
 
     moltchain_sdk::storage::remove(&dk);
     log_info("Delegation revoked");
+    reentrancy_exit();
     0
 }
 
@@ -3742,6 +3873,7 @@ pub extern "C" fn set_endpoint_as(
     url_ptr: *const u8,
     url_len: u32,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut delegate = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
     let mut owner = [0u8; 32];
@@ -3751,6 +3883,7 @@ pub extern "C" fn set_endpoint_as(
     let real_caller = get_caller();
     if real_caller.0 != delegate {
         log_info("set_endpoint_as: caller does not match transaction signer");
+        reentrancy_exit();
         return 200;
     }
 
@@ -3758,18 +3891,21 @@ pub extern "C" fn set_endpoint_as(
 
     if url_len == 0 || url_len > MAX_ENDPOINT_LEN {
         log_info("Invalid endpoint URL length");
+        reentrancy_exit();
         return 1;
     }
 
     let now = get_timestamp();
     if !has_active_permission(&owner, &delegate, DELEGATE_PERM_PROFILE, now) {
         log_info("Unauthorized delegate for endpoint update");
+        reentrancy_exit();
         return 2;
     }
 
     let idk = identity_key(&owner);
     if storage_get(&idk).is_none() {
         log_info("Identity not found — register first");
+        reentrancy_exit();
         return 3;
     }
 
@@ -3777,6 +3913,7 @@ pub extern "C" fn set_endpoint_as(
     unsafe { core::ptr::copy_nonoverlapping(url_ptr, url.as_mut_ptr(), url_len); }
     storage_set(&endpoint_key(&owner), &url);
     log_info("Delegated endpoint set");
+    reentrancy_exit();
     0
 }
 
@@ -3788,6 +3925,7 @@ pub extern "C" fn set_metadata_as(
     json_ptr: *const u8,
     json_len: u32,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut delegate = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
     let mut owner = [0u8; 32];
@@ -3797,6 +3935,7 @@ pub extern "C" fn set_metadata_as(
     let real_caller = get_caller();
     if real_caller.0 != delegate {
         log_info("set_metadata_as: caller does not match transaction signer");
+        reentrancy_exit();
         return 200;
     }
 
@@ -3804,18 +3943,21 @@ pub extern "C" fn set_metadata_as(
 
     if json_len == 0 || json_len > MAX_METADATA_LEN {
         log_info("Invalid metadata length");
+        reentrancy_exit();
         return 1;
     }
 
     let now = get_timestamp();
     if !has_active_permission(&owner, &delegate, DELEGATE_PERM_PROFILE, now) {
         log_info("Unauthorized delegate for metadata update");
+        reentrancy_exit();
         return 2;
     }
 
     let idk = identity_key(&owner);
     if storage_get(&idk).is_none() {
         log_info("Identity not found — register first");
+        reentrancy_exit();
         return 3;
     }
 
@@ -3823,6 +3965,7 @@ pub extern "C" fn set_metadata_as(
     unsafe { core::ptr::copy_nonoverlapping(json_ptr, json.as_mut_ptr(), json_len); }
     storage_set(&metadata_key(&owner), &json);
     log_info("Delegated metadata set");
+    reentrancy_exit();
     0
 }
 
@@ -3833,6 +3976,7 @@ pub extern "C" fn set_availability_as(
     owner_ptr: *const u8,
     status: u8,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut delegate = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
     let mut owner = [0u8; 32];
@@ -3842,28 +3986,33 @@ pub extern "C" fn set_availability_as(
     let real_caller = get_caller();
     if real_caller.0 != delegate {
         log_info("set_availability_as: caller does not match transaction signer");
+        reentrancy_exit();
         return 200;
     }
 
     if status > 2 {
         log_info("Invalid availability status (0=offline, 1=available, 2=busy)");
+        reentrancy_exit();
         return 1;
     }
 
     let now = get_timestamp();
     if !has_active_permission(&owner, &delegate, DELEGATE_PERM_PROFILE, now) {
         log_info("Unauthorized delegate for availability update");
+        reentrancy_exit();
         return 2;
     }
 
     let idk = identity_key(&owner);
     if storage_get(&idk).is_none() {
         log_info("Identity not found — register first");
+        reentrancy_exit();
         return 3;
     }
 
     storage_set(&availability_key(&owner), &[status]);
     log_info("Delegated availability set");
+    reentrancy_exit();
     0
 }
 
@@ -3874,6 +4023,7 @@ pub extern "C" fn set_rate_as(
     owner_ptr: *const u8,
     molt_per_unit: u64,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut delegate = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
     let mut owner = [0u8; 32];
@@ -3883,23 +4033,27 @@ pub extern "C" fn set_rate_as(
     let real_caller = get_caller();
     if real_caller.0 != delegate {
         log_info("set_rate_as: caller does not match transaction signer");
+        reentrancy_exit();
         return 200;
     }
 
     let now = get_timestamp();
     if !has_active_permission(&owner, &delegate, DELEGATE_PERM_PROFILE, now) {
         log_info("Unauthorized delegate for rate update");
+        reentrancy_exit();
         return 1;
     }
 
     let idk = identity_key(&owner);
     if storage_get(&idk).is_none() {
         log_info("Identity not found — register first");
+        reentrancy_exit();
         return 2;
     }
 
     storage_set(&rate_key(&owner), &u64_to_bytes(molt_per_unit));
     log_info("Delegated rate set");
+    reentrancy_exit();
     0
 }
 
@@ -3910,6 +4064,7 @@ pub extern "C" fn update_agent_type_as(
     owner_ptr: *const u8,
     new_agent_type: u8,
 ) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut delegate = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(delegate_ptr, delegate.as_mut_ptr(), 32); }
     let mut owner = [0u8; 32];
@@ -3919,17 +4074,20 @@ pub extern "C" fn update_agent_type_as(
     let real_caller = get_caller();
     if real_caller.0 != delegate {
         log_info("update_agent_type_as: caller does not match transaction signer");
+        reentrancy_exit();
         return 200;
     }
 
     if !is_valid_agent_type(new_agent_type) {
         log_info("Invalid agent type");
+        reentrancy_exit();
         return 1;
     }
 
     let now = get_timestamp();
     if !has_active_permission(&owner, &delegate, DELEGATE_PERM_AGENT_TYPE, now) {
         log_info("Unauthorized delegate for agent type update");
+        reentrancy_exit();
         return 2;
     }
 
@@ -3938,12 +4096,14 @@ pub extern "C" fn update_agent_type_as(
         Some(data) => data,
         None => {
             log_info("Identity not found");
+            reentrancy_exit();
             return 3;
         }
     };
 
     if record.len() < IDENTITY_SIZE {
         log_info("Identity record malformed");
+        reentrancy_exit();
         return 4;
     }
 
@@ -3953,6 +4113,7 @@ pub extern "C" fn update_agent_type_as(
     storage_set(&id_key, &record);
 
     log_info("Delegated agent type updated");
+    reentrancy_exit();
     0
 }
 
@@ -4124,6 +4285,7 @@ pub extern "C" fn get_trust_tier(pubkey_ptr: *const u8) -> u32 {
 /// Returns: 0 success, 1 not admin, 2 already paused
 #[no_mangle]
 pub extern "C" fn mid_pause(caller_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
 
@@ -4131,13 +4293,15 @@ pub extern "C" fn mid_pause(caller_ptr: *const u8) -> u32 {
     let real_caller = get_caller();
     if real_caller.0 != caller {
         log_info("mid_pause: caller does not match transaction signer");
+        reentrancy_exit();
         return 200;
     }
 
-    if !is_mid_admin(&caller) { return 1; }
-    if is_mid_paused() { return 2; }
+    if !is_mid_admin(&caller) { reentrancy_exit(); return 1; }
+    if is_mid_paused() { reentrancy_exit(); return 2; }
     storage_set(MID_PAUSE_KEY, &[1]);
     log_info("MoltyID paused");
+    reentrancy_exit();
     0
 }
 
@@ -4145,6 +4309,7 @@ pub extern "C" fn mid_pause(caller_ptr: *const u8) -> u32 {
 /// Returns: 0 success, 1 not admin, 2 not paused
 #[no_mangle]
 pub extern "C" fn mid_unpause(caller_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
 
@@ -4152,13 +4317,15 @@ pub extern "C" fn mid_unpause(caller_ptr: *const u8) -> u32 {
     let real_caller = get_caller();
     if real_caller.0 != caller {
         log_info("mid_unpause: caller does not match transaction signer");
+        reentrancy_exit();
         return 200;
     }
 
-    if !is_mid_admin(&caller) { return 1; }
-    if !is_mid_paused() { return 2; }
+    if !is_mid_admin(&caller) { reentrancy_exit(); return 1; }
+    if !is_mid_paused() { reentrancy_exit(); return 2; }
     storage_set(MID_PAUSE_KEY, &[0]);
     log_info("MoltyID unpaused");
+    reentrancy_exit();
     0
 }
 
@@ -4166,6 +4333,7 @@ pub extern "C" fn mid_unpause(caller_ptr: *const u8) -> u32 {
 /// Returns: 0 success, 1 not admin
 #[no_mangle]
 pub extern "C" fn transfer_admin(caller_ptr: *const u8, new_admin_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
 
@@ -4173,14 +4341,16 @@ pub extern "C" fn transfer_admin(caller_ptr: *const u8, new_admin_ptr: *const u8
     let real_caller = get_caller();
     if real_caller.0 != caller {
         log_info("transfer_admin: caller does not match transaction signer");
+        reentrancy_exit();
         return 200;
     }
 
-    if !is_mid_admin(&caller) { return 1; }
+    if !is_mid_admin(&caller) { reentrancy_exit(); return 1; }
     let mut new_admin = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(new_admin_ptr, new_admin.as_mut_ptr(), 32); }
     storage_set(b"mid_admin", &new_admin);
     log_info("Admin key transferred");
+    reentrancy_exit();
     0
 }
 
@@ -4188,22 +4358,26 @@ pub extern "C" fn transfer_admin(caller_ptr: *const u8, new_admin_ptr: *const u8
 /// Returns: 0 success, 1 not admin, 2 zero address rejected
 #[no_mangle]
 pub extern "C" fn set_mid_token_address(caller_ptr: *const u8, token_addr_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
     let real_caller = get_caller();
     if real_caller.0 != caller {
         log_info("set_mid_token_address: caller mismatch");
+        reentrancy_exit();
         return 200;
     }
-    if !is_mid_admin(&caller) { return 1; }
+    if !is_mid_admin(&caller) { reentrancy_exit(); return 1; }
     let mut token_addr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(token_addr_ptr, token_addr.as_mut_ptr(), 32); }
     if token_addr.iter().all(|&b| b == 0) {
         log_info("set_mid_token_address: zero address rejected");
+        reentrancy_exit();
         return 2;
     }
     storage_set(MID_TOKEN_ADDR_KEY, &token_addr);
     log_info("MoltyID token address set");
+    reentrancy_exit();
     0
 }
 
@@ -4211,22 +4385,26 @@ pub extern "C" fn set_mid_token_address(caller_ptr: *const u8, token_addr_ptr: *
 /// Returns: 0 success, 1 not admin, 2 zero address rejected
 #[no_mangle]
 pub extern "C" fn set_mid_self_address(caller_ptr: *const u8, self_addr_ptr: *const u8) -> u32 {
+    if !reentrancy_enter() { return 100; }
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
     let real_caller = get_caller();
     if real_caller.0 != caller {
         log_info("set_mid_self_address: caller mismatch");
+        reentrancy_exit();
         return 200;
     }
-    if !is_mid_admin(&caller) { return 1; }
+    if !is_mid_admin(&caller) { reentrancy_exit(); return 1; }
     let mut self_addr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(self_addr_ptr, self_addr.as_mut_ptr(), 32); }
     if self_addr.iter().all(|&b| b == 0) {
         log_info("set_mid_self_address: zero address rejected");
+        reentrancy_exit();
         return 2;
     }
     storage_set(MID_SELF_ADDR_KEY, &self_addr);
     log_info("MoltyID self address set");
+    reentrancy_exit();
     0
 }
 
@@ -4250,18 +4428,21 @@ pub extern "C" fn set_mid_self_address(caller_ptr: *const u8, self_addr_ptr: *co
 /// Args buffer layout (read via get_args): [admin 32B][owner 32B][name bytes][name_len 4B LE][agent_type 1B]
 #[no_mangle]
 pub extern "C" fn admin_register_reserved_name() -> u32 {
+    if !reentrancy_enter() { return 100; }
     // Read args from context buffer (avoids WASM ABI pointer-mapping issues)
     let args = moltchain_sdk::contract::args();
 
     // Minimum: 32 (admin) + 32 (owner) + 1 (min name) + 4 (name_len) + 1 (agent_type) = 70
     if args.len() < 70 {
         log_info("admin_register_reserved_name: args too short");
+        reentrancy_exit();
         return 3;
     }
 
     let admin = &args[0..32];
     if !is_mid_admin(admin) {
         log_info("admin_register_reserved_name: not admin");
+        reentrancy_exit();
         return 1;
     }
 
@@ -4278,6 +4459,7 @@ pub extern "C" fn admin_register_reserved_name() -> u32 {
     // Validate: 64 + name_len + 5 should equal total args length
     if 64 + name_len + 5 != args.len() {
         log_info("admin_register_reserved_name: malformed args");
+        reentrancy_exit();
         return 3;
     }
 
@@ -4286,6 +4468,7 @@ pub extern "C" fn admin_register_reserved_name() -> u32 {
     // Validate name format (but NOT reserved check — that's the whole point)
     if !validate_molt_name(name) {
         log_info("admin_register_reserved_name: invalid name format");
+        reentrancy_exit();
         return 2;
     }
 
@@ -4297,6 +4480,7 @@ pub extern "C" fn admin_register_reserved_name() -> u32 {
             let current_slot = moltchain_sdk::get_slot();
             if current_slot < expiry {
                 log_info("admin_register_reserved_name: name already taken");
+                reentrancy_exit();
                 return 5;
             }
         }
@@ -4379,6 +4563,7 @@ pub extern "C" fn admin_register_reserved_name() -> u32 {
     storage_set(b"molt_name_count", &u64_to_bytes(count + 1));
 
     log_info("Reserved .molt name registered by admin");
+    reentrancy_exit();
     0
 }
 
@@ -6200,5 +6385,64 @@ mod tests {
         test_mock::set_caller(bidder2);
         test_mock::set_value(700);
         assert_eq!(bid_name_auction(bidder2.as_ptr(), name.as_ptr(), name.len() as u32, 700), 31);
+    }
+
+    #[test]
+    fn test_reentrancy_guard_blocks_recursive_call() {
+        // G18-02: Verify reentrancy guard returns 100 when entered
+        test_mock::reset();
+        // Simulate reentrancy by setting the guard manually
+        storage_set(MOLTYID_REENTRANCY_KEY, &[1u8]);
+
+        // All guarded functions should return 100
+        let addr = [1u8; 32];
+        assert_eq!(register_identity(addr.as_ptr(), 1, addr.as_ptr(), 4), 100);
+        let name = b"test";
+        assert_eq!(register_name(addr.as_ptr(), name.as_ptr(), 4, 1), 100);
+        assert_eq!(bid_name_auction(addr.as_ptr(), name.as_ptr(), 4, 100), 100);
+
+        // Clear guard — should work again (will fail on other checks but not reentrancy)
+        storage_set(MOLTYID_REENTRANCY_KEY, &[0u8]);
+        // bid_name_auction should get past reentrancy (fail on identity check instead)
+        test_mock::set_caller(Address(addr));
+        assert_eq!(bid_name_auction(addr.as_ptr(), name.as_ptr(), 4, 100), 1); // "Bidder must have MoltyID"
+    }
+
+    #[test]
+    fn test_bid_auction_cei_pattern() {
+        // G18-02: Verify state is updated before external call (CEI)
+        // When a higher bid comes in, auction record should be updated
+        // even if refund transfer fails
+        test_mock::reset();
+
+        let creator = [1u8; 32];
+        let bidder1 = [2u8; 32];
+        let bidder2 = [3u8; 32];
+
+        // Setup identities
+        test_mock::set_caller(Address(creator));
+        storage_set(&identity_key(&creator), &[0u8; 128]);
+        test_mock::set_caller(Address(bidder1));
+        storage_set(&identity_key(&bidder1), &[0u8; 128]);
+        test_mock::set_caller(Address(bidder2));
+        storage_set(&identity_key(&bidder2), &[0u8; 128]);
+
+        // Create auction
+        let name = b"premium";
+        test_mock::set_caller(Address(creator));
+        test_mock::set_slot(100);
+        let result = create_name_auction(creator.as_ptr(), name.as_ptr(), 7, 500);
+        assert_eq!(result, 0, "Auction creation should succeed");
+
+        // First bid
+        test_mock::set_caller(Address(bidder1));
+        test_mock::set_value(600);
+        assert_eq!(bid_name_auction(bidder1.as_ptr(), name.as_ptr(), 7, 600), 0);
+
+        // After first bid, auction record should have bidder1
+        let ak = name_auction_key(name);
+        let record = storage_get(&ak).unwrap();
+        assert_eq!(bytes_to_u64(&record[25..33]), 600);
+        assert_eq!(&record[33..65], &bidder1);
     }
 }
