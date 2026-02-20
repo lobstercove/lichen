@@ -25,7 +25,7 @@ use moltchain_sdk::{
 // CONSTANTS
 // ============================================================================
 
-const REWARD_POOL_PER_MONTH: u64 = 1_000_000_000_000_000; // 1M MOLT (in shells)
+const REWARD_POOL_PER_MONTH: u64 = 500_000_000_000_000; // 500K MOLT (in shells) — sustainable rate per TOKENOMICS.md
 const SLOTS_PER_MONTH: u64 = 2_592_000;
 
 // Tier thresholds (cumulative volume in shells)
@@ -59,6 +59,8 @@ const AUTHORIZED_CALLER_PREFIX: &[u8] = b"rew_auth_";
 const TOTAL_VOLUME_KEY: &[u8] = b"rew_total_volume";
 const TRADE_COUNT_KEY: &[u8] = b"rew_trade_count";
 const TRADER_COUNT_KEY: &[u8] = b"rew_trader_count";
+const EPOCH_DISTRIBUTED_KEY: &[u8] = b"rew_epoch_dist";   // rewards distributed this epoch
+const EPOCH_START_SLOT_KEY: &[u8] = b"rew_epoch_start";   // slot when current epoch started
 
 // ============================================================================
 // HELPERS
@@ -212,11 +214,35 @@ pub fn record_trade(trader: *const u8, fee_paid: u64, volume: u64) -> u32 {
     save_u64(TOTAL_VOLUME_KEY, load_u64(TOTAL_VOLUME_KEY).saturating_add(volume));
     save_u64(TRADE_COUNT_KEY, load_u64(TRADE_COUNT_KEY).saturating_add(1));
 
+    // TOKENOMICS H7: Monthly epoch cap enforcement
+    // Reset epoch counter when SLOTS_PER_MONTH elapsed since start
+    let current_slot = get_slot();
+    let epoch_start = load_u64(EPOCH_START_SLOT_KEY);
+    let epoch_dist = if epoch_start == 0 || current_slot >= epoch_start + SLOTS_PER_MONTH {
+        // New epoch: reset counter and record start
+        save_u64(EPOCH_START_SLOT_KEY, current_slot);
+        save_u64(EPOCH_DISTRIBUTED_KEY, 0);
+        0u64
+    } else {
+        load_u64(EPOCH_DISTRIBUTED_KEY)
+    };
+
     // Calculate reward based on tier
     let tier = get_tier(current_vol.saturating_add(volume));
     let multiplier = get_multiplier(tier);
     let base_reward = fee_paid; // 1:1 fee mining
-    let reward = base_reward.saturating_mul(multiplier) / 10_000;
+    let mut reward = base_reward.saturating_mul(multiplier) / 10_000;
+
+    // Cap reward to remaining monthly budget (TOKENOMICS H7)
+    let remaining_budget = REWARD_POOL_PER_MONTH.saturating_sub(epoch_dist);
+    if reward > remaining_budget {
+        reward = remaining_budget;
+    }
+
+    // Update epoch distributed counter
+    if reward > 0 {
+        save_u64(EPOCH_DISTRIBUTED_KEY, epoch_dist.saturating_add(reward));
+    }
 
     // Add to pending
     let pending = load_u64(&trader_pending_key(&t));
@@ -1201,5 +1227,82 @@ mod tests {
         // separate pool address. In the real runtime, CCC sets caller to the
         // calling contract, so caller == from == 0xAA... is guaranteed.
         assert_eq!(get_contract_address().0, contract_self);
+    }
+
+    // ============================================================================
+    // TOKENOMICS H7 TESTS
+    // ============================================================================
+
+    #[test]
+    fn test_reward_pool_per_month_is_500k() {
+        // H7: REWARD_POOL_PER_MONTH set to 500K MOLT per TOKENOMICS.md
+        assert_eq!(REWARD_POOL_PER_MONTH, 500_000_000_000_000);
+    }
+
+    #[test]
+    fn test_monthly_epoch_cap_enforced() {
+        // H7: rewards capped at REWARD_POOL_PER_MONTH per epoch
+        let _admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_slot(100);
+
+        // Record a massive trade that would exceed monthly budget
+        // fee_paid = REWARD_POOL_PER_MONTH * 2 → uncapped reward would be 2x budget
+        let huge_fee = REWARD_POOL_PER_MONTH * 2;
+        record_trade(trader.as_ptr(), huge_fee, huge_fee);
+
+        // Pending reward should be capped at REWARD_POOL_PER_MONTH
+        let pending = load_u64(&trader_pending_key(&trader));
+        assert!(pending <= REWARD_POOL_PER_MONTH, "reward must not exceed monthly cap");
+
+        // Epoch distributed should be at cap
+        let epoch_dist = load_u64(EPOCH_DISTRIBUTED_KEY);
+        assert_eq!(epoch_dist, pending);
+    }
+
+    #[test]
+    fn test_epoch_resets_after_month() {
+        // H7: epoch resets when SLOTS_PER_MONTH has elapsed
+        let _admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_slot(100);
+
+        // Fill most of the monthly budget
+        let big_fee = REWARD_POOL_PER_MONTH / 2;
+        record_trade(trader.as_ptr(), big_fee, big_fee);
+        let dist_before = load_u64(EPOCH_DISTRIBUTED_KEY);
+        assert!(dist_before > 0);
+
+        // Advance past month boundary
+        test_mock::set_slot(100 + SLOTS_PER_MONTH + 1);
+
+        // New trade should reset epoch counter
+        let trader2 = [3u8; 32];
+        record_trade(trader2.as_ptr(), 10_000, 10_000_000);
+        let dist_after = load_u64(EPOCH_DISTRIBUTED_KEY);
+        // Should be much less than before since epoch reset
+        assert!(dist_after < dist_before, "epoch counter should reset after month");
+    }
+
+    #[test]
+    fn test_zero_reward_when_budget_exhausted() {
+        // H7: once monthly budget is fully distributed, new trades get 0 reward
+        let _admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_slot(100);
+
+        // Exhaust the budget
+        let huge_fee = REWARD_POOL_PER_MONTH * 2;
+        record_trade(trader.as_ptr(), huge_fee, huge_fee);
+        let pending1 = load_u64(&trader_pending_key(&trader));
+
+        // Another trade in same epoch
+        let trader2 = [3u8; 32];
+        record_trade(trader2.as_ptr(), 10_000, 10_000_000);
+        let pending2 = load_u64(&trader_pending_key(&trader2));
+        assert_eq!(pending2, 0, "no rewards after budget exhausted");
+
+        // Cap verification
+        assert!(pending1 <= REWARD_POOL_PER_MONTH);
     }
 }
