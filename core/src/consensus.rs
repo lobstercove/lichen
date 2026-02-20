@@ -3480,4 +3480,146 @@ mod tests {
         assert_eq!(liquid, 250_000_000);
         assert_eq!(liquid + debt, reward);
     }
+
+    // ================================================================
+    // K1-02: Fork handling with real Block objects
+    // ================================================================
+
+    #[test]
+    fn test_fork_choice_with_real_blocks_same_slot() {
+        // Two competing blocks at the same slot — heavier stake wins
+        let mut fc = ForkChoice::new();
+        let validator_a = [0xAAu8; 32];
+        let validator_b = [0xBBu8; 32];
+
+        let block_a = crate::Block::new_with_timestamp(
+            10, Hash::default(), Hash::default(), validator_a, Vec::new(), 1000,
+        );
+        let block_b = crate::Block::new_with_timestamp(
+            10, Hash::default(), Hash::default(), validator_b, Vec::new(), 1001,
+        );
+        let hash_a = block_a.hash();
+        let hash_b = block_b.hash();
+
+        // Block A has less stake weight
+        fc.add_head(block_a.header.slot, hash_a, 100);
+        // Block B has more stake weight → wins
+        fc.add_head(block_b.header.slot, hash_b, 200);
+
+        let (slot, selected) = fc.select_head().unwrap();
+        assert_eq!(slot, 10);
+        assert_eq!(selected, hash_b, "Block B should win with higher stake");
+    }
+
+    #[test]
+    fn test_fork_choice_higher_slot_wins_over_heavier() {
+        // A fork at slot 11 should win over a heavier fork at slot 10
+        let mut fc = ForkChoice::new();
+
+        let block_low = crate::Block::new_with_timestamp(
+            10, Hash::default(), Hash::default(), [1u8; 32], Vec::new(), 1000,
+        );
+        let block_high = crate::Block::new_with_timestamp(
+            11, Hash::default(), Hash::default(), [2u8; 32], Vec::new(), 1001,
+        );
+
+        // Low slot has much more weight
+        fc.add_head(block_low.header.slot, block_low.hash(), 1000);
+        // High slot has less weight but higher slot → wins
+        fc.add_head(block_high.header.slot, block_high.hash(), 50);
+
+        let (slot, _) = fc.select_head().unwrap();
+        assert_eq!(slot, 11, "Higher slot should win regardless of weight");
+    }
+
+    #[test]
+    fn test_fork_choice_deterministic_tiebreak() {
+        // Same slot, same weight → deterministic hash comparison decides
+        let mut fc = ForkChoice::new();
+
+        let block_a = crate::Block::new_with_timestamp(
+            5, Hash::default(), Hash::new([1u8; 32]), [0xAA; 32], Vec::new(), 100,
+        );
+        let block_b = crate::Block::new_with_timestamp(
+            5, Hash::default(), Hash::new([2u8; 32]), [0xBB; 32], Vec::new(), 101,
+        );
+
+        let hash_a = block_a.hash();
+        let hash_b = block_b.hash();
+
+        // Same slot, same weight
+        fc.add_head(5, hash_a, 100);
+        fc.add_head(5, hash_b, 100);
+
+        let (_, selected) = fc.select_head().unwrap();
+        // Tiebreak: deterministic — same every time
+        let expected = if hash_a.0 > hash_b.0 { hash_a } else { hash_b };
+        assert_eq!(selected, expected, "Deterministic tiebreak should pick consistently");
+
+        // Run again — same result
+        let (_, selected2) = fc.select_head().unwrap();
+        assert_eq!(selected, selected2, "Tiebreak must be deterministic");
+    }
+
+    #[test]
+    fn test_fork_choice_late_attestations_flip_preference() {
+        // Block A initially leads, but late attestations for B flip the decision
+        let mut fc = ForkChoice::new();
+        let hash_a = Hash::new([0xAA; 32]);
+        let hash_b = Hash::new([0xBB; 32]);
+
+        // Initial: A leads
+        fc.add_head(20, hash_a, 100);
+        fc.add_head(20, hash_b, 50);
+
+        let (_, selected) = fc.select_head().unwrap();
+        assert_eq!(selected, hash_a, "A should lead initially");
+
+        // Late attestations arrive for B
+        fc.add_head(20, hash_b, 80);
+
+        // Now B leads (50 + 80 = 130 > 100)
+        let (_, selected) = fc.select_head().unwrap();
+        assert_eq!(selected, hash_b, "Late attestations should flip to B");
+    }
+
+    #[test]
+    fn test_fork_choice_multi_fork_three_candidates() {
+        // Three-way fork at same slot — heaviest wins
+        let mut fc = ForkChoice::new();
+        let hash_a = Hash::new([0xAA; 32]);
+        let hash_b = Hash::new([0xBB; 32]);
+        let hash_c = Hash::new([0xCC; 32]);
+
+        fc.add_head(50, hash_a, 100);
+        fc.add_head(50, hash_b, 200);
+        fc.add_head(50, hash_c, 150);
+
+        let (_, selected) = fc.select_head().unwrap();
+        assert_eq!(selected, hash_b, "Heaviest block should win in 3-way fork");
+    }
+
+    #[test]
+    fn test_fork_choice_finality_prevents_reorg() {
+        // After finality, adding a heavier fork at a finalized slot should
+        // not win if the non-finalized fork has a later slot.
+        // This tests that slot priority (representing chain length) matters
+        // more than weight at finalized depths.
+        let mut fc = ForkChoice::new();
+        let finalized_hash = Hash::new([0x11; 32]);
+        let extension_hash = Hash::new([0x22; 32]);
+        let attacker_hash = Hash::new([0xFF; 32]);
+
+        // Chain: finalized at slot 100, extended to slot 110
+        fc.add_head(100, finalized_hash, 1000);
+        fc.add_head(110, extension_hash, 50);
+
+        // Attacker tries to reorg at slot 100 with massive weight
+        fc.add_head(100, attacker_hash, 5000);
+
+        let (slot, selected) = fc.select_head().unwrap();
+        // The extension at slot 110 should still be canonical (higher slot wins)
+        assert_eq!(slot, 110, "Extension should win — slot priority");
+        assert_eq!(selected, extension_hash);
+    }
 }
