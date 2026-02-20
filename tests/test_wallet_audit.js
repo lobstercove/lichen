@@ -448,6 +448,23 @@ test('encryptPrivateKey uses AES-256-GCM + PBKDF2', () => {
     assert(cryptoSrc.includes('getRandomValues'), 'Must use CSPRNG for salt/IV');
 });
 
+// AUDIT-FIX H6-01: Verify no fake address generation from random bytes
+test('wallet-connect.js does not generate fake addresses from random bytes', () => {
+    const walletConnectSrc = fs.readFileSync(
+        path.join(__dirname, '..', 'shared', 'wallet-connect.js'), 'utf8');
+    // The old vulnerability: generating random bytes and encoding as base58 to create a fake address
+    // Pattern: var bytes = new Uint8Array(32); crypto.getRandomValues(bytes); ... chars[bytes[i % 32] % chars.length]
+    const hasFakeAddrPattern = walletConnectSrc.includes("chars[bytes[i % 32] % chars.length]");
+    assert(!hasFakeAddrPattern,
+        'Must not generate fake addresses from random bytes (H6-01)');
+
+    // Must throw error instead
+    assert(walletConnectSrc.includes('AUDIT-FIX H6-01'),
+        'Must have AUDIT-FIX H6-01 annotation');
+    assert(walletConnectSrc.includes('throw new Error'),
+        'Must throw error when wallet extension is unavailable');
+});
+
 test('encryptPrivateKey/decryptPrivateKey roundtrip', async () => {
     const seedHex = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
     const password = 'test-password-123';
