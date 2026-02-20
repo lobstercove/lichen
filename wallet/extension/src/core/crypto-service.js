@@ -362,9 +362,32 @@ export function isValidMnemonic(mnemonic) {
   return words.length === 12 && words.every((word) => BIP39_WORDLIST.includes(word));
 }
 
-export async function mnemonicToKeypair(mnemonic) {
-  const normalized = mnemonic.trim();
-  const seedBytes = (await sha512(new TextEncoder().encode(normalized))).slice(0, 32);
+/**
+ * AUDIT-FIX I2-01: Derive Ed25519 keypair from mnemonic using BIP39-compliant PBKDF2.
+ * Replaces SHA-512 single-hash with PBKDF2-HMAC-SHA512 (2048 iterations) per BIP39 spec.
+ * @param {string} mnemonic - BIP39 mnemonic phrase
+ * @param {string} passphrase - Optional BIP39 passphrase (default: "")
+ */
+export async function mnemonicToKeypair(mnemonic, passphrase = '') {
+  const encoder = new TextEncoder();
+  // BIP39 spec: NFKD-normalize the mnemonic, salt = "mnemonic" + passphrase
+  const mnemonicBytes = encoder.encode(mnemonic.normalize('NFKD').trim());
+  const saltBytes = encoder.encode('mnemonic' + passphrase);
+
+  // Import mnemonic as PBKDF2 key material
+  const keyMaterial = await crypto.subtle.importKey(
+    'raw', mnemonicBytes, 'PBKDF2', false, ['deriveBits']
+  );
+
+  // BIP39: PBKDF2-HMAC-SHA512, 2048 iterations, 512-bit (64-byte) output
+  const seedBuffer = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: saltBytes, iterations: 2048, hash: 'SHA-512' },
+    keyMaterial,
+    512  // 64 bytes × 8 = 512 bits
+  );
+
+  // Take first 32 bytes as Ed25519 seed
+  const seedBytes = new Uint8Array(seedBuffer).slice(0, 32);
   const privateKeyHex = bytesToHex(seedBytes);
 
   const publicKeyBytes = await deriveEd25519PublicKeyFromSeed(seedBytes);
