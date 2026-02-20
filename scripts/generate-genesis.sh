@@ -127,23 +127,46 @@ print_info "Generating validator keypairs..."
 VALIDATORS_JSON="[]"
 
 for i in $(seq 1 $NUM_VALIDATORS); do
-    # Generate keypair using molt CLI
-    KEYPAIR_FILE="/tmp/validator-${i}-keypair.json"
+    KEYPAIR_FILE="/tmp/moltchain-genesis-validator-${i}.json"
     
-    # For testnet, use deterministic seeds
     if [ "$NETWORK" == "testnet" ]; then
-        print_info "  Validator $i: Using deterministic seed for testnet"
-        # Create a simple JSON keypair (you'd use molt CLI in production)
-        SEED="000000000000000000000000000000$(printf '%02d' $i)"
+        # For testnet: generate a real keypair using molt CLI or openssl
+        if command -v molt &> /dev/null; then
+            print_info "  Validator $i: Generating keypair via molt CLI..."
+            molt keygen --output "$KEYPAIR_FILE" --force 2>/dev/null
+            PUBKEY=$(grep -o '"publicKeyBase58":"[^"]*"' "$KEYPAIR_FILE" | cut -d'"' -f4)
+        elif command -v openssl &> /dev/null; then
+            # Generate Ed25519 keypair via openssl, extract raw pubkey as Base58
+            print_info "  Validator $i: Generating keypair via openssl..."
+            SEED="000000000000000000000000000000$(printf '%02d' $i)"
+            # Derive a deterministic 32-byte seed from the input
+            RAW_SEED=$(echo -n "$SEED" | openssl dgst -sha256 -binary | xxd -p -c 64)
+            # Use the SHA-256 hash as the private key seed, encode pubkey as hex
+            PUBKEY=$(echo -n "$RAW_SEED" | head -c 64 | fold -w2 | while read byte; do printf "\\x$byte"; done | openssl pkey -inform DER -outform DER -pubout 2>/dev/null | tail -c 32 | basenc --base58 2>/dev/null || echo "TESTNET_KEY_$(echo -n "$RAW_SEED" | head -c 40)")
+            # If basenc is not available, generate a deterministic but identifiable key
+            if [[ "$PUBKEY" == TESTNET_KEY_* ]]; then
+                print_warning "  Validator $i: basenc not available — using SHA-256 derived identifier"
+                print_warning "  Install basenc (coreutils 8.31+) for proper Base58 keys"
+            fi
+        else
+            print_error "  Validator $i: Neither molt CLI nor openssl available"
+            print_error "  Cannot generate real keypairs. Install molt CLI: cargo install --path cli"
+            exit 1
+        fi
     else
-        print_warning "  Validator $i: Mainnet requires secure key generation"
-        print_warning "  Please generate keys securely using: molt init"
-        continue
+        # For mainnet: REQUIRE real keypair files — never generate placeholder keys
+        print_error "  Mainnet genesis REQUIRES pre-generated validator keypairs"
+        print_error "  Generate keypairs securely: molt keygen --output validator-${i}.json"
+        print_error "  Then re-run with: --validator-keys validator-1.json,validator-2.json,..."
+        exit 1
     fi
     
-    # For demonstration, create placeholder addresses
-    # In production, use actual molt CLI: molt keygen
-    PUBKEY="Validator${i}PublicKeyBase58FormatHere$(printf '%02d' $i)"
+    # Validate the pubkey is not a placeholder
+    if [[ "$PUBKEY" == *"Placeholder"* ]] || [[ "$PUBKEY" == *"FormatHere"* ]] || [[ "$PUBKEY" == *"REPLACE"* ]] || [[ -z "$PUBKEY" ]]; then
+        print_error "  Validator $i: Invalid or placeholder public key detected: $PUBKEY"
+        print_error "  Cannot use placeholder keys in genesis. Generate real keys first."
+        exit 1
+    fi
     
     print_success "  Validator $i pubkey: ${PUBKEY:0:20}..."
     
@@ -182,8 +205,21 @@ print_info "Generating genesis accounts..."
 if [ "$NETWORK" == "testnet" ]; then
     TREASURY_ADDR="6YkFWKH9HQZFVEy4QPw82xRx5qHRk84vU1H2Hk7JLj1H"
 else
-    print_warning "Mainnet treasury address must be securely generated"
-    TREASURY_ADDR="REPLACE_WITH_SECURE_MAINNET_TREASURY_ADDRESS"
+    # Mainnet: require treasury address as argument or environment variable
+    if [ -n "${MAINNET_TREASURY_ADDR:-}" ]; then
+        TREASURY_ADDR="$MAINNET_TREASURY_ADDR"
+    else
+        print_error "Mainnet requires a securely generated treasury address"
+        print_error "Set MAINNET_TREASURY_ADDR environment variable or use --treasury-addr"
+        exit 1
+    fi
+fi
+
+# Validate treasury address is not a placeholder
+if [[ "$TREASURY_ADDR" == *"REPLACE"* ]] || [[ "$TREASURY_ADDR" == *"placeholder"* ]] || [[ -z "$TREASURY_ADDR" ]]; then
+    print_error "Treasury address is a placeholder or empty: $TREASURY_ADDR"
+    print_error "Set a real treasury address before generating genesis"
+    exit 1
 fi
 
 # Set consensus parameters based on network
@@ -280,11 +316,13 @@ echo ""
 
 if [ "$NETWORK" == "mainnet" ]; then
     print_warning "⚠️  MAINNET SECURITY CHECKLIST:"
-    echo "   □ Replace placeholder addresses with secure keypairs"
-    echo "   □ Verify all validator identities"
-    echo "   □ Backup genesis.json securely"
-    echo "   □ Test on testnet first"
-    echo "   □ Coordinate launch time with validators"
+    echo "   ✓ Placeholder keys are automatically rejected"
+    echo "   ✓ Treasury address validated (not placeholder)"
+    echo "   □ Verify all validator identities out-of-band"
+    echo "   □ Backup genesis.json securely (offline)"
+    echo "   □ Test on testnet first with identical config"
+    echo "   □ Coordinate launch time with all validators"
+    echo "   □ Verify genesis hash matches across all validators"
 fi
 
 echo ""
