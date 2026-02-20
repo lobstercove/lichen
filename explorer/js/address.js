@@ -1,34 +1,7 @@
 // MoltChain Explorer - Address Detail Page
 // Displays detailed information about a specific address/account
-
-// Inline Base58 decoder (no external dependency needed)
-const bs58 = (() => {
-    const ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-    const BASE_MAP = new Uint8Array(256).fill(255);
-    for (let i = 0; i < ALPHABET.length; i++) BASE_MAP[ALPHABET.charCodeAt(i)] = i;
-    return {
-        decode(str) {
-            if (!str || str.length === 0) return new Uint8Array(0);
-            const bytes = [0];
-            for (let i = 0; i < str.length; i++) {
-                const val = BASE_MAP[str.charCodeAt(i)];
-                if (val === 255) throw new Error('Invalid base58 character: ' + str[i]);
-                let carry = val;
-                for (let j = 0; j < bytes.length; j++) {
-                    carry += bytes[j] * 58;
-                    bytes[j] = carry & 0xff;
-                    carry >>= 8;
-                }
-                while (carry > 0) { bytes.push(carry & 0xff); carry >>= 8; }
-            }
-            let zeros = 0;
-            while (zeros < str.length && str[zeros] === '1') zeros++;
-            const result = new Uint8Array(zeros + bytes.length);
-            for (let i = 0; i < bytes.length; i++) result[zeros + i] = bytes[bytes.length - 1 - i];
-            return result;
-        }
-    };
-})();
+// NOTE: bs58decode, formatHash, formatAddress, escapeHtml, copyToClipboard,
+//       safeCopy, getMoltRpcUrl are provided by shared/utils.js
 
 let currentAddress = null;
 let txNextCursor = null;    // before_slot for next page
@@ -52,12 +25,6 @@ const AGENT_TYPE_OPTIONS = [
     { value: 8, label: 'Storage 💾' }
 ];
 
-function getRpcUrl() {
-    return typeof getExplorerRpcUrl === 'function'
-        ? getExplorerRpcUrl()
-        : 'http://localhost:8899';
-}
-
 function isSystemProgramOwner(owner) {
     const SYS = typeof SYSTEM_PROGRAM_ID !== 'undefined'
         ? SYSTEM_PROGRAM_ID : '11111111111111111111111111111111';
@@ -73,9 +40,9 @@ function moltchainToEvmAddress(base58Pubkey) {
             base58Pubkey === '11111111111111111111111111111111') {
             return '0x' + '0'.repeat(40);
         }
-        if (typeof bs58 === 'undefined' || !bs58?.decode) return null;
+        if (typeof bs58decode === 'undefined') return null;
         if (typeof keccak_256 === 'undefined') return null;
-        const pubkeyBytes = bs58.decode(base58Pubkey);
+        const pubkeyBytes = bs58decode(base58Pubkey);
         const hashHex = keccak_256(pubkeyBytes);
         return '0x' + hashHex.slice(-40);
     } catch (error) {
@@ -91,7 +58,7 @@ async function rpcCall(method, params = []) {
     if (typeof rpc !== 'undefined' && rpc && typeof rpc.call === 'function') {
         return rpc.call(method, params);
     }
-    const response = await fetch(getRpcUrl(), {
+    const response = await fetch(getMoltRpcUrl(), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jsonrpc: '2.0', id: Date.now(), method, params })
@@ -808,8 +775,8 @@ async function getMoltyIdProgramAddress() {
 }
 
 function buildTransferInstruction(fromAddress, toAddress, amountMolt) {
-    const fromPubkey = bs58.decode(fromAddress);
-    const toPubkey = bs58.decode(toAddress);
+    const fromPubkey = bs58decode(fromAddress);
+    const toPubkey = bs58decode(toAddress);
     const systemProgram = new Uint8Array(32); // SYSTEM_PROGRAM_ID = [0; 32]
     const amountShells = Math.floor(Number(amountMolt) * 1_000_000_000);
     const instructionData = new Uint8Array(9);
@@ -825,8 +792,8 @@ function buildTransferInstruction(fromAddress, toAddress, amountMolt) {
 }
 
 function buildContractCallInstruction({ callerAddress, contractAddress, functionName, args, value = 0 }) {
-    const callerPubkey = bs58.decode(callerAddress);
-    const contractPubkey = bs58.decode(contractAddress);
+    const callerPubkey = bs58decode(callerAddress);
+    const contractPubkey = bs58decode(contractAddress);
     const contractProgramId = new Uint8Array(32).fill(0xFF);
 
     const callArgs = JSON.stringify(args || {});

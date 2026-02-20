@@ -268,4 +268,31 @@ function updatePagination(config) {
     addBtn('»', totalPages, currentPage === totalPages, false);
 }
 
+// ── Extended Formatters ──
+
+function formatTimeFull(timestamp) {
+    if (!timestamp || timestamp <= 0) return 'Genesis';
+    var date = new Date(timestamp * 1000);
+    var now = new Date();
+    var diff = Math.floor((now - date) / 1000);
+
+    var ago = '';
+    if (diff < 60) ago = diff + ' seconds ago';
+    else if (diff < 3600) ago = Math.floor(diff / 60) + ' minutes ago';
+    else if (diff < 86400) ago = Math.floor(diff / 3600) + ' hours ago';
+    else ago = Math.floor(diff / 86400) + ' days ago';
+
+    return date.toLocaleString() + ' (' + ago + ')';
+}
+
+function formatTimeShort(timestamp) {
+    if (timestamp === null || timestamp === undefined) return 'N/A';
+    if (timestamp <= 0) return 'Genesis';
+    return new Date(timestamp * 1000).toLocaleString();
+}
+
+function formatShells(shells) {
+    return formatNumber(shells) + ' shells';
+}
+
 // console.log('✅ shared/utils.js loaded');
