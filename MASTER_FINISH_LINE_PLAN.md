@@ -464,21 +464,21 @@
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
 | G7-01 | CRITICAL | Security | `[FLP C12]` `initialize()` can be called by anyone — attacker seizes admin control of rewards emissions | Add `get_caller()` check in `initialize()` or only allow genesis block initialization | [x] |
-| G7-02 | HIGH | Missing | `[FLP C11]` Reward claims update bookkeeping but never transfer MOLT tokens — no source wallet defined | Wire to builder_grants wallet (250M MOLT) for actual token transfers | [ ] |
+| G7-02 | HIGH | Missing | `[FLP C11]` Reward claims update bookkeeping but never transfer MOLT tokens — no source wallet defined | Wire to builder_grants wallet (250M MOLT) for actual token transfers | [x] |
 | G7-03 | MEDIUM | Missing | No epoch-based distribution — rewards are calculated per-claim with no time boundaries | Implement epoch-based reward distribution with snapshots | [ ] |
 
 ### G.8 — contracts/dex_router/src/lib.rs
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| G8-01 | CRITICAL | Fake data | `[FLP C6]` Router swap uses simulation fallback that fabricates output amounts when cross-contract calls fail (which they always do) — trades return simulated values, not real movements | Remove simulation fallback; fail if cross-contract call fails | [ ] |
+| G8-01 | CRITICAL | Fake data | `[FLP C6]` Router swap uses simulation fallback that fabricates output amounts when cross-contract calls fail (which they always do) — trades return simulated values, not real movements | Remove simulation fallback; fail if cross-contract call fails | [x] |
 | G8-02 | HIGH | Missing | No multi-hop routing optimization — routes are hardcoded 2-hop maximum | Implement optimal path finding (Dijkstra or BFS on pair graph) | [ ] |
 
 ### G.9 — contracts/lobsterlend/src/lib.rs
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| G9-01 | HIGH | Financial | Token transfers are bookkeeping-only — no actual token movement on deposit, withdraw, borrow, or repay | Wire all operations to actual token transfers via host function | [ ] |
+| G9-01 | HIGH | Financial | Token transfers are bookkeeping-only — no actual token movement on deposit, withdraw, borrow, or repay | Wire all operations to actual token transfers via host function | [x] |
 | G9-02 | MEDIUM | Security | `[FLP M12]` Emergency pause blocks ALL operations including withdrawals — traps user funds | Allow withdrawals even when paused | [ ] |
 | G9-03 | MEDIUM | Overflow | `[FLP M13]` Borrow interest calculation can overflow u64 for large positions | Use checked arithmetic or u128 intermediates | [ ] |
 | G9-04 | MEDIUM | ABI | `[FLP M14]` Query functions use output pointers incompatible with JSON ABI encoder | Redesign queries to return serialized data via WASM memory | [ ] |
@@ -496,7 +496,7 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| G11-01 | HIGH | Financial | Bridge deposits and withdrawals are bookkeeping-only — no actual token locking or minting | Implement proper lock-and-mint / burn-and-release bridge mechanics | [ ] |
+| G11-01 | HIGH | Financial | Bridge deposits and withdrawals are bookkeeping-only — no actual token locking or minting | Implement proper lock-and-mint / burn-and-release bridge mechanics | [x] |
 | G11-02 | HIGH | Security | No relay/oracle mechanism for cross-chain verification — bridge trusts submitted proofs without validation | Implement relay verification or multi-sig oracle committee | [ ] |
 | G11-03 | MEDIUM | Missing | No bridge fee mechanism | Add configurable bridge fees | [ ] |
 
@@ -1178,13 +1178,13 @@ After cross_contract_call works:
 Phase 0 (Fatal):     [x] [x] [x] [x]                    4/4
 Phase 1 (Security):  [x] [x] [x] [x] [x] [x]            6/6  ✅ COMPLETE
 Phase 2 (Core):      [x] [x] [x] [x] [x] [x] [x] [x]    8/8  ✅ COMPLETE
-Phase 3 (Contracts): [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]  0/11
+Phase 3 (Contracts): [x] [x] [x] [x] [ ] [ ] [ ] [ ] [ ] [ ] [ ]  4/11
 Phase 4 (Infra):     [ ] [ ] [ ] [ ] [ ] [ ] [ ]        0/7
 Phase 5 (Quality):   [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]  0/10
 Phase 6 (Frontend):  [ ] [ ] [ ] [ ] [ ]                0/5
 Phase 7 (Testing):   [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
-                                              TOTAL:    18/63 phases
+                                              TOTAL:    22/63 phases
 ```
 
 ---
@@ -1212,6 +1212,10 @@ Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 | 2.13 | B1-02 | 8f882b7 | Feb 20 | Genesis contract initialization: all 4 genesis phases (deploy, initialize, create trading pairs, seed oracle) already existed in validator/src/main.rs. The only gap was bountyboard — skipped with comment "stateless bootstrap" but actually has `initialize()` → `set_identity_admin()` setting `identity_admin` key required by `verify_identity`, `update_reputation`, `issue_credential`. Without init, first-caller-wins vulnerability (G22-02). Fix: Added bountyboard InitSpec to `genesis_initialize_contracts()` Layer 5d. Also marks G22-02 as mitigated. 1 new source-level regression test: `b1_02_all_contracts_initialized_at_genesis` verifies all 27 contracts appear in genesis_initialize_contracts. 447 Rust + 52 JS tests, 0 regressions. |
 | 2.17 | A11-01 / A11-02 | a081ebc | Feb 20 | Fixed two EVM compatibility bugs in rpc/src/lib.rs. (1) A11-01: `handle_eth_gas_price()` was returning `fee_config.base_fee` (1,000,000 shells) — MetaMask computes total = gasPrice × estimateGas, so returning base_fee for both meant fee² display. Fixed to return `"0x1"` (1 shell per gas unit); `eth_estimateGas` already returns actual fee as gas value, so 1 × fee = correct total. (2) A11-02: `eth_getLogs` topic hashing used `sha2::Sha256` instead of `sha3::Keccak256` — all EVM tooling (Ethers.js, web3.py, MetaMask) uses keccak256 for event topic matching. Changed to `sha3::Keccak256`; added `sha3 = "0.10"` to rpc/Cargo.toml. Verified keccak256("Transfer(address,address,uint256)") = `ddf252ad...` matches standard EVM topic hash. 3 new tests: source-level gasPrice returns "0x1", source-level getLogs uses Keccak256, keccak256 produces correct ERC-20 Transfer topic hash. 460 Rust + 52 JS tests, 0 regressions. |
 | 2.18 | A5-03 | dce3614 | Feb 20 | Aligned slashing parameters between genesis.rs and consensus.rs. (1) Replaced dead flat `slashing_percentage_downtime: 5` field in ConsensusParams with graduated fields: `slashing_downtime_per_100_missed: 1` (1% per 100 missed slots) and `slashing_downtime_max_percent: 10` (cap at 10%), matching the actual runtime logic in consensus.rs. (2) Added `Default` impl for `ConsensusParams`. (3) Created `apply_economic_slashing_with_params()` in consensus.rs that reads all slash percentages from ConsensusParams instead of hardcoding: double_sign (50%), downtime (graduated 1%/100 max 10%), invalid_state (100%). Original `apply_economic_slashing()` preserved as backward-compat wrapper using defaults. (4) Wired validator/src/main.rs to call `apply_economic_slashing_with_params(&genesis_config.consensus)`. (5) Updated scripts/generate-genesis.sh JSON template. 3 new regression tests: source-level checks (no flat field, params used), graduated math (300 missed=3%, 2000 missed capped at 10%). Phase 2 COMPLETE (8/8). 463 Rust + 52 JS tests, 0 regressions. |
+| 2.20 | G8-01 | 67a8e28 | Feb 20 | Already fixed in Phase 2 commit 67a8e28. Simulation fallback in execute_clob_swap, execute_amm_swap, execute_legacy_swap was replaced with hard failure (return 0) when cross-contract call fails. Explicit regression test test_swap_no_simulation_fallback already exists. No additional code changes needed. |
+| 2.21 | G9-01 | ff6959c | Feb 20 | Wired all 8 core lobsterlend operations to actual token transfers. Incoming transfers (deposit, repay, liquidation payment, flash_repay): verified via get_value() — user must attach sufficient shells. Outgoing transfers (withdraw, borrow, flash_borrow, withdraw_reserves): self-custody pattern via call_token_transfer(molt, self, recipient) with bookkeeping revert on failure. Added set_moltcoin_address() admin function, transfer_out() helper, load_molt_addr()/is_zero_addr() helpers. Error 30=moltcoin not configured or insufficient value, error 31=transfer failed. 45 tests (up from 33) — 12 new: deposit/repay/liquidate/flash_repay insufficient value, withdraw/borrow/flash_borrow/withdraw_reserves without molt configured, set_moltcoin_address (happy+non-admin+zero), self-custody pattern verification. 465 Rust + 52 JS tests, 0 regressions. |
+| 2.19 | G7-02 | e81f957 | Feb 20 | Wired real token transfers in dex_rewards using self-custody pattern. Three issues fixed: (1) MOLTCOIN_ADDRESS_KEY/REWARDS_POOL_KEY were never initialized so claims silently skipped all transfers. (2) Even if configured, call_token_transfer(molt, pool, trader) would fail because moltcoin enforces caller==from and CCC caller is the dex_rewards contract not the pool. (3) Referral earnings accumulated via record_trade but had no claim function. Fix: Added get_contract_address() to SDK+runtime (new host function host_get_contract_address reads ctx.contract); dex_rewards now uses self as from address so caller==from is always satisfied in CCC. Claims fail with error 5 when moltcoin unconfigured instead of silent success. Added claim_referral_rewards (op 19). 38 contract tests (up from 34), 2 regression tests in caller_verification.rs. 465 Rust + 52 JS tests, 0 regressions. |
+| 3.22 | G11-01 | PENDING | Feb 20 | Wired all 5 moltbridge financial functions to actual token transfers. lock_tokens: get_value() verification for incoming shells. submit_mint/confirm_mint: transfer_out() to recipient on threshold completion, with CANCELLED/PENDING revert on failure. submit_unlock/confirm_unlock: transfer_out() to recipient with locked amount revert on failure. Added set_token_address() admin function (owner-only, zero rejected), load_molt_addr()/transfer_out() helpers. Also fixed all 43 pre-existing test failures (missing set_caller calls from prior caller verification phase). Added setup() with MOLT_ADDR+CONTRACT_ADDR, setup_no_molt(). 7 new tests: lock_insufficient_value, mint_without_molt, unlock_without_molt, set_token_address (happy+non-owner+zero), self_custody_transfer_pattern. 50 moltbridge tests (up from 43), 465 workspace tests, 0 regressions. |
 | 2.12 | G3-01 | 36d9084 | Feb 20 | Replaced linear tick approximation with correct exponential formula in contracts/dex_amm/src/lib.rs. (1) Precomputed 19 Q64.64 constants for 1.00005^(2^k) with 80-decimal-digit precision. (2) Implemented `mul_q64()` — 256-bit intermediate multiplication via hi/lo u64 decomposition with carry tracking and wrapping arithmetic. (3) New `tick_to_sqrt_price()` uses bit-decomposition of |tick|, multiplying accumulator by precomputed constants for each set bit; negative ticks use reciprocal. (4) New `sqrt_price_to_tick()` uses binary search for exact inversion. (5) Adjusted MAX_TICK/MIN_TICK from ±887,272 (Uniswap V3 uint160) to ±443,636 (matching u64 Q32.32 representable range). Verified against 80-digit precision reference values: tick 0,±1,±100,±600,±10000,±100000 all within ±1 ULP. 8 new tests: exponential accuracy (9 test vectors), large values, monotonicity (2001 ticks), roundtrip range, mul_q64 unit tests. Fixed 12 previously failing dex_amm tests that depended on correct pricing. 446 Rust + 52 JS tests, 0 regressions. |
 
 *Last updated: February 20, 2026*
