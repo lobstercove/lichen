@@ -143,6 +143,18 @@ fn mark_price_key(pair_id: u64) -> Vec<u8> {
     let mut k = Vec::from(&b"mrg_mark_"[..]);
     k.extend_from_slice(&u64_to_decimal(pair_id)); k
 }
+fn index_price_key(pair_id: u64) -> Vec<u8> {
+    let mut k = Vec::from(&b"mrg_idx_"[..]);
+    k.extend_from_slice(&u64_to_decimal(pair_id)); k
+}
+fn last_funding_pair_key(pair_id: u64) -> Vec<u8> {
+    let mut k = Vec::from(&b"mrg_lfund_"[..]);
+    k.extend_from_slice(&u64_to_decimal(pair_id)); k
+}
+fn cumulative_funding_key(pair_id: u64) -> Vec<u8> {
+    let mut k = Vec::from(&b"mrg_cfund_"[..]);
+    k.extend_from_slice(&u64_to_decimal(pair_id)); k
+}
 
 /// AUDIT-FIX M20: Load mark price with timestamp. Returns (price, timestamp).
 /// Backward-compatible: if only 8 bytes stored (legacy), timestamp = 0.
@@ -263,6 +275,7 @@ fn decode_pos_size(data: &[u8]) -> u64 { if data.len() >= 58 { bytes_to_u64(&dat
 fn decode_pos_margin(data: &[u8]) -> u64 { if data.len() >= 66 { bytes_to_u64(&data[58..66]) } else { 0 } }
 fn decode_pos_entry_price(data: &[u8]) -> u64 { if data.len() >= 74 { bytes_to_u64(&data[66..74]) } else { 0 } }
 fn decode_pos_leverage(data: &[u8]) -> u64 { if data.len() >= 82 { bytes_to_u64(&data[74..82]) } else { 0 } }
+fn decode_pos_accumulated_funding(data: &[u8]) -> u64 { if data.len() >= 106 { bytes_to_u64(&data[98..106]) } else { 0 } }
 
 fn update_pos_status(data: &mut Vec<u8>, s: u8) { if data.len() > 49 { data[49] = s; } }
 fn update_pos_size(data: &mut Vec<u8>, s: u64) {
@@ -270,6 +283,10 @@ fn update_pos_size(data: &mut Vec<u8>, s: u64) {
 }
 fn update_pos_margin(data: &mut Vec<u8>, m: u64) {
     if data.len() >= 66 { data[58..66].copy_from_slice(&u64_to_bytes(m)); }
+}
+fn update_pos_accumulated_funding(data: &mut Vec<u8>, f: u64) {
+    while data.len() < POSITION_SIZE { data.push(0); }
+    data[98..106].copy_from_slice(&u64_to_bytes(f));
 }
 
 /// Calculate margin ratio
@@ -356,6 +373,135 @@ pub fn set_mark_price(caller: *const u8, pair_id: u64, price: u64) -> u32 {
     data.extend_from_slice(&u64_to_bytes(get_timestamp()));
     storage_set(&mark_price_key(pair_id), &data);
     0
+}
+
+/// Set index (spot) price for a pair (called by oracle/analytics)
+/// Used together with mark price to calculate funding rates.
+pub fn set_index_price(caller: *const u8, pair_id: u64, price: u64) -> u32 {
+    let mut c = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
+    let real_caller = get_caller();
+    if real_caller.0 != c { return 200; }
+    if !require_admin(&c) { return 1; }
+    if price == 0 { return 2; }
+    let mut data = Vec::with_capacity(16);
+    data.extend_from_slice(&u64_to_bytes(price));
+    data.extend_from_slice(&u64_to_bytes(get_timestamp()));
+    storage_set(&index_price_key(pair_id), &data);
+    0
+}
+
+/// Load index price with timestamp. Returns (price, timestamp).
+fn load_index_price(pair_id: u64) -> (u64, u64) {
+    match storage_get(&index_price_key(pair_id)) {
+        Some(d) if d.len() >= 16 => (bytes_to_u64(&d[..8]), bytes_to_u64(&d[8..16])),
+        Some(d) if d.len() >= 8 => (bytes_to_u64(&d[..8]), 0),
+        _ => (0, 0),
+    }
+}
+
+/// Apply funding rates for a pair.
+/// Anyone can call this as a crank — it only executes if FUNDING_INTERVAL_SLOTS
+/// have elapsed since the last funding for this pair.
+///
+/// Funding rate = clamp((mark_price - index_price) / index_price * 10000, ±MAX_FUNDING_RATE_BPS)
+/// × tier-based fund_mult / 10
+///
+/// Longs pay when mark > index (positive rate), shorts pay when mark < index.
+/// Payment is deducted from/added to margin proportional to notional.
+///
+/// Returns: 0=applied (count in return_data), 1=too early, 2=no prices, 3=no open positions
+pub fn apply_funding(pair_id: u64) -> u32 {
+    let current_slot = get_slot();
+    let last_slot = load_u64(&last_funding_pair_key(pair_id));
+    if current_slot < last_slot + FUNDING_INTERVAL_SLOTS { return 1; }
+
+    let (mark, _mark_ts) = load_mark_price(pair_id);
+    let (index, _idx_ts) = load_index_price(pair_id);
+    if mark == 0 || index == 0 { return 2; }
+
+    // Funding rate in BPS: (mark - index) / index * 10000 (signed via u64 bias)
+    // Positive rate = longs pay shorts, negative = shorts pay longs
+    let rate_positive = mark >= index;
+    let rate_abs_bps = if rate_positive {
+        ((mark - index) as u128 * 10_000 / index as u128) as u64
+    } else {
+        ((index - mark) as u128 * 10_000 / index as u128) as u64
+    };
+    let clamped_bps = rate_abs_bps.min(MAX_FUNDING_RATE_BPS);
+
+    // If rate is 0, nothing to do but still mark as applied
+    if clamped_bps == 0 {
+        save_u64(&last_funding_pair_key(pair_id), current_slot);
+        return 0;
+    }
+
+    // Store cumulative funding rate for this pair (biased: 1<<63 = zero point)
+    let cum_key = cumulative_funding_key(pair_id);
+    let cum_funding = load_u64(&cum_key);
+    let cum_funding = if cum_funding == 0 { 1u64 << 63 } else { cum_funding }; // init bias
+    let new_cum = if rate_positive {
+        cum_funding.saturating_add(clamped_bps)
+    } else {
+        cum_funding.saturating_sub(clamped_bps)
+    };
+    save_u64(&cum_key, new_cum);
+
+    let pos_count = load_u64(POSITION_COUNT_KEY);
+    if pos_count == 0 { save_u64(&last_funding_pair_key(pair_id), current_slot); return 3; }
+
+    let mut applied = 0u64;
+    for pid in 1..=pos_count {
+        let pk = position_key(pid);
+        let mut data = match storage_get(&pk) {
+            Some(d) if d.len() >= POSITION_SIZE_V1 => d,
+            _ => continue,
+        };
+        if decode_pos_status(&data) != POS_OPEN { continue; }
+        if decode_pos_pair_id(&data) != pair_id { continue; }
+
+        let size = decode_pos_size(&data);
+        let margin = decode_pos_margin(&data);
+        let leverage = decode_pos_leverage(&data);
+        let side = decode_pos_side(&data);
+        let prev_funding = decode_pos_accumulated_funding(&data);
+
+        // Get tier-specific funding multiplier
+        let (_init, _maint, _liq, fund_mult) = get_tier_params(leverage);
+
+        // Payment = notional * clamped_bps / 10000 * fund_mult / 10
+        let notional = (size as u128 * mark as u128 / 1_000_000_000) as u64;
+        let payment = (notional as u128 * clamped_bps as u128 * fund_mult as u128
+            / (10_000 * 10) as u128) as u64;
+
+        if payment == 0 { continue; }
+
+        // Determine direction: longs pay on positive rate, shorts pay on negative
+        let pays = (side == SIDE_LONG && rate_positive) || (side == SIDE_SHORT && !rate_positive);
+
+        let new_margin = if pays {
+            margin.saturating_sub(payment)
+        } else {
+            margin.saturating_add(payment)
+        };
+
+        update_pos_margin(&mut data, new_margin);
+        // Accumulate funding: biased u64 (1<<63 = zero)
+        let prev = if prev_funding == 0 { 1u64 << 63 } else { prev_funding };
+        let new_funding = if pays {
+            prev.saturating_sub(payment)
+        } else {
+            prev.saturating_add(payment)
+        };
+        update_pos_accumulated_funding(&mut data, new_funding);
+        storage_set(&pk, &data);
+        applied += 1;
+    }
+
+    save_u64(&last_funding_pair_key(pair_id), current_slot);
+    log_info("Funding rates applied");
+    moltchain_sdk::set_return_data(&u64_to_bytes(applied));
+    0 // success — count in return_data
 }
 
 /// Enable margin trading on a pair (admin only)
@@ -2187,5 +2333,286 @@ mod tests {
         close_position(trader.as_ptr(), 1);
         // Position is now closed — remove_margin should return 3 (not open)
         assert_eq!(remove_margin(trader.as_ptr(), 1, 100), 3);
+    }
+
+    // ---- FUNDING RATE TESTS (G6-02) ----
+
+    fn setup_with_index() -> [u8; 32] {
+        let admin = setup();
+        // Set index price for pair 1: 1.0 (same as mark initially)
+        test_mock::set_caller(admin);
+        assert_eq!(set_index_price(admin.as_ptr(), 1, 1_000_000_000), 0);
+        admin
+    }
+
+    #[test]
+    fn test_set_index_price() {
+        let admin = setup();
+        test_mock::set_caller(admin);
+        assert_eq!(set_index_price(admin.as_ptr(), 1, 2_000_000_000), 0);
+        let (price, ts) = load_index_price(1);
+        assert_eq!(price, 2_000_000_000);
+        assert!(ts > 0);
+    }
+
+    #[test]
+    fn test_set_index_price_zero() {
+        let admin = setup();
+        test_mock::set_caller(admin);
+        assert_eq!(set_index_price(admin.as_ptr(), 1, 0), 2);
+    }
+
+    #[test]
+    fn test_set_index_price_not_admin() {
+        let _admin = setup();
+        let rando = [99u8; 32];
+        test_mock::set_caller(rando);
+        assert_eq!(set_index_price(rando.as_ptr(), 1, 1_000_000_000), 1);
+    }
+
+    #[test]
+    fn test_apply_funding_too_early() {
+        let _admin = setup_with_index();
+        // apply_funding should return 1 (too early) since last_funding is 0
+        // and slot is 1 (default), which is < FUNDING_INTERVAL_SLOTS
+        test_mock::set_slot(100);
+        assert_eq!(apply_funding(1), 1);
+    }
+
+    #[test]
+    fn test_apply_funding_no_index_price() {
+        let _admin = setup();
+        // No index price set → return 2
+        test_mock::set_slot(FUNDING_INTERVAL_SLOTS + 1);
+        assert_eq!(apply_funding(1), 2);
+    }
+
+    #[test]
+    fn test_apply_funding_no_positions() {
+        let _admin = setup_with_index();
+        // Set mark != index so there's a funding rate to compare
+        test_mock::set_caller([1u8; 32]);
+        set_mark_price([1u8; 32].as_ptr(), 1, 1_010_000_000);
+        set_index_price([1u8; 32].as_ptr(), 1, 1_000_000_000);
+        // Enough slots have passed, but no positions → return 3
+        test_mock::set_slot(FUNDING_INTERVAL_SLOTS + 1);
+        assert_eq!(apply_funding(1), 3);
+    }
+
+    #[test]
+    fn test_apply_funding_mark_above_index() {
+        // mark > index → longs pay, shorts receive
+        let admin = setup_with_index();
+        let trader = [2u8; 32];
+
+        // Open position at mark = 1.0 (matching setup)
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+
+        // Now shift mark above index for funding
+        test_mock::set_slot(100 + FUNDING_INTERVAL_SLOTS + 1);
+        test_mock::set_caller(admin);
+        set_mark_price(admin.as_ptr(), 1, 1_010_000_000); // 1.01
+        set_index_price(admin.as_ptr(), 1, 1_000_000_000); // 1.0
+
+        let result = apply_funding(1);
+        // 0 = success (count in return_data)
+        assert_eq!(result, 0);
+
+        // Long should have paid: rate = 100 bps (1%), clamped to 100 bps
+        // notional = 1B * 1.01 = 1.01B → scaled: 1_000_000_000 * 1_010_000_000 / 1e9 = 1_010_000_000
+        // payment = notional * 100 * 10 / (10000*10) = notional * 100 / 10000 = notional * 1%
+        // = 1_010_000_000 * 100 / 10000 = 10_100_000
+        let data = storage_get(&position_key(1)).unwrap();
+        let new_margin = decode_pos_margin(&data);
+        // Long pays: margin decreased
+        assert!(new_margin < 500_000_000, "Long margin should decrease when mark > index");
+        assert_eq!(new_margin, 500_000_000 - 10_100_000); // 489_900_000
+    }
+
+    #[test]
+    fn test_apply_funding_mark_below_index() {
+        // mark < index → shorts pay, longs receive
+        let admin = setup_with_index();
+        let trader = [2u8; 32];
+
+        // Set mark to 0.99 (1% below index)
+        test_mock::set_caller(admin);
+        set_mark_price(admin.as_ptr(), 1, 990_000_000); // 0.99
+        // Index stays at 1.0
+
+        // Open a short position
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_SHORT, 1_000_000_000, 2, 500_000_000), 0);
+
+        // Advance past funding interval
+        test_mock::set_slot(100 + FUNDING_INTERVAL_SLOTS + 1);
+        test_mock::set_caller(admin);
+        set_mark_price(admin.as_ptr(), 1, 990_000_000);
+        set_index_price(admin.as_ptr(), 1, 1_000_000_000);
+
+        apply_funding(1);
+
+        // Short should have paid: rate = 100 bps, mark < index so shorts pay
+        // notional = 1B * 0.99 / 1e9 = 990_000_000
+        // payment = 990_000_000 * 100 / 10000 = 9_900_000
+        let data = storage_get(&position_key(1)).unwrap();
+        let new_margin = decode_pos_margin(&data);
+        assert!(new_margin < 500_000_000, "Short margin should decrease when mark < index");
+        assert_eq!(new_margin, 500_000_000 - 9_900_000); // 490_100_000
+    }
+
+    #[test]
+    fn test_apply_funding_long_receives() {
+        // mark < index → longs receive funding
+        let admin = setup_with_index();
+        let trader = [2u8; 32];
+
+        test_mock::set_caller(admin);
+        set_mark_price(admin.as_ptr(), 1, 990_000_000); // mark 0.99
+        // Index stays at 1.0
+
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+
+        test_mock::set_slot(100 + FUNDING_INTERVAL_SLOTS + 1);
+        test_mock::set_caller(admin);
+        set_mark_price(admin.as_ptr(), 1, 990_000_000);
+        set_index_price(admin.as_ptr(), 1, 1_000_000_000);
+
+        apply_funding(1);
+
+        let data = storage_get(&position_key(1)).unwrap();
+        let new_margin = decode_pos_margin(&data);
+        // Long receives when mark < index
+        assert!(new_margin > 500_000_000, "Long margin should increase when mark < index");
+        assert_eq!(new_margin, 500_000_000 + 9_900_000); // 509_900_000
+    }
+
+    #[test]
+    fn test_apply_funding_capped_at_max() {
+        // Very large mark/index divergence → capped at MAX_FUNDING_RATE_BPS
+        let admin = setup_with_index();
+        let trader = [2u8; 32];
+
+        // Open position at mark = 1.0 (matching setup)
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+
+        // Set mark to 1.50 (50% above index) — would be 5000 bps, capped to 100
+        test_mock::set_slot(100 + FUNDING_INTERVAL_SLOTS + 1);
+        test_mock::set_caller(admin);
+        set_mark_price(admin.as_ptr(), 1, 1_500_000_000);
+        set_index_price(admin.as_ptr(), 1, 1_000_000_000);
+
+        apply_funding(1);
+
+        // Rate = 5000bps but capped to 100bps (1%)
+        // notional = 1B * 1.5 = 1_500_000_000
+        // payment = 1_500_000_000 * 100 / 10000 = 15_000_000
+        let data = storage_get(&position_key(1)).unwrap();
+        let new_margin = decode_pos_margin(&data);
+        assert_eq!(new_margin, 500_000_000 - 15_000_000); // 485_000_000
+    }
+
+    #[test]
+    fn test_apply_funding_twice_blocked() {
+        // Second apply within interval should fail
+        let admin = setup_with_index();
+        let trader = [2u8; 32];
+
+        // Open position at mark = 1.0
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000);
+
+        let first_slot = 100 + FUNDING_INTERVAL_SLOTS + 1;
+        test_mock::set_slot(first_slot);
+        test_mock::set_caller(admin);
+        set_mark_price(admin.as_ptr(), 1, 1_010_000_000);
+        set_index_price(admin.as_ptr(), 1, 1_000_000_000);
+
+        apply_funding(1); // first: succeeds
+
+        // Try again at same slot → too early
+        assert_eq!(apply_funding(1), 1);
+
+        // Advance but not enough
+        test_mock::set_slot(first_slot + FUNDING_INTERVAL_SLOTS - 1);
+        assert_eq!(apply_funding(1), 1);
+
+        // Advance past next interval
+        test_mock::set_slot(first_slot + FUNDING_INTERVAL_SLOTS + 1);
+        test_mock::set_caller(admin);
+        set_mark_price(admin.as_ptr(), 1, 1_010_000_000);
+        set_index_price(admin.as_ptr(), 1, 1_000_000_000);
+
+        // Should succeed again (return 0 = success)
+        assert_eq!(apply_funding(1), 0);
+    }
+
+    #[test]
+    fn test_apply_funding_accumulated_funding_tracked() {
+        // Verify accumulated_funding field is updated on positions
+        let admin = setup_with_index();
+        let trader = [2u8; 32];
+
+        // Open position at mark = 1.0
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000);
+
+        // Check initial accumulated_funding is 0
+        let data = storage_get(&position_key(1)).unwrap();
+        assert_eq!(decode_pos_accumulated_funding(&data), 0);
+
+        // Now shift mark above index
+        test_mock::set_slot(100 + FUNDING_INTERVAL_SLOTS + 1);
+        test_mock::set_caller(admin);
+        set_mark_price(admin.as_ptr(), 1, 1_010_000_000);
+        set_index_price(admin.as_ptr(), 1, 1_000_000_000);
+
+        apply_funding(1);
+
+        // accumulated_funding should be updated (biased: values < 1<<63 mean paid)
+        let data = storage_get(&position_key(1)).unwrap();
+        let acc = decode_pos_accumulated_funding(&data);
+        // Long paid 10.1M, so accumulated = (1<<63) - 10_100_000
+        let zero_point = 1u64 << 63;
+        assert!(acc < zero_point, "Long pays → accumulated funding below bias point");
+        assert_eq!(zero_point - acc, 10_100_000);
+    }
+
+    #[test]
+    fn test_apply_funding_high_leverage_multiplier() {
+        // Higher leverage = higher funding multiplier
+        let admin = setup_with_index();
+        let trader = [2u8; 32];
+
+        // Open a 10x position at mark = 1.0 (fund_mult = 20 = 2.0x)
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        // 10x: init = 10%, need 100M margin for 1B notional at price 1.0
+        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 10, 500_000_000), 0);
+
+        // Now shift mark above index
+        test_mock::set_slot(100 + FUNDING_INTERVAL_SLOTS + 1);
+        test_mock::set_caller(admin);
+        set_mark_price(admin.as_ptr(), 1, 1_010_000_000); // 1% above index
+        set_index_price(admin.as_ptr(), 1, 1_000_000_000);
+
+        apply_funding(1);
+
+        // 10x tier: fund_mult = 20 (2.0x)
+        // notional = 1_010_000_000, rate = 100bps
+        // payment = 1_010_000_000 * 100 * 20 / (10000 * 10) = 1_010_000_000 * 2000 / 100000
+        // = 20_200_000
+        let data = storage_get(&position_key(1)).unwrap();
+        let new_margin = decode_pos_margin(&data);
+        assert_eq!(new_margin, 500_000_000 - 20_200_000); // 479_800_000
     }
 }
