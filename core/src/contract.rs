@@ -1,10 +1,10 @@
 // MoltChain Smart Contract System
 // WASM-based programmable contracts with proper host function implementations
 
-use crate::{Hash, Pubkey};
+use crate::{Hash, Pubkey, StateStore};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{Arc, Mutex, RwLock};
 use wasmer::{
     imports, CompilerConfig, Function, FunctionEnv, FunctionEnvMut, Instance, Memory, Module, Store,
     Type, Value,
@@ -396,6 +396,25 @@ pub struct ContractContext {
     pub return_data: Vec<u8>,
     /// Remaining compute units (fuel). 0 = exhausted.
     pub compute_remaining: u64,
+    /// Cross-contract storage entries injected by the processor.
+    /// Merged into `storage` at execution time so contracts can read other
+    /// contracts' data (e.g., MoltyID reputation) via normal `storage_read`.
+    /// NOT tracked in `storage_changes`, NOT persisted to the contract's DB.
+    pub cross_contract_storage: HashMap<Vec<u8>, Vec<u8>>,
+    /// Shared reference to the state store for cross-contract calls.
+    /// Only present when running within the processor (not in standalone tests).
+    pub state_store: Option<StateStore>,
+    /// Current call depth (0 = top-level, incremented for each nested CCC).
+    /// Prevents infinite recursion — capped at MAX_CROSS_CALL_DEPTH.
+    pub call_depth: u32,
+    /// Accumulated storage changes from cross-contract calls, keyed by contract
+    /// address. Shared via Arc<Mutex<>> so nested calls all contribute to the
+    /// same collection. Applied atomically by the processor after execution.
+    pub pending_ccc_changes: Arc<Mutex<HashMap<Pubkey, HashMap<Vec<u8>, Option<Vec<u8>>>>>>,
+    /// Events collected from cross-contract sub-calls.
+    pub pending_ccc_events: Arc<Mutex<Vec<ContractEvent>>>,
+    /// Logs collected from cross-contract sub-calls.
+    pub pending_ccc_logs: Arc<Mutex<Vec<String>>>,
 }
 
 impl ContractContext {
@@ -414,6 +433,12 @@ impl ContractContext {
             args: Vec::new(),
             return_data: Vec::new(),
             compute_remaining: DEFAULT_COMPUTE_LIMIT,
+            cross_contract_storage: HashMap::new(),
+            state_store: None,
+            call_depth: 0,
+            pending_ccc_changes: Arc::new(Mutex::new(HashMap::new())),
+            pending_ccc_events: Arc::new(Mutex::new(Vec::new())),
+            pending_ccc_logs: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -439,6 +464,12 @@ impl ContractContext {
             args: Vec::new(),
             return_data: Vec::new(),
             compute_remaining: DEFAULT_COMPUTE_LIMIT,
+            cross_contract_storage: HashMap::new(),
+            state_store: None,
+            call_depth: 0,
+            pending_ccc_changes: Arc::new(Mutex::new(HashMap::new())),
+            pending_ccc_events: Arc::new(Mutex::new(Vec::new())),
+            pending_ccc_logs: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -465,6 +496,12 @@ impl ContractContext {
             args,
             return_data: Vec::new(),
             compute_remaining: DEFAULT_COMPUTE_LIMIT,
+            cross_contract_storage: HashMap::new(),
+            state_store: None,
+            call_depth: 0,
+            pending_ccc_changes: Arc::new(Mutex::new(HashMap::new())),
+            pending_ccc_events: Arc::new(Mutex::new(Vec::new())),
+            pending_ccc_logs: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -490,6 +527,14 @@ pub struct ContractResult {
     /// some return 0=success, others return 1=success. Callers can
     /// inspect this to implement contract-specific error handling.
     pub return_code: Option<i32>,
+    /// Accumulated storage changes from cross-contract sub-calls, keyed by
+    /// target contract address. Applied by the processor alongside the
+    /// top-level contract's own storage_changes.
+    pub cross_call_changes: HashMap<Pubkey, HashMap<Vec<u8>, Option<Vec<u8>>>>,
+    /// Events emitted by cross-contract sub-calls.
+    pub cross_call_events: Vec<ContractEvent>,
+    /// Logs emitted by cross-contract sub-calls.
+    pub cross_call_logs: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -539,6 +584,14 @@ const COMPUTE_GET_ARGS: u64 = 50;  // + per-byte cost
 const COMPUTE_SET_RETURN_DATA: u64 = 50;  // + per-byte cost
 const COMPUTE_READ_RESULT: u64 = 50;  // + per-byte cost
 const COMPUTE_BYTE_COST: u64 = 1;
+/// Compute cost for initiating a cross-contract call (base cost before callee's compute)
+const COMPUTE_CROSS_CALL: u64 = 5_000;
+/// Maximum cross-contract call depth (prevents infinite recursion)
+const MAX_CROSS_CALL_DEPTH: u32 = 8;
+/// Maximum function name length for cross-contract calls
+const MAX_CCC_FUNCTION_LEN: u32 = 256;
+/// Maximum args length for cross-contract calls (64 KB)
+const MAX_CCC_ARGS_LEN: u32 = 65_536;
 
 /// Contract runtime - executes WASM bytecode with compute metering
 ///
@@ -672,6 +725,14 @@ impl ContractRuntime {
         // Load contract's existing storage and args into context
         let mut ctx = context;
         ctx.storage = contract.storage.clone();
+        // Merge cross-contract storage entries (e.g., MoltyID reputation data)
+        // injected by the processor. These are available for reading via
+        // host_storage_read but are NOT tracked in storage_changes, so they
+        // won't be persisted back to the contract's canonical storage.
+        // Use entry().or_insert() so the contract's own data takes priority.
+        for (k, v) in std::mem::take(&mut ctx.cross_contract_storage) {
+            ctx.storage.entry(k).or_insert(v);
+        }
         ctx.args = args.to_vec();
         let initial_compute = ctx.compute_remaining;
 
@@ -941,6 +1002,9 @@ impl ContractRuntime {
                     )),
                     compute_used: host_cost.saturating_add(wasm_compute_used),
                     return_code: None,
+                    cross_call_changes: HashMap::new(),
+                    cross_call_events: Vec::new(),
+                    cross_call_logs: Vec::new(),
                 });
             }
         }
@@ -966,6 +1030,9 @@ impl ContractRuntime {
                 )),
                 compute_used,
                 return_code: None,
+                cross_call_changes: HashMap::new(),
+                cross_call_events: Vec::new(),
+                cross_call_logs: Vec::new(),
             });
         }
 
@@ -986,6 +1053,14 @@ impl ContractRuntime {
                         _ => None,
                     });
 
+                // Extract accumulated cross-contract call state
+                let ccc_changes = final_ctx.pending_ccc_changes
+                    .lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let ccc_events = final_ctx.pending_ccc_events
+                    .lock().unwrap_or_else(|e| e.into_inner()).clone();
+                let ccc_logs = final_ctx.pending_ccc_logs
+                    .lock().unwrap_or_else(|e| e.into_inner()).clone();
+
                 Ok(ContractResult {
                     return_data: final_ctx.return_data.clone(),
                     logs: final_ctx.logs.clone(),
@@ -995,6 +1070,9 @@ impl ContractRuntime {
                     error: None,
                     compute_used,
                     return_code: ret_code,
+                    cross_call_changes: ccc_changes,
+                    cross_call_events: ccc_events,
+                    cross_call_logs: ccc_logs,
                 })
             }
             Err(e) => {
@@ -1012,6 +1090,9 @@ impl ContractRuntime {
                     error: Some(error_msg),
                     compute_used,
                     return_code: None,
+                    cross_call_changes: HashMap::new(),
+                    cross_call_events: Vec::new(),
+                    cross_call_logs: Vec::new(),
                 })
             }
         }
@@ -1432,26 +1513,263 @@ fn host_set_return_data(
     0
 }
 
-/// Cross-contract call (basic implementation).
-/// Reads target address (32 bytes), function name, args, and value.
-/// NOTE: Full recursive CCC requires re-entrant execution which is deferred.
-/// This implementation returns error status so contracts know it's not yet available
-/// for re-entrant calls, but the FFI signature matches the SDK so contracts link correctly.
+/// Cross-contract call — full re-entrant implementation.
+///
+/// Reads target address (32 bytes), function name, args, and value from the
+/// caller's WASM memory, loads the target contract from the state store,
+/// creates a nested execution context, and executes the target function in a
+/// fresh ContractRuntime.
+///
+/// Returns the number of bytes written to result_ptr on success, or 0 on
+/// failure. The SDK treats >0 as success.
+///
+/// Storage changes from the callee are accumulated in `pending_ccc_changes`
+/// (shared between all nesting levels via Arc<Mutex<>>). The processor applies
+/// them atomically after the top-level execution completes.
+///
+/// Re-entrancy is bounded by `MAX_CROSS_CALL_DEPTH` (8 levels).
 #[allow(clippy::too_many_arguments)]
 fn host_cross_contract_call(
-    _env: FunctionEnvMut<ContractContext>,
-    _target_ptr: u32,
-    _function_ptr: u32,
-    _function_len: u32,
-    _args_ptr: u32,
-    _args_len: u32,
-    _value: u64,
-    _result_ptr: u32,
-    _result_len: u32,
+    mut env: FunctionEnvMut<ContractContext>,
+    target_ptr: u32,
+    function_ptr: u32,
+    function_len: u32,
+    args_ptr: u32,
+    args_len: u32,
+    value: u64,
+    result_ptr: u32,
+    result_len: u32,
 ) -> u32 {
-    // Return 0 = failure. Cross-contract calls require re-entrant execution
-    // which is planned for Phase 2. The import exists so contracts compile.
-    0
+    // ── Validate lengths ─────────────────────────────────────────────
+    if function_len > MAX_CCC_FUNCTION_LEN || args_len > MAX_CCC_ARGS_LEN {
+        return 0;
+    }
+
+    // ── Read parameters from caller's WASM linear memory ─────────────
+    let memory = match env.data().memory.clone() {
+        Some(m) => m,
+        None => return 0,
+    };
+
+    let (target, function_name, args_buf) = {
+        let view = memory.view(&env);
+
+        // Target address (32 bytes)
+        let mut target_bytes = [0u8; 32];
+        if view.read(target_ptr as u64, &mut target_bytes).is_err() {
+            return 0;
+        }
+
+        // Function name (UTF-8 string)
+        let mut func_buf = vec![0u8; function_len as usize];
+        if view.read(function_ptr as u64, &mut func_buf).is_err() {
+            return 0;
+        }
+        let function_name = match String::from_utf8(func_buf) {
+            Ok(s) => s,
+            Err(_) => return 0,
+        };
+
+        // Args
+        let mut args_buf = vec![0u8; args_len as usize];
+        if args_len > 0 {
+            if view.read(args_ptr as u64, &mut args_buf).is_err() {
+                return 0;
+            }
+        }
+
+        (Pubkey(target_bytes), function_name, args_buf)
+    };
+
+    // ── Extract shared state from context (before mutable borrow) ────
+    let state_store = match env.data().state_store.clone() {
+        Some(s) => s,
+        None => {
+            // No state store — running in test mode or standalone.
+            // Return 0 so contracts get an Err from call_contract.
+            return 0;
+        }
+    };
+    let call_depth = env.data().call_depth;
+    if call_depth >= MAX_CROSS_CALL_DEPTH {
+        return 0; // Recursion depth exceeded
+    }
+
+    let caller_contract = env.data().contract;
+    let current_slot = env.data().slot;
+    let pending_changes = env.data().pending_ccc_changes.clone();
+    let pending_events = env.data().pending_ccc_events.clone();
+    let pending_logs = env.data().pending_ccc_logs.clone();
+
+    // ── Deduct base compute cost ─────────────────────────────────────
+    {
+        let ctx = env.data_mut();
+        if !deduct_compute(ctx, COMPUTE_CROSS_CALL) {
+            return 0;
+        }
+    }
+
+    // ── Load target contract from state ──────────────────────────────
+    let target_account = match state_store.get_account(&target) {
+        Ok(Some(a)) if a.executable => a,
+        _ => return 0, // Target not found or not a contract
+    };
+    let target_contract: ContractAccount = match serde_json::from_slice(&target_account.data) {
+        Ok(c) => c,
+        Err(_) => return 0,
+    };
+
+    // ── Build callee storage: base + pending overlay ─────────────────
+    // If prior cross-contract calls in this transaction already modified the
+    // target contract's storage, merge those pending changes so the callee
+    // sees a consistent view.
+    let mut callee_storage = target_contract.storage.clone();
+    {
+        let changes = pending_changes.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(target_changes) = changes.get(&target) {
+            for (k, v_opt) in target_changes {
+                match v_opt {
+                    Some(v) => {
+                        callee_storage.insert(k.clone(), v.clone());
+                    }
+                    None => {
+                        callee_storage.remove(k);
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Cap callee compute at caller's remaining budget ──────────────
+    let caller_remaining = env.data().compute_remaining;
+
+    // ── Build callee context ─────────────────────────────────────────
+    let callee_ctx = ContractContext {
+        caller: caller_contract, // The calling contract is the caller
+        contract: target,
+        value,
+        slot: current_slot,
+        storage: callee_storage,
+        logs: Vec::new(),
+        events: Vec::new(),
+        storage_changes: HashMap::new(),
+        last_read_value: Vec::new(),
+        memory: None, // Set during execute()
+        args: args_buf.clone(),
+        return_data: Vec::new(),
+        compute_remaining: caller_remaining,
+        cross_contract_storage: HashMap::new(),
+        state_store: Some(state_store),
+        call_depth: call_depth + 1,
+        pending_ccc_changes: pending_changes.clone(),
+        pending_ccc_events: pending_events.clone(),
+        pending_ccc_logs: pending_logs.clone(),
+    };
+
+    // ── Execute callee in a fresh runtime ────────────────────────────
+    let mut runtime = ContractRuntime::get_pooled();
+    let result = match runtime.execute(&target_contract, &function_name, &args_buf, callee_ctx) {
+        Ok(r) => r,
+        Err(e) => {
+            runtime.return_to_pool();
+            // Log the error for diagnostics
+            let ctx = env.data_mut();
+            ctx.logs.push(format!(
+                "[CCC] Call to {}::{} failed: {}",
+                crate::Pubkey(target.0),
+                function_name,
+                e
+            ));
+            return 0;
+        }
+    };
+    runtime.return_to_pool();
+
+    if !result.success {
+        // Callee failed — return 0, don't apply any changes
+        let ctx = env.data_mut();
+        if let Some(ref err) = result.error {
+            ctx.logs.push(format!(
+                "[CCC] {}::{} returned error: {}",
+                crate::Pubkey(target.0),
+                function_name,
+                err
+            ));
+        }
+        return 0;
+    }
+
+    // ── Deduct callee's compute from parent ──────────────────────────
+    {
+        let ctx = env.data_mut();
+        ctx.compute_remaining = ctx.compute_remaining.saturating_sub(result.compute_used);
+    }
+
+    // ── Merge callee's direct storage changes into pending ───────────
+    if !result.storage_changes.is_empty() {
+        let mut changes = pending_changes.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = changes.entry(target).or_default();
+        for (k, v) in &result.storage_changes {
+            entry.insert(k.clone(), v.clone());
+        }
+    }
+
+    // ── Merge callee's nested cross-call changes (from deeper levels) ─
+    if !result.cross_call_changes.is_empty() {
+        let mut changes = pending_changes.lock().unwrap_or_else(|e| e.into_inner());
+        for (addr, addr_changes) in &result.cross_call_changes {
+            let entry = changes.entry(*addr).or_default();
+            for (k, v) in addr_changes {
+                entry.insert(k.clone(), v.clone());
+            }
+        }
+    }
+
+    // ── Collect events and logs from callee ──────────────────────────
+    if !result.events.is_empty() || !result.cross_call_events.is_empty() {
+        let mut events = pending_events.lock().unwrap_or_else(|e| e.into_inner());
+        events.extend(result.events.into_iter());
+        events.extend(result.cross_call_events.into_iter());
+    }
+    if !result.logs.is_empty() || !result.cross_call_logs.is_empty() {
+        let mut logs = pending_logs.lock().unwrap_or_else(|e| e.into_inner());
+        logs.extend(result.logs.into_iter());
+        logs.extend(result.cross_call_logs.into_iter());
+    }
+
+    // ── Determine result data to write back to caller ────────────────
+    // Priority: explicit return_data > return_code encoding > success byte
+    let effective_result: Vec<u8> = if !result.return_data.is_empty() {
+        result.return_data
+    } else if let Some(rc) = result.return_code {
+        // Encode the WASM return code as a 4-byte LE value.
+        // For token `transfer()` returning 1, this gives [1, 0, 0, 0].
+        // The SDK's `call_token_transfer` checks result[0] == 1, which matches.
+        (rc as u32).to_le_bytes().to_vec()
+    } else {
+        // No return data and no return code — just signal success.
+        vec![1u8]
+    };
+
+    // ── Write result data into caller's buffer ───────────────────────
+    let write_len = effective_result.len().min(result_len as usize);
+    if write_len > 0 {
+        let memory = match env.data().memory.clone() {
+            Some(m) => m,
+            None => return 0,
+        };
+        let view = memory.view(&env);
+        if view
+            .write(result_ptr as u64, &effective_result[..write_len])
+            .is_err()
+        {
+            return 0;
+        }
+    }
+
+    // Return bytes written (>0 = success per SDK convention).
+    // If write_len is 0 but call succeeded, return 1 as a success signal.
+    if write_len == 0 { 1 } else { write_len as u32 }
 }
 
 // ============================================================================
@@ -1662,6 +1980,9 @@ mod tests {
             error: None,
             compute_used: 500,
             return_code: None,
+            cross_call_changes: HashMap::new(),
+            cross_call_events: Vec::new(),
+            cross_call_logs: Vec::new(),
         };
 
         assert!(result.success);
@@ -1824,6 +2145,9 @@ mod tests {
             error: None,
             compute_used: 100,
             return_code: Some(1),
+            cross_call_changes: HashMap::new(),
+            cross_call_events: Vec::new(),
+            cross_call_logs: Vec::new(),
         };
         assert!(result.success);
         assert_eq!(result.return_code, Some(1));

@@ -40,6 +40,9 @@ pub struct SimulationResult {
     pub return_data: Option<Vec<u8>>,
     /// Contract function return code (if a contract call was simulated).
     pub return_code: Option<i32>,
+    /// Number of storage changes that would be produced by the TX.
+    /// Used by preflight to detect silent failures (success=true, 0 changes).
+    pub state_changes: usize,
 }
 
 fn is_evm_instruction(tx: &Transaction) -> bool {
@@ -903,6 +906,7 @@ impl TxProcessor {
                     compute_used: 0,
                     return_data: None,
                     return_code: None,
+                    state_changes: 0,
                 };
             }
         }
@@ -916,6 +920,7 @@ impl TxProcessor {
                 compute_used: 0,
                 return_data: None,
                 return_code: None,
+                state_changes: 0,
             };
         }
 
@@ -950,6 +955,7 @@ impl TxProcessor {
                     compute_used: 0,
                     return_data: None,
                     return_code: None,
+                    state_changes: 0,
                 };
             }
         }
@@ -978,6 +984,7 @@ impl TxProcessor {
                 compute_used: 0,
                 return_data: None,
                 return_code: None,
+                state_changes: 0,
             };
         }
         logs.push(format!("Fee estimate: {} shells", total_fee));
@@ -985,6 +992,7 @@ impl TxProcessor {
         // Simulate each instruction (read-only)
         let mut total_compute = 0u64;
         let mut last_return_data: Option<Vec<u8>> = None;
+        let mut total_state_changes: usize = 0;
 
         for (idx, instruction) in tx.message.instructions.iter().enumerate() {
             if instruction.program_id == CONTRACT_PROGRAM_ID {
@@ -1024,6 +1032,7 @@ impl TxProcessor {
                                                 Ok(result) => {
                                                     total_compute += result.compute_used;
                                                     last_return_code = result.return_code;
+                                                    total_state_changes += result.storage_changes.len();
                                                     for log in &result.logs {
                                                         logs.push(format!("[ix{}] {}", idx, log));
                                                     }
@@ -1040,11 +1049,12 @@ impl TxProcessor {
                                                             compute_used: total_compute,
                                                             return_data: last_return_data,
                                                             return_code: last_return_code,
+                                                            state_changes: total_state_changes,
                                                         };
                                                     }
                                                     logs.push(format!(
-                                                        "[ix{}] Contract call '{}' OK, compute: {}",
-                                                        idx, function, result.compute_used
+                                                        "[ix{}] Contract call '{}' OK, compute: {}, changes: {}",
+                                                        idx, function, result.compute_used, result.storage_changes.len()
                                                     ));
                                                 }
                                                 Err(e) => {
@@ -1059,6 +1069,7 @@ impl TxProcessor {
                                                         compute_used: total_compute,
                                                         return_data: last_return_data,
                                                         return_code: last_return_code,
+                                                        state_changes: total_state_changes,
                                                     };
                                                 }
                                             }
@@ -1116,6 +1127,7 @@ impl TxProcessor {
             compute_used: total_compute,
             return_data: last_return_data,
             return_code: last_return_code,
+            state_changes: total_state_changes,
         }
     }
 
@@ -2277,7 +2289,7 @@ impl TxProcessor {
         }
 
         let current_slot = self.b_get_last_slot().unwrap_or(0);
-        let context = ContractContext::with_args(
+        let mut context = ContractContext::with_args(
             *caller,
             *contract_address,
             value,
@@ -2285,6 +2297,38 @@ impl TxProcessor {
             contract.storage.clone(),
             args,
         );
+
+        // ── Cross-contract storage injection: MoltyID reputation ──
+        // If the target contract has a MoltyID address configured (indicating it
+        // needs reputation checks), read the caller's MoltyID reputation from
+        // CF_CONTRACT_STORAGE and inject it into cross_contract_storage.
+        // The contract's existing code (load_u64("rep:{hex}")) will find the
+        // injected data in ctx.storage after the merge in execute().
+        {
+            let moltyid_program = contract.storage.get(b"pm_moltyid_addr" as &[u8])
+                .or_else(|| contract.storage.get(b"gov_moltyid_addr" as &[u8]))
+                .and_then(|v| if v.len() == 32 && v.iter().any(|&x| x != 0) { Some(v) } else { None });
+
+            if let Some(moltyid_addr_bytes) = moltyid_program {
+                let mut moltyid_pubkey = Pubkey([0u8; 32]);
+                moltyid_pubkey.0.copy_from_slice(moltyid_addr_bytes);
+                // Build the MoltyID reputation key: "rep:" + hex(caller)
+                let hex_chars: &[u8; 16] = b"0123456789abcdef";
+                let mut rep_key = Vec::with_capacity(68);
+                rep_key.extend_from_slice(b"rep:");
+                for &b in caller.0.iter() {
+                    rep_key.push(hex_chars[(b >> 4) as usize]);
+                    rep_key.push(hex_chars[(b & 0x0f) as usize]);
+                }
+                // Read from MoltyID's storage in CF_CONTRACT_STORAGE
+                if let Ok(Some(rep_data)) = self.state.get_contract_storage(&moltyid_pubkey, &rep_key) {
+                    context.cross_contract_storage.insert(rep_key, rep_data);
+                }
+            }
+        }
+
+        // ── Inject state store for cross-contract calls ──────────────
+        context.state_store = Some(self.state.clone());
 
         let mut runtime = ContractRuntime::get_pooled();
         let result = runtime.execute(&contract, &function, &context.args.clone(), context)?;
@@ -2297,12 +2341,14 @@ impl TxProcessor {
             let mut meta = self.contract_meta.lock().unwrap_or_else(|e| e.into_inner());
             meta.0 = result.return_code;
             meta.1.extend(result.logs.iter().cloned());
+            // Also include logs from cross-contract sub-calls
+            meta.1.extend(result.cross_call_logs.iter().cloned());
         }
 
         // Diagnostic: log when a contract call produces no storage changes despite
         // returning success — this helps diagnose "silent failure" issues where the
         // contract returns a non-zero error code but doesn't trap.
-        if result.success && result.storage_changes.is_empty() {
+        if result.success && result.storage_changes.is_empty() && result.cross_call_changes.is_empty() {
             if let Some(rc) = result.return_code {
                 if rc != 0 {
                     eprintln!(
@@ -2320,9 +2366,14 @@ impl TxProcessor {
                 .unwrap_or("Contract execution failed".to_string()));
         }
 
-        // Store contract events
+        // Store contract events (top-level)
         for event in &result.events {
             self.b_put_contract_event(contract_address, event)?;
+        }
+
+        // Store events from cross-contract sub-calls
+        for event in &result.cross_call_events {
+            self.b_put_contract_event(&event.program, event)?;
         }
 
         // Apply storage changes from execution back to contract account
@@ -2348,6 +2399,41 @@ impl TxProcessor {
             account.data = serde_json::to_vec(&contract)
                 .map_err(|e| format!("Failed to serialize contract: {}", e))?;
             self.b_put_account(contract_address, &account)?;
+        }
+
+        // ── Apply cross-contract call storage changes ────────────────
+        // These are storage mutations produced by sub-calls to other contracts
+        // during execution. Each target contract's changes are applied
+        // atomically through the batch.
+        for (target_addr, changes) in &result.cross_call_changes {
+            if changes.is_empty() {
+                continue;
+            }
+            // Load target contract account
+            let target_account = self
+                .b_get_account(target_addr)?
+                .ok_or_else(|| format!("Cross-call target {} not found", target_addr))?;
+            let mut target_contract: ContractAccount =
+                serde_json::from_slice(&target_account.data)
+                    .map_err(|e| format!("Failed to deserialize cross-call target: {}", e))?;
+
+            for (key, value_opt) in changes {
+                match value_opt {
+                    Some(val) => {
+                        target_contract.set_storage(key.clone(), val.clone());
+                        self.b_put_contract_storage(target_addr, key, val)?;
+                    }
+                    None => {
+                        target_contract.remove_storage(key);
+                        self.b_delete_contract_storage(target_addr, key)?;
+                    }
+                }
+            }
+            // Persist updated target contract
+            let mut updated_target = target_account;
+            updated_target.data = serde_json::to_vec(&target_contract)
+                .map_err(|e| format!("Failed to serialize cross-call target: {}", e))?;
+            self.b_put_account(target_addr, &updated_target)?;
         }
 
         Ok(())
