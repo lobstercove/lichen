@@ -615,7 +615,7 @@
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
 | G27-01 | CRITICAL | Stub | `respond_challenge` — placeholder verification accepts any response | Implement actual proof-of-storage verification | [ ] |
-| G27-02 | HIGH | Financial | Storage payments are bookkeeping-only — no token transfers | Wire actual token transfers | [ ] |
+| G27-02 | HIGH | Financial | Storage payments are bookkeeping-only — no token transfers | Wire actual token transfers | [x] |
 | G27-03 | MEDIUM | Security | First-caller-wins admin init | Ensure genesis initialization | [ ] |
 
 ---
@@ -1178,13 +1178,13 @@ After cross_contract_call works:
 Phase 0 (Fatal):     [x] [x] [x] [x]                    4/4
 Phase 1 (Security):  [x] [x] [x] [x] [x] [x]            6/6  ✅ COMPLETE
 Phase 2 (Core):      [x] [x] [x] [x] [x] [x] [x] [x]    8/8  ✅ COMPLETE
-Phase 3 (Contracts): [x] [x] [x] [x] [x] [x] [x] [x] [x] [x] [ ]  10/11
+Phase 3 (Contracts): [x] [x] [x] [x] [x] [x] [x] [x] [x] [x] [x]  11/11 ✅ COMPLETE
 Phase 4 (Infra):     [ ] [ ] [ ] [ ] [ ] [ ] [ ]        0/7
 Phase 5 (Quality):   [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]  0/10
 Phase 6 (Frontend):  [ ] [ ] [ ] [ ] [ ]                0/5
 Phase 7 (Testing):   [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
-                                              TOTAL:    28/63 phases
+                                              TOTAL:    29/63 phases
 ```
 
 ---
