@@ -804,7 +804,7 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| J3-01 | HIGH | Missing | `[NEW]` Prometheus alertmanager has no targets configured — no alerts fire | Configure alertmanager with targets and route to notification channel | [ ] |
+| J3-01 | HIGH | Missing | `[NEW]` Prometheus alertmanager has no targets configured — no alerts fire | Configure alertmanager with targets and route to notification channel | [x] |
 | J3-02 | MEDIUM | Missing | Grafana dashboards reference metrics that don't exist yet | Create validator metrics exporter, then update dashboards | [ ] |
 | J3-03 | MEDIUM | Missing | No log aggregation — logs are stdout only | Add structured logging with log rotation and aggregation (ELK/Loki) | [ ] |
 
@@ -1179,12 +1179,12 @@ Phase 0 (Fatal):     [x] [x] [x] [x]                    4/4
 Phase 1 (Security):  [x] [x] [x] [x] [x] [x]            6/6  ✅ COMPLETE
 Phase 2 (Core):      [x] [x] [x] [x] [x] [x] [x] [x]    8/8  ✅ COMPLETE
 Phase 3 (Contracts): [x] [x] [x] [x] [x] [x] [x] [x] [x] [x] [x]  11/11 ✅ COMPLETE
-Phase 4 (Infra):     [x] [x] [x] [x] [x] [x] [ ]        6/7
+Phase 4 (Infra):     [x] [x] [x] [x] [x] [x] [x]        7/7 ✅ COMPLETE
 Phase 5 (Quality):   [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]  0/10
 Phase 6 (Frontend):  [ ] [ ] [ ] [ ] [ ]                0/5
 Phase 7 (Testing):   [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
-                                              TOTAL:    35/63 phases
+                                              TOTAL:    36/63 phases
 ```
 
 ---
