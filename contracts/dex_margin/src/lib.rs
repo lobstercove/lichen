@@ -1076,6 +1076,34 @@ pub fn get_position_info(position_id: u64) -> u64 {
     }
 }
 
+/// Query a user's first open position on a given pair.
+/// Returns position_id if found (with full position data in return_data),
+/// or 0 if the user has no open position on that pair.
+/// Used by dex_core for reduce-only order validation.
+pub fn query_user_open_position(trader: *const u8, pair_id: u64) -> u64 {
+    let mut addr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(trader, addr.as_mut_ptr(), 32); }
+
+    let count = load_u64(&user_position_count_key(&addr));
+    for i in 1..=count {
+        let pos_id = load_u64(&user_position_key(&addr, i));
+        if pos_id == 0 { continue; }
+        let pk = position_key(pos_id);
+        if let Some(data) = storage_get(&pk) {
+            if data.len() >= POSITION_SIZE_V1 {
+                let pos_pair = decode_pos_pair_id(&data);
+                let pos_status = decode_pos_status(&data);
+                if pos_pair == pair_id && pos_status == 0 {
+                    // Found an open position on this pair — return data
+                    moltchain_sdk::set_return_data(&data);
+                    return pos_id;
+                }
+            }
+        }
+    }
+    0
+}
+
 pub fn emergency_pause(caller: *const u8) -> u32 {
     let mut c = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32); }
@@ -1511,6 +1539,14 @@ pub extern "C" fn call() {
                 let close_amount = bytes_to_u64(&args[41..49]);
                 let r = partial_close(args[1..33].as_ptr(), pos_id, close_amount);
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
+        // 26 = query_user_open_position(trader[32], pair_id[8])
+        26 => {
+            if args.len() >= 41 {
+                let pair_id = bytes_to_u64(&args[33..41]);
+                let r = query_user_open_position(args[1..33].as_ptr(), pair_id);
+                moltchain_sdk::set_return_data(&u64_to_bytes(r));
             }
         }
         _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
@@ -2736,5 +2772,65 @@ mod tests {
         // Position still OPEN
         let data = storage_get(&position_key(1)).unwrap();
         assert_eq!(decode_pos_status(&data), POS_OPEN);
+    }
+
+    // === G2-04: query_user_open_position ===
+
+    #[test]
+    fn test_query_user_open_position_found() {
+        let admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        test_mock::set_timestamp(1000);
+        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+
+        // Query should find the open position on pair 1
+        let pos_id = query_user_open_position(trader.as_ptr(), 1);
+        assert_eq!(pos_id, 1);
+    }
+
+    #[test]
+    fn test_query_user_open_position_wrong_pair() {
+        let admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        test_mock::set_timestamp(1000);
+        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+
+        // Pair 2 doesn't exist for this trader — should return 0
+        // (need to enable margin for pair 2 first, but query doesn't check that)
+        let pos_id = query_user_open_position(trader.as_ptr(), 2);
+        assert_eq!(pos_id, 0);
+    }
+
+    #[test]
+    fn test_query_user_open_position_closed() {
+        let admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        test_mock::set_timestamp(1000);
+        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+
+        // Close the position
+        test_mock::set_caller(trader);
+        test_mock::set_timestamp(1001);
+        assert_eq!(close_position(trader.as_ptr(), 1), 0);
+
+        // Query should return 0 — no open positions
+        let pos_id = query_user_open_position(trader.as_ptr(), 1);
+        assert_eq!(pos_id, 0);
+    }
+
+    #[test]
+    fn test_query_user_open_position_no_positions() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+
+        // Trader has no positions at all
+        let pos_id = query_user_open_position(trader.as_ptr(), 1);
+        assert_eq!(pos_id, 0);
     }
 }
