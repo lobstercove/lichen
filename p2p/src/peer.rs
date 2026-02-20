@@ -7,7 +7,7 @@ use dashmap::DashMap;
 use quinn::{Connection, Endpoint, ServerConfig};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -54,6 +54,45 @@ impl PeerInfo {
     }
 }
 
+/// C2-01: Bounded LRU cache of seen message hashes.
+/// Prevents re-processing duplicate gossip messages (blocks, votes, txs, etc.)
+/// that arrive from multiple peers.  Uses FIFO eviction when at capacity.
+pub struct SeenMessageCache {
+    hashes: HashSet<[u8; 32]>,
+    order: VecDeque<[u8; 32]>,
+    capacity: usize,
+}
+
+impl SeenMessageCache {
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            hashes: HashSet::with_capacity(capacity),
+            order: VecDeque::with_capacity(capacity),
+            capacity,
+        }
+    }
+
+    /// Returns true if the hash was already seen.  If not, inserts it.
+    pub fn check_and_insert(&mut self, hash: [u8; 32]) -> bool {
+        if self.hashes.contains(&hash) {
+            return true; // already seen
+        }
+        // Evict oldest if at capacity
+        if self.hashes.len() >= self.capacity {
+            if let Some(old) = self.order.pop_front() {
+                self.hashes.remove(&old);
+            }
+        }
+        self.hashes.insert(hash);
+        self.order.push_back(hash);
+        false // new message
+    }
+
+    pub fn len(&self) -> usize {
+        self.hashes.len()
+    }
+}
+
 /// Manages peer connections
 pub struct PeerManager {
     /// Active peer connections
@@ -83,6 +122,11 @@ pub struct PeerManager {
 
     /// AUDIT-FIX C1-01: TOFU fingerprint store for certificate pinning
     fingerprint_store: Arc<PeerFingerprintStore>,
+
+    /// C2-01: Bounded seen-message cache to prevent re-processing of
+    /// duplicate gossip messages.  Stores SHA-256 hashes of deserialized
+    /// message bytes.  VecDeque provides FIFO eviction order.
+    seen_messages: Arc<Mutex<SeenMessageCache>>,
 }
 
 impl PeerManager {
@@ -151,6 +195,8 @@ impl PeerManager {
             node_cert_chain,
             node_key_bytes,
             fingerprint_store,
+            // C2-01: 20K capacity ≈ 640KB — covers ~5 minutes of peak traffic
+            seen_messages: Arc::new(Mutex::new(SeenMessageCache::new(20_000))),
         })
     }
 
@@ -243,8 +289,9 @@ impl PeerManager {
         // Spawn task to handle incoming messages
         let peers = self.peers.clone();
         let message_tx = self.message_tx.clone();
+        let seen_messages = self.seen_messages.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_connection(connection, peer_addr, peers.clone(), message_tx).await {
+            if let Err(e) = handle_connection(connection, peer_addr, peers.clone(), message_tx, seen_messages).await {
                 error!("P2P: Connection error with {}: {}", peer_addr, e);
             }
             // AUDIT-FIX H2: Remove peer from DashMap when connection drops.
@@ -404,6 +451,7 @@ impl PeerManager {
         let peer_store = self.peer_store.clone();
         let ban_list = self.ban_list.clone();
         let fingerprint_store = self.fingerprint_store.clone();
+        let seen_messages = self.seen_messages.clone();
 
         tokio::spawn(async move {
             while let Some(connecting) = endpoint.accept().await {
@@ -412,6 +460,7 @@ impl PeerManager {
                 let peer_store = peer_store.clone();
                 let ban_list = ban_list.clone();
                 let fingerprint_store = fingerprint_store.clone();
+                let seen_messages = seen_messages.clone();
 
                 tokio::spawn(async move {
                     match connecting.await {
@@ -465,7 +514,7 @@ impl PeerManager {
 
                             // Handle connection
                             if let Err(e) =
-                                handle_connection(connection, peer_addr, peers.clone(), message_tx).await
+                                handle_connection(connection, peer_addr, peers.clone(), message_tx, seen_messages).await
                             {
                                 error!("P2P: Connection error with {}: {}", peer_addr, e);
                             }
@@ -519,6 +568,7 @@ async fn handle_connection(
     peer_addr: SocketAddr,
     peers: Arc<DashMap<SocketAddr, PeerInfo>>,
     message_tx: mpsc::Sender<(SocketAddr, P2PMessage)>,
+    seen_messages: Arc<Mutex<SeenMessageCache>>,
 ) -> Result<(), String> {
     let mut deser_failures: u32 = 0;
     const MAX_DESER_FAILURES: u32 = 10;
@@ -539,7 +589,32 @@ async fn handle_connection(
         match P2PMessage::deserialize(&bytes) {
             Ok(message) => {
                 deser_failures = 0; // reset on success
-                                    // Update last seen
+
+                // C2-01: Dedup — hash the raw message bytes and skip if already seen.
+                // Only dedup gossip message types (Block, Vote, Transaction,
+                // SlashingEvidence, ValidatorAnnounce). Request/response types
+                // (Ping, Pong, BlockRequest, StatusRequest, etc.) are point-to-point
+                // and must always be processed.
+                let should_dedup = matches!(
+                    message.msg_type,
+                    crate::MessageType::Block(_)
+                        | crate::MessageType::Vote(_)
+                        | crate::MessageType::Transaction(_)
+                        | crate::MessageType::SlashingEvidence(_)
+                        | crate::MessageType::ValidatorAnnounce { .. }
+                );
+                if should_dedup {
+                    let hash: [u8; 32] = Sha256::digest(&bytes).into();
+                    let already_seen = seen_messages
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .check_and_insert(hash);
+                    if already_seen {
+                        continue; // silently drop duplicate
+                    }
+                }
+
+                // Update last seen
                 if let Some(mut peer) = peers.get_mut(&peer_addr) {
                     peer.update_last_seen();
                 }
@@ -1269,5 +1344,38 @@ mod tests {
             rustls::pki_types::UnixTime::now(),
         );
         assert!(result.is_err(), "Garbage data should be rejected by MoltCertVerifier");
+    }
+
+    /// C2-01: SeenMessageCache correctly deduplicates and evicts
+    #[test]
+    fn test_seen_message_cache_dedup() {
+        let mut cache = SeenMessageCache::new(3);
+        let h1 = [1u8; 32];
+        let h2 = [2u8; 32];
+        let h3 = [3u8; 32];
+        let h4 = [4u8; 32];
+
+        // First insert returns false (not seen)
+        assert!(!cache.check_and_insert(h1));
+        assert!(!cache.check_and_insert(h2));
+        assert!(!cache.check_and_insert(h3));
+        assert_eq!(cache.len(), 3);
+
+        // Duplicate returns true (already seen)
+        assert!(cache.check_and_insert(h1));
+        assert!(cache.check_and_insert(h2));
+        assert_eq!(cache.len(), 3);
+
+        // Fourth insert evicts oldest (h1) — order was h1, h2, h3
+        assert!(!cache.check_and_insert(h4));
+        assert_eq!(cache.len(), 3);
+
+        // h1 was evicted — no longer seen
+        assert!(!cache.check_and_insert(h1));
+        // h1 re-insert evicted h2 (next oldest) — order is now h3, h4, h1
+        // h3 still present
+        assert!(cache.check_and_insert(h3));
+        // h2 was evicted
+        assert!(!cache.check_and_insert(h2));
     }
 }
