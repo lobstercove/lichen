@@ -163,3 +163,105 @@ fn test_all_7_contracts_import_get_caller() {
         );
     }
 }
+
+// ============================================================================
+// Phase 2 Task 11: G19-01/G20-01 — Wrapped token WASM export annotations
+// ============================================================================
+
+/// The critical functions that must be exported for a token contract to work.
+const REQUIRED_TOKEN_EXPORTS: &[&str] = &[
+    "fn initialize",
+    "fn balance_of",
+    "fn transfer",
+    "fn mint",
+    "fn burn",
+    "fn approve",
+    "fn transfer_from",
+    "fn total_supply",
+];
+
+#[test]
+fn g19_01_musd_token_has_no_mangle_exports() {
+    let source = fs::read_to_string(workspace_root().join("contracts/musd_token/src/lib.rs"))
+        .expect("musd_token source should exist");
+
+    for func in REQUIRED_TOKEN_EXPORTS {
+        assert!(
+            source.contains(func),
+            "REGRESSION G19-01: musd_token missing function {}",
+            func
+        );
+    }
+
+    // Count #[no_mangle] annotations — must have at least 8 core + extras
+    let no_mangle_count = source.matches("#[no_mangle]").count();
+    assert!(
+        no_mangle_count >= 8,
+        "REGRESSION G19-01: musd_token has only {} #[no_mangle] annotations (need ≥8)",
+        no_mangle_count
+    );
+
+    // Every #[no_mangle] must be followed by pub extern "C"
+    let extern_c_count = source.matches("pub extern \"C\"").count();
+    assert_eq!(
+        no_mangle_count, extern_c_count,
+        "REGRESSION G19-01: musd_token #[no_mangle] count ({}) != pub extern \"C\" count ({})",
+        no_mangle_count, extern_c_count
+    );
+}
+
+#[test]
+fn g20_01_weth_token_has_no_mangle_exports() {
+    let source = fs::read_to_string(workspace_root().join("contracts/weth_token/src/lib.rs"))
+        .expect("weth_token source should exist");
+
+    for func in REQUIRED_TOKEN_EXPORTS {
+        assert!(
+            source.contains(func),
+            "REGRESSION G20-01: weth_token missing function {}",
+            func
+        );
+    }
+
+    let no_mangle_count = source.matches("#[no_mangle]").count();
+    assert!(
+        no_mangle_count >= 8,
+        "REGRESSION G20-01: weth_token has only {} #[no_mangle] annotations (need ≥8)",
+        no_mangle_count
+    );
+
+    let extern_c_count = source.matches("pub extern \"C\"").count();
+    assert_eq!(
+        no_mangle_count, extern_c_count,
+        "REGRESSION G20-01: weth_token #[no_mangle] count ({}) != pub extern \"C\" count ({})",
+        no_mangle_count, extern_c_count
+    );
+}
+
+#[test]
+fn g20_01_wsol_token_has_no_mangle_exports() {
+    let source = fs::read_to_string(workspace_root().join("contracts/wsol_token/src/lib.rs"))
+        .expect("wsol_token source should exist");
+
+    for func in REQUIRED_TOKEN_EXPORTS {
+        assert!(
+            source.contains(func),
+            "REGRESSION G20-01: wsol_token missing function {}",
+            func
+        );
+    }
+
+    let no_mangle_count = source.matches("#[no_mangle]").count();
+    assert!(
+        no_mangle_count >= 8,
+        "REGRESSION G20-01: wsol_token has only {} #[no_mangle] annotations (need ≥8)",
+        no_mangle_count
+    );
+
+    let extern_c_count = source.matches("pub extern \"C\"").count();
+    assert_eq!(
+        no_mangle_count, extern_c_count,
+        "REGRESSION G20-01: wsol_token #[no_mangle] count ({}) != pub extern \"C\" count ({})",
+        no_mangle_count, extern_c_count
+    );
+}
