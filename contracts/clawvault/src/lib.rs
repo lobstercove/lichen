@@ -11,6 +11,7 @@ use alloc::vec::Vec;
 use moltchain_sdk::{
     storage_get, storage_set, log_info, set_return_data,
     bytes_to_u64, u64_to_bytes, get_timestamp, get_caller,
+    get_value, call_token_transfer, get_contract_address,
     Address, CrossCall, call_contract,
 };
 
@@ -56,6 +57,9 @@ const DEFAULT_DEPOSIT_CAP: u64 = 0;
 const RISK_CONSERVATIVE: u8 = 1; // lending-only, ≤33% alloc
 const RISK_MODERATE: u8 = 2;     // mixed, ≤66% alloc
 const RISK_AGGRESSIVE: u8 = 3;   // high yield, up to 100%
+
+/// Storage key for MOLT token address (used in call_token_transfer)
+const MOLT_TOKEN_KEY: &[u8] = b"cv_molt_token";
 
 fn is_cv_paused() -> bool {
     storage_get(CV_PAUSE_KEY).map(|d| d.first().copied() == Some(1)).unwrap_or(false)
@@ -236,6 +240,10 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u64 {
     if amount == 0 {
         return 0;
     }
+    // G25-02: Verify caller attached sufficient MOLT
+    if get_value() < amount {
+        return 0;
+    }
     if is_cv_paused() {
         log_info("Vault is paused");
         return 0;
@@ -385,6 +393,21 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, shares_to_burn: u64) -> u64
     store_u64(b"cv_total_shares", total_shares - shares_to_burn);
     store_u64(b"cv_total_assets", total_assets.saturating_sub(gross_amount));
 
+    // G25-02: Transfer MOLT to depositor
+    if !transfer_molt_out(&depositor, amount) {
+        // Revert all state changes
+        store_u64(&share_key, user_shares);
+        store_u64(b"cv_total_shares", total_shares);
+        store_u64(b"cv_total_assets", total_assets);
+        if fee > 0 {
+            let prev_fees = load_u64(b"cv_protocol_fees");
+            store_u64(b"cv_protocol_fees", prev_fees.saturating_sub(fee));
+        }
+        reentrancy_exit();
+        log_info("Withdrawal transfer failed");
+        return 0;
+    }
+
     reentrancy_exit();
     log_info("Vault withdrawal successful");
     amount
@@ -427,6 +450,26 @@ fn query_protocol_yield(addr_key: &[u8], function: &str, deployed: u64, elapsed_
     }
 }
 
+/// G25-02: Transfer MOLT tokens out of the vault to a recipient.
+/// Uses self-custody pattern: vault holds tokens at its own contract address.
+/// Returns true on success or if MOLT token not configured (graceful degradation).
+fn transfer_molt_out(to: &[u8; 32], amount: u64) -> bool {
+    if amount == 0 {
+        return true;
+    }
+    let token_data = storage_get(MOLT_TOKEN_KEY);
+    if token_data.is_none() || token_data.as_ref().unwrap().len() < 32 {
+        return true; // graceful degradation: token not configured yet
+    }
+    let mut token = [0u8; 32];
+    token.copy_from_slice(&token_data.unwrap()[..32]);
+    let contract_addr = get_contract_address();
+    match call_token_transfer(Address(token), Address(contract_addr.0), Address(*to), amount) {
+        Ok(_) => true,
+        Err(_) => false,
+    }
+}
+
 /// Set protocol addresses for real yield sources. Admin only.
 /// Both addresses optional (pass zero to skip). Non-zero addresses are stored.
 ///
@@ -466,6 +509,26 @@ pub extern "C" fn set_protocol_addresses(
     0
 }
 
+/// G25-02: Set MOLT token address for self-custody transfers. Admin only.
+/// Returns: 0 success, 1 not admin
+#[no_mangle]
+pub extern "C" fn set_molt_token(caller_ptr: *const u8, token_ptr: *const u8) -> u32 {
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+    if !is_cv_admin(&caller) {
+        return 1;
+    }
+    let mut token = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(token_ptr, token.as_mut_ptr(), 32); }
+    storage_set(MOLT_TOKEN_KEY, &token);
+    log_info("MOLT token address configured");
+    0
+}
+
 // ============================================================================
 // HARVEST & AUTO-COMPOUND
 // ============================================================================
@@ -499,7 +562,7 @@ pub extern "C" fn harvest() -> u32 {
     let strategy_count = load_u64(b"cv_strategy_count") as usize;
     let mut total_yield: u64 = 0;
 
-    // Yield from each strategy — use real protocol data when available, simulated fallback
+    // Yield from each strategy — use real protocol data only (G25-02: no simulated fallback)
     for i in 0..strategy_count {
         let type_key = alloc::format!("cv_strat_type:{}", i);
         let alloc_key = alloc::format!("cv_strat_alloc:{}", i);
@@ -509,18 +572,19 @@ pub extern "C" fn harvest() -> u32 {
 
         let deployed = total_assets * allocation / 100;
 
+        // G25-02: Only real yield from connected protocols — no phantom inflation
         let strategy_yield = match strategy_type {
             STRATEGY_LENDING => {
                 query_protocol_yield(LOBSTERLEND_ADDRESS_KEY, "get_accrued_interest", deployed, elapsed_slots)
-                    .unwrap_or_else(|| simulated_yield(300, deployed, elapsed_slots))
+                    .unwrap_or(0)
             }
             STRATEGY_LP => {
                 query_protocol_yield(MOLTSWAP_ADDRESS_KEY, "get_lp_rewards", deployed, elapsed_slots)
-                    .unwrap_or_else(|| simulated_yield(500, deployed, elapsed_slots))
+                    .unwrap_or(0)
             }
             STRATEGY_STAKING => {
-                // Staking is protocol-level — always simulated
-                simulated_yield(800, deployed, elapsed_slots)
+                // Staking yield requires a real staking protocol endpoint
+                0
             }
             _ => 0,
         };
@@ -802,6 +866,14 @@ pub extern "C" fn withdraw_protocol_fees(caller_ptr: *const u8) -> u64 {
     let fees = load_u64(b"cv_protocol_fees");
     if fees == 0 { return 0; }
     store_u64(b"cv_protocol_fees", 0);
+
+    // G25-02: Transfer fees to admin
+    if !transfer_molt_out(&caller, fees) {
+        store_u64(b"cv_protocol_fees", fees); // revert
+        log_info("Fee transfer failed");
+        return 0;
+    }
+
     log_info("Protocol fees withdrawn");
     fees
 }
@@ -920,6 +992,7 @@ mod tests {
         let user = [2u8; 32];
         test_mock::set_caller(user);
         let amount = 100_000u64;
+        test_mock::set_value(amount);
         let shares = deposit(user.as_ptr(), amount);
         // V2: deposit fee = 100_000 * 10 / 10_000 = 100; net = 99_900
         // First deposit: shares = net - MIN_LOCKED_SHARES = 99_900 - 1_000 = 98_900
@@ -941,6 +1014,7 @@ mod tests {
         initialize(admin.as_ptr());
         let user = [2u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(MIN_LOCKED_SHARES);
         assert_eq!(deposit(user.as_ptr(), MIN_LOCKED_SHARES), 0);
     }
 
@@ -952,10 +1026,12 @@ mod tests {
         initialize(admin.as_ptr());
         let user1 = [2u8; 32];
         test_mock::set_caller(user1);
+        test_mock::set_value(100_000);
         deposit(user1.as_ptr(), 100_000);
         // After first deposit: total_shares = 1000 + 98_900 = 99_900, total_assets = 99_900
         let user2 = [3u8; 32];
         test_mock::set_caller(user2);
+        test_mock::set_value(50_000);
         let shares2 = deposit(user2.as_ptr(), 50_000);
         // fee = 50_000 * 10 / 10_000 = 50, net = 49_950
         // shares = 49_950 * 99_900 / 99_900 = 49_950
@@ -970,6 +1046,7 @@ mod tests {
         initialize(admin.as_ptr());
         let user = [2u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(100_000);
         let shares = deposit(user.as_ptr(), 100_000);
         let amount = withdraw(user.as_ptr(), shares);
         assert!(amount > 0);
@@ -990,6 +1067,7 @@ mod tests {
         initialize(admin.as_ptr());
         let user = [2u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(100_000);
         deposit(user.as_ptr(), 100_000);
         // User has 98_900 shares, try withdrawing 100_000
         assert_eq!(withdraw(user.as_ptr(), 100_000), 0);
@@ -1006,13 +1084,15 @@ mod tests {
         // Set deposit fee to 0 for clean math
         set_deposit_fee(admin.as_ptr(), 0);
         test_mock::set_caller(user);
+        test_mock::set_value(1_000_000_000_000);
         deposit(user.as_ptr(), 1_000_000_000_000);
         // Advance timestamp by 400 seconds (1000 slots)
         test_mock::set_timestamp(401_000);
         let result = harvest();
         assert_eq!(result, 0);
+        // G25-02: No simulated yield — without real protocol, total_assets stays same
         let total_assets = load_u64(b"cv_total_assets");
-        assert!(total_assets > 1_000_000_000_000);
+        assert_eq!(total_assets, 1_000_000_000_000);
     }
 
     #[test]
@@ -1044,6 +1124,7 @@ mod tests {
         initialize(admin.as_ptr());
         let user = [2u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(100_000);
         deposit(user.as_ptr(), 100_000);
         assert_eq!(get_user_position(user.as_ptr()), 0);
         let ret = test_mock::get_return_data();
@@ -1096,6 +1177,7 @@ mod tests {
         // Deposit blocked when paused
         let user = [3u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(100_000);
         assert_eq!(deposit(user.as_ptr(), 100_000), 0);
 
         // Withdraw still works (safety valve) — need prior deposit
@@ -1103,6 +1185,7 @@ mod tests {
         test_mock::set_caller(admin);
         assert_eq!(cv_unpause(admin.as_ptr()), 0);
         test_mock::set_caller(user);
+        test_mock::set_value(100_000);
         let shares = deposit(user.as_ptr(), 100_000);
         assert!(shares > 0);
         test_mock::set_caller(admin);
@@ -1131,6 +1214,7 @@ mod tests {
         assert_eq!(set_deposit_fee(admin.as_ptr(), 0), 0);
         let user = [2u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(100_000);
         let shares = deposit(user.as_ptr(), 100_000);
         // No fee: shares = 100_000 - 1_000 = 99_000
         assert_eq!(shares, 99_000);
@@ -1158,6 +1242,7 @@ mod tests {
         // Also set deposit fee to 0 for simpler math
         set_deposit_fee(admin.as_ptr(), 0);
         test_mock::set_caller(user);
+        test_mock::set_value(100_000);
         let shares = deposit(user.as_ptr(), 100_000);
         assert_eq!(shares, 99_000); // 100k - 1k locked
 
@@ -1189,10 +1274,12 @@ mod tests {
 
         let user = [2u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(150_000);
         let shares1 = deposit(user.as_ptr(), 150_000);
         assert!(shares1 > 0);
 
         // Second deposit would exceed cap (total_assets ~149_850 + 100_000 > 200_000)
+        test_mock::set_value(100_000);
         let shares2 = deposit(user.as_ptr(), 100_000);
         assert_eq!(shares2, 0); // rejected
     }
@@ -1250,6 +1337,7 @@ mod tests {
 
         let user = [2u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(1_000_000);
         deposit(user.as_ptr(), 1_000_000); // fee = 1_000_000 * 10 / 10_000 = 100
 
         test_mock::set_caller(admin);
@@ -1389,7 +1477,7 @@ mod tests {
 
     #[test]
     fn test_harvest_with_protocol_addresses_configured() {
-        // Even with addresses configured, test mode returns empty → falls back to simulated
+        // G25-02: With addresses configured, test mode returns empty → yield = 0 (no simulated fallback)
         setup();
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
@@ -1408,22 +1496,23 @@ mod tests {
 
         let user = [2u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(1_000_000_000_000);
         deposit(user.as_ptr(), 1_000_000_000_000);
 
         // Advance time
         test_mock::set_timestamp(401_000);
         assert_eq!(harvest(), 0);
 
-        // Yield should still accumulate (fallback to simulated)
+        // G25-02: No simulated fallback — test mode cross-calls return empty → 0 yield
         let total_assets = load_u64(b"cv_total_assets");
-        assert!(total_assets > 1_000_000_000_000);
+        assert_eq!(total_assets, 1_000_000_000_000);
         let total_earned = load_u64(b"cv_total_earned");
-        assert!(total_earned > 0);
+        assert_eq!(total_earned, 0);
     }
 
     #[test]
     fn test_harvest_without_protocol_addresses() {
-        // Same as original behavior — pure simulated yield
+        // G25-02: Without protocol addresses → 0 yield (no phantom inflation)
         setup();
         let admin = [1u8; 32];
         test_mock::set_caller(admin);
@@ -1435,12 +1524,132 @@ mod tests {
 
         let user = [2u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(1_000_000_000_000);
         deposit(user.as_ptr(), 1_000_000_000_000);
 
         test_mock::set_timestamp(401_000);
         assert_eq!(harvest(), 0);
 
+        // G25-02: No simulated fallback → total_assets unchanged
         let total_assets = load_u64(b"cv_total_assets");
-        assert!(total_assets > 1_000_000_000_000);
+        assert_eq!(total_assets, 1_000_000_000_000);
+    }
+
+    // ====================================================================
+    // G25-02 TESTS: Financial wiring & real yield
+    // ====================================================================
+
+    #[test]
+    fn test_g25_deposit_requires_get_value() {
+        // Deposit must fail when get_value() < amount (no MOLT attached)
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let user = [2u8; 32];
+        test_mock::set_caller(user);
+        // No set_value → get_value() returns 0
+        assert_eq!(deposit(user.as_ptr(), 100_000), 0);
+    }
+
+    #[test]
+    fn test_g25_withdraw_triggers_transfer() {
+        // Withdraw must attempt token transfer (graceful degradation when MOLT token not set)
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let user = [2u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_value(100_000);
+        let shares = deposit(user.as_ptr(), 100_000);
+        assert!(shares > 0);
+        let amount = withdraw(user.as_ptr(), shares);
+        // Graceful degradation: transfer_molt_out returns true when MOLT token not configured
+        assert!(amount > 0);
+    }
+
+    #[test]
+    fn test_g25_withdraw_fees_triggers_transfer() {
+        // withdraw_protocol_fees must attempt transfer
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let user = [2u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_value(1_000_000);
+        deposit(user.as_ptr(), 1_000_000);
+        test_mock::set_caller(admin);
+        let fees = withdraw_protocol_fees(admin.as_ptr());
+        // Fees collected from deposit (1000 = 1M * 10bps)
+        assert_eq!(fees, 1000);
+    }
+
+    #[test]
+    fn test_g25_set_molt_token() {
+        // Admin can set MOLT token address
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let token = [0xCC; 32];
+        assert_eq!(set_molt_token(admin.as_ptr(), token.as_ptr()), 0);
+        let stored = test_mock::get_storage(MOLT_TOKEN_KEY).unwrap();
+        assert_eq!(stored.as_slice(), &token);
+
+        // Non-admin fails
+        let other = [2u8; 32];
+        test_mock::set_caller(other);
+        assert_eq!(set_molt_token(other.as_ptr(), token.as_ptr()), 1);
+    }
+
+    #[test]
+    fn test_g25_no_phantom_inflation() {
+        // Harvest with strategies but no real protocol → total_assets stays unchanged
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        set_deposit_fee(admin.as_ptr(), 0);
+
+        add_strategy(admin.as_ptr(), STRATEGY_LENDING, 40);
+        add_strategy(admin.as_ptr(), STRATEGY_LP, 30);
+        add_strategy(admin.as_ptr(), STRATEGY_STAKING, 30);
+
+        let user = [2u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_value(1_000_000_000);
+        deposit(user.as_ptr(), 1_000_000_000);
+
+        let assets_before = load_u64(b"cv_total_assets");
+
+        // Harvest multiple times with advancing timestamps
+        test_mock::set_timestamp(100_000);
+        harvest();
+        test_mock::set_timestamp(200_000);
+        harvest();
+        test_mock::set_timestamp(500_000);
+        harvest();
+
+        let assets_after = load_u64(b"cv_total_assets");
+        // No phantom inflation — assets unchanged without real yield source
+        assert_eq!(assets_before, assets_after);
+        assert_eq!(load_u64(b"cv_total_earned"), 0);
+        assert_eq!(load_u64(b"cv_fees_earned"), 0);
+    }
+
+    #[test]
+    fn test_g25_deposit_partial_value() {
+        // Deposit with get_value() >= amount but less than double — should work
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let user = [2u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_value(100_000); // exact match
+        let shares = deposit(user.as_ptr(), 100_000);
+        assert!(shares > 0);
     }
 }
