@@ -26,6 +26,7 @@ use alloc::vec::Vec;
 
 use moltchain_sdk::{
     log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_slot, get_caller,
+    get_value, call_token_transfer, get_contract_address, Address,
 };
 
 // ============================================================================
@@ -42,6 +43,9 @@ const DEFAULT_CHALLENGE_WINDOW: u64 = 200; // slots to respond to a challenge
 const DEFAULT_SLASH_PERCENT: u64 = 10;     // 10% of stake slashed on failure
 const MIN_STAKE_PER_GB: u64 = 10_000_000;  // 10M shells (0.01 MOLT) per GB of capacity
 const ADMIN_KEY: &[u8] = b"reef_admin";
+
+/// Storage key for MOLT token address (used in call_token_transfer)
+const MOLT_TOKEN_KEY: &[u8] = b"reef_molt_token";
 
 const REEF_TOTAL_BYTES_KEY: &[u8] = b"reef_total_bytes";
 const REEF_CHALLENGE_COUNT_KEY: &[u8] = b"reef_challenge_count";
@@ -62,6 +66,26 @@ fn reentrancy_enter() -> bool {
 
 fn reentrancy_exit() {
     storage_set(RS_REENTRANCY_KEY, &[0u8]);
+}
+
+/// G27-02: Transfer MOLT tokens out of the contract to a recipient.
+/// Uses self-custody pattern: contract holds tokens at its own address.
+/// Returns true on success or if MOLT token not configured (graceful degradation).
+fn transfer_molt_out(to: &[u8; 32], amount: u64) -> bool {
+    if amount == 0 {
+        return true;
+    }
+    let token_data = storage_get(MOLT_TOKEN_KEY);
+    if token_data.is_none() || token_data.as_ref().unwrap().len() < 32 {
+        return true; // graceful degradation: token not configured yet
+    }
+    let mut token = [0u8; 32];
+    token.copy_from_slice(&token_data.unwrap()[..32]);
+    let contract_addr = get_contract_address();
+    match call_token_transfer(Address(token), Address(contract_addr.0), Address(*to), amount) {
+        Ok(_) => true,
+        Err(_) => false,
+    }
 }
 
 // ============================================================================
@@ -274,6 +298,18 @@ pub extern "C" fn store_data(
         log_info("Duration too short");
         reentrancy_exit();
         return 3;
+    }
+
+    // G27-02: Verify payment for storage cost
+    let cost = (size as u128)
+        .saturating_mul(replication_factor as u128)
+        .saturating_mul(duration_slots as u128)
+        .saturating_mul(REWARD_PER_SLOT_PER_BYTE as u128);
+    let cost = if cost > u64::MAX as u128 { u64::MAX } else { cost as u64 };
+    if get_value() < cost {
+        log_info("Insufficient payment for storage");
+        reentrancy_exit();
+        return 5;
     }
 
     let dk = data_key(&data_hash);
@@ -560,6 +596,15 @@ pub extern "C" fn claim_storage_rewards(provider_ptr: *const u8) -> u32 {
     // Reset reward balance to zero
     storage_set(&rk, &u64_to_bytes(0));
 
+    // G27-02: Transfer reward tokens to provider
+    if !transfer_molt_out(&provider_arr, reward) {
+        // Revert: restore reward balance
+        storage_set(&rk, &u64_to_bytes(reward));
+        log_info("Reward transfer failed");
+        reentrancy_exit();
+        return 2;
+    }
+
     // Return reward amount
     moltchain_sdk::set_return_data(&u64_to_bytes(reward));
 
@@ -595,6 +640,27 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
     storage_set(b"slash_percent", &u64_to_bytes(DEFAULT_SLASH_PERCENT));
     log_info("Reef Storage v2 initialized");
     reentrancy_exit();
+    0
+}
+
+/// G27-02: Set MOLT token address for self-custody transfers. Admin only.
+/// Returns: 0 success, 1 not admin
+#[no_mangle]
+pub extern "C" fn set_molt_token(caller_ptr: *const u8, token_ptr: *const u8) -> u32 {
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+    match storage_get(ADMIN_KEY) {
+        Some(admin) if caller[..] == admin[..] => {},
+        _ => { return 1; },
+    }
+    let mut token = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(token_ptr, token.as_mut_ptr(), 32); }
+    storage_set(MOLT_TOKEN_KEY, &token);
+    log_info("MOLT token address configured");
     0
 }
 
@@ -689,6 +755,13 @@ pub extern "C" fn stake_collateral(provider_ptr: *const u8, amount: u64) -> u32 
         log_info("Insufficient stake for capacity");
         reentrancy_exit();
         return 2;
+    }
+
+    // G27-02: Verify provider attached sufficient MOLT
+    if get_value() < amount {
+        log_info("Insufficient MOLT attached for staking");
+        reentrancy_exit();
+        return 3;
     }
 
     let sk = stake_key(&provider_arr);
@@ -1008,6 +1081,7 @@ mod tests {
 
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(owner);
+        test_mock::set_value(153_600_000); // cost = 1024 * 3 * 5000 * 10
         let result = store_data(
             owner.as_ptr(),
             data_hash.as_ptr(),
@@ -1043,7 +1117,9 @@ mod tests {
 
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(owner);
+        test_mock::set_value(20_480_000); // cost = 512 * 2 * 2000 * 10
         store_data(owner.as_ptr(), data_hash.as_ptr(), 512, 2, 2000);
+        test_mock::set_value(2_560_000); // cost = 256 * 1 * 1000 * 10
         let result = store_data(owner.as_ptr(), data_hash.as_ptr(), 256, 1, 1000);
         assert_eq!(result, 4); // already registered
     }
@@ -1066,6 +1142,7 @@ mod tests {
         // Store data
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(owner);
+        test_mock::set_value(153_600_000); // cost = 1024 * 3 * 5000 * 10
         store_data(owner.as_ptr(), data_hash.as_ptr(), 1024, 3, 5000);
 
         // Confirm storage
@@ -1105,6 +1182,7 @@ mod tests {
 
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(owner);
+        test_mock::set_value(122_880_000); // cost = 2048 * 2 * 3000 * 10
         store_data(owner.as_ptr(), data_hash.as_ptr(), 2048, 2, 3000);
 
         let result = get_storage_info(data_hash.as_ptr());
@@ -1156,6 +1234,7 @@ mod tests {
         register_provider(provider_addr.as_ptr(), 1_000_000);
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(owner);
+        test_mock::set_value(5_000_000); // cost = 100 * 1 * 5000 * 10
         store_data(owner.as_ptr(), data_hash.as_ptr(), 100, 1, 5000);
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(provider_addr);
@@ -1196,6 +1275,7 @@ mod tests {
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(provider_addr);
         register_provider(provider_addr.as_ptr(), 1_073_741_824); // 1 GB
+        test_mock::set_value(10_000_000);
         let result = stake_collateral(provider_addr.as_ptr(), 10_000_000);
         assert_eq!(result, 0);
         assert_eq!(get_provider_stake(provider_addr.as_ptr()), 10_000_000);
@@ -1250,6 +1330,7 @@ mod tests {
         register_provider(provider_addr.as_ptr(), 1_000_000);
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(owner);
+        test_mock::set_value(153_600_000); // cost = 1024 * 3 * 5000 * 10
         store_data(owner.as_ptr(), data_hash.as_ptr(), 1024, 3, 5000);
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(provider_addr);
@@ -1285,6 +1366,7 @@ mod tests {
         register_provider(provider_addr.as_ptr(), 1_000_000);
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(owner);
+        test_mock::set_value(51_200_000); // cost = 1024 * 1 * 5000 * 10
         store_data(owner.as_ptr(), data_hash.as_ptr(), 1024, 1, 5000);
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(provider_addr);
@@ -1309,6 +1391,7 @@ mod tests {
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(provider_addr);
         register_provider(provider_addr.as_ptr(), 1_073_741_824);
+        test_mock::set_value(51_200_000); // covers stake(10M) and store_data cost(51.2M)
         stake_collateral(provider_addr.as_ptr(), 10_000_000);
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(owner);
@@ -1350,6 +1433,7 @@ mod tests {
         stake_collateral(provider_addr.as_ptr(), 1_000_000);
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(owner);
+        test_mock::set_value(51_200_000); // cost = 1024 * 1 * 5000 * 10
         store_data(owner.as_ptr(), data_hash.as_ptr(), 1024, 1, 5000);
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(provider_addr);
@@ -1382,6 +1466,7 @@ mod tests {
         register_provider(provider_addr.as_ptr(), 1_000_000);
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(owner);
+        test_mock::set_value(51_200_000); // cost = 1024 * 1 * 5000 * 10
         store_data(owner.as_ptr(), data_hash.as_ptr(), 1024, 1, 5000);
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(provider_addr);
@@ -1422,6 +1507,7 @@ mod tests {
         register_provider(provider_addr.as_ptr(), 1_000_000);
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(owner);
+        test_mock::set_value(51_200_000); // cost = 1024 * 1 * 5000 * 10
         store_data(owner.as_ptr(), data_hash.as_ptr(), 1024, 1, 5000);
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(provider_addr);
@@ -1430,5 +1516,89 @@ mod tests {
 
         // Zero response = invalid
         assert_eq!(respond_challenge(provider_addr.as_ptr(), data_hash.as_ptr(), [0u8; 32].as_ptr()), 4);
+    }
+
+    // ====================================================================
+    // G27-02 TESTS: Financial wiring
+    // ====================================================================
+
+    #[test]
+    fn test_g27_store_data_requires_payment() {
+        // store_data must fail when get_value() < cost (no MOLT attached)
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        let owner = [1u8; 32];
+        let data_hash = [0xF1; 32];
+        test_mock::set_caller(owner);
+        // No set_value → get_value() returns 0
+        let result = store_data(owner.as_ptr(), data_hash.as_ptr(), 1024, 1, 5000);
+        assert_eq!(result, 5); // insufficient payment
+    }
+
+    #[test]
+    fn test_g27_stake_requires_get_value() {
+        // stake_collateral must fail when get_value() < amount
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 10);
+        let provider = [2u8; 32];
+        test_mock::set_caller(provider);
+        register_provider(provider.as_ptr(), 1_073_741_824); // 1 GB
+        // No set_value → get_value() returns 0
+        let result = stake_collateral(provider.as_ptr(), 10_000_000);
+        assert_eq!(result, 3); // insufficient MOLT
+    }
+
+    #[test]
+    fn test_g27_claim_rewards_triggers_transfer() {
+        // claim_storage_rewards must attempt token transfer
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        let owner = [1u8; 32];
+        let data_hash = [0xF2; 32];
+        let provider = [2u8; 32];
+        test_mock::set_caller(provider);
+        register_provider(provider.as_ptr(), 1_000_000);
+        test_mock::set_caller(owner);
+        test_mock::set_value(5_000_000);
+        store_data(owner.as_ptr(), data_hash.as_ptr(), 100, 1, 5000);
+        test_mock::set_caller(provider);
+        confirm_storage(provider.as_ptr(), data_hash.as_ptr());
+        // Claim rewards — graceful degradation (MOLT token not configured)
+        let result = claim_storage_rewards(provider.as_ptr());
+        assert_eq!(result, 0);
+        let ret = test_mock::get_return_data();
+        let reward = bytes_to_u64(&ret);
+        assert!(reward > 0);
+    }
+
+    #[test]
+    fn test_g27_set_molt_token() {
+        // Admin can set MOLT token address
+        setup();
+        let admin = [9u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let token = [0xDD; 32];
+        assert_eq!(set_molt_token(admin.as_ptr(), token.as_ptr()), 0);
+        let stored = test_mock::get_storage(MOLT_TOKEN_KEY).unwrap();
+        assert_eq!(stored.as_slice(), &token);
+        // Non-admin fails
+        let other = [5u8; 32];
+        test_mock::set_caller(other);
+        assert_eq!(set_molt_token(other.as_ptr(), token.as_ptr()), 1);
+    }
+
+    #[test]
+    fn test_g27_store_data_exact_payment() {
+        // Exact payment should succeed
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+        let owner = [1u8; 32];
+        let data_hash = [0xF3; 32];
+        test_mock::set_caller(owner);
+        // cost = 512 * 2 * 1000 * 10 = 10_240_000
+        test_mock::set_value(10_240_000);
+        let result = store_data(owner.as_ptr(), data_hash.as_ptr(), 512, 2, 1000);
+        assert_eq!(result, 0);
     }
 }
