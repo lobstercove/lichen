@@ -210,7 +210,8 @@ cat > "$OUTPUT" <<EOF
     "min_validator_stake": $MIN_VALIDATOR_STAKE,
     "validator_reward_per_block": 10000000,
     "slashing_percentage_double_sign": 50,
-    "slashing_percentage_downtime": 5,
+    "slashing_downtime_per_100_missed": 1,
+    "slashing_downtime_max_percent": 10,
     "slashing_percentage_invalid_state": 100,
     "finality_threshold_percent": 66
   },
