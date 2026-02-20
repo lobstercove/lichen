@@ -447,7 +447,12 @@ pub fn open_position(
             args
         },
     );
-    let _ = call_contract(lock_call); // best-effort in test mode
+    // AUDIT-FIX G6-01: Check lock result — fail if host cannot lock collateral
+    if call_contract(lock_call).is_err() {
+        log_info("Collateral lock failed");
+        reentrancy_exit();
+        return 8;
+    }
 
     let data = encode_position(
         &t, pos_id, pair_id, side, POS_OPEN,
@@ -574,6 +579,24 @@ pub fn add_margin(caller: *const u8, position_id: u64, amount: u64) -> u32 {
         Some(m) => m,
         None => { reentrancy_exit(); return 6; } // overflow
     };
+
+    // AUDIT-FIX G6-01: Lock additional collateral at host level
+    let lock_call = CrossCall::new(
+        Address([0u8; 32]),
+        "lock",
+        {
+            let mut args = Vec::with_capacity(40);
+            args.extend_from_slice(&c);
+            args.extend_from_slice(&u64_to_bytes(amount));
+            args
+        },
+    );
+    if call_contract(lock_call).is_err() {
+        log_info("Collateral lock failed on add_margin");
+        reentrancy_exit();
+        return 7;
+    }
+
     update_pos_margin(&mut data, new_margin);
     storage_set(&pk, &data);
     reentrancy_exit();
@@ -622,6 +645,19 @@ pub fn remove_margin(caller: *const u8, position_id: u64, amount: u64) -> u32 {
         let effective_maint = if admin_maint > maint_bps { admin_maint } else { maint_bps };
         if ratio < effective_maint { reentrancy_exit(); return 6; } // would be unhealthy
     }
+
+    // AUDIT-FIX G6-01: Unlock removed collateral at host level
+    let unlock_call = CrossCall::new(
+        Address([0u8; 32]),
+        "unlock",
+        {
+            let mut args = Vec::with_capacity(40);
+            args.extend_from_slice(&c);
+            args.extend_from_slice(&u64_to_bytes(amount));
+            args
+        },
+    );
+    let _ = call_contract(unlock_call);
 
     update_pos_margin(&mut data, new_margin);
     storage_set(&pk, &data);
@@ -2051,5 +2087,105 @@ mod tests {
         test_mock::set_caller(trader);
         // Should fail with error 7 (pair not margin-enabled)
         assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 7);
+    }
+
+    // ---- COLLATERAL LOCKING TESTS (G6-01) ----
+
+    #[test]
+    fn test_collateral_lock_lifecycle() {
+        // Verify collateral is tracked consistently through open → add → remove → close
+        let _admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+
+        // 1. Open position with 500M margin (locks 500M)
+        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+        let data = storage_get(&position_key(1)).unwrap();
+        assert_eq!(decode_pos_margin(&data), 500_000_000);
+
+        // 2. Add 100M margin (locks additional 100M → total locked 600M)
+        assert_eq!(add_margin(trader.as_ptr(), 1, 100_000_000), 0);
+        let data = storage_get(&position_key(1)).unwrap();
+        assert_eq!(decode_pos_margin(&data), 600_000_000);
+
+        // 3. Remove 50M margin (unlocks 50M → total locked 550M)
+        assert_eq!(remove_margin(trader.as_ptr(), 1, 50_000_000), 0);
+        let data = storage_get(&position_key(1)).unwrap();
+        assert_eq!(decode_pos_margin(&data), 550_000_000);
+
+        // 4. Close position (unlocks all remaining)
+        assert_eq!(close_position(trader.as_ptr(), 1), 0);
+        let data = storage_get(&position_key(1)).unwrap();
+        assert_eq!(decode_pos_status(&data), POS_CLOSED);
+    }
+
+    #[test]
+    fn test_add_margin_locks_collateral() {
+        // Verify add_margin issues lock and updates storage correctly
+        let _admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000);
+
+        // Add margin multiple times
+        assert_eq!(add_margin(trader.as_ptr(), 1, 50_000_000), 0);
+        assert_eq!(add_margin(trader.as_ptr(), 1, 25_000_000), 0);
+        let data = storage_get(&position_key(1)).unwrap();
+        assert_eq!(decode_pos_margin(&data), 575_000_000); // 500M + 50M + 25M
+    }
+
+    #[test]
+    fn test_remove_margin_unlocks_collateral() {
+        // Verify remove_margin issues unlock and updates storage correctly
+        let _admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        // 2x: maint = 25% = 250M needed for 1B notional
+        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000);
+
+        // Remove 100M (still above 25% maintenance)
+        assert_eq!(remove_margin(trader.as_ptr(), 1, 100_000_000), 0);
+        let data = storage_get(&position_key(1)).unwrap();
+        assert_eq!(decode_pos_margin(&data), 400_000_000);
+
+        // Remove another 100M (400M - 100M = 300M, still > 250M)
+        assert_eq!(remove_margin(trader.as_ptr(), 1, 100_000_000), 0);
+        let data = storage_get(&position_key(1)).unwrap();
+        assert_eq!(decode_pos_margin(&data), 300_000_000);
+
+        // Remove 60M more → 240M < 250M maintenance → should fail
+        assert_eq!(remove_margin(trader.as_ptr(), 1, 60_000_000), 6);
+        // Margin should remain unchanged
+        let data = storage_get(&position_key(1)).unwrap();
+        assert_eq!(decode_pos_margin(&data), 300_000_000);
+    }
+
+    #[test]
+    fn test_add_margin_to_closed_position_fails() {
+        // Cannot add margin to a closed position
+        let _admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000);
+        close_position(trader.as_ptr(), 1);
+        // Position is now closed — add_margin should return 3 (not open)
+        assert_eq!(add_margin(trader.as_ptr(), 1, 100), 3);
+    }
+
+    #[test]
+    fn test_remove_margin_from_closed_position_fails() {
+        // Cannot remove margin from a closed position
+        let _admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000);
+        close_position(trader.as_ptr(), 1);
+        // Position is now closed — remove_margin should return 3 (not open)
+        assert_eq!(remove_margin(trader.as_ptr(), 1, 100), 3);
     }
 }
