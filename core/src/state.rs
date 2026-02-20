@@ -1676,30 +1676,22 @@ impl StateStore {
     }
 
     /// Get reputation score for an account.
-    /// Reads from the MoltyID contract storage (reputation key format: "rep:" + hex(pubkey)).
+    /// Reads from the MoltyID contract storage via the symbol registry.
+    /// Key format in CF_CONTRACT_STORAGE: program(32) + "rep:" + hex(pubkey).
     /// Returns 0 if no reputation data found.
     pub fn get_reputation(&self, pubkey: &Pubkey) -> Result<u64, String> {
-        // Build the MoltyID reputation key: "rep:" + hex(pubkey)
+        // Build the MoltyID reputation storage key: "rep:" + hex(pubkey)
         let hex_chars: &[u8; 16] = b"0123456789abcdef";
-        let mut key = Vec::with_capacity(4 + 64);
-        key.extend_from_slice(b"rep:");
+        let mut rep_key = Vec::with_capacity(4 + 64);
+        rep_key.extend_from_slice(b"rep:");
         for &b in pubkey.0.iter() {
-            key.push(hex_chars[(b >> 4) as usize]);
-            key.push(hex_chars[(b & 0x0f) as usize]);
+            rep_key.push(hex_chars[(b >> 4) as usize]);
+            rep_key.push(hex_chars[(b & 0x0f) as usize]);
         }
-        // Try to read from the contract storage column family
-        let cf = match self.db.cf_handle(CF_CONTRACT_STORAGE) {
-            Some(cf) => cf,
-            None => return Ok(0), // No contract storage CF = no reputation data
-        };
-        match self.db.get_cf(&cf, &key) {
-            Ok(Some(data)) if data.len() >= 8 => {
-                let mut arr = [0u8; 8];
-                arr.copy_from_slice(&data[..8]);
-                Ok(u64::from_le_bytes(arr))
-            }
-            _ => Ok(0),
-        }
+        // Use get_program_storage_u64 which resolves "moltyid" → program Pubkey
+        // via the symbol registry, then reads program(32) + storage_key from
+        // CF_CONTRACT_STORAGE. This is the correct key format.
+        Ok(self.get_program_storage_u64("moltyid", &rep_key))
     }
 
     /// Transfer shells between accounts
@@ -1749,6 +1741,164 @@ impl StateStore {
         // Mark both accounts dirty for incremental Merkle
         self.mark_account_dirty_with_key(from);
         self.mark_account_dirty_with_key(to);
+
+        Ok(())
+    }
+
+    /// L4-01 fix: Atomically persist multiple account mutations and an optional
+    /// burn-counter increment in a single RocksDB WriteBatch.
+    ///
+    /// This prevents partially-committed state when a crash occurs between
+    /// sequential `put_account` calls (e.g., fee charging, reward distribution,
+    /// transaction reversal). Pass `burn_delta: 0` when no burn is needed.
+    pub fn atomic_put_accounts(
+        &self,
+        accounts: &[(&Pubkey, &Account)],
+        burn_delta: u64,
+    ) -> Result<(), String> {
+        if accounts.is_empty() && burn_delta == 0 {
+            return Ok(());
+        }
+
+        let cf = self
+            .db
+            .cf_handle(CF_ACCOUNTS)
+            .ok_or_else(|| "Accounts CF not found".to_string())?;
+
+        let mut batch = WriteBatch::default();
+
+        // Track per-account metadata for post-commit metrics & dirty markers
+        let mut meta: Vec<(&Pubkey, bool, u64, u64)> = Vec::with_capacity(accounts.len());
+
+        for (pubkey, account) in accounts {
+            // Read old state for metrics (is_new, old_balance)
+            let (is_new, old_balance) = {
+                let old = self
+                    .db
+                    .get_cf(&cf, pubkey.0)
+                    .map_err(|e| format!("Failed to read account: {}", e))?;
+                let old_bal = old
+                    .as_ref()
+                    .and_then(|data| {
+                        if data.first() == Some(&0xBC) {
+                            bincode::deserialize::<Account>(&data[1..]).ok()
+                        } else {
+                            serde_json::from_slice::<Account>(data).ok()
+                        }
+                    })
+                    .map(|a| a.shells)
+                    .unwrap_or(0);
+                (old.is_none(), old_bal)
+            };
+
+            let mut value = Vec::with_capacity(256);
+            value.push(0xBC);
+            bincode::serialize_into(&mut value, account)
+                .map_err(|e| format!("Failed to serialize account: {}", e))?;
+            batch.put_cf(&cf, pubkey.0, &value);
+            meta.push((pubkey, is_new, old_balance, account.shells));
+        }
+
+        // Optionally fold burn counter into the same WriteBatch
+        if burn_delta > 0 {
+            let cf_stats = self
+                .db
+                .cf_handle(CF_STATS)
+                .ok_or_else(|| "Stats CF not found".to_string())?;
+            let current_burned = self.get_total_burned()?;
+            let new_total = current_burned.saturating_add(burn_delta);
+            batch.put_cf(&cf_stats, b"total_burned", new_total.to_le_bytes());
+        }
+
+        // Commit everything in one WAL sync
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Atomic account write failed: {}", e))?;
+
+        // Post-commit side effects: metrics + dirty markers (crash-safe because
+        // they are rebuilt on startup from persisted state)
+        for (pubkey, is_new, old_balance, new_balance) in meta {
+            if is_new {
+                self.metrics.increment_accounts();
+            }
+            if old_balance == 0 && new_balance > 0 {
+                self.metrics.increment_active_accounts();
+            } else if old_balance > 0 && new_balance == 0 {
+                self.metrics.decrement_active_accounts();
+            }
+            self.mark_account_dirty_with_key(pubkey);
+        }
+
+        Ok(())
+    }
+
+    /// L4-01 fix: Atomically persist an account mutation together with a
+    /// ReefStake pool update. The treasury debit and pool reward distribution
+    /// land in a single WriteBatch to prevent partial updates on crash.
+    pub fn atomic_put_account_with_reefstake(
+        &self,
+        acct_key: &Pubkey,
+        acct: &Account,
+        pool: &ReefStakePool,
+    ) -> Result<(), String> {
+        let cf_accounts = self
+            .db
+            .cf_handle(CF_ACCOUNTS)
+            .ok_or_else(|| "Accounts CF not found".to_string())?;
+        let cf_reef = self
+            .db
+            .cf_handle(CF_REEFSTAKE)
+            .ok_or_else(|| "ReefStake CF not found".to_string())?;
+
+        // Read old account state for metrics
+        let (is_new, old_balance) = {
+            let old = self
+                .db
+                .get_cf(&cf_accounts, acct_key.0)
+                .map_err(|e| format!("Failed to read account: {}", e))?;
+            let old_bal = old
+                .as_ref()
+                .and_then(|data| {
+                    if data.first() == Some(&0xBC) {
+                        bincode::deserialize::<Account>(&data[1..]).ok()
+                    } else {
+                        serde_json::from_slice::<Account>(data).ok()
+                    }
+                })
+                .map(|a| a.shells)
+                .unwrap_or(0);
+            (old.is_none(), old_bal)
+        };
+
+        let mut batch = WriteBatch::default();
+
+        // Account serialization
+        let mut acct_bytes = Vec::with_capacity(256);
+        acct_bytes.push(0xBC);
+        bincode::serialize_into(&mut acct_bytes, acct)
+            .map_err(|e| format!("Failed to serialize account: {}", e))?;
+        batch.put_cf(&cf_accounts, acct_key.0, &acct_bytes);
+
+        // ReefStake pool serialization
+        let pool_bytes = serde_json::to_vec(pool)
+            .map_err(|e| format!("Failed to serialize ReefStake pool: {}", e))?;
+        batch.put_cf(&cf_reef, b"pool", &pool_bytes);
+
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Atomic account+reefstake write failed: {}", e))?;
+
+        // Post-commit metrics
+        if is_new {
+            self.metrics.increment_accounts();
+        }
+        let new_balance = acct.shells;
+        if old_balance == 0 && new_balance > 0 {
+            self.metrics.increment_active_accounts();
+        } else if old_balance > 0 && new_balance == 0 {
+            self.metrics.decrement_active_accounts();
+        }
+        self.mark_account_dirty_with_key(acct_key);
 
         Ok(())
     }

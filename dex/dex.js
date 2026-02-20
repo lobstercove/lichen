@@ -9,8 +9,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     // Configuration — override via window globals or <script> config block
     // ═══════════════════════════════════════════════════════════════════════
-    const RPC_BASE  = (window.MOLTCHAIN_RPC || 'http://localhost:8899').replace(/\/$/, '');
-    const WS_URL    = (window.MOLTCHAIN_WS  || 'ws://localhost:8900').replace(/\/$/, '');
+    const RPC_BASE  = (localStorage.getItem('dexRpcUrl') || window.MOLTCHAIN_RPC || 'http://localhost:8899').replace(/\/$/, '');
+    const WS_URL    = (localStorage.getItem('dexWsUrl') || window.MOLTCHAIN_WS  || RPC_BASE.replace(/^http/, 'ws').replace(/:8899/, ':8900')).replace(/\/$/, '');
     const API_BASE  = `${RPC_BASE}/api/v1`;
     const PRICE_SCALE = 1_000_000_000;
 
@@ -85,6 +85,8 @@ document.addEventListener('DOMContentLoaded', () => {
             this.ws.onopen = () => {
                 console.log('[WS] Connected');
                 this.reconnectDelay = 1000;
+                this.connected = true;
+                if (this.onConnectionChange) this.onConnectionChange(true);
                 for (const [, sub] of this.subs) this._sendSubscribe(sub.method, sub.params);
                 this.pending.forEach(msg => this.ws.send(msg));
                 this.pending = [];
@@ -111,6 +113,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 } catch { /* ignore */ }
             };
             this.ws.onclose = () => {
+                this.connected = false;
+                if (this.onConnectionChange) this.onConnectionChange(false);
                 if (this._closing) return;
                 setTimeout(() => this.connect(), this.reconnectDelay);
                 this.reconnectDelay = Math.min(this.reconnectDelay * 2, 30000);
@@ -957,7 +961,14 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     // WebSocket Subscriptions
     // ═══════════════════════════════════════════════════════════════════════
-    function connectWebSocket() { try { dexWs = new DexWS(WS_URL); } catch { /* ws unavailable */ } }
+    function connectWebSocket() {
+        try {
+            dexWs = new DexWS(WS_URL);
+            dexWs.onConnectionChange = (connected) => {
+                if (typeof updateFooterStatus === 'function') updateFooterStatus(footerBlockHeight, connected);
+            };
+        } catch { /* ws unavailable */ }
+    }
 
     // F6.11: RAF-throttle for high-frequency WS order book updates
     function rafThrottle(fn) { let pending = false, lastArgs; return function(...args) { lastArgs = args; if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; fn(...lastArgs); }); } }; }
@@ -1144,48 +1155,195 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
         bc.innerHTML = state.orderBook.bids.map(b => `<div class="book-row bid"><span class="price">${formatPrice(b.price)}</span><span>${formatAmount(b.amount)}</span><span>${formatAmount(b.total)}</span><div class="depth-bar" style="width:${(b.total/mb*100).toFixed(1)}%"></div></div>`).join('');
+
+        // ── Order book click-to-fill: clicking a row fills the price input ──
+        document.querySelectorAll('.book-row').forEach(row => {
+            row.style.cursor = 'pointer';
+            row.addEventListener('click', () => {
+                const priceSpan = row.querySelector('.price');
+                if (priceSpan && priceInput) {
+                    priceInput.value = priceSpan.textContent;
+                    priceInput.dispatchEvent(new Event('input'));
+                    // Switch to limit order if currently on market (price fill implies limit intent)
+                    if (state.orderType === 'market') {
+                        const limitBtn = document.querySelector('[data-type="limit"]');
+                        if (limitBtn) limitBtn.click();
+                    }
+                }
+            });
+        });
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Book Layout Buttons (Both / Bids Only / Asks Only)
+    // ═══════════════════════════════════════════════════════════════════════
+    document.querySelectorAll('.book-layout').forEach(btn => {
+        btn.addEventListener('click', () => {
+            document.querySelectorAll('.book-layout').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            const layout = btn.dataset.layout;
+            const asksEl = document.getElementById('bookAsks');
+            const bidsEl = document.querySelector('.book-bids');
+            if (!asksEl || !bidsEl) return;
+            switch (layout) {
+                case 'both':
+                    asksEl.style.display = ''; bidsEl.style.display = '';
+                    break;
+                case 'bids':
+                    asksEl.style.display = 'none'; bidsEl.style.display = '';
+                    break;
+                case 'asks':
+                    asksEl.style.display = ''; bidsEl.style.display = 'none';
+                    break;
+            }
+        });
+    });
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Footer: Block Height + Connection Status
+    // ═══════════════════════════════════════════════════════════════════════
+    const footerBlockEl = document.getElementById('footerBlock');
+    const statusDotEl = document.querySelector('.status-dot');
+    let footerBlockHeight = 0;
+
+    function updateFooterStatus(height, connected = true) {
+        if (height > footerBlockHeight) footerBlockHeight = height;
+        if (footerBlockEl) {
+            footerBlockEl.textContent = connected
+                ? `Block #${footerBlockHeight.toLocaleString()}`
+                : 'Reconnecting...';
+        }
+        if (statusDotEl) {
+            statusDotEl.classList.toggle('green', connected);
+            statusDotEl.classList.toggle('red', !connected);
+        }
+    }
+
+    // Poll block height for footer display
+    async function pollBlockHeight() {
+        try {
+            const resp = await fetch(`${RPC_BASE}/block/latest`);
+            if (resp.ok) {
+                const data = await resp.json();
+                const slot = data.slot || data.header?.slot || data.blockHeight || 0;
+                updateFooterStatus(slot, true);
+            }
+        } catch {
+            updateFooterStatus(footerBlockHeight, false);
+        }
+    }
+    pollBlockHeight();
+    setInterval(pollBlockHeight, 5000);
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Footer Links (data-molt-app)
+    // ═══════════════════════════════════════════════════════════════════════
+    document.querySelectorAll('[data-molt-app]').forEach(link => {
+        const app = link.dataset.moltApp;
+        const port = window.location.port || '80';
+        // Resolve app names to local URLs (same host, different ports)
+        const appUrls = {
+            website: `${window.location.protocol}//${window.location.hostname}:3000`,
+            explorer: `${window.location.protocol}//${window.location.hostname}:3001`,
+            developers: `${window.location.protocol}//${window.location.hostname}:3002`,
+            faucet: `${window.location.protocol}//${window.location.hostname}:3003`,
+            wallet: `${window.location.protocol}//${window.location.hostname}:3004`,
+        };
+        if (appUrls[app]) {
+            link.href = appUrls[app];
+            link.target = '_blank';
+        }
+    });
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Network Selector
+    // ═══════════════════════════════════════════════════════════════════════
+    const networkSelect = document.getElementById('networkSelect');
+    if (networkSelect) {
+        // Set initial value based on current RPC endpoint
+        const currentHost = window.location.hostname;
+        if (currentHost === 'localhost' || currentHost === '127.0.0.1') {
+            networkSelect.value = 'local-testnet';
+        }
+        networkSelect.addEventListener('change', () => {
+            const network = networkSelect.value;
+            const networkConfigs = {
+                'local-testnet': { rpc: `${window.location.protocol}//${window.location.hostname}:8899`, ws: `ws://${window.location.hostname}:8900` },
+                'local-mainnet': { rpc: `${window.location.protocol}//${window.location.hostname}:8899`, ws: `ws://${window.location.hostname}:8900` },
+                'testnet': { rpc: 'https://testnet-rpc.moltchain.io', ws: 'wss://testnet-ws.moltchain.io' },
+                'mainnet': { rpc: 'https://rpc.moltchain.io', ws: 'wss://ws.moltchain.io' },
+            };
+            const cfg = networkConfigs[network];
+            if (cfg) {
+                localStorage.setItem('dexNetwork', network);
+                localStorage.setItem('dexRpcUrl', cfg.rpc);
+                localStorage.setItem('dexWsUrl', cfg.ws);
+                window.location.reload();
+            }
+        });
+        // Restore saved network selection
+        const savedNetwork = localStorage.getItem('dexNetwork');
+        if (savedNetwork && networkSelect.querySelector(`option[value="${savedNetwork}"]`)) {
+            networkSelect.value = savedNetwork;
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════════
     // TradingView (wired to candle API)
     // ═══════════════════════════════════════════════════════════════════════
-    let tvWidget = null, realtimeCallback = null, lastBarTime = 0, activeResolution = localStorage.getItem('dexChartInterval') || '15', currentBarOpen = 0;
+    let tvWidget = null, realtimeCallback = null, lastBarTime = 0, activeResolution = localStorage.getItem('dexChartInterval') || '15', currentBarOpen = 0, currentBarHigh = 0, currentBarLow = Infinity;
 
 
     function createDatafeed() {
         return {
-            onReady: cb => setTimeout(() => cb({ supported_resolutions: ['1','5','15','30','60','240','1D','1W','1M'], exchanges: [{ value: 'MoltChain', name: 'MoltChain', desc: 'MoltChain DEX' }], symbols_types: [{ name: 'crypto', value: 'crypto' }] }), 0),
+            onReady: cb => setTimeout(() => cb({ supported_resolutions: ['1','5','15','60','240','1D','3D','1W'], exchanges: [{ value: 'MoltChain', name: 'MoltChain', desc: 'MoltChain DEX' }], symbols_types: [{ name: 'crypto', value: 'crypto' }] }), 0),
             searchSymbols: (input, ex, st, cb) => cb(pairs.filter(p => p.id.toLowerCase().includes(input.toLowerCase())).map(p => ({ symbol: p.id, full_name: 'MoltChain:' + p.id, description: p.id, exchange: 'MoltChain', type: 'crypto' }))),
             resolveSymbol: (name, ok, err) => {
                 const p = pairs.find(x => x.id === name || ('MoltChain:' + x.id) === name) || pairs[0];
                 if (!p) { err('Not found'); return; }
-                setTimeout(() => ok({ name: p.id, ticker: p.id, description: p.id, type: 'crypto', session: '24x7', timezone: 'Etc/UTC', exchange: 'MoltChain', listed_exchange: 'MoltChain', minmov: 1, pricescale: p.price < 0.001 ? 100000000 : p.price < 1 ? 10000 : 100, has_intraday: true, has_weekly_and_monthly: true, supported_resolutions: ['1','5','15','30','60','240','1D','1W','1M'], volume_precision: 2, data_status: 'streaming' }), 0);
+                setTimeout(() => ok({ name: p.id, ticker: p.id, description: p.id, type: 'crypto', session: '24x7', timezone: 'Etc/UTC', exchange: 'MoltChain', listed_exchange: 'MoltChain', minmov: 1, pricescale: p.price < 0.001 ? 100000000 : p.price < 1 ? 10000 : 100, has_intraday: true, has_weekly_and_monthly: true, supported_resolutions: ['1','5','15','60','240','1D','3D','1W'], volume_precision: 2, data_status: 'streaming' }), 0);
             },
             getBars: async (si, res, pp, ok) => {
                 const apiC = await loadCandles(pp.from, pp.to, res);
-                let bars;
-                if (apiC?.length) { bars = apiC; state.candles = apiC; }
-                else {
-                    // No candle data on-chain — return empty
-                    bars = [];
+                let bars = apiC?.length ? apiC : [];
+                if (bars.length) {
+                    state.candles = bars;
+                    lastBarTime = bars[bars.length - 1].time;
+                    currentBarOpen = bars[bars.length - 1].open;
+                    currentBarHigh = bars[bars.length - 1].high;
+                    currentBarLow = bars[bars.length - 1].low;
                 }
-                if (bars.length) lastBarTime = bars[bars.length - 1].time;
                 ok(bars, { noData: !bars.length });
             },
-            subscribeBars: (si, res, cb) => { realtimeCallback = cb; activeResolution = res; localStorage.setItem('dexChartInterval', res); },
+            subscribeBars: (si, res, cb) => {
+                realtimeCallback = cb; activeResolution = res;
+                localStorage.setItem('dexChartInterval', res);
+            },
             unsubscribeBars: () => { realtimeCallback = null; },
         };
     }
 
     function streamBarUpdate(price, vol) {
-        if (!realtimeCallback) return;
+        if (!realtimeCallback || !price || price <= 0) return;
         const ms = resolutionToMs(activeResolution);
         const bt = Math.floor(Date.now() / ms) * ms;
-        realtimeCallback(bt > lastBarTime ? (lastBarTime = bt, currentBarOpen = price, { time: bt, open: price, high: price, low: price, close: price, volume: vol }) : { time: lastBarTime, open: currentBarOpen, close: price, high: Math.max(currentBarOpen, price), low: Math.min(currentBarOpen, price), volume: vol });
+        if (bt > lastBarTime) {
+            // New candle period
+            lastBarTime = bt;
+            currentBarOpen = price;
+            currentBarHigh = price;
+            currentBarLow = price;
+            realtimeCallback({ time: bt, open: price, high: price, low: price, close: price, volume: vol || 0 });
+        } else {
+            // Update existing candle — track real high/low across all ticks
+            currentBarHigh = Math.max(currentBarHigh, price);
+            currentBarLow = Math.min(currentBarLow, price);
+            realtimeCallback({ time: lastBarTime, open: currentBarOpen, high: currentBarHigh, low: currentBarLow, close: price, volume: vol || 0 });
+        }
     }
 
-    function resolutionToMs(r) { return { '1': 60000, '5': 300000, '15': 900000, '30': 1800000, '60': 3600000, '240': 14400000, '1D': 86400000, '1W': 604800000, '1M': 2592000000 }[r] || 900000; }
-    function resolutionToSec(r) { return { '1': 60, '5': 300, '15': 900, '30': 1800, '60': 3600, '240': 14400, '1D': 86400, '1W': 604800, '1M': 2592000 }[r] || 900; }
+    function resolutionToMs(r) { return { '1': 60000, '5': 300000, '15': 900000, '60': 3600000, '240': 14400000, '1D': 86400000, '3D': 259200000, '1W': 604800000 }[r] || 900000; }
+    function resolutionToSec(r) { return { '1': 60, '5': 300, '15': 900, '60': 3600, '240': 14400, '1D': 86400, '3D': 259200, '1W': 604800 }[r] || 900; }
 
     let tvRetryCount = 0;
     function initTradingView() {
@@ -1195,8 +1353,8 @@ document.addEventListener('DOMContentLoaded', () => {
             symbol: state.activePair?.id || 'MOLT/mUSD', container: el, datafeed: createDatafeed(), library_path: 'charting_library/', locale: 'en', fullscreen: false, autosize: true, theme: 'Dark', interval: localStorage.getItem('dexChartInterval') || '15', toolbar_bg: '#0d1117',
             loading_screen: { backgroundColor: '#0A0E27', foregroundColor: '#FF6B35' },
             overrides: { 'paneProperties.background': '#0d1117', 'paneProperties.backgroundType': 'solid', 'paneProperties.vertGridProperties.color': 'rgba(255,255,255,0.04)', 'paneProperties.horzGridProperties.color': 'rgba(255,255,255,0.04)', 'scalesProperties.textColor': 'rgba(255,255,255,0.5)', 'scalesProperties.lineColor': 'rgba(255,255,255,0.08)', 'mainSeriesProperties.candleStyle.upColor': '#06d6a0', 'mainSeriesProperties.candleStyle.downColor': '#ef4444', 'mainSeriesProperties.candleStyle.borderUpColor': '#06d6a0', 'mainSeriesProperties.candleStyle.borderDownColor': '#ef4444', 'mainSeriesProperties.candleStyle.wickUpColor': '#06d6a0', 'mainSeriesProperties.candleStyle.wickDownColor': '#ef4444' },
-            disabled_features: ['header_compare','header_undo_redo','go_to_date','use_localstorage_for_settings'],
-            enabled_features: ['study_templates','side_toolbar_in_fullscreen_mode','header_symbol_search'],
+            disabled_features: ['header_compare','header_undo_redo','go_to_date','use_localstorage_for_settings','study_templates'],
+            enabled_features: ['side_toolbar_in_fullscreen_mode','header_symbol_search'],
         });
         tvWidget.onChartReady(() => { tvWidget.activeChart().onSymbolChanged().subscribe(null, () => { const s = tvWidget.activeChart().symbol(); const p = pairs.find(x => x.id === s || ('MoltChain:' + x.id) === s); if (p && p.id !== state.activePair?.id) selectPair(p); }); });
     }
@@ -1335,83 +1493,175 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // === AUDIT-FIX F10.1: Order submission via signed sendTransaction (not REST POST) ===
+    // ═══════════════════════════════════════════════════════════════════════
+    // Full Preflight Order Validation
+    // ═══════════════════════════════════════════════════════════════════════
+    // Checks ALL contract-enforceable rules client-side before submission.
+    // Returns { ok: true } or { ok: false, error: string, code: string }.
+    async function preflightOrder({ side, orderType, price, amount, stopPrice, pair, tradeMode, leverage }) {
+        // 1. Wallet & connectivity
+        if (!state.connected) return { ok: false, error: 'Connect wallet first', code: 'NO_WALLET' };
+        if (!wallet.keypair) return { ok: false, error: 'Re-import wallet to sign transactions', code: 'NO_KEYPAIR' };
+
+        // 2. Basic input validation
+        if (!amount || amount <= 0) return { ok: false, error: 'Amount must be positive', code: 'BAD_AMOUNT' };
+        if (orderType !== 'market' && (!price || price <= 0)) return { ok: false, error: 'Price must be positive', code: 'BAD_PRICE' };
+        if (amount > 9_000_000) return { ok: false, error: 'Amount too large (max 9M)', code: 'OVERFLOW_AMOUNT' };
+        if (price > 9_000_000) return { ok: false, error: 'Price too large (max 9M)', code: 'OVERFLOW_PRICE' };
+
+        // 3. Contract availability
+        if (!contracts.dex_core) return { ok: false, error: 'Contract addresses not loaded', code: 'NO_CONTRACT' };
+        if (tradeMode === 'margin' && !contracts.dex_margin) return { ok: false, error: 'Margin contract not loaded', code: 'NO_MARGIN' };
+
+        // 4. Stop-limit validation
+        if (orderType === 'stop-limit') {
+            if (!stopPrice || stopPrice <= 0) return { ok: false, error: 'Stop price required for stop-limit orders', code: 'BAD_STOP' };
+            if (stopPrice > 9_000_000) return { ok: false, error: 'Stop price too large (max 9M)', code: 'OVERFLOW_STOP' };
+            const ref = state.lastPrice || 0;
+            if (ref > 0) {
+                if (side === 'sell' && stopPrice >= ref)
+                    return { ok: false, error: 'Sell-stop price must be below current market price', code: 'STOP_DIRECTION' };
+                if (side === 'buy' && stopPrice <= ref)
+                    return { ok: false, error: 'Buy-stop price must be above current market price', code: 'STOP_DIRECTION' };
+            }
+        }
+
+        // 5. Tick size alignment — contract enforces, warn before submission
+        if (pair && orderType !== 'market') {
+            const tickSize = pair.tickSize || 0.0001;
+            const priceMod = (price * 1e8) % (tickSize * 1e8);
+            if (Math.abs(priceMod) > 0.01) {
+                return { ok: false, error: `Price must be aligned to tick size ${tickSize} (nearest: ${(Math.round(price / tickSize) * tickSize).toFixed(4)})`, code: 'TICK_ALIGN' };
+            }
+        }
+
+        // 6. Lot size alignment — contract enforces, warn before submission
+        if (pair) {
+            const lotSize = pair.lotSize || 0.01;
+            const amountMod = (amount * 1e8) % (lotSize * 1e8);
+            if (Math.abs(amountMod) > 0.01) {
+                return { ok: false, error: `Amount must be aligned to lot size ${lotSize} (nearest: ${(Math.round(amount / lotSize) * lotSize).toFixed(4)})`, code: 'LOT_ALIGN' };
+            }
+        }
+
+        // 7. Minimum notional check (MIN_ORDER_VALUE = 1000 shells = 0.000001 in human)
+        {
+            const notional = orderType === 'market' ? amount * (state.lastPrice || 1) : price * amount;
+            const minNotionalHuman = 1000 / PRICE_SCALE; // MIN_ORDER_VALUE in shells
+            if (notional < minNotionalHuman && notional > 0) {
+                return { ok: false, error: `Order notional ${formatAmount(notional)} below minimum (${formatAmount(minNotionalHuman)})`, code: 'MIN_NOTIONAL' };
+            }
+        }
+
+        // 8. Oracle band check — reject if limit price is outside ±10% of reference
+        if (orderType === 'limit' || orderType === 'post-only') {
+            const ref = state.lastPrice || 0;
+            if (ref > 0) {
+                const bandPct = orderType === 'limit' ? 0.10 : 0.05; // limits ±10%, post-only ±5%
+                const lowerBand = ref * (1 - bandPct);
+                const upperBand = ref * (1 + bandPct);
+                if (price < lowerBand || price > upperBand) {
+                    return { ok: false, error: `Price ${formatPrice(price)} is outside the oracle band (${formatPrice(lowerBand)} – ${formatPrice(upperBand)}). Adjust price or use market order.`, code: 'ORACLE_BAND' };
+                }
+            }
+        }
+
+        // 9. Post-only crossing check — reject if order would immediately match
+        if (orderType === 'post-only') {
+            const book = state.orderBook;
+            if (side === 'buy' && book.asks?.length > 0) {
+                const bestAsk = book.asks[0]?.price || 0;
+                if (bestAsk > 0 && price >= bestAsk) {
+                    return { ok: false, error: `Post-only buy at ${formatPrice(price)} would cross best ask ${formatPrice(bestAsk)} — use limit order instead`, code: 'POST_ONLY_CROSS' };
+                }
+            }
+            if (side === 'sell' && book.bids?.length > 0) {
+                const bestBid = book.bids[0]?.price || 0;
+                if (bestBid > 0 && price <= bestBid) {
+                    return { ok: false, error: `Post-only sell at ${formatPrice(price)} would cross best bid ${formatPrice(bestBid)} — use limit order instead`, code: 'POST_ONLY_CROSS' };
+                }
+            }
+        }
+
+        // 10. Open order limit check
+        if (openOrders.length >= 50) {
+            return { ok: false, error: 'Maximum open orders reached (50). Cancel an order first.', code: 'ORDER_LIMIT' };
+        }
+
+        // 11. Live balance check — refresh from on-chain before validating
+        if (wallet.address) {
+            try {
+                await loadBalances(wallet.address);
+            } catch {}
+        }
+        {
+            const neededToken = side === 'buy' ? (pair?.quote || 'mUSD') : (pair?.base || 'MOLT');
+            const effectivePrice = orderType === 'market' ? (state.lastPrice || 0) : price;
+            const neededAmount = side === 'buy' ? (effectivePrice * amount) : amount;
+            const available = balances[neededToken]?.available || 0;
+            if (neededAmount > available) {
+                return { ok: false, error: `Insufficient ${neededToken}: need ${formatAmount(neededAmount)}, have ${formatAmount(available)}`, code: 'BALANCE' };
+            }
+        }
+
+        // 12. Reduce-only validation (margin mode)
+        if (tradeMode === 'margin') {
+            const reduceOnlyEl = document.getElementById('reduceOnly');
+            if (reduceOnlyEl && reduceOnlyEl.checked) {
+                try {
+                    const { data } = await api.get(`/margin/positions?trader=${wallet.address}`);
+                    if (Array.isArray(data) && data.length > 0) {
+                        const activePairPositions = data.filter(p =>
+                            (p.pairId === state.activePairId || p.pair === pair?.id) &&
+                            p.status !== 'closed' && p.status !== 'liquidated'
+                        );
+                        const targetSide = side === 'sell' ? 'long' : 'short';
+                        const matchingPos = activePairPositions.filter(p => p.side === targetSide);
+                        const totalSize = matchingPos.reduce((sum, p) => sum + ((p.size || 0) / PRICE_SCALE), 0);
+                        if (!matchingPos.length) return { ok: false, error: `Reduce-only: No ${targetSide} position to reduce on this pair`, code: 'REDUCE_NO_POS' };
+                        if (amount > totalSize) return { ok: false, error: `Reduce-only: Amount ${formatAmount(amount)} exceeds position size ${formatAmount(totalSize)}`, code: 'REDUCE_SIZE' };
+                    } else {
+                        return { ok: false, error: 'Reduce-only: No open positions to reduce', code: 'REDUCE_NO_POS' };
+                    }
+                } catch {
+                    return { ok: false, error: 'Reduce-only: Could not verify positions', code: 'REDUCE_FAIL' };
+                }
+            }
+
+            // 13. Margin pair eligibility
+            if (!marginEnabledPairIds.includes(state.activePairId)) {
+                return { ok: false, error: 'This pair is not enabled for margin trading', code: 'MARGIN_PAIR' };
+            }
+        }
+
+        return { ok: true };
+    }
+
+    // === Order submission via signed sendTransaction ===
     if (submitBtn) submitBtn.addEventListener('click', async () => {
-        if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-        if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
         const price = parseFloat(priceInput?.value) || 0, amount = parseFloat(amountInput?.value) || 0;
         const stopPriceInput = document.getElementById('stopPrice');
         const stopPrice = parseFloat(stopPriceInput?.value) || 0;
-        if (!amount || (state.orderType !== 'market' && !price)) { showNotification('Enter price and amount', 'warning'); return; }
-        // F20.4: Reject negative values (would cause BigInt overflow in writeU64LE)
-        if (amount <= 0) { showNotification('Amount must be positive', 'warning'); return; }
-        if (state.orderType !== 'market' && price <= 0) { showNotification('Price must be positive', 'warning'); return; }
-        // Stop-limit validation: stop price required and directional check
-        if (state.orderType === 'stop-limit') {
-            if (stopPrice <= 0) { showNotification('Stop price required for stop-limit orders', 'warning'); return; }
-            if (stopPrice > 9_000_000) { showNotification('Stop price too large (max 9M)', 'warning'); return; }
-            const ref = state.lastPrice || 0;
-            if (ref > 0 && state.orderSide === 'sell' && stopPrice >= ref) {
-                showNotification('Sell-stop price must be below current market price', 'warning'); return;
-            }
-            if (ref > 0 && state.orderSide === 'buy' && stopPrice <= ref) {
-                showNotification('Buy-stop price must be above current market price', 'warning'); return;
-            }
-        }
-        // F20.10: Reject values that would overflow MAX_SAFE_INTEGER when multiplied by PRICE_SCALE
-        if (amount > 9_000_000) { showNotification('Amount too large (max 9M)', 'warning'); return; }
-        if (price > 9_000_000) { showNotification('Price too large (max 9M)', 'warning'); return; }
-        if (!contracts.dex_core) { showNotification('Contract addresses not loaded', 'error'); return; }
 
-        // Task 3.1: Post-Only checkbox — override order type to post-only (ORDER_POST_ONLY=3)
+        // Post-Only checkbox — override order type to post-only (ORDER_POST_ONLY=3)
         const postOnlyEl = document.getElementById('postOnly');
-        const reduceOnlyEl = document.getElementById('reduceOnly');
         let effectiveOrderType = state.orderType;
         if (postOnlyEl && postOnlyEl.checked && state.orderType === 'limit') {
             effectiveOrderType = 'post-only';
         }
 
-        // Task 3.2: Reduce-Only validation (client-side) — only for margin mode
-        if (reduceOnlyEl && reduceOnlyEl.checked && state.tradeMode === 'margin') {
-            try {
-                const { data } = await api.get(`/margin/positions?trader=${wallet.address}`);
-                if (Array.isArray(data) && data.length > 0) {
-                    const activePairPositions = data.filter(p =>
-                        (p.pairId === state.activePairId || p.pair === state.activePair?.id) &&
-                        p.status !== 'closed' && p.status !== 'liquidated'
-                    );
-                    // Selling reduces a Long, Buying reduces a Short
-                    const targetSide = state.orderSide === 'sell' ? 'long' : 'short';
-                    const matchingPos = activePairPositions.filter(p => p.side === targetSide);
-                    const totalSize = matchingPos.reduce((sum, p) => sum + ((p.size || 0) / PRICE_SCALE), 0);
-                    if (matchingPos.length === 0) {
-                        showNotification(`Reduce-only: No ${targetSide} position to reduce on this pair`, 'warning');
-                        return;
-                    }
-                    if (amount > totalSize) {
-                        showNotification(`Reduce-only: Amount ${formatAmount(amount)} exceeds position size ${formatAmount(totalSize)}`, 'warning');
-                        return;
-                    }
-                } else {
-                    showNotification('Reduce-only: No open positions to reduce', 'warning');
-                    return;
-                }
-            } catch {
-                showNotification('Reduce-only: Could not verify positions', 'warning');
-                return;
-            }
-        }
-
-        // F4.3: Client-side balance check before submitting order
-        {
-            const pair = state.activePair;
-            const neededToken = state.orderSide === 'buy' ? (pair?.quote || 'mUSD') : (pair?.base || 'MOLT');
-            const neededAmount = state.orderSide === 'buy' ? (price * amount) : amount;
-            const available = balances[neededToken]?.available || 0;
-            if (neededAmount > available) {
-                showNotification(`Insufficient ${neededToken} balance: need ${formatAmount(neededAmount)}, have ${formatAmount(available)}`, 'warning');
-                return;
-            }
+        // Run full preflight validation
+        const preflight = await preflightOrder({
+            side: state.orderSide,
+            orderType: effectiveOrderType,
+            price, amount, stopPrice,
+            pair: state.activePair,
+            tradeMode: state.tradeMode,
+            leverage: state.leverageValue,
+        });
+        if (!preflight.ok) {
+            showNotification(preflight.error, 'warning');
+            return;
         }
 
         // Task 3.5: Order confirmation dialog for margin trades or spot orders > $100 equivalent
@@ -1437,16 +1687,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
         submitBtn.disabled = true; submitBtn.textContent = 'Submitting...';
         try {
-            // F10.6 FIX: Route to margin contract when tradeMode is margin
+            // Route to margin contract when tradeMode is margin
             if (state.tradeMode === 'margin') {
-                if (!contracts.dex_margin) { showNotification('Margin contract not loaded', 'error'); submitBtn.disabled = false; updateSubmitBtn(); return; }
-                if (!marginEnabledPairIds.includes(state.activePairId)) { showNotification('This pair is not enabled for margin trading', 'warning'); submitBtn.disabled = false; updateSubmitBtn(); return; }
                 const marginSide = state.orderSide === 'buy' ? 'long' : 'short';
                 const size = Math.round(amount * PRICE_SCALE);
                 const leverage = state.leverageValue;
-                // F24.5 FIX: Guard margin notional against overflow past Number.MAX_SAFE_INTEGER
                 const notional = amount * (price || state.lastPrice);
-                if (notional > 9_000_000_000) { showNotification('Notional too large for margin (max $9B)', 'warning'); submitBtn.disabled = false; updateSubmitBtn(); return; }
                 const marginDeposit = Math.round((notional / leverage) * PRICE_SCALE);
                 const result = await wallet.sendTransaction([contractIx(
                     contracts.dex_margin,
@@ -2007,28 +2253,34 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function applyBinanceRealTimeOverlay() {
-        // Only update the active pair's ticker display in real-time.
-        // The pair list prices come from the backend oracle feeder via loadPairs().
-        if (!state.activePair) return;
-        const base = (state.activePair.base || '').toUpperCase();
-        const quote = (state.activePair.quote || '').toUpperCase();
-        let realtimePrice = 0;
-        if ((base === 'WSOL' || base === 'SOL') && externalPrices.wSOL > 0) {
-            realtimePrice = externalPrices.wSOL;
-        } else if ((base === 'WETH' || base === 'ETH') && externalPrices.wETH > 0) {
-            realtimePrice = externalPrices.wETH;
+        // Update ALL oracle-priced pairs in the dropdown + active pair ticker
+        const moltPairRef = pairs.find(p => (p.base || '').toUpperCase() === 'MOLT' && (p.quote || '').toUpperCase() === 'MUSD');
+        const moltUsd = moltPairRef?.price || MOLT_GENESIS_PRICE;
+        let dropdownChanged = false;
+
+        for (const p of pairs) {
+            const base = (p.base || '').toUpperCase();
+            const quote = (p.quote || '').toUpperCase();
+            let extPrice = 0;
+            if ((base === 'WSOL' || base === 'SOL') && externalPrices.wSOL > 0) extPrice = externalPrices.wSOL;
+            else if ((base === 'WETH' || base === 'ETH') && externalPrices.wETH > 0) extPrice = externalPrices.wETH;
+            if (extPrice <= 0) continue;
+
+            // For MOLT-quoted pairs, convert USD→MOLT
+            if (quote === 'MOLT' && moltUsd > 0) extPrice = extPrice / moltUsd;
+            else if (quote !== 'MUSD' && quote !== 'USD') continue;
+
+            p.price = extPrice;
+            dropdownChanged = true;
+
+            // Also update active pair's ticker display
+            if (p.pairId === state.activePairId) {
+                state.lastPrice = extPrice;
+                updateTickerDisplay();
+                streamBarUpdate(extPrice, 0);
+            }
         }
-        if (realtimePrice <= 0) return;
-        // For MOLT-quoted pairs, convert using MOLT genesis price or API price
-        if (quote === 'MOLT') {
-            const moltPair = pairs.find(p => (p.base || '').toUpperCase() === 'MOLT' && (p.quote || '').toUpperCase() === 'MUSD');
-            const moltUsd = moltPair?.price || MOLT_GENESIS_PRICE;
-            if (moltUsd > 0) realtimePrice = realtimePrice / moltUsd;
-            else return;
-        }
-        // Update ticker display with sub-second price
-        state.lastPrice = realtimePrice;
-        updateTickerDisplay();
+        if (dropdownChanged) renderPairList();
     }
 
     // ═══════════════════════════════════════════════════════════════════════
@@ -3554,7 +3806,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // ─── Render market cards dynamically ────────────────────────
     function renderPredictionMarkets() {
-        const grid = document.querySelector('.predict-markets-section');
+        const grid = document.querySelector('#predictMarketGrid') || document.querySelector('.predict-markets-section');
         if (!grid) return;
 
         // Keep only the grid container, regenerate cards
@@ -3564,7 +3816,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!predictState.markets.length) {
             const emptyEl = document.createElement('div');
             emptyEl.className = 'predict-empty-state';
-            emptyEl.style.cssText = 'text-align:center;color:var(--text-muted);padding:40px;font-size:0.9rem;grid-column:1/-1;';
+            emptyEl.style.cssText = 'text-align:center;color:var(--text-muted);padding:40px;font-size:0.9rem;';
             emptyEl.innerHTML = '<i class="fas fa-chart-line" style="font-size:2rem;margin-bottom:12px;display:block;opacity:0.4;"></i><p>No prediction markets yet</p><p style="font-size:0.8rem;margin-top:8px;">Create a market to get started</p>';
             grid.appendChild(emptyEl);
             return;

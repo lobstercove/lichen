@@ -1170,6 +1170,7 @@ fn bridge_dex_trades_to_analytics(
                 *low,
                 *volume,
                 slot,
+                now_ts,
             );
         }
 
@@ -1193,20 +1194,23 @@ fn bridge_update_candle(
     high_price: u64,
     low_price: u64,
     volume: u64,
-    current_slot: u64,
+    _current_slot: u64,
+    unix_ts: u64,
 ) {
-    let candle_start = (current_slot / interval) * interval;
+    // Use unix timestamp (not slot) for period grouping so candle boundaries
+    // align with wall-clock seconds (60s, 300s, 3600s, etc.).
+    let candle_start = (unix_ts / interval) * interval;
 
     // Read current candle's start slot
     let cur_key = format!("ana_cur_{}_{}", pair_id, interval);
     let stored_start = match state.get_contract_storage(analytics_pk, cur_key.as_bytes()) {
-        Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
-        _ => 0,
+        Ok(Some(d)) if d.len() >= 8 => Some(u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8]))),
+        _ => None,
     };
 
     let count_key = format!("ana_cc_{}_{}", pair_id, interval);
 
-    if stored_start == candle_start && stored_start > 0 {
+    if stored_start == Some(candle_start) {
         // Same candle period — update OHLC in-place
         let candle_count = match state.get_contract_storage(analytics_pk, count_key.as_bytes()) {
             Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
@@ -1236,8 +1240,7 @@ fn bridge_update_candle(
                 // Accumulate real volume
                 let new_vol = existing_vol.saturating_add(volume);
                 data[32..40].copy_from_slice(&new_vol.to_le_bytes());
-                // Slot
-                data[40..48].copy_from_slice(&current_slot.to_le_bytes());
+                // Keep timestamp as the period-start (don't overwrite with current time)
 
                 let _ = state.put_contract_storage(analytics_pk, candle_key.as_bytes(), &data);
             }
@@ -1256,7 +1259,7 @@ fn bridge_update_candle(
         candle.extend_from_slice(&low_price.to_le_bytes());   // low
         candle.extend_from_slice(&close_price.to_le_bytes()); // close
         candle.extend_from_slice(&volume.to_le_bytes());      // real trade volume
-        candle.extend_from_slice(&current_slot.to_le_bytes()); // slot
+        candle.extend_from_slice(&candle_start.to_le_bytes()); // period-start time (aligned)
 
         let new_idx = candle_count;
         let candle_key = format!("ana_c_{}_{}_{}", pair_id, interval, new_idx);
@@ -1771,6 +1774,10 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
         }
 
         // 1. Reverse each system transfer instruction
+        // L4-01 fix: collect all account mutations in an overlay, then flush
+        // them atomically via a single WriteBatch to prevent partial reversals.
+        let mut overlay: HashMap<moltchain_core::Pubkey, Account> = HashMap::new();
+
         for ix in &tx.message.instructions {
             if ix.program_id == SYSTEM_PROGRAM_ID && !ix.data.is_empty() {
                 let ix_type = ix.data[0];
@@ -1789,18 +1796,24 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
 
                     // Reverse: credit sender, debit receiver
                     if amount > 0 {
-                        if let Ok(Some(mut receiver)) = state.get_account(&to) {
-                            let debit = amount.min(receiver.spendable);
-                            receiver.shells = receiver.shells.saturating_sub(debit);
-                            receiver.spendable = receiver.spendable.saturating_sub(debit);
-                            state.put_account(&to, &receiver).ok();
+                        let receiver = overlay
+                            .entry(to)
+                            .or_insert_with(|| {
+                                state.get_account(&to).ok().flatten()
+                                    .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER))
+                            });
+                        let debit = amount.min(receiver.spendable);
+                        receiver.shells = receiver.shells.saturating_sub(debit);
+                        receiver.spendable = receiver.spendable.saturating_sub(debit);
 
-                            if let Ok(Some(mut sender)) = state.get_account(&from) {
-                                sender.shells = sender.shells.saturating_add(debit);
-                                sender.spendable = sender.spendable.saturating_add(debit);
-                                state.put_account(&from, &sender).ok();
-                            }
-                        }
+                        let sender = overlay
+                            .entry(from)
+                            .or_insert_with(|| {
+                                state.get_account(&from).ok().flatten()
+                                    .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER))
+                            });
+                        sender.shells = sender.shells.saturating_add(debit);
+                        sender.spendable = sender.spendable.saturating_add(debit);
                     }
                 }
             }
@@ -1811,12 +1824,24 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
             if let Some(&fee_payer) = first_ix.accounts.first() {
                 let fee = TxProcessor::compute_transaction_fee(tx, &fee_config);
                 if fee > 0 {
-                    if let Ok(Some(mut payer_account)) = state.get_account(&fee_payer) {
-                        payer_account.shells = payer_account.shells.saturating_add(fee);
-                        payer_account.spendable = payer_account.spendable.saturating_add(fee);
-                        state.put_account(&fee_payer, &payer_account).ok();
-                    }
+                    let payer = overlay
+                        .entry(fee_payer)
+                        .or_insert_with(|| {
+                            state.get_account(&fee_payer).ok().flatten()
+                                .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER))
+                        });
+                    payer.shells = payer.shells.saturating_add(fee);
+                    payer.spendable = payer.spendable.saturating_add(fee);
                 }
+            }
+        }
+
+        // Flush all modified accounts atomically
+        if !overlay.is_empty() {
+            let batch_accounts: Vec<(&moltchain_core::Pubkey, &Account)> =
+                overlay.iter().map(|(k, v)| (k, v)).collect();
+            if let Err(e) = state.atomic_put_accounts(&batch_accounts, 0) {
+                warn!("⚠️  Failed to atomically revert tx accounts: {}", e);
             }
         }
 
@@ -1842,13 +1867,13 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
         if let Some((cp_slot, cp_path)) = nearest {
             match StateStore::open_checkpoint(cp_path) {
                 Ok(checkpoint_store) => {
-                    let mut restored = 0usize;
+                    // L4-01 fix: collect all restored accounts, then flush atomically
+                    let mut restore_accounts: Vec<(moltchain_core::Pubkey, Account)> = Vec::new();
+                    let mut skipped = 0usize;
                     for acct_key in &non_revertible_accounts {
                         match checkpoint_store.get_account(acct_key) {
                             Ok(Some(cp_account)) => {
-                                if state.put_account(acct_key, &cp_account).is_ok() {
-                                    restored += 1;
-                                }
+                                restore_accounts.push((*acct_key, cp_account));
                             }
                             Ok(None) => {
                                 // Account didn't exist at checkpoint time — zero it out
@@ -1863,21 +1888,36 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
                                     executable: false,
                                     rent_epoch: 0,
                                 };
-                                state.put_account(acct_key, &zeroed).ok();
-                                restored += 1;
+                                restore_accounts.push((*acct_key, zeroed));
                             }
                             Err(e) => {
                                 warn!(
                                     "⚠️  Failed to read account {} from checkpoint: {}",
                                     acct_key.to_base58(), e
                                 );
+                                skipped += 1;
                             }
                         }
                     }
-                    info!(
-                        "🔄 AUDIT-FIX C7: Restored {}/{} non-revertible accounts from checkpoint slot {}",
-                        restored, non_revertible_accounts.len(), cp_slot
-                    );
+                    if !restore_accounts.is_empty() {
+                        let batch_refs: Vec<(&moltchain_core::Pubkey, &Account)> =
+                            restore_accounts.iter().map(|(k, v)| (k, v)).collect();
+                        match state.atomic_put_accounts(&batch_refs, 0) {
+                            Ok(()) => {
+                                info!(
+                                    "🔄 AUDIT-FIX C7+L4-01: Atomically restored {}/{} non-revertible accounts from checkpoint slot {}{}",
+                                    restore_accounts.len(), non_revertible_accounts.len(), cp_slot,
+                                    if skipped > 0 { format!(" ({} skipped)", skipped) } else { String::new() }
+                                );
+                            }
+                            Err(e) => {
+                                error!(
+                                    "🚨 CRITICAL: Atomic checkpoint restore failed: {}",
+                                    e
+                                );
+                            }
+                        }
+                    }
                 }
                 Err(e) => {
                     error!(
@@ -2061,9 +2101,6 @@ async fn apply_block_effects(
                             treasury_account.shells.saturating_sub(debit_amount);
                         treasury_account.spendable =
                             treasury_account.spendable.saturating_sub(debit_amount);
-                        if let Err(e) = state.put_account(treasury_pubkey, &treasury_account) {
-                            warn!("⚠️  Failed to debit treasury for block reward: {}", e);
-                        }
 
                         // Credit producer: only liquid portion to spendable
                         // During vesting: 50% liquid to spendable, 50% debt repayment (no new coins)
@@ -2078,8 +2115,16 @@ async fn apply_block_effects(
                         producer_account.add_spendable(credit_amount).unwrap_or_else(|e| {
                             warn!("\u{26a0}\u{fe0f}  Overflow crediting producer block reward: {}", e);
                         });
-                        if let Err(e) = state.put_account(&producer, &producer_account) {
-                            warn!("⚠️  Failed to credit producer block reward: {}", e);
+
+                        // L4-01 fix: treasury debit + producer credit in single atomic WriteBatch
+                        if let Err(e) = state.atomic_put_accounts(
+                            &[
+                                (treasury_pubkey, &treasury_account),
+                                (&producer, &producer_account),
+                            ],
+                            0,
+                        ) {
+                            warn!("⚠️  Failed to persist block reward (treasury→producer): {}", e);
                         }
                     }
 
@@ -2116,19 +2161,18 @@ async fn apply_block_effects(
                                         if t_acct.shells >= reef_share {
                                             t_acct.shells = t_acct.shells.saturating_sub(reef_share);
                                             t_acct.spendable = t_acct.spendable.saturating_sub(reef_share);
-                                            if let Err(e) = state.put_account(tpk, &t_acct) {
-                                                warn!("⚠️  Failed to debit treasury for ReefStake: {}", e);
+                                            reef_pool.distribute_rewards(reef_share);
+                                            // L4-01 fix: treasury debit + pool update in single atomic WriteBatch
+                                            if let Err(e) = state.atomic_put_account_with_reefstake(
+                                                tpk, &t_acct, &reef_pool,
+                                            ) {
+                                                warn!("⚠️  Failed to persist ReefStake distribution: {}", e);
                                             } else {
-                                                reef_pool.distribute_rewards(reef_share);
-                                                if let Err(e) = state.put_reefstake_pool(&reef_pool) {
-                                                    warn!("⚠️  Failed to persist ReefStake pool: {}", e);
-                                                } else {
-                                                    debug!(
-                                                        "🌊 ReefStake: distributed {:.6} MOLT to {} stakers",
-                                                        reef_share as f64 / 1_000_000_000.0,
-                                                        reef_pool.positions.len(),
-                                                    );
-                                                }
+                                                debug!(
+                                                    "🌊 ReefStake: distributed {:.6} MOLT to {} stakers",
+                                                    reef_share as f64 / 1_000_000_000.0,
+                                                    reef_pool.positions.len(),
+                                                );
                                             }
                                         }
                                     }
@@ -2994,6 +3038,11 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
         let moltyid_addr = address_map.get("moltyid").map(|p| p.0).unwrap_or(admin);
         let dex_gov_addr = address_map.get("dex_governance").map(|p| p.0).unwrap_or(admin);
 
+        // NOTE: MoltyID address IS set here. The processor's cross-contract
+        // storage injection reads the caller's MoltyID reputation from
+        // CF_CONTRACT_STORAGE and injects it into the contract's execution
+        // context before WASM runs. The contract's load_u64("rep:{hex}")
+        // call finds the injected value in ctx.storage.
         let configs: &[(u8, &[u8; 32], &str)] = &[
             (18, &moltyid_addr, "prediction_market(moltyid)"),
             (19, &oracle_addr, "prediction_market(oracle)"),
@@ -3011,6 +3060,42 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
             } else {
                 warn!("  WARN: Failed to set {}", label);
             }
+        }
+    }
+
+    // ── DEX Governance: wire up MoltyID address for reputation verification ──
+    // Opcode 14 = set_moltyid_address. Format: [14][admin 32B][moltyid_addr 32B]
+    if let Some(dex_gov_pk) = address_map.get("dex_governance") {
+        let moltyid_addr = address_map.get("moltyid").map(|p| p.0).unwrap_or(admin);
+        let mut args = Vec::with_capacity(65);
+        args.push(14u8);
+        args.extend_from_slice(&admin);
+        args.extend_from_slice(&moltyid_addr);
+        if genesis_exec_contract(state, dex_gov_pk, deployer_pubkey, "call", &args, "dex_governance(moltyid)") {
+            info!("  SET dex_governance(moltyid)");
+        } else {
+            warn!("  WARN: Failed to set dex_governance(moltyid)");
+        }
+    }
+
+    // ── MoltyID: Bootstrap admin reputation ──
+    // The admin (deployer) needs reputation >= 1000 to create prediction markets,
+    // submit governance proposals, resolve markets, etc. The initial identity
+    // registration gives only 100. Write directly to MoltyID's contract storage
+    // so the admin has the required reputation from genesis.
+    if let Some(moltyid_pk) = address_map.get("moltyid") {
+        let admin_rep: u64 = 5000; // "Elite" tier — full access to all features
+        let hex_chars: &[u8; 16] = b"0123456789abcdef";
+        let mut rep_key = Vec::with_capacity(68);
+        rep_key.extend_from_slice(b"rep:");
+        for &b in admin.iter() {
+            rep_key.push(hex_chars[(b >> 4) as usize]);
+            rep_key.push(hex_chars[(b & 0x0f) as usize]);
+        }
+        if let Err(e) = state.put_contract_storage(moltyid_pk, &rep_key, &admin_rep.to_le_bytes()) {
+            warn!("  WARN: Failed to set admin reputation in MoltyID: {}", e);
+        } else {
+            info!("  SET admin MoltyID reputation = {} (Elite tier)", admin_rep);
         }
     }
 
@@ -3493,22 +3578,31 @@ fn genesis_seed_analytics_prices(state: &StateStore, deployer_pubkey: &Pubkey) {
         info!("  ANA seeded: pair {} → price {:.4}", pair_id, price_f64);
     }
 
-    // Also write initial 1h candles for each pair so TradingView has data
-    let slot: u64 = 0; // genesis slot
+    // Also write initial candles for each pair so TradingView has data
+    // Use unix timestamp for the candle period start, matching the oracle feeder
+    let genesis_ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    // All 9 intervals so every TF has a seed candle
+    let all_intervals: [u64; 9] = [60, 300, 900, 3600, 14400, 86400, 259200, 604800, 31536000];
     for (pair_id, price_f64) in &pair_prices {
         let price_scaled = (*price_f64 * PRICE_SCALE as f64) as u64;
 
-        // Candle layout: open(8)+high(8)+low(8)+close(8)+volume(8)+slot(8) = 48 bytes
+        // Candle layout: open(8)+high(8)+low(8)+close(8)+volume(8)+timestamp(8) = 48 bytes
         let mut candle = Vec::with_capacity(48);
         candle.extend_from_slice(&price_scaled.to_le_bytes()); // open
         candle.extend_from_slice(&price_scaled.to_le_bytes()); // high
         candle.extend_from_slice(&price_scaled.to_le_bytes()); // low
         candle.extend_from_slice(&price_scaled.to_le_bytes()); // close
         candle.extend_from_slice(&0u64.to_le_bytes());         // volume
-        candle.extend_from_slice(&slot.to_le_bytes());         // slot
+        // timestamp placeholder — overwritten per-interval below
+        candle.extend_from_slice(&0u64.to_le_bytes());
 
-        // Write a single genesis candle for 1h (3600) and 1d (86400) intervals
-        for interval in &[3600u64, 86400u64] {
+        for interval in &all_intervals {
+            let candle_start = (genesis_ts / interval) * interval;
+            // Store period-start time so TradingView bars align to boundaries
+            candle[40..48].copy_from_slice(&candle_start.to_le_bytes());
             let candle_key = format!("ana_c_{}_{}_{}", pair_id, interval, 0);
             let _ = state.put_contract_storage(
                 &analytics_pk,
@@ -3521,6 +3615,13 @@ fn genesis_seed_analytics_prices(state: &StateStore, deployer_pubkey: &Pubkey) {
                 &analytics_pk,
                 count_key.as_bytes(),
                 &1u64.to_le_bytes(),
+            );
+            // Set current candle start to the timestamp-based period
+            let cur_key = format!("ana_cur_{}_{}", pair_id, interval);
+            let _ = state.put_contract_storage(
+                &analytics_pk,
+                cur_key.as_bytes(),
+                &candle_start.to_le_bytes(),
             );
         }
     }
@@ -3653,12 +3754,14 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
                 }
             }
 
-            // Skip storage writes if prices haven't changed
-            if cur_wsol == prev_wsol && cur_weth == prev_weth {
-                continue;
+            // Track whether prices actually changed — oracle feed storage writes
+            // are skipped when unchanged, but candle writes ALWAYS proceed so
+            // that new candle periods are created at correct time boundaries.
+            let prices_changed = cur_wsol != prev_wsol || cur_weth != prev_weth;
+            if prices_changed {
+                prev_wsol = cur_wsol;
+                prev_weth = cur_weth;
             }
-            prev_wsol = cur_wsol;
-            prev_weth = cur_weth;
 
             let wsol_usd = cur_wsol as f64 / MICRO_SCALE;
             let weth_usd = cur_weth as f64 / MICRO_SCALE;
@@ -3682,34 +3785,37 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
                 _ => molt_usd_default,
             };
 
-            // Write oracle prices for each external asset
-            let oracle_feeds: [(&[u8], f64); 2] = [
-                (b"wSOL", wsol_usd),
-                (b"wETH", weth_usd),
-            ];
+            // Write oracle prices for each external asset — only when changed
+            if prices_changed {
+                let oracle_feeds: [(&[u8], f64); 2] = [
+                    (b"wSOL", wsol_usd),
+                    (b"wETH", weth_usd),
+                ];
 
-            for (asset, price_usd) in &oracle_feeds {
-                if *price_usd <= 0.0 { continue; }
-                let price_raw = (*price_usd * 10f64.powi(ORACLE_DECIMALS as i32)) as u64;
+                for (asset, price_usd) in &oracle_feeds {
+                    if *price_usd <= 0.0 { continue; }
+                    let price_raw = (*price_usd * 10f64.powi(ORACLE_DECIMALS as i32)) as u64;
 
-                // Build 49-byte oracle feed: price(8)+timestamp(8)+decimals(1)+feeder(32)
-                let mut feed = Vec::with_capacity(49);
-                feed.extend_from_slice(&price_raw.to_le_bytes());
-                feed.extend_from_slice(&now_ts.to_le_bytes());
-                feed.push(ORACLE_DECIMALS);
-                feed.extend_from_slice(&feeder);
+                    // Build 49-byte oracle feed: price(8)+timestamp(8)+decimals(1)+feeder(32)
+                    let mut feed = Vec::with_capacity(49);
+                    feed.extend_from_slice(&price_raw.to_le_bytes());
+                    feed.extend_from_slice(&now_ts.to_le_bytes());
+                    feed.push(ORACLE_DECIMALS);
+                    feed.extend_from_slice(&feeder);
 
-                let price_key = format!("price_{}", core::str::from_utf8(asset).unwrap_or("?"));
-                let _ = state.put_contract_storage(&oracle_pk, price_key.as_bytes(), &feed);
+                    let price_key = format!("price_{}", core::str::from_utf8(asset).unwrap_or("?"));
+                    let _ = state.put_contract_storage(&oracle_pk, price_key.as_bytes(), &feed);
 
-                // Also write indexed key for aggregation
-                let indexed_key = format!("{}_0", price_key);
-                let _ = state.put_contract_storage(&oracle_pk, indexed_key.as_bytes(), &feed);
+                    // Also write indexed key for aggregation
+                    let indexed_key = format!("{}_0", price_key);
+                    let _ = state.put_contract_storage(&oracle_pk, indexed_key.as_bytes(), &feed);
+                }
             }
 
             // Update dex_analytics for oracle-priced pairs
-            // Pair 2=wSOL/mUSD, 3=wETH/mUSD, 4=wSOL/MOLT, 5=wETH/MOLT
-            let pair_prices: [(u64, f64); 4] = [
+            // Pair 1=MOLT/mUSD, 2=wSOL/mUSD, 3=wETH/mUSD, 4=wSOL/MOLT, 5=wETH/MOLT
+            let pair_prices: [(u64, f64); 5] = [
+                (1, molt_usd),                        // MOLT/mUSD (fixed oracle price)
                 (2, wsol_usd),                        // wSOL/mUSD
                 (3, weth_usd),                        // wETH/mUSD
                 (4, if molt_usd > 0.0 { wsol_usd / molt_usd } else { 0.0 }), // wSOL/MOLT
@@ -3722,7 +3828,7 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
             // ±5% (market) / ±10% (limit) price band protection.
             // Uses slot (not unix timestamp) because get_timestamp() in WASM
             // returns the block slot number.
-            if dex_pk.0 != [0u8; 32] {
+            if prices_changed && dex_pk.0 != [0u8; 32] {
                 for (pair_id, price_f64) in &pair_prices {
                     if *price_f64 <= 0.0 { continue; }
                     let price_scaled = (*price_f64 * PRICE_SCALE as f64) as u64;
@@ -3764,52 +3870,54 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
                     continue;
                 }
 
-                // Inactive market: oracle writes indicative price
-                // Update last price
-                let lp_key = format!("ana_lp_{}", pair_id);
-                let _ = state.put_contract_storage(
-                    &analytics_pk,
-                    lp_key.as_bytes(),
-                    &price_scaled.to_le_bytes(),
-                );
+                // Update last price + 24h stats only when prices actually changed
+                if prices_changed {
+                    // Inactive market: oracle writes indicative price
+                    let lp_key = format!("ana_lp_{}", pair_id);
+                    let _ = state.put_contract_storage(
+                        &analytics_pk,
+                        lp_key.as_bytes(),
+                        &price_scaled.to_le_bytes(),
+                    );
 
-                // Update 24h stats (read-modify-write)
-                let stats_key = format!("ana_24h_{}", pair_id);
-                let (vol, mut high, mut low, open, _close, trades) =
-                    match state.get_contract_storage(&analytics_pk, stats_key.as_bytes()) {
-                        Ok(Some(d)) if d.len() >= 48 => (
-                            u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
-                            u64::from_le_bytes(d[8..16].try_into().unwrap_or([0; 8])),
-                            u64::from_le_bytes(d[16..24].try_into().unwrap_or([0; 8])),
-                            u64::from_le_bytes(d[24..32].try_into().unwrap_or([0; 8])),
-                            u64::from_le_bytes(d[32..40].try_into().unwrap_or([0; 8])),
-                            u64::from_le_bytes(d[40..48].try_into().unwrap_or([0; 8])),
-                        ),
-                        _ => (0, 0, u64::MAX, price_scaled, price_scaled, 0),
-                    };
+                    // Update 24h stats (read-modify-write)
+                    let stats_key = format!("ana_24h_{}", pair_id);
+                    let (vol, mut high, mut low, open, _close, trades) =
+                        match state.get_contract_storage(&analytics_pk, stats_key.as_bytes()) {
+                            Ok(Some(d)) if d.len() >= 48 => (
+                                u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
+                                u64::from_le_bytes(d[8..16].try_into().unwrap_or([0; 8])),
+                                u64::from_le_bytes(d[16..24].try_into().unwrap_or([0; 8])),
+                                u64::from_le_bytes(d[24..32].try_into().unwrap_or([0; 8])),
+                                u64::from_le_bytes(d[32..40].try_into().unwrap_or([0; 8])),
+                                u64::from_le_bytes(d[40..48].try_into().unwrap_or([0; 8])),
+                            ),
+                            _ => (0, 0, u64::MAX, price_scaled, price_scaled, 0),
+                        };
 
-                if price_scaled > high { high = price_scaled; }
-                if price_scaled < low { low = price_scaled; }
+                    if price_scaled > high { high = price_scaled; }
+                    if price_scaled < low { low = price_scaled; }
 
-                let mut stats = Vec::with_capacity(48);
-                stats.extend_from_slice(&vol.to_le_bytes());
-                stats.extend_from_slice(&high.to_le_bytes());
-                stats.extend_from_slice(&low.to_le_bytes());
-                stats.extend_from_slice(&open.to_le_bytes());
-                stats.extend_from_slice(&price_scaled.to_le_bytes()); // close = current
-                stats.extend_from_slice(&trades.to_le_bytes());
-                let _ = state.put_contract_storage(
-                    &analytics_pk,
-                    stats_key.as_bytes(),
-                    &stats,
-                );
+                    let mut stats = Vec::with_capacity(48);
+                    stats.extend_from_slice(&vol.to_le_bytes());
+                    stats.extend_from_slice(&high.to_le_bytes());
+                    stats.extend_from_slice(&low.to_le_bytes());
+                    stats.extend_from_slice(&open.to_le_bytes());
+                    stats.extend_from_slice(&price_scaled.to_le_bytes()); // close = current
+                    stats.extend_from_slice(&trades.to_le_bytes());
+                    let _ = state.put_contract_storage(
+                        &analytics_pk,
+                        stats_key.as_bytes(),
+                        &stats,
+                    );
+                }
 
-                // Update candles for each interval (skip 1-minute — only real trades should write 1m candles)
+                // ALWAYS update candles — even when prices haven't changed,
+                // so new candle periods are created at correct time boundaries.
                 for &ci in &candle_intervals {
-                    if ci == 60 { continue; } // F4 fix: oracle prices overwrite 1m candles
                     oracle_update_candle(
                         &state, &analytics_pk,
-                        *pair_id, ci, price_scaled, current_slot,
+                        *pair_id, ci, price_scaled, current_slot, now_ts,
                     );
                 }
             }
@@ -3908,20 +4016,23 @@ fn oracle_update_candle(
     pair_id: u64,
     interval: u64,
     price: u64,
-    current_slot: u64,
+    _current_slot: u64,
+    unix_ts: u64,
 ) {
-    let candle_start = (current_slot / interval) * interval;
+    // Use unix timestamp (not slot) for period grouping so candle boundaries
+    // align with wall-clock seconds (60s, 300s, 3600s, etc.).
+    let candle_start = (unix_ts / interval) * interval;
 
-    // Read current candle's start slot
+    // Read current candle's start slot (use Option to distinguish missing from 0)
     let cur_key = format!("ana_cur_{}_{}", pair_id, interval);
     let stored_start = match state.get_contract_storage(analytics_pk, cur_key.as_bytes()) {
-        Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
-        _ => 0,
+        Ok(Some(d)) if d.len() >= 8 => Some(u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8]))),
+        _ => None,
     };
 
     let count_key = format!("ana_cc_{}_{}", pair_id, interval);
 
-    if stored_start == candle_start && stored_start > 0 {
+    if stored_start == Some(candle_start) {
         // Same candle period — update OHLC in-place
         let candle_count = match state.get_contract_storage(analytics_pk, count_key.as_bytes()) {
             Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
@@ -3943,8 +4054,7 @@ fn oracle_update_candle(
                 }
                 // Update close price
                 data[24..32].copy_from_slice(&price.to_le_bytes());
-                // Update slot
-                data[40..48].copy_from_slice(&current_slot.to_le_bytes());
+                // Keep timestamp as the period-start (don't overwrite with current time)
                 let _ = state.put_contract_storage(analytics_pk, candle_key.as_bytes(), &data);
             }
         }
@@ -3955,14 +4065,14 @@ fn oracle_update_candle(
             _ => 0,
         };
 
-        // Build new candle: open(8)+high(8)+low(8)+close(8)+volume(8)+slot(8) = 48
+        // Build new candle: open(8)+high(8)+low(8)+close(8)+volume(8)+timestamp(8) = 48
         let mut candle = Vec::with_capacity(48);
         candle.extend_from_slice(&price.to_le_bytes()); // open
         candle.extend_from_slice(&price.to_le_bytes()); // high
         candle.extend_from_slice(&price.to_le_bytes()); // low
         candle.extend_from_slice(&price.to_le_bytes()); // close
         candle.extend_from_slice(&0u64.to_le_bytes());  // volume (oracle updates have 0 volume)
-        candle.extend_from_slice(&current_slot.to_le_bytes()); // slot
+        candle.extend_from_slice(&candle_start.to_le_bytes()); // period-start time (aligned)
 
         let new_idx = candle_count;
         let candle_key = format!("ana_c_{}_{}_{}", pair_id, interval, new_idx);

@@ -924,7 +924,7 @@
 }
 
 /* ===== Pool View ===== */
-.pool-layout, .rewards-layout, .gov-layout, .launch-layout {
+.pool-layout, .rewards-layout, .gov-layout, .launch-layout, .predict-layout {
     max-width: 1800px;
     margin: 0 auto;
     padding: 0;
@@ -1712,11 +1712,6 @@
 .proposal-fields { min-height: 0; }
 
 /* ===== ClawPump Launchpad View ===== */
-.launch-layout {
-    max-width: 1800px;
-    margin: 0 auto;
-    padding: 0;
-}
 .launch-stats-row {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
@@ -1925,11 +1920,6 @@
 .sort-select:focus { outline: none; border-color: var(--orange-primary); }
 
 /* ===== Prediction Markets View ===== */
-.predict-layout {
-    max-width: 1800px;
-    margin: 0 auto;
-    padding: 0;
-}
 .predict-stats-row {
     display: grid;
     grid-template-columns: repeat(5, 1fr);
@@ -1978,6 +1968,14 @@
     flex-direction: column;
     gap: 12px;
     min-width: 0;
+}
+.predict-market-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 12px;
+    max-height: 700px;
+    overflow-y: auto;
 }
 .predict-side-panel {
     display: flex;

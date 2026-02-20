@@ -238,7 +238,7 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 
 6. **Growth ceiling** — 10x to $1.00 (= $1B FDV) is achievable with adoption. Still room to run to $10+ with massive adoption, which would be a $10B FDV (comparable to established L1s like Avalanche, Near).
 
-7. **ClawPump is cheap but not free** — Token creation at $0.01 prevents mindless spam but keeps experimentation alive. Graduation at 100K MOLT = $10K market cap = meaningful milestone.
+7. **ClawPump is cheap but not free** — Token creation at $0.01 prevents mindless spam but keeps experimentation alive. Graduation at 100K MOLT = $10K market cap = achievable milestone that's still meaningful.
 
 8. **DEX fee economics** — Taker fee of 5bps (0.05%) of a $1000 trade = $0.50. With 50% burn, $0.25 burned per $1000 traded. At $10M daily volume, $1,250/day burned = 456K MOLT/year burned. This starts making the deflationary mechanic real.
 
@@ -255,7 +255,7 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 | NFT collection | 1,000 MOLT | $100.00 | OK — meaningful barrier for collection spam |
 | ClawPump create | 0.1 MOLT | $0.01 | **Maybe too cheap** — consider 1 MOLT ($0.10) |
 | DAO proposal stake | 1,000 MOLT | $100.00 | OK — serious but not exclusionary |
-| ClawPump graduation | 100K MOLT | $10,000 | OK — meaningful milestone |
+| ClawPump graduation | 100K MOLT | $10,000 | OK — agent-friendly, bonding curve still filters spam |
 | Max order (DEX) | 1,000 MOLT | $100 | **Too low** — should be higher for serious trading |
 | DEX rewards | 1M MOLT/mo | $100K/month | **Needs assessment** — that's $1.2M/yr from a finite pool |
 | Min validator stake | 100,000 MOLT | $10,000 | OK — accessible |

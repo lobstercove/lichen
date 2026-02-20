@@ -21,7 +21,6 @@ use alloc::vec::Vec;
 
 use moltchain_sdk::{
     bytes_to_u64, get_caller, get_slot, log_info, storage_get, storage_set, u64_to_bytes,
-    Address, CrossCall, call_contract,
 };
 
 // ============================================================================
@@ -807,32 +806,35 @@ pub fn set_moltyid_address(caller: *const u8, moltyid_addr: *const u8) -> u32 {
     0
 }
 
-/// Verify that an address has sufficient on-chain reputation via CrossCall to MoltyID.
-/// If no MoltyID address is configured, allows all (graceful fallback).
-/// If CrossCall returns result >= 8 bytes, parse reputation u64. Otherwise fallback to allow.
+/// Verify that an address has sufficient on-chain reputation via MoltyID.
+/// The processor injects the caller's MoltyID reputation into the contract's
+/// storage at key "rep:{hex_pubkey}" before execution, so we can read it
+/// directly via storage_get. If no MoltyID address is configured, allows all.
 fn verify_reputation(addr: &[u8; 32], min_rep: u64) -> bool {
-    let moltyid_bytes = match storage_get(MOLTYID_ADDRESS_KEY) {
-        Some(b) if b.len() == 32 && b.iter().any(|&x| x != 0) => b,
+    // Check if MoltyID address is configured (non-zero)
+    match storage_get(MOLTYID_ADDRESS_KEY) {
+        Some(b) if b.len() == 32 && b.iter().any(|&x| x != 0) => {},
         _ => return true, // No MoltyID configured — allow all
     };
-    let mut moltyid_addr = [0u8; 32];
-    moltyid_addr.copy_from_slice(&moltyid_bytes);
 
-    let mut args = Vec::with_capacity(32);
-    args.extend_from_slice(addr);
-    let call = CrossCall::new(
-        Address(moltyid_addr),
-        "get_reputation",
-        args,
-    );
+    // Read reputation from injected cross-contract storage.
+    // The processor pre-populates "rep:{hex_pubkey}" with the MoltyID
+    // reputation value for the transaction caller.
+    let hex_chars: &[u8; 16] = b"0123456789abcdef";
+    let mut rep_key = Vec::with_capacity(68);
+    rep_key.extend_from_slice(b"rep:");
+    for &b in addr.iter() {
+        rep_key.push(hex_chars[(b >> 4) as usize]);
+        rep_key.push(hex_chars[(b & 0x0f) as usize]);
+    }
 
-    match call_contract(call) {
-        Ok(result) if result.len() >= 8 => {
-            let reputation = bytes_to_u64(&result);
+    match storage_get(&rep_key) {
+        Some(data) if data.len() >= 8 => {
+            let reputation = bytes_to_u64(&data);
             reputation >= min_rep
         }
-        // SECURITY FIX: CrossCall failure must block, not allow
-        // Previously returned true on failure, allowing all callers
+        // No reputation data found → block (MoltyID is configured but
+        // caller has no identity/reputation registered)
         _ => false,
     }
 }
@@ -1404,9 +1406,8 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_reputation_test_mode_allows() {
-        // With MoltyID configured but call_contract returns empty (test mode) → blocks
-        // SECURITY FIX: CrossCall failure must block, not allow
+    fn test_verify_reputation_test_mode_blocks_without_data() {
+        // With MoltyID configured but no reputation data → blocks
         let admin = setup();
         let moltyid = [77u8; 32];
         set_moltyid_address(admin.as_ptr(), moltyid.as_ptr());
@@ -1415,8 +1416,30 @@ mod tests {
     }
 
     #[test]
+    fn test_verify_reputation_with_data() {
+        // With MoltyID configured and reputation data injected → checks threshold
+        let admin = setup();
+        let moltyid = [77u8; 32];
+        set_moltyid_address(admin.as_ptr(), moltyid.as_ptr());
+        let user = [5u8; 32];
+        // Inject reputation data into mock storage (simulating processor injection)
+        let hex_chars: &[u8; 16] = b"0123456789abcdef";
+        let mut rep_key = Vec::with_capacity(68);
+        rep_key.extend_from_slice(b"rep:");
+        for &b in user.iter() {
+            rep_key.push(hex_chars[(b >> 4) as usize]);
+            rep_key.push(hex_chars[(b & 0x0f) as usize]);
+        }
+        let rep_value: u64 = 1000;
+        storage_set(&rep_key, &u64_to_bytes(rep_value));
+        assert!(verify_reputation(&user, 500));   // 1000 >= 500
+        assert!(verify_reputation(&user, 1000));  // 1000 >= 1000
+        assert!(!verify_reputation(&user, 1001)); // 1000 < 1001
+    }
+
+    #[test]
     fn test_propose_with_reputation_check() {
-        // With MoltyID configured, CrossCall failure blocks proposals (security fix)
+        // With MoltyID configured but no reputation data, proposals are blocked
         let admin = setup();
         let moltyid = [77u8; 32];
         set_moltyid_address(admin.as_ptr(), moltyid.as_ptr());
@@ -1427,13 +1450,13 @@ mod tests {
         test_mock::set_caller(proposer);
         assert_eq!(
             propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr()),
-            5  // reputation check fails in test mode
+            5  // reputation check fails — no reputation data
         );
     }
 
     #[test]
     fn test_vote_with_reputation_check() {
-        // With MoltyID configured, CrossCall failure blocks votes (security fix)
+        // With MoltyID configured but no reputation data, votes are blocked
         let admin = setup();
         let moltyid = [77u8; 32];
         set_moltyid_address(admin.as_ptr(), moltyid.as_ptr());
@@ -1446,7 +1469,7 @@ mod tests {
         // Propose also fails reputation check with MoltyID configured
         assert_eq!(
             propose_new_pair(proposer.as_ptr(), base.as_ptr(), quote.as_ptr()),
-            5  // reputation check fails in test mode
+            5  // reputation check fails — no reputation data
         );
     }
 

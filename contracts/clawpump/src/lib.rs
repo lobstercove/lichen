@@ -46,7 +46,7 @@ const CREATION_FEE: u64 = 10_000_000_000;
 const DEFAULT_MAX_SUPPLY: u64 = 1_000_000_000_000_000_000; // 1B tokens * 10^9
 
 /// Graduation threshold: when market cap reaches this, migrate to DEX
-const GRADUATION_MARKET_CAP: u64 = 1_000_000_000_000_000; // 1M MOLT ($100K at $0.10)
+const GRADUATION_MARKET_CAP: u64 = 100_000_000_000_000; // 100K MOLT ($10K at $0.10)
 
 /// Bonding curve slope factor (controls price steepness)
 /// price = BASE_PRICE + (supply_sold * SLOPE / SLOPE_SCALE)
@@ -1492,7 +1492,7 @@ mod tests {
         set_max_buy(admin.as_ptr(), u64::MAX);
 
         // Buy massive amounts to trigger graduation
-        // Graduation needs market_cap >= GRADUATION_MARKET_CAP (1_000_000_000_000_000)
+        // Graduation needs market_cap >= GRADUATION_MARKET_CAP (100_000_000_000_000)
         // market_cap = current_price(supply) * supply / 1e9
         // We need to buy enough supply to push market cap over threshold
         let buyer = [3u8; 32];

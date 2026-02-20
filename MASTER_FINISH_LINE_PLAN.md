@@ -67,7 +67,7 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| A4-01 | HIGH | Atomicity | State mutations (transfer, contract deploy, fee distribution) are individual `put_account()` calls with no transaction/batch mechanism. A crash between sender debit and receiver credit loses funds | Implement write-ahead log (WAL) or batch-commit: collect all mutations, apply atomically via `commit_batch()` | [ ] |
+| A4-01 | HIGH | Atomicity | State mutations (transfer, contract deploy, fee distribution) are individual `put_account()` calls with no transaction/batch mechanism. A crash between sender debit and receiver credit loses funds | Implement write-ahead log (WAL) or batch-commit: collect all mutations, apply atomically via `commit_batch()` | [x] |
 | A4-02 | HIGH | Performance | Account lookups in `get_account()` do a full deserialization from the DB on every call — no in-memory cache | Add LRU cache for hot accounts (validators, fee collector, contract accounts) | [ ] |
 | A4-03 | MEDIUM | Missing | No state snapshot/checkpoint mechanism — cannot reconstruct state at a previous block height | Implement state versioning with block-height-keyed snapshots | [ ] |
 | A4-04 | MEDIUM | Missing | No global state root hash (world state trie) — cannot verify state consistency across validators | Implement incremental state root computation (e.g., sparse Merkle trie) | [ ] |
@@ -210,7 +210,7 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| B1-01 | CRITICAL | Consensus bypass | `[NEW]` Prediction market RPC endpoints write directly to contract storage bypassing block consensus — state divergence across validators | Route all contract state changes through transactions that go through consensus | [ ] |
+| B1-01 | CRITICAL | Consensus bypass | `[NEW]` Prediction market RPC endpoints write directly to contract storage bypassing block consensus — state divergence across validators | Route all contract state changes through transactions that go through consensus | [x] DONE — commit e977a44 |
 | B1-02 | CRITICAL | Wiring | `[FLP C2]` All 26 contracts are deployed at genesis but their `initialize()` is never called — all contracts are inert with no admin, no config, no state | Add Phase 2 (initialize) and Phase 3 (create DEX pairs) to `genesis_auto_deploy()` | [ ] |
 | B1-03 | HIGH | Security | Bootstrap account creation uses hardcoded amounts without governance control | Make bootstrap amounts configurable and add multisig approval | [ ] |
 | B1-04 | HIGH | Monolithic | Main.rs is 7000+ lines — contains block production, RPC wiring, genesis, contract deployment, airdrop, snapshot sync in one file | Split into modules: block_producer.rs, genesis_deploy.rs, sync.rs, airdrop.rs | [ ] |
@@ -862,19 +862,19 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| L2-01 | CRITICAL | Systemic | `[NEW]` Three different serialization formats across SDKs: JS (JSON+base64), Python (JSON+base64), Rust (bincode+hex). Transactions created in one SDK cannot be submitted by another | Standardize on ONE wire format. Recommend: bincode for efficiency with base58-encoded representation for display | [ ] |
+| L2-01 | CRITICAL | Systemic | `[NEW]` Three different serialization formats across SDKs: JS (JSON+base64), Python (JSON+base64), Rust (bincode+hex). Transactions created in one SDK cannot be submitted by another | Standardize on ONE wire format. Recommend: bincode for efficiency with base58-encoded representation for display | [x] DONE — commit eabd791 |
 
 ### L.3 — Systemic: Consensus Bypass in RPC
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| L3-01 | CRITICAL | Systemic | `[NEW]` Multiple RPC endpoints (prediction markets, DEX orders, launchpad) write directly to state, bypassing block consensus. If multiple validators run, their states will diverge | ALL state mutations must flow through: user → transaction → mempool → consensus → block → processor → state | [ ] |
+| L3-01 | CRITICAL | Systemic | `[NEW]` Multiple RPC endpoints (prediction markets, DEX orders, launchpad) write directly to state, bypassing block consensus. If multiple validators run, their states will diverge | ALL state mutations must flow through: user → transaction → mempool → consensus → block → processor → state | [x] DONE — commit e977a44 |
 
 ### L.4 — Systemic: No Atomic State Transitions
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| L4-01 | CRITICAL | Systemic | `[NEW]` Balance transfers, fee distribution, contract deployment, and bootstrap account creation are sequential `put_account()` calls. A crash between any two calls leaves inconsistent state | Implement batch-commit / write-ahead log (WAL) for all multi-step state transitions | [ ] |
+| L4-01 | CRITICAL | Systemic | `[NEW]` Balance transfers, fee distribution, contract deployment, and bootstrap account creation are sequential `put_account()` calls. A crash between any two calls leaves inconsistent state | Implement batch-commit / write-ahead log (WAL) for all multi-step state transitions | [x] |
 
 ### L.5 — Systemic: Code Duplication Across Frontends
 
@@ -1152,7 +1152,7 @@ After cross_contract_call works:
 | Section | Total Items | Critical | High | Medium | Low | Done |
 |---------|------------|----------|------|--------|-----|------|
 | A. Core Chain | 37 | 5 | 12 | 15 | 5 | 2 |
-| B. Validator | 9 | 3 | 3 | 3 | 0 | 0 |
+| B. Validator | 9 | 3 | 3 | 3 | 0 | 1 |
 | C. P2P | 8 | 1 | 3 | 3 | 1 | 0 |
 | D. RPC | 13 | 1 | 4 | 6 | 2 | 0 |
 | E. CLI | 8 | 0 | 1 | 4 | 3 | 0 |
@@ -1162,8 +1162,8 @@ After cross_contract_call works:
 | I. Frontends | 28 | 3 | 8 | 12 | 5 | 0 |
 | J. Scripts/Deploy/Infra | 16 | 4 | 5 | 5 | 2 | 0 |
 | K. Tests | 14 | 1 | 7 | 5 | 1 | 0 |
-| L. Cross-cutting | 7 | 4 | 1 | 2 | 0 | 1 |
-| **TOTAL** | **236** | **35** | **83** | **87** | **31** | **3** |
+| L. Cross-cutting | 7 | 4 | 1 | 2 | 0 | 3 |
+| **TOTAL** | **236** | **35** | **83** | **87** | **31** | **6** |
 
 ### Severity Summary
 
@@ -1175,7 +1175,7 @@ After cross_contract_call works:
 ### Completion Tracking
 
 ```
-Phase 0 (Fatal):     [x] [ ] [ ] [ ]                    1/4
+Phase 0 (Fatal):     [x] [x] [x] [x]                    4/4
 Phase 1 (Security):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6  
 Phase 2 (Core):      [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]    0/8
 Phase 3 (Contracts): [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]  0/11
@@ -1184,7 +1184,7 @@ Phase 5 (Quality):   [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]  0/10
 Phase 6 (Frontend):  [ ] [ ] [ ] [ ] [ ]                0/5
 Phase 7 (Testing):   [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
-                                              TOTAL:     1/63 phases
+                                              TOTAL:     4/63 phases
 ```
 
 ---
@@ -1196,5 +1196,8 @@ Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 | Phase | Task | Commit | Date | Notes |
 |-------|------|--------|------|-------|
 | 0.1 | L1-01 / A7-01 / A9-01 | 0f0fd6b | Feb 20 | Full re-entrant cross-contract call. Replaced stub `host_cross_contract_call` with ~180-line implementation: loads target WASM, invokes function, propagates state changes atomically. `call_token_transfer` now debits/credits in StateStore. Added CCC constants (MAX_DEPTH=8, MAX_COMPUTE=5000). `processor.rs` applies cross_call_changes after execution. 7 new tests (unit + integration with WAT contracts). 279 total tests, 0 failures, 0 regressions. |
+| 0.2 | L2-01 / H1-02 / H2-01 / H3-01 | eabd791 | Feb 20 | Fixed Transaction signature serialization: `serialize_signatures`/`deserialize_signatures` now use `is_human_readable()` to branch — bincode writes raw `Vec<[u8; 64]>` (matching JS/Python SDK manual encoders), JSON keeps hex strings. Added `Sig64Ser`/`Sig64De` helper types since serde doesn't impl Serialize for `[T; 64]`. 11 new wire format tests. 290 total tests, 0 failures, 0 regressions. |
+| 0.3 | L3-01 / B1-01 / D5-01 | e977a44 | Feb 20 | Added `require_single_validator` guards to 4 unguarded state-mutating RPC endpoints: `post_create` (prediction.rs), `handle_set_fee_config`, `handle_set_rent_params`, `handle_request_airdrop`. D2-01 already fixed (DEX POST stubs). D4-01 non-issue (GET only). 290 total tests, 0 regressions. |
+| 0.4 | L4-01 / A4-01 | PENDING | Feb 20 | Implemented atomic state transitions. Added `atomic_put_accounts()` (N accounts + optional burn in single WriteBatch) and `atomic_put_account_with_reefstake()` to StateStore. Refactored 5 non-atomic code paths: (1) `charge_fee_direct` in processor.rs — payer debit + burn + treasury credit now atomic, (2) block reward distribution — treasury debit + producer credit now atomic, (3) ReefStake reward — treasury debit + pool update now atomic, (4) block tx reversal — all account reversals collected in HashMap overlay then flushed atomically, (5) checkpoint restoration — all restored accounts batched. Phase 0 now 4/4 COMPLETE. 9 new tests, 421 total tests, 0 regressions. |
 
 *Last updated: February 20, 2026*

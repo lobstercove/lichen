@@ -19,22 +19,31 @@ async function fetchPage(beforeSlot) {
     return result;
 }
 
+let isFirstLoad = true;
+
 async function loadPage(beforeSlot) {
     const table = document.getElementById('transactionsTable');
     if (!table) return;
 
-    table.innerHTML = '<tr class="loading-row"><td colspan="9"><div class="loading-spinner"></div> Loading transactions...</td></tr>';
+    // Only show loading spinner on initial load — no flash on auto-refresh
+    if (isFirstLoad) {
+        table.innerHTML = '<tr class="loading-row"><td colspan="9"><div class="loading-spinner"></div> Loading transactions...</td></tr>';
+    }
 
     try {
         const page = await fetchPage(beforeSlot);
         currentPageData = page.transactions || [];
         nextCursor = page.next_before_slot || null;
+        isFirstLoad = false;
 
         await renderTransactions();
         updatePaginationUI();
     } catch (error) {
         console.error('Failed to load transactions:', error);
-        table.innerHTML = '<tr><td colspan="9" style="text-align:center; color: #FF6B6B;">Failed to load transactions</td></tr>';
+        if (isFirstLoad) {
+            table.innerHTML = '<tr><td colspan="9" style="text-align:center; color: #FF6B6B;">Failed to load transactions</td></tr>';
+        }
+        // On refresh errors, keep existing data visible
     }
 }
 
@@ -130,6 +139,7 @@ function nextPage() {
         ? currentPageData[currentPageData.length - 1].slot
         : null;
     cursorStack.push(nextCursor);
+    isFirstLoad = true; // Show spinner for explicit navigation
     loadPage(nextCursor);
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -138,6 +148,7 @@ function previousPage() {
     if (cursorStack.length === 0) return;
     cursorStack.pop();
     const prevCursor = cursorStack.length > 0 ? cursorStack[cursorStack.length - 1] : undefined;
+    isFirstLoad = true; // Show spinner for explicit navigation
     loadPage(prevCursor);
     window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -147,6 +158,7 @@ function applyFilters() {
     currentFilter.status = document.getElementById('statusFilter').value;
     cursorStack = [];
     nextCursor = null;
+    isFirstLoad = true; // Show spinner for filter change
     loadPage(undefined);
 }
 
@@ -156,6 +168,7 @@ function clearFilters() {
     currentFilter = { type: '', status: '' };
     cursorStack = [];
     nextCursor = null;
+    isFirstLoad = true; // Show spinner for filter reset
     loadPage(undefined);
 }
 
@@ -175,11 +188,19 @@ document.addEventListener('DOMContentLoaded', () => {
         if (txPolling) { clearInterval(txPolling); txPolling = null; }
     };
 
+    let wsRefreshTimer = null;
+
     if (typeof ws !== 'undefined') {
         ws.onOpen(() => {
             stopPolling();
             ws.subscribe('subscribeBlocks', () => {
-                if (cursorStack.length === 0) loadPage(undefined);
+                // Debounce WS block events — refresh at most every 3 seconds
+                if (cursorStack.length === 0 && !wsRefreshTimer) {
+                    wsRefreshTimer = setTimeout(() => {
+                        wsRefreshTimer = null;
+                        loadPage(undefined);
+                    }, 3000);
+                }
             });
         });
         ws.onClose(() => startPolling());

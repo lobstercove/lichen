@@ -1255,20 +1255,27 @@ async fn get_candles(
     let now_sec = now_ms / 1000;
 
     let mut candles = Vec::new();
-    // Candle IDs are 1-based; candle_count is the highest stored ID
+    // Candle IDs are 0-based; candle_count is the number of stored candles
     let start = if candle_count > limit as u64 {
-        candle_count - limit as u64 + 1
+        candle_count - limit as u64
     } else {
-        1
+        0
     };
 
-    for i in start..=candle_count {
+    for i in start..candle_count {
         let key = format!("ana_c_{}_{}_{}", pair_id, interval, i);
         if let Some(data) = read_bytes(&state, DEX_ANALYTICS_PROGRAM, &key) {
             if let Some(mut candle) = decode_candle(&data) {
-                // Compute timestamp (seconds) from slot: approx now - (current_slot - candle_slot) * 0.4s
-                let slot_age_sec = slot.saturating_sub(candle.slot) * 400 / 1000;
-                candle.timestamp = now_sec.saturating_sub(slot_age_sec);
+                // The slot field stores the unix timestamp directly (written by
+                // oracle/bridge writers).  Values >= 1 billion are unix seconds;
+                // values below that are legacy slot numbers where we estimate.
+                if candle.slot >= 1_000_000_000 {
+                    candle.timestamp = candle.slot;
+                } else {
+                    // Legacy: approximate timestamp from slot delta (~0.4s/slot)
+                    let slot_age_sec = slot.saturating_sub(candle.slot) * 400 / 1000;
+                    candle.timestamp = now_sec.saturating_sub(slot_age_sec);
+                }
                 // F5.2: Filter by from/to (seconds) if provided
                 if let Some(from) = q.from {
                     if candle.timestamp < from { continue; }

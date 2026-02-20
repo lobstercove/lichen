@@ -1311,6 +1311,9 @@ impl TxProcessor {
     /// M4 fix: charge fee directly to state (not through batch), so it persists
     /// even if the instruction batch is later rolled back. This prevents
     /// free-compute DoS via intentionally-failing transactions.
+    ///
+    /// L4-01 fix: all internal mutations (payer debit, burn counter, treasury
+    /// credit) now land in a single atomic WriteBatch via `atomic_put_accounts`.
     fn charge_fee_direct(&self, payer: &Pubkey, fee: u64) -> Result<(), String> {
         let mut payer_account = self
             .state
@@ -1318,7 +1321,6 @@ impl TxProcessor {
             .ok_or_else(|| "Payer account not found".to_string())?;
 
         payer_account.deduct_spendable(fee)?;
-        self.state.put_account(payer, &payer_account)?;
 
         // Split fee according to configured percentages
         let fee_config = self
@@ -1333,24 +1335,32 @@ impl TxProcessor {
         let allocated = burn_amount.saturating_add(producer_amount).saturating_add(voters_amount);
         let treasury_amount = fee.saturating_sub(allocated);
 
-        if burn_amount > 0 {
-            self.state.add_burned(burn_amount)?;
-        }
-
         let total_to_treasury = treasury_amount + producer_amount + voters_amount;
+
+        // Build the atomic account set: payer is always included,
+        // treasury only when there is something to credit.
+        let mut accounts: Vec<(&Pubkey, &Account)> = vec![(payer, &payer_account)];
+        let treasury_pubkey;
+        let treasury_account;
+
         if total_to_treasury > 0 {
-            let treasury_pubkey = self
+            treasury_pubkey = self
                 .state
                 .get_treasury_pubkey()?
                 .ok_or_else(|| "Treasury pubkey not set".to_string())?;
-            let mut treasury_account = self
-                .state
-                .get_account(&treasury_pubkey)?
-                .unwrap_or_else(|| Account::new(0, treasury_pubkey));
-            treasury_account.add_spendable(total_to_treasury)?;
-            self.state
-                .put_account(&treasury_pubkey, &treasury_account)?;
+            treasury_account = {
+                let mut ta = self
+                    .state
+                    .get_account(&treasury_pubkey)?
+                    .unwrap_or_else(|| Account::new(0, treasury_pubkey));
+                ta.add_spendable(total_to_treasury)?;
+                ta
+            };
+            accounts.push((&treasury_pubkey, &treasury_account));
         }
+
+        // L4-01: Single atomic WriteBatch — payer debit + burn + treasury credit
+        self.state.atomic_put_accounts(&accounts, burn_amount)?;
 
         Ok(())
     }
