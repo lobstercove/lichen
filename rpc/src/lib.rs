@@ -944,26 +944,37 @@ pub fn build_rpc_router(
         orderbook_cache: Arc::new(RwLock::new(HashMap::new())),
     };
 
-    // T2.7: Restrictive CORS — allow localhost and configured origins only
+    // D1-01: Configurable CORS origins via MOLTCHAIN_CORS_ORIGINS env var
+    // (comma-separated).  Defaults to localhost-only + moltchain.io subdomains.
+    // Set to "*" for development-only wildcard (NOT recommended for production).
+    let allowed_hosts: Vec<String> = std::env::var("MOLTCHAIN_CORS_ORIGINS")
+        .ok()
+        .map(|v| v.split(',').map(|s| s.trim().to_string()).collect())
+        .unwrap_or_else(|| vec![
+            "localhost".to_string(),
+            "127.0.0.1".to_string(),
+            "moltchain.io".to_string(),
+            "app.moltchain.io".to_string(),
+            "rpc.moltchain.io".to_string(),
+            "api.moltchain.io".to_string(),
+            "explorer.moltchain.io".to_string(),
+        ]);
+    let allowed_hosts = Arc::new(allowed_hosts);
+
+    // T2.7: Restrictive CORS — allow configured origins only
     // H14 fix: use exact host matching to prevent subdomain bypass
+    let cors_hosts = allowed_hosts.clone();
     let cors = CorsLayer::new()
-        .allow_origin(AllowOrigin::predicate(|origin: &HeaderValue, _| {
+        .allow_origin(AllowOrigin::predicate(move |origin: &HeaderValue, _| {
             let origin_str = origin.to_str().unwrap_or("");
-            // Parse scheme://host:port — only allow exact localhost/127.0.0.1 hosts
+            // Parse scheme://host:port — only allow exact matching hosts
             if let Some(rest) = origin_str
                 .strip_prefix("http://")
                 .or_else(|| origin_str.strip_prefix("https://"))
             {
                 let host = rest.split('/').next().unwrap_or("");
                 let host_only = host.split(':').next().unwrap_or("");
-                host_only == "localhost"
-                    || host_only == "127.0.0.1"
-                    // AUDIT-FIX 2.14: Explicit subdomain allowlist instead of wildcard suffix
-                    || host_only == "moltchain.io"
-                    || host_only == "app.moltchain.io"
-                    || host_only == "rpc.moltchain.io"
-                    || host_only == "api.moltchain.io"
-                    || host_only == "explorer.moltchain.io"
+                cors_hosts.iter().any(|allowed| allowed == host_only)
             } else {
                 false
             }
