@@ -308,7 +308,9 @@ class MoltCrypto {
     }
 
     /**
-     * Encrypt private key (seed) with password (AES-GCM via Web Crypto API)
+     * AUDIT-FIX I2-02: Encrypt private key (seed) with password (AES-256-GCM via Web Crypto API).
+     * All secret key material MUST be encrypted before storage in localStorage.
+     * Uses PBKDF2 (100k iterations, SHA-256) for key derivation from password.
      */
     static async encryptPrivateKey(privateKeyHex, password) {
         const salt = crypto.getRandomValues(new Uint8Array(16));
