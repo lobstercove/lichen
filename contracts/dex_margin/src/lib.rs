@@ -623,7 +623,8 @@ pub fn open_position(
 }
 
 /// Close a margin position
-/// Returns: 0=success, 1=not found, 2=not owner, 3=already closed, 4=reentrancy
+/// Returns: 0=success, 1=not found, 2=not owner, 3=already closed, 4=reentrancy,
+///          5=oracle unavailable (price stale or missing)
 pub fn close_position(caller: *const u8, position_id: u64) -> u32 {
     if !reentrancy_enter() { return 4; }
     let mut c = [0u8; 32];
@@ -654,27 +655,32 @@ pub fn close_position(caller: *const u8, position_id: u64) -> u32 {
     // AUDIT-FIX M20: Use freshness-checked mark price
     let mark_price = fresh_mark_price(pair_id);
 
+    // SECURITY FIX G6-03: Reject close when oracle price is unavailable or stale.
+    // Previously returned full margin (no PnL deduction), allowing traders to
+    // escape losses during oracle outages.
+    if mark_price == 0 {
+        log_info("Cannot close position: oracle price unavailable or stale");
+        reentrancy_exit();
+        return 5;
+    }
+
     // Calculate PnL and determine unlock amount
-    let unlock_amount = if mark_price > 0 {
-        let (is_profit, pnl) = calculate_pnl(side, size, entry_price, mark_price);
-        // F10.2-B FIX: Write realized PnL to position data
-        // Store as biased u64: value = PNL_BIAS + signed_pnl
-        let pnl_biased = if is_profit {
-            (1u64 << 63).saturating_add(pnl)
-        } else {
-            (1u64 << 63).saturating_sub(pnl)
-        };
-        data[90..98].copy_from_slice(&pnl_biased.to_le_bytes());
-        // Track cumulative PnL
-        if is_profit {
-            save_u64(TOTAL_PNL_PROFIT_KEY, load_u64(TOTAL_PNL_PROFIT_KEY).saturating_add(pnl));
-            margin.saturating_add(pnl)
-        } else {
-            save_u64(TOTAL_PNL_LOSS_KEY, load_u64(TOTAL_PNL_LOSS_KEY).saturating_add(pnl));
-            margin.saturating_sub(pnl)
-        }
+    let (is_profit, pnl) = calculate_pnl(side, size, entry_price, mark_price);
+    // F10.2-B FIX: Write realized PnL to position data
+    // Store as biased u64: value = PNL_BIAS + signed_pnl
+    let pnl_biased = if is_profit {
+        (1u64 << 63).saturating_add(pnl)
     } else {
-        margin // no mark price available → return full margin
+        (1u64 << 63).saturating_sub(pnl)
+    };
+    data[90..98].copy_from_slice(&pnl_biased.to_le_bytes());
+    // Track cumulative PnL
+    let unlock_amount = if is_profit {
+        save_u64(TOTAL_PNL_PROFIT_KEY, load_u64(TOTAL_PNL_PROFIT_KEY).saturating_add(pnl));
+        margin.saturating_add(pnl)
+    } else {
+        save_u64(TOTAL_PNL_LOSS_KEY, load_u64(TOTAL_PNL_LOSS_KEY).saturating_add(pnl));
+        margin.saturating_sub(pnl)
     };
 
     // Unlock collateral at host level (move from locked to spendable)
@@ -780,17 +786,21 @@ pub fn remove_margin(caller: *const u8, position_id: u64, amount: u64) -> u32 {
     let leverage = decode_pos_leverage(&data);
     // AUDIT-FIX M20: Freshness-checked mark price for margin health
     let mark_price = fresh_mark_price(pair_id);
-    if mark_price > 0 {
-        let side = decode_pos_side(&data);
-        let entry_price = decode_pos_entry_price(&data);
-        // F10.2-A FIX: Use PnL-aware margin ratio for health check
-        let ratio = calculate_margin_ratio_with_pnl(new_margin, size, entry_price, mark_price, side);
-        let (_init_bps, maint_bps, _liq_bps, _fund_mult) = get_tier_params(leverage);
-        // Use admin-overridden maintenance if set and higher than tier
-        let admin_maint = get_maintenance_margin_override();
-        let effective_maint = if admin_maint > maint_bps { admin_maint } else { maint_bps };
-        if ratio < effective_maint { reentrancy_exit(); return 6; } // would be unhealthy
+    // SECURITY FIX G6-03: Reject margin removal when oracle is stale
+    if mark_price == 0 {
+        log_info("Cannot remove margin: oracle price unavailable or stale");
+        reentrancy_exit();
+        return 7;
     }
+    let side = decode_pos_side(&data);
+    let entry_price = decode_pos_entry_price(&data);
+    // F10.2-A FIX: Use PnL-aware margin ratio for health check
+    let ratio = calculate_margin_ratio_with_pnl(new_margin, size, entry_price, mark_price, side);
+    let (_init_bps, maint_bps, _liq_bps, _fund_mult) = get_tier_params(leverage);
+    // Use admin-overridden maintenance if set and higher than tier
+    let admin_maint = get_maintenance_margin_override();
+    let effective_maint = if admin_maint > maint_bps { admin_maint } else { maint_bps };
+    if ratio < effective_maint { reentrancy_exit(); return 6; } // would be unhealthy
 
     // AUDIT-FIX G6-01: Unlock removed collateral at host level
     let unlock_call = CrossCall::new(
@@ -1147,6 +1157,13 @@ pub fn partial_close(caller: *const u8, position_id: u64, close_amount: u64) -> 
 
     let mark_price = fresh_mark_price(pair_id);
 
+    // SECURITY FIX G6-03: Reject partial close when oracle is stale
+    if mark_price == 0 {
+        log_info("Cannot partial close: oracle price unavailable or stale");
+        reentrancy_exit();
+        return 5;
+    }
+
     // Calculate proportional close fraction
     // proportional_margin = margin * close_amount / size
     let proportional_margin = (margin as u128 * close_amount as u128 / size as u128) as u64;
@@ -1154,36 +1171,32 @@ pub fn partial_close(caller: *const u8, position_id: u64, close_amount: u64) -> 
     let remaining_size = size - close_amount; // safe since close_amount < size
 
     // Calculate PnL on the closed portion
-    let unlock_amount = if mark_price > 0 {
-        let (is_profit, pnl_full) = calculate_pnl(side, size, entry_price, mark_price);
-        // Proportional PnL for the closed amount
-        let pnl = (pnl_full as u128 * close_amount as u128 / size as u128) as u64;
+    let (is_profit, pnl_full) = calculate_pnl(side, size, entry_price, mark_price);
+    // Proportional PnL for the closed amount
+    let pnl = (pnl_full as u128 * close_amount as u128 / size as u128) as u64;
 
-        // Write proportional realized PnL to position
-        let existing_pnl_biased = if data.len() >= 98 {
-            bytes_to_u64(&data[90..98])
-        } else {
-            1u64 << 63
-        };
-        // Accumulate: add the new partial PnL to existing realized PnL
-        let new_pnl_biased = if is_profit {
-            existing_pnl_biased.saturating_add(pnl)
-        } else {
-            existing_pnl_biased.saturating_sub(pnl)
-        };
-        while data.len() < POSITION_SIZE { data.push(0); }
-        data[90..98].copy_from_slice(&new_pnl_biased.to_le_bytes());
-
-        // Track cumulative PnL
-        if is_profit {
-            save_u64(TOTAL_PNL_PROFIT_KEY, load_u64(TOTAL_PNL_PROFIT_KEY).saturating_add(pnl));
-            proportional_margin.saturating_add(pnl)
-        } else {
-            save_u64(TOTAL_PNL_LOSS_KEY, load_u64(TOTAL_PNL_LOSS_KEY).saturating_add(pnl));
-            proportional_margin.saturating_sub(pnl)
-        }
+    // Write proportional realized PnL to position
+    let existing_pnl_biased = if data.len() >= 98 {
+        bytes_to_u64(&data[90..98])
     } else {
-        proportional_margin // no mark price → return proportional margin only
+        1u64 << 63
+    };
+    // Accumulate: add the new partial PnL to existing realized PnL
+    let new_pnl_biased = if is_profit {
+        existing_pnl_biased.saturating_add(pnl)
+    } else {
+        existing_pnl_biased.saturating_sub(pnl)
+    };
+    while data.len() < POSITION_SIZE { data.push(0); }
+    data[90..98].copy_from_slice(&new_pnl_biased.to_le_bytes());
+
+    // Track cumulative PnL
+    let unlock_amount = if is_profit {
+        save_u64(TOTAL_PNL_PROFIT_KEY, load_u64(TOTAL_PNL_PROFIT_KEY).saturating_add(pnl));
+        proportional_margin.saturating_add(pnl)
+    } else {
+        save_u64(TOTAL_PNL_LOSS_KEY, load_u64(TOTAL_PNL_LOSS_KEY).saturating_add(pnl));
+        proportional_margin.saturating_sub(pnl)
     };
 
     // Unlock proportional collateral
@@ -2614,5 +2627,114 @@ mod tests {
         let data = storage_get(&position_key(1)).unwrap();
         let new_margin = decode_pos_margin(&data);
         assert_eq!(new_margin, 500_000_000 - 20_200_000); // 479_800_000
+    }
+
+    // ============================================================================
+    // G6-03 SECURITY TESTS: Oracle fallback handling
+    // ============================================================================
+
+    #[test]
+    fn test_close_position_rejects_stale_oracle() {
+        // G6-03: close_position must reject when oracle price is stale
+        let admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        test_mock::set_timestamp(1000);
+        // Open position with fresh mark price
+        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+
+        // Advance timestamp past MAX_PRICE_AGE_SECONDS (1800s) without updating oracle
+        test_mock::set_timestamp(1000 + MAX_PRICE_AGE_SECONDS + 1);
+        test_mock::set_caller(trader);
+        // close_position should return 5 (oracle unavailable)
+        assert_eq!(close_position(trader.as_ptr(), 1), 5);
+
+        // Position should still be OPEN
+        let data = storage_get(&position_key(1)).unwrap();
+        assert_eq!(decode_pos_status(&data), POS_OPEN);
+    }
+
+    #[test]
+    fn test_close_position_rejects_missing_oracle() {
+        // G6-03: close_position must reject when no oracle price exists for the pair
+        let admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(admin);
+        // Enable pair 99 which has no mark price
+        enable_margin_pair(admin.as_ptr(), 99);
+        // Manually write a position for pair 99 to bypass open_position mark check
+        let pos_id = 1u64;
+        save_u64(POSITION_COUNT_KEY, pos_id);
+        let mut pos = alloc::vec![0u8; POSITION_SIZE];
+        pos[0..32].copy_from_slice(&trader);    // trader
+        pos[32..40].copy_from_slice(&u64_to_bytes(pos_id)); // id
+        pos[40] = POS_OPEN;                      // status
+        pos[41] = SIDE_LONG;                      // side
+        pos[42..50].copy_from_slice(&u64_to_bytes(1_000_000_000)); // size
+        pos[50..58].copy_from_slice(&u64_to_bytes(1_000_000_000)); // entry_price
+        pos[58..66].copy_from_slice(&u64_to_bytes(500_000_000));   // margin
+        pos[66..74].copy_from_slice(&u64_to_bytes(99));            // pair_id
+        pos[74..82].copy_from_slice(&u64_to_bytes(2));             // leverage
+        storage_set(&position_key(pos_id), &pos);
+
+        test_mock::set_caller(trader);
+        // No mark price for pair 99 → error 5
+        assert_eq!(close_position(trader.as_ptr(), 1), 5);
+    }
+
+    #[test]
+    fn test_close_position_succeeds_with_fresh_oracle() {
+        // G6-03: close_position succeeds when oracle is fresh
+        let admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        test_mock::set_timestamp(1000);
+        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+
+        // Refresh oracle within staleness window
+        test_mock::set_timestamp(1500);
+        test_mock::set_caller(admin);
+        set_mark_price(admin.as_ptr(), 1, 1_000_000_000);
+        test_mock::set_caller(trader);
+        assert_eq!(close_position(trader.as_ptr(), 1), 0);
+        let data = storage_get(&position_key(1)).unwrap();
+        assert_eq!(decode_pos_status(&data), POS_CLOSED);
+    }
+
+    #[test]
+    fn test_remove_margin_rejects_stale_oracle() {
+        // G6-03: remove_margin must reject when oracle is stale
+        let admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        test_mock::set_timestamp(1000);
+        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+
+        // Advance past staleness window
+        test_mock::set_timestamp(1000 + MAX_PRICE_AGE_SECONDS + 1);
+        test_mock::set_caller(trader);
+        assert_eq!(remove_margin(trader.as_ptr(), 1, 1000), 7); // stale oracle
+    }
+
+    #[test]
+    fn test_partial_close_rejects_stale_oracle() {
+        // G6-03: partial_close_position must reject when oracle is stale
+        let admin = setup();
+        let trader = [2u8; 32];
+        test_mock::set_caller(trader);
+        test_mock::set_slot(100);
+        test_mock::set_timestamp(1000);
+        assert_eq!(open_position(trader.as_ptr(), 1, SIDE_LONG, 1_000_000_000, 2, 500_000_000), 0);
+
+        test_mock::set_timestamp(1000 + MAX_PRICE_AGE_SECONDS + 1);
+        test_mock::set_caller(trader);
+        assert_eq!(partial_close(trader.as_ptr(), 1, 500_000_000), 5);
+
+        // Position still OPEN
+        let data = storage_get(&position_key(1)).unwrap();
+        assert_eq!(decode_pos_status(&data), POS_OPEN);
     }
 }
