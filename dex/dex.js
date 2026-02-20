@@ -160,64 +160,66 @@ document.addEventListener('DOMContentLoaded', () => {
     let dexWs = null;
 
     // ═══════════════════════════════════════════════════════════════════════
-    // Wallet — Ed25519 via tweetnacl
+    // Wallet — delegates to MoltWallet extension (no local key storage)
+    // AUDIT-FIX I4-01: Private keys never stored in DEX. All signing
+    // is delegated to the wallet extension or MoltWallet SDK.
     // ═══════════════════════════════════════════════════════════════════════
     const wallet = {
-        keypair: null, address: null, shortAddr: null, _nacl: null,
+        keypair: null, address: null, shortAddr: null, _moltWallet: null,
 
-        async _ensureNacl() {
-            if (this._nacl) return this._nacl;
-            if (typeof globalThis.nacl !== 'undefined') { this._nacl = globalThis.nacl; return this._nacl; }
-            try { const m = await import('https://esm.sh/tweetnacl@1.0.3'); this._nacl = m.default || m; return this._nacl; } catch { return null; }
+        async _ensureWallet() {
+            if (this._moltWallet) return this._moltWallet;
+            // Try wallet extension first
+            if (typeof MoltWallet !== 'undefined') {
+                this._moltWallet = new MoltWallet({ rpcUrl: RPC_BASE });
+                return this._moltWallet;
+            }
+            return null;
         },
-        async generate() {
-            const n = await this._ensureNacl();
-            this.keypair = n ? n.sign.keyPair() : (() => { throw new Error('Crypto library unavailable — cannot generate keypair'); })();
-            this.address = bs58encode(this.keypair.publicKey);
-            this.shortAddr = this.address.slice(0, 8) + '...' + this.address.slice(-6);
-            return this;
+        async connect() {
+            const w = await this._ensureWallet();
+            if (!w) throw new Error('MoltChain Wallet extension not found — install it from the wallet page');
+            const result = await w.connect();
+            if (result && result.address) {
+                this.address = result.address;
+                this.shortAddr = this.address.slice(0, 8) + '...' + this.address.slice(-6);
+                this.keypair = { connected: true }; // Compatibility flag — no actual key material
+                return this;
+            }
+            throw new Error('Wallet connection failed');
         },
-        async fromSecretKey(hexKey) {
-            const n = await this._ensureNacl();
-            const bytes = hexToBytes(hexKey);
-            if (n && bytes.length === 64) this.keypair = { publicKey: bytes.slice(32), secretKey: bytes };
-            else if (n && bytes.length === 32) this.keypair = n.sign.keyPair.fromSeed(bytes);
-            else throw new Error('Invalid key (expected 32 or 64 byte hex)');
-            this.address = bs58encode(this.keypair.publicKey);
-            this.shortAddr = this.address.slice(0, 8) + '...' + this.address.slice(-6);
+        async connectAddress(addr) {
+            // Connect to a known address (e.g. from saved wallets list) — read-only until extension signs
+            this.address = addr;
+            this.shortAddr = addr.slice(0, 8) + '...' + addr.slice(-6);
+            this.keypair = { connected: true };
             return this;
         },
         sign(message) {
-            if (!this.keypair || !this._nacl) throw new Error('Wallet not initialized');
-            return this._nacl.sign.detached(message, this.keypair.secretKey);
+            throw new Error('Direct signing removed — use wallet extension');
         },
-        // AUDIT-FIX F10.9: sendTransaction produces validator-compatible JSON.
-        // Wire format must match parse_json_transaction():
-        //   - signatures: array of hex strings (64 bytes each)
-        //   - message.instructions[].program_id: base58 string
-        //   - message.instructions[].accounts: array of base58 strings
-        //   - message.instructions[].data: array of u8 numbers
-        //   - message.blockhash: hex string of 32-byte hash
         async sendTransaction(instructions) {
-            if (!this.keypair) throw new Error('Wallet not connected');
-            if (!this._nacl) throw new Error('Signing library not loaded');
+            if (!this.address) throw new Error('Wallet not connected');
+            // Delegate signing to wallet extension
+            const w = await this._ensureWallet();
+            if (w && typeof w.sendTransaction === 'function') {
+                return w.sendTransaction(instructions);
+            }
+            // Fallback: build unsigned TX and request extension signature
+            if (typeof window !== 'undefined' && window.MoltChain && window.MoltChain.Wallet) {
+                return window.MoltChain.Wallet.signAndSend(instructions);
+            }
+            // Last resort: submit via RPC (for server-side wallets)
             const blockhash = await api.rpc('getRecentBlockhash');
-            // Normalize instructions: ensure accounts + data format
             const normalizedIx = instructions.map(ix => {
                 const accounts = ix.accounts || [this.address];
                 const dataBytes = typeof ix.data === 'string' ? Array.from(new TextEncoder().encode(ix.data)) : Array.from(ix.data);
                 return { program_id: ix.program_id, accounts, data: dataBytes };
             });
-            // Sign: bincode-compatible message bytes (must match validator's message.serialize())
-            const msgBytes = encodeTransactionMessage(normalizedIx, blockhash, this.address);
-            const sig = this.sign(msgBytes);
-            // Wire format: JSON matching parse_json_transaction()
             const txPayload = {
-                signatures: [bytesToHex(sig)],
-                message: {
-                    instructions: normalizedIx,
-                    blockhash: blockhash,
-                },
+                signatures: [],
+                message: { instructions: normalizedIx, blockhash: blockhash },
+                signer: this.address,
             };
             const txBase64 = btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(txPayload))));
             return api.rpc('sendTransaction', [txBase64]);
@@ -1495,7 +1497,7 @@ document.addEventListener('DOMContentLoaded', () => {
     async function preflightOrder({ side, orderType, price, amount, stopPrice, pair, tradeMode, leverage }) {
         // 1. Wallet & connectivity
         if (!state.connected) return { ok: false, error: 'Connect wallet first', code: 'NO_WALLET' };
-        if (!wallet.keypair) return { ok: false, error: 'Re-import wallet to sign transactions', code: 'NO_KEYPAIR' };
+        if (!wallet.keypair) return { ok: false, error: 'Connect wallet to sign transactions', code: 'NO_KEYPAIR' };
 
         // 2. Basic input validation
         if (!amount || amount <= 0) return { ok: false, error: 'Amount must be positive', code: 'BAD_AMOUNT' };
@@ -1749,7 +1751,7 @@ document.addEventListener('DOMContentLoaded', () => {
         tb.innerHTML = openOrders.map(o => `<tr class="order-row" data-order-id="${escapeHtml(String(o.id))}"><td>${escapeHtml(o.pair)}</td><td class="side-${escapeHtml(o.side)}">${escapeHtml(o.side.toUpperCase())}</td><td style="text-transform:capitalize">${escapeHtml(o.type)}</td><td class="order-price-cell">${formatPrice(o.price)}</td><td class="order-qty-cell">${formatAmount(o.amount)}</td><td>${(o.filled * 100).toFixed(0)}%</td><td>${o.time instanceof Date ? o.time.toLocaleTimeString() : ''}</td><td><button class="edit-order-btn" data-id="${escapeHtml(String(o.id))}" data-price="${o.price}" data-amount="${o.amount}" title="Edit order"><i class="fas fa-pencil-alt"></i></button></td><td><button class="cancel-btn" data-id="${escapeHtml(String(o.id))}"><i class="fas fa-times"></i></button></td></tr>`).join('');
         // Task 3.4: Edit order buttons
         tb.querySelectorAll('.edit-order-btn').forEach(btn => btn.addEventListener('click', () => {
-            if (!state.connected || !wallet.keypair) { showNotification('Re-import wallet to sign', 'warning'); return; }
+            if (!state.connected || !wallet.keypair) { showNotification('Connect wallet to sign', 'warning'); return; }
             const orderId = btn.dataset.id;
             const row = btn.closest('tr');
             if (!row) return;
@@ -1806,7 +1808,7 @@ document.addEventListener('DOMContentLoaded', () => {
         tb.querySelectorAll('.cancel-btn').forEach(btn => btn.addEventListener('click', async () => {
             // AUDIT-FIX F10.2: Cancel order via signed sendTransaction (not unsigned DELETE)
             if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-            if (!wallet.keypair) { showNotification('Re-import wallet to sign', 'warning'); return; }
+            if (!wallet.keypair) { showNotification('Connect wallet to sign', 'warning'); return; }
             try {
                 await wallet.sendTransaction([contractIx(
                     contracts.dex_core,
@@ -1872,40 +1874,34 @@ document.addEventListener('DOMContentLoaded', () => {
     document.addEventListener('keydown', e => { if (e.key === 'Escape' && walletModal && !walletModal.classList.contains('hidden')) closeWalletModalFn(); });
     wmTabs.forEach(t => t.addEventListener('click', () => switchWmTab(t.dataset.wmTab)));
 
-    document.querySelectorAll('.wm-import-type').forEach(btn => btn.addEventListener('click', () => {
-        document.querySelectorAll('.wm-import-type').forEach(b => b.classList.remove('active')); btn.classList.add('active');
-        const k = document.getElementById('wmImportKey'), m = document.getElementById('wmImportMnemonic');
-        if (btn.dataset.import === 'key') { if (k) k.classList.remove('hidden'); if (m) m.classList.add('hidden'); } else { if (k) k.classList.add('hidden'); if (m) m.classList.remove('hidden'); }
-    }));
+    // AUDIT-FIX I4-01: Import-type toggle and mnemonic grid removed (no private key input)
 
-    const mnGrid = document.getElementById('mnemonicGrid');
-    if (mnGrid) for (let i = 0; i < 12; i++) { const inp = document.createElement('input'); inp.type = 'text'; inp.placeholder = `Word ${i + 1}`; inp.className = 'form-input'; mnGrid.appendChild(inp); }
-
+    // AUDIT-FIX I4-01: wmConnectBtn now connects via wallet extension, not by private key import
     const wmConnectBtn = document.getElementById('wmConnectBtn');
     if (wmConnectBtn) wmConnectBtn.addEventListener('click', async () => {
-        const ki = document.getElementById('wmPrivateKey'), key = ki?.value?.trim();
-        if (!key) { showNotification('Enter private key (hex)', 'warning'); return; }
-        try { await wallet.fromSecretKey(key); savedWallets.push({ address: wallet.address, short: wallet.shortAddr, added: Date.now() }); localStorage.setItem('dexWallets', JSON.stringify(savedWallets)); connectWalletTo(wallet.address, wallet.shortAddr); closeWalletModalFn(); if (ki) ki.value = ''; showNotification('Wallet connected: ' + wallet.shortAddr, 'success'); }
-        catch (e) { showNotification(`Import failed: ${e.message}`, 'error'); }
+        try {
+            await wallet.connect();
+            savedWallets.push({ address: wallet.address, short: wallet.shortAddr, added: Date.now() });
+            localStorage.setItem('dexWallets', JSON.stringify(savedWallets));
+            connectWalletTo(wallet.address, wallet.shortAddr);
+            closeWalletModalFn();
+            showNotification('Wallet connected: ' + wallet.shortAddr, 'success');
+        } catch (e) { showNotification(`Connection failed: ${e.message}`, 'error'); }
     });
 
+    // AUDIT-FIX I4-01: wmCreateBtn removed — key generation in browser is a security risk.
+    // Users should create wallets in the dedicated wallet app/extension.
     const wmCreateBtn = document.getElementById('wmCreateBtn');
-    if (wmCreateBtn) wmCreateBtn.addEventListener('click', async () => {
-        await wallet.generate();
-        const ae = document.getElementById('wmNewAddress'), ke = document.getElementById('wmNewKey'), cd = document.getElementById('wmCreatedWallet');
-        if (ae) ae.textContent = wallet.address;
-        // AUDIT-FIX DEX-3: Never display raw secret key in DOM — show masked placeholder
-        // Users should export/backup keys through the main wallet's encrypted export
-        if (ke) ke.textContent = '••••••••••••••••••••••••••••••••  (use main wallet for key backup)';
-        if (cd) cd.classList.remove('hidden');
-        savedWallets.push({ address: wallet.address, short: wallet.shortAddr, added: Date.now() }); localStorage.setItem('dexWallets', JSON.stringify(savedWallets));
-        connectWalletTo(wallet.address, wallet.shortAddr); showNotification('New wallet created: ' + wallet.shortAddr, 'success');
+    if (wmCreateBtn) wmCreateBtn.addEventListener('click', () => {
+        showNotification('Create wallets in the MoltChain Wallet app — the DEX does not generate keys for security reasons.', 'info');
     });
 
     document.querySelectorAll('.wm-copy-btn').forEach(btn => btn.addEventListener('click', () => { const el = document.getElementById(btn.dataset.copy); if (el) navigator.clipboard.writeText(el.textContent).then(() => showNotification('Copied!', 'success')); }));
 
     async function connectWalletTo(address, shortAddr) {
         state.connected = true; state.walletAddress = address;
+        // AUDIT-FIX I4-01: Keep wallet object in sync (address + compatibility flag)
+        await wallet.connectAddress(address);
         if (connectBtn) { connectBtn.innerHTML = `<i class="fas fa-wallet"></i> ${escapeHtml(shortAddr)}`; connectBtn.className = 'btn btn-small btn-secondary'; }
         toggleWalletPanels(true);
         applyWalletGateAll();
@@ -1915,7 +1911,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function disconnectWallet() {
-        state.connected = false; state.walletAddress = null; wallet.keypair = null; wallet.address = null;
+        state.connected = false; state.walletAddress = null; wallet.keypair = null; wallet.address = null; wallet._moltWallet = null;
         if (connectBtn) { connectBtn.innerHTML = '<i class="fas fa-wallet"></i> Connect Wallet'; connectBtn.className = 'btn btn-small btn-primary'; }
         openOrders = []; balances = {};
         toggleWalletPanels(false);
@@ -2526,7 +2522,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!collectBtn && !removeBtn && !addBtn) return;
         e.stopPropagation();
         if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-        if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
+        if (!wallet.keypair) { showNotification('Connect wallet to sign transactions', 'warning'); return; }
 
         if (collectBtn) {
             const posId = parseInt(collectBtn.dataset.positionId) || 0;
@@ -2994,7 +2990,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     // Bind close buttons — toggle partial close panel
                     container.querySelectorAll('.margin-close-btn').forEach(btn => btn.addEventListener('click', () => {
                         if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-                        if (!wallet.keypair) { showNotification('Re-import wallet to sign', 'warning'); return; }
+                        if (!wallet.keypair) { showNotification('Connect wallet to sign', 'warning'); return; }
                         const posId = btn.dataset.positionId;
                         const panel = container.querySelector(`.margin-pclose-inline[data-position-id="${posId}"]`);
                         if (!panel) return;
@@ -3066,7 +3062,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     // Bind Add Margin buttons
                     container.querySelectorAll('.btn-margin-add').forEach(btn => btn.addEventListener('click', () => {
                         if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-                        if (!wallet.keypair) { showNotification('Re-import wallet to sign', 'warning'); return; }
+                        if (!wallet.keypair) { showNotification('Connect wallet to sign', 'warning'); return; }
                         const posId = btn.dataset.positionId;
                         const row = container.querySelector(`.margin-adjust-inline[data-position-id="${posId}"]`);
                         if (!row) return;
@@ -3078,7 +3074,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     // Bind Remove Margin buttons
                     container.querySelectorAll('.btn-margin-remove').forEach(btn => btn.addEventListener('click', () => {
                         if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-                        if (!wallet.keypair) { showNotification('Re-import wallet to sign', 'warning'); return; }
+                        if (!wallet.keypair) { showNotification('Connect wallet to sign', 'warning'); return; }
                         const posId = btn.dataset.positionId;
                         const row = container.querySelector(`.margin-adjust-inline[data-position-id="${posId}"]`);
                         if (!row) return;
@@ -3462,7 +3458,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function bindVoteButtons() {
         document.querySelectorAll('.vote-btn').forEach(btn => btn.addEventListener('click', async () => {
             if (!state.connected) { showNotification('Connect wallet to vote', 'warning'); return; }
-            if (!wallet.keypair) { showNotification('Re-import wallet to sign', 'warning'); return; }
+            if (!wallet.keypair) { showNotification('Connect wallet to sign', 'warning'); return; }
             const card = btn.closest('.proposal-card');
             // F14.7: Contract uses MoltyID reputation check (>=500), not MOLT balance
             // Vote via signed sendTransaction
@@ -3487,7 +3483,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function bindFinalizeButtons() {
         document.querySelectorAll('.finalize-btn').forEach(btn => btn.addEventListener('click', async () => {
             if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-            if (!wallet.keypair) { showNotification('Re-import wallet to sign', 'warning'); return; }
+            if (!wallet.keypair) { showNotification('Connect wallet to sign', 'warning'); return; }
             if (!contracts.dex_governance) { showNotification('Governance contract not loaded', 'error'); return; }
             const pid = parseInt(btn.dataset.proposalId);
             if (!pid) return;
@@ -3510,7 +3506,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function bindExecuteButtons() {
         document.querySelectorAll('.execute-btn').forEach(btn => btn.addEventListener('click', async () => {
             if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-            if (!wallet.keypair) { showNotification('Re-import wallet to sign', 'warning'); return; }
+            if (!wallet.keypair) { showNotification('Connect wallet to sign', 'warning'); return; }
             if (!contracts.dex_governance) { showNotification('Governance contract not loaded', 'error'); return; }
             const pid = parseInt(btn.dataset.proposalId);
             if (!pid) return;
@@ -3581,7 +3577,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const submitProposalBtn = document.getElementById('submitProposalBtn');
     if (submitProposalBtn) submitProposalBtn.addEventListener('click', async () => {
         if (!state.connected) { showNotification('Connect wallet to propose', 'warning'); return; }
-        if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
+        if (!wallet.keypair) { showNotification('Connect wallet to sign transactions', 'warning'); return; }
         const activeType = document.querySelector('.proposal-type-btn.active');
         const ptype = activeType?.dataset?.ptype || 'pair';
         submitProposalBtn.disabled = true; submitProposalBtn.textContent = 'Submitting...';
@@ -4005,7 +4001,7 @@ document.addEventListener('DOMContentLoaded', () => {
         tbody.querySelectorAll('.btn-predict-claim-pos').forEach(btn => btn.addEventListener('click', async (e) => {
             e.stopPropagation();
             if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-            if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
+            if (!wallet.keypair) { showNotification('Connect wallet to sign transactions', 'warning'); return; }
             const mid = parseInt(btn.dataset.market);
             btn.disabled = true; btn.textContent = 'Claiming...';
             try {
@@ -4071,7 +4067,7 @@ document.addEventListener('DOMContentLoaded', () => {
         document.querySelectorAll('.btn-predict-resolve').forEach(btn => btn.addEventListener('click', async (e) => {
             e.stopPropagation();
             if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-            if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
+            if (!wallet.keypair) { showNotification('Connect wallet to sign transactions', 'warning'); return; }
             const mid = parseInt(btn.dataset.market);
             const m = predictState.markets.find(x => x.id === mid);
             if (!m) return;
@@ -4093,7 +4089,7 @@ document.addEventListener('DOMContentLoaded', () => {
         document.querySelectorAll('.btn-predict-claim').forEach(btn => btn.addEventListener('click', async (e) => {
             e.stopPropagation();
             if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-            if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
+            if (!wallet.keypair) { showNotification('Connect wallet to sign transactions', 'warning'); return; }
             const mid = parseInt(btn.dataset.market);
             btn.disabled = true; btn.textContent = 'Claiming...';
             try {
@@ -4113,7 +4109,7 @@ document.addEventListener('DOMContentLoaded', () => {
         document.querySelectorAll('.btn-predict-challenge').forEach(btn => btn.addEventListener('click', async (e) => {
             e.stopPropagation();
             if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-            if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
+            if (!wallet.keypair) { showNotification('Connect wallet to sign transactions', 'warning'); return; }
             const mid = parseInt(btn.dataset.market);
             const m = predictState.markets.find(x => x.id === mid);
             if (!m) return;
@@ -4132,7 +4128,7 @@ document.addEventListener('DOMContentLoaded', () => {
         document.querySelectorAll('.btn-predict-finalize').forEach(btn => btn.addEventListener('click', async (e) => {
             e.stopPropagation();
             if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-            if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
+            if (!wallet.keypair) { showNotification('Connect wallet to sign transactions', 'warning'); return; }
             const mid = parseInt(btn.dataset.market);
             btn.disabled = true; btn.textContent = 'Finalizing...';
             try {
@@ -4421,7 +4417,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const predictSubmitBtn = document.getElementById('predictSubmitBtn');
     if (predictSubmitBtn) predictSubmitBtn.addEventListener('click', async () => {
         if (!state.connected) { showNotification('Connect wallet to trade', 'warning'); return; }
-        if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
+        if (!wallet.keypair) { showNotification('Connect wallet to sign transactions', 'warning'); return; }
         const amt = parseFloat(document.getElementById('predictAmount')?.value) || 0;
         if (amt < 1) { showNotification('Enter amount (min $1)', 'warning'); return; }
         if (amt > 9_000_000) { showNotification('Amount too large (max 9M)', 'warning'); return; }
@@ -4457,7 +4453,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const predictCreateBtn = document.getElementById('predictCreateBtn');
     if (predictCreateBtn) predictCreateBtn.addEventListener('click', async () => {
         if (!state.connected) { showNotification('Connect wallet to create', 'warning'); return; }
-        if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
+        if (!wallet.keypair) { showNotification('Connect wallet to sign transactions', 'warning'); return; }
         const q = document.getElementById('predictQuestion')?.value?.trim();
         if (!q) { showNotification('Enter market question', 'warning'); return; }
         const liq = parseFloat(document.getElementById('predictInitLiq')?.value) || 0;
@@ -4566,7 +4562,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     document.querySelectorAll('.claim-btn, .btn-claim').forEach(btn => btn.addEventListener('click', async () => {
         if (!state.connected) { showNotification('Connect wallet to claim', 'warning'); return; }
-        if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
+        if (!wallet.keypair) { showNotification('Connect wallet to sign transactions', 'warning'); return; }
         btn.disabled = true; const origText = btn.innerHTML; btn.textContent = 'Claiming...';
         try {
             // AUDIT-FIX F10.7: Reward claim via signed sendTransaction (not fake GET)
@@ -4944,7 +4940,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const launchTradeBtn = document.getElementById('launchTradeBtn');
     if (launchTradeBtn) launchTradeBtn.addEventListener('click', async () => {
         if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-        if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
+        if (!wallet.keypair) { showNotification('Connect wallet to sign transactions', 'warning'); return; }
         if (!contracts.clawpump) { showNotification('ClawPump contract not found in registry', 'error'); return; }
         const tid = launchState.selectedToken;
         if (!tid) { showNotification('Select a token first', 'warning'); return; }
@@ -4981,7 +4977,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const launchCreateBtn = document.getElementById('launchCreateBtn');
     if (launchCreateBtn) launchCreateBtn.addEventListener('click', async () => {
         if (!state.connected) { showNotification('Connect wallet first', 'warning'); return; }
-        if (!wallet.keypair) { showNotification('Re-import wallet to sign transactions', 'warning'); return; }
+        if (!wallet.keypair) { showNotification('Connect wallet to sign transactions', 'warning'); return; }
         if (!contracts.clawpump) { showNotification('ClawPump contract not found in registry', 'error'); return; }
 
         // Check balance
@@ -5176,7 +5172,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (connectBtn) {
                 connectBtn.innerHTML = `<i class="fas fa-wallet"></i> ${escapeHtml(shortAddr)} <span style="font-size:0.65rem;opacity:0.7;margin-left:4px;">(view only)</span>`;
                 connectBtn.className = 'btn btn-small btn-secondary';
-                connectBtn.title = 'View-only mode — click to import keypair for signing';
+                connectBtn.title = 'View-only mode — click to connect wallet extension for signing';
             }
             toggleWalletPanels(true);
             applyWalletGateAll(); // F10E.1: Re-apply wallet-gate after auto-connect
