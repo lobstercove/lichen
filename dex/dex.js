@@ -1907,7 +1907,31 @@ document.addEventListener('DOMContentLoaded', () => {
         state.connected = true; state.walletAddress = address;
         // AUDIT-FIX I4-01: Keep wallet object in sync (address + compatibility flag)
         await wallet.connectAddress(address);
-        if (connectBtn) { connectBtn.innerHTML = `<i class="fas fa-wallet"></i> ${escapeHtml(shortAddr)}`; connectBtn.className = 'btn btn-small btn-secondary'; }
+        // M16: Resolve .molt name and fetch MoltyID profile for connected trader
+        let displayLabel = shortAddr;
+        try {
+            const reverseResult = await api.rpc('reverseMoltName', [address]);
+            if (reverseResult && reverseResult.name) {
+                state.moltName = reverseResult.name + '.molt';
+                displayLabel = state.moltName;
+            } else {
+                state.moltName = null;
+            }
+        } catch { state.moltName = null; }
+        try {
+            const profileResult = await api.rpc('getMoltyIdProfile', [address]);
+            if (profileResult) {
+                state.moltyIdProfile = profileResult;
+                state.reputation = profileResult.reputation || 0;
+                state.trustTier = profileResult.trustTier || profileResult.trust_tier || 0;
+            } else {
+                state.moltyIdProfile = null; state.reputation = 0; state.trustTier = 0;
+            }
+        } catch { state.moltyIdProfile = null; state.reputation = 0; state.trustTier = 0; }
+        const repBadge = state.reputation > 0
+            ? ` <span class="moltyid-rep-badge" title="MoltyID Reputation: ${state.reputation}">\u2b50${state.reputation}</span>`
+            : '';
+        if (connectBtn) { connectBtn.innerHTML = `<i class="fas fa-wallet"></i> ${escapeHtml(displayLabel)}${repBadge}`; connectBtn.className = 'btn btn-small btn-secondary'; }
         toggleWalletPanels(true);
         applyWalletGateAll();
         await Promise.all([loadBalances(address), loadUserOrders(address)]);
@@ -1917,6 +1941,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function disconnectWallet() {
         state.connected = false; state.walletAddress = null; wallet.keypair = null; wallet.address = null; wallet._moltWallet = null;
+        state.moltName = null; state.moltyIdProfile = null; state.reputation = 0; state.trustTier = 0;
         if (connectBtn) { connectBtn.innerHTML = '<i class="fas fa-wallet"></i> Connect Wallet'; connectBtn.className = 'btn btn-small btn-primary'; }
         openOrders = []; balances = {};
         toggleWalletPanels(false);
@@ -1940,10 +1965,19 @@ document.addEventListener('DOMContentLoaded', () => {
         if (rp) rp.classList.toggle('hidden', !show);
     }
 
-    function renderWalletList() {
+    async function renderWalletList() {
         const list = document.getElementById('wmWalletsList'); if (!list) return;
         if (!savedWallets.length) { list.innerHTML = `<div class="wm-empty"><i class="fas fa-wallet"></i><p>No wallets connected</p><button class="btn btn-primary btn-small" id="wmEmptyImport">Import Wallet</button></div>`; const b = document.getElementById('wmEmptyImport'); if (b) b.addEventListener('click', () => switchWmTab('import')); return; }
-        list.innerHTML = savedWallets.map((w, i) => `<div class="wm-wallet-item ${state.walletAddress === w.address ? 'active-wallet' : ''}"><span class="wm-wallet-addr">${escapeHtml(w.short || w.address.slice(0, 8) + '...' + w.address.slice(-6))}</span><div class="wm-wallet-actions">${state.walletAddress === w.address ? '<span class="btn btn-small btn-secondary" style="opacity:0.6;cursor:default;">Active</span>' : `<button class="btn btn-small btn-primary wm-switch-btn" data-idx="${i}">Switch</button>`}<button class="btn btn-small btn-secondary wm-remove-btn" data-idx="${i}"><i class="fas fa-times"></i></button></div></div>`).join('') + `<div class="wm-disconnect-all"><button class="btn btn-small btn-secondary" id="wmDisconnectAll">Disconnect All</button></div>`;
+        // M16: Batch-resolve .molt names for saved wallets
+        const nameMap = {};
+        try {
+            const result = await api.rpc('batchReverseMoltNames', [savedWallets.map(w => w.address)]);
+            if (result && typeof result === 'object') { for (const [addr, name] of Object.entries(result)) { if (name) nameMap[addr] = name + '.molt'; } }
+        } catch { /* RPC unavailable — show plain addresses */ }
+        list.innerHTML = savedWallets.map((w, i) => {
+            const label = nameMap[w.address] || w.short || w.address.slice(0, 8) + '...' + w.address.slice(-6);
+            return `<div class="wm-wallet-item ${state.walletAddress === w.address ? 'active-wallet' : ''}"><span class="wm-wallet-addr">${escapeHtml(label)}</span><div class="wm-wallet-actions">${state.walletAddress === w.address ? '<span class="btn btn-small btn-secondary" style="opacity:0.6;cursor:default;">Active</span>' : `<button class="btn btn-small btn-primary wm-switch-btn" data-idx="${i}">Switch</button>`}<button class="btn btn-small btn-secondary wm-remove-btn" data-idx="${i}"><i class="fas fa-times"></i></button></div></div>`;
+        }).join('') + `<div class="wm-disconnect-all"><button class="btn btn-small btn-secondary" id="wmDisconnectAll">Disconnect All</button></div>`;
         list.querySelectorAll('.wm-switch-btn').forEach(btn => btn.addEventListener('click', () => { const w = savedWallets[parseInt(btn.dataset.idx)]; if (w) { connectWalletTo(w.address, w.short || w.address.slice(0, 8) + '...'); renderWalletList(); } }));
         list.querySelectorAll('.wm-remove-btn').forEach(btn => btn.addEventListener('click', () => { const i = parseInt(btn.dataset.idx), r = savedWallets[i]; savedWallets.splice(i, 1); localStorage.setItem('dexWallets', JSON.stringify(savedWallets)); if (state.walletAddress === r?.address) disconnectWallet(); renderWalletList(); showNotification('Wallet removed', 'info'); }));
         const da = document.getElementById('wmDisconnectAll'); if (da) da.addEventListener('click', () => { savedWallets = []; localStorage.removeItem('dexWallets'); disconnectWallet(); renderWalletList(); showNotification('All wallets disconnected', 'info'); });

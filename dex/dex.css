@@ -2476,6 +2476,20 @@
 .btn-primary:hover { background: var(--orange-dark); box-shadow: var(--shadow-glow); }
 .btn-secondary { background: var(--bg-hover); color: var(--text-secondary); border: 1px solid var(--border); }
 .btn-secondary:hover { border-color: var(--orange-primary); color: var(--text-primary); }
+
+/* M16: MoltyID reputation badge on wallet connect button */
+.moltyid-rep-badge {
+    display: inline-block;
+    margin-left: 4px;
+    padding: 1px 5px;
+    font-size: 0.65rem;
+    border-radius: 8px;
+    background: rgba(255, 165, 0, 0.15);
+    color: var(--orange-primary);
+    font-weight: 600;
+    vertical-align: middle;
+}
+
 .network-select {
     padding: 5px 10px;
     background: var(--bg-card);
