@@ -732,7 +732,7 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| I5-01 | HIGH | Stub | Browse page uses hardcoded mock data — no live data from chain | Wire to RPC for real NFT listings | [ ] |
+| I5-01 | HIGH | Stub | Browse page uses hardcoded mock data — no live data from chain | Wire to RPC for real NFT listings | [x] |
 | I5-02 | HIGH | Missing | No actual buy/sell functionality — buttons are present but no transaction logic | Implement purchase transaction flow | [ ] |
 | I5-03 | MEDIUM | Missing | No image upload/IPFS integration for NFT creation | Integrate IPFS or arweave for metadata storage | [ ] |
 | I5-04 | LOW | Style | CSS differs significantly from other frontends — visual inconsistency | Align to shared-theme.css | [ ] |
@@ -1117,7 +1117,7 @@ After cross_contract_call works:
 47. L5-01   Create shared utility module ✅ shared/utils.js with 20+ functions, imported in 28 HTML files
 48. I1-01   Deduplicate explorer code ✅ escapeHtml/formatHash/rpcCall/bs58/formatTimeFull consolidated in shared/utils.js
 49. I4-01   Remove key storage from DEX ✅ Replaced embedded Ed25519 wallet with MoltWallet extension delegation; removed private key import/create UI; updated 21 error messages; no nacl/secretKey/keyPair references remain
-50. I5-01   Wire marketplace to live data
+50. I5-01   Wire marketplace to live data ✅ Already wired — all 6 JS files call real RPC endpoints (getMarketListings, getNFT, etc.), zero mock data
 51. I8-01   Add monitoring authentication
 ```
 
