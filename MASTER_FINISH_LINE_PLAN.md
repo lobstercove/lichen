@@ -261,7 +261,7 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| C2-01 | HIGH | Security | No gossip message deduplication — same message can be relayed infinitely, amplifying bandwidth attacks | Add seen-message cache with TTL-based expiry | [ ] |
+| C2-01 | HIGH | Security | No gossip message deduplication — same message can be relayed infinitely, amplifying bandwidth attacks | Add seen-message cache with TTL-based expiry | [x] |
 | C2-02 | MEDIUM | Performance | Gossip fans out to ALL connected peers — no intelligent peer selection | Implement gossip-sub with mesh topology and limited fanout | [ ] |
 
 ### C.3 — p2p/src/message.rs
@@ -1101,7 +1101,7 @@ After cross_contract_call works:
 ```
 37. A5-01   Improve leader selection (add randomness) ✅ mix parent_hash into SHA-256 seed
 38. A5-02   Implement fork choice rule ✅ wired ForkChoice cumulative weight into validator
-39. C2-01   Add gossip deduplication
+39. C2-01   Add gossip deduplication ✅ bounded SeenMessageCache (20K, SHA-256 hash)
 40. D1-01   Restrict CORS origins
 41. D3-01   Fix async mutex usage
 42. F2-01   Per-chain HD derivation for custody
@@ -1180,11 +1180,11 @@ Phase 1 (Security):  [x] [x] [x] [x] [x] [x]            6/6  ✅ COMPLETE
 Phase 2 (Core):      [x] [x] [x] [x] [x] [x] [x] [x]    8/8  ✅ COMPLETE
 Phase 3 (Contracts): [x] [x] [x] [x] [x] [x] [x] [x] [x] [x] [x]  11/11 ✅ COMPLETE
 Phase 4 (Infra):     [x] [x] [x] [x] [x] [x] [x]        7/7 ✅ COMPLETE
-Phase 5 (Quality):   [x] [x] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]  2/10
+Phase 5 (Quality):   [x] [x] [x] [ ] [ ] [ ] [ ] [ ] [ ] [ ]  3/10
 Phase 6 (Frontend):  [ ] [ ] [ ] [ ] [ ]                0/5
 Phase 7 (Testing):   [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
-                                              TOTAL:    38/63 phases
+                                              TOTAL:    39/63 phases
 ```
 
 ---
