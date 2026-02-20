@@ -249,14 +249,32 @@ class MoltCrypto {
     }
 
     /**
-     * Derive Ed25519 keypair from mnemonic seed phrase using SHA-512 + TweetNaCl
+     * AUDIT-FIX I2-01: Derive Ed25519 keypair from mnemonic using BIP39-compliant PBKDF2.
+     * Replaces SHA-512 single-hash with PBKDF2-HMAC-SHA512 (2048 iterations) per BIP39 spec.
+     * This produces standard-compatible seeds matching MetaMask, Phantom, Ledger, etc.
+     * @param {string} mnemonic - BIP39 mnemonic phrase
+     * @param {string} passphrase - Optional BIP39 passphrase (default: "")
      */
-    static async mnemonicToKeypair(mnemonic) {
-        // Hash mnemonic with SHA-512 to get 64 bytes, take first 32 as Ed25519 seed
+    static async mnemonicToKeypair(mnemonic, passphrase = '') {
         const encoder = new TextEncoder();
-        const data = encoder.encode(mnemonic.trim());
-        const hashBuffer = await crypto.subtle.digest('SHA-512', data);
-        const seed = new Uint8Array(hashBuffer).slice(0, 32);
+        // BIP39 spec: NFKD-normalize the mnemonic, salt = "mnemonic" + passphrase
+        const mnemonicBytes = encoder.encode(mnemonic.normalize('NFKD').trim());
+        const saltBytes = encoder.encode('mnemonic' + passphrase);
+
+        // Import mnemonic as PBKDF2 key material
+        const keyMaterial = await crypto.subtle.importKey(
+            'raw', mnemonicBytes, 'PBKDF2', false, ['deriveBits']
+        );
+
+        // BIP39: PBKDF2-HMAC-SHA512, 2048 iterations, 512-bit (64-byte) output
+        const seedBuffer = await crypto.subtle.deriveBits(
+            { name: 'PBKDF2', salt: saltBytes, iterations: 2048, hash: 'SHA-512' },
+            keyMaterial,
+            512  // 64 bytes × 8 = 512 bits
+        );
+
+        // Take first 32 bytes as Ed25519 seed
+        const seed = new Uint8Array(seedBuffer).slice(0, 32);
         
         // Real Ed25519 keypair via TweetNaCl
         const keypair = nacl.sign.keyPair.fromSeed(seed);

@@ -388,6 +388,42 @@ test('mnemonicToKeypair produces valid keypair', async () => {
     assert.strictEqual(keypair.privateKey.length, 64, 'Seed hex must be 64 chars');
 });
 
+// AUDIT-FIX I2-01: BIP39 test vector — verify PBKDF2 derivation produces correct seed
+test('mnemonicToKeypair uses PBKDF2 per BIP39 spec (test vector)', async () => {
+    // BIP39 test vector: "abandon" x11 + "about", passphrase ""
+    // Expected BIP39 seed (PBKDF2-HMAC-SHA512, 2048 iterations):
+    // 5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc1...
+    // Ed25519 seed = first 32 bytes of BIP39 seed
+    const testMnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+    const keypair = await MoltCrypto.mnemonicToKeypair(testMnemonic);
+
+    // The BIP39 seed's first 32 bytes (hex) for this test vector:
+    const expectedSeedPrefix = '5eb00bbddcf069084889a8ab9155568165f5c453ccb85e70811aaed6f6da5fc1';
+    assert.strictEqual(keypair.privateKey, expectedSeedPrefix,
+        'Must match BIP39 test vector (PBKDF2 derivation)');
+});
+
+// AUDIT-FIX I2-01: Verify deterministic derivation — same mnemonic = same keypair
+test('mnemonicToKeypair is deterministic', async () => {
+    const mnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+    const kp1 = await MoltCrypto.mnemonicToKeypair(mnemonic);
+    const kp2 = await MoltCrypto.mnemonicToKeypair(mnemonic);
+    assert.strictEqual(kp1.privateKey, kp2.privateKey, 'Same mnemonic must produce same key');
+    assert.strictEqual(kp1.publicKey, kp2.publicKey, 'Same mnemonic must produce same pubkey');
+    assert.strictEqual(kp1.address, kp2.address, 'Same mnemonic must produce same address');
+});
+
+// AUDIT-FIX I2-01: Verify passphrase support changes the derived key
+test('mnemonicToKeypair passphrase changes derived key', async () => {
+    const mnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+    const kpNoPass = await MoltCrypto.mnemonicToKeypair(mnemonic, '');
+    const kpWithPass = await MoltCrypto.mnemonicToKeypair(mnemonic, 'my-secret');
+    assert.notStrictEqual(kpNoPass.privateKey, kpWithPass.privateKey,
+        'Different passphrase must produce different key');
+    assert.notStrictEqual(kpNoPass.address, kpWithPass.address,
+        'Different passphrase must produce different address');
+});
+
 test('encryptPrivateKey/decryptPrivateKey roundtrip', async () => {
     const seedHex = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
     const password = 'test-password-123';
