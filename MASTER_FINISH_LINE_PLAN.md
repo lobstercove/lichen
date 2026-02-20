@@ -1139,7 +1139,7 @@ After cross_contract_call works:
 59. G6-03   Oracle fallback handling (H8) ✅ SECURITY: close_position/partial_close/remove_margin now reject when oracle stale/missing (return 5/7). Previously returned full margin allowing loss escape. 5 regression tests, 117 total pass
 60. H7 params   Tokenomics parameter adjustment ✅ REWARD_POOL_PER_MONTH 1M→500K MOLT, MIN_LISTING_LIQUIDITY 100K→10K MOLT, monthly epoch cap enforcement in record_trade(), 4 new tests
 61. G2-04   Wire Post-Only/Reduce-Only flags ✅ REDUCE_ONLY_FLAG(0x80) in dex_core: cross-calls dex_margin query_user_open_position to validate position exists+direction+cap qty. Error 12=reduce-only rejected. set_margin_address(opcode 30). Frontend wired. Post-Only already enforced. 10 new tests (6 core+4 margin), 92+121 total pass
-62. M16     MoltyID UI integration
+62. M16     MoltyID UI integration ✅ DEX was only gap: connectWalletTo() now resolves .molt name + fetches MoltyID profile (rep badge). renderWalletList() batch-resolves names. Explorer/Wallet/Extension already had full integration (1600+ lines, 12 RPC endpoints)
 63. M17     Prediction market full implementation
 ```
 
