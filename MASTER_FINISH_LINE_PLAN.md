@@ -781,8 +781,8 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| J1-01 | CRITICAL | Config | `[NEW]` Custody RPC URL points to wrong port in Docker Compose — custody service can't reach chain | Fix port mapping in docker-compose.yml | [ ] |
-| J1-02 | CRITICAL | Config | `[NEW]` EXPOSE ports in Dockerfile.moltchain don't match compose port mappings — services unreachable | Align Dockerfile EXPOSE with docker-compose ports | [ ] |
+| J1-01 | CRITICAL | Config | `[NEW]` Custody RPC URL points to wrong port in Docker Compose — custody service can't reach chain | Fix port mapping in docker-compose.yml | [x] |
+| J1-02 | CRITICAL | Config | `[NEW]` EXPOSE ports in Dockerfile.moltchain don't match compose port mappings — services unreachable | Align Dockerfile EXPOSE with docker-compose ports | [x] |
 | J1-03 | HIGH | Reliability | `[NEW]` `|| true` swallows contract build failures in Dockerfile and Makefile — broken contracts are silently deployed | Remove `|| true`, fail build on any contract compilation error | [ ] |
 | J1-04 | HIGH | Missing | No Docker health checks — compose can't detect unhealthy services | Add HEALTHCHECK to all Dockerfiles | [ ] |
 | J1-05 | HIGH | Missing | No resource limits (memory, CPU) in docker-compose — OOM can crash host | Add resource limits to all services | [ ] |
@@ -1179,12 +1179,12 @@ Phase 0 (Fatal):     [x] [x] [x] [x]                    4/4
 Phase 1 (Security):  [x] [x] [x] [x] [x] [x]            6/6  ✅ COMPLETE
 Phase 2 (Core):      [x] [x] [x] [x] [x] [x] [x] [x]    8/8  ✅ COMPLETE
 Phase 3 (Contracts): [x] [x] [x] [x] [x] [x] [x] [x] [x] [x] [x]  11/11 ✅ COMPLETE
-Phase 4 (Infra):     [ ] [ ] [ ] [ ] [ ] [ ] [ ]        0/7
+Phase 4 (Infra):     [x] [ ] [ ] [ ] [ ] [ ] [ ]        1/7
 Phase 5 (Quality):   [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]  0/10
 Phase 6 (Frontend):  [ ] [ ] [ ] [ ] [ ]                0/5
 Phase 7 (Testing):   [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
-                                              TOTAL:    29/63 phases
+                                              TOTAL:    30/63 phases
 ```
 
 ---
