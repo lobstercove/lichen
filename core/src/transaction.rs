@@ -428,4 +428,101 @@ mod tests {
             "A3-01 REGRESSION: Messages with different accounts must hash differently"
         );
     }
+
+    // ════════════════════════════════════════════════════════════════════
+    // K4-02: Cross-SDK serialization compatibility golden vector
+    // ════════════════════════════════════════════════════════════════════
+
+    /// Generate a deterministic Message, serialize it via bincode, and assert
+    /// the exact bytes match the golden vector. JS and Python SDKs MUST produce
+    /// identical output for the same input. If this test changes, all SDK tests
+    /// must be updated.
+    #[test]
+    fn test_cross_sdk_message_golden_vector() {
+        let ix = Instruction {
+            program_id: Pubkey([1u8; 32]),
+            accounts: vec![Pubkey([2u8; 32])],
+            data: vec![0x00, 0x01, 0x02, 0x03],
+        };
+        let msg = Message {
+            instructions: vec![ix],
+            recent_blockhash: crate::Hash::new([0xAA; 32]),
+        };
+
+        let bytes = msg.serialize();
+        let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+
+        // Print for reference if generating new golden vector:
+        // eprintln!("GOLDEN_VECTOR_HEX={}", hex);
+
+        // Golden vector (bincode 1.3 default serialization):
+        // instructions: Vec<Instruction> → u64_le(1) + Instruction
+        //   program_id: [u8; 32] → 32 raw bytes (0x01 repeated)
+        //   accounts: Vec<Pubkey> → u64_le(1) + 32 raw bytes (0x02 repeated)
+        //   data: Vec<u8> → u64_le(4) + [0x00, 0x01, 0x02, 0x03]
+        // recent_blockhash: [u8; 32] → 32 raw bytes (0xAA repeated)
+        let expected = format!(
+            "{}{}{}{}{}{}",
+            "0100000000000000",                                          // Vec<Ix> len = 1
+            "0101010101010101010101010101010101010101010101010101010101010101", // program_id
+            "0100000000000000",                                          // Vec<Pubkey> len = 1
+            "0202020202020202020202020202020202020202020202020202020202020202", // accounts[0]
+            "040000000000000000010203",                                  // Vec<u8> len=4 + data
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", // blockhash
+        );
+
+        assert_eq!(
+            hex, expected,
+            "K4-02 GOLDEN VECTOR MISMATCH!\n\
+             This means the Rust bincode serialization changed.\n\
+             JS/Python SDKs MUST also match this exact byte sequence.\n\
+             Got:      {}\n\
+             Expected: {}",
+            hex, expected
+        );
+    }
+
+    /// Golden vector for a full Transaction (signature + message).
+    #[test]
+    fn test_cross_sdk_transaction_golden_vector() {
+        let ix = Instruction {
+            program_id: Pubkey([1u8; 32]),
+            accounts: vec![Pubkey([2u8; 32])],
+            data: vec![0x00, 0x01, 0x02, 0x03],
+        };
+        let msg = Message {
+            instructions: vec![ix],
+            recent_blockhash: crate::Hash::new([0xAA; 32]),
+        };
+        let sig: [u8; 64] = [0xBB; 64];
+        let tx = Transaction {
+            signatures: vec![sig],
+            message: msg,
+        };
+
+        let bytes = bincode::serialize(&tx).expect("tx serialization");
+        let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
+
+        let sig_hex = "bb".repeat(64); // 64 bytes = 128 hex chars
+        let expected = format!(
+            "{}{}{}{}{}{}{}{}",
+            "0100000000000000",                                          // Vec<[u8;64]> len = 1
+            sig_hex,                                                     // sig (64 bytes)
+            // -- Message bytes (same as golden vector above) --
+            "0100000000000000",                                          // Vec<Ix> len = 1
+            "0101010101010101010101010101010101010101010101010101010101010101", // program_id
+            "0100000000000000",                                          // Vec<Pubkey> len = 1
+            "0202020202020202020202020202020202020202020202020202020202020202", // accounts[0]
+            "040000000000000000010203",                                  // Vec<u8> len=4 + data
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", // blockhash
+        );
+
+        assert_eq!(
+            hex, expected,
+            "K4-02 TX GOLDEN VECTOR MISMATCH!\n\
+             Got:      {}\n\
+             Expected: {}",
+            hex, expected
+        );
+    }
 }
