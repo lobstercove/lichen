@@ -20,6 +20,7 @@ use alloc::vec::Vec;
 use moltchain_sdk::{
     storage_get, storage_set, log_info, set_return_data,
     bytes_to_u64, u64_to_bytes, get_timestamp, get_caller,
+    get_value, get_contract_address, call_token_transfer, Address,
 };
 
 // T5.12: Reentrancy guard
@@ -87,6 +88,9 @@ const REPAY_COUNT_KEY: &[u8] = b"ll_repay_count";
 /// Maximum interest rate per slot to prevent manipulation
 const MAX_RATE_PER_SLOT: u64 = 25_400; // 100x base rate
 
+/// AUDIT-FIX G9-01: Moltcoin contract address — required for actual token transfers
+const MOLTCOIN_ADDRESS_KEY: &[u8] = b"ll_molt_addr";
+
 // ============================================================================
 // STORAGE HELPERS
 // ============================================================================
@@ -125,6 +129,31 @@ fn is_admin(caller: &[u8]) -> bool {
         Some(data) => data.as_slice() == caller,
         None => false,
     }
+}
+
+/// AUDIT-FIX G9-01: Load configured moltcoin address (returns zero if not set)
+fn load_molt_addr() -> [u8; 32] {
+    storage_get(MOLTCOIN_ADDRESS_KEY).map(|d| {
+        let mut a = [0u8; 32]; if d.len() >= 32 { a.copy_from_slice(&d[..32]); } a
+    }).unwrap_or([0u8; 32])
+}
+fn is_zero_addr(a: &[u8; 32]) -> bool { a.iter().all(|&b| b == 0) }
+
+/// Transfer tokens OUT from the contract's own balance to a recipient.
+/// Uses the self-custody pattern: caller==from in CCC context.
+/// Returns 0 on success, non-zero on failure.
+fn transfer_out(recipient: &[u8; 32], amount: u64) -> u32 {
+    let molt = load_molt_addr();
+    if is_zero_addr(&molt) {
+        log_info("moltcoin address not configured");
+        return 30;
+    }
+    let self_addr = get_contract_address();
+    if let Err(_) = call_token_transfer(Address(molt), self_addr, Address(*recipient), amount) {
+        log_info("Token transfer failed");
+        return 31;
+    }
+    0
 }
 
 fn get_deposit_cap() -> u64 {
@@ -190,6 +219,14 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u32 {
     if real_caller.0 != depositor {
         reentrancy_exit();
         return 200;
+    }
+
+    // AUDIT-FIX G9-01: Verify incoming value covers deposit
+    let attached = get_value();
+    if attached < amount {
+        reentrancy_exit();
+        log_info("Insufficient value attached for deposit");
+        return 30;
     }
 
     let hex = hex_encode_addr(&depositor);
@@ -275,6 +312,16 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, amount: u64) -> u32 {
     let total = load_u64(b"ll_total_deposits");
     store_u64(b"ll_total_deposits", total.saturating_sub(amount));
 
+    // AUDIT-FIX G9-01: Transfer tokens to withdrawer
+    let rc = transfer_out(&depositor, amount);
+    if rc != 0 {
+        // Revert bookkeeping on transfer failure
+        store_u64(&dep_key, current_deposit);
+        store_u64(b"ll_total_deposits", total);
+        reentrancy_exit();
+        return rc;
+    }
+
     reentrancy_exit();
     log_info("Withdrawal successful");
     0
@@ -357,6 +404,16 @@ pub extern "C" fn borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
     let ts_key = make_key(b"bts:", &hex);
     store_u64(&ts_key, get_timestamp());
 
+    // AUDIT-FIX G9-01: Transfer borrowed tokens to borrower
+    let rc = transfer_out(&borrower, amount);
+    if rc != 0 {
+        // Revert bookkeeping on transfer failure
+        store_u64(&borrow_key, current_borrow);
+        store_u64(b"ll_total_borrows", total_borrows);
+        reentrancy_exit();
+        return rc;
+    }
+
     reentrancy_exit();
     log_info("Borrow successful");
     0
@@ -380,6 +437,14 @@ pub extern "C" fn repay(borrower_ptr: *const u8, amount: u64) -> u32 {
     if real_caller.0 != borrower {
         reentrancy_exit();
         return 200;
+    }
+
+    // AUDIT-FIX G9-01: Verify incoming value covers repayment
+    let attached = get_value();
+    if attached < amount {
+        reentrancy_exit();
+        log_info("Insufficient value attached for repayment");
+        return 30;
     }
 
     let hex = hex_encode_addr(&borrower);
@@ -434,6 +499,14 @@ pub extern "C" fn liquidate(
         return 200;
     }
 
+    // AUDIT-FIX G9-01: Verify incoming value covers liquidation repayment
+    let attached = get_value();
+    if attached < repay_amount {
+        reentrancy_exit();
+        log_info("Insufficient value attached for liquidation");
+        return 30;
+    }
+
     let mut borrower = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(borrower_ptr, borrower.as_mut_ptr(), 32); }
     let hex = hex_encode_addr(&borrower);
@@ -480,6 +553,18 @@ pub extern "C" fn liquidate(
 
     // Track liquidation count
     store_u64(LIQUIDATION_COUNT_KEY, load_u64(LIQUIDATION_COUNT_KEY) + 1);
+
+    // AUDIT-FIX G9-01: Transfer seized collateral to liquidator
+    let rc = transfer_out(&_liquidator, actual_seized);
+    if rc != 0 {
+        // Revert all bookkeeping on transfer failure
+        store_u64(&borrow_key, current_borrow);
+        store_u64(&dep_key, deposit);
+        store_u64(b"ll_total_borrows", total_borrows);
+        store_u64(b"ll_total_deposits", total_deposits);
+        reentrancy_exit();
+        return rc;
+    }
 
     reentrancy_exit();
     log_info("Liquidation executed");
@@ -653,6 +738,15 @@ pub extern "C" fn flash_borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
     store_u64(FLASH_BORROWED_KEY, amount);
     store_u64(FLASH_FEE_KEY, fee);
 
+    // AUDIT-FIX G9-01: Transfer flash loan tokens to borrower
+    let rc = transfer_out(&_borrower, amount);
+    if rc != 0 {
+        // Revert flash loan state on transfer failure
+        store_u64(FLASH_BORROWED_KEY, 0);
+        store_u64(FLASH_FEE_KEY, 0);
+        return rc;
+    }
+
     // Return fee in return data so borrower knows what to repay
     set_return_data(&u64_to_bytes(fee));
     log_info("Flash loan issued");
@@ -682,6 +776,13 @@ pub extern "C" fn flash_repay(borrower_ptr: *const u8, repay_amount: u64) -> u32
     if repay_amount < required {
         log_info("Insufficient repayment (must include fee)");
         return 2;
+    }
+
+    // AUDIT-FIX G9-01: Verify incoming value covers flash repayment
+    let attached = get_value();
+    if attached < required {
+        log_info("Insufficient value attached for flash repay");
+        return 30;
     }
 
     // Fee goes to protocol reserves
@@ -821,7 +922,46 @@ pub extern "C" fn withdraw_reserves(caller_ptr: *const u8, amount: u64) -> u32 {
         return 3;
     }
     store_u64(b"ll_reserves", reserves - amount);
+
+    // AUDIT-FIX G9-01: Transfer reserve tokens to admin
+    let rc = transfer_out(&caller, amount);
+    if rc != 0 {
+        // Revert on transfer failure
+        store_u64(b"ll_reserves", reserves);
+        return rc;
+    }
+
     log_info("Reserves withdrawn");
+    0
+}
+
+/// AUDIT-FIX G9-01: Admin sets the moltcoin contract address for token transfers
+#[no_mangle]
+pub extern "C" fn set_moltcoin_address(caller_ptr: *const u8, addr_ptr: *const u8) -> u32 {
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // Verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
+    if !is_admin(&caller) {
+        log_info("Not admin");
+        return 1;
+    }
+
+    let mut addr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(addr_ptr, addr.as_mut_ptr(), 32); }
+
+    if is_zero_addr(&addr) {
+        log_info("Cannot set zero moltcoin address");
+        return 2;
+    }
+
+    storage_set(MOLTCOIN_ADDRESS_KEY, &addr);
+    log_info("Moltcoin address configured");
     0
 }
 
@@ -899,8 +1039,20 @@ mod tests {
     use moltchain_sdk::test_mock;
     use moltchain_sdk::bytes_to_u64;
 
+    const MOLT_ADDR: [u8; 32] = [99u8; 32];
+    const CONTRACT_ADDR: [u8; 32] = [88u8; 32];
+
+    /// Standard setup: reset + configure moltcoin + contract address for transfers
     fn setup() {
         test_mock::reset();
+        test_mock::set_contract_address(CONTRACT_ADDR);
+        storage_set(MOLTCOIN_ADDRESS_KEY, &MOLT_ADDR);
+    }
+
+    /// Setup without moltcoin — for testing "moltcoin not configured" error paths
+    fn setup_no_molt() {
+        test_mock::reset();
+        test_mock::set_contract_address(CONTRACT_ADDR);
     }
 
     #[test]
@@ -931,6 +1083,7 @@ mod tests {
         initialize(admin.as_ptr());
         let user = [2u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(1_000_000);
         assert_eq!(deposit(user.as_ptr(), 1_000_000), 0);
         assert_eq!(load_u64(b"ll_total_deposits"), 1_000_000);
     }
@@ -945,6 +1098,19 @@ mod tests {
         assert_eq!(deposit(user.as_ptr(), 0), 1);
     }
 
+    // AUDIT-FIX G9-01: Deposit with insufficient value attached
+    #[test]
+    fn test_deposit_insufficient_value() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let user = [2u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_value(500_000); // less than deposit amount
+        assert_eq!(deposit(user.as_ptr(), 1_000_000), 30);
+    }
+
     #[test]
     fn test_withdraw() {
         setup();
@@ -953,6 +1119,7 @@ mod tests {
         initialize(admin.as_ptr());
         let user = [2u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(1_000_000);
         deposit(user.as_ptr(), 1_000_000);
         assert_eq!(withdraw(user.as_ptr(), 500_000), 0);
         assert_eq!(load_u64(b"ll_total_deposits"), 500_000);
@@ -966,6 +1133,7 @@ mod tests {
         initialize(admin.as_ptr());
         let user = [2u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(1_000_000);
         deposit(user.as_ptr(), 1_000_000);
         assert_eq!(withdraw(user.as_ptr(), 2_000_000), 2);
     }
@@ -978,6 +1146,7 @@ mod tests {
         initialize(admin.as_ptr());
         let user = [2u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(1_000_000);
         deposit(user.as_ptr(), 1_000_000);
         borrow(user.as_ptr(), 750_000); // max borrow at 75%
         // Any withdrawal makes it unhealthy
@@ -992,6 +1161,7 @@ mod tests {
         initialize(admin.as_ptr());
         let user = [2u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(1_000_000);
         deposit(user.as_ptr(), 1_000_000);
         assert_eq!(borrow(user.as_ptr(), 500_000), 0);
         assert_eq!(load_u64(b"ll_total_borrows"), 500_000);
@@ -1005,6 +1175,7 @@ mod tests {
         initialize(admin.as_ptr());
         let user = [2u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(1_000_000);
         deposit(user.as_ptr(), 1_000_000);
         assert_eq!(borrow(user.as_ptr(), 750_001), 2); // > 75%
     }
@@ -1017,17 +1188,17 @@ mod tests {
         initialize(admin.as_ptr());
         let user1 = [2u8; 32];
         test_mock::set_caller(user1);
+        test_mock::set_value(1_000_000);
         deposit(user1.as_ptr(), 1_000_000);
         borrow(user1.as_ptr(), 750_000);
-        // user2 deposits 200_000 and tries to borrow 200_000 (only 250_000 available)
         let user2 = [3u8; 32];
         test_mock::set_caller(user2);
+        test_mock::set_value(1_000_000);
         deposit(user2.as_ptr(), 1_000_000);
-        // Available = 2M - 750K = 1.25M; user2 max = 750K; try exceed availability
-        // Drain pool: user2 borrows 750K, then user3 tries
         borrow(user2.as_ptr(), 750_000);
         let user3 = [4u8; 32];
         test_mock::set_caller(user3);
+        test_mock::set_value(2_000_000);
         deposit(user3.as_ptr(), 2_000_000);
         // Available = 4M - 1.5M = 2.5M; user3 max = 1.5M; borrow 1.5M
         assert_eq!(borrow(user3.as_ptr(), 1_500_000), 0);
@@ -1048,8 +1219,10 @@ mod tests {
         initialize(admin.as_ptr());
         let user = [2u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(1_000_000);
         deposit(user.as_ptr(), 1_000_000);
         borrow(user.as_ptr(), 500_000);
+        test_mock::set_value(200_000);
         assert_eq!(repay(user.as_ptr(), 200_000), 0);
         assert_eq!(load_u64(b"ll_total_borrows"), 300_000);
     }
@@ -1062,6 +1235,7 @@ mod tests {
         initialize(admin.as_ptr());
         let user = [2u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(100);
         assert_eq!(repay(user.as_ptr(), 100), 2);
     }
 
@@ -1073,10 +1247,28 @@ mod tests {
         initialize(admin.as_ptr());
         let user = [2u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(1_000_000);
         deposit(user.as_ptr(), 1_000_000);
         borrow(user.as_ptr(), 500_000);
+        test_mock::set_value(999_999);
         assert_eq!(repay(user.as_ptr(), 999_999), 0);
         assert_eq!(load_u64(b"ll_total_borrows"), 0);
+    }
+
+    // AUDIT-FIX G9-01: Repay with insufficient value attached
+    #[test]
+    fn test_repay_insufficient_value() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let user = [2u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_value(1_000_000);
+        deposit(user.as_ptr(), 1_000_000);
+        borrow(user.as_ptr(), 500_000);
+        test_mock::set_value(50_000); // less than repay amount
+        assert_eq!(repay(user.as_ptr(), 200_000), 30);
     }
 
     #[test]
@@ -1087,6 +1279,7 @@ mod tests {
         initialize(admin.as_ptr());
         let borrower = [2u8; 32];
         test_mock::set_caller(borrower);
+        test_mock::set_value(1_000_000);
         deposit(borrower.as_ptr(), 1_000_000);
         borrow(borrower.as_ptr(), 750_000);
         // Manually push borrow above liquidation threshold (85%)
@@ -1096,6 +1289,7 @@ mod tests {
         store_u64(b"ll_total_borrows", 860_000);
         let liquidator = [3u8; 32];
         test_mock::set_caller(liquidator);
+        test_mock::set_value(200_000);
         assert_eq!(liquidate(liquidator.as_ptr(), borrower.as_ptr(), 200_000), 0);
         let borrow_after = load_u64(&bor_key);
         assert!(borrow_after < 860_000);
@@ -1109,10 +1303,12 @@ mod tests {
         initialize(admin.as_ptr());
         let borrower = [2u8; 32];
         test_mock::set_caller(borrower);
+        test_mock::set_value(1_000_000);
         deposit(borrower.as_ptr(), 1_000_000);
         borrow(borrower.as_ptr(), 500_000); // 50% < 85%
         let liquidator = [3u8; 32];
         test_mock::set_caller(liquidator);
+        test_mock::set_value(100_000);
         assert_eq!(liquidate(liquidator.as_ptr(), borrower.as_ptr(), 100_000), 3);
     }
 
@@ -1124,10 +1320,34 @@ mod tests {
         initialize(admin.as_ptr());
         let borrower = [2u8; 32];
         test_mock::set_caller(borrower);
+        test_mock::set_value(1_000_000);
         deposit(borrower.as_ptr(), 1_000_000);
         let liquidator = [3u8; 32];
         test_mock::set_caller(liquidator);
+        test_mock::set_value(100_000);
         assert_eq!(liquidate(liquidator.as_ptr(), borrower.as_ptr(), 100_000), 2);
+    }
+
+    // AUDIT-FIX G9-01: Liquidate with insufficient value attached
+    #[test]
+    fn test_liquidate_insufficient_value() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let borrower = [2u8; 32];
+        test_mock::set_caller(borrower);
+        test_mock::set_value(1_000_000);
+        deposit(borrower.as_ptr(), 1_000_000);
+        borrow(borrower.as_ptr(), 750_000);
+        let hex = hex_encode_addr(&borrower);
+        let bor_key = make_key(b"bor:", &hex);
+        store_u64(&bor_key, 860_000);
+        store_u64(b"ll_total_borrows", 860_000);
+        let liquidator = [3u8; 32];
+        test_mock::set_caller(liquidator);
+        test_mock::set_value(50_000); // less than repay_amount
+        assert_eq!(liquidate(liquidator.as_ptr(), borrower.as_ptr(), 200_000), 30);
     }
 
     #[test]
@@ -1138,6 +1358,7 @@ mod tests {
         initialize(admin.as_ptr());
         let user = [2u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(1_000_000);
         deposit(user.as_ptr(), 1_000_000);
         borrow(user.as_ptr(), 500_000);
         assert_eq!(get_account_info(user.as_ptr()), 0);
@@ -1155,6 +1376,7 @@ mod tests {
         initialize(admin.as_ptr());
         let user = [2u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(1_000_000);
         deposit(user.as_ptr(), 1_000_000);
         borrow(user.as_ptr(), 500_000);
         assert_eq!(get_protocol_stats(), 0);
@@ -1177,6 +1399,7 @@ mod tests {
         initialize(admin.as_ptr());
         let user = [2u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(1_000_000);
         deposit(user.as_ptr(), 1_000_000);
 
         let borrower = [3u8; 32];
@@ -1187,10 +1410,11 @@ mod tests {
         let fee = bytes_to_u64(&fee_data);
         assert_eq!(fee, 90); // 0.09% of 100_000 = 90
 
-        // Underpayment rejected
+        // Underpayment rejected (amount check, before value check)
         assert_eq!(flash_repay(borrower.as_ptr(), 100_000), 2);
 
-        // Full repayment with fee
+        // Full repayment with fee — need value attached
+        test_mock::set_value(100_090);
         assert_eq!(flash_repay(borrower.as_ptr(), 100_090), 0);
 
         // Reserves increased by fee
@@ -1205,6 +1429,7 @@ mod tests {
         initialize(admin.as_ptr());
         let user = [2u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(1_000);
         deposit(user.as_ptr(), 1_000);
 
         let borrower = [3u8; 32];
@@ -1220,6 +1445,7 @@ mod tests {
         initialize(admin.as_ptr());
         let user = [2u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(1_000_000);
         deposit(user.as_ptr(), 1_000_000);
 
         let borrower = [3u8; 32];
@@ -1235,6 +1461,27 @@ mod tests {
         let borrower = [3u8; 32];
         test_mock::set_caller(borrower);
         assert_eq!(flash_repay(borrower.as_ptr(), 100_000), 1);
+    }
+
+    // AUDIT-FIX G9-01: Flash repay with insufficient value
+    #[test]
+    fn test_flash_repay_insufficient_value() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let user = [2u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_value(1_000_000);
+        deposit(user.as_ptr(), 1_000_000);
+
+        let borrower = [3u8; 32];
+        test_mock::set_caller(borrower);
+        assert_eq!(flash_borrow(borrower.as_ptr(), 100_000), 0);
+
+        // Repay amount sufficient but value not attached
+        test_mock::set_value(50); // far less than required 100,090
+        assert_eq!(flash_repay(borrower.as_ptr(), 100_090), 30);
     }
 
     #[test]
@@ -1265,6 +1512,7 @@ mod tests {
 
         // Operations work again
         test_mock::set_caller(user);
+        test_mock::set_value(1_000);
         assert_eq!(deposit(user.as_ptr(), 1_000), 0);
 
         // Double unpause rejected
@@ -1296,10 +1544,13 @@ mod tests {
 
         let user = [2u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(400_000);
         assert_eq!(deposit(user.as_ptr(), 400_000), 0);
         // Exceeds cap
+        test_mock::set_value(200_000);
         assert_eq!(deposit(user.as_ptr(), 200_000), 4);
         // Just under cap
+        test_mock::set_value(100_000);
         assert_eq!(deposit(user.as_ptr(), 100_000), 0);
     }
 
@@ -1366,6 +1617,7 @@ mod tests {
         initialize(admin.as_ptr());
         let user = [2u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(1_000_000);
         deposit(user.as_ptr(), 1_000_000);
         borrow(user.as_ptr(), 500_000);
 
@@ -1388,6 +1640,7 @@ mod tests {
         initialize(admin.as_ptr());
         let user = [2u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(1_000_000);
         deposit(user.as_ptr(), 1_000_000);
 
         // Very small borrow — fee would be 0, but minimum is 1
@@ -1397,7 +1650,8 @@ mod tests {
         let fee = bytes_to_u64(&test_mock::get_return_data());
         assert_eq!(fee, 1); // Minimum fee
 
-        // Repay
+        // Repay with value
+        test_mock::set_value(101);
         assert_eq!(flash_repay(borrower.as_ptr(), 101), 0);
     }
 
@@ -1409,6 +1663,7 @@ mod tests {
         initialize(admin.as_ptr());
         let user = [2u8; 32];
         test_mock::set_caller(user);
+        test_mock::set_value(1_000_000);
         deposit(user.as_ptr(), 1_000_000);
         borrow(user.as_ptr(), 500_000);
 
@@ -1418,6 +1673,7 @@ mod tests {
 
         // Repay should still work (no pause check — users must be able to unwind)
         test_mock::set_caller(user);
+        test_mock::set_value(200_000);
         assert_eq!(repay(user.as_ptr(), 200_000), 0);
     }
 
@@ -1429,6 +1685,7 @@ mod tests {
         initialize(admin.as_ptr());
         let borrower = [2u8; 32];
         test_mock::set_caller(borrower);
+        test_mock::set_value(1_000_000);
         deposit(borrower.as_ptr(), 1_000_000);
         borrow(borrower.as_ptr(), 750_000);
 
@@ -1445,6 +1702,126 @@ mod tests {
         // Liquidation should still work when paused (safety valve)
         let liquidator = [3u8; 32];
         test_mock::set_caller(liquidator);
+        test_mock::set_value(200_000);
         assert_eq!(liquidate(liquidator.as_ptr(), borrower.as_ptr(), 200_000), 0);
+    }
+
+    // ========================================================================
+    // AUDIT-FIX G9-01: Token transfer wiring tests
+    // ========================================================================
+
+    #[test]
+    fn test_set_moltcoin_address() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let molt = [77u8; 32];
+        assert_eq!(set_moltcoin_address(admin.as_ptr(), molt.as_ptr()), 0);
+        assert_eq!(load_molt_addr(), molt);
+    }
+
+    #[test]
+    fn test_set_moltcoin_address_non_admin() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let other = [9u8; 32];
+        test_mock::set_caller(other);
+        let molt = [77u8; 32];
+        assert_eq!(set_moltcoin_address(other.as_ptr(), molt.as_ptr()), 1);
+    }
+
+    #[test]
+    fn test_set_moltcoin_address_zero_rejected() {
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let zero = [0u8; 32];
+        assert_eq!(set_moltcoin_address(admin.as_ptr(), zero.as_ptr()), 2);
+    }
+
+    #[test]
+    fn test_withdraw_without_molt_configured() {
+        setup_no_molt();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let user = [2u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_value(1_000_000);
+        deposit(user.as_ptr(), 1_000_000);
+        // Withdraw should fail because moltcoin not configured for outgoing transfer
+        assert_eq!(withdraw(user.as_ptr(), 500_000), 30);
+        // Bookkeeping should be reverted
+        assert_eq!(load_u64(b"ll_total_deposits"), 1_000_000);
+    }
+
+    #[test]
+    fn test_borrow_without_molt_configured() {
+        setup_no_molt();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let user = [2u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_value(1_000_000);
+        deposit(user.as_ptr(), 1_000_000);
+        assert_eq!(borrow(user.as_ptr(), 500_000), 30);
+        // Bookkeeping should be reverted
+        assert_eq!(load_u64(b"ll_total_borrows"), 0);
+    }
+
+    #[test]
+    fn test_flash_borrow_without_molt_configured() {
+        setup_no_molt();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let user = [2u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_value(1_000_000);
+        deposit(user.as_ptr(), 1_000_000);
+        let borrower = [3u8; 32];
+        test_mock::set_caller(borrower);
+        assert_eq!(flash_borrow(borrower.as_ptr(), 100_000), 30);
+        // Flash state should be reverted
+        assert_eq!(load_u64(FLASH_BORROWED_KEY), 0);
+    }
+
+    #[test]
+    fn test_withdraw_reserves_without_molt_configured() {
+        setup_no_molt();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        store_u64(b"ll_reserves", 10_000);
+        assert_eq!(withdraw_reserves(admin.as_ptr(), 5_000), 30);
+        // Reserves should be reverted
+        assert_eq!(load_u64(b"ll_reserves"), 10_000);
+    }
+
+    #[test]
+    fn test_self_custody_transfer_pattern() {
+        // Verify the self-custody pattern: contract uses its own address as from
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+        let user = [2u8; 32];
+        test_mock::set_caller(user);
+        test_mock::set_value(1_000_000);
+        deposit(user.as_ptr(), 1_000_000);
+
+        // Withdraw triggers transfer_out which uses get_contract_address()
+        let self_addr = get_contract_address();
+        assert_eq!(self_addr.0, CONTRACT_ADDR);
+        assert_eq!(withdraw(user.as_ptr(), 100_000), 0);
+        assert_eq!(load_u64(b"ll_total_deposits"), 900_000);
     }
 }
