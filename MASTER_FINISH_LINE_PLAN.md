@@ -599,7 +599,7 @@
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
 | G25-01 | HIGH | Overflow | `[FLP H14]` Share-to-asset conversion and fee accumulation can overflow u64 | Use checked arithmetic or u128 intermediates | [ ] |
-| G25-02 | HIGH | Fake data | `[FLP H15]` Vault APY is hardcoded/simulated — not connected to real yield sources | Connect to LobsterLend interest and MoltSwap LP fees | [ ] |
+| G25-02 | HIGH | Fake data | `[FLP H15]` Vault APY is hardcoded/simulated — not connected to real yield sources | Connect to LobsterLend interest and MoltSwap LP fees | [x] |
 
 ### G.26 — contracts/compute_market/src/lib.rs
 
@@ -1178,13 +1178,13 @@ After cross_contract_call works:
 Phase 0 (Fatal):     [x] [x] [x] [x]                    4/4
 Phase 1 (Security):  [x] [x] [x] [x] [x] [x]            6/6  ✅ COMPLETE
 Phase 2 (Core):      [x] [x] [x] [x] [x] [x] [x] [x]    8/8  ✅ COMPLETE
-Phase 3 (Contracts): [x] [x] [x] [x] [x] [x] [x] [x] [x] [ ] [ ]  9/11
+Phase 3 (Contracts): [x] [x] [x] [x] [x] [x] [x] [x] [x] [x] [ ]  10/11
 Phase 4 (Infra):     [ ] [ ] [ ] [ ] [ ] [ ] [ ]        0/7
 Phase 5 (Quality):   [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]  0/10
 Phase 6 (Frontend):  [ ] [ ] [ ] [ ] [ ]                0/5
 Phase 7 (Testing):   [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
-                                              TOTAL:    27/63 phases
+                                              TOTAL:    28/63 phases
 ```
 
 ---
