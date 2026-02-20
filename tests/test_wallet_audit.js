@@ -535,6 +535,75 @@ test('serializeMessageBincode validates blockhash format', () => {
 });
 
 // ============================================================================
+// AUDIT-FIX H1-01 — Private key NOT exposed in toString/toJSON/inspect
+// ============================================================================
+console.log('\n── H1-01 Keypair Secret Key Protection ──');
+
+test('H1-01: toString() does not contain secret key bytes', () => {
+    const { Keypair } = require('../sdk/js/dist/keypair');
+    const kp = Keypair.generate();
+    const str = kp.toString();
+    
+    // toString must contain "publicKey" but never secret key
+    assert(str.includes('publicKey'), 'toString must mention publicKey');
+    assert(str.startsWith('Keypair('), 'toString must start with Keypair(');
+    
+    // Get the secret key hex to make sure it's NOT in the string
+    const secretHex = Buffer.from(kp.getSecretKey()).toString('hex');
+    assert(!str.includes(secretHex), 'toString must NOT contain secret key hex');
+    
+    // Ensure the full 64-byte secret key content is absent
+    assert(str.length < 200, 'toString should be concise (only pubkey)');
+});
+
+test('H1-01: toJSON() excludes secret key', () => {
+    const { Keypair } = require('../sdk/js/dist/keypair');
+    const kp = Keypair.generate();
+    const json = JSON.stringify(kp);
+    const parsed = JSON.parse(json);
+    
+    // JSON must have publicKey
+    assert(parsed.publicKey, 'JSON must include publicKey');
+    
+    // JSON must NOT have secretKey or _secretKey
+    assert(!parsed.secretKey, 'JSON must NOT include secretKey');
+    assert(!parsed._secretKey, 'JSON must NOT include _secretKey');
+    
+    // Double-check: the secret key hex must not appear in stringified output
+    const secretHex = Buffer.from(kp.getSecretKey()).toString('hex');
+    assert(!json.includes(secretHex), 'JSON.stringify must NOT contain secret key hex');
+});
+
+test('H1-01: getSecretKey() returns valid 64-byte key', () => {
+    const { Keypair } = require('../sdk/js/dist/keypair');
+    const kp = Keypair.generate();
+    const sk = kp.getSecretKey();
+    assert(sk instanceof Uint8Array, 'getSecretKey must return Uint8Array');
+    assert(sk.length === 64, 'Secret key must be 64 bytes');
+});
+
+test('H1-01: sign() still works with private _secretKey', () => {
+    const { Keypair } = require('../sdk/js/dist/keypair');
+    const nacl = require('tweetnacl');
+    const kp = Keypair.generate();
+    const msg = new Uint8Array([1, 2, 3, 4]);
+    const sig = kp.sign(msg);
+    assert(sig.length === 64, 'Signature must be 64 bytes');
+    
+    // Verify signature is valid
+    const valid = nacl.sign.detached.verify(msg, sig, kp.publicKey);
+    assert(valid, 'Signature must verify with public key');
+});
+
+test('H1-01: secretKey field is not directly accessible', () => {
+    const { Keypair } = require('../sdk/js/dist/keypair');
+    const kp = Keypair.generate();
+    
+    // The old public 'secretKey' field should no longer exist
+    assert(kp.secretKey === undefined, 'secretKey field must not be publicly accessible');
+});
+
+// ============================================================================
 // SUMMARY
 // ============================================================================
 console.log(`\n${'─'.repeat(50)}`);

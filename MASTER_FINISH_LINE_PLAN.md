@@ -626,7 +626,7 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| H1-01 | CRITICAL | Security | Private key exposed in `Keypair.toString()` — logs, serialization, debugging can leak keys | Remove private key from `toString()`, add explicit `secretKey` getter with warning JSDoc | [ ] |
+| H1-01 | CRITICAL | Security | Private key exposed in `Keypair.toString()` — logs, serialization, debugging can leak keys | Remove private key from `toString()`, add explicit `secretKey` getter with warning JSDoc | [x] |
 | H1-02 | HIGH | Serialization | Transaction serialization uses JSON+base64 — incompatible with Rust SDK's bincode format | Align all SDKs to single wire format (bincode or standardize JSON schema) | [ ] |
 | H1-03 | HIGH | Precision | Amount fields use JavaScript `number` (f64) — loses precision above 2^53 (~9M MOLT) | Use `BigInt` for all amount fields | [ ] |
 | H1-04 | HIGH | Missing | No WebSocket reconnection logic — connection drop = permanent loss | Implement auto-reconnect with exponential backoff | [ ] |
@@ -992,7 +992,7 @@ The following are **net-new findings** from this code audit that were NOT captur
 | F1-01 | HIGH | Unsandboxed compiler execution |
 | F2-01 | CRITICAL | Single master custody seed |
 | F2-02 | CRITICAL | Non-atomic custody operations |
-| H1-01 | CRITICAL | Private key in Keypair.toString() |
+| H1-01 | CRITICAL | Private key in Keypair.toString() | **FIXED** |
 | H6-01 | CRITICAL | Fake addresses generated when wallet missing |
 | I2-01 | CRITICAL | BIP39 uses SHA-512 not PBKDF2 |
 | I8-01 | HIGH | Unauthenticated admin kill switch |
@@ -1176,7 +1176,7 @@ After cross_contract_call works:
 
 ```
 Phase 0 (Fatal):     [x] [x] [x] [x]                    4/4
-Phase 1 (Security):  [x] [x] [x] [x] [x] [ ]            5/6  
+Phase 1 (Security):  [x] [x] [x] [x] [x] [x]            6/6  ✅ COMPLETE
 Phase 2 (Core):      [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]    0/8
 Phase 3 (Contracts): [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]  0/11
 Phase 4 (Infra):     [ ] [ ] [ ] [ ] [ ] [ ] [ ]        0/7
@@ -1184,7 +1184,7 @@ Phase 5 (Quality):   [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]  0/10
 Phase 6 (Frontend):  [ ] [ ] [ ] [ ] [ ]                0/5
 Phase 7 (Testing):   [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
-                                              TOTAL:     9/63 phases
+                                              TOTAL:    10/63 phases
 ```
 
 ---
@@ -1203,6 +1203,7 @@ Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 | 1.6 | C1-01 | 29b30c2 | Feb 20 | Replaced SkipServerVerification with proper TLS certificate validation. (1) Persistent node identity: cert+key saved to ~/.moltchain/node_cert.der + node_key.der, reused across restarts (NodeIdentity struct). (2) X.509 self-signature verification: verify_self_signed_cert() uses x509-parser + ring to parse and cryptographically verify certificate self-signatures — replaces the old DER-tag-only checks. (3) TOFU fingerprint pinning: PeerFingerprintStore tracks SHA-256 cert fingerprints per peer in ~/.moltchain/peer_fingerprints.json — new peers registered, known peers verified, changed fingerprints rejected with connection close. Applied to both outbound (connect_peer) and inbound (start_accepting) paths. (4) Mutual TLS: server now uses MoltClientCertVerifier (with_client_cert_verifier), clients present their node certificate via with_client_auth_cert. client_auth_mandatory=false for backwards compat. Added sha2 + x509-parser deps to p2p/Cargo.toml. 14 new tests, 443 total, 0 regressions. |
 | 1.7 | I2-01 | a8f3f40 | Feb 20 | Fixed BIP39 key derivation: replaced SHA-512 single-hash with PBKDF2-HMAC-SHA512 (2048 iterations) per BIP39 spec in both wallet/js/crypto.js (MoltCrypto.mnemonicToKeypair) and wallet/extension/src/core/crypto-service.js (mnemonicToKeypair). Uses Web Crypto API: crypto.subtle.importKey('raw') + crypto.subtle.deriveBits({name: 'PBKDF2', salt: 'mnemonic'+passphrase, iterations: 2048, hash: 'SHA-512'}). Added passphrase parameter support (BIP39 "25th word"). NFKD Unicode normalization applied. Verified against BIP39 test vector: "abandon"x11+"about" → seed prefix 5eb00bbd... matches spec. 3 new JS tests (test vector, deterministic, passphrase). 443 Rust + 44 JS tests, 0 regressions. |
 | 1.8 | I2-02 | f99cc70 | Feb 20 | Wallet key encryption already fully implemented: encryptPrivateKey() uses AES-256-GCM with PBKDF2 (100k iterations, SHA-256, CSPRNG salt+IV). All 9 key storage paths in wallet.js call encryptPrivateKey() before localStorage persistence. No plaintext secret material in localStorage — verified by source-level regex check (no wallet.privateKey= or wallet.seed= assignments). Extension uses chrome.storage.local with identical encryption. Added AUDIT-FIX I2-02 annotation to encryptPrivateKey(). 2 new regression tests. 443 Rust + 46 JS tests, 0 regressions. |
-| 1.9 | H6-01 | pending | Feb 20 | Removed fake address generation from shared/wallet-connect.js. The _createRpcWallet fallback previously generated random bytes encoded as base58 when both RPC and nacl were unavailable — producing addresses with no private key (funds permanently lost). Replaced with: this.address = null + throw new Error with clear message prompting user to install the MoltChain wallet extension + console.error + window.alert. 1 new regression test verifying the old fake-address pattern is gone. 443 Rust + 47 JS tests, 0 regressions. |
+| 1.9 | H6-01 | 8743bfc | Feb 20 | Removed fake address generation from shared/wallet-connect.js. The _createRpcWallet fallback previously generated random bytes encoded as base58 when both RPC and nacl were unavailable — producing addresses with no private key (funds permanently lost). Replaced with: this.address = null + throw new Error with clear message prompting user to install the MoltChain wallet extension + console.error + window.alert. 1 new regression test verifying the old fake-address pattern is gone. 443 Rust + 47 JS tests, 0 regressions. |
+| 1.10 | H1-01 | PENDING | Feb 20 | Protected private key from accidental exposure in SDK Keypair class (sdk/js/src/keypair.ts). (1) Changed `readonly secretKey` to `private readonly _secretKey` — field is no longer publicly accessible. (2) Added `getSecretKey(): Uint8Array` with JSDoc warning about key exposure — explicit opt-in replaces implicit access. (3) Added `toString()` returning `Keypair(publicKey: <hex>)` — never reveals secret key in logs or string coercion. (4) Added `toJSON()` returning `{ publicKey: <hex> }` — prevents JSON.stringify leakage. (5) Added `[Symbol.for('nodejs.util.inspect.custom')]` returning toString() — Node.js console.log safety. (6) Rebuilt TypeScript SDK (`npx tsc`). No external consumers break — all 7 internal `secretKey` references are to nacl's raw keypair, not the SDK class; SDK consumers use `sign()` method. 5 new regression tests: toString exclusion, toJSON exclusion, getSecretKey validity, sign functionality, secretKey field inaccessibility. 443 Rust + 52 JS tests, 0 regressions. Phase 1 COMPLETE (6/6). |
 
 *Last updated: February 20, 2026*
