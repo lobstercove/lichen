@@ -390,7 +390,7 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| F2-01 | CRITICAL | Security | `[NEW]` Single master seed for all custodied funds — compromise of one key compromises everything | Use per-chain HD derivation with hardware security module (HSM) integration | [ ] |
+| F2-01 | CRITICAL | Security | `[NEW]` Single master seed for all custodied funds — compromise of one key compromises everything | Use per-chain HD derivation with hardware security module (HSM) integration | [x] |
 | F2-02 | CRITICAL | Atomicity | `[NEW]` Deposit processing and ledger rebalancing are non-atomic — crash during rebalance can lose track of funds | Implement intent log with idempotent replay | [ ] |
 | F2-03 | HIGH | Security | Master seed stored in environment variable — visible in process listing, docker inspect, crash dumps | Use secrets manager (Vault, AWS Secrets Manager) or HSM | [ ] |
 | F2-04 | HIGH | Wiring | `[NEW]` EVM withdrawal path produces invalid output (`[addr][calldata]` instead of RLP-encoded transaction) | Fix EVM transaction construction to produce valid RLP-encoded output | [ ] |
@@ -1104,7 +1104,7 @@ After cross_contract_call works:
 39. C2-01   Add gossip deduplication ✅ bounded SeenMessageCache (20K, SHA-256 hash)
 40. D1-01   Restrict CORS origins ✅ configurable via MOLTCHAIN_CORS_ORIGINS env var
 41. D3-01   Fix async mutex usage ✅ verified: all guards scoped before .await (D6-01 also clear)
-42. F2-01   Per-chain HD derivation for custody
+42. F2-01   Per-chain HD derivation for custody ✅ BIP-44 coin types (501/60/0)
 43. G6-01   Implement collateral locking
 44. G6-02   Implement funding rates
 45. All overflow fixes (L6-01)
@@ -1180,11 +1180,11 @@ Phase 1 (Security):  [x] [x] [x] [x] [x] [x]            6/6  ✅ COMPLETE
 Phase 2 (Core):      [x] [x] [x] [x] [x] [x] [x] [x]    8/8  ✅ COMPLETE
 Phase 3 (Contracts): [x] [x] [x] [x] [x] [x] [x] [x] [x] [x] [x]  11/11 ✅ COMPLETE
 Phase 4 (Infra):     [x] [x] [x] [x] [x] [x] [x]        7/7 ✅ COMPLETE
-Phase 5 (Quality):   [x] [x] [x] [x] [x] [ ] [ ] [ ] [ ] [ ]  5/10
+Phase 5 (Quality):   [x] [x] [x] [x] [x] [x] [ ] [ ] [ ] [ ]  6/10
 Phase 6 (Frontend):  [ ] [ ] [ ] [ ] [ ]                0/5
 Phase 7 (Testing):   [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
-                                              TOTAL:    41/63 phases
+                                              TOTAL:    42/63 phases
 ```
 
 ---
