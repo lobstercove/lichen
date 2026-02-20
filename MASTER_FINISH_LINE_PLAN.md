@@ -691,7 +691,7 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| I1-01 | HIGH | Duplication | `escapeHtml()` duplicated across 11 JS files — any bug fix must be applied 11 times | Extract to shared utils.js, import everywhere | [ ] |
+| I1-01 | HIGH | Duplication | `escapeHtml()` duplicated across 11 JS files — any bug fix must be applied 11 times | Extract to shared utils.js, import everywhere | [x] ✅ All duplicates removed: escapeHtml from 11 files, formatHash/rpcCall from 6 marketplace files, bs58 from address.js, formatTimeFull/formatShells consolidated |
 | I1-02 | HIGH | Duplication | Base58 encoder/decoder duplicated across 6 files | Move to shared utility | [ ] |
 | I1-03 | HIGH | Duplication | RPC client class duplicated across 5 files | Create shared RPC client module | [ ] |
 | I1-04 | MEDIUM | Performance | Address page makes N+1 RPC calls — one for account, one for each transaction | Batch RPC calls or add server-side transaction history endpoint | [ ] |
@@ -1115,7 +1115,7 @@ After cross_contract_call works:
 
 ```
 47. L5-01   Create shared utility module ✅ shared/utils.js with 20+ functions, imported in 28 HTML files
-48. I1-01   Deduplicate explorer code
+48. I1-01   Deduplicate explorer code ✅ escapeHtml/formatHash/rpcCall/bs58/formatTimeFull consolidated in shared/utils.js
 49. I4-01   Remove key storage from DEX
 50. I5-01   Wire marketplace to live data
 51. I8-01   Add monitoring authentication
