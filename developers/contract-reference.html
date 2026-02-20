@@ -680,8 +680,9 @@
                 <tr><td>Order</td><td>128 bytes (trader, pair_id, side, type, price, qty, filled, status, slots, order_id)</td></tr>
                 <tr><td>Trading Pair</td><td>112 bytes (tokens, pair_id, tick/lot size, fees, volume)</td></tr>
             </table>
-            <div class="sub-heading">Functions (18)</div>
-            <div class="fn-list"><span class="fn-chip">create_pair</span><span class="fn-chip">update_pair_fees</span><span class="fn-chip">pause_pair</span><span class="fn-chip">unpause_pair</span><span class="fn-chip">place_order</span><span class="fn-chip">cancel_order</span><span class="fn-chip">cancel_all_orders</span><span class="fn-chip">modify_order</span><span class="fn-chip">match_order</span><span class="fn-chip">settle_trade</span><span class="fn-chip">get_order</span><span class="fn-chip">get_open_orders</span><span class="fn-chip">get_order_book</span><span class="fn-chip">get_best_bid</span><span class="fn-chip">get_best_ask</span><span class="fn-chip">get_spread</span><span class="fn-chip">get_trade_history</span><span class="fn-chip">get_pair_info</span></div>
+            <div class="sub-heading">Functions (20)</div>
+            <div class="fn-list"><span class="fn-chip">create_pair</span><span class="fn-chip">update_pair_fees</span><span class="fn-chip">pause_pair</span><span class="fn-chip">unpause_pair</span><span class="fn-chip">place_order</span><span class="fn-chip">cancel_order</span><span class="fn-chip">cancel_all_orders</span><span class="fn-chip">modify_order</span><span class="fn-chip">match_order</span><span class="fn-chip">settle_trade</span><span class="fn-chip">get_order</span><span class="fn-chip">get_open_orders</span><span class="fn-chip">get_order_book</span><span class="fn-chip">get_best_bid</span><span class="fn-chip">get_best_ask</span><span class="fn-chip">get_spread</span><span class="fn-chip">get_trade_history</span><span class="fn-chip">get_pair_info</span><span class="fn-chip">set_margin_address</span><span class="fn-chip">place_order (reduce-only)</span></div>
+            <p style="font-size:.8rem;color:var(--text-muted);margin-top:.5rem"><strong>Reduce-only orders:</strong> Set <code>order_type | 0x80</code> to flag reduce-only. Cross-validates against dex-margin open positions. Returns code 12 on rejection. <strong>set_margin_address</strong> (opcode 30): admin-only, links to dex-margin contract for validation.</p>
             <div class="badge-row"><span class="badge badge-dex">DEX</span></div>
         </div>
     </div></div>
@@ -740,7 +741,7 @@
             <div class="contract-meta"><span class="meta-chip">666 lines</span><span class="meta-chip">8 fns</span><span class="meta-chip">22 KB</span></div>
         </div>
         <div class="contract-body">
-            <p>Decentralized governance for DEX operations. Community proposes and votes on <strong>new trading pair listings</strong> and <strong>fee schedule changes</strong>. Listing requirements: minimum 100K MOLT liquidity, 10 holders, MoltyID reputation &ge; 500. 48-hour voting window, 66% approval threshold. Admin can emergency delist pairs.</p>
+            <p>Decentralized governance for DEX operations. Community proposes and votes on <strong>new trading pair listings</strong> and <strong>fee schedule changes</strong>. Listing requirements: minimum 10K MOLT liquidity, 10 holders, MoltyID reputation &ge; 500. 48-hour voting window, 66% approval threshold. Admin can emergency delist pairs. <strong>execute_proposal</strong> now performs real cross-contract dispatch: NEW_PAIR calls <code>dex_core::create_pair</code>, FEE_CHANGE calls <code>dex_core::update_pair_fees</code>, DELIST calls <code>dex_core::pause_pair</code>. All executions write audit trail to <code>gov_exec_*</code> storage keys.</p>
             <div class="sub-heading">Functions (8)</div>
             <div class="fn-list"><span class="fn-chip">propose_new_pair</span><span class="fn-chip">vote_on_pair</span><span class="fn-chip">execute_pair_proposal</span><span class="fn-chip">propose_fee_change</span><span class="fn-chip">vote_on_fee</span><span class="fn-chip">execute_fee_proposal</span><span class="fn-chip">set_listing_requirements</span><span class="fn-chip">emergency_delist</span></div>
             <div class="badge-row"><span class="badge badge-dex">DEX</span><span class="badge badge-identity">MoltyID</span></div>
@@ -755,7 +756,7 @@
             <div class="contract-meta"><span class="meta-chip">552 lines</span><span class="meta-chip">6 fns</span><span class="meta-chip">18 KB</span></div>
         </div>
         <div class="contract-body">
-            <p>Tiered trading rewards with volume-based multipliers, LP incentives, and a <strong>referral programme</strong>. Referrers earn 10% of referee fees (15% with MoltyID verification). Referees get 5% fee discount for 30 days.</p>
+            <p>Tiered trading rewards with volume-based multipliers, LP incentives, and a <strong>referral programme</strong>. Referrers earn 10% of referee fees (15% with MoltyID verification). Referees get 5% fee discount for 30 days. <strong>Monthly epoch cap:</strong> 500K MOLT/month (resets after 2,592,000 slots). Trades after budget exhaustion receive 0 reward until next epoch.</p>
             <div class="sub-heading">Trading Tiers</div>
             <table class="const-table">
                 <tr><th>Tier</th><th>Volume</th><th>Multiplier</th></tr>
@@ -778,7 +779,7 @@
             <div class="contract-meta"><span class="meta-chip">778 lines</span><span class="meta-chip">8 fns</span><span class="meta-chip">27 KB</span></div>
         </div>
         <div class="contract-body">
-            <p>Isolated and cross-margin leverage trading up to <strong>5x (isolated) / 3x (cross)</strong>. Automated liquidation engine triggers when health drops below 10%. Liquidation penalty split 50/50 between liquidator bonus and insurance fund. Socialized loss if insurance fund is depleted. Funding rate settlements every 8 hours.</p>
+            <p>Isolated and cross-margin leverage trading up to <strong>5x (isolated) / 3x (cross)</strong>. Automated liquidation engine triggers when health drops below 10%. Liquidation penalty split 50/50 between liquidator bonus and insurance fund. Socialized loss if insurance fund is depleted. Funding rate settlements every 8 hours. <strong>Oracle safety:</strong> <code>close_position</code>, <code>partial_close</code>, and <code>remove_margin</code> now <strong>reject</strong> (codes 5/7) when oracle price is unavailable — prevents zero-PnL exits during outages.</p>
             <div class="sub-heading">Configuration</div>
             <table class="const-table">
                 <tr><th>Parameter</th><th>Value</th></tr>
@@ -791,7 +792,7 @@
                 <tr><td>Funding Rate</td><td>Every 8 hours</td></tr>
             </table>
             <div class="sub-heading">Functions (8)</div>
-            <div class="fn-list"><span class="fn-chip">open_margin_position</span><span class="fn-chip">close_margin_position</span><span class="fn-chip">add_margin</span><span class="fn-chip">remove_margin</span><span class="fn-chip">liquidate</span><span class="fn-chip">get_margin_ratio</span><span class="fn-chip">set_max_leverage</span><span class="fn-chip">get_liquidatable_positions</span></div>
+            <div class="fn-list"><span class="fn-chip">open_margin_position</span><span class="fn-chip">close_margin_position</span><span class="fn-chip">partial_close</span><span class="fn-chip">add_margin</span><span class="fn-chip">remove_margin</span><span class="fn-chip">liquidate</span><span class="fn-chip">get_margin_ratio</span><span class="fn-chip">set_max_leverage</span><span class="fn-chip">get_liquidatable_positions</span><span class="fn-chip">query_user_open_position</span></div>
             <div class="badge-row"><span class="badge badge-dex">DEX</span></div>
         </div>
     </div></div>
@@ -830,7 +831,7 @@
             <div class="contract-meta"><span class="meta-chip">850 lines</span><span class="meta-chip">24 fns</span><span class="meta-chip">38 KB</span></div>
         </div>
         <div class="contract-body">
-            <p>Full prediction market with AMM pricing, liquidity pools, oracle-based resolution, DAO arbitration, and share redemption. Opcode-dispatch ABI.</p>
+            <p>Full prediction market with AMM pricing, liquidity pools, oracle-based resolution, DAO arbitration, and share redemption. Opcode-dispatch ABI. <strong>Multi-outcome sell</strong> uses binary search over <code>total_a_for_sets()</code> for exact computation. Return values from <code>create_market</code>, <code>buy_shares</code>, <code>sell_shares</code>, <code>add_liquidity</code>, <code>withdraw_liquidity</code> write <strong>full u64</strong> to <code>set_return_data()</code> to avoid u32 truncation.</p>
             <div class="sub-heading">Opcodes (24)</div>
             <table class="const-table"><tr><th>Opcode</th><th>Function</th><th>Description</th></tr>
                 <tr><td>0</td><td>create_market</td><td>Create binary outcome market</td></tr>
