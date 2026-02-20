@@ -510,19 +510,35 @@ async def main():
     import argparse
     parser = argparse.ArgumentParser(description="Deploy MoltChain DEX + wrapped tokens")
     parser.add_argument("--rpc", default=RPC_URL, help="MoltChain RPC URL")
-    parser.add_argument("--admin", default=None, help="Admin/treasury pubkey (base58). Defaults to deployer.")
+    parser.add_argument("--admin", default=None, help="Admin/treasury pubkey (base58). Required for mainnet.")
+    parser.add_argument("--network", default="testnet", choices=["testnet", "mainnet"],
+                        help="Network type. Mainnet requires --admin (multisig address).")
     args = parser.parse_args()
 
     deployer = load_or_create_deployer()
     conn = Connection(args.rpc)
 
-    # Resolve admin pubkey
+    # Resolve admin pubkey — enforce multisig for mainnet
     if args.admin:
         admin_pubkey = PublicKey.from_base58(args.admin)
-        print(f"🏛️  Admin (treasury multisig): {admin_pubkey}")
+        if admin_pubkey == deployer.public_key():
+            if args.network == "mainnet":
+                print("❌ MAINNET ERROR: --admin must be a multisig address, not the deployer keypair")
+                print("   Deploy a multisig contract first, then use its address as --admin")
+                sys.exit(1)
+            else:
+                print(f"⚠️  WARNING: Admin is the deployer keypair (single-key control)")
+                print(f"   For production, use a multisig address instead")
+        print(f"🏛️  Admin: {admin_pubkey}")
     else:
+        if args.network == "mainnet":
+            print("❌ MAINNET ERROR: --admin is required for mainnet deployments")
+            print("   A multisig-controlled admin address must be specified:")
+            print("   python3 deploy_dex.py --network mainnet --admin <MULTISIG_PUBKEY>")
+            sys.exit(1)
         admin_pubkey = deployer.public_key()
-        print(f"🏛️  Admin (deployer — change to multisig in production!): {admin_pubkey}")
+        print(f"⚠️  Admin (deployer — single-key, testnet only): {admin_pubkey}")
+        print(f"   For production: use --admin <MULTISIG_PUBKEY> --network mainnet")
 
     # Health check
     try:

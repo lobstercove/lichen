@@ -100,8 +100,31 @@ async def call_contract(
 
 
 async def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Deploy MoltChain core contracts")
+    parser.add_argument("--rpc", default=RPC_URL, help="MoltChain RPC URL")
+    parser.add_argument("--admin", default=None, help="Admin/treasury pubkey (base58). Required for mainnet.")
+    parser.add_argument("--network", default="testnet", choices=["testnet", "mainnet"],
+                        help="Network type. Mainnet requires --admin (multisig address).")
+    args = parser.parse_args()
+
     deployer = load_or_create_deployer()
-    conn = Connection(RPC_URL)
+    conn = Connection(args.rpc)
+
+    # Resolve admin pubkey — enforce multisig for mainnet
+    if args.admin:
+        admin_pubkey = PublicKey.from_base58(args.admin)
+        if admin_pubkey == deployer.public_key() and args.network == "mainnet":
+            print("❌ MAINNET ERROR: --admin must be a multisig address, not the deployer keypair")
+            sys.exit(1)
+        print(f"🏛️  Admin: {admin_pubkey}")
+    else:
+        if args.network == "mainnet":
+            print("❌ MAINNET ERROR: --admin is required for mainnet deployments")
+            print("   python3 deploy_live.py --network mainnet --admin <MULTISIG_PUBKEY>")
+            sys.exit(1)
+        admin_pubkey = deployer.public_key()
+        print(f"⚠️  Admin (deployer — single-key, testnet only): {admin_pubkey}")
 
     # Check validator
     try:
