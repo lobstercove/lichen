@@ -48,7 +48,7 @@ fn test_place_order_quantity_max_order_size_boundary() {
     let trader = [2u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
     moltchain_sdk::test_mock::set_caller(trader);
-    let result = place_order(trader.as_ptr(), pair_id, 0, 0, P, 1_000_000_000_000, 0);
+    let result = place_order(trader.as_ptr(), pair_id, 0, 0, P, 1_000_000_000_000, 0, 0);
     assert_eq!(result, 0, "MAX_ORDER_SIZE quantity should be accepted");
 }
 
@@ -59,7 +59,7 @@ fn test_place_order_quantity_exceeds_max() {
     moltchain_sdk::test_mock::set_slot(100);
     moltchain_sdk::test_mock::set_caller(trader);
     // MAX_ORDER_SIZE is 10_000_000_000_000_000 (10M MOLT at 9 decimals)
-    let result = place_order(trader.as_ptr(), pair_id, 0, 0, P, 10_000_000_000_000_001, 0);
+    let result = place_order(trader.as_ptr(), pair_id, 0, 0, P, 10_000_000_000_000_001, 0, 0);
     assert_eq!(result, 4, "quantity exceeding MAX should be rejected");
 }
 
@@ -70,7 +70,7 @@ fn test_place_order_extreme_price_no_panic() {
     moltchain_sdk::test_mock::set_slot(100);
     moltchain_sdk::test_mock::set_caller(trader);
     let high_price = (u64::MAX / 1_000_000) * 1_000_000;
-    let result = place_order(trader.as_ptr(), pair_id, 0, 0, high_price, 100, 0);
+    let result = place_order(trader.as_ptr(), pair_id, 0, 0, high_price, 100, 0, 0);
     assert!(
         result == 0 || result == 4,
         "extreme price: result={}",
@@ -86,9 +86,9 @@ fn test_fee_treasury_accumulation() {
     moltchain_sdk::test_mock::set_slot(100);
     let big_q: u64 = 200_000;
     moltchain_sdk::test_mock::set_caller(seller);
-    assert_eq!(place_order(seller.as_ptr(), pair_id, 1, 0, P, big_q, 0), 0);
+    assert_eq!(place_order(seller.as_ptr(), pair_id, 1, 0, P, big_q, 0, 0), 0);
     moltchain_sdk::test_mock::set_caller(buyer);
-    assert_eq!(place_order(buyer.as_ptr(), pair_id, 0, 0, P, big_q, 0), 0);
+    assert_eq!(place_order(buyer.as_ptr(), pair_id, 0, 0, P, big_q, 0, 0), 0);
     let treasury = get_fee_treasury();
     assert!(
         treasury > 0,
@@ -110,13 +110,13 @@ fn test_user_order_count_at_limit() {
     for i in 0..100u64 {
         let price = P + (i + 1) * 1_000_000;
         assert_eq!(
-            place_order(trader.as_ptr(), pair_id, 0, 0, price, Q, 0),
+            place_order(trader.as_ptr(), pair_id, 0, 0, price, Q, 0, 0),
             0,
             "order {}",
             i
         );
     }
-    let result = place_order(trader.as_ptr(), pair_id, 0, 0, P + 101_000_000, Q, 0);
+    let result = place_order(trader.as_ptr(), pair_id, 0, 0, P + 101_000_000, Q, 0, 0);
     assert_eq!(result, 5, "should reject at max open orders");
 }
 
@@ -128,10 +128,10 @@ fn test_user_order_count_after_cancel() {
     moltchain_sdk::test_mock::set_caller(trader);
     for i in 0..100u64 {
         let price = P + (i + 1) * 1_000_000;
-        assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, price, Q, 0), 0);
+        assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, price, Q, 0, 0), 0);
     }
     assert_eq!(cancel_order(trader.as_ptr(), 1), 0);
-    let result = place_order(trader.as_ptr(), pair_id, 0, 0, P + 101_000_000, Q, 0);
+    let result = place_order(trader.as_ptr(), pair_id, 0, 0, P + 101_000_000, Q, 0, 0);
     assert!(
         result == 0 || result == 5,
         "cancel count: result={}",
@@ -149,7 +149,7 @@ fn test_order_expiry_exact_boundary() {
     let trader = [2u8; 32];
     moltchain_sdk::test_mock::set_slot(1000);
     moltchain_sdk::test_mock::set_caller(trader);
-    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, P, Q, 1000), 8);
+    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, P, Q, 1000, 0), 8);
 }
 
 #[test]
@@ -158,7 +158,7 @@ fn test_order_expiry_one_slot_away() {
     let trader = [2u8; 32];
     moltchain_sdk::test_mock::set_slot(1000);
     moltchain_sdk::test_mock::set_caller(trader);
-    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, P, Q, 1001), 0);
+    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, P, Q, 1001, 0), 0);
 }
 
 #[test]
@@ -168,7 +168,7 @@ fn test_order_expiry_max_duration() {
     moltchain_sdk::test_mock::set_slot(1000);
     moltchain_sdk::test_mock::set_caller(trader);
     assert_eq!(
-        place_order(trader.as_ptr(), pair_id, 0, 0, P, Q, 1000 + 2_592_001),
+        place_order(trader.as_ptr(), pair_id, 0, 0, P, Q, 1000 + 2_592_001, 0),
         4
     );
 }
@@ -180,10 +180,10 @@ fn test_expired_maker_skipped_during_matching() {
     let buyer = [3u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
     moltchain_sdk::test_mock::set_caller(seller);
-    assert_eq!(place_order(seller.as_ptr(), pair_id, 1, 0, P, Q, 200), 0);
+    assert_eq!(place_order(seller.as_ptr(), pair_id, 1, 0, P, Q, 200, 0), 0);
     moltchain_sdk::test_mock::set_slot(201);
     moltchain_sdk::test_mock::set_caller(buyer);
-    assert_eq!(place_order(buyer.as_ptr(), pair_id, 0, 0, P, Q, 0), 0);
+    assert_eq!(place_order(buyer.as_ptr(), pair_id, 0, 0, P, Q, 0, 0), 0);
 }
 
 // ============================================================================
@@ -196,8 +196,8 @@ fn test_self_trade_prevention() {
     let trader = [2u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
     moltchain_sdk::test_mock::set_caller(trader);
-    assert_eq!(place_order(trader.as_ptr(), pair_id, 1, 0, P, Q, 0), 0);
-    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, P, Q, 0), 0);
+    assert_eq!(place_order(trader.as_ptr(), pair_id, 1, 0, P, Q, 0, 0), 0);
+    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, P, Q, 0, 0), 0);
 }
 
 // ============================================================================
@@ -211,9 +211,9 @@ fn test_post_only_would_cross_ask() {
     let buyer = [3u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
     moltchain_sdk::test_mock::set_caller(seller);
-    assert_eq!(place_order(seller.as_ptr(), pair_id, 1, 0, P, Q, 0), 0);
+    assert_eq!(place_order(seller.as_ptr(), pair_id, 1, 0, P, Q, 0, 0), 0);
     moltchain_sdk::test_mock::set_caller(buyer);
-    assert_eq!(place_order(buyer.as_ptr(), pair_id, 0, 3, P, Q, 0), 7);
+    assert_eq!(place_order(buyer.as_ptr(), pair_id, 0, 3, P, Q, 0, 0), 7);
 }
 
 #[test]
@@ -223,9 +223,9 @@ fn test_post_only_would_cross_bid() {
     let seller = [3u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
     moltchain_sdk::test_mock::set_caller(buyer);
-    assert_eq!(place_order(buyer.as_ptr(), pair_id, 0, 0, P, Q, 0), 0);
+    assert_eq!(place_order(buyer.as_ptr(), pair_id, 0, 0, P, Q, 0, 0), 0);
     moltchain_sdk::test_mock::set_caller(seller);
-    assert_eq!(place_order(seller.as_ptr(), pair_id, 1, 3, P, Q, 0), 7);
+    assert_eq!(place_order(seller.as_ptr(), pair_id, 1, 3, P, Q, 0, 0), 7);
 }
 
 // ============================================================================
@@ -283,7 +283,7 @@ fn test_operations_while_paused() {
     moltchain_sdk::test_mock::set_slot(100);
     assert_eq!(emergency_pause(admin.as_ptr()), 0);
     moltchain_sdk::test_mock::set_caller(trader);
-    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, P, Q, 0), 1);
+    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, P, Q, 0, 0), 1);
 }
 
 #[test]
@@ -298,7 +298,7 @@ fn test_unpause_restores_operations() {
     moltchain_sdk::test_mock::set_slot(100 + UNPAUSE_TIMELOCK_SLOTS);
     assert_eq!(execute_unpause(admin.as_ptr()), 0);   // executes
     moltchain_sdk::test_mock::set_caller(trader);
-    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, P, Q, 0), 0);
+    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, P, Q, 0, 0), 0);
 }
 
 // ============================================================================
@@ -311,7 +311,7 @@ fn test_price_not_tick_aligned() {
     let trader = [2u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
     moltchain_sdk::test_mock::set_caller(trader);
-    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, P + 1, Q, 0), 4);
+    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, P + 1, Q, 0, 0), 4);
 }
 
 #[test]
@@ -320,7 +320,7 @@ fn test_quantity_not_lot_aligned() {
     let trader = [2u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
     moltchain_sdk::test_mock::set_caller(trader);
-    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, P, 99, 0), 4);
+    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, P, 99, 0, 0), 4);
 }
 
 // ============================================================================
@@ -356,7 +356,7 @@ fn test_cancel_someone_elses_order() {
     let trader_b = [3u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
     moltchain_sdk::test_mock::set_caller(trader_a);
-    assert_eq!(place_order(trader_a.as_ptr(), pair_id, 0, 0, P, Q, 0), 0);
+    assert_eq!(place_order(trader_a.as_ptr(), pair_id, 0, 0, P, Q, 0, 0), 0);
     moltchain_sdk::test_mock::set_caller(trader_b);
     assert_eq!(cancel_order(trader_b.as_ptr(), 1), 2);
 }
@@ -375,7 +375,7 @@ fn test_cancel_already_cancelled() {
     let trader = [2u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
     moltchain_sdk::test_mock::set_caller(trader);
-    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, P, Q, 0), 0);
+    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, P, Q, 0, 0), 0);
     assert_eq!(cancel_order(trader.as_ptr(), 1), 0);
     assert_eq!(cancel_order(trader.as_ptr(), 1), 3);
 }
@@ -390,7 +390,7 @@ fn test_place_order_zero_quantity() {
     let trader = [2u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
     moltchain_sdk::test_mock::set_caller(trader);
-    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, P, 0, 0), 4);
+    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, P, 0, 0, 0), 4);
 }
 
 #[test]
@@ -399,7 +399,7 @@ fn test_place_order_zero_price_limit() {
     let trader = [2u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
     moltchain_sdk::test_mock::set_caller(trader);
-    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, 0, Q, 0), 4);
+    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, 0, Q, 0, 0), 4);
 }
 
 #[test]
@@ -408,8 +408,8 @@ fn test_place_order_invalid_side() {
     let trader = [2u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
     moltchain_sdk::test_mock::set_caller(trader);
-    assert_eq!(place_order(trader.as_ptr(), pair_id, 2, 0, P, Q, 0), 4);
-    assert_eq!(place_order(trader.as_ptr(), pair_id, 255, 0, P, Q, 0), 4);
+    assert_eq!(place_order(trader.as_ptr(), pair_id, 2, 0, P, Q, 0, 0), 4);
+    assert_eq!(place_order(trader.as_ptr(), pair_id, 255, 0, P, Q, 0, 0), 4);
 }
 
 #[test]
@@ -418,7 +418,7 @@ fn test_place_order_invalid_order_type() {
     let trader = [2u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
     moltchain_sdk::test_mock::set_caller(trader);
-    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 4, P, Q, 0), 4);
+    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 4, P, Q, 0, 0), 4);
 }
 
 #[test]
@@ -427,7 +427,7 @@ fn test_market_order_empty_book() {
     let trader = [2u8; 32];
     moltchain_sdk::test_mock::set_slot(100);
     moltchain_sdk::test_mock::set_caller(trader);
-    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 1, 0, Q, 0), 0);
+    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 1, 0, Q, 0, 0), 0);
 }
 
 // ============================================================================
@@ -441,7 +441,7 @@ fn test_trade_on_paused_pair() {
     moltchain_sdk::test_mock::set_slot(100);
     assert_eq!(pause_pair(admin.as_ptr(), pair_id), 0);
     moltchain_sdk::test_mock::set_caller(trader);
-    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, P, Q, 0), 3);
+    assert_eq!(place_order(trader.as_ptr(), pair_id, 0, 0, P, Q, 0, 0), 3);
 }
 
 #[test]
@@ -455,9 +455,9 @@ fn test_matching_many_orders() {
             a
         };
         moltchain_sdk::test_mock::set_caller(seller);
-        assert_eq!(place_order(seller.as_ptr(), pair_id, 1, 0, P, Q, 0), 0);
+        assert_eq!(place_order(seller.as_ptr(), pair_id, 1, 0, P, Q, 0, 0), 0);
     }
     let buyer = [50u8; 32];
     moltchain_sdk::test_mock::set_caller(buyer);
-    assert_eq!(place_order(buyer.as_ptr(), pair_id, 0, 0, P, Q * 10, 0), 0);
+    assert_eq!(place_order(buyer.as_ptr(), pair_id, 0, 0, P, Q * 10, 0, 0), 0);
 }

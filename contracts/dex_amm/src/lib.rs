@@ -1698,4 +1698,108 @@ mod tests {
         // Both should get approximately equal fees
         assert!(fee1 > 0 && fee2 > 0, "Both positions should earn fees");
     }
+
+    // --- K3-03: Full AMM Lifecycle E2E ---
+
+    #[test]
+    fn test_full_amm_lifecycle_deposit_swap_withdraw() {
+        // K3-03: Complete lifecycle: create pool → add liquidity (deposit)
+        //        → swap (trade) → collect fees → remove liquidity (withdraw)
+        let (_admin, pool_id) = setup_with_pool();
+        let provider = [2u8; 32];
+        let trader = [4u8; 32];
+        test_mock::set_slot(100);
+
+        // --- Step 1: Provider adds liquidity ("deposit") ---
+        test_mock::set_caller(provider);
+        let result = add_liquidity(
+            provider.as_ptr(),
+            pool_id,
+            -60, // lower tick
+            60,  // upper tick
+            1_000_000,
+            1_000_000,
+        );
+        assert_eq!(result, 0, "add_liquidity should succeed");
+
+        // Verify position created
+        let pos_data = storage_get(&position_key(1)).unwrap();
+        assert_eq!(decode_pos_owner(&pos_data), provider);
+        assert_eq!(decode_pos_pool_id(&pos_data), pool_id);
+        assert_eq!(decode_pos_lower_tick(&pos_data), -60);
+        assert_eq!(decode_pos_upper_tick(&pos_data), 60);
+        let initial_liquidity = decode_pos_liquidity(&pos_data);
+        assert!(initial_liquidity > 0, "position must have liquidity");
+
+        // No swaps yet
+        assert_eq!(load_u64(SWAP_COUNT_KEY), 0);
+
+        // --- Step 2: Trader swaps token_a → token_b ("trade") ---
+        test_mock::set_caller(trader);
+        let swap_result = swap_exact_in(
+            trader.as_ptr(),
+            pool_id,
+            true,    // is_token_a_in
+            10_000,  // amount in
+            0,       // min out (no slippage protection for test)
+            0,       // deadline (no deadline)
+        );
+        assert_eq!(swap_result, 0, "swap should succeed");
+
+        // Verify swap counted
+        assert_eq!(load_u64(SWAP_COUNT_KEY), 1, "swap count should be 1");
+
+        // --- Step 3: Provider collects fees ---
+        test_mock::set_caller(provider);
+        let collect_result = collect_fees(provider.as_ptr(), 1); // position_id = 1
+        assert_eq!(collect_result, 0, "collect_fees should succeed");
+
+        // After collection, accumulated fees should be zeroed
+        let pos_after_collect = storage_get(&position_key(1)).unwrap();
+        assert_eq!(decode_pos_fee_a(&pos_after_collect), 0, "fee_a should be 0 after collection");
+        assert_eq!(decode_pos_fee_b(&pos_after_collect), 0, "fee_b should be 0 after collection");
+
+        // --- Step 4: Provider removes all liquidity ("withdraw") ---
+        test_mock::set_caller(provider);
+        let remove_result = remove_liquidity(
+            provider.as_ptr(),
+            1, // position_id
+            initial_liquidity,
+        );
+        assert_eq!(remove_result, 0, "remove_liquidity should succeed");
+
+        // Verify position liquidity is now 0
+        let pos_final = storage_get(&position_key(1)).unwrap();
+        assert_eq!(decode_pos_liquidity(&pos_final), 0, "liquidity should be 0 after full removal");
+
+        // --- Step 5: Pool still exists with correct state ---
+        assert_eq!(load_u64(POOL_COUNT_KEY), 1, "pool count should still be 1");
+        assert_eq!(load_u64(SWAP_COUNT_KEY), 1, "swap count should still be 1");
+    }
+
+    #[test]
+    fn test_amm_multi_swap_volume_accumulation() {
+        // K3-03: Multiple swaps accumulate volume correctly
+        let (_admin, pool_id) = setup_with_pool();
+        let provider = [2u8; 32];
+        let trader = [4u8; 32];
+        test_mock::set_slot(100);
+
+        // Add deep liquidity
+        test_mock::set_caller(provider);
+        add_liquidity(provider.as_ptr(), pool_id, -120, 120, 5_000_000, 5_000_000);
+
+        // Execute 3 swaps
+        test_mock::set_caller(trader);
+        for _ in 0..3 {
+            assert_eq!(swap_exact_in(trader.as_ptr(), pool_id, true, 10_000, 0, 0), 0);
+        }
+
+        assert_eq!(load_u64(SWAP_COUNT_KEY), 3, "3 swaps should be counted");
+
+        // Fees should have accumulated on the position
+        let pos_data = storage_get(&position_key(1)).unwrap();
+        let fees = decode_pos_fee_a(&pos_data);
+        assert!(fees > 0, "LP should have earned fees from 3 swaps");
+    }
 }

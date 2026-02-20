@@ -1725,6 +1725,7 @@ pub fn modify_order(caller: *const u8, order_id: u64, new_price: u64, new_quanti
     let side = decode_order_side(&data);
     let otype = decode_order_type(&data);
     let expiry = decode_order_expiry_slot(&data);
+    let trigger = decode_order_trigger_price(&data);
 
     reentrancy_exit();
     place_order(
@@ -1735,6 +1736,7 @@ pub fn modify_order(caller: *const u8, order_id: u64, new_price: u64, new_quanti
         new_price,
         new_quantity,
         expiry,
+        trigger,
     )
 }
 
@@ -2461,6 +2463,7 @@ mod tests {
                 ORDER_LIMIT,
                 1_000_000_000,
                 1000,
+                0,
                 0
             ),
             0
@@ -2482,6 +2485,7 @@ mod tests {
                 ORDER_LIMIT,
                 2_000_000_000,
                 1000,
+                0,
                 0
             ),
             0
@@ -2503,6 +2507,7 @@ mod tests {
                 ORDER_LIMIT,
                 1_000_000_000,
                 1000,
+                0,
                 0
             ),
             1
@@ -2522,6 +2527,7 @@ mod tests {
                 ORDER_LIMIT,
                 1_000_000_000,
                 1000,
+                0,
                 0
             ),
             2
@@ -2542,6 +2548,7 @@ mod tests {
                 ORDER_LIMIT,
                 1_000_000_000,
                 1000,
+                0,
                 0
             ),
             3
@@ -2560,6 +2567,7 @@ mod tests {
                 SIDE_BUY,
                 ORDER_LIMIT,
                 1_000_000_000,
+                0,
                 0,
                 0
             ),
@@ -2581,6 +2589,7 @@ mod tests {
                 ORDER_LIMIT,
                 1_000_000_001,
                 1000,
+                0,
                 0
             ),
             4
@@ -2601,6 +2610,7 @@ mod tests {
                 ORDER_LIMIT,
                 1_000_000_000,
                 99,
+                0,
                 0
             ),
             4
@@ -2622,6 +2632,7 @@ mod tests {
                 ORDER_LIMIT,
                 1000,
                 100,
+                0,
                 0
             ),
             4
@@ -2643,7 +2654,8 @@ mod tests {
                 ORDER_LIMIT,
                 1_000_000_000,
                 1000,
-                500
+                500,
+                0
             ),
             8
         );
@@ -2668,6 +2680,7 @@ mod tests {
                 ORDER_LIMIT,
                 1_000_000_000,
                 1000,
+                0,
                 0
             ),
             0
@@ -2683,6 +2696,7 @@ mod tests {
                 ORDER_LIMIT,
                 1_000_000_000,
                 1000,
+                0,
                 0
             ),
             0
@@ -2713,6 +2727,7 @@ mod tests {
                 ORDER_LIMIT,
                 1_000_000_000,
                 2000,
+                0,
                 0
             ),
             0
@@ -2728,6 +2743,7 @@ mod tests {
                 ORDER_LIMIT,
                 1_000_000_000,
                 1000,
+                0,
                 0
             ),
             0
@@ -2754,6 +2770,7 @@ mod tests {
                 ORDER_LIMIT,
                 1_000_000_000,
                 1000,
+                0,
                 0
             ),
             0
@@ -2766,6 +2783,7 @@ mod tests {
                 ORDER_LIMIT,
                 1_000_000_000,
                 1000,
+                0,
                 0
             ),
             0
@@ -2795,6 +2813,7 @@ mod tests {
                 ORDER_LIMIT,
                 1_000_000_000,
                 1000,
+                0,
                 0
             ),
             0
@@ -2810,6 +2829,7 @@ mod tests {
                 ORDER_POST_ONLY,
                 1_000_000_000,
                 1000,
+                0,
                 0
             ),
             7
@@ -2833,6 +2853,7 @@ mod tests {
                 ORDER_LIMIT,
                 2_000_000_000,
                 1000,
+                0,
                 0
             ),
             0
@@ -2848,6 +2869,7 @@ mod tests {
                 ORDER_POST_ONLY,
                 1_000_000_000,
                 1000,
+                0,
                 0
             ),
             0
@@ -2870,6 +2892,7 @@ mod tests {
             1_000_000_000,
             1000,
             0,
+            0
         );
         assert_eq!(cancel_order(trader.as_ptr(), 1), 0);
         let data = storage_get(&order_key(1)).unwrap();
@@ -2891,6 +2914,7 @@ mod tests {
             1_000_000_000,
             1000,
             0,
+            0
         );
         test_mock::set_caller(other);
         assert_eq!(cancel_order(other.as_ptr(), 1), 2);
@@ -2910,6 +2934,7 @@ mod tests {
             1_000_000_000,
             1000,
             0,
+            0
         );
         assert_eq!(cancel_order(trader.as_ptr(), 1), 0);
         assert_eq!(cancel_order(trader.as_ptr(), 1), 3);
@@ -2929,6 +2954,7 @@ mod tests {
             1_000_000_000,
             1000,
             0,
+            0
         );
         place_order(
             trader.as_ptr(),
@@ -2938,6 +2964,7 @@ mod tests {
             2_000_000_000,
             1000,
             0,
+            0
         );
         assert_eq!(cancel_all_orders(trader.as_ptr(), pair_id), 0);
         let d1 = storage_get(&order_key(1)).unwrap();
@@ -2960,6 +2987,7 @@ mod tests {
             1_000_000_000,
             1000,
             0,
+            0
         );
         assert_eq!(modify_order(trader.as_ptr(), 1, 2_000_000_000, 2000), 0);
         // Old order cancelled
@@ -3024,6 +3052,7 @@ mod tests {
             1_000_000_000,
             1000,
             0,
+            0
         );
         assert_eq!(get_best_bid(pair_id), 1_000_000_000);
 
@@ -3037,6 +3066,7 @@ mod tests {
             2_000_000_000,
             1000,
             0,
+            0
         );
         assert_eq!(get_best_ask(pair_id), 2_000_000_000);
     }
@@ -3056,6 +3086,7 @@ mod tests {
             1_000_000_000,
             1000,
             0,
+            0
         );
         test_mock::set_caller(seller);
         place_order(
@@ -3066,6 +3097,7 @@ mod tests {
             2_000_000_000,
             1000,
             0,
+            0
         );
         assert_eq!(get_spread(pair_id), 1_000_000_000);
     }
@@ -3096,6 +3128,7 @@ mod tests {
             1_000_000_000,
             1_000_000,
             0,
+            0
         );
         test_mock::set_caller(buyer);
         place_order(
@@ -3106,6 +3139,7 @@ mod tests {
             1_000_000_000,
             1_000_000,
             0,
+            0
         );
 
         let treasury = get_fee_treasury();
@@ -3170,6 +3204,7 @@ mod tests {
                 ORDER_LIMIT,
                 1_000_000_000,
                 10_000,
+                0,
                 0
             ),
             0
@@ -3183,6 +3218,7 @@ mod tests {
                 ORDER_LIMIT,
                 1_000_000_000,
                 10_000,
+                0,
                 0
             ),
             0
@@ -3198,6 +3234,7 @@ mod tests {
                 ORDER_LIMIT,
                 1_000_000_000,
                 10_000,
+                0,
                 0
             ),
             0
@@ -3225,6 +3262,7 @@ mod tests {
             1_000_000_000,
             1000,
             0,
+            0
         );
         assert_eq!(get_order(1), 1);
         assert_eq!(get_order(999), 0);
@@ -3245,6 +3283,7 @@ mod tests {
             1_000_000_000,
             1000,
             0,
+            0
         );
         test_mock::set_caller(buyer);
         place_order(
@@ -3255,6 +3294,7 @@ mod tests {
             1_000_000_000,
             1000,
             0,
+            0
         );
         assert_eq!(get_trade_count(), 1);
     }
@@ -3437,5 +3477,166 @@ mod tests {
         );
         assert_ne!(result2, 0, "duplicate pair must be rejected");
         assert_eq!(result2, 7, "duplicate pair should return error code 7");
+    }
+
+    // --- K3-03: Full DEX Trading Lifecycle E2E ---
+
+    #[test]
+    fn test_full_trading_lifecycle_deposit_trade_withdraw() {
+        // K3-03: Complete lifecycle: create pair → place sell → place buy (match)
+        //        → verify trade → place new order → cancel → verify final state
+        let (admin, pair_id) = setup_with_pair();
+        let seller = [3u8; 32];
+        let buyer = [4u8; 32];
+        test_mock::set_slot(100);
+
+        // --- Step 1: Seller places limit SELL at 1_000_000_000, qty 100_000 ---
+        // Use large quantity so fees exceed 0 (notional = P*Q/1e9 = 100_000)
+        test_mock::set_caller(seller);
+        assert_eq!(
+            place_order(
+                seller.as_ptr(),
+                pair_id,
+                SIDE_SELL,
+                ORDER_LIMIT,
+                1_000_000_000,
+                100_000,
+                0,
+                0
+            ),
+            0,
+            "sell order should place successfully"
+        );
+
+        // Verify order #1 is OPEN
+        let order1 = storage_get(&order_key(1)).unwrap();
+        assert_eq!(decode_order_status(&order1), STATUS_OPEN);
+        assert_eq!(decode_order_side(&order1), SIDE_SELL);
+        assert_eq!(decode_order_price(&order1), 1_000_000_000);
+        assert_eq!(decode_order_quantity(&order1), 100_000);
+        assert_eq!(decode_order_filled(&order1), 0);
+
+        // Verify seller's open order count = 1
+        assert_eq!(load_u64(&user_order_count_key(&seller)), 1);
+
+        // No trades yet
+        assert_eq!(load_u64(TRADE_COUNT_KEY), 0);
+        assert_eq!(load_u64(TOTAL_VOLUME_KEY), 0);
+        assert_eq!(load_u64(FEE_TREASURY_KEY), 0);
+
+        // --- Step 2: Buyer places limit BUY at same price → auto-match ---
+        test_mock::set_caller(buyer);
+        assert_eq!(
+            place_order(
+                buyer.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                100_000,
+                0,
+                0
+            ),
+            0,
+            "buy order should place and match"
+        );
+
+        // --- Step 3: Verify trade executed ---
+        assert_eq!(load_u64(TRADE_COUNT_KEY), 1, "exactly 1 trade should execute");
+        assert!(load_u64(TOTAL_VOLUME_KEY) > 0, "volume must increase after trade");
+        assert!(load_u64(FEE_TREASURY_KEY) > 0, "fee treasury must accumulate");
+
+        // Both orders should be FILLED
+        let sell_data = storage_get(&order_key(1)).unwrap();
+        assert_eq!(decode_order_status(&sell_data), STATUS_FILLED);
+        assert_eq!(decode_order_filled(&sell_data), 100_000);
+
+        let buy_data = storage_get(&order_key(2)).unwrap();
+        assert_eq!(decode_order_status(&buy_data), STATUS_FILLED);
+        assert_eq!(decode_order_filled(&buy_data), 100_000);
+
+        // --- Step 4: Buyer places another order (resting) ---
+        // Price 900M, qty 1200 → notional = 1080 ≥ min_order(1000)
+        test_mock::set_caller(buyer);
+        assert_eq!(
+            place_order(
+                buyer.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                900_000_000,
+                1200,
+                0,
+                0
+            ),
+            0,
+            "second buy order should place (resting)"
+        );
+
+        let order3 = storage_get(&order_key(3)).unwrap();
+        assert_eq!(decode_order_status(&order3), STATUS_OPEN);
+        assert_eq!(decode_order_price(&order3), 900_000_000);
+
+        // Buyer should have open orders
+        let buyer_count = load_u64(&user_order_count_key(&buyer));
+        assert!(buyer_count > 0, "buyer should have open orders");
+
+        // --- Step 5: Cancel the resting order ("withdraw" from the orderbook) ---
+        test_mock::set_caller(buyer);
+        assert_eq!(cancel_order(buyer.as_ptr(), 3), 0, "cancel should succeed");
+
+        let cancelled = storage_get(&order_key(3)).unwrap();
+        assert_eq!(decode_order_status(&cancelled), STATUS_CANCELLED);
+
+        // --- Step 6: Final state verification ---
+        assert_eq!(load_u64(TRADE_COUNT_KEY), 1);
+        assert_eq!(load_u64(PAIR_COUNT_KEY), 1);
+    }
+
+    #[test]
+    fn test_multi_order_partial_fill_lifecycle() {
+        // K3-03: Multiple participants, partial fills, then cleanup
+        let (_admin, pair_id) = setup_with_pair();
+        let seller = [3u8; 32];
+        let buyer_a = [4u8; 32];
+        let buyer_b = [5u8; 32];
+        test_mock::set_slot(200);
+
+        // Seller posts 2000 units
+        test_mock::set_caller(seller);
+        assert_eq!(
+            place_order(seller.as_ptr(), pair_id, SIDE_SELL, ORDER_LIMIT, 1_000_000_000, 2000, 0, 0),
+            0
+        );
+
+        // Buyer A takes 1000 → partial fill
+        test_mock::set_caller(buyer_a);
+        assert_eq!(
+            place_order(buyer_a.as_ptr(), pair_id, SIDE_BUY, ORDER_LIMIT, 1_000_000_000, 1000, 0, 0),
+            0
+        );
+
+        // Sell order should be partially filled
+        let sell_data = storage_get(&order_key(1)).unwrap();
+        assert_eq!(decode_order_status(&sell_data), STATUS_PARTIAL);
+        assert_eq!(decode_order_filled(&sell_data), 1000);
+
+        assert_eq!(load_u64(TRADE_COUNT_KEY), 1);
+
+        // Buyer B takes remaining 1000 → fully fills seller
+        test_mock::set_caller(buyer_b);
+        assert_eq!(
+            place_order(buyer_b.as_ptr(), pair_id, SIDE_BUY, ORDER_LIMIT, 1_000_000_000, 1000, 0, 0),
+            0
+        );
+
+        let sell_final = storage_get(&order_key(1)).unwrap();
+        assert_eq!(decode_order_status(&sell_final), STATUS_FILLED);
+        assert_eq!(decode_order_filled(&sell_final), 2000);
+
+        assert_eq!(load_u64(TRADE_COUNT_KEY), 2, "two trades should have executed");
+
+        let total_vol = load_u64(TOTAL_VOLUME_KEY);
+        assert!(total_vol > 0, "cumulative volume must be positive");
     }
 }
