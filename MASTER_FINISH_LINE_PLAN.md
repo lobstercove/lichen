@@ -722,7 +722,7 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| I4-01 | HIGH | Security | Private keys stored in localStorage via shared-config.js | Use wallet extension for signing, never store keys in DEX | [ ] |
+| I4-01 | HIGH | Security | Private keys stored in localStorage via shared-config.js | Use wallet extension for signing, never store keys in DEX | [x] |
 | I4-02 | HIGH | Mock data | `[NEW]` Price data includes mock/simulated values — chart may show fake prices | Remove mock price feed, use only live oracle data | [ ] |
 | I4-03 | MEDIUM | Missing | `[FLP M2]` Bottom panel needs consolidation — duplicate Positions/Margin tabs | Consolidate panels, add liquidation price column | [ ] |
 | I4-04 | MEDIUM | Missing | `[FLP M4]` No slippage tolerance setting, no chart memory across sessions | Implement settings persistence in localStorage | [ ] |
@@ -1116,7 +1116,7 @@ After cross_contract_call works:
 ```
 47. L5-01   Create shared utility module ✅ shared/utils.js with 20+ functions, imported in 28 HTML files
 48. I1-01   Deduplicate explorer code ✅ escapeHtml/formatHash/rpcCall/bs58/formatTimeFull consolidated in shared/utils.js
-49. I4-01   Remove key storage from DEX
+49. I4-01   Remove key storage from DEX ✅ Replaced embedded Ed25519 wallet with MoltWallet extension delegation; removed private key import/create UI; updated 21 error messages; no nacl/secretKey/keyPair references remain
 50. I5-01   Wire marketplace to live data
 51. I8-01   Add monitoring authentication
 ```
