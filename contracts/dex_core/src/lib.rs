@@ -3,6 +3,7 @@
 // Features:
 //   - On-chain CLOB with price-time priority matching
 //   - Limit, market, stop-limit, post-only order types
+//   - Reduce-only flag (0x80) — validates against margin positions
 //   - Self-trade prevention (cancel-oldest)
 //   - Trading pair management with configurable fees
 //   - Maker rebates (-1 bps), taker fees (5 bps default)
@@ -62,6 +63,8 @@ const MIN_FEE_PER_TRADE: u64 = 1; // 1 shell minimum
 const ORDER_EXPIRY_MAX: u64 = 2_592_000; // ~30 days in slots
 // F18.2: Analytics cross-contract call — record trades after settlement
 const ANALYTICS_ADDRESS_KEY: &str = "dex_analytics_addr";
+// G2-04: Margin contract address for reduce-only cross-contract validation
+const MARGIN_ADDRESS_KEY: &str = "dex_margin_addr";
 // F18.7: Daily volume reset tracking (slot-based day boundary)
 const SLOTS_PER_DAY: u64 = 216_000; // 24h * 3600s / 0.4s
 
@@ -74,6 +77,10 @@ const ORDER_LIMIT: u8 = 0;
 const ORDER_MARKET: u8 = 1;
 const ORDER_STOP_LIMIT: u8 = 2;
 const ORDER_POST_ONLY: u8 = 3;
+
+// Reduce-only flag — OR'd with base order type (e.g. ORDER_LIMIT | REDUCE_ONLY_FLAG)
+// Indicates the order should only reduce an existing margin position, not open one.
+const REDUCE_ONLY_FLAG: u8 = 0x80;
 
 // Order status
 const STATUS_OPEN: u8 = 0;
@@ -1018,8 +1025,12 @@ pub fn place_order(
     let lot = decode_pair_lot_size(&pair_data);
     let min_ord = decode_pair_min_order(&pair_data);
 
-    // Validate params
-    if side > SIDE_SELL || order_type > ORDER_POST_ONLY {
+    // G2-04: Extract reduce-only flag and base order type
+    let is_reduce_only = (order_type & REDUCE_ONLY_FLAG) != 0;
+    let base_order_type = order_type & 0x7F;
+
+    // Validate params (using base_order_type for type range check)
+    if side > SIDE_SELL || base_order_type > ORDER_POST_ONLY {
         reentrancy_exit();
         return 4;
     }
@@ -1027,11 +1038,11 @@ pub fn place_order(
         reentrancy_exit();
         return 4;
     }
-    if order_type != ORDER_MARKET && price == 0 {
+    if base_order_type != ORDER_MARKET && price == 0 {
         reentrancy_exit();
         return 4;
     }
-    if order_type != ORDER_MARKET && price % tick != 0 {
+    if base_order_type != ORDER_MARKET && price % tick != 0 {
         reentrancy_exit();
         return 4;
     }
@@ -1040,10 +1051,13 @@ pub fn place_order(
         return 4;
     }
 
+    // G2-04: mutable quantity for reduce-only capping
+    let mut quantity = quantity;
+
     // Notional value check
     // AUDIT-FIX M10: For market orders with a worst-price bound, use
     // worst-price for notional estimation (more accurate than raw quantity).
-    let notional = if order_type == ORDER_MARKET {
+    let notional = if base_order_type == ORDER_MARKET {
         if price > 0 {
             (price as u128 * quantity as u128 / 1_000_000_000) as u64
         } else {
@@ -1144,7 +1158,7 @@ pub fn place_order(
 
                 // Only enforce if band data is fresh (within 300 slots ≈ 5 min)
                 if ref_price > 0 && current_slot.saturating_sub(band_slot) < 300 {
-                    let check_price = if order_type == ORDER_MARKET {
+                    let check_price = if base_order_type == ORDER_MARKET {
                         // Market order with worst-price bound
                         if price > 0 { price } else { 0 }
                     } else {
@@ -1153,7 +1167,7 @@ pub fn place_order(
 
                     if check_price > 0 {
                         // Percentage thresholds (basis points): market=500 (5%), limit=1000 (10%)
-                        let band_bps: u64 = if order_type == ORDER_MARKET { 500 } else { 1000 };
+                        let band_bps: u64 = if base_order_type == ORDER_MARKET { 500 } else { 1000 };
 
                         // Calculate allowed range: ref_price * (1 ± band_bps/10000) — use u128 to avoid overflow
                         let band = (ref_price as u128 * band_bps as u128 / 10000) as u64;
@@ -1171,7 +1185,7 @@ pub fn place_order(
     }
 
     // Post-only check: reject if would immediately match
-    if order_type == ORDER_POST_ONLY {
+    if base_order_type == ORDER_POST_ONLY {
         if side == SIDE_BUY {
             let best_ask = load_u64(&best_ask_key(pair_id));
             if best_ask != u64::MAX && price >= best_ask {
@@ -1187,12 +1201,58 @@ pub fn place_order(
         }
     }
 
+    // G2-04: Reduce-only validation — cross-call dex_margin to verify open position
+    if is_reduce_only {
+        let margin_addr = load_addr(MARGIN_ADDRESS_KEY.as_bytes());
+        if is_zero(&margin_addr) {
+            // No margin contract configured — cannot validate reduce-only
+            reentrancy_exit();
+            return 12;
+        }
+        // Cross-call dex_margin opcode 26: query_user_open_position(trader[32], pair_id[8])
+        let mut qargs = Vec::with_capacity(41);
+        qargs.push(26u8); // opcode
+        qargs.extend_from_slice(&t);
+        qargs.extend_from_slice(&u64_to_bytes(pair_id));
+        let call = CrossCall::new(Address(margin_addr), "query_user_open_position", qargs)
+            .with_value(0);
+        match call_contract(call) {
+            Ok(ref data) if data.len() >= 58 => {
+                // Parse position: byte 48 = side, byte 49 = status, bytes 50..58 = size
+                let pos_side = data[48];
+                let pos_status = data[49];
+                let pos_size = bytes_to_u64(&data[50..58]);
+                // Position must be open (status 0)
+                if pos_status != 0 || pos_size == 0 {
+                    reentrancy_exit();
+                    return 12;
+                }
+                // Order must be in closing direction:
+                // Long position (side=0) → must sell to reduce
+                // Short position (side=1) → must buy to reduce
+                if (pos_side == 0 && side != SIDE_SELL) || (pos_side == 1 && side != SIDE_BUY) {
+                    reentrancy_exit();
+                    return 12;
+                }
+                // Cap quantity at position size
+                if quantity > pos_size {
+                    quantity = pos_size;
+                }
+            }
+            _ => {
+                // Cross-call failed or returned insufficient data — no position found
+                reentrancy_exit();
+                return 12;
+            }
+        }
+    }
+
     // Create order
     let order_count = load_u64(ORDER_COUNT_KEY);
     let new_order_id = order_count + 1;
 
     // Stop-limit orders with a trigger_price go dormant until triggered
-    let initial_status = if order_type == ORDER_STOP_LIMIT && trigger_price > 0 {
+    let initial_status = if base_order_type == ORDER_STOP_LIMIT && trigger_price > 0 {
         STATUS_DORMANT
     } else {
         STATUS_OPEN
@@ -1202,7 +1262,7 @@ pub fn place_order(
         &t,
         pair_id,
         side,
-        order_type,
+        base_order_type,
         price,
         quantity,
         0,
@@ -1230,9 +1290,9 @@ pub fn place_order(
     let remaining = match_order(new_order_id, pair_id, side, price, quantity, &t, &pair_data);
 
     // If not fully filled and limit-type, rest on book
-    if remaining > 0 && order_type != ORDER_MARKET {
+    if remaining > 0 && base_order_type != ORDER_MARKET {
         add_to_book(pair_id, side, price, new_order_id);
-    } else if remaining > 0 && order_type == ORDER_MARKET {
+    } else if remaining > 0 && base_order_type == ORDER_MARKET {
         // Market order: cancel unfilled remainder
         let mut od = storage_get(&order_key(new_order_id)).unwrap();
         let filled = quantity - remaining;
@@ -1757,6 +1817,22 @@ pub fn set_analytics_address(caller: *const u8, analytics: *const u8) -> u32 {
     0
 }
 
+/// G2-04: Set the margin contract address for reduce-only validation
+pub fn set_margin_address(caller: *const u8, margin: *const u8) -> u32 {
+    let mut c = [0u8; 32];
+    let mut m = [0u8; 32];
+    unsafe {
+        core::ptr::copy_nonoverlapping(caller, c.as_mut_ptr(), 32);
+        core::ptr::copy_nonoverlapping(margin, m.as_mut_ptr(), 32);
+    }
+    let real_caller = get_caller();
+    if real_caller.0 != c { return 200; }
+    if !require_admin(&c) { return 1; }
+    storage_set(MARGIN_ADDRESS_KEY.as_bytes(), &m);
+    log_info("DEX Core: margin address set");
+    0
+}
+
 /// Emergency pause (admin only) — instant, no timelock
 pub fn emergency_pause(caller: *const u8) -> u32 {
     let mut c = [0u8; 32];
@@ -2266,6 +2342,13 @@ pub extern "C" fn call() {
                     bytes_to_u64(&args[9..17]),
                 );
                 moltchain_sdk::set_return_data(&u64_to_bytes(triggered));
+            }
+        }
+        // 30 = G2-04: set_margin_address(caller[32], margin_addr[32])
+        30 => {
+            if args.len() >= 65 {
+                let r = set_margin_address(args[1..33].as_ptr(), args[33..65].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
         _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
@@ -2869,6 +2952,107 @@ mod tests {
                 ORDER_POST_ONLY,
                 1_000_000_000,
                 1000,
+                0,
+                0
+            ),
+            0
+        );
+    }
+
+    // --- Reduce-Only (G2-04) ---
+
+    #[test]
+    fn test_reduce_only_rejected_no_margin_address() {
+        // Without configured margin address, reduce-only orders should fail
+        let (_admin, pair_id) = setup_with_pair();
+        let trader = [2u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(trader);
+        assert_eq!(
+            place_order(
+                trader.as_ptr(),
+                pair_id,
+                SIDE_SELL,
+                ORDER_LIMIT | REDUCE_ONLY_FLAG,
+                1_000_000_000,
+                1200,
+                0,
+                0
+            ),
+            12 // reduce-only rejected: no margin address
+        );
+    }
+
+    #[test]
+    fn test_reduce_only_rejected_no_position() {
+        // With margin address set but no position (cross-call returns empty in tests),
+        // reduce-only orders should fail
+        let (admin, pair_id) = setup_with_pair();
+        let margin_addr = [50u8; 32];
+        test_mock::set_caller(admin);
+        assert_eq!(set_margin_address(admin.as_ptr(), margin_addr.as_ptr()), 0);
+
+        let trader = [2u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(trader);
+        assert_eq!(
+            place_order(
+                trader.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_MARKET | REDUCE_ONLY_FLAG,
+                1_000_000_000,
+                1200,
+                0,
+                0
+            ),
+            12 // reduce-only rejected: no open position
+        );
+    }
+
+    #[test]
+    fn test_reduce_only_flag_preserves_base_type() {
+        // Verify that ORDER_LIMIT | REDUCE_ONLY_FLAG = 0x80, and
+        // base type extraction yields ORDER_LIMIT(0)
+        assert_eq!(ORDER_LIMIT | REDUCE_ONLY_FLAG, 0x80);
+        assert_eq!((ORDER_LIMIT | REDUCE_ONLY_FLAG) & 0x7F, ORDER_LIMIT);
+        assert_eq!((ORDER_MARKET | REDUCE_ONLY_FLAG) & 0x7F, ORDER_MARKET);
+        assert_eq!((ORDER_STOP_LIMIT | REDUCE_ONLY_FLAG) & 0x7F, ORDER_STOP_LIMIT);
+        assert_eq!((ORDER_POST_ONLY | REDUCE_ONLY_FLAG) & 0x7F, ORDER_POST_ONLY);
+    }
+
+    #[test]
+    fn test_set_margin_address() {
+        let admin = setup();
+        let margin = [42u8; 32];
+        assert_eq!(set_margin_address(admin.as_ptr(), margin.as_ptr()), 0);
+        assert_eq!(load_addr(MARGIN_ADDRESS_KEY.as_bytes()), margin);
+    }
+
+    #[test]
+    fn test_set_margin_address_not_admin() {
+        let _admin = setup();
+        let rando = [99u8; 32];
+        let margin = [42u8; 32];
+        test_mock::set_caller(rando);
+        assert_eq!(set_margin_address(rando.as_ptr(), margin.as_ptr()), 1);
+    }
+
+    #[test]
+    fn test_normal_order_unaffected_by_reduce_only_feature() {
+        // Standard limit order (no reduce-only flag) should still work normally
+        let (_admin, pair_id) = setup_with_pair();
+        let trader = [2u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(trader);
+        assert_eq!(
+            place_order(
+                trader.as_ptr(),
+                pair_id,
+                SIDE_BUY,
+                ORDER_LIMIT,
+                1_000_000_000,
+                1200,
                 0,
                 0
             ),

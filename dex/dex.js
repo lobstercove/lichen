@@ -320,7 +320,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // ── DEX Core instruction builders ──
     // Opcode 2: place_order(trader, pair_id, side, type, price, qty, expiry, trigger_price)
     // Order types: 0=limit, 1=market, 2=stop-limit, 3=post-only
-    function buildPlaceOrderArgs(trader, pairId, side, orderType, price, quantity, stopPrice) {
+    function buildPlaceOrderArgs(trader, pairId, side, orderType, price, quantity, stopPrice, reduceOnly) {
         const buf = new ArrayBuffer(75);
         const view = new DataView(buf);
         const arr = new Uint8Array(buf);
@@ -333,6 +333,8 @@ document.addEventListener('DOMContentLoaded', () => {
         if (orderType === 'market') typeByte = 1;      // ORDER_MARKET
         else if (orderType === 'stop-limit') typeByte = 2;  // ORDER_STOP_LIMIT
         else if (orderType === 'post-only') typeByte = 3;   // ORDER_POST_ONLY
+        // G2-04: OR reduce-only flag (0x80) onto type byte
+        if (reduceOnly) typeByte |= 0x80;
         writeU8(arr, 42, typeByte);
         writeU64LE(view, 43, price);
         writeU64LE(view, 51, quantity);
@@ -1720,9 +1722,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 // F17.8: Immediate panel refresh after margin trade
                 loadMarginPositions().catch(() => {});
             } else {
+                // G2-04: Check reduce-only checkbox state for the contract flag
+                const reduceOnlyEl = document.getElementById('reduceOnly');
+                const isReduceOnly = !!(reduceOnlyEl && reduceOnlyEl.checked);
                 const result = await wallet.sendTransaction([contractIx(
                     contracts.dex_core,
-                    buildPlaceOrderArgs(wallet.address, state.activePairId, state.orderSide, effectiveOrderType, Math.round(price * PRICE_SCALE), Math.round(amount * PRICE_SCALE), effectiveOrderType === 'stop-limit' ? Math.round(stopPrice * PRICE_SCALE) : 0)
+                    buildPlaceOrderArgs(wallet.address, state.activePairId, state.orderSide, effectiveOrderType, Math.round(price * PRICE_SCALE), Math.round(amount * PRICE_SCALE), effectiveOrderType === 'stop-limit' ? Math.round(stopPrice * PRICE_SCALE) : 0, isReduceOnly)
                 )]);
                 showNotification(`${state.orderSide.toUpperCase()} order placed: ${formatAmount(amount)} ${state.activePair?.base || ''} @ ${effectiveOrderType === 'market' ? 'MARKET' : formatPrice(price)}`, 'success');
                 // F24.16: Refresh from API instead of pushing client-side stub (avoids stale/duplicate entries)
