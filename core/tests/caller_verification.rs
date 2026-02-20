@@ -394,3 +394,182 @@ fn a12_01_genesis_distribution_matches_multisig() {
         total
     );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AUDIT-FIX A5-03: Slashing parameters alignment regression tests
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Verify genesis.rs no longer contains the flat slashing_percentage_downtime
+/// field, and instead uses graduated fields matching consensus.rs.
+#[test]
+fn a5_03_genesis_uses_graduated_downtime_slashing() {
+    let genesis_src = fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/genesis.rs"),
+    )
+    .expect("Failed to read genesis.rs");
+
+    // Must NOT contain the old flat downtime field as a struct field
+    // (comments referencing the old name are OK)
+    assert!(
+        !genesis_src.contains("pub slashing_percentage_downtime"),
+        "REGRESSION A5-03: genesis.rs still has flat pub slashing_percentage_downtime field; \
+         must use graduated slashing_downtime_per_100_missed + slashing_downtime_max_percent"
+    );
+
+    // Must contain the graduated fields
+    assert!(
+        genesis_src.contains("slashing_downtime_per_100_missed"),
+        "REGRESSION A5-03: genesis.rs missing slashing_downtime_per_100_missed field"
+    );
+    assert!(
+        genesis_src.contains("slashing_downtime_max_percent"),
+        "REGRESSION A5-03: genesis.rs missing slashing_downtime_max_percent field"
+    );
+}
+
+/// Verify consensus.rs apply_economic_slashing reads from ConsensusParams
+/// (not hardcoded percentages) for downtime, double-sign, and invalid-state.
+#[test]
+fn a5_03_consensus_reads_from_genesis_params() {
+    let consensus_src = fs::read_to_string(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/consensus.rs"),
+    )
+    .expect("Failed to read consensus.rs");
+
+    // Find the apply_economic_slashing_with_params function
+    let fn_start = consensus_src
+        .find("fn apply_economic_slashing_with_params")
+        .expect("apply_economic_slashing_with_params fn not found in consensus.rs");
+    let fn_body = &consensus_src[fn_start..std::cmp::min(fn_start + 3000, consensus_src.len())];
+
+    // Must reference params fields, not hardcoded values
+    assert!(
+        fn_body.contains("params.slashing_percentage_double_sign"),
+        "REGRESSION A5-03: apply_economic_slashing_with_params must use \
+         params.slashing_percentage_double_sign, not hardcode 50"
+    );
+    assert!(
+        fn_body.contains("params.slashing_downtime_per_100_missed"),
+        "REGRESSION A5-03: apply_economic_slashing_with_params must use \
+         params.slashing_downtime_per_100_missed, not hardcode 1"
+    );
+    assert!(
+        fn_body.contains("params.slashing_downtime_max_percent"),
+        "REGRESSION A5-03: apply_economic_slashing_with_params must use \
+         params.slashing_downtime_max_percent, not hardcode 10"
+    );
+    assert!(
+        fn_body.contains("params.slashing_percentage_invalid_state"),
+        "REGRESSION A5-03: apply_economic_slashing_with_params must use \
+         params.slashing_percentage_invalid_state, not hardcode 100"
+    );
+}
+
+/// Verify the graduated slashing math produces correct penalties
+/// with explicit ConsensusParams.
+#[test]
+fn a5_03_graduated_slashing_math() {
+    use moltchain_core::consensus::{
+        SlashingEvidence, SlashingOffense, SlashingTracker, StakePool, MIN_VALIDATOR_STAKE,
+    };
+    use moltchain_core::genesis::ConsensusParams;
+    use moltchain_core::Keypair;
+
+    let params = ConsensusParams {
+        slashing_downtime_per_100_missed: 1,
+        slashing_downtime_max_percent: 10,
+        slashing_percentage_double_sign: 50,
+        slashing_percentage_invalid_state: 100,
+        ..ConsensusParams::default()
+    };
+
+    let v1 = Keypair::new();
+    let reporter = Keypair::new();
+    let stake = MIN_VALIDATOR_STAKE; // 100k MOLT
+
+    // Test 1: 300 missed slots → 3% slash (3 × 1%)
+    {
+        let mut tracker = SlashingTracker::new();
+        let mut pool = StakePool::new();
+        pool.stake(v1.pubkey(), stake, 0).unwrap();
+
+        // need severity >= 70 to trigger slash, so add a DoubleBlock too
+        let dbl = SlashingEvidence::new(
+            SlashingOffense::DoubleBlock {
+                slot: 10,
+                block_hash_1: moltchain_core::Hash::new([1u8; 32]),
+                block_hash_2: moltchain_core::Hash::new([2u8; 32]),
+            },
+            v1.pubkey(),
+            10,
+            reporter.pubkey(),
+        );
+        tracker.add_evidence(dbl);
+
+        let downtime = SlashingEvidence::new(
+            SlashingOffense::Downtime {
+                last_active_slot: 0,
+                current_slot: 300,
+                missed_slots: 300,
+            },
+            v1.pubkey(),
+            300,
+            reporter.pubkey(),
+        );
+        tracker.add_evidence(downtime);
+
+        let slashed =
+            tracker.apply_economic_slashing_with_params(&v1.pubkey(), &mut pool, &params);
+        // DoubleBlock = 50% (500B) + Downtime 300/100=3 × 1% = 3% (30B) = 53% (530B)
+        let expected = (stake as u128 * 50 / 100 + stake as u128 * 3 / 100) as u64;
+        assert_eq!(
+            slashed, expected,
+            "REGRESSION A5-03: 300 missed slots should slash 53% (50% double + 3% downtime), \
+             got {} expected {}",
+            slashed, expected
+        );
+    }
+
+    // Test 2: 2000 missed slots → capped at max 10% (not 20%)
+    {
+        let v2 = Keypair::new();
+        let mut tracker = SlashingTracker::new();
+        let mut pool = StakePool::new();
+        pool.stake(v2.pubkey(), stake, 0).unwrap();
+
+        let dbl = SlashingEvidence::new(
+            SlashingOffense::DoubleBlock {
+                slot: 10,
+                block_hash_1: moltchain_core::Hash::new([3u8; 32]),
+                block_hash_2: moltchain_core::Hash::new([4u8; 32]),
+            },
+            v2.pubkey(),
+            10,
+            reporter.pubkey(),
+        );
+        tracker.add_evidence(dbl);
+
+        let downtime = SlashingEvidence::new(
+            SlashingOffense::Downtime {
+                last_active_slot: 0,
+                current_slot: 2000,
+                missed_slots: 2000,
+            },
+            v2.pubkey(),
+            2000,
+            reporter.pubkey(),
+        );
+        tracker.add_evidence(downtime);
+
+        let slashed =
+            tracker.apply_economic_slashing_with_params(&v2.pubkey(), &mut pool, &params);
+        // DoubleBlock = 50% + Downtime capped at max 10% = 60%
+        let expected = (stake as u128 * 50 / 100 + stake as u128 * 10 / 100) as u64;
+        assert_eq!(
+            slashed, expected,
+            "REGRESSION A5-03: 2000 missed slots should cap downtime at 10%, \
+             total 60% (50% double + 10% downtime), got {} expected {}",
+            slashed, expected
+        );
+    }
+}

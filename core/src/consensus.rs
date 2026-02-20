@@ -2,6 +2,7 @@
 // Byzantine Fault Tolerant consensus with Proof of Contribution
 
 use crate::contract::ContractAccount;
+use crate::genesis::ConsensusParams;
 use crate::{Hash, Pubkey};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -2416,10 +2417,25 @@ impl SlashingTracker {
     }
 
     /// Apply economic slashing to stake pool (returns total amount slashed)
+    /// AUDIT-FIX A5-03: Now reads slashing percentages from ConsensusParams
+    /// instead of hardcoding them, ensuring genesis config is the single source
+    /// of truth for all slashing parameters.
     pub fn apply_economic_slashing(
         &mut self,
         validator: &Pubkey,
         stake_pool: &mut StakePool,
+    ) -> u64 {
+        // Default params for backward compatibility (tests that don't pass config)
+        let default_params = ConsensusParams::default();
+        self.apply_economic_slashing_with_params(validator, stake_pool, &default_params)
+    }
+
+    /// Apply economic slashing using explicit consensus parameters
+    pub fn apply_economic_slashing_with_params(
+        &mut self,
+        validator: &Pubkey,
+        stake_pool: &mut StakePool,
+        params: &ConsensusParams,
     ) -> u64 {
         if !self.should_slash(validator) {
             return 0;
@@ -2441,24 +2457,32 @@ impl SlashingTracker {
 
         if let Some(evidence_list) = self.evidence.get(validator) {
             for evidence in evidence_list {
-                // Calculate stake to slash based on severity — all from original snapshot
+                // AUDIT-FIX A5-03: Use genesis ConsensusParams for slash percentages
                 let stake_penalty = match evidence.offense {
                     SlashingOffense::DoubleBlock { .. } => {
-                        // Slash 50% of stake for double block production
-                        original_stake / 2
+                        // Slash configured % of stake for double block production
+                        (original_stake as u128 * params.slashing_percentage_double_sign as u128
+                            / 100) as u64
                     }
                     SlashingOffense::DoubleVote { .. } => {
-                        // Slash 30% of stake for double voting
+                        // Slash 30% of stake for double voting (no separate genesis param)
                         (original_stake as u128 * 30 / 100) as u64
                     }
                     SlashingOffense::Downtime { missed_slots, .. } => {
-                        // Slash proportional to downtime (max 10%)
-                        let downtime_penalty = (missed_slots / 100).min(10);
-                        (original_stake as u128 * downtime_penalty as u128 / 100) as u64
+                        // AUDIT-FIX A5-03: Graduated downtime from genesis config
+                        // (per_100_missed% per 100 slots missed, capped at max_percent%)
+                        let downtime_penalty = (missed_slots / 100)
+                            .min(params.slashing_downtime_max_percent);
+                        (original_stake as u128
+                            * downtime_penalty as u128
+                            * params.slashing_downtime_per_100_missed as u128
+                            / 100) as u64
                     }
                     SlashingOffense::InvalidStateTransition { .. } => {
-                        // Slash 100% of stake for invalid state transition
-                        original_stake
+                        // Slash configured % of stake for invalid state transition
+                        (original_stake as u128
+                            * params.slashing_percentage_invalid_state as u128
+                            / 100) as u64
                     }
                     SlashingOffense::Censorship { .. } => {
                         // Slash 25% of stake for censorship attack

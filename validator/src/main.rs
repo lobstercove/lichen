@@ -8813,8 +8813,12 @@ async fn run_validator() {
                     && !slasher.is_slashed(&validator_info.pubkey)
                 {
                     // Apply ECONOMIC slashing - slash actual stake
-                    let slashed_amount =
-                        slasher.apply_economic_slashing(&validator_info.pubkey, &mut pool);
+                    // AUDIT-FIX A5-03: Use genesis ConsensusParams for slash percentages
+                    let slashed_amount = slasher.apply_economic_slashing_with_params(
+                        &validator_info.pubkey,
+                        &mut pool,
+                        &genesis_config.consensus,
+                    );
 
                     // Also apply reputation penalty (floor 50 — prevents death spiral)
                     let reputation_penalty = slasher.calculate_penalty(&validator_info.pubkey);

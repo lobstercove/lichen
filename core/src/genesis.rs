@@ -49,14 +49,35 @@ pub struct ConsensusParams {
     /// Slashing percentage for double signing
     pub slashing_percentage_double_sign: u64,
 
-    /// Slashing percentage for downtime
-    pub slashing_percentage_downtime: u64,
+    // AUDIT-FIX A5-03: Replaced flat slashing_percentage_downtime (was 5%)
+    // with graduated approach matching consensus.rs apply_economic_slashing.
+    /// Downtime slash: percent penalty per 100 missed slots (graduated)
+    pub slashing_downtime_per_100_missed: u64,
+
+    /// Downtime slash: maximum percentage cap
+    pub slashing_downtime_max_percent: u64,
 
     /// Slashing percentage for invalid state
     pub slashing_percentage_invalid_state: u64,
 
     /// Finality threshold percentage (BFT: 66%)
     pub finality_threshold_percent: u64,
+}
+
+impl Default for ConsensusParams {
+    fn default() -> Self {
+        ConsensusParams {
+            slot_duration_ms: 400,
+            epoch_slots: 432000,
+            min_validator_stake: 100_000_000_000, // 100 MOLT (testnet default)
+            validator_reward_per_block: 900_000_000,
+            slashing_percentage_double_sign: 50,
+            slashing_downtime_per_100_missed: 1,
+            slashing_downtime_max_percent: 10,
+            slashing_percentage_invalid_state: 100,
+            finality_threshold_percent: 66,
+        }
+    }
 }
 
 /// Initial account with balance
@@ -348,7 +369,9 @@ impl GenesisConfig {
                 // AUDIT-FIX 1.3: match TRANSACTION_BLOCK_REWARD constant (0.9 MOLT)
                 validator_reward_per_block: 900_000_000,   // 0.9 MOLT
                 slashing_percentage_double_sign: 50,
-                slashing_percentage_downtime: 5,
+                // AUDIT-FIX A5-03: graduated downtime (1% per 100 missed, max 10%)
+                slashing_downtime_per_100_missed: 1,
+                slashing_downtime_max_percent: 10,
                 slashing_percentage_invalid_state: 100,
                 finality_threshold_percent: 66,
             },
@@ -391,7 +414,9 @@ impl GenesisConfig {
                 // AUDIT-FIX 1.3: match TRANSACTION_BLOCK_REWARD constant (0.9 MOLT)
                 validator_reward_per_block: 900_000_000,
                 slashing_percentage_double_sign: 50,
-                slashing_percentage_downtime: 5,
+                // AUDIT-FIX A5-03: graduated downtime (1% per 100 missed, max 10%)
+                slashing_downtime_per_100_missed: 1,
+                slashing_downtime_max_percent: 10,
                 slashing_percentage_invalid_state: 100,
                 finality_threshold_percent: 66,
             },
