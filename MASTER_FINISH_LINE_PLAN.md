@@ -455,7 +455,7 @@
 |----|----------|----------|---------|-------------|--------|
 | G6-01 | HIGH | Security | `[FLP H4]` No host-level collateral locking — user can open margin position and still spend the collateral | Implement locked_balance field in account model and lock collateral atomically | [x] |
 | G6-02 | HIGH | Missing | `[FLP H6]` No funding rate implementation — perpetual futures prices can diverge arbitrarily from spot | Implement periodic funding rate calculation and settlement | [x] |
-| G6-03 | HIGH | Security | `[FLP H8]` `close_position` returns full margin on missing oracle price — traders can close losing positions at no loss during oracle outage | Return error when oracle price unavailable, or use last known price with staleness check | [ ] |
+| G6-03 | HIGH | Security | `[FLP H8]` `close_position` returns full margin on missing oracle price — traders can close losing positions at no loss during oracle outage | Return error when oracle price unavailable, or use last known price with staleness check | [x] |
 | G6-04 | MEDIUM | Missing | `[FLP H5]` Insurance fund has no withdrawal/deployment mechanism — funds are permanently trapped | Add governance-controlled withdrawal mechanism | [ ] |
 | G6-05 | LOW | Precision | `[FLP L6]` Liquidation penalty integer division remainder (up to 1 shell) is lost — dust amounts | Use rounding that favors insurance fund | [ ] |
 
@@ -1136,7 +1136,7 @@ After cross_contract_call works:
 
 ```
 58. G5-02   Governance execution (H2) ✅ Real cross-contract dispatch: NEW_PAIR→create_pair, FEE_CHANGE→update_pair_fees (+audit record), DELIST→pause_pair, PARAM_CHANGE→stored config. 4 new tests, 37 total pass
-59. G6-03   Oracle fallback handling (H8)
+59. G6-03   Oracle fallback handling (H8) ✅ SECURITY: close_position/partial_close/remove_margin now reject when oracle stale/missing (return 5/7). Previously returned full margin allowing loss escape. 5 regression tests, 117 total pass
 60. H7 params   Tokenomics parameter adjustment
 61. G2-04   Wire Post-Only/Reduce-Only flags
 62. M16     MoltyID UI integration
