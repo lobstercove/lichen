@@ -1,29 +1,10 @@
 // Transaction Detail Page - Reef Explorer
 // Uses `rpc` instance from explorer.js (loaded before this file)
 // NOTE: formatHash, formatAddress, formatNumber, formatMolt, copyToClipboard,
-//       escapeHtml, safeCopy are provided by utils.js (loaded before this file)
+//       escapeHtml, safeCopy, formatTimeFull, formatShells are provided
+//       by shared/utils.js (loaded before this file)
 
 const BASE_FEE = 1000000; // shells (from core/src/processor.rs — 0.001 MOLT)
-
-function formatShells(shells) {
-    return formatNumber(shells) + ' shells';
-}
-
-// Transaction-specific full timestamp format (absolute + relative)
-function formatTimeFull(timestamp) {
-    if (!timestamp || timestamp <= 0) return 'Genesis';
-    const date = new Date(timestamp * 1000);
-    const now = new Date();
-    const diff = Math.floor((now - date) / 1000);
-    
-    let timeAgo = '';
-    if (diff < 60) timeAgo = diff + ' seconds ago';
-    else if (diff < 3600) timeAgo = Math.floor(diff / 60) + ' minutes ago';
-    else if (diff < 86400) timeAgo = Math.floor(diff / 3600) + ' hours ago';
-    else timeAgo = Math.floor(diff / 86400) + ' days ago';
-    
-    return date.toLocaleString() + ' (' + timeAgo + ')';
-}
 
 // Get transaction hash from URL
 function getTxHash() {

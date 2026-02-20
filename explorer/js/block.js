@@ -1,30 +1,8 @@
 // Block Detail Page - Reef Explorer
 // Uses `rpc` instance from explorer.js (loaded before this file)
 // NOTE: formatHash, formatAddress, formatNumber, formatBytes, copyToClipboard,
-//       escapeHtml, safeCopy are provided by utils.js (loaded before this file)
-
-// Block-specific time format (full date + relative)
-function formatTimeShort(timestamp) {
-    if (timestamp === null || timestamp === undefined) return 'N/A';
-    if (timestamp <= 0) return 'Genesis';
-    return new Date(timestamp * 1000).toLocaleString();
-}
-
-function formatTimeFull(timestamp) {
-    if (timestamp === null || timestamp === undefined) return 'N/A';
-    if (timestamp <= 0) return 'Genesis';
-    const date = new Date(timestamp * 1000);
-    const now = new Date();
-    const diff = Math.floor((now - date) / 1000);
-    
-    let timeAgo = '';
-    if (diff < 60) timeAgo = diff + ' seconds ago';
-    else if (diff < 3600) timeAgo = Math.floor(diff / 60) + ' minutes ago';
-    else if (diff < 86400) timeAgo = Math.floor(diff / 3600) + ' hours ago';
-    else timeAgo = Math.floor(diff / 86400) + ' days ago';
-    
-    return date.toLocaleString() + ' (' + timeAgo + ')';
-}
+//       escapeHtml, safeCopy, formatTimeShort, formatTimeFull are provided
+//       by shared/utils.js (loaded before this file)
 
 // Get block number from URL
 function getBlockNumber() {
