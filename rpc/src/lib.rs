@@ -7941,18 +7941,16 @@ async fn handle_eth_estimate_gas(
 }
 
 /// eth_gasPrice — return current gas price.
-/// MoltChain uses flat fees, so gasPrice is 1 (1 shell per gas unit).
-/// Total cost = gasPrice(1) * estimateGas(actual_fee) = actual_fee.
+/// AUDIT-FIX A11-01: MoltChain uses flat fees, so gasPrice = 1 (1 shell per gas unit).
+/// Total cost = gasPrice(1) × estimateGas(actual_fee_in_shells) = actual_fee.
+/// Previously this returned base_fee, causing MetaMask to display fee² (base_fee × base_fee).
 async fn handle_eth_gas_price(
-    state: &RpcState,
+    _state: &RpcState,
 ) -> Result<serde_json::Value, RpcError> {
-    let fee_config = state
-        .state
-        .get_fee_config()
-        .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
-
-    // gasPrice = base_fee; estimateGas returns multiplier such that price * gas = total fee
-    Ok(serde_json::json!(format!("0x{:x}", fee_config.base_fee)))
+    // gasPrice = 1 shell per gas unit.
+    // eth_estimateGas returns the actual fee in shells (= gas units consumed).
+    // MetaMask/wallets compute: total = gasPrice × gasEstimate = 1 × fee = fee. ✓
+    Ok(serde_json::json!("0x1"))
 }
 
 /// eth_getBlockByNumber — return full block data for a given block number or tag.
@@ -8133,10 +8131,11 @@ async fn handle_eth_get_logs(
 
             // Build topics from event name + data keys
             let mut topics = Vec::new();
-            // topic[0] = keccak256(event_name) — standard EVM topic format
+            // AUDIT-FIX A11-02: topic[0] = keccak256(event_name) — standard EVM topic format.
+            // Previously used SHA-256, which breaks all EVM tooling (Ethers.js, web3.py, The Graph).
             let event_hash = {
-                use sha2::{Digest, Sha256};
-                let mut hasher = Sha256::new();
+                use sha3::{Digest, Keccak256};
+                let mut hasher = Keccak256::new();
                 hasher.update(event.name.as_bytes());
                 let result = hasher.finalize();
                 format!("0x{}", hex::encode(result))
@@ -9676,5 +9675,66 @@ mod tests {
 
         let filtered = filter_signatures_for_address(indexed, None, None, 1);
         assert_eq!(filtered, vec![(h4, 4)]);
+    }
+
+    // ── AUDIT-FIX A11-01: eth_gasPrice must return 1, not base_fee ──
+
+    #[test]
+    fn test_a11_01_gas_price_returns_one() {
+        // Verify the source code of handle_eth_gas_price returns "0x1"
+        // (This is a source-level check since integration tests are complex)
+        let source = include_str!("lib.rs");
+        let fn_start = source.find("async fn handle_eth_gas_price").expect("fn not found");
+        let fn_body = &source[fn_start..fn_start + 600];
+
+        // Must contain "0x1" as the return value
+        assert!(
+            fn_body.contains("\"0x1\""),
+            "REGRESSION A11-01: eth_gasPrice must return \"0x1\" (1 shell per gas unit), \
+             not base_fee. MetaMask computes total = gasPrice × estimateGas."
+        );
+        // Must NOT contain "fee_config.base_fee" in the function body
+        assert!(
+            !fn_body.contains("fee_config.base_fee"),
+            "REGRESSION A11-01: eth_gasPrice must NOT return fee_config.base_fee"
+        );
+    }
+
+    // ── AUDIT-FIX A11-02: eth_getLogs must use Keccak-256 for topic hashing ──
+
+    #[test]
+    fn test_a11_02_get_logs_uses_keccak256() {
+        // Verify the topic hashing code uses sha3::Keccak256, not sha2::Sha256
+        let source = include_str!("lib.rs");
+        let fn_start = source.find("async fn handle_eth_get_logs").expect("fn not found");
+        let fn_body = &source[fn_start..std::cmp::min(fn_start + 5000, source.len())];
+
+        // Must use Keccak256
+        assert!(
+            fn_body.contains("Keccak256"),
+            "REGRESSION A11-02: eth_getLogs topic hashing must use Keccak256, not SHA-256. \
+             EVM tooling (Ethers.js, web3.py) uses keccak256 for event topic matching."
+        );
+        // Must NOT use sha2 or Sha256 for topic hashing
+        assert!(
+            !fn_body.contains("Sha256"),
+            "REGRESSION A11-02: eth_getLogs must NOT use Sha256 for topic hashing"
+        );
+    }
+
+    #[test]
+    fn test_a11_02_keccak256_produces_correct_hash() {
+        // Verify Keccak-256 of "Transfer(address,address,uint256)" matches known EVM value
+        use sha3::{Digest, Keccak256};
+        let mut hasher = Keccak256::new();
+        hasher.update(b"Transfer(address,address,uint256)");
+        let result = hasher.finalize();
+        let hex_str = hex::encode(result);
+        // Standard EVM Transfer topic: 0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef
+        assert_eq!(
+            hex_str,
+            "ddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+            "REGRESSION A11-02: Keccak-256 of ERC-20 Transfer event must match standard EVM topic hash"
+        );
     }
 }
