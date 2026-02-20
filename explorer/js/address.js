@@ -665,15 +665,6 @@ function formatSlotExpiry(expirySlot, registeredSlot) {
     return `${dateStr} (~${durationYears}yr)`;
 }
 
-function escapeHtml(value) {
-    return String(value)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/\"/g, '&quot;')
-        .replace(/'/g, '&#039;');
-}
-
 function showAddressToast(message, timeout = 3200) {
     const toast = document.getElementById('addressToast');
     if (!toast) return;

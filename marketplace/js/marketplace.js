@@ -3,16 +3,6 @@
 
 console.log('🦞 Molt Market loading...');
 
-// AUDIT-FIX MK-2: XSS prevention utility
-function escapeHtml(str) {
-    return String(str ?? '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-}
-
 const RPC_URL = (window.moltMarketConfig && window.moltMarketConfig.rpcUrl) || 'http://localhost:8899';
 const dataSource = window.marketplaceDataSource;
 let currentWallet = null;
@@ -320,26 +310,7 @@ function buyNFT(id) {
 }
 
 // ===== Utility Functions =====
-function formatNumber(num) {
-    if (num === undefined || num === null) return '0';
-    return num.toLocaleString();
-}
-
-function formatHash(hash, length = 16) {
-    if (!hash) return '-';
-    if (hash.length <= length) return hash;
-    const half = Math.floor(length / 2);
-    return `${hash.slice(0, half)}...${hash.slice(-half)}`;
-}
-
-function timeAgo(timestamp) {
-    const seconds = Math.floor((Date.now() - timestamp) / 1000);
-    
-    if (seconds < 60) return `${seconds}s ago`;
-    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-    return `${Math.floor(seconds / 86400)}d ago`;
-}
+// formatNumber, formatHash, timeAgo provided by shared/utils.js
 
 function animateNumber(elementId, target, decimals = 0) {
     const element = document.getElementById(elementId);

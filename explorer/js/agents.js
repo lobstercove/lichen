@@ -6,14 +6,6 @@ let allAgents = [];
 let filteredAgents = [];
 let currentPage = 1;
 
-function escapeHtml(str) {
-    return String(str || '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;');
-}
-
 function formatRateMolt(rateRaw) {
     const raw = Number(rateRaw || 0);
     return (raw / 1_000_000_000).toFixed(4);

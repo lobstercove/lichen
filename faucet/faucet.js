@@ -4,16 +4,6 @@
 const FAUCET_API = (window.MOLT_CONFIG && window.MOLT_CONFIG.faucet) || 'http://localhost:9100';
 const MOLT_PER_REQUEST = 100;
 
-// F16.1 fix: HTML-escape helper to prevent XSS in innerHTML
-function escapeHtml(str) {
-    return String(str ?? '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-}
-
 // Generate random captcha
 function generateCaptcha() {
     const num1 = Math.floor(Math.random() * 10) + 1;

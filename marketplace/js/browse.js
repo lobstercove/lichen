@@ -4,16 +4,6 @@
 (function () {
     'use strict';
 
-    // AUDIT-FIX MK-4: XSS prevention utility
-    function escapeHtml(str) {
-        return String(str ?? '')
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#39;');
-    }
-
     const RPC_URL = (window.moltMarketConfig && window.moltMarketConfig.rpcUrl) || 'http://localhost:8899';
     const PAGE_SIZE = 20;
 
@@ -26,39 +16,9 @@
     let currentWallet = null;
     let collectionsLoaded = [];
 
-    // ===== RPC Helper =====
-    async function rpcCall(method, params) {
-        const res = await fetch(RPC_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-        });
-        const data = await res.json();
-        if (data.error) throw new Error(data.error.message || 'RPC error');
-        return data.result;
-    }
+    // rpcCall, formatNumber, formatHash, timeAgo provided by shared/utils.js
 
     // ===== Utilities =====
-    function formatNumber(num) {
-        if (num === undefined || num === null) return '0';
-        return Number(num).toLocaleString();
-    }
-
-    function formatHash(hash, length) {
-        length = length || 16;
-        if (!hash) return '-';
-        if (hash.length <= length) return hash;
-        const half = Math.floor(length / 2);
-        return hash.slice(0, half) + '...' + hash.slice(-half);
-    }
-
-    function timeAgo(ts) {
-        const seconds = Math.floor((Date.now() - ts) / 1000);
-        if (seconds < 60) return seconds + 's ago';
-        if (seconds < 3600) return Math.floor(seconds / 60) + 'm ago';
-        if (seconds < 86400) return Math.floor(seconds / 3600) + 'h ago';
-        return Math.floor(seconds / 86400) + 'd ago';
-    }
 
     function hashString(input) {
         let hash = 0;

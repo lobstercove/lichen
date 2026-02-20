@@ -6,41 +6,14 @@
 
     const RPC_URL = (window.moltMarketConfig && window.moltMarketConfig.rpcUrl) || 'http://localhost:8899';
 
-    // XSS prevention utility
-    function escapeHtml(str) {
-        return String(str ?? '')
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#39;');
-    }
-
     let currentWallet = null;
     let uploadedFile = null;
     let uploadedDataUrl = null;
     let properties = [];
 
-    // ===== RPC Helper =====
-    async function rpcCall(method, params) {
-        const res = await fetch(RPC_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
-        });
-        const data = await res.json();
-        if (data.error) throw new Error(data.error.message || 'RPC error');
-        return data.result;
-    }
+    // rpcCall, formatHash provided by shared/utils.js
 
     // ===== Utilities =====
-    function formatHash(hash, length) {
-        length = length || 16;
-        if (!hash) return '-';
-        if (hash.length <= length) return hash;
-        var half = Math.floor(length / 2);
-        return hash.slice(0, half) + '...' + hash.slice(-half);
-    }
 
     function hashString(input) {
         var hash = 0;

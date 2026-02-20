@@ -4,7 +4,6 @@
 (function () {
     'use strict';
 
-    var DEFAULT_RPC_URL = (window.moltMarketConfig && window.moltMarketConfig.rpcUrl) || 'http://localhost:8899';
     var EMOJIS = ['\u{1F99E}', '\u{1F980}', '\u{1F990}', '\u{1F419}', '\u{1F991}', '\u{1F41A}', '\u{1F988}', '\u{1F421}'];
     var CREATOR_EMOJIS = ['\u{1F3A8}', '\u2728', '\u{1F680}', '\u{1F48E}', '\u{1F525}', '\u26A1', '\u{1F31F}', '\u{1F3AF}', '\u{1F3C6}', '\u{1F451}'];
     var collectionNameCache = {};
@@ -37,13 +36,7 @@
         return 'linear-gradient(135deg, ' + colorFromNum(hashString(base + '-a')) + ', ' + colorFromNum(hashString(base + '-b')) + ')';
     }
 
-    function formatHash(hash, length) {
-        length = length || 16;
-        if (!hash) return '-';
-        if (hash.length <= length) return hash;
-        var half = Math.floor(length / 2);
-        return hash.slice(0, half) + '...' + hash.slice(-half);
-    }
+    // formatHash provided by shared/utils.js
 
     function normalizeTimestamp(ts) {
         if (!ts) return Date.now();
@@ -55,17 +48,7 @@
         return (shells / 1000000000).toFixed(2);
     }
 
-    // ===== RPC Call =====
-    async function rpcCall(method, params) {
-        var res = await fetch(DEFAULT_RPC_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: method, params: params }),
-        });
-        var data = await res.json();
-        if (data.error) throw new Error(data.error.message || 'RPC error');
-        return data.result;
-    }
+    // rpcCall provided by shared/utils.js
 
     // ===== Collection Name Lookup =====
     async function getCollectionName(contractId) {
