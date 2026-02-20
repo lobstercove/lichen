@@ -950,7 +950,7 @@ Every item from FINISH_LINE_PLAN.md has been mapped into this audit. Here is the
 | M14 (lobsterlend ABI) | G9-04 | Merged | |
 | M15 (Event system) | L7-01 | Merged | |
 | M16 (MoltyID UI) | NOT in code audit | Tracked | Feature addition |
-| M17 (Prediction full impl) | Depends on G21-01 | Tracked | |
+| M17 (Prediction full impl) | Depends on G21-01 | Merged | |
 | M18 (Gov reputation) | G5-01 | Merged | |
 | M19 (compute timeout) | G26-04 | Merged | |
 | M20 (MoltyID stale reads) | D1-02 | Merged | |
@@ -1140,7 +1140,7 @@ After cross_contract_call works:
 60. H7 params   Tokenomics parameter adjustment ✅ REWARD_POOL_PER_MONTH 1M→500K MOLT, MIN_LISTING_LIQUIDITY 100K→10K MOLT, monthly epoch cap enforcement in record_trade(), 4 new tests
 61. G2-04   Wire Post-Only/Reduce-Only flags ✅ REDUCE_ONLY_FLAG(0x80) in dex_core: cross-calls dex_margin query_user_open_position to validate position exists+direction+cap qty. Error 12=reduce-only rejected. set_margin_address(opcode 30). Frontend wired. Post-Only already enforced. 10 new tests (6 core+4 margin), 92+121 total pass
 62. M16     MoltyID UI integration ✅ DEX was only gap: connectWalletTo() now resolves .molt name + fetches MoltyID profile (rep badge). renderWalletList() batch-resolves names. Explorer/Wallet/Extension already had full integration (1600+ lines, 12 RPC endpoints)
-63. M17     Prediction market full implementation
+63. M17     Prediction market full implementation ✅ G21-02: set_return_data with full u64 in 5 functions, WASM dispatch skips overwrite on success (opcodes 1,3,4,5,13,14,15). G21-03: replaced heuristic multi-outcome sell with optimal binary search via total_a_for_sets(). 12 new tests, 220 total pass
 ```
 
 ---
@@ -1175,16 +1175,16 @@ After cross_contract_call works:
 ### Completion Tracking
 
 ```
-Phase 0 (Fatal):     [x] [x] [x] [x]                    4/4
+Phase 0 (Fatal):     [x] [x] [x] [x]                    4/4   ✅ COMPLETE
 Phase 1 (Security):  [x] [x] [x] [x] [x] [x]            6/6  ✅ COMPLETE
 Phase 2 (Core):      [x] [x] [x] [x] [x] [x] [x] [x]    8/8  ✅ COMPLETE
 Phase 3 (Contracts): [x] [x] [x] [x] [x] [x] [x] [x] [x] [x] [x]  11/11 ✅ COMPLETE
 Phase 4 (Infra):     [x] [x] [x] [x] [x] [x] [x]        7/7 ✅ COMPLETE
 Phase 5 (Quality):   [x] [x] [x] [x] [x] [x] [x] [x] [x] [x]  10/10 ✅ COMPLETE
 Phase 6 (Frontend):  [x] [x] [x] [x] [x]                5/5 ✅ COMPLETE
-Phase 7 (Testing):   [x] [x] [x] [x] [x] [ ]            5/6
-Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
-                                              TOTAL:    56/63
+Phase 7 (Testing):   [x] [x] [x] [x] [x] [x]            6/6 ✅ COMPLETE
+Phase 8 (Features):  [x] [x] [x] [x] [x] [x]            6/6 ✅ COMPLETE
+                                              TOTAL:    63/63 ✅ ALL COMPLETE
 ```
 
 ---
