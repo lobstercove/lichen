@@ -15,7 +15,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use moltchain_sdk::{Pool, Address, log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_timestamp,
-    CrossCall, call_contract, get_caller,
+    CrossCall, call_contract, get_caller, call_token_transfer, get_value, get_contract_address,
 };
 
 // ============================================================================
@@ -74,6 +74,19 @@ fn reentrancy_enter() -> bool {
 
 fn reentrancy_exit() {
     storage_set(REENTRANCY_KEY, &[0u8]);
+}
+
+/// G17-02: Transfer tokens out from the pool's self-custody.
+/// token_addr: contract address of the token to transfer.
+/// to: recipient address.
+/// amount: amount to transfer.
+/// Returns 0 on success, 31 on failure.
+fn transfer_out(token_addr: &[u8; 32], to: &[u8; 32], amount: u64) -> u32 {
+    let self_addr = get_contract_address();
+    match call_token_transfer(Address(*token_addr), self_addr, Address(*to), amount) {
+        Ok(_) => 0,
+        Err(_) => 31,
+    }
 }
 
 /// Reconstruct pool state from persistent storage.
@@ -253,6 +266,14 @@ pub extern "C" fn add_liquidity(
             return 0;
         }
 
+        // G17-02: Verify attached value covers deposited tokens
+        let attached = get_value();
+        if attached < amount_a.saturating_add(amount_b) {
+            log_info("Insufficient value for liquidity deposit");
+            reentrancy_exit();
+            return 0;
+        }
+
         let mut pool = load_pool();
         match pool.add_liquidity(provider, amount_a, amount_b, min_liquidity) {
             Ok(liquidity) => {
@@ -299,6 +320,18 @@ pub extern "C" fn remove_liquidity(
         match pool.remove_liquidity(provider, liquidity, min_amount_a, min_amount_b) {
             Ok((amount_a, amount_b)) => {
                 log_info("Liquidity removed successfully");
+
+                // G17-02: Transfer tokens out to provider
+                if transfer_out(&pool.token_a.0, &provider_addr, amount_a) != 0 {
+                    log_info("Transfer of token A to provider failed");
+                    reentrancy_exit();
+                    return 0;
+                }
+                if transfer_out(&pool.token_b.0, &provider_addr, amount_b) != 0 {
+                    log_info("Transfer of token B to provider failed");
+                    reentrancy_exit();
+                    return 0;
+                }
                 
                 // Write amounts to output pointers
                 let out_a_slice = core::slice::from_raw_parts_mut(out_a_ptr, 8);
@@ -330,6 +363,15 @@ pub extern "C" fn swap_a_for_b(amount_a_in: u64, min_amount_b_out: u64) -> u64 {
         log_info("Reentrancy detected");
         return 0;
     }
+
+    // G17-02: Verify attached value covers input tokens
+    let attached = get_value();
+    if attached < amount_a_in {
+        log_info("Insufficient value for swap input");
+        reentrancy_exit();
+        return 0;
+    }
+
     // v2: TWAP oracle update before reserve change
     twap_update();
 
@@ -363,6 +405,13 @@ pub extern "C" fn swap_a_for_b(amount_a_in: u64, min_amount_b_out: u64) -> u64 {
             } else {
                 amount_b_out
             };
+            // G17-02: Transfer output tokens to swapper
+            let swapper = get_caller();
+            if transfer_out(&pool.token_b.0, &swapper.0, final_out) != 0 {
+                log_info("Token B transfer to swapper failed");
+                reentrancy_exit();
+                return 0;
+            }
             track_swap(amount_a_in, final_out, true);
             reentrancy_exit();
             final_out
@@ -399,6 +448,15 @@ pub extern "C" fn swap_b_for_a(amount_b_in: u64, min_amount_a_out: u64) -> u64 {
         log_info("Reentrancy detected");
         return 0;
     }
+
+    // G17-02: Verify attached value covers input tokens
+    let attached = get_value();
+    if attached < amount_b_in {
+        log_info("Insufficient value for swap input");
+        reentrancy_exit();
+        return 0;
+    }
+
     // v2: TWAP oracle update before reserve change
     twap_update();
 
@@ -432,6 +490,13 @@ pub extern "C" fn swap_b_for_a(amount_b_in: u64, min_amount_a_out: u64) -> u64 {
             } else {
                 amount_a_out
             };
+            // G17-02: Transfer output tokens to swapper
+            let swapper = get_caller();
+            if transfer_out(&pool.token_a.0, &swapper.0, final_out) != 0 {
+                log_info("Token A transfer to swapper failed");
+                reentrancy_exit();
+                return 0;
+            }
             track_swap(final_out, amount_b_in, false);
             reentrancy_exit();
             final_out
@@ -604,6 +669,16 @@ pub extern "C" fn flash_loan_borrow(amount: u64, token_is_a: u32) -> u64 {
     // Reserves only change when repay succeeds (atomic guarantee)
     fl_store_loan(token_is_a == 1, amount, fee);
 
+    // G17-02: Transfer borrowed tokens to borrower
+    let borrower = get_caller();
+    let token_addr = if token_is_a == 1 { pool.token_a.0 } else { pool.token_b.0 };
+    if transfer_out(&token_addr, &borrower.0, amount) != 0 {
+        log_info("Flash loan token transfer failed");
+        fl_clear();
+        reentrancy_exit();
+        return 0;
+    }
+
     // Store the borrow timestamp for staleness detection
     let timestamp = get_timestamp();
     storage_set(b"fl_borrow_time", &u64_to_bytes(timestamp));
@@ -623,6 +698,14 @@ pub extern "C" fn flash_loan_repay(repay_amount: u64) -> u32 {
     if !fl_is_active() {
         log_info("No active flash loan to repay");
         return 1;
+    }
+
+    // G17-02: Verify attached value covers repayment
+    let attached = get_value();
+    if attached < repay_amount {
+        log_info("Insufficient value for flash loan repayment");
+        // Don't clear loan — borrower can retry
+        return 3;
     }
 
     let loan_amount = fl_get_amount();
@@ -1047,6 +1130,8 @@ mod tests {
 
     fn setup() {
         test_mock::reset();
+        // G17-02: Set contract address for self-custody transfers
+        test_mock::set_contract_address([0xCC; 32]);
     }
 
     #[test]
@@ -1081,6 +1166,8 @@ mod tests {
         let min_liquidity: u64 = 0;
 
         test_mock::set_caller(provider);
+        // G17-02: Attach value covering both token deposits
+        test_mock::set_value(amount_a + amount_b);
         let liquidity = add_liquidity(
             provider.as_ptr(),
             amount_a,
@@ -1107,11 +1194,13 @@ mod tests {
         // Add liquidity first
         let provider = [3u8; 32];
         test_mock::set_caller(provider);
+        test_mock::set_value(2_000_000);
         add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
 
         // Swap A for B
         let amount_in: u64 = 10_000;
         let min_out: u64 = 0;
+        test_mock::set_value(amount_in);
         let amount_out = swap_a_for_b(amount_in, min_out);
 
         assert!(amount_out > 0, "Should receive some token B");
@@ -1135,9 +1224,11 @@ mod tests {
 
         let provider = [3u8; 32];
         test_mock::set_caller(provider);
+        test_mock::set_value(2_000_000);
         add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
 
         let amount_in: u64 = 10_000;
+        test_mock::set_value(amount_in);
         let amount_out = swap_b_for_a(amount_in, 0);
 
         assert!(amount_out > 0);
@@ -1153,6 +1244,7 @@ mod tests {
 
         let provider = [3u8; 32];
         test_mock::set_caller(provider);
+        test_mock::set_value(3_000_000);
         add_liquidity(provider.as_ptr(), 1_000_000, 2_000_000, 0);
 
         // Quote for swapping A->B
@@ -1189,6 +1281,7 @@ mod tests {
 
         let provider = [3u8; 32];
         test_mock::set_caller(provider);
+        test_mock::set_value(2_000_000);
         add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
 
         assert!(get_total_liquidity() > 0);
@@ -1203,9 +1296,11 @@ mod tests {
 
         let provider = [3u8; 32];
         test_mock::set_caller(provider);
+        test_mock::set_value(2_000_000);
         add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
 
         // Without discount config, swap works as normal
+        test_mock::set_value(10_000);
         let amount_out = swap_a_for_b(10_000, 0);
         assert!(amount_out > 0);
     }
@@ -1262,9 +1357,11 @@ mod tests {
 
         let provider = [3u8; 32];
         test_mock::set_caller(provider);
+        test_mock::set_value(3_000_000);
         add_liquidity(provider.as_ptr(), 1_000_000, 2_000_000, 0);
 
         test_mock::set_timestamp(1000);
+        test_mock::set_value(1_000);
         swap_a_for_b(1_000, 0);
 
         // TWAP should have been initialized
@@ -1282,12 +1379,15 @@ mod tests {
 
         let provider = [3u8; 32];
         test_mock::set_caller(provider);
+        test_mock::set_value(2_000_000);
         add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
 
         test_mock::set_timestamp(1000);
+        test_mock::set_value(1_000);
         swap_a_for_b(1_000, 0);
 
         test_mock::set_timestamp(2000);
+        test_mock::set_value(1_000);
         swap_a_for_b(1_000, 0);
 
         // Snapshot count should be 1 (first swap initializes, second increments once)
@@ -1311,9 +1411,11 @@ mod tests {
         let token_b = [2u8; 32];
         initialize(token_a.as_ptr(), token_b.as_ptr());
         test_mock::set_caller([3u8; 32]);
+        test_mock::set_value(2_000_000);
         add_liquidity([3u8; 32].as_ptr(), 1_000_000, 1_000_000, 0);
 
         test_mock::set_timestamp(100);
+        test_mock::set_value(1_000);
         let out = swap_a_for_b_with_deadline(1_000, 0, 200);
         assert!(out > 0);
     }
@@ -1325,6 +1427,7 @@ mod tests {
         let token_b = [2u8; 32];
         initialize(token_a.as_ptr(), token_b.as_ptr());
         test_mock::set_caller([3u8; 32]);
+        test_mock::set_value(2_000_000);
         add_liquidity([3u8; 32].as_ptr(), 1_000_000, 1_000_000, 0);
 
         test_mock::set_timestamp(300);
@@ -1339,6 +1442,7 @@ mod tests {
         let token_b = [2u8; 32];
         initialize(token_a.as_ptr(), token_b.as_ptr());
         test_mock::set_caller([3u8; 32]);
+        test_mock::set_value(2_000_000);
         add_liquidity([3u8; 32].as_ptr(), 1_000_000, 1_000_000, 0);
 
         test_mock::set_timestamp(300);
@@ -1357,9 +1461,11 @@ mod tests {
         let token_b = [2u8; 32];
         initialize(token_a.as_ptr(), token_b.as_ptr());
         test_mock::set_caller([3u8; 32]);
+        test_mock::set_value(2_000_000);
         add_liquidity([3u8; 32].as_ptr(), 1_000_000, 1_000_000, 0);
 
         // Try to swap 10% of reserves (>5% impact) — should be rejected
+        test_mock::set_value(100_000);
         let out = swap_a_for_b(100_000, 0);
         assert_eq!(out, 0, "Large swap should be rejected by price impact guard");
     }
@@ -1371,9 +1477,11 @@ mod tests {
         let token_b = [2u8; 32];
         initialize(token_a.as_ptr(), token_b.as_ptr());
         test_mock::set_caller([3u8; 32]);
+        test_mock::set_value(2_000_000);
         add_liquidity([3u8; 32].as_ptr(), 1_000_000, 1_000_000, 0);
 
         // Swap 1% of reserves (<5% impact) — should succeed
+        test_mock::set_value(10_000);
         let out = swap_a_for_b(10_000, 0);
         assert!(out > 0, "Small swap should pass price impact guard");
     }
@@ -1389,6 +1497,7 @@ mod tests {
         let token_b = [2u8; 32];
         initialize(token_a.as_ptr(), token_b.as_ptr());
         test_mock::set_caller([3u8; 32]);
+        test_mock::set_value(2_000_000);
         add_liquidity([3u8; 32].as_ptr(), 1_000_000, 1_000_000, 0);
 
         // Try to flash loan 95% of reserves
@@ -1450,5 +1559,184 @@ mod tests {
         test_mock::set_caller(attacker);
         let result = set_reputation_discount(attacker.as_ptr(), 100, 15);
         assert_eq!(result, 2); // not admin
+    }
+
+    // =============================================
+    // G17-02 TESTS: Token transfer wiring
+    // =============================================
+
+    #[test]
+    fn test_add_liquidity_insufficient_value() {
+        setup();
+        let token_a = [1u8; 32];
+        let token_b = [2u8; 32];
+        initialize(token_a.as_ptr(), token_b.as_ptr());
+
+        let provider = [3u8; 32];
+        test_mock::set_caller(provider);
+        // Attach less value than amount_a + amount_b
+        test_mock::set_value(500_000);
+        let liquidity = add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
+        assert_eq!(liquidity, 0, "Should reject insufficient value for liquidity");
+    }
+
+    #[test]
+    fn test_swap_a_insufficient_value() {
+        setup();
+        let token_a = [1u8; 32];
+        let token_b = [2u8; 32];
+        initialize(token_a.as_ptr(), token_b.as_ptr());
+
+        let provider = [3u8; 32];
+        test_mock::set_caller(provider);
+        test_mock::set_value(2_000_000);
+        add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
+
+        // Try to swap with insufficient value
+        test_mock::set_value(5_000);
+        let out = swap_a_for_b(10_000, 0);
+        assert_eq!(out, 0, "Swap should fail with insufficient value");
+    }
+
+    #[test]
+    fn test_swap_b_insufficient_value() {
+        setup();
+        let token_a = [1u8; 32];
+        let token_b = [2u8; 32];
+        initialize(token_a.as_ptr(), token_b.as_ptr());
+
+        let provider = [3u8; 32];
+        test_mock::set_caller(provider);
+        test_mock::set_value(2_000_000);
+        add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
+
+        // Try to swap with insufficient value
+        test_mock::set_value(5_000);
+        let out = swap_b_for_a(10_000, 0);
+        assert_eq!(out, 0, "Swap should fail with insufficient value");
+    }
+
+    #[test]
+    fn test_remove_liquidity_transfers_out() {
+        setup();
+        let token_a = [1u8; 32];
+        let token_b = [2u8; 32];
+        initialize(token_a.as_ptr(), token_b.as_ptr());
+
+        let provider = [3u8; 32];
+        test_mock::set_caller(provider);
+        test_mock::set_value(2_000_000);
+        let liq = add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
+        assert!(liq > 0);
+
+        // Remove liquidity — should trigger transfer_out for both tokens
+        test_mock::set_caller(provider);
+        let mut out_a = [0u8; 8];
+        let mut out_b = [0u8; 8];
+        let result = remove_liquidity(
+            provider.as_ptr(),
+            liq,
+            0,
+            0,
+            out_a.as_mut_ptr(),
+            out_b.as_mut_ptr(),
+        );
+        assert_eq!(result, 1, "Remove liquidity should succeed with transfers");
+
+        let amount_a = u64::from_le_bytes(out_a);
+        let amount_b = u64::from_le_bytes(out_b);
+        assert!(amount_a > 0, "Should receive token A back");
+        assert!(amount_b > 0, "Should receive token B back");
+    }
+
+    #[test]
+    fn test_flash_loan_borrow_transfers() {
+        setup();
+        let token_a = [1u8; 32];
+        let token_b = [2u8; 32];
+        initialize(token_a.as_ptr(), token_b.as_ptr());
+
+        let provider = [3u8; 32];
+        test_mock::set_caller(provider);
+        test_mock::set_value(2_000_000);
+        add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
+
+        // Borrow 50% of reserves (within cap)
+        let borrowed = flash_loan_borrow(500_000, 1);
+        assert_eq!(borrowed, 500_000, "Should borrow successfully with token transfer");
+    }
+
+    #[test]
+    fn test_flash_loan_repay_insufficient_value() {
+        setup();
+        let token_a = [1u8; 32];
+        let token_b = [2u8; 32];
+        initialize(token_a.as_ptr(), token_b.as_ptr());
+
+        let provider = [3u8; 32];
+        test_mock::set_caller(provider);
+        test_mock::set_value(2_000_000);
+        add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
+
+        // Borrow
+        let borrowed = flash_loan_borrow(100_000, 1);
+        assert_eq!(borrowed, 100_000);
+
+        // Try to repay with insufficient value
+        let fee = get_flash_loan_fee(100_000);
+        let repay_total = 100_000 + fee;
+        test_mock::set_value(repay_total / 2); // insufficient
+        let result = flash_loan_repay(repay_total);
+        assert_eq!(result, 3, "Should fail with insufficient value for repayment");
+    }
+
+    #[test]
+    fn test_flash_loan_borrow_repay_cycle() {
+        setup();
+        let token_a = [1u8; 32];
+        let token_b = [2u8; 32];
+        initialize(token_a.as_ptr(), token_b.as_ptr());
+
+        let provider = [3u8; 32];
+        test_mock::set_caller(provider);
+        test_mock::set_value(2_000_000);
+        add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
+
+        // Borrow 100k of token A
+        let borrowed = flash_loan_borrow(100_000, 1);
+        assert_eq!(borrowed, 100_000);
+
+        // Repay with fee
+        let fee = get_flash_loan_fee(100_000);
+        let repay_total = 100_000 + fee;
+        test_mock::set_value(repay_total);
+        let result = flash_loan_repay(repay_total);
+        assert_eq!(result, 0, "Flash loan repay should succeed");
+
+        // Reserves should have increased by the fee
+        let ra = test_mock::get_storage(b"reserve_a").map(|b| bytes_to_u64(&b)).unwrap_or(0);
+        assert_eq!(ra, 1_000_000 + fee, "Reserve A should increase by flash loan fee");
+    }
+
+    #[test]
+    fn test_self_custody_transfer_pattern() {
+        setup();
+        let token_a = [1u8; 32];
+        let token_b = [2u8; 32];
+        initialize(token_a.as_ptr(), token_b.as_ptr());
+
+        let provider = [3u8; 32];
+        test_mock::set_caller(provider);
+        test_mock::set_value(2_000_000);
+        add_liquidity(provider.as_ptr(), 1_000_000, 1_000_000, 0);
+
+        // Verify contract address is set for self-custody
+        let self_addr = get_contract_address();
+        assert_eq!(self_addr.0, [0xCC; 32], "Contract address should be configured");
+
+        // Swap triggers transfer_out from self-custody
+        test_mock::set_value(10_000);
+        let out = swap_a_for_b(10_000, 0);
+        assert!(out > 0, "Swap should succeed with self-custody transfer");
     }
 }
