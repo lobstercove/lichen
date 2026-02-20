@@ -731,16 +731,36 @@ function clearThreats() {
 }
 
 // ── Kill Switches ───────────────────────────────────────────
+// AUDIT-FIX I8-01: All admin actions require authentication via admin_token.
+// Token is prompted once per session and passed in every admin RPC call.
+
+function getAdminToken() {
+    let token = sessionStorage.getItem('moltchain_admin_token');
+    if (!token) {
+        token = prompt('Admin authentication required.\nEnter admin token:');
+        if (!token) return null;
+        sessionStorage.setItem('moltchain_admin_token', token);
+    }
+    return token;
+}
+
+function clearAdminSession() {
+    sessionStorage.removeItem('moltchain_admin_token');
+    addEvent('warning', 'sign-out-alt', 'Admin session cleared');
+}
 
 async function killswitchBanIP() {
+    const token = getAdminToken(); if (!token) return;
     const ip = prompt('Enter IP address to ban:');
     if (!ip) return;
-    const result = await rpc('admin_banIP', [ip]);
+    const result = await rpc('admin_banIP', [ip, { admin_token: token }]);
+    if (result === null) { showAlert('Admin action failed — check token'); sessionStorage.removeItem('moltchain_admin_token'); return; }
     addBan('ip-ban', ip, result?.error ? 'Local ban (admin RPC pending)' : 'IP banned via admin RPC');
     addEvent('danger', 'ban', `Banned IP: ${ip}`);
 }
 
 async function killswitchRateLimit() {
+    const token = getAdminToken(); if (!token) return;
     const target = prompt('Enter IP or method to throttle:');
     if (!target) return;
     const limit = prompt('Requests per minute:', '10');
@@ -750,32 +770,38 @@ async function killswitchRateLimit() {
 }
 
 async function killswitchBlockMethod() {
+    const token = getAdminToken(); if (!token) return;
     const method = prompt('Enter RPC method to block (e.g. sendTransaction):');
     if (!method) return;
-    await rpc('admin_blockMethod', [method]);
+    const result = await rpc('admin_blockMethod', [method, { admin_token: token }]);
+    if (result === null) { showAlert('Admin action failed — check token'); sessionStorage.removeItem('moltchain_admin_token'); return; }
     addBan('method-block', method, 'Method blocked');
     addEvent('danger', 'lock', `Blocked method: ${method}`);
 }
 
 async function killswitchFreezeAccount() {
+    const token = getAdminToken(); if (!token) return;
     const address = prompt('Enter account address to freeze:');
     if (!address) return;
-    await rpc('admin_freezeAccount', [address]);
+    const result = await rpc('admin_freezeAccount', [address, { admin_token: token }]);
+    if (result === null) { showAlert('Admin action failed — check token'); sessionStorage.removeItem('moltchain_admin_token'); return; }
     addBan('freeze', truncAddr(address), `Account frozen: ${address}`);
     addEvent('danger', 'snowflake', `Frozen account: ${truncAddr(address)}`);
 }
 
 async function killswitchEmergencyShutdown() {
+    const token = getAdminToken(); if (!token) return;
     if (!confirm('EMERGENCY SHUTDOWN\n\nThis will halt ALL validator nodes immediately.\nAre you absolutely sure?')) return;
     if (!confirm('FINAL CONFIRMATION\n\nThis action cannot be undone remotely.\nProceed with emergency shutdown?')) return;
     addEvent('danger', 'power-off', 'EMERGENCY SHUTDOWN initiated across all nodes');
     for (const v of VALIDATOR_RPCS) {
-        await rpc('admin_shutdown', [], v.rpc);
+        await rpc('admin_shutdown', [{ admin_token: token }], v.rpc);
     }
     showAlert('EMERGENCY SHUTDOWN executed - all nodes signaled');
 }
 
 async function killswitchDenyAll() {
+    const token = getAdminToken(); if (!token) return;
     if (!confirm('DENY ALL TRAFFIC\n\nThis will reject ALL incoming RPC requests.\nContinue?')) return;
     addBan('deny-all', 'ALL TRAFFIC', 'Emergency deny-all active');
     addEvent('danger', 'shield-alt', 'DENY ALL mode activated');
@@ -784,12 +810,14 @@ async function killswitchDenyAll() {
 
 function quickBan(source) {
     if (!source || source === 'System' || source === 'Network') return;
+    const token = getAdminToken(); if (!token) return;
     addBan('ip-ban', source, 'Quick ban from threat log');
     addEvent('danger', 'ban', `Quick ban: ${source}`);
 }
 
 function quickThrottle(source) {
     if (!source || source === 'System' || source === 'Network') return;
+    const token = getAdminToken(); if (!token) return;
     addBan('throttle', source, 'Quick throttle from threat log');
     addEvent('warning', 'tachometer-alt', `Quick throttle: ${source}`);
 }
