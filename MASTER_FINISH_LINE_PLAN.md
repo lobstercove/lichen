@@ -454,7 +454,7 @@
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
 | G6-01 | HIGH | Security | `[FLP H4]` No host-level collateral locking — user can open margin position and still spend the collateral | Implement locked_balance field in account model and lock collateral atomically | [x] |
-| G6-02 | HIGH | Missing | `[FLP H6]` No funding rate implementation — perpetual futures prices can diverge arbitrarily from spot | Implement periodic funding rate calculation and settlement | [ ] |
+| G6-02 | HIGH | Missing | `[FLP H6]` No funding rate implementation — perpetual futures prices can diverge arbitrarily from spot | Implement periodic funding rate calculation and settlement | [x] |
 | G6-03 | HIGH | Security | `[FLP H8]` `close_position` returns full margin on missing oracle price — traders can close losing positions at no loss during oracle outage | Return error when oracle price unavailable, or use last known price with staleness check | [ ] |
 | G6-04 | MEDIUM | Missing | `[FLP H5]` Insurance fund has no withdrawal/deployment mechanism — funds are permanently trapped | Add governance-controlled withdrawal mechanism | [ ] |
 | G6-05 | LOW | Precision | `[FLP L6]` Liquidation penalty integer division remainder (up to 1 shell) is lost — dust amounts | Use rounding that favors insurance fund | [ ] |
@@ -1106,7 +1106,7 @@ After cross_contract_call works:
 41. D3-01   Fix async mutex usage ✅ verified: all guards scoped before .await (D6-01 also clear)
 42. F2-01   Per-chain HD derivation for custody ✅ BIP-44 coin types (501/60/0)
 43. G6-01   Implement collateral locking ✅ add_margin/remove_margin lock/unlock + open_position checks result
-44. G6-02   Implement funding rates
+44. G6-02   Implement funding rates ✅ apply_funding crank, set_index_price, per-pair interval tracking
 45. All overflow fixes (L6-01)
 46. All reentrancy guards (G23-02, G18-02)
 ```
@@ -1180,11 +1180,11 @@ Phase 1 (Security):  [x] [x] [x] [x] [x] [x]            6/6  ✅ COMPLETE
 Phase 2 (Core):      [x] [x] [x] [x] [x] [x] [x] [x]    8/8  ✅ COMPLETE
 Phase 3 (Contracts): [x] [x] [x] [x] [x] [x] [x] [x] [x] [x] [x]  11/11 ✅ COMPLETE
 Phase 4 (Infra):     [x] [x] [x] [x] [x] [x] [x]        7/7 ✅ COMPLETE
-Phase 5 (Quality):   [x] [x] [x] [x] [x] [x] [x] [ ] [ ] [ ]  7/10
+Phase 5 (Quality):   [x] [x] [x] [x] [x] [x] [x] [x] [ ] [ ]  8/10
 Phase 6 (Frontend):  [ ] [ ] [ ] [ ] [ ]                0/5
 Phase 7 (Testing):   [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
-                                              TOTAL:    43/63 phases
+                                              TOTAL:    44/63 phases
 ```
 
 ---
