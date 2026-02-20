@@ -673,7 +673,7 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| H6-01 | CRITICAL | Security | `[NEW]` Generates random bytes as fake addresses when wallet extension is unavailable — funds sent to these addresses are permanently lost (no private key) | Never generate fake addresses; show clear error prompting user to install wallet extension | [ ] |
+| H6-01 | CRITICAL | Security | `[NEW]` Generates random bytes as fake addresses when wallet extension is unavailable — funds sent to these addresses are permanently lost (no private key) | Never generate fake addresses; show clear error prompting user to install wallet extension | [x] |
 | H6-02 | HIGH | Security | API key transmitted in cleartext | Use HTTPS only and consider removing API key from client-side code | [ ] |
 
 ### H.7 — shared-config.js
@@ -1176,7 +1176,7 @@ After cross_contract_call works:
 
 ```
 Phase 0 (Fatal):     [x] [x] [x] [x]                    4/4
-Phase 1 (Security):  [x] [x] [x] [x] [ ] [ ]            4/6  
+Phase 1 (Security):  [x] [x] [x] [x] [x] [ ]            5/6  
 Phase 2 (Core):      [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]    0/8
 Phase 3 (Contracts): [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]  0/11
 Phase 4 (Infra):     [ ] [ ] [ ] [ ] [ ] [ ] [ ]        0/7
@@ -1184,7 +1184,7 @@ Phase 5 (Quality):   [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]  0/10
 Phase 6 (Frontend):  [ ] [ ] [ ] [ ] [ ]                0/5
 Phase 7 (Testing):   [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
-                                              TOTAL:     8/63 phases
+                                              TOTAL:     9/63 phases
 ```
 
 ---
@@ -1202,6 +1202,7 @@ Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 | 1.5 | G1-01 / G1-02 / G7-01 / G10-01 / G13-01 / G15-01 / G26-01 | cf56d11 | Feb 20 | Caller verification sweep across 7 contracts (moltcoin, dex_rewards, moltauction, moltdao, moltoracle, compute_market). All 7 findings already fixed in prior sessions with `AUDIT-FIX` annotations: each vulnerable function now calls `get_caller()` and compares against parameter-supplied identity before proceeding. moltcoin: approve() + mint(), dex_rewards: initialize(), moltauction: create_auction(), moltdao: cancel_proposal(), moltoracle: submit_price(), compute_market: 5 admin fns (set_claim_timeout, set_complete_timeout, set_challenge_period, add_arbitrator, remove_arbitrator) all use get_caller() + is_admin(). Added 8 source-level regression tests in core/tests/caller_verification.rs verifying get_caller() patterns exist in all 7 contract source files. 429 total tests, 0 regressions. |
 | 1.6 | C1-01 | 29b30c2 | Feb 20 | Replaced SkipServerVerification with proper TLS certificate validation. (1) Persistent node identity: cert+key saved to ~/.moltchain/node_cert.der + node_key.der, reused across restarts (NodeIdentity struct). (2) X.509 self-signature verification: verify_self_signed_cert() uses x509-parser + ring to parse and cryptographically verify certificate self-signatures — replaces the old DER-tag-only checks. (3) TOFU fingerprint pinning: PeerFingerprintStore tracks SHA-256 cert fingerprints per peer in ~/.moltchain/peer_fingerprints.json — new peers registered, known peers verified, changed fingerprints rejected with connection close. Applied to both outbound (connect_peer) and inbound (start_accepting) paths. (4) Mutual TLS: server now uses MoltClientCertVerifier (with_client_cert_verifier), clients present their node certificate via with_client_auth_cert. client_auth_mandatory=false for backwards compat. Added sha2 + x509-parser deps to p2p/Cargo.toml. 14 new tests, 443 total, 0 regressions. |
 | 1.7 | I2-01 | a8f3f40 | Feb 20 | Fixed BIP39 key derivation: replaced SHA-512 single-hash with PBKDF2-HMAC-SHA512 (2048 iterations) per BIP39 spec in both wallet/js/crypto.js (MoltCrypto.mnemonicToKeypair) and wallet/extension/src/core/crypto-service.js (mnemonicToKeypair). Uses Web Crypto API: crypto.subtle.importKey('raw') + crypto.subtle.deriveBits({name: 'PBKDF2', salt: 'mnemonic'+passphrase, iterations: 2048, hash: 'SHA-512'}). Added passphrase parameter support (BIP39 "25th word"). NFKD Unicode normalization applied. Verified against BIP39 test vector: "abandon"x11+"about" → seed prefix 5eb00bbd... matches spec. 3 new JS tests (test vector, deterministic, passphrase). 443 Rust + 44 JS tests, 0 regressions. |
-| 1.8 | I2-02 | pending | Feb 20 | Wallet key encryption already fully implemented: encryptPrivateKey() uses AES-256-GCM with PBKDF2 (100k iterations, SHA-256, CSPRNG salt+IV). All 9 key storage paths in wallet.js call encryptPrivateKey() before localStorage persistence. No plaintext secret material in localStorage — verified by source-level regex check (no wallet.privateKey= or wallet.seed= assignments). Extension uses chrome.storage.local with identical encryption. Added AUDIT-FIX I2-02 annotation to encryptPrivateKey(). 2 new regression tests. 443 Rust + 46 JS tests, 0 regressions. |
+| 1.8 | I2-02 | f99cc70 | Feb 20 | Wallet key encryption already fully implemented: encryptPrivateKey() uses AES-256-GCM with PBKDF2 (100k iterations, SHA-256, CSPRNG salt+IV). All 9 key storage paths in wallet.js call encryptPrivateKey() before localStorage persistence. No plaintext secret material in localStorage — verified by source-level regex check (no wallet.privateKey= or wallet.seed= assignments). Extension uses chrome.storage.local with identical encryption. Added AUDIT-FIX I2-02 annotation to encryptPrivateKey(). 2 new regression tests. 443 Rust + 46 JS tests, 0 regressions. |
+| 1.9 | H6-01 | pending | Feb 20 | Removed fake address generation from shared/wallet-connect.js. The _createRpcWallet fallback previously generated random bytes encoded as base58 when both RPC and nacl were unavailable — producing addresses with no private key (funds permanently lost). Replaced with: this.address = null + throw new Error with clear message prompting user to install the MoltChain wallet extension + console.error + window.alert. 1 new regression test verifying the old fake-address pattern is gone. 443 Rust + 47 JS tests, 0 regressions. |
 
 *Last updated: February 20, 2026*

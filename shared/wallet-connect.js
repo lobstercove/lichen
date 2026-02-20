@@ -176,14 +176,19 @@ MoltWallet.prototype._createRpcWallet = async function() {
                 ? bs58.encode(kp.publicKey)
                 : Array.from(kp.publicKey).map(function(b) { return b.toString(16).padStart(2, '0'); }).join('');
         } else {
-            var bytes = new Uint8Array(32);
-            crypto.getRandomValues(bytes);
-            var chars = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-            var addr = '';
-            for (var i = 0; i < 44; i++) {
-                addr += chars[bytes[i % 32] % chars.length];
+            // AUDIT-FIX H6-01: Never generate fake addresses from random bytes.
+            // The old code generated random bytes encoded as base58, producing
+            // addresses with no corresponding private key. Funds sent to such
+            // addresses would be permanently lost. Instead, refuse to create
+            // a wallet and prompt the user to install the wallet extension.
+            this.address = null;
+            var errorMsg = 'Wallet creation failed: no wallet extension or cryptographic library available. ' +
+                'Please install the MoltChain wallet extension to use this application.';
+            console.error('AUDIT-FIX H6-01: ' + errorMsg);
+            if (typeof window !== 'undefined' && window.alert) {
+                window.alert(errorMsg);
             }
-            this.address = addr;
+            throw new Error(errorMsg);
         }
         this._walletData = {
             address: this.address,
