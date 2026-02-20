@@ -18,7 +18,7 @@ use alloc::vec::Vec;
 use moltchain_sdk::{
     storage_get, storage_set, log_info,
     bytes_to_u64, u64_to_bytes, get_slot,
-    Address, call_token_transfer, get_caller,
+    Address, call_token_transfer, get_caller, get_contract_address,
 };
 
 // ============================================================================
@@ -241,8 +241,10 @@ pub fn record_trade(trader: *const u8, fee_paid: u64, volume: u64) -> u32 {
     0
 }
 
-/// Claim trading rewards — transfers MOLT from rewards pool to trader
-/// Returns: 0=success, 1=nothing to claim, 2=paused, 3=reentrancy, 4=transfer failed
+/// Claim trading rewards — transfers MOLT from contract's own balance to trader.
+/// The contract itself holds the reward tokens (self-custody pattern).
+/// Returns: 0=success, 1=nothing to claim, 2=paused, 3=reentrancy,
+///          4=transfer failed, 5=moltcoin address not configured
 pub fn claim_trading_rewards(trader: *const u8) -> u32 {
     if !reentrancy_enter() { return 3; }
     if !require_not_paused() { reentrancy_exit(); return 2; }
@@ -259,16 +261,22 @@ pub fn claim_trading_rewards(trader: *const u8) -> u32 {
     let pending = load_u64(&trader_pending_key(&t));
     if pending == 0 { reentrancy_exit(); return 1; }
 
-    // Transfer MOLT from rewards pool to trader
+    // Transfer MOLT from contract's own balance to trader.
+    // AUDIT-FIX G7-02: Use self-custody pattern — the contract holds reward
+    // tokens at its own address. get_contract_address() == caller in CCC context,
+    // satisfying moltcoin's caller==from check.
     let molt_addr = load_addr(MOLTCOIN_ADDRESS_KEY);
-    let pool_addr = load_addr(REWARDS_POOL_KEY);
-    if !is_zero(&molt_addr) && !is_zero(&pool_addr) {
-        if let Err(_) = call_token_transfer(
-            Address(molt_addr), Address(pool_addr), Address(t), pending,
-        ) {
-            reentrancy_exit();
-            return 4;
-        }
+    if is_zero(&molt_addr) {
+        log_info("claim_trading_rewards: moltcoin address not configured");
+        reentrancy_exit();
+        return 5;
+    }
+    let self_addr = get_contract_address();
+    if let Err(_) = call_token_transfer(
+        Address(molt_addr), self_addr, Address(t), pending,
+    ) {
+        reentrancy_exit();
+        return 4;
     }
 
     save_u64(&trader_pending_key(&t), 0);
@@ -284,8 +292,9 @@ pub fn claim_trading_rewards(trader: *const u8) -> u32 {
     0
 }
 
-/// Claim LP rewards for a position — transfers MOLT from rewards pool to provider
-/// Returns: 0=success, 1=nothing to claim, 2=paused, 3=reentrancy, 4=transfer failed
+/// Claim LP rewards for a position — transfers MOLT from contract's own balance to provider.
+/// Returns: 0=success, 1=nothing to claim, 2=paused, 3=reentrancy,
+///          4=transfer failed, 5=moltcoin address not configured
 pub fn claim_lp_rewards(provider: *const u8, position_id: u64) -> u32 {
     if !reentrancy_enter() { return 3; }
     if !require_not_paused() { reentrancy_exit(); return 2; }
@@ -303,16 +312,20 @@ pub fn claim_lp_rewards(provider: *const u8, position_id: u64) -> u32 {
     let pending = load_u64(&lp_k);
     if pending == 0 { reentrancy_exit(); return 1; }
 
-    // Transfer MOLT from rewards pool to provider
+    // Transfer MOLT from contract's own balance to provider.
+    // AUDIT-FIX G7-02: self-custody pattern (see claim_trading_rewards).
     let molt_addr = load_addr(MOLTCOIN_ADDRESS_KEY);
-    let pool_addr = load_addr(REWARDS_POOL_KEY);
-    if !is_zero(&molt_addr) && !is_zero(&pool_addr) {
-        if let Err(_) = call_token_transfer(
-            Address(molt_addr), Address(pool_addr), Address(p), pending,
-        ) {
-            reentrancy_exit();
-            return 4;
-        }
+    if is_zero(&molt_addr) {
+        log_info("claim_lp_rewards: moltcoin address not configured");
+        reentrancy_exit();
+        return 5;
+    }
+    let self_addr = get_contract_address();
+    if let Err(_) = call_token_transfer(
+        Address(molt_addr), self_addr, Address(p), pending,
+    ) {
+        reentrancy_exit();
+        return 4;
     }
 
     save_u64(&lp_k, 0);
@@ -355,6 +368,52 @@ pub fn register_referral(trader: *const u8, referrer: *const u8) -> u32 {
     save_u64(&referrer_count_key(&r), count + 1);
 
     log_info("Referral registered");
+    reentrancy_exit();
+    0
+}
+
+/// Claim referral rewards — transfers accumulated referral earnings to the referrer.
+/// AUDIT-FIX G7-02: referral earnings were recorded in record_trade but had
+/// no claim path. This function completes the referral economy.
+/// Returns: 0=success, 1=nothing to claim, 2=paused, 3=reentrancy,
+///          4=transfer failed, 5=moltcoin address not configured
+pub fn claim_referral_rewards(referrer: *const u8) -> u32 {
+    if !reentrancy_enter() { return 3; }
+    if !require_not_paused() { reentrancy_exit(); return 2; }
+    let mut r = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(referrer, r.as_mut_ptr(), 32); }
+
+    // Verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != r {
+        reentrancy_exit();
+        return 200;
+    }
+
+    let earnings = load_u64(&referrer_earnings_key(&r));
+    if earnings == 0 { reentrancy_exit(); return 1; }
+
+    // Transfer MOLT from contract's own balance to referrer (self-custody pattern)
+    let molt_addr = load_addr(MOLTCOIN_ADDRESS_KEY);
+    if is_zero(&molt_addr) {
+        log_info("claim_referral_rewards: moltcoin address not configured");
+        reentrancy_exit();
+        return 5;
+    }
+    let self_addr = get_contract_address();
+    if let Err(_) = call_token_transfer(
+        Address(molt_addr), self_addr, Address(r), earnings,
+    ) {
+        reentrancy_exit();
+        return 4;
+    }
+
+    save_u64(&referrer_earnings_key(&r), 0);
+    let total = load_u64(TOTAL_DISTRIBUTED_KEY);
+    save_u64(TOTAL_DISTRIBUTED_KEY, total + earnings);
+
+    moltchain_sdk::set_return_data(&u64_to_bytes(earnings));
+    log_info("Referral rewards claimed");
     reentrancy_exit();
     0
 }
@@ -662,6 +721,13 @@ pub extern "C" fn call() {
             buf.extend_from_slice(&u64_to_bytes(load_u64(REWARD_EPOCH_KEY)));
             moltchain_sdk::set_return_data(&buf);
         }
+        // 19: claim_referral_rewards(referrer[32])
+        19 => {
+            if args.len() >= 33 {
+                let r = claim_referral_rewards(args[1..33].as_ptr());
+                moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
+            }
+        }
         _ => { moltchain_sdk::set_return_data(&[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]); }
     }
 }
@@ -676,15 +742,37 @@ mod tests {
     use super::*;
     use moltchain_sdk::test_mock;
 
+    /// Standard setup: admin created, moltcoin address configured, dex caller
+    /// authorized, and contract address set. Tokens are held at the contract
+    /// address (self-custody pattern per G7-02).
     fn setup() -> [u8; 32] {
         test_mock::reset();
         let admin = [1u8; 32];
+        let molt = [10u8; 32];
+        let contract_self = [0xAAu8; 32]; // contract's own address
         test_mock::set_caller(admin);
+        test_mock::set_contract_address(contract_self);
         assert_eq!(initialize(admin.as_ptr()), 0);
-        // Set caller to admin for admin operations
+        // Configure moltcoin address so claims actually transfer
         test_mock::set_caller(admin);
+        assert_eq!(set_moltcoin_address(admin.as_ptr(), molt.as_ptr()), 0);
         // Authorize a caller address for record_trade / accrue_lp_rewards
         let dex_caller = [0xFFu8; 32];
+        assert_eq!(set_authorized_caller(admin.as_ptr(), dex_caller.as_ptr(), 1), 0);
+        test_mock::set_caller(dex_caller);
+        admin
+    }
+
+    /// Setup without moltcoin address configured — for testing error path.
+    fn setup_no_molt() -> [u8; 32] {
+        test_mock::reset();
+        let admin = [1u8; 32];
+        let contract_self = [0xAAu8; 32];
+        test_mock::set_caller(admin);
+        test_mock::set_contract_address(contract_self);
+        assert_eq!(initialize(admin.as_ptr()), 0);
+        let dex_caller = [0xFFu8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(set_authorized_caller(admin.as_ptr(), dex_caller.as_ptr(), 1), 0);
         test_mock::set_caller(dex_caller);
         admin
@@ -811,6 +899,49 @@ mod tests {
         record_trade(trader.as_ptr(), 10_000, 10_000_000);
         let ref_earnings = load_u64(&referrer_earnings_key(&referrer));
         assert_eq!(ref_earnings, 1000); // 10% of 10000
+    }
+
+    #[test]
+    fn test_claim_referral_rewards() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+        let referrer = [3u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(trader);
+        register_referral(trader.as_ptr(), referrer.as_ptr());
+        test_mock::set_caller([0xFFu8; 32]);
+        record_trade(trader.as_ptr(), 10_000, 10_000_000);
+        // Referrer has 1000 shells in earnings (10% of 10_000 fee)
+        assert_eq!(load_u64(&referrer_earnings_key(&referrer)), 1000);
+        // Referrer claims
+        test_mock::set_caller(referrer);
+        assert_eq!(claim_referral_rewards(referrer.as_ptr()), 0);
+        // Earnings zeroed, total distributed increased
+        assert_eq!(load_u64(&referrer_earnings_key(&referrer)), 0);
+        assert_eq!(get_total_distributed(), 1000);
+    }
+
+    #[test]
+    fn test_claim_referral_rewards_nothing() {
+        let _admin = setup();
+        let referrer = [3u8; 32];
+        test_mock::set_caller(referrer);
+        assert_eq!(claim_referral_rewards(referrer.as_ptr()), 1); // nothing to claim
+    }
+
+    #[test]
+    fn test_claim_referral_rewards_wrong_caller() {
+        let _admin = setup();
+        let trader = [2u8; 32];
+        let referrer = [3u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(trader);
+        register_referral(trader.as_ptr(), referrer.as_ptr());
+        test_mock::set_caller([0xFFu8; 32]);
+        record_trade(trader.as_ptr(), 10_000, 10_000_000);
+        // Try to claim as trader (not the referrer)
+        test_mock::set_caller(trader);
+        assert_eq!(claim_referral_rewards(referrer.as_ptr()), 200); // caller mismatch
     }
 
     #[test]
@@ -986,11 +1117,6 @@ mod tests {
     fn test_claim_with_molt_configured() {
         let admin = setup();
         let trader = [2u8; 32];
-        let molt = [10u8; 32];
-        let pool = [11u8; 32];
-        test_mock::set_caller(admin);
-        set_moltcoin_address(admin.as_ptr(), molt.as_ptr());
-        set_rewards_pool(admin.as_ptr(), pool.as_ptr());
 
         test_mock::set_caller([0xFFu8; 32]);
         record_trade(trader.as_ptr(), 5000, 5_000_000);
@@ -1006,11 +1132,7 @@ mod tests {
     fn test_claim_lp_with_molt_configured() {
         let admin = setup();
         let provider = [2u8; 32];
-        let molt = [10u8; 32];
-        let pool = [11u8; 32];
         test_mock::set_caller(admin);
-        set_moltcoin_address(admin.as_ptr(), molt.as_ptr());
-        set_rewards_pool(admin.as_ptr(), pool.as_ptr());
         set_reward_rate(admin.as_ptr(), 1, 1_000_000);
         test_mock::set_caller([0xFFu8; 32]);
         accrue_lp_rewards(1, 100_000, 1);
@@ -1021,13 +1143,63 @@ mod tests {
     }
 
     #[test]
-    fn test_claim_without_molt_configured() {
-        // Without MOLT address configured, claims still work (bookkeeping only)
-        let _admin = setup();
+    fn test_claim_without_molt_configured_fails() {
+        // AUDIT-FIX G7-02: Without MOLT address configured, claims MUST fail
+        // (error 5) instead of silently proceeding with bookkeeping only.
+        let _admin = setup_no_molt();
         let trader = [2u8; 32];
         record_trade(trader.as_ptr(), 5000, 5_000_000);
         test_mock::set_caller(trader);
-        assert_eq!(claim_trading_rewards(trader.as_ptr()), 0);
-        assert_eq!(load_u64(&trader_claimed_key(&trader)), 5000);
+        assert_eq!(claim_trading_rewards(trader.as_ptr()), 5);
+        // Pending rewards should NOT be zeroed since transfer didn't happen
+        assert_eq!(load_u64(&trader_pending_key(&trader)), 5000);
+    }
+
+    #[test]
+    fn test_claim_lp_without_molt_configured_fails() {
+        let admin = setup_no_molt();
+        let provider = [2u8; 32];
+        test_mock::set_caller(admin);
+        set_reward_rate(admin.as_ptr(), 1, 1_000_000);
+        test_mock::set_caller([0xFFu8; 32]);
+        accrue_lp_rewards(1, 100_000, 1);
+        test_mock::set_caller(provider);
+        assert_eq!(claim_lp_rewards(provider.as_ptr(), 1), 5);
+        // Pending LP rewards preserved
+        assert!(load_u64(&lp_pending_key(1)) > 0);
+    }
+
+    #[test]
+    fn test_claim_referral_without_molt_configured_fails() {
+        let _admin = setup_no_molt();
+        let trader = [2u8; 32];
+        let referrer = [3u8; 32];
+        test_mock::set_slot(100);
+        test_mock::set_caller(trader);
+        register_referral(trader.as_ptr(), referrer.as_ptr());
+        test_mock::set_caller([0xFFu8; 32]);
+        record_trade(trader.as_ptr(), 10_000, 10_000_000);
+        test_mock::set_caller(referrer);
+        assert_eq!(claim_referral_rewards(referrer.as_ptr()), 5);
+        // Earnings preserved
+        assert_eq!(load_u64(&referrer_earnings_key(&referrer)), 1000);
+    }
+
+    #[test]
+    fn test_self_custody_transfer_pattern() {
+        // Verify the self-custody pattern: get_contract_address() is used as
+        // the `from` address in token transfers, ensuring caller == from in
+        // cross-contract call context.
+        let _admin = setup();
+        let contract_self = [0xAAu8; 32];
+        let trader = [2u8; 32];
+        record_trade(trader.as_ptr(), 5000, 5_000_000);
+        test_mock::set_caller(trader);
+        let result = claim_trading_rewards(trader.as_ptr());
+        assert_eq!(result, 0);
+        // The transfer used get_contract_address() (0xAA...) as from, not a
+        // separate pool address. In the real runtime, CCC sets caller to the
+        // calling contract, so caller == from == 0xAA... is guaranteed.
+        assert_eq!(get_contract_address().0, contract_self);
     }
 }

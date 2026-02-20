@@ -573,3 +573,53 @@ fn a5_03_graduated_slashing_math() {
         );
     }
 }
+
+// ============================================================================
+// G7-02  get_contract_address host function — self-custody transfer pattern
+// ============================================================================
+
+#[cfg(test)]
+mod get_contract_address_tests {
+    use moltchain_core::contract::{ContractContext, ContractRuntime};
+    use moltchain_core::Pubkey;
+    use std::collections::HashMap;
+
+    /// Verify that the ContractContext correctly stores both `caller` and
+    /// `contract` fields, and that they are distinct — this is the foundation
+    /// of the self-custody pattern used by dex_rewards G7-02: the contract
+    /// calls get_contract_address() to learn its own address, then uses it
+    /// as the `from` field in cross-contract token transfers.
+    #[test]
+    fn test_g7_02_contract_context_has_distinct_caller_and_contract() {
+        let caller = Pubkey([0xBBu8; 32]);
+        let contract = Pubkey([0xAAu8; 32]);
+        let ctx = ContractContext::new(caller, contract, 0, 100);
+        assert_eq!(ctx.caller, caller);
+        assert_eq!(ctx.contract, contract);
+        assert_ne!(ctx.caller, ctx.contract,
+            "REGRESSION G7-02: caller and contract must be distinct so that \
+             get_contract_address() returns the contract's own address, not the caller's");
+    }
+
+    /// Verify that ContractContext::new stores the contract address correctly
+    /// across multiple invocations — important for the cross-contract call
+    /// chain where each level has its own ContractContext.
+    #[test]
+    fn test_g7_02_contract_address_preserved_in_nested_context() {
+        // Simulate: user → contract_a → contract_b
+        let user = Pubkey([0x01u8; 32]);
+        let contract_a = Pubkey([0xAAu8; 32]);
+        let contract_b = Pubkey([0xBBu8; 32]);
+
+        // Level 0: user calls contract_a
+        let ctx_a = ContractContext::new(user, contract_a, 0, 100);
+        assert_eq!(ctx_a.contract, contract_a);
+        assert_eq!(ctx_a.caller, user);
+
+        // Level 1: contract_a calls contract_b
+        let ctx_b = ContractContext::new(contract_a, contract_b, 0, 100);
+        assert_eq!(ctx_b.contract, contract_b);
+        assert_eq!(ctx_b.caller, contract_a,
+            "REGRESSION G7-02: In CCC, callee's caller must be the calling contract");
+    }
+}

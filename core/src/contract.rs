@@ -777,6 +777,7 @@ impl ContractRuntime {
                 // Chain introspection
                 "get_timestamp" => Function::new_typed_with_env(&mut self.store, &env, host_get_timestamp),
                 "get_caller" => Function::new_typed_with_env(&mut self.store, &env, host_get_caller),
+                "get_contract_address" => Function::new_typed_with_env(&mut self.store, &env, host_get_contract_address),
                 "get_value" => Function::new_typed_with_env(&mut self.store, &env, host_get_value),
                 "get_slot" => Function::new_typed_with_env(&mut self.store, &env, host_get_slot),
                 // Args & return data
@@ -1425,6 +1426,31 @@ fn host_get_caller(mut env: FunctionEnvMut<ContractContext>, out_ptr: u32) -> u3
     };
     let view = memory.view(&env);
     if view.write(out_ptr as u64, &caller_bytes).is_err() {
+        return 1;
+    }
+    0
+}
+
+/// Write the 32-byte contract (self) address into WASM memory at `out_ptr`.
+/// This lets a contract discover its own on-chain address, which is required
+/// for the self-custody pattern: the contract holds tokens at its own address
+/// and uses get_contract_address() as the `from` field in cross-contract
+/// token transfers so that `caller == from` is always satisfied.
+fn host_get_contract_address(mut env: FunctionEnvMut<ContractContext>, out_ptr: u32) -> u32 {
+    {
+        let ctx = env.data_mut();
+        if !deduct_compute(ctx, COMPUTE_GET_CALLER) {
+            return 1;
+        }
+    }
+    let ctx = env.data();
+    let contract_bytes = ctx.contract.0;
+    let memory = match &ctx.memory {
+        Some(m) => m.clone(),
+        None => return 1,
+    };
+    let view = memory.view(&env);
+    if view.write(out_ptr as u64, &contract_bytes).is_err() {
         return 1;
     }
     0

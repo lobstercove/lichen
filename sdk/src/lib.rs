@@ -33,6 +33,7 @@ pub mod test_mock {
     std::thread_local! {
         pub static STORAGE: RefCell<HashMap<Vec<u8>, Vec<u8>>> = RefCell::new(HashMap::new());
         pub static CALLER: RefCell<[u8; 32]> = RefCell::new([0u8; 32]);
+        pub static CONTRACT_ADDRESS: RefCell<[u8; 32]> = RefCell::new([0u8; 32]);
         pub static ARGS: RefCell<Vec<u8>> = RefCell::new(Vec::new());
         pub static RETURN_DATA: RefCell<Vec<u8>> = RefCell::new(Vec::new());
         pub static EVENTS: RefCell<Vec<Vec<u8>>> = RefCell::new(Vec::new());
@@ -45,6 +46,7 @@ pub mod test_mock {
     pub fn reset() {
         STORAGE.with(|s| s.borrow_mut().clear());
         CALLER.with(|c| *c.borrow_mut() = [0u8; 32]);
+        CONTRACT_ADDRESS.with(|c| *c.borrow_mut() = [0u8; 32]);
         ARGS.with(|a| a.borrow_mut().clear());
         RETURN_DATA.with(|r| r.borrow_mut().clear());
         EVENTS.with(|e| e.borrow_mut().clear());
@@ -56,6 +58,10 @@ pub mod test_mock {
 
     pub fn set_caller(addr: [u8; 32]) {
         CALLER.with(|c| *c.borrow_mut() = addr);
+    }
+
+    pub fn set_contract_address(addr: [u8; 32]) {
+        CONTRACT_ADDRESS.with(|c| *c.borrow_mut() = addr);
     }
 
     pub fn set_args(data: &[u8]) {
@@ -362,6 +368,27 @@ pub fn get_caller() -> Address {
     #[cfg(not(target_arch = "wasm32"))]
     {
         Address(test_mock::CALLER.with(|c| *c.borrow()))
+    }
+}
+
+/// Get the address of the currently executing contract.
+/// Returns a 32-byte `Address` representing the contract's own public key.
+/// In a cross-contract call context, this returns the callee's (target's) address.
+pub fn get_contract_address() -> Address {
+    #[cfg(target_arch = "wasm32")]
+    {
+        extern "C" {
+            fn get_contract_address(out_ptr: u32) -> u32;
+        }
+        let mut buf = [0u8; 32];
+        unsafe {
+            get_contract_address(buf.as_mut_ptr() as u32);
+        }
+        Address(buf)
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        Address(test_mock::CONTRACT_ADDRESS.with(|c| *c.borrow()))
     }
 }
 
