@@ -148,7 +148,7 @@ struct RpcState {
 /// Direct state writes bypass consensus and cause divergence when >1 validator.
 /// In multi-validator mode, callers must submit proper signed transactions
 /// via `sendTransaction` instead.
-fn require_single_validator(state: &RpcState, endpoint: &str) -> Result<(), RpcError> {
+pub(crate) fn require_single_validator(state: &RpcState, endpoint: &str) -> Result<(), RpcError> {
     let validators = state.state.get_all_validators().unwrap_or_default();
     if validators.len() > 1 {
         return Err(RpcError {
@@ -1796,6 +1796,8 @@ async fn handle_set_fee_config(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
+    // L3-01: Block in multi-validator mode — direct state write bypasses consensus
+    require_single_validator(state, "setFeeConfig")?;
     verify_admin_auth(state, &params)?;
 
     let params = params.ok_or_else(|| RpcError {
@@ -1901,6 +1903,8 @@ async fn handle_set_rent_params(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
+    // L3-01: Block in multi-validator mode — direct state write bypasses consensus
+    require_single_validator(state, "setRentParams")?;
     verify_admin_auth(state, &params)?;
 
     let params = params.ok_or_else(|| RpcError {
@@ -2709,6 +2713,15 @@ async fn handle_send_transaction(
         message: "Missing params".to_string(),
     })?;
 
+    // Support optional second param: { skipPreflight: true }
+    let skip_preflight = params
+        .as_array()
+        .and_then(|arr| arr.get(1))
+        .and_then(|v| v.as_object())
+        .and_then(|o| o.get("skipPreflight"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
     let tx_base64 = params
         .as_array()
         .and_then(|arr| arr.first())
@@ -2825,6 +2838,28 @@ async fn handle_send_transaction(
         }
     }
 
+    // ── Preflight simulation: pre-execute contract calls to catch errors ─
+    // Like Solana's preflight check — simulates the TX and rejects if it
+    // would fail on-chain. Callers can pass { skipPreflight: true } to bypass.
+    // Skip preflight for deploy transactions (data contains JSON with "Deploy" key).
+    if !skip_preflight {
+        let has_contract_call = tx.message.instructions.iter().any(|ix| {
+            ix.program_id == moltchain_core::CONTRACT_PROGRAM_ID
+                && !ix.data.starts_with(b"{\"Deploy\"") // skip deploys
+        });
+        if has_contract_call {
+            let processor = TxProcessor::new(state.state.clone());
+            let sim = processor.simulate_transaction(&tx);
+            if !sim.success {
+                let reason = sim.error.unwrap_or_else(|| "Contract execution failed".to_string());
+                return Err(RpcError {
+                    code: -32002,
+                    message: format!("Transaction simulation failed: {}", reason),
+                });
+            }
+        }
+    }
+
     let signature = submit_transaction(state, tx)?;
 
     Ok(serde_json::json!(signature))
@@ -2879,6 +2914,7 @@ async fn handle_simulate_transaction(
         "computeUsed": result.compute_used,
         "returnData": return_data_b64,
         "returnCode": result.return_code,
+        "stateChanges": result.state_changes,
     }))
 }
 
@@ -8769,8 +8805,9 @@ async fn handle_request_airdrop(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    // Note: multi-validator check removed — this is testnet-only and the primary
-    // validator's state root includes the airdrop, which propagates via blocks.
+    // L3-01: Block in multi-validator mode — direct state writes bypass consensus.
+    // Even on testnet, multiple validators would diverge on airdrop state.
+    require_single_validator(state, "requestAirdrop")?;
 
     // Only allow on testnet / devnet (not mainnet)
     if state.network_id.contains("mainnet")
