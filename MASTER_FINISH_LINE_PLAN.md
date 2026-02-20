@@ -880,7 +880,7 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| L5-01 | HIGH | Systemic | 7 utility functions duplicated across 5-14 files each (escapeHtml, Base58, RPC client, formatAmount, formatTime, copyToClipboard, createPagination). Bug fixes are nearly impossible to apply consistently | Create shared JS module: `shared/utils.js` with all common functions, import in all frontends | [ ] |
+| L5-01 | HIGH | Systemic | 7 utility functions duplicated across 5-14 files each (escapeHtml, Base58, RPC client, formatAmount, formatTime, copyToClipboard, createPagination). Bug fixes are nearly impossible to apply consistently | Create shared JS module: `shared/utils.js` with all common functions, import in all frontends | [x] ✅ shared/utils.js created with 20+ canonical functions, imported in 28 HTML files, removed duplicates from 22 JS files |
 
 ### L.6 — Systemic: Unchecked Arithmetic in All Contracts
 
@@ -1114,7 +1114,7 @@ After cross_contract_call works:
 ### Phase 6: Frontend Consolidation (Day 5-7)
 
 ```
-47. L5-01   Create shared utility module
+47. L5-01   Create shared utility module ✅ shared/utils.js with 20+ functions, imported in 28 HTML files
 48. I1-01   Deduplicate explorer code
 49. I4-01   Remove key storage from DEX
 50. I5-01   Wire marketplace to live data
