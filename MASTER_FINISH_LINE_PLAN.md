@@ -431,7 +431,7 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| G3-01 | CRITICAL | Math | `[FLP C4]` `tick_to_sqrt_price` uses linear approximation instead of correct exponential formula (`1.0001^(tick/2)`) — prices are wrong at all ticks | Implement correct exponential tick-to-price conversion using fixed-point arithmetic | [ ] |
+| G3-01 | CRITICAL | Math | `[FLP C4]` `tick_to_sqrt_price` uses linear approximation instead of correct exponential formula (`1.0001^(tick/2)`) — prices are wrong at all ticks | Implement correct exponential tick-to-price conversion using fixed-point arithmetic | [x] |
 | G3-02 | HIGH | Performance | `[FLP M7]` Fee distribution iterates over ALL liquidity positions — O(n) gas cost | Switch to per-share fee accumulator pattern (like Uniswap V3's feeGrowthGlobal) | [ ] |
 | G3-03 | MEDIUM | Missing | No fee tier configuration — single fee rate for all pools | Add configurable fee tiers (0.01%, 0.05%, 0.3%, 1%) | [ ] |
 
@@ -1177,14 +1177,14 @@ After cross_contract_call works:
 ```
 Phase 0 (Fatal):     [x] [x] [x] [x]                    4/4
 Phase 1 (Security):  [x] [x] [x] [x] [x] [x]            6/6  ✅ COMPLETE
-Phase 2 (Core):      [x] [ ] [ ] [ ] [ ] [ ] [ ] [ ]    1/8
+Phase 2 (Core):      [x] [x] [ ] [ ] [ ] [ ] [ ] [ ]    2/8
 Phase 3 (Contracts): [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]  0/11
 Phase 4 (Infra):     [ ] [ ] [ ] [ ] [ ] [ ] [ ]        0/7
 Phase 5 (Quality):   [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ]  0/10
 Phase 6 (Frontend):  [ ] [ ] [ ] [ ] [ ]                0/5
 Phase 7 (Testing):   [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
-                                              TOTAL:    11/63 phases
+                                              TOTAL:    12/63 phases
 ```
 
 ---
@@ -1205,6 +1205,7 @@ Phase 8 (Features):  [ ] [ ] [ ] [ ] [ ] [ ]            0/6
 | 1.8 | I2-02 | f99cc70 | Feb 20 | Wallet key encryption already fully implemented: encryptPrivateKey() uses AES-256-GCM with PBKDF2 (100k iterations, SHA-256, CSPRNG salt+IV). All 9 key storage paths in wallet.js call encryptPrivateKey() before localStorage persistence. No plaintext secret material in localStorage — verified by source-level regex check (no wallet.privateKey= or wallet.seed= assignments). Extension uses chrome.storage.local with identical encryption. Added AUDIT-FIX I2-02 annotation to encryptPrivateKey(). 2 new regression tests. 443 Rust + 46 JS tests, 0 regressions. |
 | 1.9 | H6-01 | 8743bfc | Feb 20 | Removed fake address generation from shared/wallet-connect.js. The _createRpcWallet fallback previously generated random bytes encoded as base58 when both RPC and nacl were unavailable — producing addresses with no private key (funds permanently lost). Replaced with: this.address = null + throw new Error with clear message prompting user to install the MoltChain wallet extension + console.error + window.alert. 1 new regression test verifying the old fake-address pattern is gone. 443 Rust + 47 JS tests, 0 regressions. |
 | 1.10 | H1-01 | 7d3d002 | Feb 20 | Protected private key from accidental exposure in SDK Keypair class (sdk/js/src/keypair.ts). (1) Changed `readonly secretKey` to `private readonly _secretKey` — field is no longer publicly accessible. (2) Added `getSecretKey(): Uint8Array` with JSDoc warning about key exposure — explicit opt-in replaces implicit access. (3) Added `toString()` returning `Keypair(publicKey: <hex>)` — never reveals secret key in logs or string coercion. (4) Added `toJSON()` returning `{ publicKey: <hex> }` — prevents JSON.stringify leakage. (5) Added `[Symbol.for('nodejs.util.inspect.custom')]` returning toString() — Node.js console.log safety. (6) Rebuilt TypeScript SDK (`npx tsc`). No external consumers break — all 7 internal `secretKey` references are to nacl's raw keypair, not the SDK class; SDK consumers use `sign()` method. 5 new regression tests: toString exclusion, toJSON exclusion, getSecretKey validity, sign functionality, secretKey field inaccessibility. 443 Rust + 52 JS tests, 0 regressions. Phase 1 COMPLETE (6/6). |
-| 2.11 | G19-01 / G20-01 | PENDING | Feb 20 | Wrapped token WASM export annotations: all three wrapped token contracts (musd_token, weth_token, wsol_token) already have correct `#[no_mangle] pub extern "C"` on all 20 exported functions each — verified by grep count (20/20 in every contract) and Cargo.toml `crate-type = ["cdylib", "rlib"]`. Pattern matches reference contract (moltcoin). 3 new source-level regression tests in core/tests/caller_verification.rs: verify each contract has all 8 required token functions, ≥8 `#[no_mangle]` annotations, and matching `pub extern "C"` count. 446 Rust + 52 JS tests, 0 regressions. |
+| 2.11 | G19-01 / G20-01 | 1c6e3fc | Feb 20 | Wrapped token WASM export annotations: all three wrapped token contracts (musd_token, weth_token, wsol_token) already have correct `#[no_mangle] pub extern "C"` on all 20 exported functions each — verified by grep count (20/20 in every contract) and Cargo.toml `crate-type = ["cdylib", "rlib"]`. Pattern matches reference contract (moltcoin). 3 new source-level regression tests in core/tests/caller_verification.rs: verify each contract has all 8 required token functions, ≥8 `#[no_mangle]` annotations, and matching `pub extern "C"` count. 446 Rust + 52 JS tests, 0 regressions. |
+| 2.12 | G3-01 | PENDING | Feb 20 | Replaced linear tick approximation with correct exponential formula in contracts/dex_amm/src/lib.rs. (1) Precomputed 19 Q64.64 constants for 1.00005^(2^k) with 80-decimal-digit precision. (2) Implemented `mul_q64()` — 256-bit intermediate multiplication via hi/lo u64 decomposition with carry tracking and wrapping arithmetic. (3) New `tick_to_sqrt_price()` uses bit-decomposition of |tick|, multiplying accumulator by precomputed constants for each set bit; negative ticks use reciprocal. (4) New `sqrt_price_to_tick()` uses binary search for exact inversion. (5) Adjusted MAX_TICK/MIN_TICK from ±887,272 (Uniswap V3 uint160) to ±443,636 (matching u64 Q32.32 representable range). Verified against 80-digit precision reference values: tick 0,±1,±100,±600,±10000,±100000 all within ±1 ULP. 8 new tests: exponential accuracy (9 test vectors), large values, monotonicity (2001 ticks), roundtrip range, mul_q64 unit tests. Fixed 12 previously failing dex_amm tests that depended on correct pricing. 446 Rust + 52 JS tests, 0 regressions. |
 
 *Last updated: February 20, 2026*

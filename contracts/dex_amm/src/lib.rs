@@ -27,8 +27,12 @@ use moltchain_sdk::{
 
 const MAX_POOLS: u64 = 100;
 const MIN_LIQUIDITY: u64 = 1_000;
-const MAX_TICK: i32 = 887_272;
-const MIN_TICK: i32 = -887_272;
+// AUDIT-FIX G3-01: MAX_TICK/MIN_TICK adjusted for u64 Q32.32 range.
+// With sqrt_price stored as u64 Q32.32, the representable ratio range is
+// [1/2^32, 2^32), corresponding to tick ≈ ±443,636. The original ±887,272
+// (from Uniswap V3's uint160 Q64.96) would overflow u64.
+const MAX_TICK: i32 = 443_636;
+const MIN_TICK: i32 = -443_636;
 
 // Fee tiers (in basis points)
 const FEE_TIER_1BPS: u8 = 0;
@@ -309,32 +313,131 @@ fn update_pos_fee_b(data: &mut Vec<u8>, fee: u64) {
 
 // ============================================================================
 // TICK MATH (Q32.32 fixed-point for no_std)
+// AUDIT-FIX G3-01: Replaced linear approximation with correct exponential
+// formula: sqrt_price = 1.0001^(tick/2) = 1.00005^tick
+// Uses bit-decomposition of |tick| with precomputed Q64.64 constants for
+// 1.00005^(2^k), then narrows to Q32.32 for storage. Matches Uniswap V3
+// TickMath.sol methodology adapted for integer-only no_std WASM.
 // ============================================================================
 
-/// Approximate sqrt_price for a given tick using integer math
-/// sqrt_price = floor(2^32 * 1.0001^(tick/2))
-/// For simplicity, we use a linear approximation near tick 0 and scale
-fn tick_to_sqrt_price(tick: i32) -> u64 {
-    // Base: at tick 0, sqrt_price = 2^32 = 4_294_967_296
-    let base: u64 = 1u64 << 32;
-    if tick == 0 { return base; }
+/// Precomputed Q64.64 constants for 1.00005^(2^k).
+/// Each entry = floor(1.00005^(2^k) * 2^64).
+/// Generated with 80-decimal-digit precision arithmetic.
+/// We need bits 0..18 to cover |tick| up to 443,636.
+const TICK_RATIOS: [u128; 19] = [
+    18447666410913237093,    // k=0:  1.00005^1
+    18448588794233782755,    // k=1:  1.00005^2
+    18450433699234678119,    // k=2:  1.00005^4
+    18454124062740255875,    // k=3:  1.00005^8
+    18461507004283223312,    // k=4:  1.00005^16
+    18476281749631266690,    // k=5:  1.00005^32
+    18505866722479494652,    // k=6:  1.00005^64
+    18565178862011796984,    // k=7:  1.00005^128
+    18684374044615830753,    // k=8:  1.00005^256
+    18925065152102488741,    // k=9:  1.00005^512
+    19415789018386924678,    // k=10: 1.00005^1024
+    20435739862829184269,    // k=11: 1.00005^2048
+    22639196493023416200,    // k=12: 1.00005^4096
+    27784481413182840296,    // k=13: 1.00005^8192
+    41848979110613408870,    // k=14: 1.00005^16384
+    94940171859194227663,    // k=15: 1.00005^32768
+    488630199271840203185,   // k=16: 1.00005^65536
+    12943176892702717671113, // k=17: 1.00005^131072
+    9081593337360425506718466, // k=18: 1.00005^262144
+];
 
-    // Each tick changes price by 0.01%, so sqrt changes by ~0.005%
-    // Approximation: sqrt_price ≈ base * (1 + tick * 5 / 1_000_000)
-    // Use i128 for intermediate math
-    let shift = tick as i128 * 5 * base as i128 / 1_000_000;
-    let result = base as i128 + shift;
-    if result <= 0 { 1 } else { result as u64 }
+/// Multiply two Q64.64 numbers and return Q64.64 result.
+/// Computes floor((a * b) / 2^64) without overflow.
+/// Both a and b are u128 representing Q64.64 fixed-point numbers.
+fn mul_q64(a: u128, b: u128) -> u128 {
+    // Split a and b into high (integer) and low (fractional) 64-bit parts.
+    let a_hi = a >> 64;
+    let a_lo = a & 0xFFFFFFFFFFFFFFFF_u128;
+    let b_hi = b >> 64;
+    let b_lo = b & 0xFFFFFFFFFFFFFFFF_u128;
+
+    // 256-bit product P = a*b, decomposed:
+    //   P = (a_hi*b_hi)<<128 + (a_hi*b_lo + a_lo*b_hi)<<64 + a_lo*b_lo
+    //
+    // We want floor(P / 2^64) = floor(P >> 64).
+    // P >> 64 = (a_hi*b_hi)<<64 + (a_hi*b_lo + a_lo*b_hi) + (a_lo*b_lo)>>64
+    //
+    // Each partial product fits in u128 since all halves are at most 64 bits.
+    // The sum can exceed u128 so we track carries.
+
+    let ll = a_lo * b_lo;  // u128, holds full product of two u64 values
+    let hl = a_hi * b_lo;  // u128
+    let lh = a_lo * b_hi;  // u128
+    let hh = a_hi * b_hi;  // u128
+
+    // Start with the fractional contribution: ll >> 64
+    let ll_hi = ll >> 64;
+
+    // Sum the middle terms and ll_hi
+    let (sum1, c1) = hl.overflowing_add(lh);
+    let (sum2, c2) = sum1.overflowing_add(ll_hi);
+
+    // Carry into the high part: each overflow = 2^128, which shifts to 2^64 after >>64
+    let carry: u128 = (c1 as u128) + (c2 as u128);
+
+    // Result = hh<<64 + carry<<64 + sum2
+    // Use wrapping arithmetic to avoid debug-mode overflow panics.
+    // For our bounded inputs (price ratios ~1.0 to ~2^32) the result always fits u128.
+    (hh.wrapping_add(carry)).wrapping_shl(64).wrapping_add(sum2)
 }
 
-/// Get tick from sqrt_price (inverse)
+/// Compute sqrt_price (Q32.32) for a given tick using exponential formula.
+/// sqrt_price = floor(2^32 * 1.00005^tick)
+/// Returns: Q32.32 fixed-point sqrt price as u64
+fn tick_to_sqrt_price(tick: i32) -> u64 {
+    let abs_tick = if tick < 0 { (-tick) as u32 } else { tick as u32 };
+    
+    // Accumulator in Q64.64
+    let mut acc: u128 = 1u128 << 64;
+    
+    // Multiply by precomputed 1.00005^(2^k) for each set bit
+    for k in 0..19u32 {
+        if abs_tick & (1u32 << k) != 0 {
+            acc = mul_q64(acc, TICK_RATIOS[k as usize]);
+        }
+    }
+    
+    // For negative ticks: take reciprocal = Q64^2 / acc = (2^128) / acc
+    if tick < 0 {
+        // acc represents 1.00005^|tick| in Q64.64
+        // reciprocal in Q64.64 = 2^128 / acc
+        if acc == 0 { return 1; }
+        // Use u128::MAX / acc as approximation (loses 1 ULP at most)
+        acc = (u128::MAX / acc) + 1; // ceil division approximation
+    }
+    
+    // Convert Q64.64 → Q32.32: right-shift by 32
+    let result = acc >> 32;
+    
+    // Clamp to u64
+    if result == 0 { 1 } else if result > u64::MAX as u128 { u64::MAX } else { result as u64 }
+}
+
+/// Get tick from sqrt_price (inverse of tick_to_sqrt_price).
+/// Uses binary search over the tick range for exact inversion.
 fn sqrt_price_to_tick(sqrt_price: u64) -> i32 {
-    let base: u64 = 1u64 << 32;
-    if sqrt_price == base { return 0; }
-    // Inverse of approximation
-    let diff = sqrt_price as i128 - base as i128;
-    let tick = diff * 1_000_000 / (5 * base as i128);
-    tick as i32
+    if sqrt_price == (1u64 << 32) { return 0; }
+    
+    // Binary search: find the largest tick where tick_to_sqrt_price(tick) <= sqrt_price
+    let mut lo: i32 = MIN_TICK;
+    let mut hi: i32 = MAX_TICK;
+    
+    while lo < hi {
+        let mid = lo + (hi - lo + 1) / 2;
+        let price_at_mid = tick_to_sqrt_price(mid);
+        if price_at_mid <= sqrt_price {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    
+    lo
 }
 
 /// Calculate liquidity from amounts and price range
@@ -1392,7 +1495,7 @@ mod tests {
         assert_eq!(set_pool_protocol_fee(admin.as_ptr(), pool_id, 101), 2);
     }
 
-    // --- Tick Math ---
+    // --- Tick Math (AUDIT-FIX G3-01: exponential accuracy tests) ---
 
     #[test]
     fn test_tick_to_sqrt_price_at_zero() {
@@ -1412,6 +1515,96 @@ mod tests {
         let price_neg = tick_to_sqrt_price(-600);
         let price_pos = tick_to_sqrt_price(600);
         assert!(price_neg < price_pos, "Negative tick should give lower price");
+    }
+
+    #[test]
+    fn test_tick_exponential_accuracy() {
+        // Verify against precomputed reference values (80-digit precision):
+        // sqrt_price_Q32 = floor(1.00005^tick * 2^32)
+        let test_vectors: &[(i32, u64)] = &[
+            (0,      4_294_967_296),
+            (1,      4_295_182_044),    // 1.00005
+            (-1,     4_294_752_558),    // 0.999950002...
+            (100,    4_316_495_369),    // 1.00501239...
+            (-100,   4_273_546_591),    // 0.99501260...
+            (600,    4_425_765_204),    // 1.03045376...
+            (-600,   4_168_034_955),    // 0.97044626...
+            (10000,  7_081_115_426),    // 1.64870066...
+            (-10000, 2_605_061_909),    // 0.60653824...
+        ];
+
+        for &(tick, expected) in test_vectors {
+            let computed = tick_to_sqrt_price(tick);
+            // Allow ±1 ULP tolerance for fixed-point rounding
+            let diff = if computed > expected { computed - expected } else { expected - computed };
+            assert!(
+                diff <= 1,
+                "tick_to_sqrt_price({}) = {} but expected {} (diff={})",
+                tick, computed, expected, diff
+            );
+        }
+    }
+
+    #[test]
+    fn test_tick_large_values() {
+        // At tick 100000: sqrt_price = 1.00005^100000 ≈ 148.39
+        // Q32.32 = floor(148.39 * 2^32) = 637,349,993,568
+        let price_100k = tick_to_sqrt_price(100_000);
+        let expected_100k: u64 = 637_349_993_568;
+        let diff = if price_100k > expected_100k { price_100k - expected_100k } else { expected_100k - price_100k };
+        assert!(diff <= 200, "tick 100000 off by {} (expected ~637B)", diff);
+
+        // Negative large tick
+        let price_neg100k = tick_to_sqrt_price(-100_000);
+        let expected_neg100k: u64 = 28_942_879;
+        let diff2 = if price_neg100k > expected_neg100k { price_neg100k - expected_neg100k } else { expected_neg100k - price_neg100k };
+        assert!(diff2 <= 2, "tick -100000 off by {} (expected ~28.9M)", diff2);
+    }
+
+    #[test]
+    fn test_tick_monotonicity() {
+        // Price must strictly increase with tick
+        let mut prev_price = tick_to_sqrt_price(-1000);
+        for tick in (-999..=1000).step_by(1) {
+            let price = tick_to_sqrt_price(tick);
+            assert!(
+                price > prev_price,
+                "tick_to_sqrt_price not monotonic at tick {}: {} <= {}",
+                tick, price, prev_price
+            );
+            prev_price = price;
+        }
+    }
+
+    #[test]
+    fn test_tick_roundtrip_range() {
+        // Roundtrip accuracy across a range of ticks
+        for tick in &[0, 1, -1, 10, -10, 100, -100, 600, -600, 1000, -1000, 10000, -10000, 100000, -100000] {
+            let price = tick_to_sqrt_price(*tick);
+            let recovered = sqrt_price_to_tick(price);
+            assert!(
+                (recovered - tick).abs() <= 1,
+                "Roundtrip failed for tick {}: got {}",
+                tick, recovered
+            );
+        }
+    }
+
+    #[test]
+    fn test_mul_q64_basic() {
+        // 1.0 * 1.0 = 1.0
+        let one = 1u128 << 64;
+        assert_eq!(mul_q64(one, one), one);
+
+        // 1.0 * ratio[0] = ratio[0]
+        let r0 = TICK_RATIOS[0];
+        assert_eq!(mul_q64(one, r0), r0);
+
+        // ratio[0] * ratio[0] should equal ratio[1] (since 1.00005^1 * 1.00005^1 = 1.00005^2)
+        let r1 = TICK_RATIOS[1];
+        let product = mul_q64(r0, r0);
+        let diff = if product > r1 { product - r1 } else { r1 - product };
+        assert!(diff <= 1, "R0*R0 should equal R1, diff={}", diff);
     }
 
     // --- Emergency Pause ---
