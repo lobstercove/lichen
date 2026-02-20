@@ -337,4 +337,95 @@ mod tests {
             "Deploy instruction over 4MB should be rejected"
         );
     }
+
+    // ── AUDIT-FIX A3-01: Verify data field IS included in signature hash ──
+
+    /// Regression test: changing instruction data MUST produce a different
+    /// message hash and different signature. This prevents the old vulnerability
+    /// where `data` was excluded from the signed hash.
+    #[test]
+    fn test_a3_01_data_field_included_in_signature_hash() {
+        let bh = Hash::default();
+
+        // Two instructions identical except for data
+        let ix1 = Instruction {
+            program_id: Pubkey([1u8; 32]),
+            accounts: vec![Pubkey([2u8; 32])],
+            data: vec![0x01, 0x02, 0x03],
+        };
+        let ix2 = Instruction {
+            program_id: Pubkey([1u8; 32]),
+            accounts: vec![Pubkey([2u8; 32])],
+            data: vec![0x01, 0x02, 0x04], // only last byte differs
+        };
+
+        let msg1 = Message::new(vec![ix1], bh);
+        let msg2 = Message::new(vec![ix2], bh);
+
+        // Serialized bytes must differ
+        assert_ne!(
+            msg1.serialize(),
+            msg2.serialize(),
+            "A3-01 REGRESSION: Messages with different data must serialize differently"
+        );
+
+        // Hashes must differ
+        assert_ne!(
+            msg1.hash(),
+            msg2.hash(),
+            "A3-01 REGRESSION: Messages with different data must hash differently"
+        );
+    }
+
+    /// Regression test: changing program_id MUST produce a different hash.
+    #[test]
+    fn test_a3_01_program_id_included_in_signature_hash() {
+        let bh = Hash::default();
+
+        let ix1 = Instruction {
+            program_id: Pubkey([1u8; 32]),
+            accounts: vec![Pubkey([2u8; 32])],
+            data: vec![0x01],
+        };
+        let ix2 = Instruction {
+            program_id: Pubkey([99u8; 32]), // different program
+            accounts: vec![Pubkey([2u8; 32])],
+            data: vec![0x01],
+        };
+
+        let msg1 = Message::new(vec![ix1], bh);
+        let msg2 = Message::new(vec![ix2], bh);
+
+        assert_ne!(
+            msg1.hash(),
+            msg2.hash(),
+            "A3-01 REGRESSION: Messages with different program_id must hash differently"
+        );
+    }
+
+    /// Regression test: changing accounts MUST produce a different hash.
+    #[test]
+    fn test_a3_01_accounts_included_in_signature_hash() {
+        let bh = Hash::default();
+
+        let ix1 = Instruction {
+            program_id: Pubkey([1u8; 32]),
+            accounts: vec![Pubkey([2u8; 32])],
+            data: vec![0x01],
+        };
+        let ix2 = Instruction {
+            program_id: Pubkey([1u8; 32]),
+            accounts: vec![Pubkey([3u8; 32])], // different account
+            data: vec![0x01],
+        };
+
+        let msg1 = Message::new(vec![ix1], bh);
+        let msg2 = Message::new(vec![ix2], bh);
+
+        assert_ne!(
+            msg1.hash(),
+            msg2.hash(),
+            "A3-01 REGRESSION: Messages with different accounts must hash differently"
+        );
+    }
 }
