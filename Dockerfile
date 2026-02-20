@@ -84,5 +84,8 @@ ENV RUST_LOG=info
 
 VOLUME ["/var/lib/moltchain"]
 
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+    CMD curl -sf http://localhost:8899/ -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' -H 'Content-Type: application/json' || exit 1
+
 ENTRYPOINT ["moltchain-validator"]
 CMD ["--data-dir", "/var/lib/moltchain"]
