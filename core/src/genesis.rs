@@ -60,21 +60,39 @@ pub struct ConsensusParams {
     /// Slashing percentage for invalid state
     pub slashing_percentage_invalid_state: u64,
 
+    /// AUDIT-FIX MEDIUM-9: Slashing percentage for double vote (previously hardcoded at 30%)
+    #[serde(default = "default_double_vote_pct")]
+    pub slashing_percentage_double_vote: u64,
+
+    /// AUDIT-FIX MEDIUM-9: Slashing percentage for censorship (previously hardcoded at 25%)
+    #[serde(default = "default_censorship_pct")]
+    pub slashing_percentage_censorship: u64,
+
     /// Finality threshold percentage (BFT: 66%)
     pub finality_threshold_percent: u64,
 }
 
+fn default_double_vote_pct() -> u64 { 30 }
+fn default_censorship_pct() -> u64 { 25 }
+
+/// AUDIT-FIX MEDIUM-8: This Default impl uses **testnet-scale** values
+/// (75 MOLT min stake instead of 75K MOLT). It exists solely for backward
+/// compatibility in unit tests that don't construct full genesis configs.
+/// Production validators always load from genesis.json which sets
+/// `min_validator_stake` to the real value (75,000,000,000,000 shells = 75K MOLT).
 impl Default for ConsensusParams {
     fn default() -> Self {
         ConsensusParams {
             slot_duration_ms: 400,
             epoch_slots: 432000,
-            min_validator_stake: 75_000_000_000, // 75 MOLT (testnet default)
+            min_validator_stake: 75_000_000_000, // 75 MOLT — testnet only, see note above
             validator_reward_per_block: 900_000_000,
             slashing_percentage_double_sign: 50,
             slashing_downtime_per_100_missed: 1,
             slashing_downtime_max_percent: 10,
             slashing_percentage_invalid_state: 100,
+            slashing_percentage_double_vote: 30,
+            slashing_percentage_censorship: 25,
             finality_threshold_percent: 66,
         }
     }
@@ -373,6 +391,8 @@ impl GenesisConfig {
                 slashing_downtime_per_100_missed: 1,
                 slashing_downtime_max_percent: 10,
                 slashing_percentage_invalid_state: 100,
+                slashing_percentage_double_vote: 30,
+                slashing_percentage_censorship: 25,
                 finality_threshold_percent: 66,
             },
             initial_accounts: vec![
@@ -418,6 +438,8 @@ impl GenesisConfig {
                 slashing_downtime_per_100_missed: 1,
                 slashing_downtime_max_percent: 10,
                 slashing_percentage_invalid_state: 100,
+                slashing_percentage_double_vote: 30,
+                slashing_percentage_censorship: 25,
                 finality_threshold_percent: 66,
             },
             initial_accounts: vec![

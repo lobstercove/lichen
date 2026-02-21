@@ -9144,16 +9144,15 @@ async fn run_validator() {
                 let mut slasher = slashing_for_evidence.lock().await;
                 if slasher.add_evidence(evidence.clone()) {
                     info!(
-                        "⚔️  Evidence recorded for {}",
+                        "⚔️  Evidence recorded for {} — sweep will apply penalty",
                         evidence.validator.to_base58()
                     );
-                    if slasher.should_slash(&evidence.validator) {
-                        slasher.slash(&evidence.validator);
-                        info!(
-                            "⚔️  Validator {} marked as slashed",
-                            evidence.validator.to_base58()
-                        );
-                    }
+                    // AUDIT-FIX CRITICAL-1: Do NOT call should_slash()/slash() here.
+                    // The P2P handler must only record evidence. The periodic sweep
+                    // (every 100 slots) applies the correct tiered economic penalty.
+                    // Previously, calling slash() here marked the validator as slashed
+                    // without any economic penalty, and the sweep then skipped it
+                    // because is_slashed() returned true — a complete penalty bypass.
                 } else {
                     debug!(
                         "Duplicate or invalid evidence for {}",
@@ -9442,7 +9441,13 @@ async fn run_validator() {
                     .unwrap_or(false);
 
                 // For downtime, record the offense to advance the tier
-                if has_downtime && !slasher.is_slashed(&validator_info.pubkey) {
+                // AUDIT-FIX HIGH-4: Only record a new offense when fresh evidence
+                // has actually been added. Without this gate, the sweep would call
+                // record_downtime_offense every 100 slots on the SAME evidence,
+                // escalating Tier 1 → Tier 2 in just 40 seconds (1 sweep cycle).
+                if has_downtime && !slasher.is_slashed(&validator_info.pubkey)
+                    && slasher.has_new_downtime_evidence(&validator_info.pubkey)
+                {
                     let tier = slasher.record_downtime_offense(&validator_info.pubkey, slot);
 
                     match tier {
@@ -9467,6 +9472,7 @@ async fn run_validator() {
                                 &validator_info.pubkey,
                                 &mut pool,
                                 &genesis_config.consensus,
+                                slot,
                             );
 
                             // Apply suspension
@@ -9514,6 +9520,7 @@ async fn run_validator() {
                                 &validator_info.pubkey,
                                 &mut pool,
                                 &genesis_config.consensus,
+                                slot,
                             );
 
                             let reputation_penalty = slasher.calculate_penalty(&validator_info.pubkey);
@@ -9551,6 +9558,7 @@ async fn run_validator() {
                         &validator_info.pubkey,
                         &mut pool,
                         &genesis_config.consensus,
+                        slot,
                     );
 
                     let reputation_penalty = slasher.calculate_penalty(&validator_info.pubkey);
@@ -9577,6 +9585,20 @@ async fn run_validator() {
                                 error!("Failed to persist slashed account: {}", e);
                             }
                         }
+                    }
+                }
+            }
+
+            // AUDIT-FIX CRITICAL-2: Clear slashed flag at end of sweep.
+            // Without this, once a validator is marked slashed it is permanently
+            // immune to all future slashing (is_slashed check at top of sweep skips
+            // them). We clear the flag so the sweep can re-evaluate next cycle.
+            // Permanently banned validators (collusion) are NOT cleared.
+            {
+                let all_slashed: Vec<_> = slasher.slashed_validators().collect();
+                for pk in all_slashed {
+                    if !slasher.is_permanently_banned(&pk) {
+                        slasher.clear_slashed(&pk);
                     }
                 }
             }

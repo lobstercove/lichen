@@ -525,7 +525,7 @@ fn test_slashing_tracker_records_evidence() {
     );
     let added = tracker.add_evidence(evidence);
     assert!(added, "First evidence should be accepted");
-    assert!(tracker.should_slash(&v1.pubkey()));
+    assert!(tracker.should_slash(&v1.pubkey(), 5));
 }
 
 #[test]
@@ -567,9 +567,9 @@ fn test_slashing_different_validators_independent() {
         1700000002,
     );
     tracker.add_evidence(ev1);
-    assert!(tracker.should_slash(&v1.pubkey()));
+    assert!(tracker.should_slash(&v1.pubkey(), 5));
     assert!(
-        !tracker.should_slash(&v2.pubkey()),
+        !tracker.should_slash(&v2.pubkey(), 5),
         "Unrelated validator should not be slashed"
     );
 }
