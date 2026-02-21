@@ -350,8 +350,11 @@ fn load_treasury_keypair(
 
     let mut seed = [0u8; 32];
     seed.copy_from_slice(&bytes[..32]);
+    let keypair = Keypair::from_seed(&seed);
+    // P10-VAL-06: Zeroize seed bytes after use to minimize key material exposure
+    seed.iter_mut().for_each(|b| *b = 0);
     info!("🔐 Loaded treasury keypair from {}", path.display());
-    Some(Keypair::from_seed(&seed))
+    Some(keypair)
 }
 
 fn is_reward_or_debt_tx(tx: &Transaction) -> bool {
@@ -8081,25 +8084,32 @@ async fn run_validator() {
                         };
 
                     if let Some((store, meta)) = checkpoint_store {
-                        let all_entries = match category.as_str() {
-                            "accounts" => store.export_accounts_iter().unwrap_or_default(),
-                            "contract_storage" => {
-                                store.export_contract_storage_iter().unwrap_or_default()
-                            }
-                            "programs" => store.export_programs_iter().unwrap_or_default(),
-                            _ => Vec::new(),
-                        };
+                        // P10-CORE-03 FIX: Use paginated export to avoid loading
+                        // the entire column family into memory.
+                        let chunk_sz = chunk_size.max(1) as u64;
+                        let offset = (chunk_index as u64) * chunk_sz;
 
-                        let total_entries = all_entries.len() as u64;
-                        let chunk_sz = chunk_size.max(1) as usize;
-                        let total_chunks = total_entries.div_ceil(chunk_sz as u64);
-                        let start = (chunk_index as usize) * chunk_sz;
-                        let end = ((chunk_index as usize + 1) * chunk_sz).min(all_entries.len());
-                        let chunk: Vec<(Vec<u8>, Vec<u8>)> = if start < all_entries.len() {
-                            all_entries[start..end].to_vec()
-                        } else {
-                            Vec::new()
-                        };
+                        let page = match category.as_str() {
+                            "accounts" => store.export_accounts_iter(offset, chunk_sz),
+                            "contract_storage" => {
+                                store.export_contract_storage_iter(offset, chunk_sz)
+                            }
+                            "programs" => store.export_programs_iter(offset, chunk_sz),
+                            _ => Ok(moltchain_core::state::KvPage {
+                                entries: Vec::new(),
+                                total: 0,
+                            }),
+                        }
+                        .unwrap_or_else(|_| {
+                            moltchain_core::state::KvPage {
+                                entries: Vec::new(),
+                                total: 0,
+                            }
+                        });
+
+                        let total_entries = page.total;
+                        let total_chunks = total_entries.div_ceil(chunk_sz).max(1);
+                        let chunk = page.entries;
 
                         let entries_bytes = bincode::serialize(&chunk).unwrap_or_default();
                         let msg = P2PMessage::new(

@@ -240,8 +240,16 @@ async fn main() {
     info!("   RPC URL: {}", state.config.rpc_url);
     info!("   ℹ️  Fund the faucet wallet with MOLT before use");
 
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("Failed to bind faucet to {}: {}", addr, e);
+            std::process::exit(1);
+        });
+    axum::serve(listener, app).await.unwrap_or_else(|e| {
+        eprintln!("Faucet server error: {}", e);
+        std::process::exit(1);
+    });
 }
 
 /// Health check

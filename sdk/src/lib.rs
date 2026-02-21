@@ -41,6 +41,7 @@ pub mod test_mock {
         pub static TIMESTAMP: RefCell<u64> = RefCell::new(1000);
         pub static VALUE: RefCell<u64> = RefCell::new(0);
         pub static SLOT: RefCell<u64> = RefCell::new(1);
+        pub static CROSS_CALL_RESPONSE: RefCell<Option<Vec<u8>>> = RefCell::new(None);
     }
 
     pub fn reset() {
@@ -54,6 +55,7 @@ pub mod test_mock {
         TIMESTAMP.with(|t| *t.borrow_mut() = 1000);
         VALUE.with(|v| *v.borrow_mut() = 0);
         SLOT.with(|s| *s.borrow_mut() = 1);
+        CROSS_CALL_RESPONSE.with(|c| *c.borrow_mut() = None);
     }
 
     pub fn set_caller(addr: [u8; 32]) {
@@ -78,6 +80,10 @@ pub mod test_mock {
 
     pub fn set_slot(s: u64) {
         SLOT.with(|slot| *slot.borrow_mut() = s);
+    }
+
+    pub fn set_cross_call_response(data: Option<Vec<u8>>) {
+        CROSS_CALL_RESPONSE.with(|c| *c.borrow_mut() = data);
     }
 
     pub fn get_return_data() -> Vec<u8> {

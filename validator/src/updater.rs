@@ -529,6 +529,14 @@ fn extract_binary_from_archive(archive_data: &[u8], output_path: &Path) -> Resul
         let mut entry = entry_result?;
         let path = entry.path()?.to_path_buf();
 
+        // P10-VAL-08: Validate tar entry paths to prevent directory traversal attacks.
+        // Reject entries containing ".." components or absolute paths.
+        let path_str = path.to_string_lossy();
+        if path_str.contains("..") || path.is_absolute() {
+            warn!("⚠️  Skipping tar entry with suspicious path: {}", path_str);
+            continue;
+        }
+
         // Look for the binary — either at root or in a subdirectory
         let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 

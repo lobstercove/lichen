@@ -1244,7 +1244,7 @@ fn load_config() -> CustodyConfig {
         solana_usdt_mint,
         evm_usdc_contract,
         evm_usdt_contract,
-        signer_endpoints,
+        signer_endpoints: signer_endpoints.clone(),
         signer_threshold,
         molt_rpc_url,
         treasury_keypair_path,
@@ -1315,8 +1315,32 @@ fn load_config() -> CustodyConfig {
                 }
             }
         },
-        // C9 fix: auth token for threshold signers
-        signer_auth_token: std::env::var("CUSTODY_SIGNER_AUTH_TOKEN").ok(),
+        // AUDIT-FIX P10-CUST-01: Signer auth token MUST NOT be predictable.
+        // Previously could be None when env var was absent, leaving signer requests
+        // completely unauthenticated. Now generates a cryptographically random token
+        // if the env var is not set and signers are configured.
+        signer_auth_token: {
+            let env_token = std::env::var("CUSTODY_SIGNER_AUTH_TOKEN")
+                .ok()
+                .filter(|t| !t.is_empty());
+            if env_token.is_some() {
+                env_token
+            } else if !signer_endpoints.is_empty() {
+                // Generate cryptographically random 32-byte auth token
+                use rand::Rng;
+                let random_bytes: [u8; 32] = rand::thread_rng().gen();
+                let generated = hex::encode(random_bytes);
+                tracing::warn!(
+                    "⚠️  CUSTODY_SIGNER_AUTH_TOKEN not set — generated random token. \
+                     For production, set CUSTODY_SIGNER_AUTH_TOKEN explicitly. \
+                     Generated token (distribute to signers): {}",
+                    generated
+                );
+                Some(generated)
+            } else {
+                None // no signers configured, token not needed
+            }
+        },
         // AUDIT-FIX 1.22: Per-signer auth tokens
         signer_auth_tokens: std::env::var("CUSTODY_SIGNER_AUTH_TOKENS")
             .ok()
@@ -2696,11 +2720,23 @@ async fn collect_frost_signatures(
                         .map(|(_, c)| c.clone())
                         .unwrap_or_default();
 
+                    // AUDIT-FIX P10-CUST-02: Use length-prefixed encoding instead of
+                    // "frost_commitment:" delimiter. The ":" delimiter could collide with
+                    // hex data or other payload formats, causing parse ambiguity.
+                    // Format: 4-byte big-endian msg_len || message_hex || commitment_hex
+                    let frost_payload = {
+                        let msg_bytes = message_hex.as_bytes();
+                        let cmt_bytes = commitment_hex.as_bytes();
+                        let mut buf = Vec::with_capacity(4 + msg_bytes.len() + cmt_bytes.len());
+                        buf.extend_from_slice(&(msg_bytes.len() as u32).to_be_bytes());
+                        buf.extend_from_slice(msg_bytes);
+                        buf.extend_from_slice(cmt_bytes);
+                        hex::encode(buf)
+                    };
                     job.signatures.push(SignerSignature {
                         signer_pubkey: resp.signer_id_hex,
                         signature: resp.share_hex,
-                        // Store commitment alongside share for aggregation
-                        message_hash: format!("frost_commitment:{}", commitment_hex),
+                        message_hash: frost_payload,
                         received_at: chrono::Utc::now().timestamp(),
                     });
                 }
@@ -6326,13 +6362,30 @@ fn assemble_signed_solana_tx(
         ));
     }
 
-    // Reconstruct the signing message (same message all signers committed to)
-    let message_bytes = hex::decode(&job.signatures[0].message_hash)
-        .map_err(|e| format!("decode message hash: {}", e))?;
+    // AUDIT-FIX P10-CUST-02: Parse length-prefixed encoding to extract both the
+    // signing message and per-signer commitments. The old "frost_commitment:" delimiter
+    // was ambiguous and also lost the original message bytes.
+    // Format: 4-byte big-endian msg_len || message_hex_utf8 || commitment_hex_utf8
+    let message_bytes = {
+        let raw = hex::decode(&job.signatures[0].message_hash)
+            .map_err(|e| format!("decode FROST payload: {}", e))?;
+        if raw.len() < 4 {
+            return Err("FROST payload too short for length prefix".to_string());
+        }
+        let msg_len = u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
+        if raw.len() < 4 + msg_len {
+            return Err(format!(
+                "FROST payload truncated: need {} + 4, have {}",
+                msg_len,
+                raw.len()
+            ));
+        }
+        let msg_hex = std::str::from_utf8(&raw[4..4 + msg_len])
+            .map_err(|e| format!("FROST message hex not UTF-8: {}", e))?;
+        hex::decode(msg_hex).map_err(|e| format!("decode signing message: {}", e))?
+    };
 
-    // Reconstruct commitments from the signing package
-    // The commitments are stored in the message_hash field of each signature entry
-    // as: "message_hex:commitment_hex" (packed by the collect_frost_signatures function)
+    // Reconstruct commitments from length-prefixed FROST payloads
     let mut commitments_map: BTreeMap<frost::Identifier, frost::round1::SigningCommitments> =
         BTreeMap::new();
 
@@ -6342,17 +6395,20 @@ fn assemble_signed_solana_tx(
         let identifier = frost::Identifier::deserialize(&id_bytes)
             .map_err(|e| format!("deserialize FROST identifier for commitment: {:?}", e))?;
 
-        // message_hash contains the commitment for this signer (set during round 1)
-        // We store commitments separately in the SignerSignature.message_hash field
-        // Format: the raw hex-encoded serialized SigningCommitments
-        // Note: for the signing package reconstruction, we need the original commitments
-        // that were distributed in round 2. These are stored alongside each share.
-        if let Some(commitment_hex) = sig_entry.message_hash.strip_prefix("frost_commitment:") {
-            let commitment_bytes =
-                hex::decode(commitment_hex).map_err(|e| format!("decode commitment: {}", e))?;
-            let commitment = frost::round1::SigningCommitments::deserialize(&commitment_bytes)
-                .map_err(|e| format!("deserialize commitment: {:?}", e))?;
-            commitments_map.insert(identifier, commitment);
+        // Parse length-prefixed payload to extract commitment_hex
+        let raw = hex::decode(&sig_entry.message_hash)
+            .map_err(|e| format!("decode FROST payload for commitment: {}", e))?;
+        if raw.len() >= 4 {
+            let msg_len = u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]) as usize;
+            if raw.len() > 4 + msg_len {
+                let commitment_hex = std::str::from_utf8(&raw[4 + msg_len..])
+                    .map_err(|e| format!("commitment hex not UTF-8: {}", e))?;
+                let commitment_bytes =
+                    hex::decode(commitment_hex).map_err(|e| format!("decode commitment: {}", e))?;
+                let commitment = frost::round1::SigningCommitments::deserialize(&commitment_bytes)
+                    .map_err(|e| format!("deserialize commitment: {:?}", e))?;
+                commitments_map.insert(identifier, commitment);
+            }
         }
     }
 

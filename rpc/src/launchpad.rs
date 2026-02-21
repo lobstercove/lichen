@@ -200,8 +200,11 @@ async fn get_stats(State(state): State<Arc<RpcState>>) -> impl IntoResponse {
     let fees_raw = read_u64_key(&state, b"cp_fees_collected");
 
     // Count graduated tokens
+    // P10-VAL-10: Cap iteration to prevent unbounded scan when token_count is large.
+    // At >10k tokens, consider maintaining a persistent graduated counter instead.
+    let scan_limit = token_count.min(10_000);
     let mut graduated = 0u64;
-    for id in 1..=token_count {
+    for id in 1..=scan_limit {
         let key = format!("cpt:{:016x}", id);
         if let Some(data) = read_bytes(&state, key.as_bytes()) {
             if data.len() >= 65 && data[64] != 0 {

@@ -10,6 +10,7 @@ use alloc::vec::Vec;
 use moltchain_sdk::{
     Address, log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_timestamp,
     call_token_transfer, call_token_balance, get_caller, CrossCall, call_contract,
+    get_contract_address,
 };
 
 // Reentrancy guard
@@ -25,6 +26,32 @@ fn reentrancy_enter() -> bool {
 
 fn reentrancy_exit() {
     storage_set(DAO_REENTRANCY_KEY, &[0u8]);
+}
+
+/// AUDIT-FIX P10-SC-02: Query on-chain reputation via MoltyID injected storage.
+/// Returns 0 if MoltyID is not configured or voter has no reputation.
+fn lookup_onchain_reputation(addr: &[u8; 32]) -> u64 {
+    // Check if MoltyID is configured
+    let moltyid_data = storage_get(b"moltyid_address");
+    match moltyid_data {
+        Some(b) if b.len() == 32 && b.iter().any(|&x| x != 0) => {},
+        _ => return 0, // No MoltyID configured — reputation is 0
+    };
+    
+    // Read reputation from injected cross-contract storage
+    // The processor pre-populates "rep:{hex_pubkey}" for the tx caller
+    let hex_chars: &[u8; 16] = b"0123456789abcdef";
+    let mut rep_key = Vec::with_capacity(68);
+    rep_key.extend_from_slice(b"rep:");
+    for &b in addr.iter() {
+        rep_key.push(hex_chars[(b >> 4) as usize]);
+        rep_key.push(hex_chars[(b & 0x0f) as usize]);
+    }
+    
+    match storage_get(&rep_key) {
+        Some(data) if data.len() >= 8 => bytes_to_u64(&data),
+        _ => 0,
+    }
 }
 
 // AUDIT-FIX P2: Pause check helper (was stored but never checked)
@@ -318,6 +345,33 @@ pub extern "C" fn create_proposal_typed(
     
     log_info(&alloc::format!("   Proposal stake required: {} shells", min_threshold));
     
+    // AUDIT-FIX P10-SC-01: Actually escrow proposal stake via token transfer
+    // The proposer must have attached enough value, OR we transfer from their token balance
+    let governance_token_data = storage_get(b"governance_token").unwrap_or_default();
+    if governance_token_data.len() >= 32 {
+        let mut token_addr = [0u8; 32];
+        token_addr.copy_from_slice(&governance_token_data[..32]);
+        let dao_self = get_contract_address();
+        // Transfer stake from proposer to DAO contract (escrow)
+        match call_token_transfer(
+            Address(token_addr),
+            Address(proposer),
+            dao_self,
+            min_threshold,
+        ) {
+            Ok(true) => {
+                log_info("   Proposal stake escrowed successfully");
+            }
+            _ => {
+                log_info("   Failed to escrow proposal stake — insufficient balance or transfer failed");
+                return 0;
+            }
+        }
+    } else {
+        log_info("   No governance token configured — cannot escrow stake");
+        return 0;
+    }
+
     // Generate proposal ID
     let mut proposal_count = storage_get(b"proposal_count")
         .and_then(|d| Some(bytes_to_u64(&d)))
@@ -392,7 +446,8 @@ pub extern "C" fn vote(
     _voting_power: u64, // IGNORED — balance is looked up on-chain
 ) -> u32 {
     // Default reputation of 100 for backward compat
-    vote_with_reputation(voter_ptr, proposal_id, support, 0, 100)
+    // AUDIT-FIX P10-SC-05: Default reputation=0 (on-chain lookup used instead)
+    vote_with_reputation(voter_ptr, proposal_id, support, 0, 0)
 }
 
 /// Vote with quadratic voting power per whitepaper:
@@ -406,7 +461,7 @@ pub extern "C" fn vote_with_reputation(
     proposal_id: u64,
     support: u8, // 1 = for, 0 = against
     _token_balance: u64, // IGNORED — looked up on-chain
-    reputation: u64,
+    _reputation: u64,
 ) -> u32 {
     log_info(" Casting vote (quadratic)...");
     
@@ -446,9 +501,9 @@ pub extern "C" fn vote_with_reputation(
         0
     };
     
-    // SECURITY FIX: Cap reputation to maximum possible on-chain value (1000)
-    // TODO: Replace with on-chain reputation verification via MoltyID cross-call
-    let reputation = reputation.min(1000);
+    // AUDIT-FIX P10-SC-02: On-chain reputation verification via MoltyID
+    // Ignore caller-supplied reputation entirely — look up from MoltyID storage
+    let reputation = lookup_onchain_reputation(&voter);
     
     // Calculate quadratic voting power from VERIFIED on-chain balance
     let quadratic_power = governance_voting_power(actual_balance, reputation);
@@ -548,11 +603,12 @@ pub extern "C" fn execute_proposal(
         }
     };
     
-    // Check if already executed
-    if proposal[192] == 1 {
+    // Check if already executed (1=executed, 2=treasury_used)
+    if proposal[192] == 1 || proposal[192] == 2 {
         log_info("Proposal already executed");
         return 0;
     }
+    // Status 3 = approved-but-failed (retryable) — allow re-execution
     
     // Check if cancelled
     if proposal[193] == 1 {
@@ -686,8 +742,11 @@ pub extern "C" fn execute_proposal(
                 log_info(&alloc::format!("   Action dispatched to target contract, result: {} bytes", result.len()));
             }
             Err(_) => {
-                log_info("   Action dispatch to target contract failed");
-                // Don't revert — mark as executed anyway since the vote passed
+                log_info("   Action dispatch to target contract failed — retryable");
+                // AUDIT-FIX P10-SC-03: Don't mark as executed on failure — allow retry
+                proposal[192] = 3; // 3 = approved-but-failed (retryable)
+                storage_set(key.as_bytes(), &proposal);
+                return 0;
             }
         }
     } else {
@@ -698,6 +757,30 @@ pub extern "C" fn execute_proposal(
     proposal[192] = 1;
     storage_set(key.as_bytes(), &proposal);
     
+    // AUDIT-FIX P10-SC-01: Refund escrowed stake to proposer on successful execution
+    let stake_amount = if proposal.len() > 211 {
+        bytes_to_u64(&proposal[204..212])
+    } else {
+        PROPOSAL_STAKE
+    };
+    let governance_token_data = storage_get(b"governance_token").unwrap_or_default();
+    if governance_token_data.len() >= 32 && stake_amount > 0 {
+        let mut token_addr = [0u8; 32];
+        token_addr.copy_from_slice(&governance_token_data[..32]);
+        let dao_self = get_contract_address();
+        let mut proposer_addr = [0u8; 32];
+        proposer_addr.copy_from_slice(&proposal[0..32]);
+        match call_token_transfer(
+            Address(token_addr),
+            dao_self,
+            Address(proposer_addr),
+            stake_amount,
+        ) {
+            Ok(true) => log_info("   Stake refunded to proposer"),
+            _ => log_info("   Warning: stake refund failed"),
+        }
+    }
+
     log_info("Proposal executed!");
     1
 }
@@ -845,6 +928,30 @@ pub extern "C" fn cancel_proposal(
     proposal[193] = 1;
     storage_set(key.as_bytes(), &proposal);
     
+    // AUDIT-FIX P10-SC-01: Refund escrowed stake to proposer on cancellation
+    let stake_amount = if proposal.len() > 211 {
+        bytes_to_u64(&proposal[204..212])
+    } else {
+        PROPOSAL_STAKE
+    };
+    let governance_token_data = storage_get(b"governance_token").unwrap_or_default();
+    if governance_token_data.len() >= 32 && stake_amount > 0 {
+        let mut token_addr = [0u8; 32];
+        token_addr.copy_from_slice(&governance_token_data[..32]);
+        let dao_self = get_contract_address();
+        let mut proposer_addr = [0u8; 32];
+        proposer_addr.copy_from_slice(&proposal[0..32]);
+        match call_token_transfer(
+            Address(token_addr),
+            dao_self,
+            Address(proposer_addr),
+            stake_amount,
+        ) {
+            Ok(true) => log_info("   Stake refunded to proposer"),
+            _ => log_info("   Warning: stake refund failed"),
+        }
+    }
+
     log_info("Proposal cancelled!");
     1
 }
@@ -1205,6 +1312,25 @@ pub extern "C" fn dao_unpause(caller_ptr: *const u8) -> u32 {
     0
 }
 
+/// AUDIT-FIX P10-SC-02: Set the MoltyID contract address for on-chain reputation verification.
+#[no_mangle]
+pub extern "C" fn set_moltyid_address(
+    _caller_ptr: *const u8,
+    moltyid_addr_ptr: *const u8,
+) -> u32 {
+    let real_caller = get_caller();
+    let owner = storage_get(b"dao_owner").unwrap_or_default();
+    if owner.len() != 32 || real_caller.0 != owner.as_slice() {
+        log_info("set_moltyid_address: only dao_owner can configure");
+        return 0;
+    }
+    let mut addr = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(moltyid_addr_ptr, addr.as_mut_ptr(), 32); }
+    storage_set(b"moltyid_address", &addr);
+    log_info("MoltyID address configured for reputation verification");
+    1
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;
@@ -1214,6 +1340,9 @@ mod tests {
 
     fn setup() {
         test_mock::reset();
+        // AUDIT-FIX: Enable cross-call mock to return success (vec![1])
+        // so token transfers (escrow) succeed in tests
+        test_mock::set_cross_call_response(Some(std::vec![1]));
     }
 
     #[test]

@@ -938,12 +938,16 @@ pub fn set_moltyid_address(caller: *const u8, moltyid_addr: *const u8) -> u32 {
 /// Verify that an address has sufficient on-chain reputation via MoltyID.
 /// The processor injects the caller's MoltyID reputation into the contract's
 /// storage at key "rep:{hex_pubkey}" before execution, so we can read it
-/// directly via storage_get. If no MoltyID address is configured, allows all.
+/// directly via storage_get. If no MoltyID address is configured, fails closed.
 fn verify_reputation(addr: &[u8; 32], min_rep: u64) -> bool {
     // Check if MoltyID address is configured (non-zero)
     match storage_get(MOLTYID_ADDRESS_KEY) {
         Some(b) if b.len() == 32 && b.iter().any(|&x| x != 0) => {},
-        _ => return true, // No MoltyID configured — allow all
+        _ => {
+            // P10-SC-10: Fail closed when MoltyID is not configured
+            log_info("verify_reputation: MoltyID not configured — denying (fail closed)");
+            return false;
+        }
     };
 
     // Read reputation from injected cross-contract storage.
@@ -1526,12 +1530,12 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_reputation_no_address_allows() {
-        // Without MoltyID address configured, verify_reputation returns true
+    fn test_verify_reputation_no_address_denies() {
+        // P10-SC-10: Without MoltyID address configured, verify_reputation fails closed
         let _admin = setup();
         let user = [5u8; 32];
-        assert!(verify_reputation(&user, 500));
-        assert!(verify_reputation(&user, u64::MAX));
+        assert!(!verify_reputation(&user, 500));
+        assert!(!verify_reputation(&user, u64::MAX));
     }
 
     #[test]

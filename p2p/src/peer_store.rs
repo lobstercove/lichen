@@ -1,6 +1,7 @@
 // Durable peer store for bootstrap and restart recovery
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -15,15 +16,19 @@ struct PeerStoreData {
 pub struct PeerStore {
     path: PathBuf,
     peers: Mutex<Vec<SocketAddr>>,
+    /// P10-P2P-02: O(1) address lookup index (mirrors `peers` Vec)
+    peer_set: Mutex<HashSet<SocketAddr>>,
     max_peers: usize,
 }
 
 impl PeerStore {
     pub fn new(path: PathBuf, max_peers: usize) -> Self {
         let peers = Self::load_from_path(&path);
+        let peer_set: HashSet<SocketAddr> = peers.iter().copied().collect();
         PeerStore {
             path,
             peers: Mutex::new(peers),
+            peer_set: Mutex::new(peer_set),
             max_peers,
         }
     }
@@ -47,23 +52,28 @@ impl PeerStore {
     }
 
     pub fn record_peer(&self, addr: SocketAddr) {
-        // L5 fix: minimize lock scope — collect data under lock, then write file outside lock
+        // P10-P2P-02: O(1) duplicate check via HashSet
         let data_to_write = {
-            let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
-            if peers.contains(&addr) {
+            let mut set = self.peer_set.lock().unwrap_or_else(|e| e.into_inner());
+            if set.contains(&addr) {
                 return;
             }
+            set.insert(addr);
 
+            let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
             peers.push(addr);
             if peers.len() > self.max_peers {
+                let evicted = peers[0];
                 peers.rotate_left(1);
                 peers.truncate(self.max_peers);
+                // Also remove evicted peer from the set
+                set.remove(&evicted);
             }
 
             PeerStoreData {
                 peers: peers.iter().map(|peer| peer.to_string()).collect(),
             }
-        }; // lock dropped here
+        }; // locks dropped here
 
         // File I/O outside the lock
         if let Some(parent) = self.path.parent() {

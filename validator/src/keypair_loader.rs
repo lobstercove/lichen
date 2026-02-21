@@ -76,8 +76,10 @@ fn load_keypair(path: &Path) -> Result<Keypair> {
 
     let mut seed = [0u8; 32];
     seed.copy_from_slice(&keypair_file.private_key);
-
-    Ok(Keypair::from_seed(&seed))
+    let keypair = Keypair::from_seed(&seed);
+    // P10-VAL-06: Zeroize seed bytes after use to minimize key material exposure
+    seed.iter_mut().for_each(|b| *b = 0);
+    Ok(keypair)
 }
 
 /// Save keypair to file

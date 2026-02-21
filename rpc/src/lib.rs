@@ -5784,6 +5784,19 @@ async fn handle_upgrade_contract(
         });
     }
 
+    // P10-RPC-05: Reject oversized WASM code to prevent storage abuse
+    const MAX_CONTRACT_CODE_SIZE: usize = 524_288; // 512 KB
+    if code_bytes.len() > MAX_CONTRACT_CODE_SIZE {
+        return Err(RpcError {
+            code: -32602,
+            message: format!(
+                "Contract code too large: {} bytes (max {} bytes / 512 KB)",
+                code_bytes.len(),
+                MAX_CONTRACT_CODE_SIZE,
+            ),
+        });
+    }
+
     // Parse signature (hex-encoded)
     let sig_hex = arr[3].as_str().ok_or_else(|| RpcError {
         code: -32602,
@@ -6570,6 +6583,11 @@ fn parse_moltyid_achievement_record(input: &[u8]) -> Option<MoltyIdAchievementRe
     })
 }
 
+/// P10-VAL-01: Loads full ContractAccount (including storage map) for read-only
+/// RPC queries. Acceptable — no write overhead for reads. If ContractAccount
+/// grows large in production, consider a lightweight path that only reads the
+/// needed storage keys via get_contract_storage() instead of deserializing the
+/// entire account.
 fn load_moltyid_contract(state: &RpcState) -> Result<(Pubkey, ContractAccount), RpcError> {
     let symbol_entry = state
         .state
@@ -6758,6 +6776,10 @@ async fn handle_get_moltyid_vouches(
         }
     }
 
+    // TODO-PERF (P10-VAL-02): O(n²) scan — iterates all identities × vouches
+    // to find given vouches for this pubkey. For large identity sets, add a
+    // reverse index "vouch_given:<voucher_hex>:<index>" → vouchee to enable
+    // O(1) lookup per given vouch.
     let mut given = Vec::new();
     for (key, value) in &contract.storage {
         if !key.starts_with(b"id:") {
@@ -7234,6 +7256,12 @@ async fn handle_get_moltyid_agent_directory(
             "created_at": identity.created_at,
             "updated_at": identity.updated_at,
         }));
+
+        // P10-VAL-07: Cap collected entries to prevent excessive memory use
+        // on large identity sets. 10K is well above any realistic directory page.
+        if agents.len() >= 10_000 {
+            break;
+        }
     }
 
     agents.sort_by(|a, b| {
@@ -7267,6 +7295,9 @@ async fn handle_get_moltyid_stats(state: &RpcState) -> Result<serde_json::Value,
         .and_then(|value| read_u64_le(value, 0))
         .unwrap_or(0);
 
+    // PERF-NOTE (P10-VAL-07): Full storage scan for tier distribution.
+    // Acceptable for current identity counts. Consider caching or contract-side
+    // aggregate counters if identity count exceeds 100K.
     let mut tier_distribution = [0u64; 6];
     for (key, value) in &contract.storage {
         if !key.starts_with(b"id:") {
@@ -8164,7 +8195,10 @@ fn parse_evm_block_tag(tag: &str, state: &RpcState) -> Result<u64, RpcError> {
 /// Format a real Block into EVM-compatible JSON block object.
 fn format_evm_block(block: &moltchain_core::Block, include_txs: bool) -> serde_json::Value {
     let slot = block.header.slot;
-    let block_hash = format!("0x{}", hex::encode(block.header.state_root.0));
+    // AUDIT-FIX P10-RPC-01: Use actual block hash, NOT state_root.
+    // state_root is a Merkle root of account state — it is NOT the block identifier.
+    // EVM tooling (MetaMask, Ethers.js) uses the "hash" field to track/index blocks.
+    let block_hash = format!("0x{}", hex::encode(block.hash().0));
     let parent_hash = format!("0x{}", hex::encode(block.header.parent_hash.0));
     let timestamp = format!("0x{:x}", block.header.timestamp);
     let tx_root = format!("0x{}", hex::encode(block.header.tx_root.0));
@@ -8597,11 +8631,18 @@ async fn handle_eth_get_logs(
                 continue;
             }
 
-            // Encode non-indexed data as ABI-encoded bytes
+            // AUDIT-FIX P10-RPC-03: ABI-encode data values (each left-padded to 32 bytes).
+            // Raw concatenation of UTF-8 bytes breaks EVM ABI decoding in ethers.js / web3.py.
             let data_hex = {
                 let mut data_bytes = Vec::new();
                 for v in event.data.values() {
-                    data_bytes.extend_from_slice(v.as_bytes());
+                    let v_bytes = v.as_bytes();
+                    // ABI encoding: each value is left-padded to 32 bytes
+                    if v_bytes.len() < 32 {
+                        let padding = 32 - v_bytes.len();
+                        data_bytes.extend(std::iter::repeat(0u8).take(padding));
+                    }
+                    data_bytes.extend_from_slice(v_bytes);
                 }
                 format!("0x{}", hex::encode(&data_bytes))
             };
@@ -8613,14 +8654,28 @@ async fn handle_eth_get_logs(
                     format!("0x{}", hex::encode(&event.program.0[12..32]))
                 };
 
-            // Get block hash for this slot
+            // AUDIT-FIX P10-RPC-01: Use actual block hash, not state_root.
             let block_hash = state
                 .state
                 .get_block_by_slot(slot)
                 .ok()
                 .flatten()
-                .map(|b| format!("0x{}", hex::encode(b.header.state_root.0)))
+                .map(|b| format!("0x{}", hex::encode(b.hash().0)))
                 .unwrap_or_else(|| format!("0x{:064x}", slot));
+
+            // AUDIT-FIX P10-RPC-02: Derive deterministic transactionHash from
+            // keccak256(block_hash_bytes || log_index). The previous code used
+            // a sequential counter (log_index) formatted as hex, which fabricated
+            // colliding "transaction hashes" across different blocks.
+            let tx_hash = {
+                use sha3::{Digest, Keccak256};
+                let block_hash_hex = block_hash.strip_prefix("0x").unwrap_or(&block_hash);
+                let bh_bytes = hex::decode(block_hash_hex).unwrap_or_default();
+                let mut hasher = Keccak256::new();
+                hasher.update(&bh_bytes);
+                hasher.update(&log_index.to_be_bytes());
+                format!("0x{}", hex::encode(hasher.finalize()))
+            };
 
             logs.push(serde_json::json!({
                 "address": contract_addr,
@@ -8628,7 +8683,7 @@ async fn handle_eth_get_logs(
                 "data": data_hex,
                 "blockNumber": format!("0x{:x}", slot),
                 "blockHash": block_hash,
-                "transactionHash": format!("0x{:064x}", log_index),
+                "transactionHash": tx_hash,
                 "transactionIndex": "0x0",
                 "logIndex": format!("0x{:x}", log_index),
                 "removed": false,
@@ -9513,6 +9568,9 @@ async fn handle_get_prediction_markets(
         }
     };
 
+    // PERF-NOTE (P10-VAL-05): Linear scan over all markets. Acceptable at
+    // current scale. For >100K markets, consider contract-side filtered
+    // counters or an off-chain index to avoid O(n) per query.
     let mut markets = Vec::new();
     for id in 1..=total {
         let key = format!("pm_m_{}", id);

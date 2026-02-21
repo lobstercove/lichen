@@ -77,10 +77,11 @@ pub fn call_contract(call: CrossCall) -> CallResult<Vec<u8>> {
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
-        // Mock: cross-contract calls return empty success in test mode.
-        // Individual tests can override behavior via test_mock storage.
+        // Mock: cross-contract calls return configurable response in test mode.
         let _ = call;
-        Ok(Vec::new())
+        use crate::test_mock;
+        let response = test_mock::CROSS_CALL_RESPONSE.with(|c| c.borrow().clone());
+        Ok(response.unwrap_or_default())
     }
 }
 
