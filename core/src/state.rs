@@ -80,10 +80,8 @@ struct BlockhashCache {
     entries: Vec<(u64, Hash)>,
 }
 
-/// Global blockhash cache. Populated lazily on first `get_recent_blockhashes`
-/// and kept warm by `push_blockhash_cache` on every `put_block`.
-static BLOCKHASH_CACHE: std::sync::LazyLock<Mutex<Option<BlockhashCache>>> =
-    std::sync::LazyLock::new(|| Mutex::new(None));
+// AUDIT-FIX C-7: Blockhash cache moved from static global to StateStore instance field
+// so that each store instance has its own cache (avoids cross-instance pollution in tests).
 
 /// Token symbol registry entry
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -611,6 +609,9 @@ pub struct StateStore {
     /// AUDIT-FIX B-1: Mutex to serialize treasury read-modify-write in charge_fee_direct,
     /// preventing lost-update race when parallel TX groups credit fees concurrently.
     treasury_lock: Arc<std::sync::Mutex<()>>,
+    /// AUDIT-FIX C-7: Per-instance blockhash cache (was previously a static global).
+    /// Populated lazily on first `get_recent_blockhashes`, kept warm by `push_blockhash_cache`.
+    blockhash_cache: Arc<Mutex<Option<BlockhashCache>>>,
 }
 
 /// Atomic write batch for transaction processing (T1.4/T3.1).
@@ -829,6 +830,7 @@ impl StateStore {
             tx_slot_seq_lock: Arc::new(std::sync::Mutex::new(())),
             burned_lock: Arc::new(std::sync::Mutex::new(())),
             treasury_lock: Arc::new(std::sync::Mutex::new(())),
+            blockhash_cache: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -941,7 +943,7 @@ impl StateStore {
     ) -> Result<std::collections::HashSet<Hash>, String> {
         // Fast path: check the in-process cache
         {
-            let cache = BLOCKHASH_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+            let cache = self.blockhash_cache.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(ref inner) = *cache {
                 // Cache is valid — return all hashes within the requested window
                 let last_slot = self.get_last_slot()?;
@@ -974,7 +976,7 @@ impl StateStore {
 
         // Warm the cache
         {
-            let mut cache = BLOCKHASH_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+            let mut cache = self.blockhash_cache.lock().unwrap_or_else(|e| e.into_inner());
             *cache = Some(BlockhashCache { entries });
         }
 
@@ -984,7 +986,7 @@ impl StateStore {
     /// PERF-OPT 3: Push a new blockhash into the in-memory cache after committing a block.
     /// Evicts entries older than 300 slots.
     fn push_blockhash_cache(&self, hash: Hash, slot: u64) {
-        let mut cache = BLOCKHASH_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cache = self.blockhash_cache.lock().unwrap_or_else(|e| e.into_inner());
         let inner = cache.get_or_insert_with(|| BlockhashCache {
             entries: Vec::new(),
         });
@@ -2993,6 +2995,44 @@ impl StateStore {
 // ─── StateBatch Methods ──────────────────────────────────────────────
 
 impl StateBatch {
+    /// B-7: Check symbol registry against both batch overlay and committed state.
+    /// Returns true if the symbol exists in either the batch overlay or committed DB.
+    pub fn symbol_exists(&self, symbol: &str) -> Result<bool, String> {
+        let normalized = StateStore::normalize_symbol(symbol)?;
+        // Check batch overlay first
+        if self.symbol_overlay.contains(&normalized) {
+            return Ok(true);
+        }
+        // Fall back to committed state
+        let cf = self.db.cf_handle(CF_SYMBOL_REGISTRY)
+            .ok_or_else(|| "Symbol registry CF not found".to_string())?;
+        let exists = self.db.get_cf(&cf, normalized.as_bytes())
+            .map_err(|e| format!("Database error: {}", e))?
+            .is_some();
+        Ok(exists)
+    }
+
+    /// B-7: Get symbol registry entry from batch overlay or committed state.
+    pub fn get_symbol_registry(&self, symbol: &str) -> Result<Option<SymbolRegistryEntry>, String> {
+        let normalized = StateStore::normalize_symbol(symbol)?;
+        let cf = self.db.cf_handle(CF_SYMBOL_REGISTRY)
+            .ok_or_else(|| "Symbol registry CF not found".to_string())?;
+        match self.db.get_cf(&cf, normalized.as_bytes())
+            .map_err(|e| format!("Database error: {}", e))? {
+            Some(data) => {
+                let entry: SymbolRegistryEntry = serde_json::from_slice(&data)
+                    .map_err(|e| format!("Failed to decode symbol registry: {}", e))?;
+                Ok(Some(entry))
+            }
+            None => {
+                // If in batch overlay but not in DB yet, it exists but we can't read the entry
+                // (the overlay only stores the name, not the full entry).
+                // This is sufficient for the B-4 uniqueness check.
+                Ok(None)
+            }
+        }
+    }
+
     /// Accumulate burned amount in this batch (committed atomically on commit_batch)
     pub fn add_burned(&mut self, amount: u64) {
         self.burned_delta = self.burned_delta.saturating_add(amount);

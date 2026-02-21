@@ -119,10 +119,12 @@ pub fn read_molt_price_feed_from_state(state: &crate::state::StateStore) -> Opti
 pub fn molt_price_from_state(state: &crate::state::StateStore) -> f64 {
     match read_molt_price_feed_from_state(state) {
         Some((price_raw, decimals, timestamp)) => {
-            // Check staleness: reject if > 1 hour old
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
+            // A-5: Use deterministic block timestamp instead of SystemTime::now()
+            // This ensures all validators evaluating the same slot reach identical results.
+            let now = state.get_last_slot()
+                .ok()
+                .and_then(|slot| state.get_block_by_slot(slot).ok().flatten())
+                .map(|block| block.header.timestamp)
                 .unwrap_or(0);
 
             if now > 0 && timestamp > 0 && now.saturating_sub(timestamp) > ORACLE_STALENESS_SECS {
@@ -1250,8 +1252,13 @@ impl StakePool {
     pub fn get_stats(&self) -> StakingStats {
         let active_validators = self.active_validators().len() as u64;
         let unclaimed_rewards = self.total_unclaimed_rewards();
+        // A-6: Use only active validators' stake for average calculation
+        let active_total: u64 = self.stakes.values()
+            .filter(|s| s.is_active && s.meets_minimum())
+            .map(|s| s.total_stake())
+            .sum();
         let avg_stake = if active_validators > 0 {
-            self.total_staked / active_validators
+            active_total / active_validators
         } else {
             0
         };

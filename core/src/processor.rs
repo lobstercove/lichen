@@ -968,8 +968,38 @@ impl TxProcessor {
         let mut logs = Vec::new();
         let mut last_return_code: Option<i32> = None;
 
-        // Validate blockhash
-        {
+        // B-6: Mirror process_transaction blockhash guards for simulation consistency
+        // Reject zero blockhash
+        if tx.message.recent_blockhash == crate::hash::Hash::default() {
+            return SimulationResult {
+                success: false,
+                fee: 0,
+                logs,
+                error: Some("Zero blockhash is not valid for replay protection".to_string()),
+                compute_used: 0,
+                return_data: None,
+                return_code: None,
+                state_changes: 0,
+            };
+        }
+
+        // Handle EVM sentinel blockhash
+        if tx.message.recent_blockhash == EVM_SENTINEL_BLOCKHASH {
+            if !is_evm_instruction(tx) {
+                return SimulationResult {
+                    success: false,
+                    fee: 0,
+                    logs,
+                    error: Some("EVM sentinel blockhash is reserved for EVM-wrapped transactions".to_string()),
+                    compute_used: 0,
+                    return_data: None,
+                    return_code: None,
+                    state_changes: 0,
+                };
+            }
+            // EVM sentinel: skip blockhash validation (EVM has its own replay protection)
+        } else {
+            // Validate blockhash
             let recent = self.state.get_recent_blockhashes(300).unwrap_or_default();
             if !recent.contains(&tx.message.recent_blockhash) {
                 return SimulationResult {
@@ -1655,14 +1685,46 @@ impl TxProcessor {
             // Update: allow re-registration by same owner (overwrite)
         }
 
-        // AUDIT-FIX B-4: Check if a DIFFERENT program already owns this symbol
-        if let Ok(Some(existing)) = self.state.get_symbol_registry(symbol) {
-            if existing.program != contract_id {
-                return Err(format!(
-                    "Symbol '{}' is already registered by program {}",
-                    symbol,
-                    existing.program.to_base58()
-                ));
+        // AUDIT-FIX B-4 + B-7: Check if a DIFFERENT program already owns this symbol
+        // Use batch-aware lookup to catch intra-batch duplicates
+        {
+            let batch_lock = self.batch.lock().unwrap();
+            if let Some(ref batch) = *batch_lock {
+                // Check batch overlay first (handles intra-batch duplicates)
+                if batch.symbol_exists(symbol).unwrap_or(false) {
+                    // Symbol is already registered in this batch or committed state;
+                    // verify via full entry lookup to see if same program or different
+                    if let Ok(Some(existing)) = batch.get_symbol_registry(symbol) {
+                        if existing.program != contract_id {
+                            return Err(format!(
+                                "Symbol '{}' is already registered by program {}",
+                                symbol,
+                                existing.program.to_base58()
+                            ));
+                        }
+                    } else {
+                        // Symbol is in overlay but entry not yet committed — this means
+                        // another instruction in this same batch already registered it.
+                        // Since re-registration by the same program is allowed, we only
+                        // reject if we know it's a different program. The overlay only stores
+                        // names, so we must conservatively reject to prevent symbol squatting.
+                        return Err(format!(
+                            "Symbol '{}' was already registered in this transaction batch",
+                            symbol
+                        ));
+                    }
+                }
+            } else {
+                // No batch — direct state lookup
+                if let Ok(Some(existing)) = self.state.get_symbol_registry(symbol) {
+                    if existing.program != contract_id {
+                        return Err(format!(
+                            "Symbol '{}' is already registered by program {}",
+                            symbol,
+                            existing.program.to_base58()
+                        ));
+                    }
+                }
             }
         }
 

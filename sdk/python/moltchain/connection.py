@@ -3,12 +3,15 @@
 import asyncio
 import json
 import base64
+import logging
 from typing import Any, Callable, Dict, List, Optional
 import httpx
 import websockets
 from .keypair import Keypair
 from .publickey import PublicKey
 from .transaction import Transaction, TransactionBuilder
+
+logger = logging.getLogger(__name__)
 
 
 class Connection:
@@ -313,8 +316,12 @@ class Connection:
                                     await callback(result)
                                 else:
                                     callback(result)
-                            except Exception:
-                                pass  # Don't let callback errors crash the handler
+                            except Exception as e:
+                                # AUDIT-FIX J-7: Log callback errors instead of silently swallowing
+                                logger.warning(
+                                    "WS subscription callback error (sub %s): %s",
+                                    sub_id, e, exc_info=True
+                                )
                 except (KeyError, TypeError):
                     continue
         except websockets.exceptions.ConnectionClosed:

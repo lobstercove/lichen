@@ -15,7 +15,8 @@ export class PublicKey {
     } else if (Array.isArray(value)) {
       this.bytes = new Uint8Array(value);
     } else {
-      this.bytes = value;
+      // AUDIT-FIX J-6: Defensive copy to prevent external mutation
+      this.bytes = new Uint8Array(value);
     }
 
     if (this.bytes.length !== 32) {
@@ -32,9 +33,10 @@ export class PublicKey {
 
   /**
    * Convert to bytes
+   * AUDIT-FIX J-6: Returns a copy to prevent external mutation of internal state
    */
   toBytes(): Uint8Array {
-    return this.bytes;
+    return new Uint8Array(this.bytes);
   }
 
   /**

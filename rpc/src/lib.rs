@@ -8598,6 +8598,8 @@ async fn handle_eth_get_logs(
         .unwrap_or_default();
 
     let mut logs = Vec::new();
+    /// AUDIT-FIX F-13: Cap returned log count to prevent unbounded memory growth.
+    const MAX_LOG_RESULTS: usize = 10_000;
 
     for slot in effective_from..=to_slot {
         // AUDIT-FIX F-5: Reset logIndex per block (EVM spec requires per-block indexing)
@@ -8724,6 +8726,15 @@ async fn handle_eth_get_logs(
                 "removed": false,
             }));
             log_index += 1;
+
+            // AUDIT-FIX F-13: Stop collecting once we hit the cap
+            if logs.len() >= MAX_LOG_RESULTS {
+                break;
+            }
+        }
+        // AUDIT-FIX F-13: Also break the outer slot loop if cap reached
+        if logs.len() >= MAX_LOG_RESULTS {
+            break;
         }
     }
 
@@ -10183,6 +10194,11 @@ async fn handle_get_dex_analytics_stats(state: &RpcState) -> Result<serde_json::
 }
 
 /// getDexGovernanceStats — Governance stats
+/// AUDIT-NOTE F-14: This endpoint is already O(1). Each counter (proposal_count, total_votes,
+/// voter_count) is stored as a dedicated key in contract storage and read via a single
+/// `get_storage()` call. There is no proposal scanning or iteration over votes. The
+/// `stats_u64()` helper performs a point-lookup, making this endpoint suitable for frequent
+/// polling without performance concerns.
 async fn handle_get_dex_governance_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     let c = load_contract_by_symbol(state, "DEXGOV")?;
     Ok(serde_json::json!({

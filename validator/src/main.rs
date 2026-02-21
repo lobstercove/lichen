@@ -9451,6 +9451,12 @@ async fn run_validator() {
             // AUDIT-FIX E-5: Track validators already slashed this sweep to prevent double-slashing
             let mut slashed_this_sweep = std::collections::HashSet::new();
 
+            // AUDIT-FIX E-9: Collect all slashing debits in a Vec and write them atomically
+            // at the end of the sweep. This ensures that if the validator crashes mid-sweep,
+            // either ALL debits are persisted or NONE are, keeping account balances consistent
+            // with the stake pool state.
+            let mut slash_debits: Vec<(moltchain_core::Pubkey, u64)> = Vec::new();
+
             for validator_info in vs.validators_mut() {
                 // Grace period: don't slash validators that recently joined (200 slots ≈ 80s).
                 // Prevents false-positive slashing during initial sync/handshake.
@@ -9536,13 +9542,11 @@ async fn run_validator() {
                                     moltchain_core::consensus::DOWNTIME_SUSPENSION_SLOTS
                                 );
 
-                                // Persist slashing to on-chain account
-                                if let Ok(Some(mut acct)) = state.get_account(&validator_info.pubkey) {
+                                // AUDIT-FIX E-9: Defer slashing debit for atomic persistence
+                                if let Ok(Some(acct)) = state.get_account(&validator_info.pubkey) {
                                     let debit = slashed_amount.min(acct.staked);
-                                    acct.staked = acct.staked.saturating_sub(debit);
-                                    acct.shells = acct.shells.saturating_sub(debit);
-                                    if let Err(e) = state.put_account(&validator_info.pubkey, &acct) {
-                                        error!("Failed to persist slashed account: {}", e);
+                                    if debit > 0 {
+                                        slash_debits.push((validator_info.pubkey, debit));
                                     }
                                 }
                             }
@@ -9572,12 +9576,10 @@ async fn run_validator() {
                                     validator_info.reputation
                                 );
 
-                                if let Ok(Some(mut acct)) = state.get_account(&validator_info.pubkey) {
+                                if let Ok(Some(acct)) = state.get_account(&validator_info.pubkey) {
                                     let debit = slashed_amount.min(acct.staked);
-                                    acct.staked = acct.staked.saturating_sub(debit);
-                                    acct.shells = acct.shells.saturating_sub(debit);
-                                    if let Err(e) = state.put_account(&validator_info.pubkey, &acct) {
-                                        error!("Failed to persist slashed account: {}", e);
+                                    if debit > 0 {
+                                        slash_debits.push((validator_info.pubkey, debit));
                                     }
                                 }
                             }
@@ -9615,15 +9617,38 @@ async fn run_validator() {
                             validator_info.reputation
                         );
 
-                        if let Ok(Some(mut acct)) = state.get_account(&validator_info.pubkey) {
+                        if let Ok(Some(acct)) = state.get_account(&validator_info.pubkey) {
                             let debit = slashed_amount.min(acct.staked);
-                            acct.staked = acct.staked.saturating_sub(debit);
-                            acct.shells = acct.shells.saturating_sub(debit);
-                            if let Err(e) = state.put_account(&validator_info.pubkey, &acct) {
-                                error!("Failed to persist slashed account: {}", e);
+                            if debit > 0 {
+                                slash_debits.push((validator_info.pubkey, debit));
                             }
                         }
                     }
+                }
+            }
+
+            // AUDIT-FIX E-9: Atomically persist all slashing debits in a single batch.
+            // This ensures crash-consistency: either ALL account balance debits from this
+            // sweep are persisted, or NONE are.
+            if !slash_debits.is_empty() {
+                let mut batch = state.begin_batch();
+                for (pubkey, debit) in &slash_debits {
+                    if let Ok(Some(mut acct)) = state.get_account(pubkey) {
+                        acct.staked = acct.staked.saturating_sub(*debit);
+                        acct.shells = acct.shells.saturating_sub(*debit);
+                        if let Err(e) = batch.put_account(pubkey, &acct) {
+                            error!("Failed to stage slashing debit for {}: {}", pubkey.to_base58(), e);
+                        }
+                    }
+                }
+                if let Err(e) = state.commit_batch(batch) {
+                    error!("Failed to atomically persist slashing debits: {}", e);
+                } else {
+                    info!(
+                        "✅ Atomically persisted {} slashing debit(s) in sweep at slot {}",
+                        slash_debits.len(),
+                        slot
+                    );
                 }
             }
 
