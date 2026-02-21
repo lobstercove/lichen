@@ -1087,6 +1087,26 @@ fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
     }
 }
 
+/// State-driven SL/TP trigger wrapper — reads a persistent cursor from state so that
+/// both block producers AND block receivers execute triggers deterministically.
+/// Previously, `run_sltp_trigger_engine` was only called in the block-production loop,
+/// causing state divergence across validators (P9-VAL-01 fix).
+fn run_sltp_triggers_from_state(state: &StateStore) {
+    let cursor = state.get_program_storage_u64("DEX", b"dex_sltp_trigger_cursor");
+    let current = state.get_program_storage_u64("DEX", b"dex_trade_count");
+    if current > cursor {
+        run_sltp_trigger_engine(state, cursor, current);
+        // Persist the new cursor so subsequent blocks pick up from here
+        if let Ok(Some(dex_entry)) = state.get_symbol_registry("DEX") {
+            let _ = state.put_contract_storage(
+                &dex_entry.program,
+                b"dex_sltp_trigger_cursor",
+                &current.to_le_bytes(),
+            );
+        }
+    }
+}
+
 fn bridge_dex_trades_to_analytics(state: &StateStore, from_trade: u64, to_trade: u64, slot: u64) {
     const PRICE_SCALE: f64 = 1_000_000_000.0;
 
@@ -6680,6 +6700,7 @@ async fn run_validator() {
                                 continue;
                             }
                             replay_block_transactions(&processor_for_blocks, &pending_block);
+                            run_sltp_triggers_from_state(&state_for_blocks);
                             if state_for_blocks.put_block(&pending_block).is_ok() {
                                 state_for_blocks.set_last_slot(pending_slot).ok();
                                 *last_block_time_for_blocks.lock().await =
@@ -6718,6 +6739,7 @@ async fn run_validator() {
                     if can_chain {
                         // Valid next block in chain - replay transactions then store
                         replay_block_transactions(&processor_for_blocks, &block);
+                        run_sltp_triggers_from_state(&state_for_blocks);
                         if state_for_blocks.put_block(&block).is_ok() {
                             state_for_blocks.set_last_slot(block_slot).ok();
                             *last_block_time_for_blocks.lock().await = std::time::Instant::now();
@@ -6845,6 +6867,7 @@ async fn run_validator() {
                                     continue;
                                 }
                                 replay_block_transactions(&processor_for_blocks, &pending_block);
+                                run_sltp_triggers_from_state(&state_for_blocks);
                                 if state_for_blocks.put_block(&pending_block).is_ok() {
                                     state_for_blocks.set_last_slot(pending_slot).ok();
                                     *last_block_time_for_blocks.lock().await =
@@ -6987,6 +7010,7 @@ async fn run_validator() {
                                 );
                                 // Replace slot index with the higher-weight block
                                 replay_block_transactions(&processor_for_blocks, &block);
+                                run_sltp_triggers_from_state(&state_for_blocks);
                                 if state_for_blocks.put_block(&block).is_ok() {
                                     state_for_blocks.set_last_slot(current_slot).ok();
                                     *last_block_time_for_blocks.lock().await =
@@ -7054,6 +7078,7 @@ async fn run_validator() {
                                             &processor_for_blocks,
                                             &pending_block,
                                         );
+                                        run_sltp_triggers_from_state(&state_for_blocks);
                                         if state_for_blocks.put_block(&pending_block).is_ok() {
                                             state_for_blocks.set_last_slot(pending_slot).ok();
                                             *last_block_time_for_blocks.lock().await =
@@ -9053,9 +9078,6 @@ async fn run_validator() {
     // emit_dex_events each maintain their own cursors.
     let mut last_bridge_trade_count = last_dex_trade_count;
 
-    // SL/TP trigger engine: tracks its own cursor for deterministic triggering
-    let mut last_trigger_trade_count = last_dex_trade_count;
-
     loop {
         // TIP-BASED SLOT: Always derive the next slot to produce from the chain tip.
         // This guarantees consecutive slot numbers — no gaps. Every validator agrees
@@ -9541,12 +9563,8 @@ async fn run_validator() {
 
             // SL/TP trigger engine: check dormant stop-limit orders and margin
             // position SL/TP levels when new trades occurred.
-            // Runs synchronously to ensure deterministic state across validators.
-            if current_trade_count > last_trigger_trade_count {
-                let prev = last_trigger_trade_count;
-                last_trigger_trade_count = current_trade_count;
-                run_sltp_trigger_engine(&state, prev, current_trade_count);
-            }
+            // Uses state-persisted cursor so receivers execute identically (P9-VAL-01).
+            run_sltp_triggers_from_state(&state);
         }
 
         // Rolling 24h window reset: check if any pair's 24h stats need to roll over
@@ -9677,5 +9695,67 @@ async fn run_validator() {
 
         parent_hash = block_hash;
         // (No slot increment — next iteration derives slot from chain tip)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// P9-VAL-01 test: Verify run_sltp_triggers_from_state uses a persistent
+    /// cursor and only processes new trades. This ensures both block producers
+    /// and receivers execute triggers with identical parameters.
+    #[test]
+    fn test_sltp_trigger_cursor_tracks_state() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+
+        // Deploy a fake DEX program so cursor/trade_count keys resolve
+        let dex_pk = Pubkey([42u8; 32]);
+        state
+            .register_symbol(
+                "DEX",
+                moltchain_core::state::SymbolRegistryEntry {
+                    symbol: "DEX".to_string(),
+                    program: dex_pk,
+                    owner: Pubkey([0u8; 32]),
+                    name: None,
+                    template: None,
+                    metadata: None,
+                },
+            )
+            .unwrap();
+
+        // Initially: trade_count=0, cursor=0 → no-op
+        run_sltp_triggers_from_state(&state);
+        let cursor_after_noop =
+            state.get_program_storage_u64("DEX", b"dex_sltp_trigger_cursor");
+        assert_eq!(cursor_after_noop, 0, "cursor should stay 0 when no trades");
+
+        // Simulate new trades: set trade_count=5
+        state
+            .put_contract_storage(&dex_pk, b"dex_trade_count", &5u64.to_le_bytes())
+            .unwrap();
+
+        // Now run triggers — should update cursor to 5
+        run_sltp_triggers_from_state(&state);
+        let cursor_after_trades =
+            state.get_program_storage_u64("DEX", b"dex_sltp_trigger_cursor");
+        assert_eq!(cursor_after_trades, 5, "cursor should advance to 5");
+
+        // Calling again with same trade_count → no-op (idempotent)
+        run_sltp_triggers_from_state(&state);
+        let cursor_idempotent =
+            state.get_program_storage_u64("DEX", b"dex_sltp_trigger_cursor");
+        assert_eq!(cursor_idempotent, 5, "cursor should stay 5 (idempotent)");
+
+        // More trades: set trade_count=10
+        state
+            .put_contract_storage(&dex_pk, b"dex_trade_count", &10u64.to_le_bytes())
+            .unwrap();
+        run_sltp_triggers_from_state(&state);
+        let cursor_final =
+            state.get_program_storage_u64("DEX", b"dex_sltp_trigger_cursor");
+        assert_eq!(cursor_final, 10, "cursor should advance to 10");
     }
 }
