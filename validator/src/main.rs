@@ -680,13 +680,11 @@ fn emit_dex_events(
 
     // Emit orderbook + ticker updates for affected pairs
     for pair_id in &affected_pairs {
-        // Read best bid/ask from orderbook (simplified: last trade price as approximation)
-        // Full orderbook reconstruction is expensive; emit a lightweight update
-        // that tells subscribers to re-fetch
-        let trade_key = format!("dex_trade_{}", to_trade);
-        if let Some(data) = state.get_program_storage("DEX", trade_key.as_bytes()) {
-            if data.len() >= 32 {
-                let price_raw = u64::from_le_bytes(data[16..24].try_into().unwrap_or([0; 8]));
+        // P9-VAL-06: Read per-pair last price (ana_lp_{pair_id}) instead of global last trade
+        let lp_key = format!("ana_lp_{}", pair_id);
+        if let Some(data) = state.get_program_storage("ANALYTICS", lp_key.as_bytes()) {
+            if data.len() >= 8 {
+                let price_raw = u64::from_le_bytes(data[0..8].try_into().unwrap_or([0; 8]));
                 let last_price = price_raw as f64 / PRICE_SCALE;
 
                 // Read 24h stats for volume/change
@@ -742,16 +740,14 @@ fn emit_dex_events(
 /// Checks each trading pair's 24h stats window. If >86400 seconds have elapsed
 /// since the last reset, sets open=current close, zeroes volume/trades,
 /// resets high/low to current price.  This gives the user a true rolling 24h view.
-fn reset_24h_stats_if_expired(state: &StateStore) {
+/// P9-VAL-05: Accept deterministic block timestamp instead of SystemTime::now()
+fn reset_24h_stats_if_expired(state: &StateStore, block_ts: u64) {
     let analytics_pk = match state.get_symbol_registry("ANALYTICS") {
         Ok(Some(entry)) => entry.program,
         _ => return,
     };
 
-    let now_ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now_ts = block_ts;
 
     let pair_count = state.get_program_storage_u64("DEX", b"dex_pair_count");
     for pair_id in 1..=pair_count {
@@ -1020,8 +1016,20 @@ fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
             continue;
         }
 
+        // P9-VAL-08: Re-read position status to prevent double-close race.
+        // A user transaction processed in the same block may have already closed
+        // this position between our initial read and this write.
+        let fresh_data = match state.get_program_storage("MARGIN", pk.as_bytes()) {
+            Some(d) if d.len() >= 114 => d,
+            _ => continue,
+        };
+        if fresh_data[49] != 0 {
+            // Position was closed by a user TX in this block — skip
+            continue;
+        }
+
         // Close the position: set status to POS_CLOSED (1)
-        let mut new_data = data.clone();
+        let mut new_data = fresh_data.clone();
         new_data[49] = 1; // POS_CLOSED
 
         // Calculate realized PnL using the last trade price
@@ -1146,6 +1154,24 @@ fn run_sltp_triggers_from_state(state: &StateStore) {
     }
 }
 
+/// P9-VAL-04: Deterministic analytics bridge — uses state-persisted cursor
+/// so both producers and receivers execute the same analytics writes.
+fn run_analytics_bridge_from_state(state: &StateStore, slot: u64) {
+    let cursor = state.get_program_storage_u64("DEX", b"dex_analytics_bridge_cursor");
+    let current = state.get_program_storage_u64("DEX", b"dex_trade_count");
+    if current > cursor {
+        bridge_dex_trades_to_analytics(state, cursor, current, slot);
+        // Persist the new cursor so subsequent blocks pick up from here
+        if let Ok(Some(dex_entry)) = state.get_symbol_registry("DEX") {
+            let _ = state.put_contract_storage(
+                &dex_entry.program,
+                b"dex_analytics_bridge_cursor",
+                &current.to_le_bytes(),
+            );
+        }
+    }
+}
+
 fn bridge_dex_trades_to_analytics(state: &StateStore, from_trade: u64, to_trade: u64, slot: u64) {
     const PRICE_SCALE: f64 = 1_000_000_000.0;
 
@@ -1155,10 +1181,15 @@ fn bridge_dex_trades_to_analytics(state: &StateStore, from_trade: u64, to_trade:
         _ => return, // no analytics contract deployed
     };
 
-    let now_ts = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
+    // P9-VAL-04: Use deterministic slot-derived timestamp instead of SystemTime::now()
+    let genesis_ts = state
+        .get_block_by_slot(0)
+        .ok()
+        .flatten()
+        .map(|b| b.header.timestamp)
         .unwrap_or(0);
+    let slot_duration_ms = 400u64; // matches genesis config default
+    let now_ts = genesis_ts + (slot * slot_duration_ms / 1000);
 
     // Candle intervals matching dex_analytics: 1m, 5m, 15m, 1h, 4h, 1d, 3d, 1w, 1y
     const CANDLE_INTERVALS: [u64; 9] = [60, 300, 900, 3600, 14400, 86400, 259200, 604800, 31536000];
@@ -6740,7 +6771,9 @@ async fn run_validator() {
                                 continue;
                             }
                             replay_block_transactions(&processor_for_blocks, &pending_block);
+                            run_analytics_bridge_from_state(&state_for_blocks, pending_block.header.slot);
                             run_sltp_triggers_from_state(&state_for_blocks);
+                            reset_24h_stats_if_expired(&state_for_blocks, pending_block.header.timestamp);
                             if state_for_blocks.put_block(&pending_block).is_ok() {
                                 state_for_blocks.set_last_slot(pending_slot).ok();
                                 *last_block_time_for_blocks.lock().await =
@@ -6779,7 +6812,9 @@ async fn run_validator() {
                     if can_chain {
                         // Valid next block in chain - replay transactions then store
                         replay_block_transactions(&processor_for_blocks, &block);
+                        run_analytics_bridge_from_state(&state_for_blocks, block.header.slot);
                         run_sltp_triggers_from_state(&state_for_blocks);
+                        reset_24h_stats_if_expired(&state_for_blocks, block.header.timestamp);
                         if state_for_blocks.put_block(&block).is_ok() {
                             state_for_blocks.set_last_slot(block_slot).ok();
                             *last_block_time_for_blocks.lock().await = std::time::Instant::now();
@@ -6907,7 +6942,9 @@ async fn run_validator() {
                                     continue;
                                 }
                                 replay_block_transactions(&processor_for_blocks, &pending_block);
+                                run_analytics_bridge_from_state(&state_for_blocks, pending_block.header.slot);
                                 run_sltp_triggers_from_state(&state_for_blocks);
+                                reset_24h_stats_if_expired(&state_for_blocks, pending_block.header.timestamp);
                                 if state_for_blocks.put_block(&pending_block).is_ok() {
                                     state_for_blocks.set_last_slot(pending_slot).ok();
                                     *last_block_time_for_blocks.lock().await =
@@ -7035,10 +7072,11 @@ async fn run_validator() {
                             let fc_incoming = fork_choice.get_weight(&block.hash());
                             let oracle_prefers_incoming = fc_incoming > fc_existing;
 
+                            // P9-VAL-07: Only replace based on weight/stake evidence,
+                            // not on sync state (we_are_behind) or pending queue (has_pending)
+                            // to prevent malicious validators from forcing replacements.
                             if incoming_weight > existing_weight
                                 || oracle_prefers_incoming
-                                || we_are_behind
-                                || has_pending
                             {
                                 // Revert old block's financial effects before replacing
                                 revert_block_effects(&state_for_blocks, &existing);
@@ -7050,7 +7088,9 @@ async fn run_validator() {
                                 );
                                 // Replace slot index with the higher-weight block
                                 replay_block_transactions(&processor_for_blocks, &block);
+                                run_analytics_bridge_from_state(&state_for_blocks, block.header.slot);
                                 run_sltp_triggers_from_state(&state_for_blocks);
+                                reset_24h_stats_if_expired(&state_for_blocks, block.header.timestamp);
                                 if state_for_blocks.put_block(&block).is_ok() {
                                     state_for_blocks.set_last_slot(current_slot).ok();
                                     *last_block_time_for_blocks.lock().await =
@@ -7118,7 +7158,9 @@ async fn run_validator() {
                                             &processor_for_blocks,
                                             &pending_block,
                                         );
+                                        run_analytics_bridge_from_state(&state_for_blocks, pending_block.header.slot);
                                         run_sltp_triggers_from_state(&state_for_blocks);
+                                        reset_24h_stats_if_expired(&state_for_blocks, pending_block.header.timestamp);
                                         if state_for_blocks.put_block(&pending_block).is_ok() {
                                             state_for_blocks.set_last_slot(pending_slot).ok();
                                             *last_block_time_for_blocks.lock().await =
@@ -9122,10 +9164,6 @@ async fn run_validator() {
     // F6.2: Track DEX trade count for WS event emission
     let mut last_dex_trade_count = state.get_program_storage_u64("DEX", b"dex_trade_count");
 
-    // Trade bridge: track separately so bridge_dex_trades_to_analytics and
-    // emit_dex_events each maintain their own cursors.
-    let mut last_bridge_trade_count = last_dex_trade_count;
-
     loop {
         // TIP-BASED SLOT: Always derive the next slot to produce from the chain tip.
         // This guarantees consecutive slot numbers — no gaps. Every validator agrees
@@ -9598,16 +9636,8 @@ async fn run_validator() {
                 });
             }
 
-            // Trade bridge: write real trade data to dex_analytics
-            if current_trade_count > last_bridge_trade_count {
-                let prev = last_bridge_trade_count;
-                last_bridge_trade_count = current_trade_count;
-                let state_c = state.clone();
-                let slot_c = slot;
-                tokio::task::spawn_blocking(move || {
-                    bridge_dex_trades_to_analytics(&state_c, prev, current_trade_count, slot_c);
-                });
-            }
+            // P9-VAL-04: Trade bridge uses state-persisted cursor (deterministic)
+            run_analytics_bridge_from_state(&state, slot);
 
             // SL/TP trigger engine: check dormant stop-limit orders and margin
             // position SL/TP levels when new trades occurred.
@@ -9616,7 +9646,8 @@ async fn run_validator() {
         }
 
         // Rolling 24h window reset: check if any pair's 24h stats need to roll over
-        reset_24h_stats_if_expired(&state);
+        // P9-VAL-05: Pass deterministic block timestamp
+        reset_24h_stats_if_expired(&state, block.header.timestamp);
 
         // Broadcast block event to WebSocket subscribers
         let _ = ws_event_tx.send(moltchain_rpc::ws::Event::Block(block.clone()));
