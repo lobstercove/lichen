@@ -483,6 +483,9 @@ fn record_block_activity(state: &StateStore, block: &Block) -> u32 {
                         warn!("⚠️  Failed to record program call: {}", e);
                         error_count += 1;
                     }
+                    // AUDIT-FIX E-8: Increment activity_seq after each record to prevent
+                    // duplicate keys when both program_call and market_activity are recorded
+                    activity_seq = activity_seq.saturating_add(1);
 
                     let market_kind = match function.as_str() {
                         "list_nft" => Some(MarketActivityKind::Listing),
@@ -2285,7 +2288,9 @@ async fn apply_block_effects(
                         match state.get_reefstake_pool() {
                             Ok(mut reef_pool) => {
                                 if reef_pool.st_molt_token.total_supply > 0 {
-                                    // Fund reef_share from treasury
+                                    // AUDIT-FIX E-6: Re-read treasury from state to get the
+                                    // post-block-reward-debit balance. The re-read is safe because
+                                    // atomic_put_accounts above writes directly to RocksDB.
                                     if let Some(ref tpk) = treasury_pubkey {
                                         let mut t_acct =
                                             state.get_account(tpk).ok().flatten().unwrap_or_else(
@@ -9443,6 +9448,9 @@ async fn run_validator() {
             // Cleanup expired suspensions and repayment boosts
             slasher.cleanup_expired(slot);
 
+            // AUDIT-FIX E-5: Track validators already slashed this sweep to prevent double-slashing
+            let mut slashed_this_sweep = std::collections::HashSet::new();
+
             for validator_info in vs.validators_mut() {
                 // Grace period: don't slash validators that recently joined (200 slots ≈ 80s).
                 // Prevents false-positive slashing during initial sync/handshake.
@@ -9575,10 +9583,15 @@ async fn run_validator() {
                             }
                         }
                     }
+                    // AUDIT-FIX E-5: Mark this validator as slashed this sweep
+                    slashed_this_sweep.insert(validator_info.pubkey);
                 }
 
                 // For non-downtime severe offenses, apply immediately (no tiering)
-                if has_non_downtime && !slasher.is_slashed(&validator_info.pubkey) {
+                // AUDIT-FIX E-5: Skip if already slashed for downtime in this sweep
+                if has_non_downtime && !slasher.is_slashed(&validator_info.pubkey)
+                    && !slashed_this_sweep.contains(&validator_info.pubkey)
+                {
                     let slashed_amount = slasher.apply_economic_slashing_with_params(
                         &validator_info.pubkey,
                         &mut pool,
@@ -9856,11 +9869,10 @@ async fn run_validator() {
         // Test transactions disabled - use wallet or CLI to send real transactions
         // (Previous test code was incorrectly signing transfers from genesis with validator key)
 
-        // Create block
-        // Use wall-clock timestamp so explorer display and cross-validator
-        // sync work correctly regardless of heartbeat cadence.  The receiving
-        // side validates within a generous wall-clock window (see block rx).
-        let state_root = state.compute_state_root();
+        // AUDIT-FIX E-7: Apply block effects BEFORE computing state_root so the
+        // root in the block header reflects post-effect state (rewards, fees, etc.).
+        // Step 1: Create a preliminary block (state_root = default placeholder).
+        //         apply_block_effects only uses block.header.slot/validator/transactions.
         let wall_clock_timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -9868,11 +9880,26 @@ async fn run_validator() {
         let mut block = Block::new_with_timestamp(
             slot,
             parent_hash,
-            state_root,
+            Hash::default(), // placeholder — will be set after effects
             validator_pubkey.0,
             transactions.clone(),
             wall_clock_timestamp,
         );
+
+        // Step 2: Apply block effects (rewards, stake updates, etc.)
+        apply_block_effects(
+            &state,
+            &validator_set,
+            &stake_pool,
+            &vote_aggregator,
+            &block,
+            rewards_applied,
+        )
+        .await;
+
+        // Step 3: Now compute state_root AFTER effects are applied
+        let state_root = state.compute_state_root();
+        block.header.state_root = state_root;
 
         // Sign block so receiving validators can verify authenticity (T2.2)
         block.sign(&validator_keypair);
@@ -10003,15 +10030,7 @@ async fn run_validator() {
             info!("📡 Broadcasted block {} + vote to network", slot);
         }
 
-        apply_block_effects(
-            &state,
-            &validator_set,
-            &stake_pool,
-            &vote_aggregator,
-            &block,
-            rewards_applied,
-        )
-        .await;
+        // AUDIT-FIX E-7: apply_block_effects already called before block creation (above)
         maybe_create_checkpoint(&state, slot, &data_dir, &sync_manager).await;
 
         // Periodic stats pruning — every 1000 slots, prune seq counters older than 10K slots
