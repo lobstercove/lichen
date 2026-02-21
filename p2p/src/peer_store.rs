@@ -52,15 +52,17 @@ impl PeerStore {
     }
 
     pub fn record_peer(&self, addr: SocketAddr) {
-        // P10-P2P-02: O(1) duplicate check via HashSet
+        // AUDIT-FIX F-4: Acquire both locks in a single scope with consistent ordering.
+        // Lock ordering: peers FIRST, then peer_set. This matches get_known_peers()
+        // which only acquires peers. No other code path acquires peer_set→peers.
         let data_to_write = {
+            let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
             let mut set = self.peer_set.lock().unwrap_or_else(|e| e.into_inner());
             if set.contains(&addr) {
                 return;
             }
             set.insert(addr);
 
-            let mut peers = self.peers.lock().unwrap_or_else(|e| e.into_inner());
             peers.push(addr);
             if peers.len() > self.max_peers {
                 let evicted = peers[0];

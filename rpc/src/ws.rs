@@ -147,7 +147,7 @@ use std::net::IpAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::{broadcast, mpsc, RwLock};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Per-IP connection limit
 const MAX_CONNECTIONS_PER_IP: u32 = 10;
@@ -693,7 +693,15 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
         }
     }
 
-    // Clean up
+    // F-10: Explicit cleanup — clear subscriptions before dropping, abort all tasks
+    {
+        let mut subs = subscription_manager.subscriptions.write().await;
+        let sub_count = subs.len();
+        subs.clear();
+        if sub_count > 0 {
+            debug!("Cleaned up {} subscriptions on WebSocket disconnect", sub_count);
+        }
+    }
     send_task.abort();
     event_task.abort();
     dex_event_task.abort();
