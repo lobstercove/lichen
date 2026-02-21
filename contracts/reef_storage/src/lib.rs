@@ -1028,6 +1028,26 @@ pub extern "C" fn slash_provider(
     let slash_amount = stake * slash_pct / 100;
     if slash_amount > 0 {
         storage_set(&sk, &u64_to_bytes(stake.saturating_sub(slash_amount)));
+
+        // H-10: Redistribute slashed tokens — 50% to challenger (caller), 50% to treasury
+        let caller = get_caller();
+        let half = slash_amount / 2;
+        let remainder = slash_amount - half;
+        // Reward the challenger who reported the failure
+        if half > 0 {
+            transfer_molt_out(&caller.0, half);
+        }
+        // Send remainder to platform treasury (admin)
+        if remainder > 0 {
+            if let Some(admin_data) = storage_get(ADMIN_KEY) {
+                if admin_data.len() >= 32 {
+                    let mut treasury = [0u8; 32];
+                    treasury.copy_from_slice(&admin_data[..32]);
+                    transfer_molt_out(&treasury, remainder);
+                }
+            }
+            // If no admin set, remainder stays in contract as unclaimed
+        }
     }
 
     // Mark challenge as answered (so it can't be double-slashed)
