@@ -211,6 +211,9 @@ impl TxProcessor {
                     match *kind {
                         6 => total = total.saturating_add(fee_config.nft_collection_fee),
                         7 => total = total.saturating_add(fee_config.nft_mint_fee),
+                        // AUDIT-FIX B-2: Type 17 (SystemDeploy) must charge the same
+                        // contract_deploy_fee as CONTRACT_PROGRAM_ID Deploy.
+                        17 => total = total.saturating_add(fee_config.contract_deploy_fee),
                         _ => {}
                     }
                 }
@@ -2160,8 +2163,9 @@ impl TxProcessor {
             ));
         }
 
-        // AUDIT-FIX CP-1: Deploy fee is already charged upfront in process_transaction()
-        // via compute_transaction_fee() + charge_fee_direct(). Removed duplicate charge here.
+        // Deploy fee is charged upfront in process_transaction()
+        // via compute_transaction_fee() which now includes type 17 (B-2 fix).
+        // No duplicate charge needed here.
 
         // Create contract account
         let contract = crate::ContractAccount::new(code_bytes.to_vec(), deployer);
@@ -3350,16 +3354,60 @@ mod tests {
         assert!(result.success, "Deploy should succeed: {:?}", result.error);
     }
 
+    /// AUDIT-FIX B-2: System deploy (type 17) charges contract_deploy_fee.
     #[test]
-    fn test_system_deploy_contract_insufficient_funds() {
-        let (processor, _state, alice_kp, alice, treasury, genesis_hash) = setup();
+    fn test_system_deploy_charges_deploy_fee() {
+        let (processor, state, alice_kp, alice, treasury, genesis_hash) = setup();
         let validator = Pubkey([42u8; 32]);
 
-        // Alice has 1000 MOLT but we drain her to 0 — below BASE_FEE (1M shells)
-        let low_alice = Account::new(0, alice);
-        _state.put_account(&alice, &low_alice).unwrap();
+        // Fund treasury
+        let mut treasury_acct = state.get_account(&treasury).unwrap().unwrap();
+        treasury_acct.add_spendable(Account::molt_to_shells(100)).unwrap();
+        state.put_account(&treasury, &treasury_acct).unwrap();
 
-        let code = vec![0x00; 100];
+        let before = state.get_account(&alice).unwrap().unwrap().spendable;
+
+        // Valid WASM module
+        let code = vec![0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
+        let mut data = vec![17u8];
+        data.extend_from_slice(&(code.len() as u32).to_le_bytes());
+        data.extend_from_slice(&code);
+
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, treasury],
+            data,
+        };
+        let message = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(message);
+        let sig = alice_kp.sign(&tx.message.serialize());
+        tx.signatures.push(sig);
+
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(result.success, "Deploy should succeed: {:?}", result.error);
+
+        // The fee should include contract_deploy_fee (25 MOLT) + base_fee (0.001 MOLT)
+        let after = state.get_account(&alice).unwrap().unwrap().spendable;
+        let charged = before - after;
+        // contract_deploy_fee = 25_000_000_000 shells, base_fee = 1_000_000 shells
+        assert!(
+            charged >= 25_000_000_000,
+            "Expected at least 25 MOLT fee for deploy, got {} shells charged",
+            charged
+        );
+    }
+
+    /// AUDIT-FIX B-2: An account with only 1 MOLT cannot pay the 25 MOLT deploy fee.
+    #[test]
+    fn test_system_deploy_rejects_underfunded() {
+        let (processor, state, alice_kp, alice, treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        // Set Alice to only 1 MOLT — cannot afford 25 MOLT deploy fee
+        let low = Account::new(1, alice);
+        state.put_account(&alice, &low).unwrap();
+
+        let code = vec![0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
         let mut data = vec![17u8];
         data.extend_from_slice(&(code.len() as u32).to_le_bytes());
         data.extend_from_slice(&code);
@@ -3377,7 +3425,7 @@ mod tests {
         let result = processor.process_transaction(&tx, &validator);
         assert!(
             !result.success,
-            "Deploy with insufficient funds should fail"
+            "Deploy with only 1 MOLT should fail due to 25 MOLT fee"
         );
     }
 
