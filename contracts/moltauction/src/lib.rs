@@ -181,6 +181,15 @@ pub extern "C" fn place_bid(
     
     let mut bidder = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(bidder_ptr, bidder.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX H-8: Verify bidder matches actual caller to prevent bid forgery
+    let real_caller = get_caller();
+    if real_caller.0 != bidder {
+        log_info("Bidder does not match caller — rejected");
+        reentrancy_exit();
+        return 0;
+    }
+
     let mut nft_contract = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(nft_contract_ptr, nft_contract.as_mut_ptr(), 32); }
     
@@ -586,24 +595,77 @@ pub extern "C" fn accept_offer(
     
     let offer_amount = bytes_to_u64(&offer_data[72..80]);
     let payment_token = &offer_data[80..112];
-    
-    // CROSS-CONTRACT CALL 1: Transfer tokens (offerer → seller)
-    let seller_amount = offer_amount * 975 / 1000; // minus 2.5% fee
-    
+    let payment_token_addr = Address(payment_token.try_into().expect("offer payment_token 32-byte address"));
+
+    // AUDIT-FIX H-5: Calculate marketplace fee + royalties (matching finalize_auction)
+    let marketplace_fee_bps: u64 = 250; // 2.5%
+    let mut royalty_bps: u64 = 0;
+    let mut royalty_recipient: Option<[u8; 32]> = None;
+
+    let royalty_key = alloc::format!("royalty_{}", hex_addr(&nft_contract));
+    if let Some(royalty_data) = storage_get(royalty_key.as_bytes()) {
+        if royalty_data.len() >= 40 {
+            royalty_bps = bytes_to_u64(&royalty_data[32..40]);
+            let mut addr = [0u8; 32];
+            addr.copy_from_slice(&royalty_data[0..32]);
+            royalty_recipient = Some(addr);
+        }
+    }
+
+    let total_deduction_bps = marketplace_fee_bps + royalty_bps.min(1000);
+    let seller_amount = offer_amount * (10000 - total_deduction_bps) / 10000;
+    let marketplace_fee = offer_amount * marketplace_fee_bps / 10000;
+
+    // CROSS-CONTRACT CALL 1: Transfer seller's share (offerer → seller)
     match call_token_transfer(
-        Address(payment_token.try_into().expect("offer payment_token 32-byte address")),
+        payment_token_addr,
         Address(offerer),
         Address(seller),
         seller_amount
     ) {
-        Ok(true) => log_info("Payment transferred"),
+        Ok(true) => log_info("Payment transferred to seller"),
         _ => {
             log_info("Payment failed");
             return 0;
         }
     }
-    
-    // CROSS-CONTRACT CALL 2: Transfer NFT (seller → offerer)
+
+    // CROSS-CONTRACT CALL 2: Transfer marketplace fee (offerer → marketplace escrow)
+    if marketplace_fee > 0 {
+        let marketplace_addr = get_marketplace_addr();
+        match call_token_transfer(
+            payment_token_addr,
+            Address(offerer),
+            marketplace_addr,
+            marketplace_fee
+        ) {
+            Ok(true) => log_info("Marketplace fee collected"),
+            _ => log_info("Marketplace fee transfer failed (non-critical)"),
+        }
+    }
+
+    // CROSS-CONTRACT CALL 3: Pay royalty to creator if configured
+    if royalty_bps > 0 {
+        if let Some(creator_addr) = royalty_recipient {
+            let royalty_amount = offer_amount * royalty_bps.min(1000) / 10000;
+            if royalty_amount > 0 {
+                match call_token_transfer(
+                    payment_token_addr,
+                    Address(offerer),
+                    Address(creator_addr),
+                    royalty_amount
+                ) {
+                    Ok(true) => {
+                        log_info("Royalty paid to creator");
+                        log_info(&alloc::format!("   Royalty: {} ({}bps)", royalty_amount, royalty_bps));
+                    }
+                    _ => log_info("Royalty payment failed (non-critical)"),
+                }
+            }
+        }
+    }
+
+    // CROSS-CONTRACT CALL 4: Transfer NFT (seller → offerer)
     match call_nft_transfer(
         Address(nft_contract),
         Address(seller),
@@ -808,6 +870,14 @@ pub extern "C" fn set_reserve_price(
     if is_ma_paused() { return 4; }
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX H-6: Verify caller matches actual transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        log_info("set_reserve_price: caller does not match signer — rejected");
+        return 2;
+    }
+
     let mut nft_contract = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(nft_contract_ptr, nft_contract.as_mut_ptr(), 32); }
 
@@ -841,6 +911,14 @@ pub extern "C" fn cancel_auction(
 ) -> u32 {
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+
+    // AUDIT-FIX H-7: Verify caller matches actual transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        log_info("cancel_auction: caller does not match signer — rejected");
+        return 2;
+    }
+
     let mut nft_contract = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(nft_contract_ptr, nft_contract.as_mut_ptr(), 32); }
 
@@ -1191,6 +1269,8 @@ mod tests {
         let seller = [2u8; 32];
         create_test_auction(&nft, 1, &seller, 100, 999_999);
 
+        // AUDIT-FIX H-6: set_caller for caller verification
+        test_mock::set_caller(seller);
         // Seller can set reserve
         let result = set_reserve_price(seller.as_ptr(), nft.as_ptr(), 1, 5000);
         assert_eq!(result, 0);
@@ -1207,6 +1287,7 @@ mod tests {
         let seller = [2u8; 32];
         let other = [5u8; 32];
         create_test_auction(&nft, 1, &seller, 100, 999_999);
+        test_mock::set_caller(other);
         assert_eq!(set_reserve_price(other.as_ptr(), nft.as_ptr(), 1, 5000), 2);
     }
 
@@ -1223,6 +1304,7 @@ mod tests {
         data[160..168].copy_from_slice(&u64_to_bytes(500));
         moltchain_sdk::storage_set(key.as_bytes(), &data);
 
+        test_mock::set_caller(seller);
         assert_eq!(set_reserve_price(seller.as_ptr(), nft.as_ptr(), 1, 5000), 3);
     }
 
@@ -1235,6 +1317,7 @@ mod tests {
         create_test_auction(&nft, 1, &seller, 100, 500);
 
         // Set reserve at 10000
+        test_mock::set_caller(seller);
         set_reserve_price(seller.as_ptr(), nft.as_ptr(), 1, 10_000);
 
         // Simulate a bid of 5000 (below reserve)
@@ -1261,6 +1344,8 @@ mod tests {
         let seller = [2u8; 32];
         create_test_auction(&nft, 1, &seller, 100, 999_999);
 
+        // AUDIT-FIX H-7: set_caller for caller verification
+        test_mock::set_caller(seller);
         // Cancel works
         assert_eq!(cancel_auction(seller.as_ptr(), nft.as_ptr(), 1), 0);
 
@@ -1283,6 +1368,7 @@ mod tests {
         data[160..168].copy_from_slice(&u64_to_bytes(500));
         moltchain_sdk::storage_set(key.as_bytes(), &data);
 
+        test_mock::set_caller(seller);
         assert_eq!(cancel_auction(seller.as_ptr(), nft.as_ptr(), 1), 3);
     }
 
@@ -1293,6 +1379,7 @@ mod tests {
         let seller = [2u8; 32];
         let other = [5u8; 32];
         create_test_auction(&nft, 1, &seller, 100, 999_999);
+        test_mock::set_caller(other);
         assert_eq!(cancel_auction(other.as_ptr(), nft.as_ptr(), 1), 2);
     }
 
@@ -1313,6 +1400,7 @@ mod tests {
 
         // set_reserve blocked when paused
         create_test_auction(&nft, 99, &seller, 100, 999_999);
+        test_mock::set_caller(seller);
         assert_eq!(set_reserve_price(seller.as_ptr(), nft.as_ptr(), 99, 5000), 4);
 
         assert_eq!(ma_unpause(non_admin.as_ptr()), 1); // not admin
@@ -1320,6 +1408,7 @@ mod tests {
         assert_eq!(ma_unpause(admin.as_ptr()), 2); // not paused
 
         // Works after unpause
+        test_mock::set_caller(seller);
         assert_eq!(set_reserve_price(seller.as_ptr(), nft.as_ptr(), 99, 5000), 0);
     }
 
@@ -1331,6 +1420,7 @@ mod tests {
         create_test_auction(&nft, 1, &seller, 100, 999_999);
 
         // Set reserve
+        test_mock::set_caller(seller);
         set_reserve_price(seller.as_ptr(), nft.as_ptr(), 1, 5000);
 
         let result = get_auction_info(nft.as_ptr(), 1);
