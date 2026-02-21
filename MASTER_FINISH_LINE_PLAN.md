@@ -1465,4 +1465,189 @@ Phase 10 (Audit 3):  [x]×36                              36/36 ✅ ALL COMPLETE
 | 3.27 | G24-01 | b2d3f23 | Feb 20 | Wired clawpump financial transfers + fixed graduation. 4 bugs: (1) No get_value() — create_token()/buy() trusted parameters instead of verifying payment. (2) No call_token_transfer — sell() never sent refund, withdraw_fees() never transferred. (3) No get_contract_address for self-custody. (4) Graduation without DEX addresses didn't set graduated flag → infinite retry. Added transfer_molt_out() helper with graceful degradation, get_value() checks on create_token+buy, call_token_transfer on sell+withdraw_fees with state revert, set_molt_token() admin fn, graduation flag fix. 6 new G24-01 tests. 44 clawpump tests (up from 38), 465 workspace tests, 0 regressions. |
 | 2.12 | G3-01 | 36d9084 | Feb 20 | Replaced linear tick approximation with correct exponential formula in contracts/dex_amm/src/lib.rs. (1) Precomputed 19 Q64.64 constants for 1.00005^(2^k) with 80-decimal-digit precision. (2) Implemented `mul_q64()` — 256-bit intermediate multiplication via hi/lo u64 decomposition with carry tracking and wrapping arithmetic. (3) New `tick_to_sqrt_price()` uses bit-decomposition of |tick|, multiplying accumulator by precomputed constants for each set bit; negative ticks use reciprocal. (4) New `sqrt_price_to_tick()` uses binary search for exact inversion. (5) Adjusted MAX_TICK/MIN_TICK from ±887,272 (Uniswap V3 uint160) to ±443,636 (matching u64 Q32.32 representable range). Verified against 80-digit precision reference values: tick 0,±1,±100,±600,±10000,±100000 all within ±1 ULP. 8 new tests: exponential accuracy (9 test vectors), large values, monotonicity (2001 ticks), roundtrip range, mul_q64 unit tests. Fixed 12 previously failing dex_amm tests that depended on correct pricing. 446 Rust + 52 JS tests, 0 regressions. |
 
-*Last updated: February 20, 2026*
+*Last updated: February 22, 2026*
+
+---
+
+## PHASE 11: MASTER FINAL AUDIT — EXECUTION PLAN {#phase-11}
+
+**Generated:** February 22, 2026  
+**Remaining:** 280 open findings (5 CRITICAL, 57 HIGH, 155 MEDIUM, 63 LOW)  
+**Already complete:** 172 findings fixed, 5 FALSE positives  
+**Strategy:** 8 waves, dependency-ordered, no stubs, every fix gets a test  
+
+### Wave 1 — CRITICAL LAUNCH BLOCKERS (5 items, ~2 days)
+
+These prevent launch. Must be fixed first.
+
+| Order | ID | Finding | Fix |
+|-------|-----|---------|-----|
+| 1.1 | I3-01 | Wallet extension BIP39 uses SHA-512 instead of PBKDF2 | Port the same PBKDF2 fix from web wallet (Phase 1.7) to extension crypto-service.js |
+| 1.2 | B4-01 | FROST threshold signing implemented but never called — custody relies on single key | Wire `ThresholdSigner` into custody sweep/credit operations; add config for threshold mode |
+| 1.3 | F2-02 | Custody deposit processing + ledger rebalancing non-atomic — crash loses funds | Implement intent log with idempotent replay; WAL before each rebalance step |
+| 1.4 | D5-01 | Prediction market RPC writes directly to state — bypasses consensus | Route create_market, place_bet, resolve through transaction→consensus→processor pipeline |
+| 1.5 | G27-01 | `respond_challenge` in clawvault accepts any response | Implement actual proof-of-storage verification (Merkle proof of chunk) |
+
+### Wave 2 — CONSENSUS BYPASS & ATOMICITY (12 items, ~3 days)
+
+State mutations that skip consensus = chain fork risk. Atomicity gaps = fund loss on crash.
+
+| Order | ID | Severity | Finding | Fix |
+|-------|-----|----------|---------|-----|
+| 2.1 | D2-01 | HIGH | DEX order matching in RPC handler — bypasses consensus | Route through tx pipeline |
+| 2.2 | D4-01 | HIGH | Launchpad token creation writes to state directly | Route through tx pipeline |
+| 2.3 | D5-02 | HIGH | Market resolution has no oracle verification | Add oracle + multisig resolution |
+| 2.4 | A7-03 | HIGH | Contract calls excluded from parallel conflict detection | Add contract address to read/write set |
+| 2.5 | A17-01 | HIGH | NFT marketplace buy non-atomic (payment vs transfer) | Use atomic_put_accounts batch |
+| 2.6 | G14-01 | HIGH | NFT marketplace purchase non-atomic | Atomic batch |
+| 2.7 | G10-02 | HIGH | Auction settlement non-atomic — bid refunds + winner separate | Atomic batch |
+| 2.8 | G21-02 | HIGH | Withdrawal u32 truncation — precision loss | Use u64 throughout |
+| 2.9 | G24-02 | HIGH | Graduation partial cross-call failure not reverted | Implement rollback |
+| 2.10 | G2-01 | HIGH | CLOB cross-contract token transfers fail silently | Fail-close: revert trade on transfer failure |
+| 2.11 | G13-02 | HIGH | `execute_proposal` is stub — sets status, performs no action | Wire cross-contract execution of proposals |
+| 2.12 | G11-02 | HIGH | Bridge trusts submitted proofs without validation | Implement relay verification or multisig oracle |
+
+### Wave 3 — SECURITY HARDENING (18 items, ~4 days)
+
+Keys, permissions, auth, crypto — attack surface reduction.
+
+| Order | ID | Severity | Finding | Fix |
+|-------|-----|----------|---------|-----|
+| 3.1 | A13-01 | HIGH | Multisig secret keys — no zeroize on drop | Use `zeroize` crate |
+| 3.2 | B2-01 | HIGH | Keypair file no permission check | Check 0600, warn/error |
+| 3.3 | E3-01 | HIGH | Generated keypair world-readable permissions | chmod 0600 after creation |
+| 3.4 | B5-01 | HIGH | Auto-updater no cryptographic verification | Verify download against signed hash |
+| 3.5 | B3-01 | HIGH | Block sync trusts peer block sequence | Verify signatures + previous_hash chain |
+| 3.6 | B1-03 | HIGH | Bootstrap amounts hardcoded, no governance | Make configurable + multisig approval |
+| 3.7 | C1-02 | HIGH | No peer authentication | Require TLS client certs or noise protocol |
+| 3.8 | F1-01 | HIGH | Compiler runs cargo build unsandboxed | Docker/WASM sandbox with resource limits |
+| 3.9 | F2-03 | HIGH | Master seed in env variable | Use secrets manager or HSM |
+| 3.10 | F2-04 | HIGH | EVM withdrawal produces invalid output | Fix RLP transaction encoding |
+| 3.11 | I2-03 | HIGH | No Content Security Policy | Add strict CSP headers |
+| 3.12 | I3-02 | HIGH | Extension broad page access permissions | Minimize to necessary origins |
+| 3.13 | I9-01 | HIGH | Playground code execution unsandboxed | Sandbox compilation and execution |
+| 3.14 | H6-02 | HIGH | API key in cleartext | HTTPS only, remove from client-side |
+| 3.15 | H7-01 | HIGH | Shared SDK stores keys unencrypted in localStorage | Encrypt with WebCrypto |
+| 3.16 | G5-01 | HIGH | DAO accepts caller-provided reputation | Read from MoltyID via CCC |
+| 3.17 | G15-02 | HIGH | Oracle single-feeder, no price deviation guard | Multi-feeder median + circuit breaker |
+| 3.18 | G17-01 | HIGH | moltswap wrong admin key | Fix to correct multisig address |
+
+### Wave 4 — PERFORMANCE & DATA INTEGRITY (14 items, ~3 days)
+
+| Order | ID | Severity | Finding | Fix |
+|-------|-----|----------|---------|-----|
+| 4.1 | A4-02 | HIGH | State get_account no cache | LRU cache for hot accounts |
+| 4.2 | G2-02 | HIGH | CLOB order matching O(n) | Sorted structure, O(log n) |
+| 4.3 | G3-02 | HIGH | Fee distribution O(n) over all positions | Per-share fee accumulator |
+| 4.4 | G8-02 | HIGH | No multi-hop DEX routing | Dijkstra/BFS path finding |
+| 4.5 | A11-03 | HIGH | EVM balance conversion truncates | Proper 18-decimal scaling |
+| 4.6 | A11-04 | HIGH | eth_call not implemented | Implement read-only contract execution |
+| 4.7 | D1-02 | HIGH | MoltyID reputation RPC reads stale storage | Read from CF_CONTRACT_STORAGE |
+| 4.8 | H1-02 | HIGH | JS SDK JSON+base64 vs Rust bincode | Align to single wire format |
+| 4.9 | H2-01 | HIGH | Python SDK same serialization mismatch | Align wire format |
+| 4.10 | H3-01 | HIGH | Rust SDK bincode+hex format | Align wire format |
+| 4.11 | H1-03 | HIGH | JS SDK uses f64 for amounts — precision loss >2^53 | BigInt |
+| 4.12 | H4-01 | HIGH | DEX SDK assumes concentrated liquidity vs x*y=k | Align SDK to contract |
+| 4.13 | H1-04 | HIGH | JS SDK no WebSocket reconnection | Auto-reconnect + exponential backoff |
+| 4.14 | H2-02 | HIGH | Python SDK no WS reconnection/heartbeat | Implement reconnection |
+
+### Wave 5 — INFRASTRUCTURE & TESTING (14 items, ~3 days)
+
+| Order | ID | Severity | Finding | Fix |
+|-------|-----|----------|---------|-----|
+| 5.1 | B1-04 | HIGH | main.rs monolithic 10K+ lines | Split into modules |
+| 5.2 | J1-05 | HIGH | Docker no resource limits | Add memory/CPU limits |
+| 5.3 | J2-04 | HIGH | Scripts hardcoded paths | Use relative paths / env vars |
+| 5.4 | K1-03 | HIGH | No WASM contract execution tests | Integration tests deploying + calling WASM |
+| 5.5 | K2-02 | HIGH | No fuzzing for financial contracts | cargo-fuzz targets |
+| 5.6 | K2-03 | HIGH | No AMM property-based tests | Constant product invariant tests |
+| 5.7 | K3-01 | HIGH | E2E tests mock instead of real chain | Rewrite against running validator |
+| 5.8 | K4-01 | HIGH | SDK tests only serialization | Round-trip tests vs live chain |
+| 5.9 | I1-02 | HIGH | Base58 duplicated across 6 files | Shared utility module |
+| 5.10 | I1-03 | HIGH | RPC client duplicated across 5 files | Shared RPC client |
+| 5.11 | I4-02 | HIGH | Explorer mock price data | Remove mock feed, use live oracle |
+| 5.12 | I5-02 | HIGH | Marketplace no buy/sell logic | Implement purchase tx flow |
+| 5.13 | H4-02 | HIGH | DEX SDK WS no proper pong verification | Ping-pong + disconnect on timeout |
+| 5.14 | B5-02 | MEDIUM | No update rollback mechanism | Canary deploy with old binary fallback |
+
+### Wave 6 — MEDIUM SEVERITY SWEEP (155 items, ~8 days)
+
+Grouped by subsystem. Each sub-wave is ~1 day.
+
+**6A. Core Chain (24 MEDIUM):** A1-01, A2-02, A2-03, A3-02, A3-03, A4-03, A4-04, A5-04, A6-01, A6-02, A6-03, A7-04, A7-05, A8-01, A9-04, A10-01, A11-05, A12-02, A13-02, A16-01, A16-02, A17-02, A17-03, A20-01
+
+**6B. Validator/P2P/RPC (18 MEDIUM):** B1-05, B1-06, B3-02, B4-02, C1-03, C2-02, C3-01, C4-01, C4-02, D1-03, D1-04, D1-05, D2-02, D3-02, D4-02, A18-01, A19-01, B5-02
+
+**6C. Contracts (37 MEDIUM):** All remaining G-section MEDIUM items — overflow guards, math verification, storage limits, input validation, admin governance, event emission
+
+**6D. CLI/Compiler/Custody/Faucet (7 MEDIUM):** E-section + F-section remaining MEDIUM items
+
+**6E. SDK (8 MEDIUM):** H-section remaining MEDIUM items — error handling, type safety, connection management
+
+**6F. Frontends (12 MEDIUM):** I-section remaining MEDIUM items — XSS protection, responsive design, error handling, real data wiring
+
+**6G. Scripts/Deploy/Infra (8 MEDIUM):** J-section remaining MEDIUM items — health checks, logging, monitoring wiring
+
+**6H. Tests (8 MEDIUM):** K-section remaining MEDIUM items — negative tests, stress tests, benchmark harness
+
+**6I. Phase 9 Remaining MEDIUM (33 MEDIUM):** P9-A through P9-F remaining MEDIUM items
+
+### Wave 7 — LOW SEVERITY POLISH (63 items, ~4 days)
+
+Naming, dead code, minor performance, documentation, convenience improvements. Batch by file proximity.
+
+**7A. Core LOW (13):** A2-04, A3-04, A4-05, A5-05, A6-04, A7-06, A8-02, A10-02, A12-03, A13-03, A15-01, A16-03, A20-02
+
+**7B. Runtime LOW (7):** B2-02, C3-02, C4-03, D3-03, A18-02, A19-02
+
+**7C. Contract LOW (15):** G-section remaining LOW items
+
+**7D. CLI/SDK/Frontend LOW (13):** E/H/I-section remaining LOW items
+
+**7E. Infra/Test LOW (7):** J/K-section remaining LOW items
+
+**7F. Phase 9 Remaining LOW (8):** P9 remaining LOW items
+
+### Wave 8 — FINAL VALIDATION (1 day)
+
+| Step | Task |
+|------|------|
+| 8.1 | Full `cargo test` — all suites pass (target: 900+ tests) |
+| 8.2 | Fresh genesis + validator start — verify 5s heartbeats, block production |
+| 8.3 | Deploy all 27 contracts — verify genesis initialization |
+| 8.4 | SDK round-trip: JS/Python/Rust submit tx → verify on-chain |
+| 8.5 | Explorer/wallet/DEX frontend smoke test — all pages render, real data |
+| 8.6 | `cargo clippy -- -W warnings` — zero warnings |
+| 8.7 | `cargo audit` — no known CVEs in dependencies |
+| 8.8 | Final grep: no `TODO`, `FIXME`, `HACK`, `stub`, `placeholder`, `mock` in production code |
+| 8.9 | Generate coverage report — target ≥80% line coverage for core/ and contracts/ |
+| 8.10 | Tag release `v1.0.0-rc1` and push |
+
+### Execution Timeline
+
+```
+Wave 1 (CRITICAL):           Day 1-2    ████░░░░░░░░░░░░░░░░░░░░░░░░ 
+Wave 2 (Consensus/Atomicity): Day 3-5    ░░░░████████░░░░░░░░░░░░░░░░
+Wave 3 (Security):            Day 6-9    ░░░░░░░░░░░░████████████░░░░
+Wave 4 (Performance/Data):    Day 10-12  ░░░░░░░░░░░░░░░░░░░░████████
+Wave 5 (Infra/Testing):       Day 13-15  ████████░░░░░░░░░░░░░░░░░░░░
+Wave 6 (MEDIUM sweep):        Day 16-23  ░░░░░░░░████████████████████
+Wave 7 (LOW polish):          Day 24-27  ████████████████░░░░░░░░░░░░
+Wave 8 (Final validation):    Day 28     ░░░░░░░░░░░░░░░░████░░░░░░░░
+                                         ───────── ~4 weeks ──────────
+```
+
+### Rules of Engagement
+
+1. **No stubs, no placeholders, no TODOs** — every fix is complete production code
+2. **Every fix gets a test** — unit test at minimum, integration test preferred
+3. **Commit after each wave** — atomic commits with detailed messages
+4. **Build + test after every fix** — zero regressions tolerated
+5. **Mark `[x]` in this document** as each finding is closed
+6. **Update Completion Tracking** section after each wave
+
+### Recent Fixes (This Session)
+
+| Date | Commit | Changes |
+|------|--------|---------|
+| Feb 22 | 1f5899a | **Runaway block production fix:** Removed is_primary_leader heartbeat bypass, added 400ms slot floor, restructured heartbeat gate. **Doc updates:** MIN_VALIDATOR_STAKE 100K→75K across 9 doc/frontend files. **SLOTS_PER_YEAR fix:** MoltyID + explorer aligned to core 78,840,000 (400ms/slot), auction slot durations recalculated. 805 tests pass. |
