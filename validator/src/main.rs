@@ -8610,6 +8610,19 @@ async fn run_validator() {
         while let Some(tx) = rpc_tx_receiver.recv().await {
             info!("📨 RPC transaction received, adding to mempool");
 
+            // P9-RPC-01: Defense-in-depth — reject sentinel blockhash for non-EVM TXs
+            // before they even enter the mempool.  Only eth_sendRawTransaction may
+            // submit TXs with the EVM sentinel; any other path is a bypass attempt.
+            if tx.message.recent_blockhash == moltchain_core::Hash([0xEE; 32]) {
+                let is_evm = tx.message.instructions.first()
+                    .map(|ix| ix.program_id == EVM_PROGRAM_ID)
+                    .unwrap_or(false);
+                if !is_evm {
+                    info!("❌ RPC transaction rejected: non-EVM TX with EVM sentinel blockhash");
+                    continue;
+                }
+            }
+
             // Validate structure before adding to mempool
             if let Err(e) = tx.validate_structure() {
                 info!("❌ RPC transaction rejected: {}", e);

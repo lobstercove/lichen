@@ -168,10 +168,22 @@ impl PeerManager {
         server_crypto.alpn_protocols = vec![b"molt".to_vec()];
 
         // Configure QUIC server
-        let server_config = ServerConfig::with_crypto(Arc::new(
+        let mut server_config = ServerConfig::with_crypto(Arc::new(
             quinn::crypto::rustls::QuicServerConfig::try_from(server_crypto)
                 .map_err(|e| format!("Failed to create QUIC server config: {}", e))?,
         ));
+
+        // P9-NET-01: Limit concurrent uni-directional streams per connection.
+        // Without this, a malicious peer could open thousands of streams
+        // and exhaust memory/file descriptors.  256 concurrent streams is
+        // generous for honest peers (they open 1 stream per message) while
+        // bounding resource consumption.
+        {
+            let mut transport = quinn::TransportConfig::default();
+            transport.max_concurrent_uni_streams(256u32.into());
+            transport.max_concurrent_bidi_streams(16u32.into());
+            server_config.transport_config(Arc::new(transport));
+        }
 
         // Create QUIC endpoint
         let endpoint = Endpoint::server(server_config, local_addr)
@@ -955,9 +967,11 @@ impl rustls::server::danger::ClientCertVerifier for MoltClientCertVerifier {
     }
 
     fn client_auth_mandatory(&self) -> bool {
-        // Permissionless network: accept peers without client certs during transition.
-        // Once all nodes are upgraded, this can be set to true for full mutual TLS.
-        false
+        // P9-NET-02: Enforce mutual TLS — all peers MUST present a valid
+        // self-signed certificate.  Without this, unauthenticated peers can
+        // connect and inject malicious blocks/votes.  All nodes now generate
+        // a certificate at startup so no backwards-compat concern remains.
+        true
     }
 
     fn root_hint_subjects(&self) -> &[rustls::DistinguishedName] {

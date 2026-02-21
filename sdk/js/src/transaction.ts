@@ -84,13 +84,20 @@ export class TransactionBuilder {
 
   /**
    * Create a transfer instruction
+   *
+   * P9-SDK-01: `amount` accepts `number | bigint` to avoid silent truncation
+   * for values exceeding `Number.MAX_SAFE_INTEGER` (2^53 - 1).
+   * Using `bigint` is recommended for large MOLT amounts.
    */
-  static transfer(from: PublicKey, to: PublicKey, amount: number): Instruction {
+  static transfer(from: PublicKey, to: PublicKey, amount: number | bigint): Instruction {
+    const amt = BigInt(amount);
+    if (amt < 0n) throw new Error('Transfer amount must be non-negative');
+    if (amt > 0xFFFFFFFFFFFFFFFFn) throw new Error('Transfer amount exceeds u64 max');
     // Encode transfer data (program-specific format)
     const data = new Uint8Array(9);
     data[0] = 0; // Transfer instruction type
     const view = new DataView(data.buffer);
-    view.setBigUint64(1, BigInt(amount), true);
+    view.setBigUint64(1, amt, true);
 
     return {
       programId: new PublicKey('11111111111111111111111111111111'), // System program (all-zero pubkey)
@@ -101,12 +108,17 @@ export class TransactionBuilder {
 
   /**
    * Create a stake instruction
+   *
+   * P9-SDK-01: `amount` accepts `number | bigint`.
    */
-  static stake(from: PublicKey, validator: PublicKey, amount: number): Instruction {
+  static stake(from: PublicKey, validator: PublicKey, amount: number | bigint): Instruction {
+    const amt = BigInt(amount);
+    if (amt < 0n) throw new Error('Stake amount must be non-negative');
+    if (amt > 0xFFFFFFFFFFFFFFFFn) throw new Error('Stake amount exceeds u64 max');
     const data = new Uint8Array(9);
     data[0] = 9; // Stake instruction type
     const view = new DataView(data.buffer);
-    view.setBigUint64(1, BigInt(amount), true);
+    view.setBigUint64(1, amt, true);
 
     return {
       programId: new PublicKey('11111111111111111111111111111111'), // System program (all-zero pubkey)
@@ -117,12 +129,17 @@ export class TransactionBuilder {
 
   /**
    * Create an unstake request instruction
+   *
+   * P9-SDK-01: `amount` accepts `number | bigint`.
    */
-  static unstake(from: PublicKey, validator: PublicKey, amount: number): Instruction {
+  static unstake(from: PublicKey, validator: PublicKey, amount: number | bigint): Instruction {
+    const amt = BigInt(amount);
+    if (amt < 0n) throw new Error('Unstake amount must be non-negative');
+    if (amt > 0xFFFFFFFFFFFFFFFFn) throw new Error('Unstake amount exceeds u64 max');
     const data = new Uint8Array(9);
     data[0] = 10; // Unstake request instruction type
     const view = new DataView(data.buffer);
-    view.setBigUint64(1, BigInt(amount), true);
+    view.setBigUint64(1, amt, true);
 
     return {
       programId: new PublicKey('11111111111111111111111111111111'), // System program (all-zero pubkey)
