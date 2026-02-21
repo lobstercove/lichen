@@ -12,8 +12,13 @@ use std::sync::Arc;
 // STAKING - Economic Security
 // ============================================================================
 
-/// Minimum stake required to become a validator (100,000 MOLT — $10,000 at $0.10/MOLT)
-pub const MIN_VALIDATOR_STAKE: u64 = 100_000 * 1_000_000_000; // 100k MOLT in shells
+/// Minimum stake required to remain an active validator (75,000 MOLT — $7,500 at $0.10/MOLT).
+/// Bootstrap grant is still 100K MOLT, but validators stay active down to 75K,
+/// giving a 25% buffer before deactivation after slashing.
+pub const MIN_VALIDATOR_STAKE: u64 = 75_000 * 1_000_000_000; // 75k MOLT in shells
+
+/// Bootstrap grant amount (100,000 MOLT) — the initial stake granted to the first 200 validators
+pub const BOOTSTRAP_GRANT_AMOUNT: u64 = 100_000 * 1_000_000_000; // 100k MOLT in shells
 
 /// Transaction block reward (0.9 MOLT per block with transactions — $0.09 at $0.10/MOLT)
 pub const TRANSACTION_BLOCK_REWARD: u64 = 900_000_000; // 0.9 MOLT
@@ -339,6 +344,11 @@ pub struct StakeInfo {
     /// Last slot when machine fingerprint was migrated (for migration cooldown)
     #[serde(default)]
     pub last_migration_slot: u64,
+    /// If > 0, penalty repayment boost is active until this slot.
+    /// While active, 90% of rewards go to debt repayment and only 10% are liquid.
+    /// Set by the slashing sweep when a tier-2 downtime offense occurs.
+    #[serde(default)]
+    pub penalty_boost_until: u64,
 }
 
 /// Serde default for bootstrap_index — u64::MAX means "not a bootstrap validator"
@@ -364,9 +374,9 @@ impl StakeInfo {
         current_slot: u64,
         bootstrap_index: u64,
     ) -> Self {
-        // Only bootstrap if this is one of the first 200 AND amount matches MIN_VALIDATOR_STAKE
+        // Only bootstrap if this is one of the first 200 AND amount matches BOOTSTRAP_GRANT_AMOUNT
         let is_bootstrap =
-            bootstrap_index < MAX_BOOTSTRAP_VALIDATORS && amount == MIN_VALIDATOR_STAKE;
+            bootstrap_index < MAX_BOOTSTRAP_VALIDATORS && amount == BOOTSTRAP_GRANT_AMOUNT;
         let bootstrap_debt = if is_bootstrap { amount } else { 0 };
 
         Self {
@@ -392,6 +402,7 @@ impl StakeInfo {
             start_slot: current_slot,
             bootstrap_index,
             last_migration_slot: 0,
+            penalty_boost_until: 0,
         }
     }
 
@@ -407,23 +418,25 @@ impl StakeInfo {
     }
 
     /// Slash stake by amount (returns amount actually slashed)
-    /// AUDIT-FIX 3.4: Design is additive slashing on principal with proportional
-    /// vesting adjustment. amount is absolute shells to slash (not a percentage).
-    /// Vesting fields (earned_amount, bootstrap_debt) are scaled proportionally
-    /// to maintain consistent vesting ratios after the principal is reduced.
+    /// Slashing burns principal stake but does NOT reduce bootstrap debt.
+    /// This prevents the perverse incentive where slashing would accelerate
+    /// graduation by reducing debt proportionally. Only earned_amount is
+    /// reduced to reflect the smaller principal.
     pub fn slash(&mut self, amount: u64) -> u64 {
         let slashed = amount.min(self.amount);
         if slashed == 0 || self.amount == 0 {
             return 0;
         }
-        // Proportionally reduce vesting state to keep ratios consistent
-        let ratio_num = self.amount.saturating_sub(slashed);
+        // Reduce principal
+        let new_amount = self.amount.saturating_sub(slashed);
+        // Scale earned_amount proportionally (it reflects real earned value)
+        let ratio_num = new_amount;
         let ratio_den = self.amount;
         self.earned_amount =
             (self.earned_amount as u128 * ratio_num as u128 / ratio_den as u128) as u64;
-        self.bootstrap_debt =
-            (self.bootstrap_debt as u128 * ratio_num as u128 / ratio_den as u128) as u64;
-        self.amount = ratio_num;
+        // IMPORTANT: Do NOT reduce bootstrap_debt — slashing should not help graduation.
+        // The validator still owes the full original debt amount.
+        self.amount = new_amount;
         self.is_active = self.meets_minimum();
         slashed
     }
@@ -462,23 +475,34 @@ impl StakeInfo {
                 self.bootstrap_debt = 0;
                 self.status = BootstrapStatus::FullyVested;
                 self.graduation_slot = Some(current_slot);
+                self.penalty_boost_until = 0; // Clear boost on graduation
                 // All reward is liquid after time-cap graduation
                 self.total_claimed = self.total_claimed.saturating_add(total_reward);
                 return (total_reward, 0);
             }
 
-            // ── Performance bonus: 95%+ uptime → accelerated repayment ──
-            // PERFORMANCE_BONUS_BPS = 15000 → 1.5× multiplier on the 50% debt portion.
-            // Effective split: debt = 50% × 1.5 = 75%, liquid = 25%.
-            let debt_fraction =
+            // ── Penalty repayment boost: 90% to debt, 10% liquid ──
+            // Active when slashing sweep sets penalty_boost_until > current_slot.
+            // This overrides the normal 50/75% split as punitive acceleration.
+            let debt_fraction = if self.penalty_boost_until > 0
+                && current_slot < self.penalty_boost_until
+            {
+                (total_reward as u128 * 90 / 100) as u64
+            } else {
+                // Clear expired boost
+                if self.penalty_boost_until > 0 && current_slot >= self.penalty_boost_until {
+                    self.penalty_boost_until = 0;
+                }
+
+                // ── Performance bonus: 95%+ uptime → accelerated repayment ──
                 if self.uptime_bps(current_slot, num_validators) >= UPTIME_BONUS_THRESHOLD_BPS {
-                    // Accelerated: debt_portion = base_50% × (PERFORMANCE_BONUS_BPS / 10000)
                     let base_half = total_reward / 2;
                     (base_half as u128 * PERFORMANCE_BONUS_BPS as u128 / 10000) as u64
                 } else {
                     // Standard 50% to debt repayment
                     total_reward / 2
-                };
+                }
+            };
 
             // Apply debt payment (capped at remaining debt)
             let paid = debt_fraction.min(self.bootstrap_debt);
@@ -502,6 +526,47 @@ impl StakeInfo {
             (liquid, paid) // (spendable, locked_for_debt)
         } else {
             // Fully vested: 100% liquid
+            self.total_claimed = self.total_claimed.saturating_add(total_reward);
+            (total_reward, 0)
+        }
+    }
+
+    /// Claim rewards with penalty repayment boost active.
+    /// When a Tier 2 downtime penalty is applied, 90% of rewards go to bootstrap
+    /// debt repayment (instead of the normal 50% or 75%), leaving only 10% liquid.
+    /// This accelerates debt repayment as a punitive measure.
+    /// Returns (liquid_amount, debt_payment).
+    pub fn claim_rewards_with_penalty_boost(&mut self, current_slot: u64) -> (u64, u64) {
+        let total_reward = self.rewards_earned;
+        self.rewards_earned = 0;
+
+        if self.bootstrap_debt > 0 {
+            // Time-cap graduation check (same as regular)
+            if current_slot >= self.start_slot.saturating_add(MAX_BOOTSTRAP_SLOTS) {
+                self.bootstrap_debt = 0;
+                self.status = BootstrapStatus::FullyVested;
+                self.graduation_slot = Some(current_slot);
+                self.total_claimed = self.total_claimed.saturating_add(total_reward);
+                return (total_reward, 0);
+            }
+
+            // Penalty boost: 90% to debt, 10% liquid
+            let debt_fraction = (total_reward as u128 * 90 / 100) as u64;
+            let paid = debt_fraction.min(self.bootstrap_debt);
+            self.bootstrap_debt -= paid;
+            self.earned_amount = self.earned_amount.saturating_add(paid);
+            self.total_debt_repaid = self.total_debt_repaid.saturating_add(paid);
+            let liquid = total_reward - paid;
+            self.total_claimed = self.total_claimed.saturating_add(total_reward);
+
+            if self.bootstrap_debt == 0 {
+                self.status = BootstrapStatus::FullyVested;
+                self.graduation_slot = Some(current_slot);
+            }
+
+            (liquid, paid)
+        } else {
+            // Fully vested: 100% liquid (no debt to boost)
             self.total_claimed = self.total_claimed.saturating_add(total_reward);
             (total_reward, 0)
         }
@@ -567,7 +632,7 @@ impl StakeInfo {
         (annual_rewards / total_staked as f64) * 100.0
     }
 
-    /// Add additional stake (after graduation, up to 100k max)
+    /// Add additional stake (after graduation, up to 1M max)
     pub fn add_stake(&mut self, additional: u64) -> Result<(), String> {
         if !self.is_fully_vested() {
             return Err("Must be fully vested to add additional stake".to_string());
@@ -582,6 +647,27 @@ impl StakeInfo {
 
         self.amount = self.amount.saturating_add(additional);
         Ok(())
+    }
+
+    /// Top up stake after being slashed — recovery mechanism.
+    /// Unlike `add_stake()`, this does NOT require full vesting.
+    /// Allows a slashed validator to add funds to get back above MIN_VALIDATOR_STAKE.
+    /// Returns Ok(new_total) or Err if amount exceeds max or is zero.
+    pub fn top_up_stake(&mut self, additional: u64) -> Result<u64, String> {
+        if additional == 0 {
+            return Err("Top-up amount must be greater than zero".to_string());
+        }
+
+        if additional > MAX_VALIDATOR_STAKE.saturating_sub(self.amount) {
+            return Err(format!(
+                "Cannot exceed maximum stake of {} MOLT",
+                MAX_VALIDATOR_STAKE / 1_000_000_000
+            ));
+        }
+
+        self.amount = self.amount.saturating_add(additional);
+        self.is_active = self.meets_minimum();
+        Ok(self.amount)
     }
 
     /// Request to unstake (stop validating and withdraw stake)
@@ -820,6 +906,51 @@ impl StakePool {
         } else {
             0
         }
+    }
+
+    /// Top up a validator's stake after slashing (recovery mechanism).
+    /// Unlike `stake()`, this does not require meeting MIN_VALIDATOR_STAKE upfront.
+    /// The validator must already exist in the stake pool.
+    /// Returns Ok(new_total) or Err if validator not found or amount invalid.
+    pub fn top_up_stake(&mut self, validator: &Pubkey, amount: u64) -> Result<u64, String> {
+        if let Some(stake_info) = self.stakes.get_mut(validator) {
+            let new_total = stake_info.top_up_stake(amount)?;
+            self.total_staked = self.total_staked.saturating_add(amount);
+            Ok(new_total)
+        } else {
+            Err("Validator not found in stake pool".to_string())
+        }
+    }
+
+    /// Remove inactive validators that have been deactivated (stake below minimum)
+    /// for more than `grace_slots` slots. Returns the list of removed pubkeys.
+    /// Ghost validators (slashed & inactive) are cleaned up by this method.
+    pub fn remove_ghost_validators(&mut self, current_slot: u64, grace_slots: u64) -> Vec<Pubkey> {
+        let mut removed = Vec::new();
+        let to_remove: Vec<Pubkey> = self.stakes.iter()
+            .filter(|(_, info)| {
+                // Only remove validators that are:
+                // 1. Inactive (below minimum stake)
+                // 2. Have been inactive long enough (beyond grace period)
+                // 3. Have zero amount (fully slashed) OR have been below minimum for grace_slots
+                !info.is_active
+                    && info.amount == 0
+                    && current_slot.saturating_sub(info.last_reward_slot) > grace_slots
+            })
+            .map(|(pk, _)| *pk)
+            .collect();
+
+        for pk in to_remove {
+            if let Some(info) = self.stakes.remove(&pk) {
+                self.total_staked = self.total_staked.saturating_sub(info.amount);
+                // Clean up fingerprint registry
+                if info.machine_fingerprint != [0u8; 32] {
+                    self.fingerprint_registry.remove(&info.machine_fingerprint);
+                }
+                removed.push(pk);
+            }
+        }
+        removed
     }
 
     /// Get stake info for a validator
@@ -2310,6 +2441,17 @@ impl SlashingEvidence {
 
 /// Slashing tracker - manages evidence and penalties
 /// AUDIT-FIX 2.6: Made serializable for persistence to RocksDB
+///
+/// ## Tiered Downtime Penalty System
+///
+/// Downtime offenses use a 3-tier escalation:
+/// - **Tier 1** (1st offense): Reputation penalty only — warning, no economic slash
+/// - **Tier 2** (2nd offense): Small slash (0.5% of stake) + temporary suspension (100 slots)
+///   + increased bootstrap debt repayment rate (90% of rewards go to debt)
+/// - **Tier 3** (3rd+ offense): Full downtime slashing per ConsensusParams
+///   (1% per 100 missed slots, max 10%)
+///
+/// Offense count decays (forgiveness) after 50,000 slots (~5.5 hours) of no new offenses.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SlashingTracker {
     /// Evidence by validator
@@ -2318,7 +2460,31 @@ pub struct SlashingTracker {
     slashed: std::collections::HashSet<Pubkey>,
     /// Permanently banned validators (collusion = permanent ban per whitepaper)
     permanently_banned: std::collections::HashSet<Pubkey>,
+    /// Tiered downtime offense count per validator (for escalation)
+    #[serde(default)]
+    downtime_offense_count: std::collections::HashMap<Pubkey, u64>,
+    /// Last downtime offense slot per validator (for forgiveness decay)
+    #[serde(default)]
+    last_downtime_offense_slot: std::collections::HashMap<Pubkey, u64>,
+    /// Validators with penalty repayment boost active (slot when boost expires)
+    #[serde(default)]
+    penalty_repayment_boost: std::collections::HashMap<Pubkey, u64>,
+    /// Validators temporarily suspended (slot when suspension ends)
+    #[serde(default)]
+    suspended_until: std::collections::HashMap<Pubkey, u64>,
 }
+
+/// Number of slots of good behavior before downtime offense count decays to zero
+pub const DOWNTIME_FORGIVENESS_SLOTS: u64 = 50_000; // ~5.5 hours at 400ms/slot
+
+/// Suspension duration in slots for Tier 2 downtime offense
+pub const DOWNTIME_SUSPENSION_SLOTS: u64 = 100; // ~40 seconds
+
+/// Tier 2 small slash percentage (basis points — 50 = 0.5%)
+pub const DOWNTIME_TIER2_SLASH_BPS: u64 = 50;
+
+/// Duration of penalty repayment boost in slots after Tier 2 offense
+pub const PENALTY_REPAYMENT_BOOST_SLOTS: u64 = 216_000; // ~1 day
 
 impl Default for SlashingTracker {
     fn default() -> Self {
@@ -2333,6 +2499,10 @@ impl SlashingTracker {
             evidence: std::collections::HashMap::new(),
             slashed: std::collections::HashSet::new(),
             permanently_banned: std::collections::HashSet::new(),
+            downtime_offense_count: std::collections::HashMap::new(),
+            last_downtime_offense_slot: std::collections::HashMap::new(),
+            penalty_repayment_boost: std::collections::HashMap::new(),
+            suspended_until: std::collections::HashMap::new(),
         }
     }
 
@@ -2394,14 +2564,105 @@ impl SlashingTracker {
         self.evidence.values().map(|v| v.len()).sum()
     }
 
-    /// Check if validator should be slashed
+    /// Check if validator should be slashed.
+    ///
+    /// For non-downtime offenses: severity >= 70 (DoubleBlock, DoubleVote,
+    /// InvalidStateTransition, Censorship, Collusion).
+    ///
+    /// For downtime offenses: uses tiered system based on offense count:
+    /// - Tier 1 (1st offense): NO economic slash (reputation only)
+    /// - Tier 2 (2nd offense): Small slash (0.5%)
+    /// - Tier 3 (3rd+ offense): Full graduated slashing
     pub fn should_slash(&self, validator: &Pubkey) -> bool {
         if let Some(evidence_list) = self.evidence.get(validator) {
-            // Slash if any severe offense (severity >= 70 covers all whitepaper offenses)
-            evidence_list.iter().any(|e| e.severity() >= 70)
+            // Always slash for severe non-downtime offenses (severity >= 70)
+            let has_severe = evidence_list.iter().any(|e| {
+                e.severity() >= 70 && !matches!(e.offense, SlashingOffense::Downtime { .. })
+            });
+            if has_severe {
+                return true;
+            }
+
+            // For downtime-only evidence, check the tiered system
+            let has_downtime = evidence_list.iter().any(|e| {
+                matches!(e.offense, SlashingOffense::Downtime { .. })
+            });
+            if has_downtime {
+                let offense_count = self.get_downtime_offense_tier(validator);
+                // Tier 2+ gets economic slashing
+                return offense_count >= 2;
+            }
+
+            false
         } else {
             false
         }
+    }
+
+    /// Get the current downtime offense tier for a validator (after applying forgiveness decay).
+    /// Returns the effective offense count (0 = no offenses, 1 = tier 1, 2 = tier 2, 3+ = tier 3).
+    pub fn get_downtime_offense_tier(&self, validator: &Pubkey) -> u64 {
+        self.downtime_offense_count.get(validator).copied().unwrap_or(0)
+    }
+
+    /// Record a new downtime offense for a validator, applying forgiveness decay first.
+    /// Returns the new offense count (tier level).
+    pub fn record_downtime_offense(&mut self, validator: &Pubkey, current_slot: u64) -> u64 {
+        // Apply forgiveness decay: if enough slots have passed since last offense,
+        // reset the count to zero before incrementing.
+        if let Some(&last_slot) = self.last_downtime_offense_slot.get(validator) {
+            if current_slot.saturating_sub(last_slot) >= DOWNTIME_FORGIVENESS_SLOTS {
+                // Forgiveness: reset offense count
+                self.downtime_offense_count.insert(*validator, 0);
+            }
+        }
+
+        let count = self.downtime_offense_count.entry(*validator).or_insert(0);
+        *count += 1;
+        self.last_downtime_offense_slot.insert(*validator, current_slot);
+        *count
+    }
+
+    /// Check if a validator is currently suspended (Tier 2 temporary suspension)
+    pub fn is_suspended(&self, validator: &Pubkey, current_slot: u64) -> bool {
+        if let Some(&suspend_end) = self.suspended_until.get(validator) {
+            current_slot < suspend_end
+        } else {
+            false
+        }
+    }
+
+    /// Apply temporary suspension to a validator (Tier 2 penalty)
+    pub fn suspend_validator(&mut self, validator: &Pubkey, current_slot: u64) {
+        self.suspended_until.insert(*validator, current_slot + DOWNTIME_SUSPENSION_SLOTS);
+    }
+
+    /// Check if a validator has a penalty repayment boost active
+    pub fn has_penalty_repayment_boost(&self, validator: &Pubkey, current_slot: u64) -> bool {
+        if let Some(&boost_end) = self.penalty_repayment_boost.get(validator) {
+            current_slot < boost_end
+        } else {
+            false
+        }
+    }
+
+    /// Apply penalty repayment boost (Tier 2 — 90% of rewards go to bootstrap debt)
+    pub fn apply_penalty_repayment_boost(&mut self, validator: &Pubkey, current_slot: u64) {
+        self.penalty_repayment_boost.insert(*validator, current_slot + PENALTY_REPAYMENT_BOOST_SLOTS);
+    }
+
+    /// Clear the slashed flag for a validator (allows recovery after top-up).
+    /// Does NOT clear permanent bans.
+    pub fn clear_slashed(&mut self, validator: &Pubkey) {
+        if !self.is_permanently_banned(validator) {
+            self.slashed.remove(validator);
+        }
+    }
+
+    /// Clean up expired suspensions and repayment boosts
+    pub fn cleanup_expired(&mut self, current_slot: u64) {
+        self.suspended_until.retain(|_, &mut end| current_slot < end);
+        self.penalty_repayment_boost.retain(|_, &mut end| current_slot < end);
     }
 
     /// Mark validator as slashed
@@ -2462,20 +2723,19 @@ impl SlashingTracker {
         self.apply_economic_slashing_with_params(validator, stake_pool, &default_params)
     }
 
-    /// Apply economic slashing using explicit consensus parameters
+    /// Apply economic slashing using explicit consensus parameters.
+    ///
+    /// For downtime offenses, applies tiered penalties:
+    /// - Tier 1 (1st offense): No economic slash (reputation only)
+    /// - Tier 2 (2nd offense): 0.5% of stake + suspension + repayment boost
+    /// - Tier 3 (3rd+ offense): Full graduated slashing per ConsensusParams
     pub fn apply_economic_slashing_with_params(
         &mut self,
         validator: &Pubkey,
         stake_pool: &mut StakePool,
         params: &ConsensusParams,
     ) -> u64 {
-        if !self.should_slash(validator) {
-            return 0;
-        }
-
         // AUDIT-FIX CP-9: Snapshot stake BEFORE the loop to prevent compound slashing.
-        // Without this, each iteration re-reads the (already-slashed) stake, causing
-        // e.g. DoubleBlock(50%) + DoubleVote(30%) = 65% instead of the intended 80%.
         let original_stake = stake_pool
             .get_stake(validator)
             .map(|s| s.total_stake())
@@ -2486,41 +2746,65 @@ impl SlashingTracker {
         }
 
         let mut total_penalty = 0u64;
+        let offense_tier = self.get_downtime_offense_tier(validator);
+
+        // Check if there are any non-downtime offenses that meet the severity threshold
+        let has_non_downtime_slash = if let Some(evidence_list) = self.evidence.get(validator) {
+            evidence_list.iter().any(|e| {
+                e.severity() >= 70 && !matches!(e.offense, SlashingOffense::Downtime { .. })
+            })
+        } else {
+            false
+        };
+
+        // For downtime-only cases, check if tier warrants slashing
+        let has_downtime_slash = offense_tier >= 2;
+
+        if !has_non_downtime_slash && !has_downtime_slash {
+            return 0;
+        }
 
         if let Some(evidence_list) = self.evidence.get(validator) {
             for evidence in evidence_list {
-                // AUDIT-FIX A5-03: Use genesis ConsensusParams for slash percentages
                 let stake_penalty = match evidence.offense {
                     SlashingOffense::DoubleBlock { .. } => {
-                        // Slash configured % of stake for double block production
                         (original_stake as u128 * params.slashing_percentage_double_sign as u128
                             / 100) as u64
                     }
                     SlashingOffense::DoubleVote { .. } => {
-                        // Slash 30% of stake for double voting (no separate genesis param)
                         (original_stake as u128 * 30 / 100) as u64
                     }
                     SlashingOffense::Downtime { missed_slots, .. } => {
-                        // AUDIT-FIX A5-03: Graduated downtime from genesis config
-                        // (per_100_missed% per 100 slots missed, capped at max_percent%)
-                        let downtime_penalty =
-                            (missed_slots / 100).min(params.slashing_downtime_max_percent);
-                        (original_stake as u128
-                            * downtime_penalty as u128
-                            * params.slashing_downtime_per_100_missed as u128
-                            / 100) as u64
+                        // Tiered downtime slashing
+                        match offense_tier {
+                            0 | 1 => {
+                                // Tier 1: No economic slash (reputation only)
+                                0
+                            }
+                            2 => {
+                                // Tier 2: Small fixed slash (0.5% of stake)
+                                (original_stake as u128 * DOWNTIME_TIER2_SLASH_BPS as u128
+                                    / 10_000) as u64
+                            }
+                            _ => {
+                                // Tier 3+: Full graduated downtime slashing
+                                let downtime_penalty =
+                                    (missed_slots / 100).min(params.slashing_downtime_max_percent);
+                                (original_stake as u128
+                                    * downtime_penalty as u128
+                                    * params.slashing_downtime_per_100_missed as u128
+                                    / 100) as u64
+                            }
+                        }
                     }
                     SlashingOffense::InvalidStateTransition { .. } => {
-                        // Slash configured % of stake for invalid state transition
                         (original_stake as u128 * params.slashing_percentage_invalid_state as u128
                             / 100) as u64
                     }
                     SlashingOffense::Censorship { .. } => {
-                        // Slash 25% of stake for censorship attack
                         (original_stake as u128 * 25 / 100) as u64
                     }
                     SlashingOffense::Collusion { .. } => {
-                        // Slash 100% of stake + permanent ban
                         original_stake
                     }
                 };
@@ -3057,12 +3341,12 @@ mod tests {
             });
             let idx = pool.next_bootstrap_index().unwrap();
             assert_eq!(idx, i);
-            pool.stake_with_index(pk, MIN_VALIDATOR_STAKE, 0, idx)
+            pool.stake_with_index(pk, BOOTSTRAP_GRANT_AMOUNT, 0, idx)
                 .unwrap();
 
             // Confirm bootstrap debt exists
             let stake = pool.get_stake(&pk).unwrap();
-            assert_eq!(stake.bootstrap_debt, MIN_VALIDATOR_STAKE);
+            assert_eq!(stake.bootstrap_debt, BOOTSTRAP_GRANT_AMOUNT);
             assert_eq!(stake.bootstrap_index, i);
             assert_eq!(stake.status, BootstrapStatus::Bootstrapping);
         }
@@ -3085,9 +3369,9 @@ mod tests {
     #[test]
     fn test_standard_graduation_50_50_split() {
         let pk = Pubkey::new([1u8; 32]);
-        let mut stake = StakeInfo::with_bootstrap_index(pk, MIN_VALIDATOR_STAKE, 0, 0);
+        let mut stake = StakeInfo::with_bootstrap_index(pk, BOOTSTRAP_GRANT_AMOUNT, 0, 0);
 
-        assert_eq!(stake.bootstrap_debt, MIN_VALIDATOR_STAKE);
+        assert_eq!(stake.bootstrap_debt, BOOTSTRAP_GRANT_AMOUNT);
         assert_eq!(stake.status, BootstrapStatus::Bootstrapping);
 
         // Simulate low uptime: 0 blocks produced on a 1-validator network.
@@ -3102,7 +3386,7 @@ mod tests {
         // Standard 50/50 split
         assert_eq!(debt, 500_000_000); // 0.5 MOLT to debt
         assert_eq!(liquid, 500_000_000); // 0.5 MOLT liquid
-        assert_eq!(stake.bootstrap_debt, MIN_VALIDATOR_STAKE - 500_000_000);
+        assert_eq!(stake.bootstrap_debt, BOOTSTRAP_GRANT_AMOUNT - 500_000_000);
         assert_eq!(stake.earned_amount, 500_000_000);
         assert_eq!(stake.total_claimed, 1_000_000_000);
         assert_eq!(stake.total_debt_repaid, 500_000_000);
@@ -3111,7 +3395,7 @@ mod tests {
     #[test]
     fn test_performance_bonus_75_25_split() {
         let pk = Pubkey::new([1u8; 32]);
-        let mut stake = StakeInfo::with_bootstrap_index(pk, MIN_VALIDATOR_STAKE, 0, 0);
+        let mut stake = StakeInfo::with_bootstrap_index(pk, BOOTSTRAP_GRANT_AMOUNT, 0, 0);
 
         // Simulate high uptime on a 1-validator network.
         // Plan formula: expected_blocks = (current_slot - start_slot) / num_validators
@@ -3146,10 +3430,10 @@ mod tests {
     #[test]
     fn test_time_cap_graduation() {
         let pk = Pubkey::new([1u8; 32]);
-        let mut stake = StakeInfo::with_bootstrap_index(pk, MIN_VALIDATOR_STAKE, 0, 0);
+        let mut stake = StakeInfo::with_bootstrap_index(pk, BOOTSTRAP_GRANT_AMOUNT, 0, 0);
 
         assert_eq!(stake.status, BootstrapStatus::Bootstrapping);
-        assert_eq!(stake.bootstrap_debt, MIN_VALIDATOR_STAKE);
+        assert_eq!(stake.bootstrap_debt, BOOTSTRAP_GRANT_AMOUNT);
 
         // Add rewards but don't claim enough to fully repay
         let reward = 10_000_000_000_000u64; // 10,000 MOLT
@@ -3171,7 +3455,7 @@ mod tests {
     fn test_time_cap_before_debt_repayment() {
         let pk = Pubkey::new([1u8; 32]);
         let start_slot = 1000;
-        let mut stake = StakeInfo::with_bootstrap_index(pk, MIN_VALIDATOR_STAKE, start_slot, 0);
+        let mut stake = StakeInfo::with_bootstrap_index(pk, BOOTSTRAP_GRANT_AMOUNT, start_slot, 0);
 
         // Add a small reward — nowhere near enough to repay debt
         stake.add_reward(1_000_000_000, start_slot + 100); // 1 MOLT
@@ -3199,9 +3483,9 @@ mod tests {
         let pk1 = Pubkey::new([1u8; 32]);
         let pk2 = Pubkey::new([2u8; 32]);
 
-        pool.stake_with_index(pk1, MIN_VALIDATOR_STAKE, 0, 0)
+        pool.stake_with_index(pk1, BOOTSTRAP_GRANT_AMOUNT, 0, 0)
             .unwrap();
-        pool.stake_with_index(pk2, MIN_VALIDATOR_STAKE, 0, 1)
+        pool.stake_with_index(pk2, BOOTSTRAP_GRANT_AMOUNT, 0, 1)
             .unwrap();
 
         let fingerprint = [0xABu8; 32];
@@ -3223,9 +3507,9 @@ mod tests {
         let pk1 = Pubkey::new([1u8; 32]);
         let pk2 = Pubkey::new([2u8; 32]);
 
-        pool.stake_with_index(pk1, MIN_VALIDATOR_STAKE, 0, 0)
+        pool.stake_with_index(pk1, BOOTSTRAP_GRANT_AMOUNT, 0, 0)
             .unwrap();
-        pool.stake_with_index(pk2, MIN_VALIDATOR_STAKE, 0, 1)
+        pool.stake_with_index(pk2, BOOTSTRAP_GRANT_AMOUNT, 0, 1)
             .unwrap();
 
         let zero_fp = [0u8; 32];
@@ -3239,7 +3523,7 @@ mod tests {
     fn test_machine_migration() {
         let mut pool = StakePool::new();
         let pk = Pubkey::new([1u8; 32]);
-        pool.stake_with_index(pk, MIN_VALIDATOR_STAKE, 0, 0)
+        pool.stake_with_index(pk, BOOTSTRAP_GRANT_AMOUNT, 0, 0)
             .unwrap();
 
         let old_fp = [0xAAu8; 32];
@@ -3289,7 +3573,7 @@ mod tests {
     #[test]
     fn test_uptime_bps_calculation() {
         let pk = Pubkey::new([1u8; 32]);
-        let mut stake = StakeInfo::with_bootstrap_index(pk, MIN_VALIDATOR_STAKE, 0, 0);
+        let mut stake = StakeInfo::with_bootstrap_index(pk, BOOTSTRAP_GRANT_AMOUNT, 0, 0);
 
         // 0 blocks produced, 1 validator → 0 uptime
         assert_eq!(stake.uptime_bps(SLOTS_PER_EPOCH, 1), 0);
@@ -3338,7 +3622,7 @@ mod tests {
                 b
             });
             let idx = pool.next_bootstrap_index().unwrap();
-            pool.stake_with_index(dummy, MIN_VALIDATOR_STAKE, 0, idx)
+            pool.stake_with_index(dummy, BOOTSTRAP_GRANT_AMOUNT, 0, idx)
                 .unwrap();
         }
 
@@ -3368,7 +3652,7 @@ mod tests {
                 b
             });
             let idx = pool.next_bootstrap_index().unwrap();
-            pool.stake_with_index(pk, MIN_VALIDATOR_STAKE, 0, idx)
+            pool.stake_with_index(pk, BOOTSTRAP_GRANT_AMOUNT, 0, idx)
                 .unwrap();
         }
         assert_eq!(pool.bootstrap_grants_issued(), 5);
@@ -3387,7 +3671,7 @@ mod tests {
         // Bincode roundtrip WITH fingerprint (tests fingerprint_registry serialization)
         let pk_with_fp = Pubkey::new([0xAA; 32]);
         let next_idx = pool.next_bootstrap_index().unwrap();
-        pool.stake_with_index(pk_with_fp, MIN_VALIDATOR_STAKE, 0, next_idx)
+        pool.stake_with_index(pk_with_fp, BOOTSTRAP_GRANT_AMOUNT, 0, next_idx)
             .unwrap();
         pool.register_fingerprint(&pk_with_fp, [0xFF; 32]).unwrap();
         let bytes2 = bincode::serialize(&pool).unwrap();
@@ -3405,7 +3689,7 @@ mod tests {
         let shared_fp = [0xAA; 32];
 
         // pk1 is bootstrap (index 0) with fingerprint
-        pool.stake_with_index(pk1, MIN_VALIDATOR_STAKE, 0, 0)
+        pool.stake_with_index(pk1, BOOTSTRAP_GRANT_AMOUNT, 0, 0)
             .unwrap();
         pool.register_fingerprint(&pk1, shared_fp).unwrap();
 
@@ -3432,7 +3716,7 @@ mod tests {
 
         // pk1 bootstraps successfully with fingerprint
         let (idx1, is_new1) = pool
-            .try_bootstrap_with_fingerprint(pk1, MIN_VALIDATOR_STAKE, 0, fingerprint)
+            .try_bootstrap_with_fingerprint(pk1, BOOTSTRAP_GRANT_AMOUNT, 0, fingerprint)
             .unwrap();
         assert_eq!(idx1, 0);
         assert!(is_new1);
@@ -3440,7 +3724,7 @@ mod tests {
 
         // pk2 tries same fingerprint → should fail
         let err = pool
-            .try_bootstrap_with_fingerprint(pk2, MIN_VALIDATOR_STAKE, 0, fingerprint)
+            .try_bootstrap_with_fingerprint(pk2, BOOTSTRAP_GRANT_AMOUNT, 0, fingerprint)
             .unwrap_err();
         assert!(err.contains("already registered"));
 
@@ -3450,7 +3734,7 @@ mod tests {
         // pk2 with a different fingerprint succeeds
         let fp2 = [0xCC; 32];
         let (idx2, is_new2) = pool
-            .try_bootstrap_with_fingerprint(pk2, MIN_VALIDATOR_STAKE, 0, fp2)
+            .try_bootstrap_with_fingerprint(pk2, BOOTSTRAP_GRANT_AMOUNT, 0, fp2)
             .unwrap();
         assert_eq!(idx2, 1);
         assert!(is_new2);
@@ -3466,14 +3750,14 @@ mod tests {
 
         // First bootstrap
         let (idx, is_new) = pool
-            .try_bootstrap_with_fingerprint(pk, MIN_VALIDATOR_STAKE, 0, fp)
+            .try_bootstrap_with_fingerprint(pk, BOOTSTRAP_GRANT_AMOUNT, 0, fp)
             .unwrap();
         assert_eq!(idx, 0);
         assert!(is_new);
 
         // Re-stake same validator
         let (idx2, is_new2) = pool
-            .try_bootstrap_with_fingerprint(pk, MIN_VALIDATOR_STAKE, 100, fp)
+            .try_bootstrap_with_fingerprint(pk, BOOTSTRAP_GRANT_AMOUNT, 100, fp)
             .unwrap();
         assert_eq!(idx2, 0); // Same index
         assert!(!is_new2); // Not new
@@ -3483,7 +3767,7 @@ mod tests {
 
         // Total stake doubled
         let stake = pool.get_stake(&pk).unwrap();
-        assert_eq!(stake.amount, MIN_VALIDATOR_STAKE * 2);
+        assert_eq!(stake.amount, BOOTSTRAP_GRANT_AMOUNT * 2);
     }
 
     #[test]
@@ -3491,7 +3775,7 @@ mod tests {
         // Verify PERFORMANCE_BONUS_BPS = 15000 produces 75% debt fraction
         // base_half = reward / 2, debt = base_half * 15000 / 10000 = base_half * 1.5
         let pk = Pubkey::new([1u8; 32]);
-        let mut stake = StakeInfo::with_bootstrap_index(pk, MIN_VALIDATOR_STAKE, 0, 0);
+        let mut stake = StakeInfo::with_bootstrap_index(pk, BOOTSTRAP_GRANT_AMOUNT, 0, 0);
         let reward: u64 = 1_000_000_000; // 1 MOLT
         stake.rewards_earned = reward;
 
@@ -3721,6 +4005,381 @@ mod tests {
         assert_eq!(
             e1.timestamp, e2.timestamp,
             "two evidence structs with same input must be identical"
+        );
+    }
+
+    // ================================================================
+    // Tiered Downtime Slashing System tests
+    // ================================================================
+
+    #[test]
+    fn test_tiered_downtime_tier1_reputation_only() {
+        // Tier 1 (1st offense): No economic slash, reputation penalty only
+        let mut tracker = SlashingTracker::new();
+        let mut pool = StakePool::new();
+        let pk = Pubkey::new([1u8; 32]);
+        pool.stake(pk, BOOTSTRAP_GRANT_AMOUNT, 0).unwrap();
+
+        // Record first downtime offense → tier 1
+        let tier = tracker.record_downtime_offense(&pk, 100);
+        assert_eq!(tier, 1, "First offense should be tier 1");
+
+        // Add downtime evidence
+        let evidence = SlashingEvidence::new(
+            SlashingOffense::Downtime {
+                last_active_slot: 0,
+                current_slot: 500,
+                missed_slots: 500,
+            },
+            pk,
+            500,
+            Pubkey::new([2u8; 32]),
+            1700000000,
+        );
+        tracker.add_evidence(evidence);
+
+        // Apply slashing — should be 0 (tier 1 = no economic penalty)
+        let params = crate::genesis::ConsensusParams::default();
+        let slashed = tracker.apply_economic_slashing_with_params(&pk, &mut pool, &params);
+        assert_eq!(slashed, 0, "Tier 1 downtime should not slash any stake");
+
+        // Stake should be unchanged
+        let stake = pool.get_stake(&pk).unwrap();
+        assert_eq!(stake.total_stake(), BOOTSTRAP_GRANT_AMOUNT);
+    }
+
+    #[test]
+    fn test_tiered_downtime_tier2_small_slash() {
+        // Tier 2 (2nd offense): 0.5% slash
+        let mut tracker = SlashingTracker::new();
+        let mut pool = StakePool::new();
+        let pk = Pubkey::new([1u8; 32]);
+        pool.stake(pk, BOOTSTRAP_GRANT_AMOUNT, 0).unwrap();
+
+        // Record two offenses to reach tier 2
+        tracker.record_downtime_offense(&pk, 100);
+        let tier = tracker.record_downtime_offense(&pk, 200);
+        assert_eq!(tier, 2, "Second offense should be tier 2");
+
+        // Add downtime evidence
+        let evidence = SlashingEvidence::new(
+            SlashingOffense::Downtime {
+                last_active_slot: 0,
+                current_slot: 500,
+                missed_slots: 500,
+            },
+            pk,
+            500,
+            Pubkey::new([2u8; 32]),
+            1700000000,
+        );
+        tracker.add_evidence(evidence);
+
+        // Apply slashing — should be 0.5% of stake
+        let params = crate::genesis::ConsensusParams::default();
+        let slashed = tracker.apply_economic_slashing_with_params(&pk, &mut pool, &params);
+        let expected = (BOOTSTRAP_GRANT_AMOUNT as u128 * DOWNTIME_TIER2_SLASH_BPS as u128
+            / 10_000) as u64;
+        assert_eq!(
+            slashed, expected,
+            "Tier 2 should slash 0.5% ({} shells), got {}",
+            expected, slashed
+        );
+    }
+
+    #[test]
+    fn test_tiered_downtime_tier3_graduated() {
+        // Tier 3+ (3rd offense): Full graduated slashing
+        let mut tracker = SlashingTracker::new();
+        let mut pool = StakePool::new();
+        let pk = Pubkey::new([1u8; 32]);
+        pool.stake(pk, BOOTSTRAP_GRANT_AMOUNT, 0).unwrap();
+
+        // Record three offenses to reach tier 3
+        tracker.record_downtime_offense(&pk, 100);
+        tracker.record_downtime_offense(&pk, 200);
+        let tier = tracker.record_downtime_offense(&pk, 300);
+        assert_eq!(tier, 3, "Third offense should be tier 3");
+
+        // Add downtime evidence: 500 missed slots → 5 × 1% = 5%
+        let evidence = SlashingEvidence::new(
+            SlashingOffense::Downtime {
+                last_active_slot: 0,
+                current_slot: 500,
+                missed_slots: 500,
+            },
+            pk,
+            500,
+            Pubkey::new([2u8; 32]),
+            1700000000,
+        );
+        tracker.add_evidence(evidence);
+
+        let params = crate::genesis::ConsensusParams::default();
+        let slashed = tracker.apply_economic_slashing_with_params(&pk, &mut pool, &params);
+        // 500/100 = 5 periods × 1% per period = 5%
+        let expected = (BOOTSTRAP_GRANT_AMOUNT as u128 * 5 / 100) as u64;
+        assert_eq!(
+            slashed, expected,
+            "Tier 3 should apply graduated slashing (5% for 500 missed), got {}",
+            slashed
+        );
+    }
+
+    #[test]
+    fn test_downtime_forgiveness_decay() {
+        // After DOWNTIME_FORGIVENESS_SLOTS of no offenses, tier resets
+        let mut tracker = SlashingTracker::new();
+        let pk = Pubkey::new([1u8; 32]);
+
+        // Record 2 offenses
+        tracker.record_downtime_offense(&pk, 100);
+        tracker.record_downtime_offense(&pk, 200);
+        assert_eq!(tracker.get_downtime_offense_tier(&pk), 2);
+
+        // Record a 3rd offense AFTER the forgiveness window → should reset to 1
+        let forgiven_slot = 200 + DOWNTIME_FORGIVENESS_SLOTS + 1;
+        let tier = tracker.record_downtime_offense(&pk, forgiven_slot);
+        assert_eq!(
+            tier, 1,
+            "After forgiveness window, offense count should reset; tier should be 1"
+        );
+    }
+
+    #[test]
+    fn test_slash_does_not_reduce_bootstrap_debt() {
+        // Slashing burns stake but must NOT reduce bootstrap debt
+        let pk = Pubkey::new([1u8; 32]);
+        let mut stake = StakeInfo::with_bootstrap_index(pk, BOOTSTRAP_GRANT_AMOUNT, 0, 0);
+        let original_debt = stake.bootstrap_debt;
+        assert_eq!(original_debt, BOOTSTRAP_GRANT_AMOUNT);
+
+        // Slash 10% of stake
+        let slash_amount = BOOTSTRAP_GRANT_AMOUNT / 10;
+        stake.slash(slash_amount);
+
+        // Debt should be unchanged
+        assert_eq!(
+            stake.bootstrap_debt, original_debt,
+            "Slashing must NOT reduce bootstrap debt (perverse incentive fix)"
+        );
+        // Stake should be reduced
+        assert_eq!(
+            stake.amount,
+            BOOTSTRAP_GRANT_AMOUNT - slash_amount,
+            "Stake should be reduced by slash amount"
+        );
+    }
+
+    #[test]
+    fn test_penalty_repayment_boost_90_10_split() {
+        // Penalty boost: 90% to debt, 10% liquid
+        let pk = Pubkey::new([1u8; 32]);
+        let mut stake = StakeInfo::with_bootstrap_index(pk, BOOTSTRAP_GRANT_AMOUNT, 0, 0);
+
+        // Activate penalty boost (lasts until slot 100_000)
+        stake.penalty_boost_until = 100_000;
+
+        // Add 1 MOLT reward
+        stake.add_reward(1_000_000_000, 500);
+        let (liquid, debt) = stake.claim_rewards(500, 1);
+
+        // 90% to debt, 10% liquid
+        assert_eq!(debt, 900_000_000, "90% should go to debt repayment");
+        assert_eq!(liquid, 100_000_000, "10% should be liquid");
+    }
+
+    #[test]
+    fn test_penalty_repayment_boost_expires() {
+        // Penalty boost expires after penalty_boost_until slot
+        let pk = Pubkey::new([1u8; 32]);
+        let mut stake = StakeInfo::with_bootstrap_index(pk, BOOTSTRAP_GRANT_AMOUNT, 0, 0);
+
+        // Set boost to expire at slot 1000
+        stake.penalty_boost_until = 1000;
+
+        // Claim BEFORE expiry → 90/10 split
+        stake.add_reward(1_000_000_000, 500);
+        let (liquid1, debt1) = stake.claim_rewards(500, 1);
+        assert_eq!(debt1, 900_000_000, "Before expiry: 90% to debt");
+        assert_eq!(liquid1, 100_000_000, "Before expiry: 10% liquid");
+
+        // Claim AFTER expiry → normal 50/50 split (0 blocks = 0 uptime)
+        stake.add_reward(1_000_000_000, 1500);
+        let (liquid2, debt2) = stake.claim_rewards(1500, 1);
+        assert_eq!(debt2, 500_000_000, "After expiry: 50% to debt (standard)");
+        assert_eq!(liquid2, 500_000_000, "After expiry: 50% liquid (standard)");
+
+        // penalty_boost_until should be cleared
+        assert_eq!(stake.penalty_boost_until, 0, "Boost should be cleared after expiry");
+    }
+
+    #[test]
+    fn test_suspension_check() {
+        let mut tracker = SlashingTracker::new();
+        let pk = Pubkey::new([1u8; 32]);
+
+        // Not suspended initially
+        assert!(
+            !tracker.is_suspended(&pk, 0),
+            "Should not be suspended initially"
+        );
+
+        // Suspend at slot 100
+        tracker.suspend_validator(&pk, 100);
+
+        // Suspended during window
+        assert!(
+            tracker.is_suspended(&pk, 100),
+            "Should be suspended at suspension slot"
+        );
+        assert!(
+            tracker.is_suspended(&pk, 100 + DOWNTIME_SUSPENSION_SLOTS - 1),
+            "Should be suspended before window ends"
+        );
+
+        // Not suspended after window
+        assert!(
+            !tracker.is_suspended(&pk, 100 + DOWNTIME_SUSPENSION_SLOTS),
+            "Should not be suspended after window expires"
+        );
+    }
+
+    #[test]
+    fn test_top_up_stake_recovery() {
+        // A slashed validator can top up to recover above minimum
+        let mut pool = StakePool::new();
+        let pk = Pubkey::new([1u8; 32]);
+        pool.stake(pk, BOOTSTRAP_GRANT_AMOUNT, 0).unwrap();
+
+        // Slash below MIN_VALIDATOR_STAKE (75K)
+        let slash_amount = BOOTSTRAP_GRANT_AMOUNT - MIN_VALIDATOR_STAKE + 1_000_000_000; // Slash to below 75K
+        pool.slash_validator(&pk, slash_amount);
+
+        let stake_before = pool.get_stake(&pk).unwrap();
+        assert!(
+            stake_before.total_stake() < MIN_VALIDATOR_STAKE,
+            "Should be below minimum after slashing"
+        );
+
+        // Top up to recover
+        let top_up = 10_000_000_000_000; // 10K MOLT
+        let result = pool.top_up_stake(&pk, top_up);
+        assert!(result.is_ok(), "Top-up should succeed");
+
+        let stake_after = pool.get_stake(&pk).unwrap();
+        assert!(
+            stake_after.total_stake() >= MIN_VALIDATOR_STAKE,
+            "Should be above minimum after top-up"
+        );
+    }
+
+    #[test]
+    fn test_ghost_validator_cleanup() {
+        // Ghost validators (inactive for too long) get removed
+        let mut pool = StakePool::new();
+
+        // Create 3 validators
+        let pk1 = Pubkey::new([1u8; 32]);
+        let pk2 = Pubkey::new([2u8; 32]);
+        let pk3 = Pubkey::new([3u8; 32]);
+        pool.stake(pk1, BOOTSTRAP_GRANT_AMOUNT, 0).unwrap();
+        pool.stake(pk2, BOOTSTRAP_GRANT_AMOUNT, 0).unwrap();
+        pool.stake(pk3, BOOTSTRAP_GRANT_AMOUNT, 0).unwrap();
+
+        // Slash pk2 to 0 (ghost)
+        pool.slash_validator(&pk2, BOOTSTRAP_GRANT_AMOUNT);
+
+        let stake2 = pool.get_stake(&pk2).unwrap();
+        assert_eq!(stake2.total_stake(), 0, "Fully slashed validator has 0 stake");
+
+        // Remove ghosts with 10K slot grace
+        let removed = pool.remove_ghost_validators(20_000, 10_000);
+        assert_eq!(removed.len(), 1, "Should remove 1 ghost validator");
+        assert_eq!(removed[0], pk2, "Should remove the fully-slashed validator");
+
+        // pk2 should be gone
+        assert!(
+            pool.get_stake(&pk2).is_none(),
+            "Ghost validator should be removed"
+        );
+
+        // pk1 and pk3 should remain
+        assert!(pool.get_stake(&pk1).is_some(), "Active validator should remain");
+        assert!(pool.get_stake(&pk3).is_some(), "Active validator should remain");
+    }
+
+    #[test]
+    fn test_clear_slashed_for_recovery() {
+        let mut tracker = SlashingTracker::new();
+        let pk = Pubkey::new([1u8; 32]);
+
+        // Add evidence so slash() succeeds (needs severity >= 70)
+        let evidence = SlashingEvidence::new(
+            SlashingOffense::DoubleBlock {
+                slot: 100,
+                block_hash_1: Hash::new([0xAA; 32]),
+                block_hash_2: Hash::new([0xBB; 32]),
+            },
+            pk,
+            100,
+            Pubkey::new([2u8; 32]),
+            1700000000,
+        );
+        tracker.add_evidence(evidence);
+
+        // Mark as slashed
+        assert!(tracker.slash(&pk), "Should be able to slash with evidence");
+        assert!(tracker.is_slashed(&pk), "Should be slashed");
+
+        // Clear slashed status for recovery
+        tracker.clear_slashed(&pk);
+        assert!(
+            !tracker.is_slashed(&pk),
+            "Should not be slashed after clearing"
+        );
+    }
+
+    #[test]
+    fn test_cleanup_expired_removes_old_data() {
+        let mut tracker = SlashingTracker::new();
+        let pk = Pubkey::new([1u8; 32]);
+
+        // Record offense and suspension
+        tracker.record_downtime_offense(&pk, 100);
+        tracker.suspend_validator(&pk, 100);
+
+        // Cleanup at a slot well past all expiry windows
+        let far_future = 100 + DOWNTIME_FORGIVENESS_SLOTS + DOWNTIME_SUSPENSION_SLOTS + 1;
+        tracker.cleanup_expired(far_future);
+
+        // Suspension should be removed (expired)
+        assert!(
+            !tracker.is_suspended(&pk, far_future),
+            "Expired suspension should be cleaned up"
+        );
+    }
+
+    #[test]
+    fn test_min_stake_vs_bootstrap_grant_separation() {
+        // Verify MIN_VALIDATOR_STAKE < BOOTSTRAP_GRANT_AMOUNT (the 25% buffer)
+        assert!(
+            MIN_VALIDATOR_STAKE < BOOTSTRAP_GRANT_AMOUNT,
+            "MIN_VALIDATOR_STAKE ({}) must be less than BOOTSTRAP_GRANT_AMOUNT ({})",
+            MIN_VALIDATOR_STAKE,
+            BOOTSTRAP_GRANT_AMOUNT
+        );
+
+        // Verify the exact values
+        assert_eq!(MIN_VALIDATOR_STAKE, 75_000 * 1_000_000_000); // 75K MOLT
+        assert_eq!(BOOTSTRAP_GRANT_AMOUNT, 100_000 * 1_000_000_000); // 100K MOLT
+
+        // Verify a validator can be slashed by up to 25% and still be above minimum
+        let max_survivable_slash = BOOTSTRAP_GRANT_AMOUNT - MIN_VALIDATOR_STAKE;
+        assert_eq!(
+            max_survivable_slash,
+            25_000 * 1_000_000_000,
+            "25K MOLT buffer between grant and minimum"
         );
     }
 }

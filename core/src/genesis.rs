@@ -69,7 +69,7 @@ impl Default for ConsensusParams {
         ConsensusParams {
             slot_duration_ms: 400,
             epoch_slots: 432000,
-            min_validator_stake: 100_000_000_000, // 100 MOLT (testnet default)
+            min_validator_stake: 75_000_000_000, // 75 MOLT (testnet default)
             validator_reward_per_block: 900_000_000,
             slashing_percentage_double_sign: 50,
             slashing_downtime_per_100_missed: 1,
@@ -364,8 +364,8 @@ impl GenesisConfig {
                 slot_duration_ms: 400,
                 // AUDIT-FIX 1.3: match SLOTS_PER_EPOCH constant (432_000)
                 epoch_slots: 432000, // ~2 days at 400ms
-                // AUDIT-FIX 3.22: Lower stake requirement for testnet (100 MOLT vs 100k)
-                min_validator_stake: 100_000_000_000, // 100 MOLT (testnet)
+                // AUDIT-FIX 3.22: Lower stake requirement for testnet (75 MOLT vs 75k)
+                min_validator_stake: 75_000_000_000, // 75 MOLT (testnet)
                 // AUDIT-FIX 1.3: match TRANSACTION_BLOCK_REWARD constant (0.9 MOLT)
                 validator_reward_per_block: 900_000_000, // 0.9 MOLT
                 slashing_percentage_double_sign: 50,
@@ -410,7 +410,7 @@ impl GenesisConfig {
                 slot_duration_ms: 400,
                 // AUDIT-FIX 1.3: match SLOTS_PER_EPOCH constant (432_000)
                 epoch_slots: 432000,
-                min_validator_stake: 100_000_000_000_000, // 100,000 MOLT
+                min_validator_stake: 75_000_000_000_000, // 75,000 MOLT
                 // AUDIT-FIX 1.3: match TRANSACTION_BLOCK_REWARD constant (0.9 MOLT)
                 validator_reward_per_block: 900_000_000,
                 slashing_percentage_double_sign: 50,

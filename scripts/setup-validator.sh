@@ -296,7 +296,7 @@ gossip_interval = 10
 cleanup_timeout = 300
 
 [consensus]
-min_validator_stake = 100000000000
+min_validator_stake = 75000000000
 slot_duration_ms = 400
 enable_slashing = true
 

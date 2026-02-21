@@ -224,7 +224,7 @@ fi
 
 # Set consensus parameters based on network
 if [ "$NETWORK" == "testnet" ]; then
-    MIN_VALIDATOR_STAKE="100000000000"  # 100 MOLT
+    MIN_VALIDATOR_STAKE="75000000000"  # 75 MOLT
     SLOT_DURATION_MS="400"
 else
     MIN_VALIDATOR_STAKE="1000000000000"  # 1000 MOLT  
