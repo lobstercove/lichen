@@ -512,6 +512,7 @@ fn a5_03_graduated_slashing_math() {
             v1.pubkey(),
             10,
             reporter.pubkey(),
+            1700000004,
         );
         tracker.add_evidence(dbl);
 
@@ -524,6 +525,7 @@ fn a5_03_graduated_slashing_math() {
             v1.pubkey(),
             300,
             reporter.pubkey(),
+            1700000120,
         );
         tracker.add_evidence(downtime);
 
@@ -554,6 +556,7 @@ fn a5_03_graduated_slashing_math() {
             v2.pubkey(),
             10,
             reporter.pubkey(),
+            1700000004,
         );
         tracker.add_evidence(dbl);
 
@@ -566,6 +569,7 @@ fn a5_03_graduated_slashing_math() {
             v2.pubkey(),
             2000,
             reporter.pubkey(),
+            1700000800,
         );
         tracker.add_evidence(downtime);
 

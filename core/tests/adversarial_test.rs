@@ -358,6 +358,7 @@ fn test_validator_double_voting_slashing() {
         validator.pubkey(),
         100,
         reporter.pubkey(),
+        1700000040,
     );
 
     // Submit evidence
@@ -620,6 +621,7 @@ fn test_byzantine_block_production() {
         byzantine_validator.pubkey(),
         slot,
         reporter.pubkey(),
+        1700000040,
     );
 
     // This evidence should lead to slashing

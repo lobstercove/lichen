@@ -2228,21 +2228,20 @@ pub struct SlashingEvidence {
 
 impl SlashingEvidence {
     /// Create new slashing evidence
+    /// P9-CORE-02: Accept deterministic block_timestamp instead of using SystemTime::now()
     pub fn new(
         offense: SlashingOffense,
         validator: Pubkey,
         evidence_slot: u64,
         reporter: Pubkey,
+        block_timestamp: u64,
     ) -> Self {
         SlashingEvidence {
             offense,
             validator,
             evidence_slot,
             reporter,
-            timestamp: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs(),
+            timestamp: block_timestamp,
         }
     }
 
@@ -3685,5 +3684,37 @@ mod tests {
         // The extension at slot 110 should still be canonical (higher slot wins)
         assert_eq!(slot, 110, "Extension should win — slot priority");
         assert_eq!(selected, extension_hash);
+    }
+
+    /// P9-CORE-02: SlashingEvidence uses deterministic block_timestamp, not SystemTime::now()
+    #[test]
+    fn test_slashing_evidence_deterministic_timestamp() {
+        let v = Pubkey::new([1u8; 32]);
+        let r = Pubkey::new([2u8; 32]);
+        let ts = 1_700_000_040u64;
+        let e1 = SlashingEvidence::new(
+            SlashingOffense::DoubleBlock {
+                slot: 100,
+                block_hash_1: Hash::new([0xAA; 32]),
+                block_hash_2: Hash::new([0xBB; 32]),
+            },
+            v,
+            100,
+            r,
+            ts,
+        );
+        let e2 = SlashingEvidence::new(
+            SlashingOffense::DoubleBlock {
+                slot: 100,
+                block_hash_1: Hash::new([0xAA; 32]),
+                block_hash_2: Hash::new([0xBB; 32]),
+            },
+            v,
+            100,
+            r,
+            ts,
+        );
+        assert_eq!(e1.timestamp, ts, "timestamp must equal caller-supplied value");
+        assert_eq!(e1.timestamp, e2.timestamp, "two evidence structs with same input must be identical");
     }
 }
