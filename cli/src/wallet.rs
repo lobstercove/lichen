@@ -128,6 +128,12 @@ impl WalletManager {
         // Copy keypair to wallets directory
         let new_keypair_path = self.wallets_dir.join(format!("{}.json", name));
         fs::copy(&keypair_path, &new_keypair_path)?;
+        // I-3: Set restrictive permissions (owner-only read/write)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&new_keypair_path, fs::Permissions::from_mode(0o600))?;
+        }
 
         // Create wallet info
         let wallet_info = WalletInfo {

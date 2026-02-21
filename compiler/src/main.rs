@@ -486,7 +486,7 @@ panic = "abort"
             }]
         })?;
 
-    let output = wait_with_timeout(&mut child, COMPILE_TIMEOUT).map_err(|e| {
+    let output = wait_with_timeout(&mut child, COMPILE_TIMEOUT).await.map_err(|e| {
         vec![CompileError {
             file: "cargo".to_string(),
             line: 0,
@@ -591,7 +591,7 @@ async fn compile_c(
             }]
         })?;
 
-    let output = wait_with_timeout(&mut child, COMPILE_TIMEOUT).map_err(|e| {
+    let output = wait_with_timeout(&mut child, COMPILE_TIMEOUT).await.map_err(|e| {
         vec![CompileError {
             file: "clang".to_string(),
             line: 0,
@@ -678,7 +678,7 @@ async fn compile_assemblyscript(
             }]
         })?;
 
-    let output = wait_with_timeout(&mut child, COMPILE_TIMEOUT).map_err(|e| {
+    let output = wait_with_timeout(&mut child, COMPILE_TIMEOUT).await.map_err(|e| {
         vec![CompileError {
             file: "asc".to_string(),
             line: 0,
@@ -917,7 +917,8 @@ fn path_to_str(path: &PathBuf) -> Result<String, Vec<CompileError>> {
 }
 
 /// Wait for a child process with a timeout. Kills the process if it exceeds the deadline.
-fn wait_with_timeout(
+/// I-6: Uses tokio::time::sleep instead of std::thread::sleep to avoid blocking the async runtime.
+async fn wait_with_timeout(
     child: &mut std::process::Child,
     timeout: Duration,
 ) -> Result<std::process::Output, String> {
@@ -960,7 +961,7 @@ fn wait_with_timeout(
                         timeout.as_secs()
                     ));
                 }
-                std::thread::sleep(Duration::from_millis(100));
+                tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Err(e) => {
                 return Err(format!("Failed to wait for compiler process: {}", e));

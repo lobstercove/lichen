@@ -1565,11 +1565,13 @@ async fn main() -> Result<()> {
                 println!();
 
                 let data = addr.as_bytes().to_vec();
+                // I-2: Error instead of querying with a random keypair
+                let query_kp = keypair_mgr
+                    .load_keypair(&keypair_mgr.default_keypair_path())
+                    .map_err(|_| anyhow::anyhow!("No wallet configured. Run `molt wallet create` first."))?;
                 match client
                     .call_contract(
-                        &keypair_mgr
-                            .load_keypair(&keypair_mgr.default_keypair_path())
-                            .unwrap_or_else(|_| Keypair::new()),
+                        &query_kp,
                         &contract_addr,
                         "balance_of".to_string(),
                         data,
@@ -1719,11 +1721,13 @@ async fn main() -> Result<()> {
                     let filter = if all { "all" } else { "active" };
                     let data = filter.as_bytes().to_vec();
 
+                    // I-2: Error instead of querying with a random keypair
+                    let query_kp = keypair_mgr
+                        .load_keypair(&keypair_mgr.default_keypair_path())
+                        .map_err(|_| anyhow::anyhow!("No wallet configured. Run `molt wallet create` first."))?;
                     match client
                         .call_contract(
-                            &keypair_mgr
-                                .load_keypair(&keypair_mgr.default_keypair_path())
-                                .unwrap_or_else(|_| Keypair::new()),
+                            &query_kp,
                             &dao_addr,
                             "get_proposals".to_string(),
                             data,
@@ -1749,11 +1753,13 @@ async fn main() -> Result<()> {
                     let dao_addr = moltchain_core::Pubkey([0xDA; 32]);
                     let data = proposal_id.to_le_bytes().to_vec();
 
+                    // I-2: Error instead of querying with a random keypair
+                    let query_kp = keypair_mgr
+                        .load_keypair(&keypair_mgr.default_keypair_path())
+                        .map_err(|_| anyhow::anyhow!("No wallet configured. Run `molt wallet create` first."))?;
                     match client
                         .call_contract(
-                            &keypair_mgr
-                                .load_keypair(&keypair_mgr.default_keypair_path())
-                                .unwrap_or_else(|_| Keypair::new()),
+                            &query_kp,
                             &dao_addr,
                             "get_proposal".to_string(),
                             data,
