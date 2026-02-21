@@ -5597,6 +5597,10 @@ async fn handle_deploy_contract(
         });
     }
 
+    // AUDIT-FIX F-1: Use StateBatch for atomic all-or-nothing commit of
+    // deployer debit + treasury credit + contract account creation.
+    let mut batch = state.state.begin_batch();
+
     // Debit deployer using deduct_spendable to maintain shells == spendable + staked + locked
     let mut updated_deployer = deployer_account.clone();
     updated_deployer
@@ -5605,8 +5609,7 @@ async fn handle_deploy_contract(
             code: -32000,
             message: format!("Failed to deduct deploy fee: {}", e),
         })?;
-    state
-        .state
+    batch
         .put_account(&deployer_pubkey, &updated_deployer)
         .map_err(|e| RpcError {
             code: -32000,
@@ -5639,8 +5642,7 @@ async fn handle_deploy_contract(
             code: -32000,
             message: format!("Treasury balance overflow: {}", e),
         })?;
-    state
-        .state
+    batch
         .put_account(&treasury_pubkey, &treasury_account)
         .map_err(|e| RpcError {
             code: -32000,
@@ -5657,13 +5659,18 @@ async fn handle_deploy_contract(
     account.executable = true;
 
     // Store the contract account
-    state
-        .state
+    batch
         .put_account(&program_pubkey, &account)
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("Failed to store contract: {}", e),
         })?;
+
+    // Commit all three writes atomically
+    state.state.commit_batch(batch).map_err(|e| RpcError {
+        code: -32000,
+        message: format!("Atomic deploy commit failed: {}", e),
+    })?;
 
     // Index in programs list
     if let Err(e) = state.state.index_program(&program_pubkey) {
@@ -5880,6 +5887,10 @@ async fn handle_upgrade_contract(
         });
     }
 
+    // AUDIT-FIX F-2: Use StateBatch for atomic all-or-nothing commit of
+    // owner debit + treasury credit + contract upgrade.
+    let mut batch = state.state.begin_batch();
+
     let mut updated_owner = owner_account.clone();
     updated_owner
         .deduct_spendable(upgrade_fee)
@@ -5887,8 +5898,7 @@ async fn handle_upgrade_contract(
             code: -32000,
             message: format!("Failed to deduct upgrade fee: {}", e),
         })?;
-    state
-        .state
+    batch
         .put_account(&owner_pubkey, &updated_owner)
         .map_err(|e| RpcError {
             code: -32000,
@@ -5921,8 +5931,7 @@ async fn handle_upgrade_contract(
             code: -32000,
             message: format!("Treasury balance overflow: {}", e),
         })?;
-    state
-        .state
+    batch
         .put_account(&treasury_pubkey, &treasury_account)
         .map_err(|e| RpcError {
             code: -32000,
@@ -5950,13 +5959,18 @@ async fn handle_upgrade_contract(
         message: format!("Failed to serialize upgraded contract: {}", e),
     })?;
 
-    state
-        .state
+    batch
         .put_account(&contract_pubkey, &updated_account)
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("Failed to store upgraded contract: {}", e),
         })?;
+
+    // Commit all three writes atomically
+    state.state.commit_batch(batch).map_err(|e| RpcError {
+        code: -32000,
+        message: format!("Atomic upgrade commit failed: {}", e),
+    })?;
 
     info!(
         "upgradeContract: {} upgraded {} v{} → v{} (code={} bytes, fee={} shells)",
