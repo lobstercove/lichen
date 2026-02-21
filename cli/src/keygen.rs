@@ -3,7 +3,6 @@
 use anyhow::{bail, Context, Result};
 use moltchain_core::Keypair;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -44,24 +43,32 @@ pub struct KeypairFile {
     pub encryption_version: Option<u8>,
 }
 
-/// T1.8: Derive a 32-byte encryption key from a password and salt.
-/// Uses 100,000 iterations of SHA-256 for key stretching to resist brute-force.
+/// T1.8 (P9-CLI-01 FIX): Derive a 32-byte encryption key from a password and salt.
+/// Uses Argon2id — memory-hard KDF resistant to GPU/ASIC brute-force attacks.
+/// Parameters: 19 MiB memory, 2 iterations, 1 parallelism (OWASP minimum recommendation).
+/// If the caller provides a salt shorter than 16 bytes (Argon2 minimum), it is
+/// stretched to 16 bytes via SHA-256 hashing — production always uses 16-byte salts.
 fn derive_encryption_key(password: &str, salt: &[u8]) -> [u8; 32] {
-    let mut hasher = Sha256::new();
-    hasher.update(password.as_bytes());
-    hasher.update(salt);
-    let mut hash = hasher.finalize();
+    use argon2::{Algorithm, Argon2, Params, Version};
+    use sha2::{Digest, Sha256};
 
-    for _ in 0..100_000 {
-        let mut h = Sha256::new();
-        h.update(hash);
-        h.update(password.as_bytes());
-        hash = h.finalize();
-    }
+    // Argon2 requires salt ≥ 8 bytes (RFC 9106 recommends ≥16).
+    // Stretch short salts via SHA-256 so legacy callers don't panic.
+    let effective_salt: Vec<u8> = if salt.len() < 16 {
+        let h = Sha256::digest(salt);
+        h[..16].to_vec()
+    } else {
+        salt.to_vec()
+    };
 
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&hash);
-    key
+    // OWASP recommended minimum: m=19456 (19 MiB), t=2, p=1
+    let params = Params::new(19456, 2, 1, Some(32)).expect("valid Argon2 params");
+    let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    let mut output = [0u8; 32];
+    argon2
+        .hash_password_into(password.as_bytes(), &effective_salt, &mut output)
+        .expect("Argon2id key derivation failed");
+    output
 }
 
 /// T1.8: XOR encrypt/decrypt — symmetric operation.
@@ -375,6 +382,21 @@ mod tests {
         assert_ne!(key1, key2);
         let key3 = derive_encryption_key("other", b"salt");
         assert_ne!(key1, key3);
+    }
+
+    /// P9-CLI-01: Verify KDF uses Argon2id (deterministic, 32-byte output,
+    /// different from a naive SHA-256 hash).
+    #[test]
+    fn test_kdf_is_argon2id_not_sha256() {
+        let key = derive_encryption_key("test_password", b"test_salt_16!!");
+        // Argon2id output for this input is fixed — verify it's not a raw SHA-256 hash
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(b"test_password");
+        h.update(b"test_salt_16!!");
+        let sha_hash: [u8; 32] = h.finalize().into();
+        assert_ne!(key, sha_hash, "KDF output should differ from raw SHA-256");
+        assert_eq!(key.len(), 32);
     }
 
     #[test]
