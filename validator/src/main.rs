@@ -6342,8 +6342,8 @@ async fn run_validator() {
         let local_addr = p2p_config.listen_addr;
         let last_block_time_for_blocks = last_block_time_for_blocks.clone();
         let genesis_config_for_blocks = genesis_config.clone();
-        let genesis_time_secs_for_blocks = genesis_time_secs;
-        let slot_duration_ms_for_blocks = slot_duration_ms;
+        // genesis_time_secs_for_blocks and slot_duration_ms_for_blocks removed:
+        // Timestamp validation now uses wall-clock only, not slot-derived timestamps.
         let slashing_for_blocks = slashing_tracker.clone();
         let validator_pubkey_for_block_slash = validator_pubkey;
         let received_slots_for_rx = received_network_slots_for_blocks.clone();
@@ -9137,6 +9137,7 @@ async fn run_validator() {
                         validator_count,
                         validator_set_stabilization.as_secs()
                     );
+                    time::sleep(Duration::from_millis(200)).await;
                     continue;
                 } else {
                     // Check if we've waited long enough for ValidatorSet to stabilize
@@ -9153,7 +9154,10 @@ async fn run_validator() {
                                 validator_set_stabilization.as_secs(),
                                 validator_count
                             );
+                            slot_start = std::time::Instant::now();
+                            last_attempted_slot = slot;
                         }
+                        time::sleep(Duration::from_millis(200)).await;
                         continue;
                     }
                 }
