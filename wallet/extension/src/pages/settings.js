@@ -323,20 +323,22 @@ async function onExportKeystore() {
   try {
     const password = requireExportPassword();
     const privateKeyHex = await decryptPrivateKey(wallet.encryptedKey, password);
-    const privateKeyBytes = hexToBytes(privateKeyHex);
     const publicKeyBytes = hexToBytes(wallet.publicKey);
-    const secretKey = new Uint8Array(64);
-    secretKey.set(privateKeyBytes, 0);
-    secretKey.set(publicKeyBytes, 32);
+
+    // AUDIT-FIX K-2: Encrypt the secret key with the user's password
+    // Never export raw secret key in plaintext
+    const secretKeyHex = privateKeyHex + wallet.publicKey;
+    const encryptedSecret = await encryptPrivateKey(secretKeyHex, password);
 
     const keystore = {
       name: wallet.name,
       address: wallet.address,
       publicKey: Array.from(publicKeyBytes),
-      secretKey: Array.from(secretKey),
+      encryptedSecretKey: encryptedSecret,
       created: wallet.createdAt,
       exported: new Date().toISOString(),
-      version: '1.0'
+      version: '2.0',
+      encryption: 'AES-256-GCM-PBKDF2'
     };
 
     const blob = new Blob([JSON.stringify(keystore, null, 2)], { type: 'application/json' });
