@@ -58,6 +58,8 @@ class Connection:
         )
         self._next_id += 1
 
+        # J-2: Check HTTP status before parsing JSON
+        response.raise_for_status()
         data = response.json()
 
         if "error" in data:
