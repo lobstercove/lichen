@@ -3,6 +3,7 @@
 use moltchain_core::Block;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::sync::Mutex;
 use tracing::{info, warn};
 
@@ -32,6 +33,9 @@ pub struct SyncManager {
     /// Highest slot seen from network
     highest_seen_slot: Arc<Mutex<u64>>,
 
+    /// When highest_seen_slot was last updated (for decay)
+    highest_seen_updated_at: Arc<Mutex<Instant>>,
+
     /// Current sync batch being processed
     current_sync_batch: Arc<Mutex<Option<(u64, u64)>>>,
 
@@ -46,6 +50,7 @@ impl SyncManager {
             requested_slots: Arc::new(Mutex::new(HashSet::new())),
             is_syncing: Arc::new(Mutex::new(false)),
             highest_seen_slot: Arc::new(Mutex::new(0)),
+            highest_seen_updated_at: Arc::new(Mutex::new(Instant::now())),
             current_sync_batch: Arc::new(Mutex::new(None)),
             last_checkpoint: Arc::new(Mutex::new(0)),
         }
@@ -90,6 +95,8 @@ impl SyncManager {
         let mut highest = self.highest_seen_slot.lock().await;
         if slot > *highest {
             *highest = slot;
+            let mut ts = self.highest_seen_updated_at.lock().await;
+            *ts = Instant::now();
         }
     }
 
@@ -103,6 +110,30 @@ impl SyncManager {
         let capped = slot.min(cap);
         if capped > *highest {
             *highest = capped;
+            let mut ts = self.highest_seen_updated_at.lock().await;
+            *ts = Instant::now();
+        }
+    }
+
+    /// Decay `highest_seen_slot` toward the given tip if no new blocks have
+    /// arrived from the network for `stale_secs`. This prevents the
+    /// "freeze production" guard from permanently stalling the chain when
+    /// no peer can actually serve the missing blocks.
+    pub async fn decay_highest_seen(&self, current_tip: u64, stale_secs: u64) {
+        let updated_at = *self.highest_seen_updated_at.lock().await;
+        if updated_at.elapsed().as_secs() >= stale_secs {
+            let mut highest = self.highest_seen_slot.lock().await;
+            if *highest > current_tip {
+                let old = *highest;
+                *highest = current_tip;
+                info!(
+                    "📉 Decayed highest_seen from {} to {} (no new blocks for {}s)",
+                    old, current_tip, stale_secs
+                );
+                // Reset the timestamp so we don't spam the log
+                let mut ts = self.highest_seen_updated_at.lock().await;
+                *ts = Instant::now();
+            }
         }
     }
 
