@@ -1939,11 +1939,20 @@ fn encode_json_args_to_binary(
                                 parts.push((1, vec![v as u8]));
                             } else if v <= 0xFFFF {
                                 parts.push((2, (v as u16).to_le_bytes().to_vec()));
-                            } else {
+                            } else if v <= 0xFFFF_FFFF {
+                                // AUDIT-FIX D-3: Only use 4 bytes when value fits in u32
                                 parts.push((4, (v as u32).to_le_bytes().to_vec()));
+                            } else {
+                                // AUDIT-FIX D-3: Use 8 bytes for values > u32::MAX
+                                parts.push((8, v.to_le_bytes().to_vec()));
                             }
                         } else if let Some(v) = n.as_i64() {
-                            parts.push((4, (v as i32).to_le_bytes().to_vec()));
+                            if v >= i32::MIN as i64 && v <= i32::MAX as i64 {
+                                parts.push((4, (v as i32).to_le_bytes().to_vec()));
+                            } else {
+                                // AUDIT-FIX D-3: Use 8 bytes for values outside i32 range
+                                parts.push((8, v.to_le_bytes().to_vec()));
+                            }
                         } else {
                             parts.push((4, 0u32.to_le_bytes().to_vec()));
                         }

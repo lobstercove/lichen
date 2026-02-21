@@ -311,17 +311,17 @@ impl ReefStakePool {
 
         // Update user position
         if let Some(position) = self.positions.get_mut(&user) {
+            // AUDIT-FIX D-4: Reject tier changes on existing positions to prevent
+            // silently locking all previous deposits under a longer lock period.
+            // Users must withdraw and re-stake to change tiers.
+            if tier != position.lock_tier {
+                return Err(format!(
+                    "Cannot change lock tier on existing position (current: {:?}, requested: {:?}). Withdraw first.",
+                    position.lock_tier, tier
+                ));
+            }
             position.st_molt_amount += st_molt_to_mint;
             position.molt_deposited += molt_amount;
-            // Upgrade tier if new tier is higher
-            if (tier as u8) > (position.lock_tier as u8) {
-                position.lock_tier = tier;
-                // Only update lock when tier upgrades (same-tier deposits
-                // don't extend the lock — the original lock covers all deposits)
-                if lock_until > position.lock_until {
-                    position.lock_until = lock_until;
-                }
-            }
         } else {
             self.positions.insert(
                 user,

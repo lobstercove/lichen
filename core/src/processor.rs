@@ -1655,6 +1655,17 @@ impl TxProcessor {
             // Update: allow re-registration by same owner (overwrite)
         }
 
+        // AUDIT-FIX B-4: Check if a DIFFERENT program already owns this symbol
+        if let Ok(Some(existing)) = self.state.get_symbol_registry(symbol) {
+            if existing.program != contract_id {
+                return Err(format!(
+                    "Symbol '{}' is already registered by program {}",
+                    symbol,
+                    existing.program.to_base58()
+                ));
+            }
+        }
+
         let entry = SymbolRegistryEntry {
             symbol: symbol.to_string(),
             program: contract_id,
@@ -1786,12 +1797,9 @@ impl TxProcessor {
         self.b_put_account(&collection_account, &updated_collection)?;
         self.b_put_account(&token_account, &token_account_data)?;
         self.b_index_nft_mint(&collection_account, &token_account, &owner)?;
-        // M6 fix: index token_id through batch for atomicity (was direct state write before)
-        if let Err(e) =
-            self.b_index_nft_token_id(&collection_account, mint_data.token_id, &token_account)
-        {
-            eprintln!("Warning: failed to index NFT token_id: {}", e);
-        }
+        // AUDIT-FIX B-3: Propagate token_id index error instead of swallowing it.
+        // A successful mint without an index is invisible to query APIs.
+        self.b_index_nft_token_id(&collection_account, mint_data.token_id, &token_account)?;
 
         Ok(())
     }

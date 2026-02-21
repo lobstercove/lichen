@@ -772,6 +772,22 @@ impl StakePool {
             ));
         }
 
+        // AUDIT-FIX A-2: Enforce MAX_VALIDATOR_STAKE cap
+        if let Some(existing) = self.stakes.get(&validator) {
+            let new_total = existing.amount.saturating_add(amount);
+            if new_total > MAX_VALIDATOR_STAKE {
+                return Err(format!(
+                    "Stake {} would exceed max {} per validator",
+                    new_total, MAX_VALIDATOR_STAKE
+                ));
+            }
+        } else if amount > MAX_VALIDATOR_STAKE {
+            return Err(format!(
+                "Stake {} exceeds max {} per validator",
+                amount, MAX_VALIDATOR_STAKE
+            ));
+        }
+
         if let Some(stake_info) = self.stakes.get_mut(&validator) {
             stake_info.amount = stake_info.amount.saturating_add(amount);
             stake_info.is_active = stake_info.meets_minimum();
@@ -1058,8 +1074,11 @@ impl StakePool {
         }
 
         // Update validator's delegated amount
+        // AUDIT-FIX A-3: Use saturating_add to prevent overflow
         if let Some(stake_info) = self.stakes.get_mut(validator) {
-            stake_info.delegated_amount += amount;
+            stake_info.delegated_amount = stake_info.delegated_amount.saturating_add(amount);
+            // AUDIT-FIX A-1: Update is_active after delegation changes total stake
+            stake_info.is_active = stake_info.meets_minimum();
         }
 
         // Delegations contribute to total active stake (used as denominator
@@ -1067,9 +1086,10 @@ impl StakePool {
         self.total_staked = self.total_staked.saturating_add(amount);
 
         // Track individual delegation
+        // AUDIT-FIX A-3: Use saturating_add to prevent overflow
         let validator_delegations = self.delegations.entry(*validator).or_default();
         let entry = validator_delegations.entry(delegator).or_insert(0);
-        *entry += amount;
+        *entry = entry.saturating_add(amount);
 
         Ok(())
     }
@@ -1101,6 +1121,8 @@ impl StakePool {
                 return Err("Insufficient delegated amount".to_string());
             }
             stake_info.delegated_amount -= amount;
+            // AUDIT-FIX A-1: Update is_active after delegation changes total stake
+            stake_info.is_active = stake_info.meets_minimum();
         } else {
             return Err("Validator not found".to_string());
         }
@@ -1384,6 +1406,22 @@ impl StakePool {
             ));
         }
 
+        // AUDIT-FIX A-2: Enforce MAX_VALIDATOR_STAKE cap
+        if let Some(existing) = self.stakes.get(&validator) {
+            let new_total = existing.amount.saturating_add(amount);
+            if new_total > MAX_VALIDATOR_STAKE {
+                return Err(format!(
+                    "Stake {} would exceed max {} per validator",
+                    new_total, MAX_VALIDATOR_STAKE
+                ));
+            }
+        } else if amount > MAX_VALIDATOR_STAKE {
+            return Err(format!(
+                "Stake {} exceeds max {} per validator",
+                amount, MAX_VALIDATOR_STAKE
+            ));
+        }
+
         if let Some(stake_info) = self.stakes.get_mut(&validator) {
             stake_info.amount = stake_info.amount.saturating_add(amount);
             stake_info.is_active = stake_info.meets_minimum();
@@ -1516,7 +1554,15 @@ impl StakePool {
         // If validator already exists, just update amount (no new bootstrap)
         if self.stakes.contains_key(&validator) {
             let stake_info = self.stakes.get_mut(&validator).unwrap();
-            stake_info.amount = stake_info.amount.saturating_add(amount);
+            // AUDIT-FIX A-2: Enforce MAX_VALIDATOR_STAKE cap
+            let new_total = stake_info.amount.saturating_add(amount);
+            if new_total > MAX_VALIDATOR_STAKE {
+                return Err(format!(
+                    "Stake {} would exceed max {} per validator",
+                    new_total, MAX_VALIDATOR_STAKE
+                ));
+            }
+            stake_info.amount = new_total;
             stake_info.is_active = stake_info.meets_minimum();
             let existing_index = stake_info.bootstrap_index;
             self.total_staked = self.total_staked.saturating_add(amount);

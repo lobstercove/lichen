@@ -1753,9 +1753,13 @@ impl StateStore {
             .map_err(|_| "Insufficient spendable balance".to_string())?;
 
         // Get or create receiver account
-        let mut to_account = self
-            .get_account(to)?
-            .unwrap_or_else(|| Account::new(0, *to));
+        // AUDIT-FIX C-5: Track whether this is a new account for counter increment
+        let to_existed = self.get_account(to)?.is_some();
+        let mut to_account = if to_existed {
+            self.get_account(to)?.unwrap()
+        } else {
+            Account::new(0, *to)
+        };
 
         // Credit spendable balance
         to_account.add_spendable(shells)?;
@@ -1783,6 +1787,12 @@ impl StateStore {
         // Mark both accounts dirty for incremental Merkle
         self.mark_account_dirty_with_key(from);
         self.mark_account_dirty_with_key(to);
+
+        // AUDIT-FIX C-5: Increment account counters when transfer creates a new account
+        if !to_existed {
+            self.metrics.increment_accounts();
+            self.metrics.increment_active_accounts();
+        }
 
         Ok(())
     }
