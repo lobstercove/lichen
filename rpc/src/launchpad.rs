@@ -375,30 +375,66 @@ struct QuoteQuery {
 }
 
 /// Compute how many tokens you get for `after_fee_shells` shells at current supply
+///
+/// AUDIT-FIX F-8: Use u128 fixed-point arithmetic instead of f64 to avoid
+/// precision loss above ~9M MOLT.
 fn compute_buy_tokens(supply: u64, after_fee_shells: u128) -> u64 {
-    // Cost of buying `a` tokens at supply `s`:
-    // cost = (BASE_PRICE * a + SLOPE * a * (2*s + a) / (2 * SLOPE_SCALE)) / norm
-    // We need to find `a` such that cost = after_fee_shells / norm
-    // => BASE_PRICE * a + SLOPE * a * (2*s + a) / (2 * SLOPE_SCALE) = after_fee_shells
-    // This is a quadratic in a: SLOPE/(2*SLOPE_SCALE) * a^2 + (BASE_PRICE + SLOPE*s/SLOPE_SCALE) * a - after_fee_shells = 0
-    // But we can use the quadratic formula to solve directly.
-    let s = supply as f64;
-    let fee_shells_f = after_fee_shells as f64;
+    // Quadratic: SLOPE/(2*SLOPE_SCALE) * a^2 + (BASE_PRICE + SLOPE*s/SLOPE_SCALE) * a - after_fee_shells = 0
+    // Multiply everything by 2*SLOPE_SCALE to clear fractions:
+    //   SLOPE * a^2 + 2*SLOPE_SCALE*(BASE_PRICE + SLOPE*s/SLOPE_SCALE) * a - 2*SLOPE_SCALE*after_fee_shells = 0
+    //   SLOPE * a^2 + (2*SLOPE_SCALE*BASE_PRICE + 2*SLOPE*s) * a - 2*SLOPE_SCALE*after_fee_shells = 0
+    //
+    // Using quadratic formula: a = (-B + sqrt(B^2 + 4*A*C)) / (2*A)
+    // where A = SLOPE, B = 2*SLOPE_SCALE*BASE_PRICE + 2*SLOPE*s, C = 2*SLOPE_SCALE*after_fee_shells
+    let s = supply as u128;
+    let a_coeff = SLOPE as u128;
+    let b_coeff = 2u128 * SLOPE_SCALE as u128 * BASE_PRICE as u128
+        + 2u128 * SLOPE as u128 * s;
+    let c_val = 2u128 * SLOPE_SCALE as u128 * after_fee_shells;
 
-    let a_coeff = SLOPE as f64 / (2.0 * SLOPE_SCALE as f64);
-    let b_coeff = BASE_PRICE as f64 + (SLOPE as f64 * s / SLOPE_SCALE as f64);
-    let c_coeff = -fee_shells_f;
+    // discriminant = B^2 + 4*A*C
+    let discriminant = b_coeff
+        .checked_mul(b_coeff)
+        .and_then(|b2| {
+            let four_ac = 4u128.checked_mul(a_coeff)?.checked_mul(c_val)?;
+            b2.checked_add(four_ac)
+        });
 
-    let discriminant = b_coeff * b_coeff - 4.0 * a_coeff * c_coeff;
-    if discriminant < 0.0 {
+    let discriminant = match discriminant {
+        Some(d) => d,
+        None => return 0, // overflow — amount too large
+    };
+
+    let sqrt_d = isqrt_u128(discriminant);
+
+    // a = (-B + sqrt(discriminant)) / (2*A)
+    // Since B > 0, we need sqrt(discriminant) > B for positive result
+    if sqrt_d <= b_coeff {
         return 0;
     }
-    let tokens = (-b_coeff + discriminant.sqrt()) / (2.0 * a_coeff);
-    if tokens < 0.0 {
-        0
+    let numerator = sqrt_d - b_coeff;
+    let denominator = 2u128 * a_coeff;
+    let tokens = numerator / denominator;
+
+    if tokens > u64::MAX as u128 {
+        u64::MAX
     } else {
         tokens as u64
     }
+}
+
+/// Integer square root for u128 using Newton's method
+fn isqrt_u128(n: u128) -> u128 {
+    if n == 0 {
+        return 0;
+    }
+    let mut x = n;
+    let mut y = (x + 1) / 2;
+    while y < x {
+        x = y;
+        y = (x + n / x) / 2;
+    }
+    x
 }
 
 /// GET /tokens/:id/holders — Get user balance for a token

@@ -1882,25 +1882,30 @@ fn quote_clob_swap(
 
         if is_buying_base {
             // Buying base with quote: at this price, each base unit costs price_raw (scaled)
-            // cost_per_base_unit = price_raw (in quote-currency scaled units)
-            // how many base units can we buy with remaining_in quote?
-            // base_qty = remaining_in * PRICE_SCALE / price_raw
             let can_buy = if *price_raw > 0 {
                 (remaining_in as u128 * PRICE_SCALE as u128 / *price_raw as u128) as u64
             } else {
                 continue;
             };
+            // AUDIT-FIX F-6: Skip if integer truncation produces zero output
+            if can_buy == 0 {
+                continue;
+            }
             let fill_qty = can_buy.min(*qty_available);
             let fill_cost = (fill_qty as u128 * *price_raw as u128 / PRICE_SCALE as u128) as u64;
 
             total_out += fill_qty;
-            remaining_in = remaining_in.saturating_sub(fill_cost);
+            remaining_in = remaining_in.saturating_sub(fill_cost.max(1));
         } else {
             // Selling base for quote: each base unit earns price_raw (scaled)
             let fill_qty = remaining_in.min(*qty_available);
             let fill_proceeds =
                 (fill_qty as u128 * *price_raw as u128 / PRICE_SCALE as u128) as u64;
 
+            // AUDIT-FIX F-11: Skip if integer truncation produces zero proceeds
+            if fill_proceeds == 0 {
+                continue;
+            }
             total_out += fill_proceeds;
             remaining_in = remaining_in.saturating_sub(fill_qty);
         }
@@ -1908,6 +1913,8 @@ fn quote_clob_swap(
         last_fill_price = *price_raw;
     }
 
+    // AUDIT-FIX F-6/F-11: If total_out is zero after all fills, the trade amount
+    // is too small for any order book level. Return None.
     if total_out == 0 {
         return None;
     }

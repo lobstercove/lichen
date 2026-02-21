@@ -735,10 +735,30 @@ fn solana_transaction_encoded_json(
     let encoded = encode_solana_transaction(tx, encoding);
 
     let post_balances = account_balances(state, tx);
+    // AUDIT-FIX F-9: Reconstruct pre-balances from transaction effects.
+    // The fee payer (account[0]) had fee added to their balance before deduction.
+    // For transfer instructions (opcode 0), we also reconstruct the amount moved.
+    let transfer_amount = tx.message.instructions.first().and_then(|ix| {
+        if ix.data.first() == Some(&0) && ix.data.len() >= 9 {
+            Some(u64::from_le_bytes(ix.data[1..9].try_into().unwrap_or([0; 8])))
+        } else {
+            None
+        }
+    }).unwrap_or(0);
     let pre_balances: Vec<u64> = post_balances
         .iter()
         .enumerate()
-        .map(|(i, &bal)| if i == 0 { bal.saturating_add(fee) } else { bal })
+        .map(|(i, &bal)| {
+            if i == 0 {
+                // Fee payer: add back fee AND outgoing transfer
+                bal.saturating_add(fee).saturating_add(transfer_amount)
+            } else if i == 1 && transfer_amount > 0 {
+                // Transfer recipient: subtract received amount
+                bal.saturating_sub(transfer_amount)
+            } else {
+                bal
+            }
+        })
         .collect();
 
     serde_json::json!({
@@ -8578,9 +8598,10 @@ async fn handle_eth_get_logs(
         .unwrap_or_default();
 
     let mut logs = Vec::new();
-    let mut log_index: u64 = 0;
 
     for slot in effective_from..=to_slot {
+        // AUDIT-FIX F-5: Reset logIndex per block (EVM spec requires per-block indexing)
+        let mut log_index: u64 = 0;
         let events = state
             .state
             .get_events_by_slot(slot, 10_000)

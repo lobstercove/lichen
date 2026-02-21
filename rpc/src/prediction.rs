@@ -723,6 +723,11 @@ async fn post_create(
         return api_err("Question must be 1-512 characters");
     }
 
+    // F-12: Reject zero initial_liquidity — prevents division-by-zero in CPMM pool math
+    if req.initial_liquidity == 0 {
+        return api_err("initial_liquidity must be greater than zero");
+    }
+
     let cat_id = match req.category.as_str() {
         "politics" => 0u8,
         "sports" => 1,
