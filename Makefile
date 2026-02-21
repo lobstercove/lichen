@@ -139,7 +139,7 @@ deploy-mainnet: build-contracts-wasm
 	@echo "🚀 Deploying to mainnet..."
 	@echo "⚠️  Mainnet deployment requires manual confirmation."
 	@read -p "Continue? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
-	scripts/testnet-deploy.sh --rpc=$(RPC_URL) --seed-pairs --seed-pools
+	scripts/mainnet-deploy.sh --rpc=$(RPC_URL) --network=mainnet
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Run

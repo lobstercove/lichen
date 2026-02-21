@@ -8,7 +8,8 @@
 # ── Rust build artifacts ────────────────────────────────────
 /target/
 **/target/
-Cargo.lock
+# P9-INF-04: Cargo.lock is tracked for reproducible builds (binary project)
+# Cargo.lock
 **/*.rs.bk
 *.pdb
 **/incremental/

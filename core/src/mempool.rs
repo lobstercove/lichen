@@ -240,7 +240,7 @@ impl Mempool {
         let transactions: Vec<_> = self.queue.drain().collect();
         let (valid, expired): (Vec<_>, Vec<_>) = transactions
             .into_iter()
-            .partition(|ptx| now - ptx.timestamp < self.expiration_time);
+            .partition(|ptx| now.saturating_sub(ptx.timestamp) < self.expiration_time);
         for ptx in &expired {
             self.transactions.remove(&ptx.hash);
         }
@@ -250,7 +250,7 @@ impl Mempool {
         let express: Vec<_> = self.express_queue.drain().collect();
         let (valid_express, expired_express): (Vec<_>, Vec<_>) = express
             .into_iter()
-            .partition(|ptx| now - ptx.timestamp < self.expiration_time);
+            .partition(|ptx| now.saturating_sub(ptx.timestamp) < self.expiration_time);
         for ptx in &expired_express {
             self.transactions.remove(&ptx.hash);
         }

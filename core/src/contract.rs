@@ -570,7 +570,7 @@ const MAX_VALUE_LEN: usize = 65_536;
 const MAX_RETURN_DATA: usize = 65_536;
 /// Maximum event data JSON size (8 KB)
 const MAX_EVENT_DATA: usize = 8_192;
-/// Default compute limit per contract call (15 million units)
+/// Default compute limit per contract call (10 million units)
 pub const DEFAULT_COMPUTE_LIMIT: u64 = 10_000_000;
 /// Compute cost for a storage read
 const COMPUTE_STORAGE_READ: u64 = 100;
@@ -604,7 +604,7 @@ const MAX_CCC_ARGS_LEN: u32 = 65_536;
 /// The WASM runtime is sandboxed with the following security measures:
 ///
 /// 1. **Compute Metering**: Every WASM instruction costs 1 compute unit.
-///    Execution traps after `MAX_WASM_COMPUTE_UNITS` (1.4M) units, preventing
+///    Execution traps after `MAX_WASM_COMPUTE_UNITS` (10M) units, preventing
 ///    infinite loops and DoS via compute exhaustion.
 ///
 /// 2. **Memory Limits**: WASM linear memory is capped at `MAX_WASM_MEMORY_PAGES`

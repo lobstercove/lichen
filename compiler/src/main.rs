@@ -127,7 +127,18 @@ async fn main() {
             }
         }))
         .route("/health", axum::routing::get(health_handler))
-        .layer(CorsLayer::permissive());
+        // P9-INF-08: Restrict CORS to known developer portal origins instead of
+        // permissive wildcard. In production, set COMPILER_CORS_ORIGIN env var.
+        .layer({
+            let allowed_origin = std::env::var("COMPILER_CORS_ORIGIN")
+                .unwrap_or_else(|_| "http://localhost:3000".to_string());
+            CorsLayer::new()
+                .allow_origin(allowed_origin.parse::<axum::http::HeaderValue>()
+                    .unwrap_or_else(|_| "http://localhost:3000".parse().unwrap()))
+                .allow_methods([axum::http::Method::GET, axum::http::Method::POST, axum::http::Method::OPTIONS])
+                .allow_headers([axum::http::header::CONTENT_TYPE, axum::http::header::AUTHORIZATION,
+                    axum::http::HeaderName::from_static("x-api-key")])
+        });
 
     let addr = format!("0.0.0.0:{}", port);
     info!("🔨 MoltChain Compiler Service starting on {} (auth: enabled)", addr);
