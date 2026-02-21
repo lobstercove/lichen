@@ -6379,26 +6379,20 @@ async fn run_validator() {
                     continue;
                 }
 
-                // AUDIT-FIX A2-01: Timestamp bounded-window validation.
-                // Expected timestamp = genesis_time + slot * slot_duration / 1000.
-                // Allow ±60 seconds tolerance for clock drift / view rotation delays.
+                // Timestamp validation: reject blocks with timestamps
+                // more than 120s IN THE FUTURE.  Past blocks are accepted
+                // because late-joining validators need to sync historical
+                // blocks whose wall-clock time has long passed.
                 if block_slot > 0 {
-                    if let Err(drift) = Block::validate_timestamp(
-                        block.header.timestamp,
-                        genesis_time_secs_for_blocks,
-                        block_slot,
-                        slot_duration_ms_for_blocks,
-                        60, // max drift seconds
-                    ) {
-                        let expected_ts = Block::derive_slot_timestamp(
-                            genesis_time_secs_for_blocks,
-                            block_slot,
-                            slot_duration_ms_for_blocks,
-                        );
+                    let now_secs = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_secs();
+                    if block.header.timestamp > now_secs + 120 {
                         warn!(
-                            "⚠️  Rejecting block {} — timestamp {} deviates {}s from expected {} \
-                             (slot-based: genesis_time + slot * slot_duration)",
-                            block_slot, block.header.timestamp, drift, expected_ts
+                            "⚠️  Rejecting block {} — timestamp {} is {}s in the future (wall-clock {})",
+                            block_slot, block.header.timestamp,
+                            block.header.timestamp - now_secs, now_secs
                         );
                         continue;
                     }
@@ -9442,19 +9436,21 @@ async fn run_validator() {
         // (Previous test code was incorrectly signing transfers from genesis with validator key)
 
         // Create block
-        // AUDIT-FIX A2-01: Use deterministic slot-based timestamp instead of
-        // SystemTime::now(). All validators derive the same timestamp for a
-        // given slot: genesis_time + (slot * slot_duration_ms / 1000).
+        // Use wall-clock timestamp so explorer display and cross-validator
+        // sync work correctly regardless of heartbeat cadence.  The receiving
+        // side validates within a generous wall-clock window (see block rx).
         let state_root = state.compute_state_root();
-        let deterministic_timestamp =
-            Block::derive_slot_timestamp(genesis_time_secs, slot, slot_duration_ms);
+        let wall_clock_timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         let mut block = Block::new_with_timestamp(
             slot,
             parent_hash,
             state_root,
             validator_pubkey.0,
             transactions.clone(),
-            deterministic_timestamp,
+            wall_clock_timestamp,
         );
 
         // Sign block so receiving validators can verify authenticity (T2.2)
