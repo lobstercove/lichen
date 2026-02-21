@@ -1722,12 +1722,35 @@ fn host_cross_contract_call(
         return_data: Vec::new(),
         compute_remaining: caller_remaining,
         cross_contract_storage: HashMap::new(),
-        state_store: Some(state_store),
+        state_store: Some(state_store.clone()),
         call_depth: call_depth + 1,
         pending_ccc_changes: pending_changes.clone(),
         pending_ccc_events: pending_events.clone(),
         pending_ccc_logs: pending_logs.clone(),
     };
+
+    // ── AUDIT-FIX D-2: Verify caller has sufficient balance for value ──
+    if value > 0 {
+        match state_store.get_account(&caller_contract) {
+            Ok(Some(caller_acct)) if caller_acct.spendable >= value => {
+                // Escrow: deduct from caller before callee executes
+                let mut updated = caller_acct;
+                updated.spendable = updated.spendable.saturating_sub(value);
+                if state_store.put_account(&caller_contract, &updated).is_err() {
+                    return 0;
+                }
+            }
+            _ => {
+                // Caller doesn't have enough balance — reject forged value
+                let ctx = env.data_mut();
+                ctx.logs.push(format!(
+                    "[CCC] Call to {}::{} rejected: caller {} has insufficient balance for value {}",
+                    crate::Pubkey(target.0), function_name, crate::Pubkey(caller_contract.0), value
+                ));
+                return 0;
+            }
+        }
+    }
 
     // ── Execute callee in a fresh runtime ────────────────────────────
     let mut runtime = ContractRuntime::get_pooled();
@@ -1735,6 +1758,13 @@ fn host_cross_contract_call(
         Ok(r) => r,
         Err(e) => {
             runtime.return_to_pool();
+            // AUDIT-FIX D-2: Refund escrowed value on execute error
+            if value > 0 {
+                if let Ok(Some(mut caller_acct)) = state_store.get_account(&caller_contract) {
+                    caller_acct.spendable = caller_acct.spendable.saturating_add(value);
+                    let _ = state_store.put_account(&caller_contract, &caller_acct);
+                }
+            }
             // Log the error for diagnostics
             let ctx = env.data_mut();
             ctx.logs.push(format!(
@@ -1748,8 +1778,21 @@ fn host_cross_contract_call(
     };
     runtime.return_to_pool();
 
+    // ── AUDIT-FIX D-1: Always deduct callee compute, even on failure ─
+    {
+        let ctx = env.data_mut();
+        ctx.compute_remaining = ctx.compute_remaining.saturating_sub(result.compute_used);
+    }
+
     if !result.success {
         // Callee failed — return 0, don't apply any changes
+        // AUDIT-FIX D-2: Refund escrowed value on callee failure
+        if value > 0 {
+            if let Ok(Some(mut caller_acct)) = state_store.get_account(&caller_contract) {
+                caller_acct.spendable = caller_acct.spendable.saturating_add(value);
+                let _ = state_store.put_account(&caller_contract, &caller_acct);
+            }
+        }
         let ctx = env.data_mut();
         if let Some(ref err) = result.error {
             ctx.logs.push(format!(
@@ -1762,10 +1805,12 @@ fn host_cross_contract_call(
         return 0;
     }
 
-    // ── Deduct callee's compute from parent ──────────────────────────
-    {
-        let ctx = env.data_mut();
-        ctx.compute_remaining = ctx.compute_remaining.saturating_sub(result.compute_used);
+    // ── AUDIT-FIX D-2: Credit value to callee on success ─────────────
+    if value > 0 {
+        if let Ok(Some(mut callee_acct)) = state_store.get_account(&target) {
+            callee_acct.spendable = callee_acct.spendable.saturating_add(value);
+            let _ = state_store.put_account(&target, &callee_acct);
+        }
     }
 
     // ── Merge callee's direct storage changes into pending ───────────
