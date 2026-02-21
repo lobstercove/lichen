@@ -748,15 +748,20 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     if (typeof ws !== 'undefined') {
+        // Subscribe once — resubscribeAll() in the WS class re-sends
+        // on every reconnect automatically.  Calling subscribe() inside
+        // onOpen would push a duplicate to `desired` on every reconnect,
+        // eventually exceeding the server's per-connection subscription limit.
+        ws.subscribe('subscribeBlocks', () => {
+            lastWsBlockTime = Date.now();
+            updateLatestBlocks();
+            updateLatestTransactions();
+            updateDashboardStats();
+        });
+
         ws.onOpen(() => {
             stopPolling();
             lastWsBlockTime = Date.now();
-            ws.subscribe('subscribeBlocks', () => {
-                lastWsBlockTime = Date.now();
-                updateLatestBlocks();
-                updateLatestTransactions();
-                updateDashboardStats();
-            });
             startStaleCheck();
         });
 

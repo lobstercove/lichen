@@ -9468,7 +9468,23 @@ async fn run_validator() {
             // View rotation (wall-clock based above) will eventually make us
             // the leader if the current leader is offline. No slot advancement
             // needed since slot is derived from chain tip each iteration.
-            continue;
+            //
+            // FIX: Deadlock breaker — if we've exhausted all 16 views (view==15)
+            // and still waited an additional full view interval without any block,
+            // produce anyway. This prevents the network from permanently stalling
+            // when the selected leaders (V2/V3) are still syncing and cannot produce.
+            // The heartbeat mechanism ensures the chain stays alive.
+            let deadlock_timeout_ms = view_change_interval_ms * 20; // ~24 seconds
+            if view >= 15 && slot_start.elapsed().as_millis() as u64 > deadlock_timeout_ms {
+                info!(
+                    "⚠️  Slot {} — all views exhausted with no block after {}ms, producing as deadlock breaker",
+                    slot,
+                    slot_start.elapsed().as_millis()
+                );
+                // Fall through to produce
+            } else {
+                continue;
+            }
         }
 
         // Update parent_hash from actual latest block (in case chain was synced from P2P)

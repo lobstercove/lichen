@@ -12,7 +12,7 @@ use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
@@ -178,10 +178,18 @@ impl PeerManager {
         // and exhaust memory/file descriptors.  256 concurrent streams is
         // generous for honest peers (they open 1 stream per message) while
         // bounding resource consumption.
+        //
+        // FIX: Also set keep_alive_interval (5s) so idle connections are not
+        // dropped by the 30s idle timeout.  Without keep-alive, the QUIC
+        // connection dies after max_idle_timeout when no streams are opened,
+        // causing V2/V3 to never sync blocks from V1 and deadlocking the
+        // entire network.
         {
             let mut transport = quinn::TransportConfig::default();
             transport.max_concurrent_uni_streams(256u32.into());
             transport.max_concurrent_bidi_streams(16u32.into());
+            transport.keep_alive_interval(Some(Duration::from_secs(5)));
+            transport.max_idle_timeout(Some(Duration::from_secs(30).try_into().unwrap()));
             server_config.transport_config(Arc::new(transport));
         }
 
@@ -256,10 +264,20 @@ impl PeerManager {
         // Configure ALPN
         rustls_config.alpn_protocols = vec![b"molt".to_vec()];
 
-        let client_config = quinn::ClientConfig::new(Arc::new(
+        let mut client_config = quinn::ClientConfig::new(Arc::new(
             quinn::crypto::rustls::QuicClientConfig::try_from(rustls_config)
                 .map_err(|e| format!("Failed to create QUIC config: {}", e))?,
         ));
+        // FIX: Client transport must also set keep_alive + idle timeout to
+        // match server config, otherwise connections still flap.
+        {
+            let mut transport = quinn::TransportConfig::default();
+            transport.max_concurrent_uni_streams(256u32.into());
+            transport.max_concurrent_bidi_streams(16u32.into());
+            transport.keep_alive_interval(Some(Duration::from_secs(5)));
+            transport.max_idle_timeout(Some(Duration::from_secs(30).try_into().unwrap()));
+            client_config.transport_config(Arc::new(transport));
+        }
         let mut endpoint = self.endpoint.clone();
         endpoint.set_default_client_config(client_config);
 

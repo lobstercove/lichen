@@ -1289,7 +1289,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // ═══════════════════════════════════════════════════════════════════════
     // TradingView (wired to candle API)
     // ═══════════════════════════════════════════════════════════════════════
-    let tvWidget = null, realtimeCallback = null, lastBarTime = 0, activeResolution = localStorage.getItem('dexChartInterval') || '15', currentBarOpen = 0, currentBarHigh = 0, currentBarLow = Infinity;
+    let tvWidget = null, realtimeCallback = null, lastBarTime = 0, activeResolution = localStorage.getItem('dexChartInterval') || '15', currentBarOpen = 0, currentBarHigh = 0, currentBarLow = Infinity, currentSubscriberUID = null;
 
 
     function createDatafeed() {
@@ -1313,11 +1313,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 ok(bars, { noData: !bars.length });
             },
-            subscribeBars: (si, res, cb) => {
+            subscribeBars: (si, res, cb, uid) => {
                 realtimeCallback = cb; activeResolution = res;
+                currentSubscriberUID = uid;
                 localStorage.setItem('dexChartInterval', res);
             },
-            unsubscribeBars: () => { realtimeCallback = null; },
+            unsubscribeBars: (uid) => { if (uid === currentSubscriberUID) { realtimeCallback = null; currentSubscriberUID = null; } },
         };
     }
 
