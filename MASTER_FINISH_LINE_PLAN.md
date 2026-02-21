@@ -98,7 +98,7 @@
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
 | A7-01 | CRITICAL | Atomicity | `[FLP C10]` `cross_contract_call()` is a stub that returns 0. Every financial contract that depends on token transfers is non-functional | Implement real cross-contract call via host function or message-passing system | [x] DONE — commit 0f0fd6b |
-| A7-02 | HIGH | Security | Fee distribution to validators uses proportional split but doesn't verify validator is still in the active set — slashed validators keep receiving fees until removed | Check validator status before fee distribution | [ ] |
+| A7-02 | HIGH | Security | Fee distribution to validators uses proportional split but doesn't verify validator is still in the active set — slashed validators keep receiving fees until removed | Check validator status before fee distribution | [x] (fixed in 9e33036) |
 | A7-03 | HIGH | Atomicity | Parallel transaction processing excludes `CONTRACT_PROGRAM_ID` from conflict detection — two contract calls to the same contract can execute in parallel and race on state | Add contract address to the read/write set for conflict detection | [ ] |
 | A7-04 | MEDIUM | Security | Gas metering is simplified — WASM execution charges gas per instruction but doesn't account for memory allocation, I/O, or host function costs | Add gas costs for memory grow, storage read/write, and host function calls | [ ] |
 | A7-05 | MEDIUM | Performance | Contract WASM is deserialized from JSON on every call — should be stored as raw bytes | Store WASM as raw bytes, not JSON-encoded | [ ] |
@@ -116,8 +116,8 @@
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
 | A9-01 | CRITICAL | Stub | `[FLP C10]` `call_token_transfer` host function is a stub — returns 0 without performing any transfer. ALL contracts that need to move tokens are broken | Implement as a real host function that performs atomic balance transfer in state | [x] DONE — commit 0f0fd6b |
-| A9-02 | HIGH | Security | No WASM validation — any bytes can be deployed as a "contract". Malicious WASM can exhaust memory, import unavailable functions, or contain invalid opcodes | Validate WASM module structure, imports, memory limits before deployment | [ ] |
-| A9-03 | HIGH | Missing | No contract size limit — a multi-GB WASM can be deployed | Add maximum contract size (e.g., 1 MB) enforced at deployment | [ ] |
+| A9-02 | HIGH | Security | No WASM validation — any bytes can be deployed as a "contract". Malicious WASM can exhaust memory, import unavailable functions, or contain invalid opcodes | Validate WASM module structure, imports, memory limits before deployment | [x] (fixed in 9e33036) |
+| A9-03 | HIGH | Missing | No contract size limit — a multi-GB WASM can be deployed | Add maximum contract size (e.g., 1 MB) enforced at deployment | [x] (fixed in 9e33036) |
 | A9-04 | MEDIUM | Security | Contract storage is unbounded — a contract can allocate unlimited storage with no cost | Add storage deposit per byte or storage size limit per contract | [ ] |
 
 ### A.10 — core/src/contract_instruction.rs
@@ -157,8 +157,8 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| A14-01 | CRITICAL | Fake implementation | `[FLP L2]` `verify_proof()` uses HMAC-SHA256 with publicly accessible data — trivially forgeable. No ZK crate dependencies, no Merkle tree, no Pedersen commitments | Full rewrite required per ZK_PRIVACY_IMPLEMENTATION_PLAN (8-12 weeks). For launch: either disable entirely or gate behind feature flag | [ ] |
-| A14-02 | HIGH | Dead code | Entire privacy module is non-functional but ships in the binary — attack surface for no benefit | Feature-gate behind `#[cfg(feature = "privacy")]` and disable by default | [ ] |
+| A14-01 | CRITICAL | Fake implementation | `[FLP L2]` `verify_proof()` uses HMAC-SHA256 with publicly accessible data — trivially forgeable. No ZK crate dependencies, no Merkle tree, no Pedersen commitments | Full rewrite required per ZK_PRIVACY_IMPLEMENTATION_PLAN (8-12 weeks). For launch: either disable entirely or gate behind feature flag | [x] (fixed in 9e33036) |
+| A14-02 | HIGH | Dead code | Entire privacy module is non-functional but ships in the binary — attack surface for no benefit | Feature-gate behind `#[cfg(feature = "privacy")]` and disable by default | [x] (fixed in 9e33036) |
 
 ### A.15 — core/src/hash.rs
 
@@ -599,7 +599,7 @@
 
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
-| G25-01 | HIGH | Overflow | `[FLP H14]` Share-to-asset conversion and fee accumulation can overflow u64 | Use checked arithmetic or u128 intermediates | [ ] |
+| G25-01 | HIGH | Overflow | `[FLP H14]` Share-to-asset conversion and fee accumulation can overflow u64 | Use checked arithmetic or u128 intermediates | [x] (fixed in 9e33036) |
 | G25-02 | HIGH | Fake data | `[FLP H15]` Vault APY is hardcoded/simulated — not connected to real yield sources | Connect to LobsterLend interest and MoltSwap LP fees | [x] |
 
 ### G.26 — contracts/compute_market/src/lib.rs
@@ -607,8 +607,8 @@
 | ID | Severity | Category | Finding | Fix Required | Status |
 |----|----------|----------|---------|-------------|--------|
 | G26-01 | CRITICAL | Security | `[FLP C7]` 5 admin functions accept caller parameter without `get_caller()` — anyone can modify config or pause contract | Use `get_caller()` in all admin functions | [x] |
-| G26-02 | HIGH | Bug | `[FLP H19]` Paused state returns 0 (success) instead of error — callers think operations succeeded | Return error code when paused | [ ] |
-| G26-03 | HIGH | Financial | `[FLP H18]` `resolve_dispute` uses wrong transfer source | Fix source account for dispute resolution transfers | [ ] |
+| G26-02 | HIGH | Bug | `[FLP H19]` Paused state returns 0 (success) instead of error — callers think operations succeeded | Return error code when paused | [x] (fixed in 9e33036) |
+| G26-03 | HIGH | Financial | `[FLP H18]` `resolve_dispute` uses wrong transfer source | Fix source account for dispute resolution transfers | [x] (fixed in 9e33036) |
 | G26-04 | MEDIUM | Bug | `[FLP M19]` Job cancellation timeout calculated from `created_slot` instead of `claim_slot` | Use `claim_slot` for timeout calculation | [ ] |
 
 ### G.27 — contracts/reef_storage/src/lib.rs
