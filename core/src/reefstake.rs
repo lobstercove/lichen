@@ -4,7 +4,7 @@
 use crate::consensus::UNSTAKE_COOLDOWN_SLOTS;
 use crate::Pubkey;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 /// Percentage of each block reward allocated to ReefStake stakers (basis points).
 /// 1000 bp = 10% of block reward funds the liquid staking pool.
@@ -51,6 +51,50 @@ mod pubkey_map_serde {
         }
 
         deserializer.deserialize_map(PubkeyMapVisitor(std::marker::PhantomData))
+    }
+}
+
+/// Serde helper: serialize/deserialize BTreeMap<Pubkey, V> with base58 string keys.
+/// Deterministic iteration order (sorted by Pubkey bytes) is critical for consensus.
+mod pubkey_btreemap_serde {
+    use super::*;
+    use serde::de::{self, MapAccess, Visitor};
+    use serde::ser::SerializeMap;
+
+    pub fn serialize<V: Serialize, S: serde::Serializer>(
+        map: &BTreeMap<Pubkey, V>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let mut m = serializer.serialize_map(Some(map.len()))?;
+        for (k, v) in map {
+            m.serialize_entry(&k.to_base58(), v)?;
+        }
+        m.end()
+    }
+
+    pub fn deserialize<'de, V: Deserialize<'de>, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<BTreeMap<Pubkey, V>, D::Error> {
+        struct PubkeyBTreeMapVisitor<V>(std::marker::PhantomData<V>);
+
+        impl<'de, V: Deserialize<'de>> Visitor<'de> for PubkeyBTreeMapVisitor<V> {
+            type Value = BTreeMap<Pubkey, V>;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a map with base58 pubkey string keys")
+            }
+
+            fn visit_map<M: MapAccess<'de>>(self, mut access: M) -> Result<Self::Value, M::Error> {
+                let mut map = BTreeMap::new();
+                while let Some((key, value)) = access.next_entry::<String, V>()? {
+                    let pubkey = Pubkey::from_base58(&key).map_err(de::Error::custom)?;
+                    map.insert(pubkey, value);
+                }
+                Ok(map)
+            }
+        }
+
+        deserializer.deserialize_map(PubkeyBTreeMapVisitor(std::marker::PhantomData))
     }
 }
 
@@ -202,8 +246,8 @@ pub struct UnstakeRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReefStakePool {
     pub st_molt_token: StMoltToken,
-    #[serde(with = "pubkey_map_serde")]
-    pub positions: HashMap<Pubkey, StakingPosition>,
+    #[serde(with = "pubkey_btreemap_serde")]
+    pub positions: BTreeMap<Pubkey, StakingPosition>,
     #[serde(with = "pubkey_map_serde")]
     pub unstake_requests: HashMap<Pubkey, Vec<UnstakeRequest>>,
     pub total_validators: u64, // Number of validators staked to
@@ -221,7 +265,7 @@ impl ReefStakePool {
     pub fn new() -> Self {
         Self {
             st_molt_token: StMoltToken::new(),
-            positions: HashMap::new(),
+            positions: BTreeMap::new(),
             unstake_requests: HashMap::new(),
             total_validators: 0,
             average_apy_bp: 0,
@@ -624,5 +668,47 @@ mod tests {
         assert!(pool.get_position(&alice).is_none()); // Alice removed
         let (bob_pos, _) = pool.get_position(&bob).unwrap();
         assert_eq!(bob_pos.st_molt_amount, 1000);
+    }
+
+    /// P9-CORE-01: Verify distribute_rewards is deterministic across multiple stakers.
+    /// With BTreeMap, the "last position gets remainder" dust always goes to the
+    /// lexicographically highest Pubkey, ensuring cross-validator consistency.
+    #[test]
+    fn test_distribute_rewards_deterministic() {
+        let mut pool = ReefStakePool::new();
+        // Create 3 stakers with known pubkeys
+        let pk_a = Pubkey::from_base58("11111111111111111111111111111112").unwrap();
+        let pk_b = Pubkey::from_base58("6YkFWKH9HQZFVEy4QPw82xRx5qHRk84vU1H2Hk7JLj1H").unwrap();
+        let pk_c = Pubkey::from_base58("BwVDmnwtfVBiRYB4iWxWrb5M9fAfQD9hbMmnQMw3MRvV").unwrap();
+
+        pool.stake(pk_a, 100, 0).unwrap();
+        pool.stake(pk_b, 100, 0).unwrap();
+        pool.stake(pk_c, 100, 0).unwrap();
+
+        // Distribute 10 shells that don't divide evenly by 3
+        pool.distribute_rewards(10);
+
+        let a_rewards = pool.get_position(&pk_a).unwrap().0.rewards_earned;
+        let b_rewards = pool.get_position(&pk_b).unwrap().0.rewards_earned;
+        let c_rewards = pool.get_position(&pk_c).unwrap().0.rewards_earned;
+
+        // Total must be exactly 10 (no dust lost)
+        assert_eq!(a_rewards + b_rewards + c_rewards, 10);
+
+        // BTreeMap sorts by bytes, so iteration order is deterministic.
+        // The last key (lexicographically highest) gets the remainder dust.
+        // Run twice to confirm determinism:
+        let mut pool2 = ReefStakePool::new();
+        pool2.stake(pk_c, 100, 0).unwrap(); // insert order swapped
+        pool2.stake(pk_a, 100, 0).unwrap();
+        pool2.stake(pk_b, 100, 0).unwrap();
+        pool2.distribute_rewards(10);
+
+        assert_eq!(pool2.get_position(&pk_a).unwrap().0.rewards_earned, a_rewards);
+        assert_eq!(pool2.get_position(&pk_b).unwrap().0.rewards_earned, b_rewards);
+        assert_eq!(pool2.get_position(&pk_c).unwrap().0.rewards_earned, c_rewards);
+
+        // Verify positions field is BTreeMap (deterministic)
+        assert!(pool.positions.keys().collect::<Vec<_>>().windows(2).all(|w| w[0] <= w[1]));
     }
 }
