@@ -2090,6 +2090,16 @@ pub fn sell_shares(
     // Apply new reserves
     let new_reserves = apply_sell_reserves(&reserves, outcome, shares_amount);
 
+    // CEI: Transfer mUSD to trader FIRST, before any state mutation.
+    // If this fails we return cleanly with no state corruption.
+    if !transfer_musd_out(trader, musd_returned) {
+        log_info("sell_shares: mUSD transfer to trader failed");
+        reentrancy_exit();
+        return 0;
+    }
+
+    // --- State mutations (only reached after successful transfer) ---
+
     // Update outcome pools
     for i in 0..outcome_count {
         let mut pool = load_outcome_pool(market_id, i).unwrap();
@@ -2160,13 +2170,6 @@ pub fn sell_shares(
     save_u64(TOTAL_COLLATERAL_KEY, total_coll.saturating_sub(total_out));
     let total_fees = load_u64(FEES_COLLECTED_KEY);
     save_u64(FEES_COLLECTED_KEY, total_fees + protocol_fee);
-
-    // G21-01: Transfer mUSD to trader
-    if !transfer_musd_out(trader, musd_returned) {
-        log_info("sell_shares: mUSD transfer to trader failed");
-        reentrancy_exit();
-        return 0;
-    }
 
     log_info("Shares sold!");
 
@@ -2925,10 +2928,10 @@ pub fn reclaim_collateral(
     if total_lp > 0 && user_lp > 0 {
         // LP's share of remaining collateral
         let lp_share = (total_coll_market as u128 * user_lp as u128 / total_lp as u128) as u64;
-        // Don't double-count with cost basis
-        if lp_share > refund {
-            refund = lp_share;
-        }
+        // Dual-role users (trader + LP) get both refunds summed;
+        // cost_basis covers share purchases, lp_share covers LP deposits —
+        // these are independent contributions to the pool.
+        refund += lp_share;
     }
 
     if refund == 0 {
@@ -3023,6 +3026,16 @@ pub fn withdraw_liquidity(
         return 0;
     }
 
+    // CEI: Transfer mUSD to LP provider FIRST, before any state mutation.
+    // If this fails we return cleanly with no state corruption.
+    if !transfer_musd_out(provider, musd_returned) {
+        log_info("withdraw_liquidity: mUSD transfer to provider failed");
+        reentrancy_exit();
+        return 0;
+    }
+
+    // --- State mutations (only reached after successful transfer) ---
+
     // Reduce reserves proportionally
     let outcome_count = market_outcome_count(&record);
     for i in 0..outcome_count {
@@ -3046,13 +3059,6 @@ pub fn withdraw_liquidity(
 
     let platform_coll = load_u64(TOTAL_COLLATERAL_KEY);
     save_u64(TOTAL_COLLATERAL_KEY, platform_coll.saturating_sub(musd_returned));
-
-    // G21-01: Transfer mUSD to LP provider
-    if !transfer_musd_out(provider, musd_returned) {
-        log_info("withdraw_liquidity: mUSD transfer to provider failed");
-        reentrancy_exit();
-        return 0;
-    }
 
     // G21-02: Store full u64 mUSD in return_data (no u32 truncation)
     moltchain_sdk::set_return_data(&u64_to_bytes(musd_returned));
