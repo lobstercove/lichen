@@ -3213,15 +3213,21 @@ async function exportJSONWithPassword(password) {
             return;
         }
         
-        // Create JSON keystore
+        // AUDIT-FIX K-1: Encrypt secret key with password using AES-256-GCM (via MoltCrypto)
+        // Never export raw secret key in plaintext
+        const secretKeyHex = Array.from(keypair.secretKey).map(b => b.toString(16).padStart(2, '0')).join('');
+        const encryptedSecret = await MoltCrypto.encryptPrivateKey(secretKeyHex, password);
+        
+        // Create JSON keystore with encrypted secret key
         const keystore = {
             name: wallet.name,
             address: wallet.address,
             publicKey: Array.from(keypair.publicKey),
-            secretKey: Array.from(keypair.secretKey),
+            encryptedSecretKey: encryptedSecret,
             created: wallet.created,
             exported: new Date().toISOString(),
-            version: '1.0'
+            version: '2.0',
+            encryption: 'AES-256-GCM-PBKDF2'
         };
         
         const filename = `molt-wallet-keystore-${wallet.name}-${Date.now()}.json`;
