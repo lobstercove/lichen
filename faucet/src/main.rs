@@ -430,20 +430,39 @@ fn load_or_generate_keypair() -> Keypair {
                         return kp;
                     }
                 }
-                // Format 2: JSON object with secret_key or privateKey (hex)
+                // Format 2: JSON object with secret_key or privateKey
                 if let Ok(obj) = serde_json::from_str::<serde_json::Value>(&data) {
-                    let hex_key = obj
+                    let key_val = obj
                         .get("secret_key")
                         .or_else(|| obj.get("privateKey"))
-                        .and_then(|v| v.as_str());
-                    if let Some(hex_str) = hex_key {
-                        if let Ok(bytes) = hex::decode(hex_str.trim()) {
+                        .or_else(|| obj.get("seed"));
+
+                    if let Some(val) = key_val {
+                        // Format 2a: byte array  {"privateKey": [u8, u8, ...]}
+                        if let Some(arr) = val.as_array() {
+                            let bytes: Vec<u8> = arr
+                                .iter()
+                                .filter_map(|v| v.as_u64().map(|n| n as u8))
+                                .collect();
                             if bytes.len() >= 32 {
                                 let mut seed = [0u8; 32];
                                 seed.copy_from_slice(&bytes[..32]);
                                 let kp = Keypair::from_seed(&seed);
-                                info!("🔑 Loaded faucet keypair from {} (JSON object)", path);
+                                info!("🔑 Loaded faucet keypair from {} (JSON array)", path);
                                 return kp;
+                            }
+                        }
+                        // Format 2b: hex string  {"privateKey": "abcd..."}
+                        if let Some(hex_str) = val.as_str() {
+                            let clean = hex_str.trim().trim_start_matches("0x");
+                            if let Ok(bytes) = hex::decode(clean) {
+                                if bytes.len() >= 32 {
+                                    let mut seed = [0u8; 32];
+                                    seed.copy_from_slice(&bytes[..32]);
+                                    let kp = Keypair::from_seed(&seed);
+                                    info!("🔑 Loaded faucet keypair from {} (JSON hex)", path);
+                                    return kp;
+                                }
                             }
                         }
                     }
@@ -506,39 +525,116 @@ fn load_or_generate_keypair() -> Keypair {
     kp
 }
 
-/// Send airdrop via the requestAirdrop RPC method.
-/// This bypasses the need for a funded faucet wallet — the RPC debits the
-/// treasury and credits the recipient directly (testnet/devnet only).
+/// Send airdrop as a signed transfer transaction from the faucet wallet.
+/// Builds a native transfer (system program, instruction type 0x00),
+/// signs it with the faucet keypair, encodes as base64 bincode, and
+/// submits via `sendTransaction` RPC — works with any number of validators.
 async fn send_faucet_transfer(
     state: &FaucetState,
     recipient_address: &str,
     amount_molt: u64,
 ) -> Result<String, String> {
+    use moltchain_core::{Hash, Instruction, Message, Transaction};
+
+    // 1. Resolve recipient pubkey
+    let recipient = Pubkey::from_base58(recipient_address)
+        .map_err(|_| format!("Invalid recipient address: {}", recipient_address))?;
+
+    // 2. Fetch recent blockhash from the validator
     let client = reqwest::Client::new();
-    let resp = client
+    let bh_resp = client
         .post(&state.config.rpc_url)
         .json(&serde_json::json!({
             "jsonrpc": "2.0",
             "id": 1,
-            "method": "requestAirdrop",
-            "params": [recipient_address, amount_molt]
+            "method": "getRecentBlockhash"
         }))
         .send()
         .await
         .map_err(|e| format!("RPC request failed: {}", e))?;
 
-    let data: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-
-    if let Some(error) = data.get("error") {
+    let bh_data: serde_json::Value = bh_resp.json().await.map_err(|e| e.to_string())?;
+    if let Some(error) = bh_data.get("error") {
         return Err(format!(
-            "Airdrop failed: {}",
+            "getRecentBlockhash failed: {}",
             error["message"].as_str().unwrap_or("unknown")
         ));
     }
 
+    let bh_hex = bh_data["result"]["blockhash"]
+        .as_str()
+        .or_else(|| bh_data["result"].as_str())
+        .ok_or("getRecentBlockhash: missing blockhash in result")?;
+    let bh_bytes = hex::decode(bh_hex)
+        .map_err(|e| format!("Invalid blockhash hex: {}", e))?;
+    if bh_bytes.len() != 32 {
+        return Err(format!(
+            "Invalid blockhash length: {} (expected 32)",
+            bh_bytes.len()
+        ));
+    }
+    let mut bh_arr = [0u8; 32];
+    bh_arr.copy_from_slice(&bh_bytes);
+    let recent_blockhash = Hash(bh_arr);
+
+    // 3. Build the transfer instruction:
+    //    system program (all-zero), instruction type 0x00, 8-byte LE amount
+    let amount_shells = amount_molt * 1_000_000_000; // MOLT → shells
+    let mut ix_data = vec![0x00u8]; // Transfer instruction type
+    ix_data.extend_from_slice(&amount_shells.to_le_bytes());
+
+    let system_program = Pubkey([0u8; 32]);
+    let faucet_pubkey = state.keypair.pubkey();
+
+    let ix = Instruction {
+        program_id: system_program,
+        accounts: vec![faucet_pubkey, recipient],
+        data: ix_data,
+    };
+
+    // 4. Build message and transaction
+    let message = Message::new(vec![ix], recent_blockhash);
+    let mut tx = Transaction::new(message);
+
+    // 5. Sign with faucet keypair
+    let msg_bytes = tx.message.serialize();
+    let signature = state.keypair.sign(&msg_bytes);
+    tx.signatures.push(signature);
+
+    // 6. Serialize to bincode and base64-encode
+    let tx_bytes = bincode::serialize(&tx)
+        .map_err(|e| format!("Transaction serialization failed: {}", e))?;
+    let tx_b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &tx_bytes);
+
+    // 7. Submit via sendTransaction RPC
+    let send_resp = client
+        .post(&state.config.rpc_url)
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "sendTransaction",
+            "params": [tx_b64]
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("sendTransaction RPC failed: {}", e))?;
+
+    let send_data: serde_json::Value = send_resp.json().await.map_err(|e| e.to_string())?;
+
+    if let Some(error) = send_data.get("error") {
+        return Err(format!(
+            "sendTransaction failed: {}",
+            error["message"].as_str().unwrap_or("unknown")
+        ));
+    }
+
+    let sig_hex = send_data["result"]
+        .as_str()
+        .unwrap_or("unknown");
+
     Ok(format!(
-        "{} MOLT airdropped to {}",
-        amount_molt, recipient_address
+        "{} MOLT transferred to {} (sig: {})",
+        amount_molt, recipient_address, &sig_hex[..16.min(sig_hex.len())]
     ))
 }
 

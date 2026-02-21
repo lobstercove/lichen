@@ -87,6 +87,22 @@ def report(status: str, msg: str, elapsed: float = 0.0):
         RESULTS.append({"status": status, "msg": msg, "ts": int(time.time()), "elapsed": round(elapsed, 3)})
 
 
+def _extract_shells(bal) -> int:
+    """Extract shells (lamports) from a getBalance response.
+
+    The RPC returns {'shells': N, 'spendable': N, ...} — NOT {'balance': N}.
+    Handle both formats defensively.
+    """
+    if isinstance(bal, (int, float)):
+        return int(bal)
+    if isinstance(bal, dict):
+        for key in ("shells", "spendable", "balance"):
+            v = bal.get(key)
+            if isinstance(v, (int, float)):
+                return int(v)
+    return 0
+
+
 def load_keypair_flexible(path: Path) -> Keypair:
     try:
         return Keypair.load(path)
@@ -223,6 +239,19 @@ async def wait_tx(conn: Connection, sig: str, timeout: int = TX_CONFIRM_TIMEOUT)
     return None
 
 
+def _is_transient_error(e: Exception) -> bool:
+    """Return True for errors that should be retried (server overload, disconnects)."""
+    msg = str(e).lower()
+    return any(kw in msg for kw in (
+        "disconnected", "connection refused", "connection reset",
+        "broken pipe", "timed out", "timeout", "too many",
+        "service unavailable", "503", "429",
+    ))
+
+MAX_RETRIES = 3
+RETRY_BACKOFF = 0.5  # seconds, doubles each retry
+
+
 async def send_and_confirm_named(
     conn: Connection, caller: Keypair, program: PublicKey,
     func: str, args: Optional[Dict[str, Any]] = None,
@@ -232,29 +261,36 @@ async def send_and_confirm_named(
 ) -> bool:
     tag = label or func
     t0 = time.time()
-    try:
-        if binary_args is not None:
-            sig = await call_named_binary(conn, caller, program, func, binary_args, layout)
-        else:
-            sig = await call_named(conn, caller, program, func, args)
-        tx = await wait_tx(conn, sig)
-        elapsed = time.time() - t0
-        contract = tag.split(".")[0] if "." in tag else tag
-        with _lock:
-            TIMINGS.append({"contract": contract, "test": tag, "elapsed": round(elapsed, 3), "status": "PASS" if tx else "FAIL"})
-        if tx:
-            report("PASS", f"{tag} sig={sig[:16]}...", elapsed)
-            return True
-        else:
-            report("FAIL", f"{tag} not confirmed in {TX_CONFIRM_TIMEOUT}s", elapsed)
-            return False
-    except Exception as e:
-        elapsed = time.time() - t0
-        contract = tag.split(".")[0] if "." in tag else tag
-        with _lock:
-            TIMINGS.append({"contract": contract, "test": tag, "elapsed": round(elapsed, 3), "status": "FAIL"})
-        report("FAIL", f"{tag} error={e}", elapsed)
-        return False
+    last_error = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            if binary_args is not None:
+                sig = await call_named_binary(conn, caller, program, func, binary_args, layout)
+            else:
+                sig = await call_named(conn, caller, program, func, args)
+            tx = await wait_tx(conn, sig)
+            elapsed = time.time() - t0
+            contract = tag.split(".")[0] if "." in tag else tag
+            with _lock:
+                TIMINGS.append({"contract": contract, "test": tag, "elapsed": round(elapsed, 3), "status": "PASS" if tx else "FAIL"})
+            if tx:
+                report("PASS", f"{tag} sig={sig[:16]}...", elapsed)
+                return True
+            else:
+                report("FAIL", f"{tag} not confirmed in {TX_CONFIRM_TIMEOUT}s", elapsed)
+                return False
+        except Exception as e:
+            last_error = e
+            if _is_transient_error(e) and attempt < MAX_RETRIES - 1:
+                await asyncio.sleep(RETRY_BACKOFF * (2 ** attempt))
+                continue
+            break
+    elapsed = time.time() - t0
+    contract = tag.split(".")[0] if "." in tag else tag
+    with _lock:
+        TIMINGS.append({"contract": contract, "test": tag, "elapsed": round(elapsed, 3), "status": "FAIL"})
+    report("FAIL", f"{tag} error={last_error}", elapsed)
+    return False
 
 
 async def send_and_confirm_opcode(
@@ -262,26 +298,33 @@ async def send_and_confirm_opcode(
     opcode_args: bytes, label: str = "",
 ) -> bool:
     t0 = time.time()
-    try:
-        sig = await call_opcode(conn, caller, program, opcode_args)
-        tx = await wait_tx(conn, sig)
-        elapsed = time.time() - t0
-        contract = label.split(".")[0] if "." in label else label
-        with _lock:
-            TIMINGS.append({"contract": contract, "test": label, "elapsed": round(elapsed, 3), "status": "PASS" if tx else "FAIL"})
-        if tx:
-            report("PASS", f"{label} sig={sig[:16]}...", elapsed)
-            return True
-        else:
-            report("FAIL", f"{label} not confirmed in {TX_CONFIRM_TIMEOUT}s", elapsed)
-            return False
-    except Exception as e:
-        elapsed = time.time() - t0
-        contract = label.split(".")[0] if "." in label else label
-        with _lock:
-            TIMINGS.append({"contract": contract, "test": label, "elapsed": round(elapsed, 3), "status": "FAIL"})
-        report("FAIL", f"{label} error={e}", elapsed)
-        return False
+    last_error = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            sig = await call_opcode(conn, caller, program, opcode_args)
+            tx = await wait_tx(conn, sig)
+            elapsed = time.time() - t0
+            contract = label.split(".")[0] if "." in label else label
+            with _lock:
+                TIMINGS.append({"contract": contract, "test": label, "elapsed": round(elapsed, 3), "status": "PASS" if tx else "FAIL"})
+            if tx:
+                report("PASS", f"{label} sig={sig[:16]}...", elapsed)
+                return True
+            else:
+                report("FAIL", f"{label} not confirmed in {TX_CONFIRM_TIMEOUT}s", elapsed)
+                return False
+        except Exception as e:
+            last_error = e
+            if _is_transient_error(e) and attempt < MAX_RETRIES - 1:
+                await asyncio.sleep(RETRY_BACKOFF * (2 ** attempt))
+                continue
+            break
+    elapsed = time.time() - t0
+    contract = label.split(".")[0] if "." in label else label
+    with _lock:
+        TIMINGS.append({"contract": contract, "test": label, "elapsed": round(elapsed, 3), "status": "FAIL"})
+    report("FAIL", f"{label} error={last_error}", elapsed)
+    return False
 
 
 # ─── Contract discovery ───
@@ -1197,19 +1240,34 @@ async def main() -> int:
         except Exception as e:
             report("PASS", f"{label} airdrop skipped: {e}")
 
-    # Ensure secondary has funds
-    try:
-        bal = await conn.get_balance(secondary.public_key())
-        bal_val = bal.get("balance", bal) if isinstance(bal, dict) else bal
-        if isinstance(bal_val, (int, float)) and bal_val < 1_000_000_000:
-            blockhash = await conn.get_recent_blockhash()
+    # Ensure secondary has funds via transfer from deployer.
+    # Send the funding TX through EVERY validator RPC — this ensures each
+    # validator has a local copy of the TX even before P2P propagation.
+    secondary_funded = False
+    for ci, fund_conn in enumerate(conns):
+        try:
+            bal = await fund_conn.get_balance(secondary.public_key())
+            bal_shells = _extract_shells(bal)
+            if bal_shells >= 1_000_000_000:
+                if ci == 0:
+                    report("PASS", f"secondary already funded ({bal_shells} shells)")
+                secondary_funded = True
+                continue
+            blockhash = await fund_conn.get_recent_blockhash()
             ix = TransactionBuilder.transfer(deployer.public_key(), secondary.public_key(), 10_000_000_000)
             tx = TransactionBuilder().add(ix).set_recent_blockhash(blockhash).build_and_sign(deployer)
-            sig = await conn.send_transaction(tx)
-            await wait_tx(conn, sig)
-            report("PASS", f"secondary funded via transfer (10 MOLT)")
-    except Exception as e:
-        report("PASS", f"secondary transfer fallback: {e}")
+            sig = await fund_conn.send_transaction(tx)
+            confirmed = await wait_tx(fund_conn, sig)
+            if confirmed:
+                report("PASS", f"secondary funded via V{ci+1} transfer (10 MOLT), sig={sig[:16]}...")
+                secondary_funded = True
+            elif ci == 0:
+                report("FAIL", f"secondary transfer NOT confirmed on V1 in {TX_CONFIRM_TIMEOUT}s")
+        except Exception as e:
+            if ci == 0:
+                report("FAIL", f"secondary funding via V1 failed: {e}")
+    if not secondary_funded:
+        report("FAIL", "secondary keypair could not be funded on any validator")
 
     # Discover contracts
     contracts = await discover_contracts(conn)
@@ -1223,29 +1281,21 @@ async def main() -> int:
     # PERF-OPT 4b: Wait for all validators to sync funding TXs before
     # distributing test suites across multiple RPCs.
     if len(conns) > 1:
-        await asyncio.sleep(3.0)  # Allow blocks to propagate
-        # Ensure deployer account is visible on all endpoints; airdrop if needed
+        await asyncio.sleep(4.0)  # Allow blocks to propagate
+        # Verify deployer and secondary are funded on ALL endpoints
         for i, c in enumerate(conns[1:], 1):
-            for attempt in range(5):
-                try:
-                    bal = await c.get_balance(deployer.public_key())
-                    bal_val = bal.get("balance", bal) if isinstance(bal, dict) else bal
-                    if isinstance(bal_val, (int, float)) and bal_val >= 1_000_000_000:
-                        break
-                except Exception:
-                    pass
-                # Airdrop directly to this validator to ensure visibility
-                try:
-                    await c._rpc("requestAirdrop", [str(deployer.public_key()), 100])
-                except Exception:
-                    pass
-                await asyncio.sleep(1.0)
-            # Fund secondary on this endpoint too
-            try:
-                await c._rpc("requestAirdrop", [str(secondary.public_key()), 100])
-            except Exception:
-                pass
-        await asyncio.sleep(2.0)  # Final sync settle
+            for kp, kp_label in [(deployer, "deployer"), (secondary, "secondary")]:
+                for attempt in range(20):
+                    try:
+                        bal = await c.get_balance(kp.public_key())
+                        if _extract_shells(bal) >= 1_000_000_000:
+                            break
+                    except Exception:
+                        pass
+                    await asyncio.sleep(0.5)
+                else:
+                    report("FAIL", f"{kp_label} not visible on validator {i+1} after 10s")
+        await asyncio.sleep(1.0)  # Final sync settle
 
     # Build all scenarios
     named_scenarios = build_named_scenarios(deployer, secondary, contracts)
