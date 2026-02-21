@@ -64,6 +64,13 @@ use crate::nft::{
 /// Smart contract program ID (all ones)
 pub const CONTRACT_PROGRAM_ID: Pubkey = Pubkey([0xFFu8; 32]);
 
+/// P9-RPC-01: EVM sentinel blockhash — used by `eth_sendRawTransaction` to
+/// mark EVM-wrapped transactions.  The EVM layer provides its own replay
+/// protection via nonces + ECDSA signatures, so native blockhash validation
+/// is skipped for these TXs.  Non-EVM transactions MUST NOT use this hash;
+/// doing so is rejected as an attempted bypass.
+pub const EVM_SENTINEL_BLOCKHASH: Hash = Hash([0xEE; 32]);
+
 /// Slot-based month length (400ms slots, 216,000 per day)
 pub const SLOTS_PER_MONTH: u64 = 216_000 * 30;
 /// Base transaction fee (0.001 MOLT = 1,000,000 shells)
@@ -606,6 +613,25 @@ impl TxProcessor {
         let tx_hash = tx.hash();
         if let Ok(Some(_)) = self.state.get_transaction(&tx_hash) {
             return self.make_result(false, 0, Some("Transaction already processed".to_string()));
+        }
+
+        // P9-RPC-01: Handle EVM sentinel blockhash.
+        // EVM-wrapped TXs use a sentinel blockhash because the EVM layer has its
+        // own replay protection (nonces + ECDSA).  We must:
+        //   a) Allow the sentinel for EVM instructions (skip normal blockhash check)
+        //   b) Reject the sentinel for non-EVM instructions (prevents bypass attack)
+        if tx.message.recent_blockhash == EVM_SENTINEL_BLOCKHASH {
+            if is_evm_instruction(tx) {
+                // EVM TX with sentinel — process via EVM path (no native blockhash needed)
+                return self.process_evm_transaction(tx);
+            } else {
+                // Non-EVM TX trying to use sentinel — this is an attempted bypass
+                return self.make_result(
+                    false,
+                    0,
+                    Some("EVM sentinel blockhash is reserved for EVM-wrapped transactions".to_string()),
+                );
+            }
         }
 
         // Validate recent_blockhash for replay protection
@@ -3775,5 +3801,71 @@ mod tests {
         let validator = Pubkey([42u8; 32]);
         let results = processor.process_transactions_parallel(&[], &validator);
         assert_eq!(results.len(), 0);
+    }
+
+    /// P9-RPC-01: Non-EVM TXs with the EVM sentinel blockhash must be rejected.
+    #[test]
+    fn test_sentinel_blockhash_rejected_for_non_evm_tx() {
+        let (processor, _state, alice_kp, alice, _treasury, _genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        // Build a normal transfer using the sentinel blockhash
+        let ix = crate::transaction::Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, Pubkey([5u8; 32])],
+            data: {
+                let mut d = vec![0u8]; // Transfer
+                d.extend_from_slice(&100u64.to_le_bytes());
+                d
+            },
+        };
+        let msg = crate::transaction::Message {
+            instructions: vec![ix],
+            recent_blockhash: EVM_SENTINEL_BLOCKHASH,
+        };
+        let sig = alice_kp.sign(&msg.serialize());
+        let tx = Transaction {
+            signatures: vec![sig],
+            message: msg,
+        };
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success, "Non-EVM TX with sentinel blockhash should be rejected");
+        assert!(
+            result.error.as_deref().unwrap_or("").contains("EVM sentinel blockhash"),
+            "Error should mention the sentinel: {:?}",
+            result.error,
+        );
+    }
+
+    /// P9-RPC-01: EVM TX with sentinel blockhash must be accepted (routed to EVM path).
+    /// It will fail at the EVM decode stage (no valid RLP in dummy data) but must
+    /// NOT be rejected at the sentinel/blockhash check itself.
+    #[test]
+    fn test_sentinel_blockhash_accepted_for_evm_tx() {
+        let (processor, _state, _alice_kp, alice, _treasury, _genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        // Build an EVM-program TX with sentinel blockhash and dummy data
+        let ix = crate::transaction::Instruction {
+            program_id: crate::evm::EVM_PROGRAM_ID,
+            accounts: vec![alice],
+            data: vec![0xDE, 0xAD], // invalid EVM payload — will fail decoding, not sentinel check
+        };
+        let msg = crate::transaction::Message {
+            instructions: vec![ix],
+            recent_blockhash: EVM_SENTINEL_BLOCKHASH,
+        };
+        let tx = Transaction {
+            signatures: vec![[0u8; 64]],
+            message: msg,
+        };
+        let result = processor.process_transaction(&tx, &validator);
+        // Should fail with EVM decode error — NOT with "sentinel blockhash" error
+        assert!(!result.success);
+        let err = result.error.as_deref().unwrap_or("");
+        assert!(
+            !err.contains("sentinel blockhash"),
+            "EVM TX should pass the sentinel check; got: {err}",
+        );
     }
 }

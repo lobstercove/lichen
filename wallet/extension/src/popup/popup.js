@@ -406,14 +406,40 @@ async function exportKeystoreJsonAction() {
     secretKey.set(privateKeyBytes, 0);
     secretKey.set(publicKeyBytes, 32);
 
+    // P9-FE-01: Encrypt the exported keystore with the wallet password instead
+    // of dumping the secretKey in cleartext.  Uses SubtleCrypto AES-GCM with
+    // a PBKDF2-derived key so the file is safe at rest.
+    const enc = new TextEncoder();
+    const salt = crypto.getRandomValues(new Uint8Array(32));
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const baseKey = await crypto.subtle.importKey(
+      'raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']
+    );
+    const aesKey = await crypto.subtle.deriveKey(
+      { name: 'PBKDF2', salt, iterations: 600000, hash: 'SHA-256' },
+      baseKey,
+      { name: 'AES-GCM', length: 256 },
+      false, ['encrypt']
+    );
+    const ciphertext = await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv }, aesKey, secretKey
+    );
+
     const keystore = {
+      version: '2.0',
       name: wallet.name,
       address: wallet.address,
       publicKey: Array.from(publicKeyBytes),
-      secretKey: Array.from(secretKey),
+      encrypted: {
+        algorithm: 'AES-256-GCM',
+        kdf: 'PBKDF2-SHA256',
+        iterations: 600000,
+        salt: Array.from(salt),
+        iv: Array.from(iv),
+        ciphertext: Array.from(new Uint8Array(ciphertext)),
+      },
       created: wallet.createdAt,
       exported: new Date().toISOString(),
-      version: '1.0'
     };
 
     const blob = new Blob([JSON.stringify(keystore, null, 2)], { type: 'application/json' });
@@ -425,7 +451,7 @@ async function exportKeystoreJsonAction() {
     URL.revokeObjectURL(url);
 
     setExportOutput(JSON.stringify(keystore, null, 2));
-    setStatus('JSON keystore exported');
+    setStatus('Encrypted JSON keystore exported');
   } catch (error) {
     setStatus(`Export failed: ${error?.message || error}`);
   }
@@ -435,6 +461,21 @@ async function downloadPrivateKeyAction() {
   const wallet = getActiveWallet();
   if (!wallet) {
     setStatus('No active wallet');
+    return;
+  }
+
+  // P9-FE-02: Security warning before downloading cleartext private key.
+  // This is a destructive / high-risk action — users must explicitly confirm.
+  const confirmed = confirm(
+    '⚠️  SECURITY WARNING\n\n' +
+    'You are about to download your PRIVATE KEY in plain text.\n\n' +
+    '• Anyone who obtains this file can steal ALL funds from this wallet.\n' +
+    '• Never share this file or upload it to any website.\n' +
+    '• Store it in an encrypted volume or delete it after use.\n\n' +
+    'Do you want to proceed?'
+  );
+  if (!confirmed) {
+    setStatus('Private key download cancelled');
     return;
   }
 

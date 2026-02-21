@@ -60,8 +60,8 @@ pub use nft::{
 };
 pub use processor::{
     get_trust_tier, FeeConfig, SimulationResult, TxProcessor, TxResult, BASE_FEE,
-    CONTRACT_DEPLOY_FEE, CONTRACT_PROGRAM_ID, CONTRACT_UPGRADE_FEE, NFT_COLLECTION_FEE,
-    NFT_MINT_FEE, SYSTEM_PROGRAM_ID,
+    CONTRACT_DEPLOY_FEE, CONTRACT_PROGRAM_ID, CONTRACT_UPGRADE_FEE, EVM_SENTINEL_BLOCKHASH,
+    NFT_COLLECTION_FEE, NFT_MINT_FEE, SYSTEM_PROGRAM_ID,
 };
 pub use reefstake::{
     ReefStakePool, StMoltToken, StakingPosition, UnstakeRequest, REEFSTAKE_BLOCK_SHARE_BPS,

@@ -59,6 +59,23 @@ use moltchain_core::{
 
 /// System account owner (Pubkey([0x01; 32]))
 const SYSTEM_ACCOUNT_OWNER: Pubkey = Pubkey([0x01; 32]);
+
+/// P9-RPC-02: Maximum size for bincode transaction deserialization.
+/// Prevents OOM/DoS from maliciously large payloads.  4 MiB matches
+/// the contract-deploy datasize limit enforced by `validate_structure()`.
+const MAX_TX_BINCODE_SIZE: u64 = 4 * 1024 * 1024;
+
+/// P9-RPC-02: Bounded bincode deserialization for Transaction.
+/// Uses `bincode::options().with_limit()` to reject payloads that
+/// exceed `MAX_TX_BINCODE_SIZE` before allocating memory.
+fn bounded_bincode_deserialize(bytes: &[u8]) -> Result<Transaction, bincode::Error> {
+    use bincode::Options;
+    bincode::options()
+        .with_limit(MAX_TX_BINCODE_SIZE)
+        .with_fixint_encoding()
+        .allow_trailing_bytes()
+        .deserialize(bytes)
+}
 use moltchain_core::consensus::{ValidatorInfo, HEARTBEAT_BLOCK_REWARD, TRANSACTION_BLOCK_REWARD};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -260,6 +277,42 @@ pub trait P2PNetworkTrait: Send + Sync {
 // RATE LIMITING & MIDDLEWARE
 // ═══════════════════════════════════════════════════════════════════════════════
 
+/// P9-RPC-03: Method cost tier for tiered rate limiting.
+/// Expensive methods (e.g., sendTransaction, simulateTransaction) get a lower
+/// per-second cap than cheap read-only queries (e.g., getBalance, getSlot).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum MethodTier {
+    /// Cheap read-only lookups (getBalance, getSlot, health)
+    Cheap,
+    /// Moderate reads that touch indexes or iterate (getTransactionsByAddress)
+    Moderate,
+    /// Expensive writes or simulations (sendTransaction, simulateTransaction)
+    Expensive,
+}
+
+/// P9-RPC-03: Classify an RPC method name into a cost tier.
+fn classify_method(method: &str) -> MethodTier {
+    match method {
+        // Writes / simulations
+        "sendTransaction" | "simulateTransaction" | "deployContract" | "upgradeContract"
+        | "stake" | "unstake" | "stakeToReefStake" | "unstakeFromReefStake"
+        | "claimUnstakedTokens" | "requestAirdrop" | "setFeeConfig" | "setRentParams"
+        | "setContractAbi" => MethodTier::Expensive,
+
+        // Moderate reads (iterate indexes, join data)
+        "getTransactionsByAddress" | "getTransactionHistory" | "getRecentTransactions"
+        | "getTokenHolders" | "getTokenTransfers" | "getContractEvents" | "getContractLogs"
+        | "getNFTsByOwner" | "getNFTsByCollection" | "getNFTActivity" | "getMarketListings"
+        | "getMarketSales" | "getProgramCalls" | "getProgramStorage" | "getPrograms"
+        | "getAllContracts" | "getAllSymbolRegistry" | "getPredictionMarkets"
+        | "getPredictionLeaderboard" | "batchReverseMoltNames" | "searchMoltNames"
+        | "getUnstakingQueue" => MethodTier::Moderate,
+
+        // Everything else is a cheap point lookup
+        _ => MethodTier::Cheap,
+    }
+}
+
 /// T2.6: Per-IP rate limiter with stale entry pruning
 /// AUDIT-FIX 2.17: std::sync::Mutex is intentional here — the critical section
 /// is a fast HashMap lookup/insert with no `.await` points, consistent with
@@ -268,6 +321,11 @@ struct RateLimiter {
     requests: std::sync::Mutex<HashMap<IpAddr, (u64, Instant)>>,
     max_per_second: u64,
     last_prune: std::sync::Mutex<Instant>,
+    /// P9-RPC-03: Per-tier per-IP counters.
+    /// Key = (IpAddr, MethodTier), Value = (count, window_start).
+    tier_requests: std::sync::Mutex<HashMap<(IpAddr, MethodTier), (u64, Instant)>>,
+    /// Per-second limits for each tier.
+    tier_limits: [u64; 3], // [Cheap, Moderate, Expensive]
 }
 
 impl RateLimiter {
@@ -276,10 +334,18 @@ impl RateLimiter {
             requests: std::sync::Mutex::new(HashMap::new()),
             max_per_second,
             last_prune: std::sync::Mutex::new(Instant::now()),
+            tier_requests: std::sync::Mutex::new(HashMap::new()),
+            // P9-RPC-03: Default tier limits.
+            // Cheap: 100% of global cap, Moderate: 40%, Expensive: 10%
+            tier_limits: [
+                max_per_second,                      // Cheap
+                max_per_second * 2 / 5,              // Moderate (40%)
+                std::cmp::max(max_per_second / 10, 50), // Expensive (10%, min 50)
+            ],
         }
     }
 
-    /// Check if a request from `ip` is within the rate limit.
+    /// Check if a request from `ip` is within the global rate limit.
     /// Returns `true` if allowed, `false` if rate-limited.
     fn check(&self, ip: IpAddr) -> bool {
         let mut map = self.requests.lock().unwrap_or_else(|e| e.into_inner());
@@ -290,6 +356,10 @@ impl RateLimiter {
             let mut last = self.last_prune.lock().unwrap_or_else(|e| e.into_inner());
             if now.duration_since(*last).as_secs() >= 30 {
                 map.retain(|_, (_, ts)| now.duration_since(*ts).as_secs() < 60);
+                // Also prune tier counters
+                if let Ok(mut tier_map) = self.tier_requests.lock() {
+                    tier_map.retain(|_, (_, ts)| now.duration_since(*ts).as_secs() < 60);
+                }
                 *last = now;
             }
         }
@@ -303,6 +373,23 @@ impl RateLimiter {
         } else {
             entry.0 += 1;
             entry.0 <= self.max_per_second
+        }
+    }
+
+    /// P9-RPC-03: Check if a request from `ip` for method `tier` is within
+    /// the tier-specific rate limit.  Should be called AFTER `check()` passes.
+    fn check_tier(&self, ip: IpAddr, tier: MethodTier) -> bool {
+        let limit = self.tier_limits[tier as usize];
+        let mut map = self.tier_requests.lock().unwrap_or_else(|e| e.into_inner());
+        let now = Instant::now();
+        let entry = map.entry((ip, tier)).or_insert((0, now));
+        if now.duration_since(entry.1).as_secs() >= 1 {
+            entry.0 = 1;
+            entry.1 = now;
+            true
+        } else {
+            entry.0 += 1;
+            entry.0 <= limit
         }
     }
 }
@@ -1031,7 +1118,37 @@ pub fn build_rpc_router(
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Handle RPC request
-async fn handle_rpc(State(state): State<Arc<RpcState>>, Json(req): Json<RpcRequest>) -> Response {
+async fn handle_rpc(
+    State(state): State<Arc<RpcState>>,
+    connect_info: Option<ConnectInfo<SocketAddr>>,
+    Json(req): Json<RpcRequest>,
+) -> Response {
+    // P9-RPC-03: Tiered rate limiting — classify the method and enforce
+    // a per-tier per-IP limit on top of the global rate limit.
+    let tier = classify_method(&req.method);
+    if tier != MethodTier::Cheap {
+        let ip = connect_info
+            .map(|ci| ci.0.ip())
+            .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+        if !state.rate_limiter.check_tier(ip, tier) {
+            let label = match tier {
+                MethodTier::Expensive => "expensive",
+                MethodTier::Moderate => "moderate",
+                MethodTier::Cheap => "cheap",
+            };
+            warn!("P9-RPC-03: {} method rate limit exceeded for IP {}", label, ip);
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": req.id,
+                    "error": {"code": -32005, "message": format!("Rate limit exceeded for {} methods", label)}
+                })),
+            )
+                .into_response();
+        }
+    }
+
     // Route to appropriate handler
     let result = match req.method.as_str() {
         // Basic queries (canonical Molt endpoints)
@@ -1209,8 +1326,32 @@ async fn handle_rpc(State(state): State<Arc<RpcState>>, Json(req): Json<RpcReque
 /// Handle Solana-compatible RPC request
 async fn handle_solana_rpc(
     State(state): State<Arc<RpcState>>,
+    connect_info: Option<ConnectInfo<SocketAddr>>,
     Json(req): Json<RpcRequest>,
 ) -> Response {
+    // P9-RPC-03: Tiered rate limiting for Solana-compat methods
+    let tier = match req.method.as_str() {
+        "sendTransaction" => MethodTier::Expensive,
+        "getSignaturesForAddress" => MethodTier::Moderate,
+        _ => MethodTier::Cheap,
+    };
+    if tier != MethodTier::Cheap {
+        let ip = connect_info
+            .map(|ci| ci.0.ip())
+            .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+        if !state.rate_limiter.check_tier(ip, tier) {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": req.id,
+                    "error": {"code": -32005, "message": "Rate limit exceeded"}
+                })),
+            )
+                .into_response();
+        }
+    }
+
     let result = match req.method.as_str() {
         "getLatestBlockhash" => handle_solana_get_latest_blockhash(&state).await,
         "getRecentBlockhash" => handle_solana_get_latest_blockhash(&state).await,
@@ -1254,8 +1395,32 @@ async fn handle_solana_rpc(
 /// Handle Ethereum-compatible RPC request
 async fn handle_evm_rpc(
     State(state): State<Arc<RpcState>>,
+    connect_info: Option<ConnectInfo<SocketAddr>>,
     Json(req): Json<RpcRequest>,
 ) -> Response {
+    // P9-RPC-03: Tiered rate limiting for EVM-compat methods
+    let tier = match req.method.as_str() {
+        "eth_sendRawTransaction" | "eth_call" | "eth_estimateGas" => MethodTier::Expensive,
+        "eth_getLogs" => MethodTier::Moderate,
+        _ => MethodTier::Cheap,
+    };
+    if tier != MethodTier::Cheap {
+        let ip = connect_info
+            .map(|ci| ci.0.ip())
+            .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+        if !state.rate_limiter.check_tier(ip, tier) {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                Json(serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": req.id,
+                    "error": {"code": -32005, "message": "Rate limit exceeded"}
+                })),
+            )
+                .into_response();
+        }
+    }
+
     let result = match req.method.as_str() {
         "eth_getBalance" => handle_eth_get_balance(&state, req.params).await,
         "eth_sendRawTransaction" => handle_eth_send_raw_transaction(&state, req.params).await,
@@ -2636,7 +2801,7 @@ fn decode_solana_transaction(
         }
     };
 
-    bincode::deserialize(&tx_bytes)
+    bounded_bincode_deserialize(&tx_bytes)
         .or_else(|_| parse_json_transaction(&tx_bytes))
         .map_err(|e: RpcError| e)
 }
@@ -2841,10 +3006,20 @@ async fn handle_send_transaction(
 
     // Deserialize transaction — try bincode first, then JSON (wallet sends JSON)
     let tx: Transaction =
-        bincode::deserialize(&tx_bytes).or_else(|_| parse_json_transaction(&tx_bytes))?;
+        bounded_bincode_deserialize(&tx_bytes).or_else(|_| parse_json_transaction(&tx_bytes))?;
 
     // ── Pre-mempool validation ──────────────────────────────────
     // Reject structurally invalid transactions BEFORE entering mempool.
+
+    // P9-RPC-01: Reject EVM sentinel blockhash via sendTransaction.
+    // Only eth_sendRawTransaction may create TXs with the sentinel — external
+    // callers must never be allowed to submit sentinel-tagged TXs directly.
+    if tx.message.recent_blockhash == moltchain_core::Hash([0xEE; 32]) {
+        return Err(RpcError {
+            code: -32003,
+            message: "EVM sentinel blockhash is not allowed via sendTransaction".to_string(),
+        });
+    }
 
     // 1. Reject transactions with empty signatures
     if tx.signatures.is_empty() {
@@ -3003,7 +3178,7 @@ async fn handle_simulate_transaction(
         })?;
 
     // Deserialize transaction
-    let tx: Transaction = bincode::deserialize(&tx_bytes).map_err(|e| RpcError {
+    let tx: Transaction = bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
         code: -32602,
         message: format!("Invalid transaction: {}", e),
     })?;
@@ -3600,6 +3775,15 @@ async fn handle_solana_send_transaction(
         .and_then(|v| v.as_str());
 
     let tx = decode_solana_transaction(tx_payload, encoding)?;
+
+    // P9-RPC-01: Reject EVM sentinel blockhash via Solana sendTransaction
+    if tx.message.recent_blockhash == moltchain_core::Hash([0xEE; 32]) {
+        return Err(RpcError {
+            code: -32003,
+            message: "EVM sentinel blockhash is not allowed via sendTransaction".to_string(),
+        });
+    }
+
     let signature_hash = tx.signature();
     let signature_base58 = hash_to_base58(&signature_hash);
 
@@ -4301,7 +4485,7 @@ async fn handle_stake(
                 message: format!("Invalid base64: {}", e),
             })?;
 
-        let tx: Transaction = bincode::deserialize(&tx_bytes).map_err(|e| RpcError {
+        let tx: Transaction = bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
             code: -32602,
             message: format!("Invalid transaction: {}", e),
         })?;
@@ -4360,7 +4544,7 @@ async fn handle_unstake(
                 message: format!("Invalid base64: {}", e),
             })?;
 
-        let tx: Transaction = bincode::deserialize(&tx_bytes).map_err(|e| RpcError {
+        let tx: Transaction = bounded_bincode_deserialize(&tx_bytes).map_err(|e| RpcError {
             code: -32602,
             message: format!("Invalid transaction: {}", e),
         })?;
@@ -7712,9 +7896,11 @@ async fn handle_eth_send_raw_transaction(
 
     let message = moltchain_core::Message {
         instructions: vec![instruction],
-        // AUDIT-FIX 2.15: Use a recognizable sentinel blockhash for EVM-wrapped txs.
-        // Real validation happens at the EVM layer via ECDSA signature in the raw payload.
-        recent_blockhash: Hash([0xEE; 32]),
+        // P9-RPC-01: Use the named constant for the EVM sentinel blockhash.
+        // The processor recognises this sentinel and routes directly to the
+        // EVM execution path, skipping native blockhash + sig verification
+        // (the EVM layer provides its own replay protection via nonces + ECDSA).
+        recent_blockhash: moltchain_core::EVM_SENTINEL_BLOCKHASH,
     };
 
     let tx = Transaction {
