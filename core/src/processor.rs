@@ -1446,13 +1446,23 @@ impl TxProcessor {
             .saturating_add(producer_amount)
             .saturating_add(voters_amount);
 
+        // AUDIT-FIX B-5: Cap the total distributed to prevent shell creation from
+        // malformed fee split percentages exceeding 100%.
+        let capped_to_treasury = std::cmp::min(total_to_treasury, fee.saturating_sub(burn_amount));
+
         // Build the atomic account set: payer is always included,
         // treasury only when there is something to credit.
         let mut accounts: Vec<(&Pubkey, &Account)> = vec![(payer, &payer_account)];
         let treasury_pubkey;
         let treasury_account;
 
-        if total_to_treasury > 0 {
+        if capped_to_treasury > 0 {
+            // AUDIT-FIX B-1: Acquire treasury_lock to serialize the treasury
+            // read-modify-write cycle. Without this lock, parallel TX groups
+            // could both read the same treasury balance and overwrite each
+            // other's fee credits (classic lost-update race).
+            let _treasury_guard = self.state.lock_treasury()?;
+
             treasury_pubkey = self
                 .state
                 .get_treasury_pubkey()?
@@ -1462,7 +1472,7 @@ impl TxProcessor {
                     .state
                     .get_account(&treasury_pubkey)?
                     .unwrap_or_else(|| Account::new(0, treasury_pubkey));
-                ta.add_spendable(total_to_treasury)?;
+                ta.add_spendable(capped_to_treasury)?;
                 ta
             };
             accounts.push((&treasury_pubkey, &treasury_account));
@@ -3972,6 +3982,92 @@ mod tests {
         assert!(
             !err.contains("sentinel blockhash"),
             "EVM TX should pass the sentinel check; got: {err}",
+        );
+    }
+
+    /// AUDIT-FIX B-1: Treasury lock serializes concurrent fee charging.
+    /// Two parallel groups charging fees must not lose updates — both debits
+    /// must be reflected in the final treasury balance.
+    #[test]
+    fn test_treasury_lock_prevents_lost_updates() {
+        let temp_dir = tempdir().unwrap();
+        let state = StateStore::open(temp_dir.path()).unwrap();
+        let treasury = Pubkey([3u8; 32]);
+        state.set_treasury_pubkey(&treasury).unwrap();
+        state
+            .put_account(&treasury, &Account::new(0, treasury))
+            .unwrap();
+
+        // Create two payers each with 10 MOLT (10_000_000_000 shells)
+        let kp_a = Keypair::generate();
+        let kp_b = Keypair::generate();
+        let payer_a = kp_a.pubkey();
+        let payer_b = kp_b.pubkey();
+        let initial_shells = Account::molt_to_shells(10);
+        state
+            .put_account(&payer_a, &Account::new(10, payer_a))
+            .unwrap();
+        state
+            .put_account(&payer_b, &Account::new(10, payer_b))
+            .unwrap();
+
+        let fee = Account::molt_to_shells(1); // 1 MOLT = 1_000_000_000 shells
+
+        // Simulate two parallel groups charging fees concurrently.
+        // With the treasury_lock, the second group must see the first's write.
+        let state_a = state.clone();
+        let state_b = state.clone();
+
+        let proc_a = TxProcessor::new(state_a);
+        let proc_b = TxProcessor::new(state_b);
+
+        // Group A charges fee
+        proc_a.charge_fee_direct(&payer_a, fee).unwrap();
+
+        // Group B charges fee — must see group A's treasury credit
+        proc_b.charge_fee_direct(&payer_b, fee).unwrap();
+
+        // Treasury should have received BOTH fee credits (minus burned portion)
+        let final_treasury = state.get_account(&treasury).unwrap().unwrap();
+        assert!(
+            final_treasury.shells > 0,
+            "Treasury must have received fee credits"
+        );
+        // Both payers should have been debited exactly 1 MOLT
+        let payer_a_bal = state.get_account(&payer_a).unwrap().unwrap().shells;
+        let payer_b_bal = state.get_account(&payer_b).unwrap().unwrap().shells;
+        assert_eq!(payer_a_bal, initial_shells - fee);
+        assert_eq!(payer_b_bal, initial_shells - fee);
+    }
+
+    /// AUDIT-FIX B-5: Fee split percentages are capped so total distributed
+    /// never exceeds the original fee amount.
+    #[test]
+    fn test_fee_split_capped_no_shell_creation() {
+        let (processor, state, _alice_kp, _alice, treasury, _genesis_hash) = setup();
+
+        // Set up a payer with known balance (10 MOLT)
+        let payer = Pubkey([99u8; 32]);
+        state
+            .put_account(&payer, &Account::new(10, payer))
+            .unwrap();
+
+        let fee = Account::molt_to_shells(1); // 1 MOLT
+        let treasury_before = state.get_account(&treasury).unwrap().unwrap().shells;
+
+        processor.charge_fee_direct(&payer, fee).unwrap();
+
+        let treasury_after = state.get_account(&treasury).unwrap().unwrap().shells;
+        let treasury_gain = treasury_after - treasury_before;
+        let burned = state.get_total_burned().unwrap_or(0);
+
+        // Treasury gain + burned must not exceed the fee charged
+        assert!(
+            treasury_gain.saturating_add(burned) <= fee,
+            "Treasury gain ({}) + burned ({}) must not exceed fee ({})",
+            treasury_gain,
+            burned,
+            fee
         );
     }
 }

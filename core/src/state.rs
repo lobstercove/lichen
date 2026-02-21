@@ -608,6 +608,9 @@ pub struct StateStore {
     /// P10-CORE-01: Mutex to serialize add_burned read-modify-write operations,
     /// preventing lost updates under concurrent access.
     burned_lock: Arc<std::sync::Mutex<()>>,
+    /// AUDIT-FIX B-1: Mutex to serialize treasury read-modify-write in charge_fee_direct,
+    /// preventing lost-update race when parallel TX groups credit fees concurrently.
+    treasury_lock: Arc<std::sync::Mutex<()>>,
 }
 
 /// Atomic write batch for transaction processing (T1.4/T3.1).
@@ -825,6 +828,7 @@ impl StateStore {
             transfer_seq_lock: Arc::new(std::sync::Mutex::new(())),
             tx_slot_seq_lock: Arc::new(std::sync::Mutex::new(())),
             burned_lock: Arc::new(std::sync::Mutex::new(())),
+            treasury_lock: Arc::new(std::sync::Mutex::new(())),
         })
     }
 
@@ -4122,6 +4126,15 @@ impl StateStore {
             Ok(None) => Ok(None),
             Err(e) => Err(format!("Database error: {}", e)),
         }
+    }
+
+    /// AUDIT-FIX B-1: Acquire treasury lock to serialize concurrent treasury
+    /// read-modify-write operations during parallel fee charging.
+    /// Returns a MutexGuard that must be held for the entire treasury RMW cycle.
+    pub fn lock_treasury(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {
+        self.treasury_lock
+            .lock()
+            .map_err(|e| format!("treasury_lock poisoned: {}", e))
     }
 
     /// Load genesis public key
