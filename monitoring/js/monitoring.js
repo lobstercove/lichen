@@ -19,7 +19,7 @@ const SYMBOLS = [
     'MOLT','MUSD','WETH','WSOL','DEX','DEXAMM','DEXGOV','DEXMARGIN',
     'DEXREWARDS','DEXROUTER','BRIDGE','DAO','CLAWVAULT','CLAWPAY',
     'CLAWPUMP','ORACLE','LEND','MARKET','AUCTION','BOUNTY','ANALYTICS',
-    'COMPUTE','MOLTSWAP','PUNKS','REEF','TLOBSTER','YID'
+    'COMPUTE','MOLTSWAP','PUNKS','REEF','PREDMKT','YID'
 ];
 
 const REFRESH_MS = 3000;
@@ -395,6 +395,11 @@ async function refresh() {
         // ─ Smart Contracts Monitor (once) ─
         if (!contractMonitorLoaded) {
             await updateContractMonitor();
+        }
+
+        // ─ MoltyID Identity Monitor (every 10s) ─
+        if (!identityMonitorLoaded || Date.now() % 10000 < REFRESH_MS) {
+            await updateIdentitiesMonitor();
         }
 
         // ─ Footer ─
@@ -938,7 +943,7 @@ const DEX_SUBSYSTEMS = [
       metrics: ['candles', 'indexed_trades', 'pairs_tracked', 'uptime'] },
     { id: 'moltswap', symbol: 'MOLTSWAP', name: 'MoltSwap', desc: 'Simple token swap interface', icon: 'fas fa-arrows-rotate', color: '#ff6b35',
       metrics: ['swaps_24h', 'volume', 'unique_users', 'pairs'] },
-    { id: 'prediction_market', symbol: 'TLOBSTER', name: 'PredictionReef', desc: 'Binary/multi-outcome markets + mUSD', icon: 'fas fa-chart-pie', color: '#e879f9',
+    { id: 'prediction_market', symbol: 'PREDMKT', name: 'Prediction Markets', desc: 'Binary/multi-outcome markets + mUSD', icon: 'fas fa-chart-pie', color: '#e879f9',
       metrics: ['markets', 'volume', 'collateral', 'traders'] },
 ];
 
@@ -969,24 +974,24 @@ async function updateDexMonitor() {
         // Try to load subsystem-specific metrics
         try {
             if (sub.id === 'dex_core') {
-                const stats = await rpc('getDexStats');
+                const stats = await rpc('getDexCoreStats');
                 if (stats) {
-                    metricsData = { pairs: stats.total_pairs || 0, orders: stats.open_orders || 0,
-                        fills_24h: stats.fills_24h || 0, volume_24h: stats.volume_24h || 0 };
+                    metricsData = { pairs: stats.pair_count || 0, orders: stats.order_count || 0,
+                        fills_24h: stats.trade_count || 0, volume_24h: stats.total_volume || 0 };
                     deployed = true;
                 }
             } else if (sub.id === 'dex_amm') {
-                const stats = await rpc('getAmmStats');
+                const stats = await rpc('getDexAmmStats');
                 if (stats) {
-                    metricsData = { pools: stats.total_pools || 0, tvl: stats.tvl || 0,
-                        volume_24h: stats.volume_24h || 0, fees_24h: stats.fees_24h || 0 };
+                    metricsData = { pools: stats.pool_count || 0, tvl: stats.total_volume || 0,
+                        volume_24h: stats.swap_count || 0, fees_24h: stats.total_fees || 0 };
                     deployed = true;
                 }
             } else if (sub.id === 'dex_margin') {
-                const stats = await rpc('getMarginStats');
+                const stats = await rpc('getDexMarginStats');
                 if (stats) {
-                    metricsData = { positions: stats.open_positions || 0, total_collateral: stats.total_collateral || 0,
-                        liquidations: stats.liquidations_24h || 0, max_leverage: '10x' };
+                    metricsData = { positions: stats.position_count || 0, total_collateral: stats.total_volume || 0,
+                        liquidations: stats.liquidation_count || 0, max_leverage: '10x' };
                     deployed = true;
                 }
             } else if (sub.id === 'prediction_market') {
@@ -1085,21 +1090,21 @@ async function updateDexMonitor() {
         badge.className = 'panel-badge ' + (onlineCount === DEX_SUBSYSTEMS.length ? 'success' : onlineCount > 0 ? 'info' : 'warning');
     }
 
-    // Update summary stats
-    const dexStats = await rpc('getDexStats').catch(() => null);
+    // Update summary stats from real RPC endpoints
     const el = id => document.getElementById(id);
-    if (dexStats) {
-        if (el('dexTotalPairs')) el('dexTotalPairs').textContent = formatNum(dexStats.total_pairs || 0);
-        if (el('dexVolume24h')) el('dexVolume24h').textContent = formatMolt(dexStats.volume_24h || 0);
-        if (el('dexOpenOrders')) el('dexOpenOrders').textContent = formatNum(dexStats.open_orders || 0);
+    const dexCoreStats = await rpc('getDexCoreStats').catch(() => null);
+    if (dexCoreStats) {
+        if (el('dexTotalPairs')) el('dexTotalPairs').textContent = formatNum(dexCoreStats.pair_count || 0);
+        if (el('dexVolume24h')) el('dexVolume24h').textContent = formatMolt(dexCoreStats.total_volume || 0);
+        if (el('dexOpenOrders')) el('dexOpenOrders').textContent = formatNum(dexCoreStats.order_count || 0);
     }
-    const ammStats = await rpc('getAmmStats').catch(() => null);
+    const ammStats = await rpc('getDexAmmStats').catch(() => null);
     if (ammStats) {
-        if (el('dexTVL')) el('dexTVL').textContent = formatMolt(ammStats.tvl || 0);
+        if (el('dexTVL')) el('dexTVL').textContent = formatMolt(ammStats.total_volume || 0);
     }
-    const marginStats = await rpc('getMarginStats').catch(() => null);
+    const marginStats = await rpc('getDexMarginStats').catch(() => null);
     if (marginStats) {
-        if (el('dexMarginPos')) el('dexMarginPos').textContent = formatNum(marginStats.open_positions || 0);
+        if (el('dexMarginPos')) el('dexMarginPos').textContent = formatNum(marginStats.position_count || 0);
     }
     const predictStats = await rpc('getPredictionMarketStats').catch(() => null);
     if (predictStats) {
@@ -1136,7 +1141,7 @@ const ALL_CONTRACTS = [
     { symbol: 'REEF', name: 'Reef Storage', cat: 'infra', icon: 'fas fa-database', color: '#22d3ee' },
     { symbol: 'PUNKS', name: 'MoltPunks', cat: 'nft', icon: 'fas fa-image', color: '#f43f5e' },
     { symbol: 'YID', name: 'MoltyID', cat: 'identity', icon: 'fas fa-fingerprint', color: '#818cf8' },
-    { symbol: 'TLOBSTER', name: 'Prediction Market', cat: 'defi', icon: 'fas fa-chart-pie', color: '#e879f9' },
+    { symbol: 'PREDMKT', name: 'Prediction Markets', cat: 'defi', icon: 'fas fa-chart-pie', color: '#e879f9' },
 ];
 
 let contractMonitorLoaded = false;
@@ -1164,7 +1169,7 @@ async function updateContractMonitor() {
         if (deployed) {
             try {
                 let cs = null;
-                if (c.symbol === 'TLOBSTER') {
+                if (c.symbol === 'PREDMKT') {
                     cs = await rpc('getPredictionMarketStats');
                     if (cs) cs = { markets: cs.open_markets || 0, volume: cs.total_volume || 0, collateral: cs.total_collateral || 0, fees: cs.fees_collected || 0 };
                 } else if (c.symbol === 'MOLT') {
@@ -1221,6 +1226,69 @@ async function updateContractMonitor() {
             });
         });
     });
+}
+
+// ── MoltyID Identity Monitor ────────────────────────────────
+
+let identityMonitorLoaded = false;
+
+async function updateIdentitiesMonitor() {
+    const badge = document.getElementById('identityMonitorBadge');
+    const tierGrid = document.getElementById('identityTierGrid');
+    const el = id => document.getElementById(id);
+
+    const stats = await rpc('getMoltyIdStats').catch(() => null);
+    if (!stats) {
+        if (badge) { badge.textContent = 'OFFLINE'; badge.className = 'panel-badge warning'; }
+        return;
+    }
+
+    const totalIdentities = stats.total_identities || 0;
+    const totalNames = stats.total_names || 0;
+    const tier = stats.tier_distribution || {};
+
+    // Summary bar
+    if (el('idTotalIdentities')) el('idTotalIdentities').textContent = formatNum(totalIdentities);
+    if (el('idTotalNames')) el('idTotalNames').textContent = formatNum(totalNames);
+    if (el('idTierNewcomer')) el('idTierNewcomer').textContent = formatNum(tier.newcomer || 0);
+    if (el('idTierVerified')) el('idTierVerified').textContent = formatNum(tier.verified || 0);
+    if (el('idTierTrusted')) el('idTierTrusted').textContent = formatNum(tier.trusted || 0);
+    if (el('idTierEstablished')) el('idTierEstablished').textContent = formatNum(tier.established || 0);
+    if (el('idTierElite')) el('idTierElite').textContent = formatNum(tier.elite || 0);
+    if (el('idTierLegendary')) el('idTierLegendary').textContent = formatNum(tier.legendary || 0);
+
+    // Tier distribution visual cards
+    if (tierGrid) {
+        const tiers = [
+            { name: 'Newcomer', count: tier.newcomer || 0, color: '#94a3b8', icon: 'fas fa-seedling' },
+            { name: 'Verified', count: tier.verified || 0, color: '#4ade80', icon: 'fas fa-check-circle' },
+            { name: 'Trusted', count: tier.trusted || 0, color: '#60a5fa', icon: 'fas fa-shield-alt' },
+            { name: 'Established', count: tier.established || 0, color: '#a78bfa', icon: 'fas fa-star' },
+            { name: 'Elite', count: tier.elite || 0, color: '#f59e0b', icon: 'fas fa-crown' },
+            { name: 'Legendary', count: tier.legendary || 0, color: '#ef4444', icon: 'fas fa-gem' },
+        ];
+        const maxCount = Math.max(1, ...tiers.map(t => t.count));
+        tierGrid.innerHTML = tiers.map(t => {
+            const pct = Math.round((t.count / maxCount) * 100);
+            return `<div class="identity-tier-card">
+                <div class="identity-tier-header">
+                    <i class="${t.icon}" style="color:${t.color};"></i>
+                    <span class="identity-tier-name">${t.name}</span>
+                    <span class="identity-tier-count" style="color:${t.color};">${formatNum(t.count)}</span>
+                </div>
+                <div class="identity-tier-bar-bg">
+                    <div class="identity-tier-bar" style="width:${pct}%;background:${t.color};"></div>
+                </div>
+            </div>`;
+        }).join('');
+    }
+
+    if (badge) {
+        badge.textContent = `${formatNum(totalIdentities)} Identities`;
+        badge.className = 'panel-badge ' + (totalIdentities > 0 ? 'success' : 'info');
+    }
+
+    identityMonitorLoaded = true;
 }
 
 // ── Clock ───────────────────────────────────────────────────
