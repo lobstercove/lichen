@@ -675,6 +675,11 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
     // Handle incoming messages
     while let Some(Ok(msg)) = receiver.next().await {
         if let Message::Text(text) = msg {
+            // Handle client-side keepalive pings (explorer sends {"method":"ping"})
+            if text.contains("\"ping\"") {
+                let _ = tx.send("{\"result\":\"pong\"}".to_string()).await;
+                continue;
+            }
             if let Ok(req) = serde_json::from_str::<SubscriptionRequest>(&text) {
                 let response = handle_subscription_request(req, &subscription_manager).await;
                 if let Ok(json) = serde_json::to_string(&response) {

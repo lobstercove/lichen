@@ -117,6 +117,10 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     };
 
+    // Always run background REST polling for validators regardless of WS state
+    // This ensures data freshness during chain stalls
+    setInterval(loadValidators, 15000);
+
     if (typeof ws !== 'undefined') {
         ws.onOpen(() => {
             stopPolling();

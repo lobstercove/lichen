@@ -32,6 +32,10 @@ alloy-primitives = "0.8.26"
 alloy-rlp = "0.3.13"
 derive_more = { version = "1.0.0", features = ["display"] }
 
+[features]
+default = []
+privacy = []  # A14-01/A14-02: Privacy module is disabled by default until real ZK implementation is ready
+
 [dev-dependencies]
 criterion = "0.5"
 tempfile = "3.24.0"

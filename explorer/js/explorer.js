@@ -703,14 +703,17 @@ document.addEventListener('DOMContentLoaded', () => {
     let dashboardPolling = null;
     let lastWsBlockTime = 0;
     let staleCheckInterval = null;
-    const WS_STALE_THRESHOLD = 10000; // 10 seconds
+    // Poll REST as a continuous background regardless of WS — ensures
+    // the dashboard always shows fresh data even during chain stalls
+    let backgroundPolling = null;
+    const WS_STALE_THRESHOLD = 6000; // 6 seconds (reduced from 10s for faster detection)
 
     const startPolling = () => {
         if (dashboardPolling || !isDashboard) return;
         dashboardPolling = setInterval(() => {
             updateDashboardStats();
             updateLatestTransactions();
-        }, 5000);
+        }, 3000); // Poll every 3s when WS is down (was 5s)
     };
 
     const stopPolling = () => {
@@ -719,6 +722,16 @@ document.addEventListener('DOMContentLoaded', () => {
             dashboardPolling = null;
         }
     };
+
+    // Background REST poll: always runs at low frequency to ensure data freshness
+    // even when WS appears connected but chain is stalled
+    const startBackgroundPolling = () => {
+        if (backgroundPolling || !isDashboard) return;
+        backgroundPolling = setInterval(() => {
+            updateDashboardStats();
+        }, 10000); // Every 10s as a safety net
+    };
+    startBackgroundPolling();
 
     // Stale data detector: if WS is "connected" but no block event
     // has arrived in WS_STALE_THRESHOLD ms, force a REST poll and

@@ -316,12 +316,12 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u64 {
     // Update user shares
     let share_key = make_key(b"cv_shares:", &hex);
     let prev_shares = load_u64(&share_key);
-    store_u64(&share_key, prev_shares + shares);
+    store_u64(&share_key, prev_shares.saturating_add(shares));
 
     // Update totals (re-read in case first-deposit wrote them)
     let total_shares = load_u64(b"cv_total_shares");
     let total_assets = load_u64(b"cv_total_assets");
-    store_u64(b"cv_total_shares", total_shares + shares);
+    store_u64(b"cv_total_shares", total_shares.saturating_add(shares));
     // For first deposit, MIN_LOCKED_SHARES of the amount is already counted;
     // for subsequent deposits, just add the net amount.
     let additional_assets = if total_shares == MIN_LOCKED_SHARES {
@@ -329,7 +329,7 @@ pub extern "C" fn deposit(depositor_ptr: *const u8, amount: u64) -> u64 {
     } else {
         net_amount
     };
-    store_u64(b"cv_total_assets", total_assets + additional_assets);
+    store_u64(b"cv_total_assets", total_assets.saturating_add(additional_assets));
 
     reentrancy_exit();
     log_info("Vault deposit successful");
@@ -384,7 +384,7 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, shares_to_burn: u64) -> u64
 
     if fee > 0 {
         let prev_fees = load_u64(b"cv_protocol_fees");
-        store_u64(b"cv_protocol_fees", prev_fees + fee);
+        store_u64(b"cv_protocol_fees", prev_fees.saturating_add(fee));
     }
 
     // Update user shares
@@ -594,7 +594,7 @@ pub extern "C" fn harvest() -> u32 {
 
         // Update deployed amount
         let deployed_key = alloc::format!("cv_strat_deployed:{}", i);
-        store_u64(deployed_key.as_bytes(), deployed + strategy_yield);
+        store_u64(deployed_key.as_bytes(), deployed.saturating_add(strategy_yield));
     }
 
     if total_yield > 0 {
@@ -603,13 +603,13 @@ pub extern "C" fn harvest() -> u32 {
         let net_yield = total_yield - perf_fee;
 
         // Auto-compound: add net yield back to total assets
-        store_u64(b"cv_total_assets", total_assets + net_yield);
+        store_u64(b"cv_total_assets", total_assets.saturating_add(net_yield));
 
         // Track fees and earnings
         let fees = load_u64(b"cv_fees_earned");
-        store_u64(b"cv_fees_earned", fees + perf_fee);
+        store_u64(b"cv_fees_earned", fees.saturating_add(perf_fee));
         let earned = load_u64(b"cv_total_earned");
-        store_u64(b"cv_total_earned", earned + net_yield);
+        store_u64(b"cv_total_earned", earned.saturating_add(net_yield));
 
         log_info("Harvest & auto-compound complete");
     }

@@ -36,7 +36,7 @@ use alloc::vec::Vec;
 
 use moltchain_sdk::{
     log_info, storage_get, storage_set, bytes_to_u64, u64_to_bytes, get_slot,
-    get_caller, Address, CrossCall, call_contract, call_token_transfer,
+    get_caller, get_contract_address, Address, CrossCall, call_contract, call_token_transfer,
 };
 
 // SECURITY: Reentrancy guard
@@ -266,7 +266,7 @@ pub extern "C" fn register_provider(
 
     // SECURITY FIX: Check if contract is paused
     let paused = storage_get(b"cm_paused").unwrap_or_default();
-    if paused.len() > 0 && paused[0] == 1 { return 0; }
+    if paused.len() > 0 && paused[0] == 1 { return 99; }
 
     let mut addr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(provider_ptr, addr.as_mut_ptr(), 32) };
@@ -330,7 +330,7 @@ pub extern "C" fn submit_job(
 
     // SECURITY FIX: Check if contract is paused
     let paused = storage_get(b"cm_paused").unwrap_or_default();
-    if paused.len() > 0 && paused[0] == 1 { return 0; }
+    if paused.len() > 0 && paused[0] == 1 { return 99; }
 
     let mut req_arr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(requester_ptr, req_arr.as_mut_ptr(), 32) };
@@ -406,7 +406,7 @@ pub extern "C" fn claim_job(
 
     // SECURITY FIX: Check if contract is paused
     let paused = storage_get(b"cm_paused").unwrap_or_default();
-    if paused.len() > 0 && paused[0] == 1 { return 0; }
+    if paused.len() > 0 && paused[0] == 1 { return 99; }
 
     let mut prov_arr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(provider_ptr, prov_arr.as_mut_ptr(), 32) };
@@ -473,7 +473,7 @@ pub extern "C" fn complete_job(
 
     // SECURITY FIX: Check if contract is paused
     let paused = storage_get(b"cm_paused").unwrap_or_default();
-    if paused.len() > 0 && paused[0] == 1 { return 0; }
+    if paused.len() > 0 && paused[0] == 1 { return 99; }
 
     let mut prov_arr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(provider_ptr, prov_arr.as_mut_ptr(), 32) };
@@ -549,7 +549,7 @@ pub extern "C" fn dispute_job(
 
     // SECURITY FIX: Check if contract is paused
     let paused = storage_get(b"cm_paused").unwrap_or_default();
-    if paused.len() > 0 && paused[0] == 1 { return 0; }
+    if paused.len() > 0 && paused[0] == 1 { return 99; }
 
     let mut requester = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(requester_ptr, requester.as_mut_ptr(), 32) };
@@ -772,7 +772,7 @@ pub extern "C" fn cancel_job(
 
     // SECURITY FIX: Check if contract is paused
     let paused = storage_get(b"cm_paused").unwrap_or_default();
-    if paused.len() > 0 && paused[0] == 1 { return 0; }
+    if paused.len() > 0 && paused[0] == 1 { return 99; }
 
     let mut requester = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(requester_ptr, requester.as_mut_ptr(), 32) };
@@ -852,7 +852,7 @@ pub extern "C" fn release_payment(job_id: u64) -> u32 {
 
     // SECURITY FIX: Check if contract is paused
     let paused = storage_get(b"cm_paused").unwrap_or_default();
-    if paused.len() > 0 && paused[0] == 1 { return 0; }
+    if paused.len() > 0 && paused[0] == 1 { return 99; }
 
     if !reentrancy_enter() { return 20; }
 
@@ -933,7 +933,7 @@ pub extern "C" fn resolve_dispute(
 
     // SECURITY FIX: Check if contract is paused
     let paused = storage_get(b"cm_paused").unwrap_or_default();
-    if paused.len() > 0 && paused[0] == 1 { return 0; }
+    if paused.len() > 0 && paused[0] == 1 { return 99; }
 
     if !reentrancy_enter() { return 20; }
 
@@ -999,7 +999,7 @@ pub extern "C" fn resolve_dispute(
         if token_bytes.len() == 32 {
             let mut token_addr = [0u8; 32];
             token_addr.copy_from_slice(&token_bytes);
-            let contract_addr = get_caller();
+            let contract_addr = get_contract_address();
             if _to_requester > 0 {
                 let _ = call_token_transfer(
                     Address(token_addr),

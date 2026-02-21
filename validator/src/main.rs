@@ -68,7 +68,8 @@ const EXIT_CODE_RESTART: i32 = 75;
 
 /// Default number of seconds with no block activity before the watchdog
 /// triggers a restart.  Override with `--watchdog-timeout <secs>`.
-const DEFAULT_WATCHDOG_TIMEOUT_SECS: u64 = 120;
+/// Reduced from 120s to 30s for faster recovery from stalls.
+const DEFAULT_WATCHDOG_TIMEOUT_SECS: u64 = 30;
 
 /// Maximum number of automatic restarts before the supervisor gives up.
 /// Override with `--max-restarts <n>`.
@@ -2429,14 +2430,30 @@ async fn apply_block_effects(
 
         if !voter_pubkeys.is_empty() {
             let pool = stake_pool.read().await;
+            // AUDIT-FIX A7-02: Exclude slashed validators from fee distribution
+            // Only count stake from non-slashed validators for proportional sharing
             let total_voter_stake: u64 = voter_pubkeys
                 .iter()
+                .filter(|validator| {
+                    pool.get_stake(validator)
+                        .map(|s| s.is_active)
+                        .unwrap_or(false)
+                })
                 .filter_map(|validator| pool.get_stake(validator))
                 .map(|stake_info| stake_info.total_stake())
                 .sum();
 
             let mut remaining = voters_share;
             for (idx, validator) in voter_pubkeys.iter().enumerate() {
+                // AUDIT-FIX A7-02: Skip slashed/inactive validators
+                let is_active = pool
+                    .get_stake(validator)
+                    .map(|s| s.is_active)
+                    .unwrap_or(false);
+                if !is_active {
+                    continue;
+                }
+
                 let share = if total_voter_stake > 0 {
                     let stake = pool
                         .get_stake(validator)
@@ -9033,6 +9050,27 @@ async fn run_validator() {
 
             // Check all validators for downtime (offline for 100+ slots)
             let vs = validator_set_for_downtime.read().await;
+
+            // FIX: Detect chain-wide stall — if ALL validators have similar
+            // missed_slots (within 200 of each other), the entire chain was
+            // stalled. Do NOT slash for downtime during a full chain stall.
+            // Only slash when individual validators go offline while the
+            // chain is progressing.
+            let all_missed: Vec<u64> = vs.validators().iter().map(|v| {
+                current_slot.saturating_sub(v.last_active_slot)
+            }).collect();
+            let min_missed = all_missed.iter().copied().min().unwrap_or(0);
+            let max_missed = all_missed.iter().copied().max().unwrap_or(0);
+            // If every validator missed within 200 slots of each other, it's
+            // a chain-wide stall, not individual downtime.
+            let is_chain_stall = max_missed >= 100 && (max_missed.saturating_sub(min_missed)) < 200;
+            if is_chain_stall {
+                debug!("⏸️  Chain-wide stall detected (all validators missed {}-{} slots) — skipping downtime slashing",
+                    min_missed, max_missed);
+                drop(vs);
+                continue;
+            }
+
             for validator_info in vs.validators() {
                 let missed_slots = current_slot.saturating_sub(validator_info.last_active_slot);
 
@@ -9141,10 +9179,11 @@ async fn run_validator() {
     let state_for_watchdog = state.clone();
     tokio::spawn(async move {
         // Give the validator time to start up and sync before monitoring
-        time::sleep(Duration::from_secs(watchdog_timeout_secs.max(60))).await;
-        let mut interval = time::interval(Duration::from_secs(15));
+        // Reduced startup grace from watchdog_timeout.max(60) to 30s for faster detection
+        time::sleep(Duration::from_secs(30)).await;
+        let mut interval = time::interval(Duration::from_secs(5)); // Check every 5s (was 15s)
         let mut stale_checks: u32 = 0;
-        let threshold = (watchdog_timeout_secs / 15).max(4) as u32;
+        let threshold = (watchdog_timeout_secs / 5).max(3) as u32; // 3 checks minimum
         let mut last_known_slot: u64 = 0;
         loop {
             interval.tick().await;

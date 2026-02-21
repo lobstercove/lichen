@@ -2090,6 +2090,25 @@ impl TxProcessor {
             return Err("DeployContract: code cannot be empty".to_string());
         }
 
+        // AUDIT-FIX A9-03: Enforce maximum contract size (512 KB)
+        const MAX_CONTRACT_SIZE: usize = 512 * 1024; // 512 KB
+        if code_bytes.len() > MAX_CONTRACT_SIZE {
+            return Err(format!(
+                "DeployContract: code size {} exceeds maximum {} bytes",
+                code_bytes.len(),
+                MAX_CONTRACT_SIZE
+            ));
+        }
+
+        // AUDIT-FIX A9-02: Validate WASM magic number (\0asm = 0x00 0x61 0x73 0x6D)
+        if code_bytes.len() < 8 {
+            return Err("DeployContract: code too small to be valid WASM".to_string());
+        }
+        const WASM_MAGIC: [u8; 4] = [0x00, 0x61, 0x73, 0x6D];
+        if code_bytes[..4] != WASM_MAGIC {
+            return Err("DeployContract: invalid WASM module (bad magic number)".to_string());
+        }
+
         // Verify treasury is correct
         let actual_treasury = self
             .state
@@ -2311,6 +2330,22 @@ impl TxProcessor {
     ) -> Result<(), String> {
         if ix.accounts.len() < 2 {
             return Err("Deploy requires deployer and contract accounts".to_string());
+        }
+
+        // AUDIT-FIX A9-02/A9-03: Validate WASM before deploy
+        const MAX_CONTRACT_SIZE: usize = 512 * 1024;
+        if code.is_empty() {
+            return Err("Deploy: code cannot be empty".to_string());
+        }
+        if code.len() > MAX_CONTRACT_SIZE {
+            return Err(format!(
+                "Deploy: code size {} exceeds maximum {} bytes",
+                code.len(),
+                MAX_CONTRACT_SIZE
+            ));
+        }
+        if code.len() < 8 || code[..4] != [0x00, 0x61, 0x73, 0x6D] {
+            return Err("Deploy: invalid WASM module (bad magic number)".to_string());
         }
 
         let deployer = &ix.accounts[0];
@@ -3285,7 +3320,8 @@ mod tests {
         state.put_account(&treasury, &treasury_acct).unwrap();
 
         // Build deploy instruction: [17 | code_length(4 LE) | code_bytes]
-        let code = vec![0x00, 0x61, 0x73, 0x6D]; // fake WASM magic
+        // Valid WASM: magic (4 bytes) + version (4 bytes)
+        let code = vec![0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
         let mut data = vec![17u8];
         data.extend_from_slice(&(code.len() as u32).to_le_bytes());
         data.extend_from_slice(&code);
@@ -3336,12 +3372,71 @@ mod tests {
     }
 
     #[test]
+    fn test_system_deploy_contract_invalid_wasm_magic() {
+        let (processor, state, alice_kp, alice, treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        let mut treasury_acct = state.get_account(&treasury).unwrap().unwrap();
+        treasury_acct.add_spendable(Account::molt_to_shells(100)).unwrap();
+        state.put_account(&treasury, &treasury_acct).unwrap();
+
+        // Invalid magic bytes (not WASM)
+        let code = vec![0xFF, 0xFF, 0xFF, 0xFF, 0x01, 0x00, 0x00, 0x00];
+        let mut data = vec![17u8];
+        data.extend_from_slice(&(code.len() as u32).to_le_bytes());
+        data.extend_from_slice(&code);
+
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, treasury],
+            data,
+        };
+        let message = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(message);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success, "Deploy with invalid WASM magic should fail");
+        assert!(result.error.unwrap().contains("bad magic number"));
+    }
+
+    #[test]
+    fn test_system_deploy_contract_too_small() {
+        let (processor, state, alice_kp, alice, treasury, genesis_hash) = setup();
+        let validator = Pubkey([42u8; 32]);
+
+        let mut treasury_acct = state.get_account(&treasury).unwrap().unwrap();
+        treasury_acct.add_spendable(Account::molt_to_shells(100)).unwrap();
+        state.put_account(&treasury, &treasury_acct).unwrap();
+
+        // Only 4 bytes — below 8-byte minimum
+        let code = vec![0x00, 0x61, 0x73, 0x6D];
+        let mut data = vec![17u8];
+        data.extend_from_slice(&(code.len() as u32).to_le_bytes());
+        data.extend_from_slice(&code);
+
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, treasury],
+            data,
+        };
+        let message = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(message);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+
+        let result = processor.process_transaction(&tx, &validator);
+        assert!(!result.success, "Deploy with code too small should fail");
+        assert!(result.error.unwrap().contains("too small"));
+    }
+
+    #[test]
     fn test_system_set_contract_abi() {
         let (processor, state, alice_kp, alice, treasury, genesis_hash) = setup();
         let validator = Pubkey([42u8; 32]);
 
         // First deploy a contract
-        let code = vec![0x00, 0x61, 0x73, 0x6D];
+        // Valid WASM: magic (4 bytes) + version (4 bytes)
+        let code = vec![0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
         let mut deploy_data = vec![17u8];
         deploy_data.extend_from_slice(&(code.len() as u32).to_le_bytes());
         deploy_data.extend_from_slice(&code);
@@ -3410,7 +3505,8 @@ mod tests {
         let validator = Pubkey([42u8; 32]);
 
         // Deploy a contract as alice
-        let code = vec![0x00, 0x61, 0x73, 0x6E];
+        // Valid WASM: magic (4 bytes) + version (4 bytes)
+        let code = vec![0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00];
         let mut deploy_data = vec![17u8];
         deploy_data.extend_from_slice(&(code.len() as u32).to_le_bytes());
         deploy_data.extend_from_slice(&code);
