@@ -819,7 +819,14 @@ pub extern "C" fn set_protocol_fee(
     let mut caller = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
 
-    let admin = match storage_get(IDENTITY_ADMIN_KEY) {
+    // P9-SC-04: Verify caller matches transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+
+    // P9-SC-04: Use MS_ADMIN_KEY (pool admin), not IDENTITY_ADMIN_KEY
+    let admin = match storage_get(MS_ADMIN_KEY) {
         Some(data) => data,
         None => return 1,
     };
@@ -877,6 +884,13 @@ const MOLTYID_DISCOUNT_BPS_KEY: &[u8] = b"moltyid_disc_bps";
 pub extern "C" fn set_identity_admin(admin_ptr: *const u8) -> u32 {
     let mut admin = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32); }
+
+    // P9-SC-05: Verify caller matches the claimed admin address
+    let real_caller = get_caller();
+    if real_caller.0 != admin {
+        log_info("set_identity_admin rejected: caller mismatch");
+        return 2;
+    }
 
     if storage_get(IDENTITY_ADMIN_KEY).is_some() {
         log_info("Identity admin already set");
@@ -1310,6 +1324,7 @@ mod tests {
         setup();
 
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(set_identity_admin(admin.as_ptr()), 0);
         assert_eq!(set_identity_admin(admin.as_ptr()), 1); // already set
 
@@ -1333,6 +1348,7 @@ mod tests {
         setup();
 
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(set_identity_admin(admin.as_ptr()), 0);
 
         let other = [9u8; 32];
@@ -1513,12 +1529,16 @@ mod tests {
     fn test_set_protocol_fee_admin_only() {
         setup();
         let admin = [1u8; 32];
-        assert_eq!(set_identity_admin(admin.as_ptr()), 0);
+        // P9-SC-04: set_protocol_fee now uses MS_ADMIN_KEY
+        storage_set(MS_ADMIN_KEY, &admin);
+        test_mock::set_caller(admin);
 
         let treasury = [0xBBu8; 32];
         assert_eq!(set_protocol_fee(admin.as_ptr(), treasury.as_ptr(), 1000), 0);
 
+        // Non-admin caller (no mismatch, just unauthorized)
         let other = [9u8; 32];
+        test_mock::set_caller(other);
         assert_eq!(set_protocol_fee(other.as_ptr(), treasury.as_ptr(), 1000), 2);
     }
 
@@ -1537,6 +1557,7 @@ mod tests {
     fn test_set_moltyid_address_wrong_caller() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(set_identity_admin(admin.as_ptr()), 0);
 
         // Non-admin tries to set MoltyID address with mismatched caller
@@ -1552,6 +1573,7 @@ mod tests {
     fn test_set_reputation_discount_wrong_caller() {
         setup();
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(set_identity_admin(admin.as_ptr()), 0);
 
         // Non-admin tries to set reputation discount

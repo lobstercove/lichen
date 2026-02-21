@@ -19,6 +19,7 @@ use alloc::vec::Vec;
 use moltchain_sdk::{
     storage_get, storage_set, log_info,
     bytes_to_u64, u64_to_bytes, get_slot, get_caller,
+    Address, call_token_transfer, get_contract_address,
 };
 
 // ============================================================================
@@ -754,7 +755,35 @@ pub fn collect_fees(provider: *const u8, position_id: u64) -> u32 {
     let fee_a = decode_pos_fee_a(&pos_data);
     let fee_b = decode_pos_fee_b(&pos_data);
 
-    // Reset fees (transfer would happen via cross-call in production)
+    // P9-SC-02: Transfer fee tokens to LP before resetting counters
+    let pool_id = decode_pos_pool_id(&pos_data);
+    let pool_pk = pool_key(pool_id);
+    let pool_data = match storage_get(&pool_pk) {
+        Some(d) if d.len() >= POOL_SIZE => d,
+        _ => return 3,
+    };
+    let token_a_addr = decode_pool_token_a(&pool_data);
+    let token_b_addr = decode_pool_token_b(&pool_data);
+    let contract_addr = get_contract_address();
+
+    if fee_a > 0 {
+        if call_token_transfer(
+            Address(token_a_addr), contract_addr, Address(p), fee_a
+        ).is_err() {
+            log_info("Fee A transfer failed");
+            return 4;
+        }
+    }
+    if fee_b > 0 {
+        if call_token_transfer(
+            Address(token_b_addr), contract_addr, Address(p), fee_b
+        ).is_err() {
+            log_info("Fee B transfer failed");
+            return 4;
+        }
+    }
+
+    // Reset fees after successful transfer
     update_pos_fee_a(&mut pos_data, 0);
     update_pos_fee_b(&mut pos_data, 0);
     storage_set(&pk, &pos_data);

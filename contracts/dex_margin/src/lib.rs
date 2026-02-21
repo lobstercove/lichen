@@ -23,6 +23,7 @@ use moltchain_sdk::{
     storage_get, storage_set, log_info,
     bytes_to_u64, u64_to_bytes, get_slot, get_timestamp,
     get_caller, Address, CrossCall, call_contract, call_token_transfer,
+    get_contract_address,
 };
 
 // ============================================================================
@@ -999,11 +1000,11 @@ pub fn withdraw_insurance(caller: *const u8, amount: u64, recipient: *const u8) 
     let molt_addr = load_addr(MOLTCOIN_ADDRESS_KEY);
     if is_zero(&molt_addr) { return 4; }
 
-    // Cross-contract call to transfer MOLT from this contract to recipient
-    let admin_addr = load_addr(ADMIN_KEY);
+    // P9-SC-03: Transfer from contract address (not admin) — contract holds insurance funds
+    let contract_addr = get_contract_address();
     match call_token_transfer(
         Address(molt_addr),
-        Address(admin_addr), // source: contract admin (insurance custodian)
+        contract_addr,
         Address(r),
         amount,
     ) {

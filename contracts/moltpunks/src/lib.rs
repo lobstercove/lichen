@@ -80,6 +80,13 @@ pub extern "C" fn mint(
         let mut caller_addr = [0u8; 32];
         core::ptr::copy_nonoverlapping(caller_ptr, caller_addr.as_mut_ptr(), 32);
         let caller = Address(caller_addr);
+
+        // P9-SC-06: Verify caller matches transaction signer
+        let real_caller = get_caller();
+        if real_caller.0 != caller.0 {
+            log_info("Unauthorized: caller mismatch");
+            return 0;
+        }
         
         // Check if caller is minter
         if caller.0 != get_minter().0 {
@@ -446,6 +453,7 @@ mod tests {
         initialize(minter.as_ptr());
         let to = [2u8; 32];
         let metadata = b"ipfs://QmTest123";
+        test_mock::set_caller(minter);
         assert_eq!(mint(minter.as_ptr(), to.as_ptr(), 1, metadata.as_ptr(), metadata.len() as u32), 1);
         assert_eq!(total_minted(), 1);
     }
@@ -458,6 +466,7 @@ mod tests {
         let other = [2u8; 32];
         let to = [3u8; 32];
         let metadata = b"ipfs://QmTest";
+        test_mock::set_caller(other);
         assert_eq!(mint(other.as_ptr(), to.as_ptr(), 1, metadata.as_ptr(), metadata.len() as u32), 0);
     }
 
@@ -468,6 +477,7 @@ mod tests {
         initialize(minter.as_ptr());
         let to = [2u8; 32];
         let metadata = b"ipfs://QmTest";
+        test_mock::set_caller(minter);
         mint(minter.as_ptr(), to.as_ptr(), 1, metadata.as_ptr(), metadata.len() as u32);
         assert_eq!(mint(minter.as_ptr(), to.as_ptr(), 1, metadata.as_ptr(), metadata.len() as u32), 0);
     }
@@ -480,6 +490,7 @@ mod tests {
         let from = [2u8; 32];
         let to = [3u8; 32];
         let metadata = b"ipfs://QmTest";
+        test_mock::set_caller(minter);
         mint(minter.as_ptr(), from.as_ptr(), 1, metadata.as_ptr(), metadata.len() as u32);
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(from);
@@ -495,6 +506,7 @@ mod tests {
         let other = [3u8; 32];
         let to = [4u8; 32];
         let metadata = b"ipfs://QmTest";
+        test_mock::set_caller(minter);
         mint(minter.as_ptr(), owner.as_ptr(), 1, metadata.as_ptr(), metadata.len() as u32);
         assert_eq!(transfer(other.as_ptr(), to.as_ptr(), 1), 0);
     }
@@ -506,6 +518,7 @@ mod tests {
         initialize(minter.as_ptr());
         let owner = [2u8; 32];
         let metadata = b"ipfs://QmTest";
+        test_mock::set_caller(minter);
         mint(minter.as_ptr(), owner.as_ptr(), 1, metadata.as_ptr(), metadata.len() as u32);
         let mut out = [0u8; 32];
         assert_eq!(owner_of(1, out.as_mut_ptr()), 1);
@@ -529,6 +542,7 @@ mod tests {
         let owner = [2u8; 32];
         let metadata = b"ipfs://QmTest";
         assert_eq!(balance_of(owner.as_ptr()), 0);
+        test_mock::set_caller(minter);
         mint(minter.as_ptr(), owner.as_ptr(), 1, metadata.as_ptr(), metadata.len() as u32);
         assert_eq!(balance_of(owner.as_ptr()), 1);
         mint(minter.as_ptr(), owner.as_ptr(), 2, metadata.as_ptr(), metadata.len() as u32);
@@ -543,6 +557,7 @@ mod tests {
         let owner = [2u8; 32];
         let spender = [3u8; 32];
         let metadata = b"ipfs://QmTest";
+        test_mock::set_caller(minter);
         mint(minter.as_ptr(), owner.as_ptr(), 1, metadata.as_ptr(), metadata.len() as u32);
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(owner);
@@ -558,6 +573,7 @@ mod tests {
         let other = [3u8; 32];
         let spender = [4u8; 32];
         let metadata = b"ipfs://QmTest";
+        test_mock::set_caller(minter);
         mint(minter.as_ptr(), owner.as_ptr(), 1, metadata.as_ptr(), metadata.len() as u32);
         assert_eq!(approve(other.as_ptr(), spender.as_ptr(), 1), 0);
     }
@@ -571,6 +587,7 @@ mod tests {
         let spender = [3u8; 32];
         let to = [4u8; 32];
         let metadata = b"ipfs://QmTest";
+        test_mock::set_caller(minter);
         mint(minter.as_ptr(), owner.as_ptr(), 1, metadata.as_ptr(), metadata.len() as u32);
         // AUDIT-FIX P2: Set caller for security check on approve
         test_mock::set_caller(owner);
@@ -591,6 +608,7 @@ mod tests {
         let other = [3u8; 32];
         let to = [4u8; 32];
         let metadata = b"ipfs://QmTest";
+        test_mock::set_caller(minter);
         mint(minter.as_ptr(), owner.as_ptr(), 1, metadata.as_ptr(), metadata.len() as u32);
         assert_eq!(transfer_from(other.as_ptr(), owner.as_ptr(), to.as_ptr(), 1), 0);
     }
@@ -602,6 +620,7 @@ mod tests {
         initialize(minter.as_ptr());
         let owner = [2u8; 32];
         let metadata = b"ipfs://QmTest";
+        test_mock::set_caller(minter);
         mint(minter.as_ptr(), owner.as_ptr(), 1, metadata.as_ptr(), metadata.len() as u32);
         // AUDIT-FIX P2: Set caller for security check
         test_mock::set_caller(owner);
@@ -618,6 +637,7 @@ mod tests {
         let owner = [2u8; 32];
         let other = [3u8; 32];
         let metadata = b"ipfs://QmTest";
+        test_mock::set_caller(minter);
         mint(minter.as_ptr(), owner.as_ptr(), 1, metadata.as_ptr(), metadata.len() as u32);
         assert_eq!(burn(other.as_ptr(), 1), 0);
     }
@@ -656,9 +676,9 @@ mod tests {
         let to = [3u8; 32];
         let metadata = b"ipfs://QmTest";
         // Mint a token first
+        test_mock::set_caller(minter);
         assert_eq!(mint(minter.as_ptr(), owner.as_ptr(), 1, metadata.as_ptr(), metadata.len() as u32), 1);
         // Pause the contract
-        test_mock::set_caller(minter);
         assert_eq!(mp_pause(minter.as_ptr()), 1);
         // Attempt to transfer while paused → should fail
         test_mock::set_caller(owner);
@@ -675,6 +695,7 @@ mod tests {
         let spender = [3u8; 32];
         let attacker = [4u8; 32];
         let metadata = b"ipfs://QmTest";
+        test_mock::set_caller(minter);
         assert_eq!(mint(minter.as_ptr(), owner.as_ptr(), 1, metadata.as_ptr(), metadata.len() as u32), 1);
         // set_caller differs from owner arg → should fail
         test_mock::set_caller(attacker);
@@ -690,6 +711,7 @@ mod tests {
         let owner = [2u8; 32];
         let attacker = [4u8; 32];
         let metadata = b"ipfs://QmTest";
+        test_mock::set_caller(minter);
         assert_eq!(mint(minter.as_ptr(), owner.as_ptr(), 1, metadata.as_ptr(), metadata.len() as u32), 1);
         // set_caller differs from owner arg → should fail
         test_mock::set_caller(attacker);
