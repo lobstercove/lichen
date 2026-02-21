@@ -26,8 +26,8 @@ use moltchain_core::{
     Instruction, Keypair, MarketActivity, MarketActivityKind, Mempool, Message, NftActivity,
     NftActivityKind, ProgramCallActivity, Pubkey, SlashingEvidence, SlashingOffense, StakePool,
     StateStore, SymbolRegistryEntry, Transaction, TxProcessor, ValidatorInfo, ValidatorSet, Vote,
-    VoteAggregator, BASE_FEE, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID,
-    MIN_VALIDATOR_STAKE, NFT_COLLECTION_FEE, NFT_MINT_FEE, SLOTS_PER_EPOCH,
+    VoteAggregator, BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE,
+    EVM_PROGRAM_ID, MIN_VALIDATOR_STAKE, NFT_COLLECTION_FEE, NFT_MINT_FEE, SLOTS_PER_EPOCH,
     SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
 };
 use moltchain_p2p::{
@@ -5861,7 +5861,7 @@ async fn run_validator() {
                     info!("⚠️  This validator not in genesis set, adding dynamically");
                     set.add_validator(ValidatorInfo {
                         pubkey: validator_pubkey,
-                        stake: MIN_VALIDATOR_STAKE, // 100K MOLT stake — matches V2/V3 join grant
+                        stake: BOOTSTRAP_GRANT_AMOUNT, // 100K MOLT stake — matches V2/V3 join grant
                         reputation: 100,
                         blocks_proposed: 0,
                         votes_cast: 0,
@@ -5882,7 +5882,7 @@ async fn run_validator() {
             info!("⚠️  This validator not in genesis set, adding dynamically");
             set.add_validator(ValidatorInfo {
                 pubkey: validator_pubkey,
-                stake: MIN_VALIDATOR_STAKE, // 100K MOLT stake — matches V2/V3 join grant
+                stake: BOOTSTRAP_GRANT_AMOUNT, // 100K MOLT stake — matches V2/V3 join grant
                 reputation: 100,
                 blocks_proposed: 0,
                 votes_cast: 0,
@@ -5939,8 +5939,8 @@ async fn run_validator() {
 
         if is_bootstrap_eligible {
             // H13 fix: Bootstrap grant must come from treasury, not ex nihilo
-            let bootstrap_molt = MIN_VALIDATOR_STAKE / 1_000_000_000; // 100K MOLT
-            let bootstrap_shells = MIN_VALIDATOR_STAKE;
+            let bootstrap_molt = BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000; // 100K MOLT
+            let bootstrap_shells = BOOTSTRAP_GRANT_AMOUNT;
             let treasury_pk = state.get_treasury_pubkey().ok().flatten();
             let mut funded = false;
 
@@ -5998,14 +5998,14 @@ async fn run_validator() {
                 "📋 Bootstrap phase complete ({} grants issued). This validator must self-fund.",
                 bootstrap_grants_issued
             );
-            // Create empty account — validator needs external funding of MIN_VALIDATOR_STAKE
+            // Create empty account — validator needs external funding of BOOTSTRAP_GRANT_AMOUNT
             let empty_account = Account::new(0, SYSTEM_ACCOUNT_OWNER);
             if let Err(e) = state.put_account(&validator_pubkey, &empty_account) {
                 eprintln!("Failed to create validator account: {e}");
             }
             info!(
                 "✓ Validator account created (empty — requires {} MOLT deposit)",
-                MIN_VALIDATOR_STAKE / 1_000_000_000
+                BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000
             );
         }
     } else if let Some(account) = validator_account {
@@ -6078,7 +6078,7 @@ async fn run_validator() {
             .get_stake(&validator_pubkey)
             .map(|s| s.amount)
             .unwrap_or(0);
-        if existing >= MIN_VALIDATOR_STAKE {
+        if existing >= BOOTSTRAP_GRANT_AMOUNT {
             info!("✅ Already staked: {} MOLT", existing / 1_000_000_000);
 
             // Ensure fingerprint is registered (may be missing from pre-graduation validators)
@@ -6111,7 +6111,7 @@ async fn run_validator() {
             // New validator — atomic: validate fingerprint → allocate index → stake → register
             match pool.try_bootstrap_with_fingerprint(
                 validator_pubkey,
-                MIN_VALIDATOR_STAKE,
+                BOOTSTRAP_GRANT_AMOUNT,
                 current_slot,
                 machine_fingerprint,
             ) {
@@ -6125,8 +6125,8 @@ async fn run_validator() {
                         info!("📋 Post-bootstrap validator — self-funded, no debt");
                     }
                     info!(
-                        "💰 Staked {} MOLT (minimum required)",
-                        MIN_VALIDATOR_STAKE / 1_000_000_000
+                        "💰 Staked {} MOLT (bootstrap grant)",
+                        BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000
                     );
                     if machine_fingerprint != [0u8; 32] {
                         info!("🔒 Machine fingerprint registered");
@@ -7567,7 +7567,7 @@ async fn run_validator() {
                         bootstrap_count = 0;
                     }
 
-                    let needs_bootstrap = already_staked < MIN_VALIDATOR_STAKE;
+                    let needs_bootstrap = already_staked < BOOTSTRAP_GRANT_AMOUNT;
 
                     if needs_bootstrap && bootstrap_count >= MAX_BOOTSTRAPS_PER_EPOCH {
                         warn!(
@@ -7586,10 +7586,10 @@ async fn run_validator() {
                         blocks_proposed: 0,
                         votes_cast: 0,
                         correct_votes: 0,
-                        stake: if already_staked >= MIN_VALIDATOR_STAKE {
+                        stake: if already_staked >= BOOTSTRAP_GRANT_AMOUNT {
                             already_staked
                         } else {
-                            MIN_VALIDATOR_STAKE
+                            BOOTSTRAP_GRANT_AMOUNT
                         },
                         joined_slot: announcement.current_slot,
                         last_active_slot: announcement.current_slot,
@@ -7653,8 +7653,8 @@ async fn run_validator() {
                                 if let Ok(Some(mut treasury)) =
                                     state_for_validators.get_account(&tpk)
                                 {
-                                    if treasury.spendable >= MIN_VALIDATOR_STAKE {
-                                        treasury.deduct_spendable(MIN_VALIDATOR_STAKE).ok();
+                                    if treasury.spendable >= BOOTSTRAP_GRANT_AMOUNT {
+                                        treasury.deduct_spendable(BOOTSTRAP_GRANT_AMOUNT).ok();
                                         if let Err(e) =
                                             state_for_validators.put_account(&tpk, &treasury)
                                         {
@@ -7664,7 +7664,7 @@ async fn run_validator() {
                                         }
                                     } else {
                                         warn!("⚠️  Treasury insufficient for remote validator bootstrap ({} < {})",
-                                            treasury.spendable, MIN_VALIDATOR_STAKE);
+                                            treasury.spendable, BOOTSTRAP_GRANT_AMOUNT);
                                     }
                                 }
                             }
@@ -7677,7 +7677,7 @@ async fn run_validator() {
                                         let fingerprint = announcement.machine_fingerprint;
                                         match pool.try_bootstrap_with_fingerprint(
                                             announcement.pubkey,
-                                            MIN_VALIDATOR_STAKE,
+                                            BOOTSTRAP_GRANT_AMOUNT,
                                             announcement.current_slot,
                                             fingerprint,
                                         ) {
@@ -7685,7 +7685,7 @@ async fn run_validator() {
                                                 info!(
                                                     "💰 Bootstrap validator #{} staked in local pool ({} MOLT, with debt)",
                                                     bootstrap_index + 1,
-                                                    MIN_VALIDATOR_STAKE / 1_000_000_000
+                                                    BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000
                                                 );
                                             }
                                             Err(e) => {
@@ -7702,7 +7702,7 @@ async fn run_validator() {
                                                         state_for_validators.get_account(&tpk)
                                                     {
                                                         treasury
-                                                            .add_spendable(MIN_VALIDATOR_STAKE)
+                                                            .add_spendable(BOOTSTRAP_GRANT_AMOUNT)
                                                             .ok();
                                                         let _ = state_for_validators
                                                             .put_account(&tpk, &treasury);
@@ -7714,9 +7714,9 @@ async fn run_validator() {
                                 }
 
                                 let mut bootstrap_account = Account {
-                                    shells: MIN_VALIDATOR_STAKE,
+                                    shells: BOOTSTRAP_GRANT_AMOUNT,
                                     spendable: 0,
-                                    staked: MIN_VALIDATOR_STAKE,
+                                    staked: BOOTSTRAP_GRANT_AMOUNT,
                                     locked: 0,
                                     data: Vec::new(),
                                     owner: SYSTEM_ACCOUNT_OWNER,
@@ -7740,7 +7740,7 @@ async fn run_validator() {
                                     info!(
                                         "💰 Created bootstrap account for validator {} ({} MOLT staked, treasury debited) [{}/{}]",
                                         announcement.pubkey.to_base58(),
-                                        MIN_VALIDATOR_STAKE / 1_000_000_000,
+                                        BOOTSTRAP_GRANT_AMOUNT / 1_000_000_000,
                                         bootstrap_count,
                                         MAX_BOOTSTRAPS_PER_EPOCH,
                                     );
@@ -8842,7 +8842,7 @@ async fn run_validator() {
                     let pool = stake_pool_for_announce.read().await;
                     pool.get_stake(&validator_pubkey_for_announce)
                         .map(|s| s.total_stake())
-                        .unwrap_or(MIN_VALIDATOR_STAKE)
+                        .unwrap_or(BOOTSTRAP_GRANT_AMOUNT)
                 };
                 let current_slot = state_for_announce.get_last_slot().unwrap_or(0);
 
@@ -9416,6 +9416,9 @@ async fn run_validator() {
             let mut vs = validator_set.write().await;
             let mut pool = stake_pool.write().await;
 
+            // Cleanup expired suspensions and repayment boosts
+            slasher.cleanup_expired(slot);
+
             for validator_info in vs.validators_mut() {
                 // Grace period: don't slash validators that recently joined (200 slots ≈ 80s).
                 // Prevents false-positive slashing during initial sync/handshake.
@@ -9424,18 +9427,132 @@ async fn run_validator() {
                     continue;
                 }
 
-                if slasher.should_slash(&validator_info.pubkey)
-                    && !slasher.is_slashed(&validator_info.pubkey)
-                {
-                    // Apply ECONOMIC slashing - slash actual stake
-                    // AUDIT-FIX A5-03: Use genesis ConsensusParams for slash percentages
+                // Skip if validator is temporarily suspended (Tier 2 penalty)
+                if slasher.is_suspended(&validator_info.pubkey, slot) {
+                    continue;
+                }
+
+                // Check for downtime evidence to apply tiered system
+                let has_downtime = slasher.get_evidence(&validator_info.pubkey)
+                    .map(|ev| ev.iter().any(|e| matches!(e.offense, SlashingOffense::Downtime { .. })))
+                    .unwrap_or(false);
+
+                let has_non_downtime = slasher.get_evidence(&validator_info.pubkey)
+                    .map(|ev| ev.iter().any(|e| e.severity() >= 70 && !matches!(e.offense, SlashingOffense::Downtime { .. })))
+                    .unwrap_or(false);
+
+                // For downtime, record the offense to advance the tier
+                if has_downtime && !slasher.is_slashed(&validator_info.pubkey) {
+                    let tier = slasher.record_downtime_offense(&validator_info.pubkey, slot);
+
+                    match tier {
+                        1 => {
+                            // Tier 1: Reputation penalty only (warning)
+                            let reputation_penalty = slasher.calculate_penalty(&validator_info.pubkey);
+                            let old_reputation = validator_info.reputation;
+                            validator_info.reputation = validator_info
+                                .reputation
+                                .saturating_sub(reputation_penalty)
+                                .max(50);
+                            warn!(
+                                "⚠️  DOWNTIME WARNING (Tier 1) {} | Rep: {} -> {} | No stake slashed",
+                                validator_info.pubkey.to_base58(),
+                                old_reputation,
+                                validator_info.reputation
+                            );
+                        }
+                        2 => {
+                            // Tier 2: Small slash (0.5%) + suspension + penalty repayment boost
+                            let slashed_amount = slasher.apply_economic_slashing_with_params(
+                                &validator_info.pubkey,
+                                &mut pool,
+                                &genesis_config.consensus,
+                            );
+
+                            // Apply suspension
+                            slasher.suspend_validator(&validator_info.pubkey, slot);
+
+                            // Apply penalty repayment boost (90% to debt for ~1 day)
+                            slasher.apply_penalty_repayment_boost(&validator_info.pubkey, slot);
+
+                            // Set penalty boost on StakeInfo so claim_rewards auto-detects it
+                            if let Some(stake_info) = pool.get_stake_mut(&validator_info.pubkey) {
+                                stake_info.penalty_boost_until = slot + moltchain_core::consensus::PENALTY_REPAYMENT_BOOST_SLOTS;
+                            }
+
+                            let reputation_penalty = slasher.calculate_penalty(&validator_info.pubkey);
+                            let old_reputation = validator_info.reputation;
+                            validator_info.reputation = validator_info
+                                .reputation
+                                .saturating_sub(reputation_penalty)
+                                .max(50);
+
+                            if slashed_amount > 0 {
+                                warn!(
+                                    "⚔️  DOWNTIME SLASH (Tier 2) {} | Stake burned: {:.4} MOLT | Rep: {} -> {} | Suspended {} slots | Repayment boost active",
+                                    validator_info.pubkey.to_base58(),
+                                    slashed_amount as f64 / 1_000_000_000.0,
+                                    old_reputation,
+                                    validator_info.reputation,
+                                    moltchain_core::consensus::DOWNTIME_SUSPENSION_SLOTS
+                                );
+
+                                // Persist slashing to on-chain account
+                                if let Ok(Some(mut acct)) = state.get_account(&validator_info.pubkey) {
+                                    let debit = slashed_amount.min(acct.staked);
+                                    acct.staked = acct.staked.saturating_sub(debit);
+                                    acct.shells = acct.shells.saturating_sub(debit);
+                                    if let Err(e) = state.put_account(&validator_info.pubkey, &acct) {
+                                        error!("Failed to persist slashed account: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            // Tier 3+: Full graduated slashing
+                            let slashed_amount = slasher.apply_economic_slashing_with_params(
+                                &validator_info.pubkey,
+                                &mut pool,
+                                &genesis_config.consensus,
+                            );
+
+                            let reputation_penalty = slasher.calculate_penalty(&validator_info.pubkey);
+                            let old_reputation = validator_info.reputation;
+                            validator_info.reputation = validator_info
+                                .reputation
+                                .saturating_sub(reputation_penalty)
+                                .max(50);
+
+                            if slashed_amount > 0 {
+                                warn!(
+                                    "⚔️💰 DOWNTIME SLASH (Tier 3) {} | Stake burned: {} MOLT | Rep: {} -> {}",
+                                    validator_info.pubkey.to_base58(),
+                                    slashed_amount / 1_000_000_000,
+                                    old_reputation,
+                                    validator_info.reputation
+                                );
+
+                                if let Ok(Some(mut acct)) = state.get_account(&validator_info.pubkey) {
+                                    let debit = slashed_amount.min(acct.staked);
+                                    acct.staked = acct.staked.saturating_sub(debit);
+                                    acct.shells = acct.shells.saturating_sub(debit);
+                                    if let Err(e) = state.put_account(&validator_info.pubkey, &acct) {
+                                        error!("Failed to persist slashed account: {}", e);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // For non-downtime severe offenses, apply immediately (no tiering)
+                if has_non_downtime && !slasher.is_slashed(&validator_info.pubkey) {
                     let slashed_amount = slasher.apply_economic_slashing_with_params(
                         &validator_info.pubkey,
                         &mut pool,
                         &genesis_config.consensus,
                     );
 
-                    // Also apply reputation penalty (floor 50 — prevents death spiral)
                     let reputation_penalty = slasher.calculate_penalty(&validator_info.pubkey);
                     let old_reputation = validator_info.reputation;
                     validator_info.reputation = validator_info
@@ -9452,9 +9569,6 @@ async fn run_validator() {
                             validator_info.reputation
                         );
 
-                        // AUDIT-FIX 0.4: Persist slashing to the validator's Account
-                        // Debit staked amount from the on-chain account so restarts
-                        // don't restore the slashed stake.
                         if let Ok(Some(mut acct)) = state.get_account(&validator_info.pubkey) {
                             let debit = slashed_amount.min(acct.staked);
                             acct.staked = acct.staked.saturating_sub(debit);
@@ -9464,6 +9578,15 @@ async fn run_validator() {
                             }
                         }
                     }
+                }
+            }
+
+            // Clean up ghost validators (fully slashed, inactive for 10K+ slots)
+            let removed = pool.remove_ghost_validators(slot, 10_000);
+            if !removed.is_empty() {
+                for pk in &removed {
+                    vs.remove_validator(pk);
+                    info!("🗑️  Removed ghost validator {}", pk.to_base58());
                 }
             }
 

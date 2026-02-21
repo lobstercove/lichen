@@ -8,7 +8,7 @@ use moltchain_core::{
     Account, Block, FeeConfig, ForkChoice, Hash, Instruction, Keypair, Mempool, Message, Pubkey,
     SlashingEvidence, SlashingOffense, SlashingTracker, StakePool, StateStore, Transaction,
     TxProcessor, ValidatorInfo, ValidatorSet, Vote, VoteAggregator, BASE_FEE, CONTRACT_DEPLOY_FEE,
-    MIN_VALIDATOR_STAKE, SYSTEM_PROGRAM_ID,
+    MIN_VALIDATOR_STAKE, BOOTSTRAP_GRANT_AMOUNT, SYSTEM_PROGRAM_ID,
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 use tempfile::TempDir;
@@ -1315,7 +1315,7 @@ fn test_stakepool_delegation_bootstrapping_rejected() {
     let validator = Keypair::new();
     let delegator = Keypair::new();
     // Use stake_with_index to simulate a bootstrap validator (index 0 < 200)
-    pool.stake_with_index(validator.pubkey(), MIN_VALIDATOR_STAKE, 0, 0)
+    pool.stake_with_index(validator.pubkey(), BOOTSTRAP_GRANT_AMOUNT, 0, 0)
         .unwrap();
     // Fresh bootstrap validators are in bootstrapping phase — delegation must be rejected
     let result = pool.delegate(delegator.pubkey(), &validator.pubkey(), 5_000);

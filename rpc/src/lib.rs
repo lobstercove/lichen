@@ -8977,7 +8977,8 @@ async fn handle_get_reward_adjustment_info(
     state: &RpcState,
 ) -> Result<serde_json::Value, RpcError> {
     use moltchain_core::consensus::{
-        HEARTBEAT_BLOCK_REWARD, MIN_VALIDATOR_STAKE, SLOTS_PER_YEAR, TRANSACTION_BLOCK_REWARD,
+        BOOTSTRAP_GRANT_AMOUNT, HEARTBEAT_BLOCK_REWARD, MIN_VALIDATOR_STAKE, SLOTS_PER_YEAR,
+        TRANSACTION_BLOCK_REWARD,
     };
 
     let stake_pool_arc = state.stake_pool.as_ref().ok_or_else(|| RpcError {
@@ -9004,6 +9005,7 @@ async fn handle_get_reward_adjustment_info(
         "heartbeatBlockReward": HEARTBEAT_BLOCK_REWARD,
         "slotsPerYear": SLOTS_PER_YEAR,
         "minValidatorStake": MIN_VALIDATOR_STAKE,
+        "bootstrapGrantAmount": BOOTSTRAP_GRANT_AMOUNT,
         "totalStaked": total_staked,
         "totalSlashed": stats.total_slashed,
         "activeValidators": active_count,

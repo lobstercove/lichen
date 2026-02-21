@@ -449,7 +449,7 @@ fn a5_03_consensus_reads_from_genesis_params() {
     let fn_start = consensus_src
         .find("fn apply_economic_slashing_with_params")
         .expect("apply_economic_slashing_with_params fn not found in consensus.rs");
-    let fn_body = &consensus_src[fn_start..std::cmp::min(fn_start + 3000, consensus_src.len())];
+    let fn_body = &consensus_src[fn_start..std::cmp::min(fn_start + 5000, consensus_src.len())];
 
     // Must reference params fields, not hardcoded values
     assert!(
@@ -494,15 +494,19 @@ fn a5_03_graduated_slashing_math() {
 
     let v1 = Keypair::new();
     let reporter = Keypair::new();
-    let stake = MIN_VALIDATOR_STAKE; // 100k MOLT
+    let stake = MIN_VALIDATOR_STAKE; // 75k MOLT
 
-    // Test 1: 300 missed slots → 3% slash (3 × 1%)
+    // Test 1: 300 missed slots → 3% slash (3 × 1%) at tier 3 + DoubleBlock 50%
     {
         let mut tracker = SlashingTracker::new();
         let mut pool = StakePool::new();
         pool.stake(v1.pubkey(), stake, 0).unwrap();
 
-        // need severity >= 70 to trigger slash, so add a DoubleBlock too
+        // Record 3 downtime offenses to reach tier 3 (graduated slashing)
+        tracker.record_downtime_offense(&v1.pubkey(), 100);
+        tracker.record_downtime_offense(&v1.pubkey(), 200);
+        tracker.record_downtime_offense(&v1.pubkey(), 300);
+
         let dbl = SlashingEvidence::new(
             SlashingOffense::DoubleBlock {
                 slot: 10,
@@ -540,12 +544,17 @@ fn a5_03_graduated_slashing_math() {
         );
     }
 
-    // Test 2: 2000 missed slots → capped at max 10% (not 20%)
+    // Test 2: 2000 missed slots → capped at max 10% (not 20%) at tier 3
     {
         let v2 = Keypair::new();
         let mut tracker = SlashingTracker::new();
         let mut pool = StakePool::new();
         pool.stake(v2.pubkey(), stake, 0).unwrap();
+
+        // Record 3 downtime offenses to reach tier 3 (graduated slashing)
+        tracker.record_downtime_offense(&v2.pubkey(), 100);
+        tracker.record_downtime_offense(&v2.pubkey(), 200);
+        tracker.record_downtime_offense(&v2.pubkey(), 300);
 
         let dbl = SlashingEvidence::new(
             SlashingOffense::DoubleBlock {
