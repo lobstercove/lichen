@@ -2814,9 +2814,13 @@ function logoutWallet() {
         // Security: clear all input fields immediately
         clearAllInputs();
         
-        // Clear ALL wallet data
-        localStorage.clear();
-        sessionStorage.clear();
+        // K-3: Only remove wallet-prefixed keys to avoid wiping other app data on shared origins
+        Object.keys(localStorage).filter(function(k) {
+            return k.startsWith('molt_wallet_') || k.startsWith('walletState') || k.startsWith('wallet_');
+        }).forEach(function(k) { localStorage.removeItem(k); });
+        Object.keys(sessionStorage).filter(function(k) {
+            return k.startsWith('molt_wallet_') || k.startsWith('walletState') || k.startsWith('wallet_');
+        }).forEach(function(k) { sessionStorage.removeItem(k); });
         
         // Reset state completely (isLocked false — no wallet exists to lock)
         walletState = {
