@@ -1176,7 +1176,13 @@ fn run_analytics_bridge_from_state(state: &StateStore, slot: u64, slot_duration_
     }
 }
 
-fn bridge_dex_trades_to_analytics(state: &StateStore, from_trade: u64, to_trade: u64, slot: u64, slot_duration_ms: u64) {
+fn bridge_dex_trades_to_analytics(
+    state: &StateStore,
+    from_trade: u64,
+    to_trade: u64,
+    slot: u64,
+    slot_duration_ms: u64,
+) {
     const PRICE_SCALE: f64 = 1_000_000_000.0;
 
     // Resolve ANALYTICS pubkey via symbol registry
@@ -6854,7 +6860,11 @@ async fn run_validator() {
                     if can_chain {
                         // Valid next block in chain - replay transactions then store
                         replay_block_transactions(&processor_for_blocks, &block);
-                        run_analytics_bridge_from_state(&state_for_blocks, block.header.slot, genesis_config_for_blocks.consensus.slot_duration_ms.max(1));
+                        run_analytics_bridge_from_state(
+                            &state_for_blocks,
+                            block.header.slot,
+                            genesis_config_for_blocks.consensus.slot_duration_ms.max(1),
+                        );
                         run_sltp_triggers_from_state(&state_for_blocks);
                         reset_24h_stats_if_expired(&state_for_blocks, block.header.timestamp);
                         if state_for_blocks.put_block(&block).is_ok() {
@@ -7058,10 +7068,8 @@ async fn run_validator() {
                         // range requests.
                         let mut chunk_start = start;
                         while chunk_start <= end {
-                            let chunk_end = std::cmp::min(
-                                chunk_start + sync::P2P_BLOCK_RANGE_LIMIT - 1,
-                                end,
-                            );
+                            let chunk_end =
+                                std::cmp::min(chunk_start + sync::P2P_BLOCK_RANGE_LIMIT - 1, end);
                             let request_msg = P2PMessage::new(
                                 MessageType::BlockRangeRequest {
                                     start_slot: chunk_start,
@@ -7072,7 +7080,9 @@ async fn run_validator() {
                             peer_mgr_for_sync.broadcast(request_msg).await;
                             info!(
                                 "📡 Sent block range request: {} to {} (chunk of {})",
-                                chunk_start, chunk_end, chunk_end - chunk_start + 1
+                                chunk_start,
+                                chunk_end,
+                                chunk_end - chunk_start + 1
                             );
                             chunk_start = chunk_end + 1;
                         }
@@ -7233,7 +7243,10 @@ async fn run_validator() {
                                         run_analytics_bridge_from_state(
                                             &state_for_blocks,
                                             pending_block.header.slot,
-                                            genesis_config_for_blocks.consensus.slot_duration_ms.max(1),
+                                            genesis_config_for_blocks
+                                                .consensus
+                                                .slot_duration_ms
+                                                .max(1),
                                         );
                                         run_sltp_triggers_from_state(&state_for_blocks);
                                         reset_24h_stats_if_expired(
@@ -8143,8 +8156,8 @@ async fn run_validator() {
                     if let Some((store, meta)) = checkpoint_store {
                         // P10-CORE-03 FIX: Use paginated export to avoid loading
                         // the entire column family into memory.
-                        let chunk_sz = chunk_size.max(1) as u64;
-                        let offset = (chunk_index as u64) * chunk_sz;
+                        let chunk_sz = chunk_size.max(1);
+                        let offset = chunk_index * chunk_sz;
 
                         let page = match category.as_str() {
                             "accounts" => store.export_accounts_iter(offset, chunk_sz),
@@ -9096,9 +9109,11 @@ async fn run_validator() {
             // stalled. Do NOT slash for downtime during a full chain stall.
             // Only slash when individual validators go offline while the
             // chain is progressing.
-            let all_missed: Vec<u64> = vs.validators().iter().map(|v| {
-                current_slot.saturating_sub(v.last_active_slot)
-            }).collect();
+            let all_missed: Vec<u64> = vs
+                .validators()
+                .iter()
+                .map(|v| current_slot.saturating_sub(v.last_active_slot))
+                .collect();
             let min_missed = all_missed.iter().copied().min().unwrap_or(0);
             let max_missed = all_missed.iter().copied().max().unwrap_or(0);
             // If every validator missed within 200 slots of each other, it's
@@ -9486,12 +9501,22 @@ async fn run_validator() {
                 }
 
                 // Check for downtime evidence to apply tiered system
-                let has_downtime = slasher.get_evidence(&validator_info.pubkey)
-                    .map(|ev| ev.iter().any(|e| matches!(e.offense, SlashingOffense::Downtime { .. })))
+                let has_downtime = slasher
+                    .get_evidence(&validator_info.pubkey)
+                    .map(|ev| {
+                        ev.iter()
+                            .any(|e| matches!(e.offense, SlashingOffense::Downtime { .. }))
+                    })
                     .unwrap_or(false);
 
-                let has_non_downtime = slasher.get_evidence(&validator_info.pubkey)
-                    .map(|ev| ev.iter().any(|e| e.severity() >= 70 && !matches!(e.offense, SlashingOffense::Downtime { .. })))
+                let has_non_downtime = slasher
+                    .get_evidence(&validator_info.pubkey)
+                    .map(|ev| {
+                        ev.iter().any(|e| {
+                            e.severity() >= 70
+                                && !matches!(e.offense, SlashingOffense::Downtime { .. })
+                        })
+                    })
                     .unwrap_or(false);
 
                 // For downtime, record the offense to advance the tier
@@ -9499,7 +9524,8 @@ async fn run_validator() {
                 // has actually been added. Without this gate, the sweep would call
                 // record_downtime_offense every 100 slots on the SAME evidence,
                 // escalating Tier 1 → Tier 2 in just 40 seconds (1 sweep cycle).
-                if has_downtime && !slasher.is_slashed(&validator_info.pubkey)
+                if has_downtime
+                    && !slasher.is_slashed(&validator_info.pubkey)
                     && slasher.has_new_downtime_evidence(&validator_info.pubkey)
                 {
                     let tier = slasher.record_downtime_offense(&validator_info.pubkey, slot);
@@ -9507,7 +9533,8 @@ async fn run_validator() {
                     match tier {
                         1 => {
                             // Tier 1: Reputation penalty only (warning)
-                            let reputation_penalty = slasher.calculate_penalty(&validator_info.pubkey);
+                            let reputation_penalty =
+                                slasher.calculate_penalty(&validator_info.pubkey);
                             let old_reputation = validator_info.reputation;
                             validator_info.reputation = validator_info
                                 .reputation
@@ -9537,10 +9564,12 @@ async fn run_validator() {
 
                             // Set penalty boost on StakeInfo so claim_rewards auto-detects it
                             if let Some(stake_info) = pool.get_stake_mut(&validator_info.pubkey) {
-                                stake_info.penalty_boost_until = slot + moltchain_core::consensus::PENALTY_REPAYMENT_BOOST_SLOTS;
+                                stake_info.penalty_boost_until =
+                                    slot + moltchain_core::consensus::PENALTY_REPAYMENT_BOOST_SLOTS;
                             }
 
-                            let reputation_penalty = slasher.calculate_penalty(&validator_info.pubkey);
+                            let reputation_penalty =
+                                slasher.calculate_penalty(&validator_info.pubkey);
                             let old_reputation = validator_info.reputation;
                             validator_info.reputation = validator_info
                                 .reputation
@@ -9575,7 +9604,8 @@ async fn run_validator() {
                                 slot,
                             );
 
-                            let reputation_penalty = slasher.calculate_penalty(&validator_info.pubkey);
+                            let reputation_penalty =
+                                slasher.calculate_penalty(&validator_info.pubkey);
                             let old_reputation = validator_info.reputation;
                             validator_info.reputation = validator_info
                                 .reputation
@@ -9606,7 +9636,8 @@ async fn run_validator() {
 
                 // For non-downtime severe offenses, apply immediately (no tiering)
                 // AUDIT-FIX E-5: Skip if already slashed for downtime in this sweep
-                if has_non_downtime && !slasher.is_slashed(&validator_info.pubkey)
+                if has_non_downtime
+                    && !slasher.is_slashed(&validator_info.pubkey)
                     && !slashed_this_sweep.contains(&validator_info.pubkey)
                 {
                     let slashed_amount = slasher.apply_economic_slashing_with_params(
@@ -9652,7 +9683,11 @@ async fn run_validator() {
                         acct.staked = acct.staked.saturating_sub(*debit);
                         acct.shells = acct.shells.saturating_sub(*debit);
                         if let Err(e) = batch.put_account(pubkey, &acct) {
-                            error!("Failed to stage slashing debit for {}: {}", pubkey.to_base58(), e);
+                            error!(
+                                "Failed to stage slashing debit for {}: {}",
+                                pubkey.to_base58(),
+                                e
+                            );
                         }
                     }
                 }

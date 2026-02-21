@@ -533,7 +533,8 @@ fn a5_03_graduated_slashing_math() {
         );
         tracker.add_evidence(downtime);
 
-        let slashed = tracker.apply_economic_slashing_with_params(&v1.pubkey(), &mut pool, &params, 300);
+        let slashed =
+            tracker.apply_economic_slashing_with_params(&v1.pubkey(), &mut pool, &params, 300);
         // DoubleBlock = 50% (500B) + Downtime 300/100=3 × 1% = 3% (30B) = 53% (530B)
         let expected = (stake as u128 * 50 / 100 + stake as u128 * 3 / 100) as u64;
         assert_eq!(
@@ -582,7 +583,8 @@ fn a5_03_graduated_slashing_math() {
         );
         tracker.add_evidence(downtime);
 
-        let slashed = tracker.apply_economic_slashing_with_params(&v2.pubkey(), &mut pool, &params, 2000);
+        let slashed =
+            tracker.apply_economic_slashing_with_params(&v2.pubkey(), &mut pool, &params, 2000);
         // DoubleBlock = 50% + Downtime capped at max 10% = 60%
         let expected = (stake as u128 * 50 / 100 + stake as u128 * 10 / 100) as u64;
         assert_eq!(

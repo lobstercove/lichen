@@ -990,7 +990,10 @@ impl TxProcessor {
                     success: false,
                     fee: 0,
                     logs,
-                    error: Some("EVM sentinel blockhash is reserved for EVM-wrapped transactions".to_string()),
+                    error: Some(
+                        "EVM sentinel blockhash is reserved for EVM-wrapped transactions"
+                            .to_string(),
+                    ),
                     compute_used: 0,
                     return_data: None,
                     return_code: None,
@@ -3432,7 +3435,9 @@ mod tests {
 
         // Fund treasury
         let mut treasury_acct = state.get_account(&treasury).unwrap().unwrap();
-        treasury_acct.add_spendable(Account::molt_to_shells(100)).unwrap();
+        treasury_acct
+            .add_spendable(Account::molt_to_shells(100))
+            .unwrap();
         state.put_account(&treasury, &treasury_acct).unwrap();
 
         let before = state.get_account(&alice).unwrap().unwrap().spendable;
@@ -3505,7 +3510,9 @@ mod tests {
         let validator = Pubkey([42u8; 32]);
 
         let mut treasury_acct = state.get_account(&treasury).unwrap().unwrap();
-        treasury_acct.add_spendable(Account::molt_to_shells(100)).unwrap();
+        treasury_acct
+            .add_spendable(Account::molt_to_shells(100))
+            .unwrap();
         state.put_account(&treasury, &treasury_acct).unwrap();
 
         // Invalid magic bytes (not WASM)
@@ -3524,7 +3531,10 @@ mod tests {
         tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
 
         let result = processor.process_transaction(&tx, &validator);
-        assert!(!result.success, "Deploy with invalid WASM magic should fail");
+        assert!(
+            !result.success,
+            "Deploy with invalid WASM magic should fail"
+        );
         assert!(result.error.unwrap().contains("bad magic number"));
     }
 
@@ -3534,7 +3544,9 @@ mod tests {
         let validator = Pubkey([42u8; 32]);
 
         let mut treasury_acct = state.get_account(&treasury).unwrap().unwrap();
-        treasury_acct.add_spendable(Account::molt_to_shells(100)).unwrap();
+        treasury_acct
+            .add_spendable(Account::molt_to_shells(100))
+            .unwrap();
         state.put_account(&treasury, &treasury_acct).unwrap();
 
         // Only 4 bytes — below 8-byte minimum
@@ -4166,9 +4178,7 @@ mod tests {
 
         // Set up a payer with known balance (10 MOLT)
         let payer = Pubkey([99u8; 32]);
-        state
-            .put_account(&payer, &Account::new(10, payer))
-            .unwrap();
+        state.put_account(&payer, &Account::new(10, payer)).unwrap();
 
         let fee = Account::molt_to_shells(1); // 1 MOLT
         let treasury_before = state.get_account(&treasury).unwrap().unwrap().shells;
@@ -4205,11 +4215,7 @@ mod tests {
     }
 
     /// Helper: wrap a single instruction into a signed transaction
-    fn make_signed_tx(
-        kp: &Keypair,
-        ix: Instruction,
-        recent_blockhash: Hash,
-    ) -> Transaction {
+    fn make_signed_tx(kp: &Keypair, ix: Instruction, recent_blockhash: Hash) -> Transaction {
         let message = crate::transaction::Message::new(vec![ix], recent_blockhash);
         let mut tx = Transaction::new(message);
         let sig = kp.sign(&tx.message.serialize());
@@ -4225,29 +4231,36 @@ mod tests {
         let validator = Pubkey([42u8; 32]);
 
         // Two instructions: 0-transfer (fee payer = alice), create_account (signer = new_acct)
-        let message = crate::transaction::Message::new(vec![
-            Instruction {
-                program_id: SYSTEM_PROGRAM_ID,
-                accounts: vec![alice, alice],
-                data: {
-                    let mut d = vec![0u8];
-                    d.extend_from_slice(&0u64.to_le_bytes());
-                    d
+        let message = crate::transaction::Message::new(
+            vec![
+                Instruction {
+                    program_id: SYSTEM_PROGRAM_ID,
+                    accounts: vec![alice, alice],
+                    data: {
+                        let mut d = vec![0u8];
+                        d.extend_from_slice(&0u64.to_le_bytes());
+                        d
+                    },
                 },
-            },
-            Instruction {
-                program_id: SYSTEM_PROGRAM_ID,
-                accounts: vec![new_acct],
-                data: vec![1],
-            },
-        ], genesis_hash);
+                Instruction {
+                    program_id: SYSTEM_PROGRAM_ID,
+                    accounts: vec![new_acct],
+                    data: vec![1],
+                },
+            ],
+            genesis_hash,
+        );
         let mut tx = Transaction::new(message);
         let msg_bytes = tx.message.serialize();
         tx.signatures.push(alice_kp.sign(&msg_bytes));
         tx.signatures.push(new_kp.sign(&msg_bytes));
 
         let result = processor.process_transaction(&tx, &validator);
-        assert!(result.success, "Create account should succeed: {:?}", result.error);
+        assert!(
+            result.success,
+            "Create account should succeed: {:?}",
+            result.error
+        );
 
         let acct = state.get_account(&new_acct).unwrap();
         assert!(acct.is_some(), "New account must exist after creation");
@@ -4262,20 +4275,29 @@ mod tests {
         let validator = Pubkey([42u8; 32]);
 
         // Pre-create the account
-        state.put_account(&existing, &Account::new(10, existing)).unwrap();
+        state
+            .put_account(&existing, &Account::new(10, existing))
+            .unwrap();
 
-        let message = crate::transaction::Message::new(vec![
-            Instruction {
-                program_id: SYSTEM_PROGRAM_ID,
-                accounts: vec![alice, alice],
-                data: { let mut d = vec![0u8]; d.extend_from_slice(&0u64.to_le_bytes()); d },
-            },
-            Instruction {
-                program_id: SYSTEM_PROGRAM_ID,
-                accounts: vec![existing],
-                data: vec![1],
-            },
-        ], genesis_hash);
+        let message = crate::transaction::Message::new(
+            vec![
+                Instruction {
+                    program_id: SYSTEM_PROGRAM_ID,
+                    accounts: vec![alice, alice],
+                    data: {
+                        let mut d = vec![0u8];
+                        d.extend_from_slice(&0u64.to_le_bytes());
+                        d
+                    },
+                },
+                Instruction {
+                    program_id: SYSTEM_PROGRAM_ID,
+                    accounts: vec![existing],
+                    data: vec![1],
+                },
+            ],
+            genesis_hash,
+        );
         let mut tx = Transaction::new(message);
         let msg_bytes = tx.message.serialize();
         tx.signatures.push(alice_kp.sign(&msg_bytes));
@@ -4283,8 +4305,11 @@ mod tests {
 
         let result = processor.process_transaction(&tx, &validator);
         assert!(!result.success, "Create existing account should fail");
-        assert!(result.error.as_ref().unwrap().contains("already exists"),
-            "Expected 'already exists', got: {:?}", result.error);
+        assert!(
+            result.error.as_ref().unwrap().contains("already exists"),
+            "Expected 'already exists', got: {:?}",
+            result.error
+        );
     }
 
     // ====================================================================
@@ -4298,7 +4323,9 @@ mod tests {
         let validator = Pubkey([42u8; 32]);
 
         // Fund treasury
-        state.put_account(&treasury, &Account::new(1_000_000, treasury)).unwrap();
+        state
+            .put_account(&treasury, &Account::new(1_000_000, treasury))
+            .unwrap();
 
         // Treasury keypair needed to sign
         let treasury_kp = Keypair::generate();
@@ -4320,7 +4347,11 @@ mod tests {
         let tx = make_signed_tx(&treasury_kp, ix, genesis_hash);
 
         let result = processor.process_transaction(&tx, &validator);
-        assert!(result.success, "Treasury transfer should succeed: {:?}", result.error);
+        assert!(
+            result.success,
+            "Treasury transfer should succeed: {:?}",
+            result.error
+        );
         assert_eq!(state.get_balance(&bob).unwrap(), amount);
     }
 
@@ -4362,7 +4393,9 @@ mod tests {
         genesis_hash: Hash,
     ) -> TxResult {
         // Ensure creator has enough for the collection fee (1000 MOLT) + base fee
-        state.put_account(&creator, &Account::new(10_000, creator)).unwrap();
+        state
+            .put_account(&creator, &Account::new(10_000, creator))
+            .unwrap();
         let col_data = crate::nft::CreateCollectionData {
             name: "TestCollection".to_string(),
             symbol: "TNFT".to_string(),
@@ -4390,9 +4423,18 @@ mod tests {
         let collection = Pubkey([60u8; 32]);
 
         let result = create_test_collection(
-            &processor, &state, &alice_kp, alice, collection, genesis_hash,
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            collection,
+            genesis_hash,
         );
-        assert!(result.success, "Collection creation should succeed: {:?}", result.error);
+        assert!(
+            result.success,
+            "Collection creation should succeed: {:?}",
+            result.error
+        );
 
         let acct = state.get_account(&collection).unwrap().unwrap();
         let col_state = crate::nft::decode_collection_state(&acct.data).unwrap();
@@ -4410,12 +4452,19 @@ mod tests {
 
         // First creation succeeds
         let r1 = create_test_collection(
-            &processor, &state, &alice_kp, alice, collection, genesis_hash,
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            collection,
+            genesis_hash,
         );
         assert!(r1.success, "First creation should succeed: {:?}", r1.error);
 
         // Ensure alice has balance for the second attempt
-        state.put_account(&alice, &Account::new(10_000, alice)).unwrap();
+        state
+            .put_account(&alice, &Account::new(10_000, alice))
+            .unwrap();
 
         // Try to create again with slightly different data to avoid replay protection
         let col_data = crate::nft::CreateCollectionData {
@@ -4437,8 +4486,11 @@ mod tests {
         let tx = make_signed_tx(&alice_kp, ix, genesis_hash);
         let r2 = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
         assert!(!r2.success, "Duplicate collection should fail");
-        assert!(r2.error.as_ref().unwrap().contains("already exists"),
-            "Expected 'already exists', got: {:?}", r2.error);
+        assert!(
+            r2.error.as_ref().unwrap().contains("already exists"),
+            "Expected 'already exists', got: {:?}",
+            r2.error
+        );
     }
 
     #[test]
@@ -4449,9 +4501,18 @@ mod tests {
 
         // Create collection first
         let r = create_test_collection(
-            &processor, &state, &alice_kp, alice, collection, genesis_hash,
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            collection,
+            genesis_hash,
         );
-        assert!(r.success, "Setup: collection creation failed: {:?}", r.error);
+        assert!(
+            r.success,
+            "Setup: collection creation failed: {:?}",
+            r.error
+        );
 
         // Mint NFT
         let mint_data = crate::nft::MintNftData {
@@ -4492,7 +4553,14 @@ mod tests {
         let token2 = Pubkey([66u8; 32]);
 
         // Create collection + mint token_id=1
-        create_test_collection(&processor, &state, &alice_kp, alice, collection, genesis_hash);
+        create_test_collection(
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            collection,
+            genesis_hash,
+        );
         let mint_data = crate::nft::MintNftData {
             token_id: 1,
             metadata_uri: "https://example.com/1.json".to_string(),
@@ -4530,7 +4598,14 @@ mod tests {
         let token_addr = Pubkey([69u8; 32]);
 
         // Create collection + mint
-        create_test_collection(&processor, &state, &alice_kp, alice, collection, genesis_hash);
+        create_test_collection(
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            collection,
+            genesis_hash,
+        );
         let mint_data = crate::nft::MintNftData {
             token_id: 1,
             metadata_uri: "https://example.com/1.json".to_string(),
@@ -4554,7 +4629,11 @@ mod tests {
         };
         let tx_transfer = make_signed_tx(&alice_kp, ix_transfer, genesis_hash);
         let result = processor.process_transaction(&tx_transfer, &Pubkey([42u8; 32]));
-        assert!(result.success, "NFT transfer should succeed: {:?}", result.error);
+        assert!(
+            result.success,
+            "NFT transfer should succeed: {:?}",
+            result.error
+        );
 
         let token_acct = state.get_account(&token_addr).unwrap().unwrap();
         let token_state = crate::nft::decode_token_state(&token_acct.data).unwrap();
@@ -4572,11 +4651,25 @@ mod tests {
         state.put_account(&eve, &Account::new(100, eve)).unwrap();
 
         // Create + mint (alice owns)
-        create_test_collection(&processor, &state, &alice_kp, alice, collection, genesis_hash);
-        let mint_data = crate::nft::MintNftData { token_id: 1, metadata_uri: "uri".to_string() };
+        create_test_collection(
+            &processor,
+            &state,
+            &alice_kp,
+            alice,
+            collection,
+            genesis_hash,
+        );
+        let mint_data = crate::nft::MintNftData {
+            token_id: 1,
+            metadata_uri: "uri".to_string(),
+        };
         let mut mdata = vec![7u8];
         mdata.extend_from_slice(&bincode::serialize(&mint_data).unwrap());
-        let ix = Instruction { program_id: SYSTEM_PROGRAM_ID, accounts: vec![alice, collection, token_addr, alice], data: mdata };
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, collection, token_addr, alice],
+            data: mdata,
+        };
         let tx = make_signed_tx(&alice_kp, ix, genesis_hash);
         let r = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
         assert!(r.success, "Mint should succeed: {:?}", r.error);
@@ -4590,8 +4683,11 @@ mod tests {
         let tx_transfer = make_signed_tx(&eve_kp, ix_transfer, genesis_hash);
         let result = processor.process_transaction(&tx_transfer, &Pubkey([42u8; 32]));
         assert!(!result.success, "Eve should not transfer alice's NFT");
-        assert!(result.error.as_ref().unwrap().contains("Unauthorized"),
-            "Expected 'Unauthorized', got: {:?}", result.error);
+        assert!(
+            result.error.as_ref().unwrap().contains("Unauthorized"),
+            "Expected 'Unauthorized', got: {:?}",
+            result.error
+        );
     }
 
     // ====================================================================
@@ -4615,7 +4711,9 @@ mod tests {
         setup_validator_in_pool(&state, validator);
 
         // Fund alice with enough for MIN_VALIDATOR_STAKE (75K MOLT)
-        state.put_account(&alice, &Account::new(100_000, alice)).unwrap();
+        state
+            .put_account(&alice, &Account::new(100_000, alice))
+            .unwrap();
 
         // Stake at MIN_VALIDATOR_STAKE
         let amount = crate::consensus::MIN_VALIDATOR_STAKE;
@@ -4634,12 +4732,18 @@ mod tests {
 
         // Verify alice's staked balance
         let acct = state.get_account(&alice).unwrap().unwrap();
-        assert_eq!(acct.staked, amount, "Staked balance should equal MIN_VALIDATOR_STAKE");
+        assert_eq!(
+            acct.staked, amount,
+            "Staked balance should equal MIN_VALIDATOR_STAKE"
+        );
 
         // Verify stake pool updated
         let pool = state.get_stake_pool().unwrap();
         let stake_info = pool.get_stake(&validator).unwrap();
-        assert!(stake_info.amount >= amount, "Stake pool should reflect the staked amount");
+        assert!(
+            stake_info.amount >= amount,
+            "Stake pool should reflect the staked amount"
+        );
     }
 
     #[test]
@@ -4659,7 +4763,10 @@ mod tests {
         };
         let tx = make_signed_tx(&alice_kp, ix, genesis_hash);
         let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
-        assert!(!result.success, "Staking to unregistered validator should fail");
+        assert!(
+            !result.success,
+            "Staking to unregistered validator should fail"
+        );
         assert!(result.error.unwrap().contains("not registered"));
     }
 
@@ -4671,14 +4778,20 @@ mod tests {
         setup_validator_in_pool(&state, validator);
 
         // Fund alice
-        state.put_account(&alice, &Account::new(100_000, alice)).unwrap();
+        state
+            .put_account(&alice, &Account::new(100_000, alice))
+            .unwrap();
 
         // Stake MIN_VALIDATOR_STAKE first
         let amount = crate::consensus::MIN_VALIDATOR_STAKE;
         let ix_stake = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![alice, validator],
-            data: { let mut d = vec![9u8]; d.extend_from_slice(&amount.to_le_bytes()); d },
+            data: {
+                let mut d = vec![9u8];
+                d.extend_from_slice(&amount.to_le_bytes());
+                d
+            },
         };
         let tx_stake = make_signed_tx(&alice_kp, ix_stake, genesis_hash);
         let r = processor.process_transaction(&tx_stake, &validator);
@@ -4689,7 +4802,11 @@ mod tests {
         let ix_unstake = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![alice, validator],
-            data: { let mut d = vec![10u8]; d.extend_from_slice(&unstake_amount.to_le_bytes()); d },
+            data: {
+                let mut d = vec![10u8];
+                d.extend_from_slice(&unstake_amount.to_le_bytes());
+                d
+            },
         };
         let tx_unstake = make_signed_tx(&alice_kp, ix_unstake, genesis_hash);
         let result = processor.process_transaction(&tx_unstake, &validator);
@@ -4697,8 +4814,15 @@ mod tests {
 
         // Verify staked balance decreased and locked increased
         let acct = state.get_account(&alice).unwrap().unwrap();
-        assert_eq!(acct.staked, amount - unstake_amount, "Staked should be reduced");
-        assert_eq!(acct.locked, unstake_amount, "Locked should equal unstaked amount");
+        assert_eq!(
+            acct.staked,
+            amount - unstake_amount,
+            "Staked should be reduced"
+        );
+        assert_eq!(
+            acct.locked, unstake_amount,
+            "Locked should equal unstaked amount"
+        );
     }
 
     #[test]
@@ -4709,14 +4833,20 @@ mod tests {
         setup_validator_in_pool(&state, validator);
 
         // Fund alice
-        state.put_account(&alice, &Account::new(100_000, alice)).unwrap();
+        state
+            .put_account(&alice, &Account::new(100_000, alice))
+            .unwrap();
 
         // Stake MIN_VALIDATOR_STAKE
         let stake_amount = crate::consensus::MIN_VALIDATOR_STAKE;
         let ix_stake = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![alice, validator],
-            data: { let mut d = vec![9u8]; d.extend_from_slice(&stake_amount.to_le_bytes()); d },
+            data: {
+                let mut d = vec![9u8];
+                d.extend_from_slice(&stake_amount.to_le_bytes());
+                d
+            },
         };
         let tx = make_signed_tx(&alice_kp, ix_stake, genesis_hash);
         let r = processor.process_transaction(&tx, &validator);
@@ -4727,13 +4857,20 @@ mod tests {
         let ix_unstake = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![alice, validator],
-            data: { let mut d = vec![10u8]; d.extend_from_slice(&too_much.to_le_bytes()); d },
+            data: {
+                let mut d = vec![10u8];
+                d.extend_from_slice(&too_much.to_le_bytes());
+                d
+            },
         };
         let tx2 = make_signed_tx(&alice_kp, ix_unstake, genesis_hash);
         let result = processor.process_transaction(&tx2, &validator);
         assert!(!result.success, "Unstaking more than staked should fail");
-        assert!(result.error.as_ref().unwrap().contains("Insufficient"),
-            "Expected 'Insufficient', got: {:?}", result.error);
+        assert!(
+            result.error.as_ref().unwrap().contains("Insufficient"),
+            "Expected 'Insufficient', got: {:?}",
+            result.error
+        );
     }
 
     #[test]
@@ -4744,16 +4881,23 @@ mod tests {
         setup_validator_in_pool(&state, validator);
 
         // Fund alice
-        state.put_account(&alice, &Account::new(200_000, alice)).unwrap();
+        state
+            .put_account(&alice, &Account::new(200_000, alice))
+            .unwrap();
 
         // Stake MIN_VALIDATOR_STAKE
         let amount = crate::consensus::MIN_VALIDATOR_STAKE;
         let ix_s = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![alice, validator],
-            data: { let mut d = vec![9u8]; d.extend_from_slice(&amount.to_le_bytes()); d },
+            data: {
+                let mut d = vec![9u8];
+                d.extend_from_slice(&amount.to_le_bytes());
+                d
+            },
         };
-        let r = processor.process_transaction(&make_signed_tx(&alice_kp, ix_s, genesis_hash), &validator);
+        let r = processor
+            .process_transaction(&make_signed_tx(&alice_kp, ix_s, genesis_hash), &validator);
         assert!(r.success, "Stake failed: {:?}", r.error);
 
         // Request unstake — half
@@ -4761,9 +4905,14 @@ mod tests {
         let ix_u = Instruction {
             program_id: SYSTEM_PROGRAM_ID,
             accounts: vec![alice, validator],
-            data: { let mut d = vec![10u8]; d.extend_from_slice(&unstake_amount.to_le_bytes()); d },
+            data: {
+                let mut d = vec![10u8];
+                d.extend_from_slice(&unstake_amount.to_le_bytes());
+                d
+            },
         };
-        let r2 = processor.process_transaction(&make_signed_tx(&alice_kp, ix_u, genesis_hash), &validator);
+        let r2 = processor
+            .process_transaction(&make_signed_tx(&alice_kp, ix_u, genesis_hash), &validator);
         assert!(r2.success, "Unstake request failed: {:?}", r2.error);
 
         // Immediately try to claim (cooldown not passed — slot is still 0)
@@ -4785,8 +4934,10 @@ mod tests {
     fn test_register_evm_address_success() {
         let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
 
-        let evm_addr: [u8; 20] = [0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55,
-            0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
+        let evm_addr: [u8; 20] = [
+            0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99,
+            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF,
+        ];
 
         let mut data = vec![12u8];
         data.extend_from_slice(&evm_addr);
@@ -4798,7 +4949,11 @@ mod tests {
         };
         let tx = make_signed_tx(&alice_kp, ix, genesis_hash);
         let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
-        assert!(result.success, "EVM registration should succeed: {:?}", result.error);
+        assert!(
+            result.success,
+            "EVM registration should succeed: {:?}",
+            result.error
+        );
 
         // Verify mapping exists
         let mapped = state.lookup_evm_address(&evm_addr).unwrap();
@@ -4854,8 +5009,15 @@ mod tests {
         let tx = make_signed_tx(&alice_kp, ix, genesis_hash);
         let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
         assert!(!result.success, "Invalid EVM data should fail");
-        assert!(result.error.as_ref().unwrap().contains("Invalid EVM address data"),
-            "Expected 'Invalid EVM address data', got: {:?}", result.error);
+        assert!(
+            result
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("Invalid EVM address data"),
+            "Expected 'Invalid EVM address data', got: {:?}",
+            result.error
+        );
     }
 
     // ====================================================================
@@ -4884,7 +5046,9 @@ mod tests {
 
         // Get alice's stMOLT balance
         let pool = state.get_reefstake_pool().unwrap();
-        let (alice_pos, _) = pool.get_position(&alice).expect("Alice should have a position after deposit");
+        let (alice_pos, _) = pool
+            .get_position(&alice)
+            .expect("Alice should have a position after deposit");
         let alice_stmolt = alice_pos.st_molt_amount;
         assert!(alice_stmolt > 0, "Alice should have stMOLT after deposit");
 
@@ -4901,13 +5065,22 @@ mod tests {
         };
         let tx_xfer = make_signed_tx(&alice_kp, ix_transfer, genesis_hash);
         let result = processor.process_transaction(&tx_xfer, &Pubkey([42u8; 32]));
-        assert!(result.success, "ReefStake transfer should succeed: {:?}", result.error);
+        assert!(
+            result.success,
+            "ReefStake transfer should succeed: {:?}",
+            result.error
+        );
 
         // Verify balances
         let pool2 = state.get_reefstake_pool().unwrap();
-        let (bob_pos, _) = pool2.get_position(&bob).expect("Bob should have a position after transfer");
+        let (bob_pos, _) = pool2
+            .get_position(&bob)
+            .expect("Bob should have a position after transfer");
         let bob_stmolt = bob_pos.st_molt_amount;
-        assert_eq!(bob_stmolt, transfer_amount, "Bob should have received stMOLT");
+        assert_eq!(
+            bob_stmolt, transfer_amount,
+            "Bob should have received stMOLT"
+        );
     }
 
     // ====================================================================
@@ -4949,7 +5122,11 @@ mod tests {
         };
         let tx = make_signed_tx(&alice_kp, ix, genesis_hash);
         let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
-        assert!(result.success, "Symbol registration should succeed: {:?}", result.error);
+        assert!(
+            result.success,
+            "Symbol registration should succeed: {:?}",
+            result.error
+        );
 
         // Verify symbol is registered
         let entry = state.get_symbol_registry("TMOLT").unwrap();
@@ -4999,16 +5176,31 @@ mod tests {
         let mut data = vec![20u8];
         data.extend_from_slice(json.as_bytes());
 
-        let ix1 = Instruction { program_id: SYSTEM_PROGRAM_ID, accounts: vec![alice, contract1], data: data.clone() };
+        let ix1 = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, contract1],
+            data: data.clone(),
+        };
         let tx1 = make_signed_tx(&alice_kp, ix1, genesis_hash);
         let r1 = processor.process_transaction(&tx1, &Pubkey([42u8; 32]));
-        assert!(r1.success, "First registration should succeed: {:?}", r1.error);
+        assert!(
+            r1.success,
+            "First registration should succeed: {:?}",
+            r1.error
+        );
 
         // Try to register same symbol for contract2
-        let ix2 = Instruction { program_id: SYSTEM_PROGRAM_ID, accounts: vec![alice, contract2], data };
+        let ix2 = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, contract2],
+            data,
+        };
         let tx2 = make_signed_tx(&alice_kp, ix2, genesis_hash);
         let r2 = processor.process_transaction(&tx2, &Pubkey([42u8; 32]));
-        assert!(!r2.success, "Duplicate symbol on different contract should fail");
+        assert!(
+            !r2.success,
+            "Duplicate symbol on different contract should fail"
+        );
         assert!(r2.error.unwrap().contains("already registered"));
     }
 
@@ -5094,7 +5286,11 @@ mod tests {
         let tx = make_transfer_tx(&alice_kp, alice, bob, 10, genesis_hash);
         let sim = processor.simulate_transaction(&tx);
 
-        assert!(sim.success, "Simulation should succeed for valid tx: {:?}", sim.error);
+        assert!(
+            sim.success,
+            "Simulation should succeed for valid tx: {:?}",
+            sim.error
+        );
         assert!(sim.fee > 0, "Fee should be non-zero");
         assert!(!sim.logs.is_empty(), "Logs should be populated");
     }
@@ -5107,7 +5303,10 @@ mod tests {
         let tx = make_transfer_tx(&alice_kp, alice, bob, 10, Hash::default());
         let sim = processor.simulate_transaction(&tx);
 
-        assert!(!sim.success, "Zero blockhash should be rejected in simulation");
+        assert!(
+            !sim.success,
+            "Zero blockhash should be rejected in simulation"
+        );
         assert!(sim.error.unwrap().contains("Zero blockhash"));
     }
 
@@ -5119,7 +5318,10 @@ mod tests {
         let tx = make_transfer_tx(&alice_kp, alice, bob, 10, Hash::hash(b"not_a_real_block"));
         let sim = processor.simulate_transaction(&tx);
 
-        assert!(!sim.success, "Invalid blockhash should be rejected in simulation");
+        assert!(
+            !sim.success,
+            "Invalid blockhash should be rejected in simulation"
+        );
         assert!(sim.error.unwrap().contains("Blockhash not found"));
     }
 
@@ -5130,7 +5332,11 @@ mod tests {
 
         let mut data = vec![0u8];
         data.extend_from_slice(&Account::molt_to_shells(10).to_le_bytes());
-        let ix = Instruction { program_id: SYSTEM_PROGRAM_ID, accounts: vec![alice, bob], data };
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, bob],
+            data,
+        };
         let message = crate::transaction::Message::new(vec![ix], genesis_hash);
         let tx = Transaction::new(message); // No signatures
 
@@ -5189,4 +5395,5 @@ mod tests {
         let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
         assert!(!result.success, "Empty instruction data should fail");
         assert!(result.error.unwrap().contains("Empty instruction data"));
-    }}
+    }
+}

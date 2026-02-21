@@ -223,7 +223,9 @@ async fn main() {
             CorsLayer::new()
                 // I-5: Restrict CORS to known origins instead of wildcard
                 .allow_origin([
-                    "https://faucet.moltchain.io".parse::<HeaderValue>().unwrap(),
+                    "https://faucet.moltchain.io"
+                        .parse::<HeaderValue>()
+                        .unwrap(),
                     "https://moltchain.io".parse::<HeaderValue>().unwrap(),
                     "http://localhost:3003".parse::<HeaderValue>().unwrap(),
                     "http://localhost:3000".parse::<HeaderValue>().unwrap(),
@@ -493,10 +495,9 @@ fn load_or_generate_keypair() -> Keypair {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            if let Err(e) = std::fs::set_permissions(
-                default_path,
-                std::fs::Permissions::from_mode(0o600),
-            ) {
+            if let Err(e) =
+                std::fs::set_permissions(default_path, std::fs::Permissions::from_mode(0o600))
+            {
                 warn!("⚠️  Could not set keypair permissions: {}", e);
             }
         }

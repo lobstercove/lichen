@@ -388,17 +388,14 @@ fn compute_buy_tokens(supply: u64, after_fee_shells: u128) -> u64 {
     // where A = SLOPE, B = 2*SLOPE_SCALE*BASE_PRICE + 2*SLOPE*s, C = 2*SLOPE_SCALE*after_fee_shells
     let s = supply as u128;
     let a_coeff = SLOPE as u128;
-    let b_coeff = 2u128 * SLOPE_SCALE as u128 * BASE_PRICE as u128
-        + 2u128 * SLOPE as u128 * s;
+    let b_coeff = 2u128 * SLOPE_SCALE as u128 * BASE_PRICE as u128 + 2u128 * SLOPE as u128 * s;
     let c_val = 2u128 * SLOPE_SCALE as u128 * after_fee_shells;
 
     // discriminant = B^2 + 4*A*C
-    let discriminant = b_coeff
-        .checked_mul(b_coeff)
-        .and_then(|b2| {
-            let four_ac = 4u128.checked_mul(a_coeff)?.checked_mul(c_val)?;
-            b2.checked_add(four_ac)
-        });
+    let discriminant = b_coeff.checked_mul(b_coeff).and_then(|b2| {
+        let four_ac = 4u128.checked_mul(a_coeff)?.checked_mul(c_val)?;
+        b2.checked_add(four_ac)
+    });
 
     let discriminant = match discriminant {
         Some(d) => d,
@@ -429,7 +426,7 @@ fn isqrt_u128(n: u128) -> u128 {
         return 0;
     }
     let mut x = n;
-    let mut y = (x + 1) / 2;
+    let mut y = x.div_ceil(2);
     while y < x {
         x = y;
         y = (x + n / x) / 2;

@@ -738,13 +738,20 @@ fn solana_transaction_encoded_json(
     // AUDIT-FIX F-9: Reconstruct pre-balances from transaction effects.
     // The fee payer (account[0]) had fee added to their balance before deduction.
     // For transfer instructions (opcode 0), we also reconstruct the amount moved.
-    let transfer_amount = tx.message.instructions.first().and_then(|ix| {
-        if ix.data.first() == Some(&0) && ix.data.len() >= 9 {
-            Some(u64::from_le_bytes(ix.data[1..9].try_into().unwrap_or([0; 8])))
-        } else {
-            None
-        }
-    }).unwrap_or(0);
+    let transfer_amount = tx
+        .message
+        .instructions
+        .first()
+        .and_then(|ix| {
+            if ix.data.first() == Some(&0) && ix.data.len() >= 9 {
+                Some(u64::from_le_bytes(
+                    ix.data[1..9].try_into().unwrap_or([0; 8]),
+                ))
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0);
     let pre_balances: Vec<u64> = post_balances
         .iter()
         .enumerate()
@@ -8677,7 +8684,7 @@ async fn handle_eth_get_logs(
                     // ABI encoding: each value is left-padded to 32 bytes
                     if v_bytes.len() < 32 {
                         let padding = 32 - v_bytes.len();
-                        data_bytes.extend(std::iter::repeat(0u8).take(padding));
+                        data_bytes.extend(std::iter::repeat_n(0u8, padding));
                     }
                     data_bytes.extend_from_slice(v_bytes);
                 }
@@ -8710,7 +8717,7 @@ async fn handle_eth_get_logs(
                 let bh_bytes = hex::decode(block_hash_hex).unwrap_or_default();
                 let mut hasher = Keccak256::new();
                 hasher.update(&bh_bytes);
-                hasher.update(&log_index.to_be_bytes());
+                hasher.update(log_index.to_be_bytes());
                 format!("0x{}", hex::encode(hasher.finalize()))
             };
 

@@ -1568,15 +1568,11 @@ async fn main() -> Result<()> {
                 // I-2: Error instead of querying with a random keypair
                 let query_kp = keypair_mgr
                     .load_keypair(&keypair_mgr.default_keypair_path())
-                    .map_err(|_| anyhow::anyhow!("No wallet configured. Run `molt wallet create` first."))?;
+                    .map_err(|_| {
+                        anyhow::anyhow!("No wallet configured. Run `molt wallet create` first.")
+                    })?;
                 match client
-                    .call_contract(
-                        &query_kp,
-                        &contract_addr,
-                        "balance_of".to_string(),
-                        data,
-                        0,
-                    )
+                    .call_contract(&query_kp, &contract_addr, "balance_of".to_string(), data, 0)
                     .await
                 {
                     Ok(sig) => {
@@ -1724,15 +1720,11 @@ async fn main() -> Result<()> {
                     // I-2: Error instead of querying with a random keypair
                     let query_kp = keypair_mgr
                         .load_keypair(&keypair_mgr.default_keypair_path())
-                        .map_err(|_| anyhow::anyhow!("No wallet configured. Run `molt wallet create` first."))?;
+                        .map_err(|_| {
+                            anyhow::anyhow!("No wallet configured. Run `molt wallet create` first.")
+                        })?;
                     match client
-                        .call_contract(
-                            &query_kp,
-                            &dao_addr,
-                            "get_proposals".to_string(),
-                            data,
-                            0,
-                        )
+                        .call_contract(&query_kp, &dao_addr, "get_proposals".to_string(), data, 0)
                         .await
                     {
                         Ok(sig) => {
@@ -1756,15 +1748,11 @@ async fn main() -> Result<()> {
                     // I-2: Error instead of querying with a random keypair
                     let query_kp = keypair_mgr
                         .load_keypair(&keypair_mgr.default_keypair_path())
-                        .map_err(|_| anyhow::anyhow!("No wallet configured. Run `molt wallet create` first."))?;
+                        .map_err(|_| {
+                            anyhow::anyhow!("No wallet configured. Run `molt wallet create` first.")
+                        })?;
                     match client
-                        .call_contract(
-                            &query_kp,
-                            &dao_addr,
-                            "get_proposal".to_string(),
-                            data,
-                            0,
-                        )
+                        .call_contract(&query_kp, &dao_addr, "get_proposal".to_string(), data, 0)
                         .await
                     {
                         Ok(sig) => {

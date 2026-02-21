@@ -121,7 +121,8 @@ pub fn molt_price_from_state(state: &crate::state::StateStore) -> f64 {
         Some((price_raw, decimals, timestamp)) => {
             // A-5: Use deterministic block timestamp instead of SystemTime::now()
             // This ensures all validators evaluating the same slot reach identical results.
-            let now = state.get_last_slot()
+            let now = state
+                .get_last_slot()
                 .ok()
                 .and_then(|slot| state.get_block_by_slot(slot).ok().flatten())
                 .map(|block| block.header.timestamp)
@@ -478,7 +479,7 @@ impl StakeInfo {
                 self.status = BootstrapStatus::FullyVested;
                 self.graduation_slot = Some(current_slot);
                 self.penalty_boost_until = 0; // Clear boost on graduation
-                // All reward is liquid after time-cap graduation
+                                              // All reward is liquid after time-cap graduation
                 self.total_claimed = self.total_claimed.saturating_add(total_reward);
                 return (total_reward, 0);
             }
@@ -486,25 +487,24 @@ impl StakeInfo {
             // ── Penalty repayment boost: 90% to debt, 10% liquid ──
             // Active when slashing sweep sets penalty_boost_until > current_slot.
             // This overrides the normal 50/75% split as punitive acceleration.
-            let debt_fraction = if self.penalty_boost_until > 0
-                && current_slot < self.penalty_boost_until
-            {
-                (total_reward as u128 * 90 / 100) as u64
-            } else {
-                // Clear expired boost
-                if self.penalty_boost_until > 0 && current_slot >= self.penalty_boost_until {
-                    self.penalty_boost_until = 0;
-                }
-
-                // ── Performance bonus: 95%+ uptime → accelerated repayment ──
-                if self.uptime_bps(current_slot, num_validators) >= UPTIME_BONUS_THRESHOLD_BPS {
-                    let base_half = total_reward / 2;
-                    (base_half as u128 * PERFORMANCE_BONUS_BPS as u128 / 10000) as u64
+            let debt_fraction =
+                if self.penalty_boost_until > 0 && current_slot < self.penalty_boost_until {
+                    (total_reward as u128 * 90 / 100) as u64
                 } else {
-                    // Standard 50% to debt repayment
-                    total_reward / 2
-                }
-            };
+                    // Clear expired boost
+                    if self.penalty_boost_until > 0 && current_slot >= self.penalty_boost_until {
+                        self.penalty_boost_until = 0;
+                    }
+
+                    // ── Performance bonus: 95%+ uptime → accelerated repayment ──
+                    if self.uptime_bps(current_slot, num_validators) >= UPTIME_BONUS_THRESHOLD_BPS {
+                        let base_half = total_reward / 2;
+                        (base_half as u128 * PERFORMANCE_BONUS_BPS as u128 / 10000) as u64
+                    } else {
+                        // Standard 50% to debt repayment
+                        total_reward / 2
+                    }
+                };
 
             // Apply debt payment (capped at remaining debt)
             let paid = debt_fraction.min(self.bootstrap_debt);
@@ -914,7 +914,9 @@ impl StakePool {
     /// Ghost validators (slashed & inactive) are cleaned up by this method.
     pub fn remove_ghost_validators(&mut self, current_slot: u64, grace_slots: u64) -> Vec<Pubkey> {
         let mut removed = Vec::new();
-        let to_remove: Vec<Pubkey> = self.stakes.iter()
+        let to_remove: Vec<Pubkey> = self
+            .stakes
+            .iter()
             .filter(|(_, info)| {
                 // Only remove validators that are:
                 // 1. Inactive (below minimum stake)
@@ -1253,7 +1255,9 @@ impl StakePool {
         let active_validators = self.active_validators().len() as u64;
         let unclaimed_rewards = self.total_unclaimed_rewards();
         // A-6: Use only active validators' stake for average calculation
-        let active_total: u64 = self.stakes.values()
+        let active_total: u64 = self
+            .stakes
+            .values()
             .filter(|s| s.is_active && s.meets_minimum())
             .map(|s| s.total_stake())
             .sum();
@@ -2575,10 +2579,12 @@ impl SlashingTracker {
                 // when the validator went offline — so it correctly deduplicates.
                 (
                     SlashingOffense::Downtime {
-                        last_active_slot: la1, ..
+                        last_active_slot: la1,
+                        ..
                     },
                     SlashingOffense::Downtime {
-                        last_active_slot: la2, ..
+                        last_active_slot: la2,
+                        ..
                     },
                 ) => la1 == la2,
                 _ => false,
@@ -2616,9 +2622,9 @@ impl SlashingTracker {
             }
 
             // For downtime-only evidence, check the tiered system
-            let has_downtime = evidence_list.iter().any(|e| {
-                matches!(e.offense, SlashingOffense::Downtime { .. })
-            });
+            let has_downtime = evidence_list
+                .iter()
+                .any(|e| matches!(e.offense, SlashingOffense::Downtime { .. }));
             if has_downtime {
                 let offense_count = self.get_downtime_offense_tier(validator, current_slot);
                 // Tier 2+ gets economic slashing
@@ -2638,7 +2644,11 @@ impl SlashingTracker {
     /// would still be treated as Tier 2/3 until record_downtime_offense ran.
     /// Returns the effective offense count (0 = no offenses, 1 = tier 1, 2 = tier 2, 3+ = tier 3).
     pub fn get_downtime_offense_tier(&self, validator: &Pubkey, current_slot: u64) -> u64 {
-        let raw_count = self.downtime_offense_count.get(validator).copied().unwrap_or(0);
+        let raw_count = self
+            .downtime_offense_count
+            .get(validator)
+            .copied()
+            .unwrap_or(0);
         if raw_count == 0 {
             return 0;
         }
@@ -2665,7 +2675,8 @@ impl SlashingTracker {
 
         let count = self.downtime_offense_count.entry(*validator).or_insert(0);
         *count += 1;
-        self.last_downtime_offense_slot.insert(*validator, current_slot);
+        self.last_downtime_offense_slot
+            .insert(*validator, current_slot);
         *count
     }
 
@@ -2675,15 +2686,25 @@ impl SlashingTracker {
     /// This prevents the sweep from calling record_downtime_offense every 100 slots
     /// on the same evidence, which would escalate Tier 1→2 in 40 seconds.
     pub fn has_new_downtime_evidence(&mut self, validator: &Pubkey) -> bool {
-        let current_downtime_count = self.evidence.get(validator)
-            .map(|ev| ev.iter().filter(|e| matches!(e.offense, SlashingOffense::Downtime { .. })).count())
+        let current_downtime_count = self
+            .evidence
+            .get(validator)
+            .map(|ev| {
+                ev.iter()
+                    .filter(|e| matches!(e.offense, SlashingOffense::Downtime { .. }))
+                    .count()
+            })
             .unwrap_or(0);
 
-        let last_count = self.last_processed_downtime_evidence_count
-            .get(validator).copied().unwrap_or(0);
+        let last_count = self
+            .last_processed_downtime_evidence_count
+            .get(validator)
+            .copied()
+            .unwrap_or(0);
 
         if current_downtime_count > last_count {
-            self.last_processed_downtime_evidence_count.insert(*validator, current_downtime_count);
+            self.last_processed_downtime_evidence_count
+                .insert(*validator, current_downtime_count);
             true
         } else {
             false
@@ -2701,7 +2722,8 @@ impl SlashingTracker {
 
     /// Apply temporary suspension to a validator (Tier 2 penalty)
     pub fn suspend_validator(&mut self, validator: &Pubkey, current_slot: u64) {
-        self.suspended_until.insert(*validator, current_slot + DOWNTIME_SUSPENSION_SLOTS);
+        self.suspended_until
+            .insert(*validator, current_slot + DOWNTIME_SUSPENSION_SLOTS);
     }
 
     /// Check if a validator has a penalty repayment boost active
@@ -2715,7 +2737,8 @@ impl SlashingTracker {
 
     /// Apply penalty repayment boost (Tier 2 — 90% of rewards go to bootstrap debt)
     pub fn apply_penalty_repayment_boost(&mut self, validator: &Pubkey, current_slot: u64) {
-        self.penalty_repayment_boost.insert(*validator, current_slot + PENALTY_REPAYMENT_BOOST_SLOTS);
+        self.penalty_repayment_boost
+            .insert(*validator, current_slot + PENALTY_REPAYMENT_BOOST_SLOTS);
     }
 
     /// Clear the slashed flag for a validator (allows recovery after top-up).
@@ -2728,8 +2751,10 @@ impl SlashingTracker {
 
     /// Clean up expired suspensions and repayment boosts
     pub fn cleanup_expired(&mut self, current_slot: u64) {
-        self.suspended_until.retain(|_, &mut end| current_slot < end);
-        self.penalty_repayment_boost.retain(|_, &mut end| current_slot < end);
+        self.suspended_until
+            .retain(|_, &mut end| current_slot < end);
+        self.penalty_repayment_boost
+            .retain(|_, &mut end| current_slot < end);
     }
 
     /// Mark validator as slashed
@@ -2845,13 +2870,16 @@ impl SlashingTracker {
             // contribute 0.5%, inflating the penalty far beyond the intended 0.5%.
 
             // 1. Find the worst downtime entry (highest missed_slots)
-            let worst_downtime_missed = evidence_list.iter().filter_map(|e| {
-                if let SlashingOffense::Downtime { missed_slots, .. } = e.offense {
-                    Some(missed_slots)
-                } else {
-                    None
-                }
-            }).max();
+            let worst_downtime_missed = evidence_list
+                .iter()
+                .filter_map(|e| {
+                    if let SlashingOffense::Downtime { missed_slots, .. } = e.offense {
+                        Some(missed_slots)
+                    } else {
+                        None
+                    }
+                })
+                .max();
 
             // 2. Apply downtime penalty once using worst entry
             if let Some(missed_slots) = worst_downtime_missed {
@@ -2859,8 +2887,7 @@ impl SlashingTracker {
                     0 | 1 => 0, // Tier 1: No economic slash
                     2 => {
                         // Tier 2: 0.5% of stake (applied ONCE regardless of evidence count)
-                        (original_stake as u128 * DOWNTIME_TIER2_SLASH_BPS as u128
-                            / 10_000) as u64
+                        (original_stake as u128 * DOWNTIME_TIER2_SLASH_BPS as u128 / 10_000) as u64
                     }
                     _ => {
                         // Tier 3+: Full graduated using worst entry's missed_slots
@@ -2882,7 +2909,8 @@ impl SlashingTracker {
                             / 100) as u64
                     }
                     SlashingOffense::DoubleVote { .. } => {
-                        (original_stake as u128 * params.slashing_percentage_double_vote as u128 / 100) as u64
+                        (original_stake as u128 * params.slashing_percentage_double_vote as u128
+                            / 100) as u64
                     }
                     SlashingOffense::Downtime { .. } => {
                         0 // Already handled above via worst-entry
@@ -2892,11 +2920,10 @@ impl SlashingTracker {
                             / 100) as u64
                     }
                     SlashingOffense::Censorship { .. } => {
-                        (original_stake as u128 * params.slashing_percentage_censorship as u128 / 100) as u64
+                        (original_stake as u128 * params.slashing_percentage_censorship as u128
+                            / 100) as u64
                     }
-                    SlashingOffense::Collusion { .. } => {
-                        original_stake
-                    }
+                    SlashingOffense::Collusion { .. } => original_stake,
                 };
 
                 total_penalty = total_penalty.saturating_add(stake_penalty);
@@ -4168,8 +4195,8 @@ mod tests {
         // Apply slashing — should be 0.5% of stake
         let params = crate::genesis::ConsensusParams::default();
         let slashed = tracker.apply_economic_slashing_with_params(&pk, &mut pool, &params, 500);
-        let expected = (BOOTSTRAP_GRANT_AMOUNT as u128 * DOWNTIME_TIER2_SLASH_BPS as u128
-            / 10_000) as u64;
+        let expected =
+            (BOOTSTRAP_GRANT_AMOUNT as u128 * DOWNTIME_TIER2_SLASH_BPS as u128 / 10_000) as u64;
         assert_eq!(
             slashed, expected,
             "Tier 2 should slash 0.5% ({} shells), got {}",
@@ -4301,7 +4328,10 @@ mod tests {
         assert_eq!(liquid2, 500_000_000, "After expiry: 50% liquid (standard)");
 
         // penalty_boost_until should be cleared
-        assert_eq!(stake.penalty_boost_until, 0, "Boost should be cleared after expiry");
+        assert_eq!(
+            stake.penalty_boost_until, 0,
+            "Boost should be cleared after expiry"
+        );
     }
 
     #[test]
@@ -4381,7 +4411,11 @@ mod tests {
         pool.slash_validator(&pk2, BOOTSTRAP_GRANT_AMOUNT);
 
         let stake2 = pool.get_stake(&pk2).unwrap();
-        assert_eq!(stake2.total_stake(), 0, "Fully slashed validator has 0 stake");
+        assert_eq!(
+            stake2.total_stake(),
+            0,
+            "Fully slashed validator has 0 stake"
+        );
 
         // Remove ghosts with 10K slot grace
         let removed = pool.remove_ghost_validators(20_000, 10_000);
@@ -4395,8 +4429,14 @@ mod tests {
         );
 
         // pk1 and pk3 should remain
-        assert!(pool.get_stake(&pk1).is_some(), "Active validator should remain");
-        assert!(pool.get_stake(&pk3).is_some(), "Active validator should remain");
+        assert!(
+            pool.get_stake(&pk1).is_some(),
+            "Active validator should remain"
+        );
+        assert!(
+            pool.get_stake(&pk3).is_some(),
+            "Active validator should remain"
+        );
     }
 
     #[test]
@@ -4419,7 +4459,10 @@ mod tests {
         tracker.add_evidence(evidence);
 
         // Mark as slashed
-        assert!(tracker.slash(&pk, 100), "Should be able to slash with evidence");
+        assert!(
+            tracker.slash(&pk, 100),
+            "Should be able to slash with evidence"
+        );
         assert!(tracker.is_slashed(&pk), "Should be slashed");
 
         // Clear slashed status for recovery
@@ -4509,8 +4552,8 @@ mod tests {
 
         let params = crate::genesis::ConsensusParams::default();
         let slashed = tracker.apply_economic_slashing_with_params(&pk, &mut pool, &params, 500);
-        let expected_single = (BOOTSTRAP_GRANT_AMOUNT as u128 * DOWNTIME_TIER2_SLASH_BPS as u128
-            / 10_000) as u64;
+        let expected_single =
+            (BOOTSTRAP_GRANT_AMOUNT as u128 * DOWNTIME_TIER2_SLASH_BPS as u128 / 10_000) as u64;
 
         assert_eq!(
             slashed, expected_single,
@@ -4631,7 +4674,11 @@ mod tests {
         // Clear one
         tracker.clear_slashed(&pk1);
         let slashed: Vec<_> = tracker.slashed_validators().collect();
-        assert_eq!(slashed.len(), 1, "After clearing pk1, only pk2 should remain");
+        assert_eq!(
+            slashed.len(),
+            1,
+            "After clearing pk1, only pk2 should remain"
+        );
         assert!(slashed.contains(&pk2));
     }
 

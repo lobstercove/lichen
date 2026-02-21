@@ -943,7 +943,10 @@ impl StateStore {
     ) -> Result<std::collections::HashSet<Hash>, String> {
         // Fast path: check the in-process cache
         {
-            let cache = self.blockhash_cache.lock().unwrap_or_else(|e| e.into_inner());
+            let cache = self
+                .blockhash_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             if let Some(ref inner) = *cache {
                 // Cache is valid — return all hashes within the requested window
                 let last_slot = self.get_last_slot()?;
@@ -976,7 +979,10 @@ impl StateStore {
 
         // Warm the cache
         {
-            let mut cache = self.blockhash_cache.lock().unwrap_or_else(|e| e.into_inner());
+            let mut cache = self
+                .blockhash_cache
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             *cache = Some(BlockhashCache { entries });
         }
 
@@ -986,7 +992,10 @@ impl StateStore {
     /// PERF-OPT 3: Push a new blockhash into the in-memory cache after committing a block.
     /// Evicts entries older than 300 slots.
     fn push_blockhash_cache(&self, hash: Hash, slot: u64) {
-        let mut cache = self.blockhash_cache.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cache = self
+            .blockhash_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let inner = cache.get_or_insert_with(|| BlockhashCache {
             entries: Vec::new(),
         });
@@ -3004,9 +3013,13 @@ impl StateBatch {
             return Ok(true);
         }
         // Fall back to committed state
-        let cf = self.db.cf_handle(CF_SYMBOL_REGISTRY)
+        let cf = self
+            .db
+            .cf_handle(CF_SYMBOL_REGISTRY)
             .ok_or_else(|| "Symbol registry CF not found".to_string())?;
-        let exists = self.db.get_cf(&cf, normalized.as_bytes())
+        let exists = self
+            .db
+            .get_cf(&cf, normalized.as_bytes())
             .map_err(|e| format!("Database error: {}", e))?
             .is_some();
         Ok(exists)
@@ -3015,10 +3028,15 @@ impl StateBatch {
     /// B-7: Get symbol registry entry from batch overlay or committed state.
     pub fn get_symbol_registry(&self, symbol: &str) -> Result<Option<SymbolRegistryEntry>, String> {
         let normalized = StateStore::normalize_symbol(symbol)?;
-        let cf = self.db.cf_handle(CF_SYMBOL_REGISTRY)
+        let cf = self
+            .db
+            .cf_handle(CF_SYMBOL_REGISTRY)
             .ok_or_else(|| "Symbol registry CF not found".to_string())?;
-        match self.db.get_cf(&cf, normalized.as_bytes())
-            .map_err(|e| format!("Database error: {}", e))? {
+        match self
+            .db
+            .get_cf(&cf, normalized.as_bytes())
+            .map_err(|e| format!("Database error: {}", e))?
+        {
             Some(data) => {
                 let entry: SymbolRegistryEntry = serde_json::from_slice(&data)
                     .map_err(|e| format!("Failed to decode symbol registry: {}", e))?;
@@ -6062,7 +6080,11 @@ mod tests {
 
         // Prune with a high current_slot (should clean all dirty markers)
         let deleted = state.prune_slot_stats(10000, 100).unwrap();
-        assert!(deleted >= 2, "Should have pruned at least 2 dirty_acct keys, got {}", deleted);
+        assert!(
+            deleted >= 2,
+            "Should have pruned at least 2 dirty_acct keys, got {}",
+            deleted
+        );
 
         // Dirty markers should be gone
         assert!(state.db.get_cf(&cf, key1).unwrap().is_none());
@@ -6096,7 +6118,10 @@ mod tests {
             .unwrap()
             .map(|v| u64::from_le_bytes(v.try_into().unwrap_or([0; 8])))
             .unwrap_or(0);
-        assert_eq!(val, 1, "dirty_account_count must not be reset when no dirty_acct keys were pruned");
+        assert_eq!(
+            val, 1,
+            "dirty_account_count must not be reset when no dirty_acct keys were pruned"
+        );
     }
 
     /// AUDIT-FIX C-3: commit_batch holds burned_lock during RMW to prevent

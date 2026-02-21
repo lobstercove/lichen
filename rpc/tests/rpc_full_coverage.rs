@@ -1883,20 +1883,13 @@ async fn test_all_solana_methods_no_panic() {
 // (accounts, blocks, transactions, validators) and verify the returned JSON
 // contains correct, meaningful values.
 
-use moltchain_core::{Block, Hash, Transaction, Instruction, Message};
 use moltchain_core::consensus::ValidatorInfo;
+use moltchain_core::{Block, Hash, Instruction, Message, Transaction};
 
 /// Helper: build an app backed by a StateStore pre-populated with a funded
 /// account, a stored block at slot 1, a validator, and a transaction.
 /// Returns `(Router, StateStore, funded_base58, validator_base58, block_hash_hex, tx_sig_hex)`.
-fn app_with_rich_state() -> (
-    axum::Router,
-    StateStore,
-    String,
-    String,
-    String,
-    String,
-) {
+fn app_with_rich_state() -> (axum::Router, StateStore, String, String, String, String) {
     let dir = tempfile::tempdir().expect("tempdir");
     let state = StateStore::open(dir.path()).expect("state");
     let _ = Box::leak(Box::new(dir));
@@ -1988,7 +1981,14 @@ fn app_with_rich_state() -> (
         None,
         None,
     );
-    (app, cloned_state, funded_b58, val_b58, block_hash_hex, tx_sig_hex)
+    (
+        app,
+        cloned_state,
+        funded_b58,
+        val_b58,
+        block_hash_hex,
+        tx_sig_hex,
+    )
 }
 
 // ── getBalance positive path (native "/") ────────────────────────────────────
@@ -1996,14 +1996,18 @@ fn app_with_rich_state() -> (
 #[tokio::test]
 async fn test_native_get_balance_funded_account() {
     let (app, _, addr, _, _, _) = app_with_rich_state();
-    let resp = rpc_p(&app, "/", "getBalance", json!([addr]))
-        .await
-        .unwrap();
+    let resp = rpc_p(&app, "/", "getBalance", json!([addr])).await.unwrap();
     assert_valid_rpc(&resp);
     let result = &resp["result"];
-    assert!(!result.is_null(), "funded account balance should not be null");
+    assert!(
+        !result.is_null(),
+        "funded account balance should not be null"
+    );
     // Account::new(5, ..) → shells = 5_000_000_000, spendable = 5_000_000_000
-    assert_eq!(result["shells"], 5_000_000_000u64, "shells = 5 MOLT in shells");
+    assert_eq!(
+        result["shells"], 5_000_000_000u64,
+        "shells = 5 MOLT in shells"
+    );
     assert_eq!(result["spendable"], 5_000_000_000u64, "spendable = 5 MOLT");
     assert_eq!(result["molt"], "5.0000", "molt = 5.0000");
     assert_eq!(result["staked"], 0, "staked = 0");
@@ -2062,7 +2066,10 @@ async fn test_native_get_block_with_stored_block() {
     let result = &resp["result"];
     assert!(!result.is_null(), "block at slot 1 should exist");
     assert_eq!(result["slot"], 1, "block slot should be 1");
-    assert_eq!(result["timestamp"], 1_700_000_001u64, "timestamp should match");
+    assert_eq!(
+        result["timestamp"], 1_700_000_001u64,
+        "timestamp should match"
+    );
     assert_eq!(
         result["transaction_count"], 1,
         "block should contain 1 transaction"
@@ -2179,7 +2186,10 @@ async fn test_solana_get_balance_funded() {
     assert_valid_rpc(&resp);
     let result = &resp["result"];
     // Solana format: { "context": { "slot": N }, "value": shells }
-    assert!(result["context"]["slot"].is_number(), "should have context.slot");
+    assert!(
+        result["context"]["slot"].is_number(),
+        "should have context.slot"
+    );
     assert_eq!(
         result["value"], 5_000_000_000u64,
         "solana getBalance value should be 5B shells"
@@ -2268,10 +2278,7 @@ async fn test_evm_eth_chain_id_value() {
     let resp = rpc(&app, "/evm", "eth_chainId").await.unwrap();
     assert_valid_rpc(&resp);
     let chain = resp["result"].as_str().expect("chainId should be string");
-    assert!(
-        chain.starts_with("0x"),
-        "chainId should be hex: {chain}"
-    );
+    assert!(chain.starts_with("0x"), "chainId should be hex: {chain}");
     // "molt-test" → evm_chain_id_from_chain_id hash
     assert!(!chain.is_empty());
 }
@@ -2283,7 +2290,9 @@ async fn test_evm_eth_block_number_value() {
     let (app, _, _, _, _, _) = app_with_rich_state();
     let resp = rpc(&app, "/evm", "eth_blockNumber").await.unwrap();
     assert_valid_rpc(&resp);
-    let bn = resp["result"].as_str().expect("blockNumber should be hex string");
+    let bn = resp["result"]
+        .as_str()
+        .expect("blockNumber should be hex string");
     assert!(bn.starts_with("0x"), "blockNumber should be hex");
     // Slot is 1, so blockNumber should be "0x1"
     assert_eq!(bn, "0x1", "blockNumber should match last slot");
@@ -2305,7 +2314,11 @@ async fn test_evm_eth_get_logs_empty() {
     assert_valid_rpc(&resp);
     let result = &resp["result"];
     assert!(result.is_array(), "eth_getLogs must return an array");
-    assert_eq!(result.as_array().unwrap().len(), 0, "no logs in empty state");
+    assert_eq!(
+        result.as_array().unwrap().len(),
+        0,
+        "no logs in empty state"
+    );
 }
 
 #[tokio::test]
@@ -2348,7 +2361,10 @@ async fn test_evm_eth_get_balance_funded() {
     assert_valid_rpc(&resp);
     // Should return hex balance string
     let result = resp.get("result").expect("should have result");
-    assert!(!result.is_null(), "eth_getBalance for mapped account should not be null");
+    assert!(
+        !result.is_null(),
+        "eth_getBalance for mapped account should not be null"
+    );
 }
 
 // ── health endpoint returns "ok" ─────────────────────────────────────────────
@@ -2369,7 +2385,10 @@ async fn test_native_get_recent_blockhash_with_block() {
     let resp = rpc(&app, "/", "getRecentBlockhash").await.unwrap();
     assert_valid_rpc(&resp);
     let result = &resp["result"];
-    assert!(!result.is_null(), "blockhash should exist with stored blocks");
+    assert!(
+        !result.is_null(),
+        "blockhash should exist with stored blocks"
+    );
 }
 
 // ── getChainStatus returns slot info ─────────────────────────────────────────
@@ -2612,7 +2631,9 @@ async fn test_evm_net_version_value() {
     let app = fresh_app();
     let resp = rpc(&app, "/evm", "net_version").await.unwrap();
     assert_valid_rpc(&resp);
-    let ver = resp["result"].as_str().expect("net_version should be string");
+    let ver = resp["result"]
+        .as_str()
+        .expect("net_version should be string");
     // Should be numeric decimal chain ID
     assert!(
         ver.parse::<u64>().is_ok(),
@@ -2708,7 +2729,10 @@ async fn test_rest_dex_pairs_returns_json() {
     let resp = rest_get(&app, "/api/v1/pairs").await;
     if let Ok(json) = resp {
         // Should be array (possibly empty)
-        assert!(json.is_array() || json.is_object(), "pairs should be array or object");
+        assert!(
+            json.is_array() || json.is_object(),
+            "pairs should be array or object"
+        );
     }
 }
 
@@ -2776,7 +2800,14 @@ async fn test_batch_solana_with_rich_state() {
     let (app, _, addr, _, _, _) = app_with_rich_state();
 
     // No-param methods
-    for method in &["getHealth", "getVersion", "getSlot", "getBlockHeight", "getLatestBlockhash", "getRecentBlockhash"] {
+    for method in &[
+        "getHealth",
+        "getVersion",
+        "getSlot",
+        "getBlockHeight",
+        "getLatestBlockhash",
+        "getRecentBlockhash",
+    ] {
         let resp = rpc(&app, "/solana", method).await.unwrap();
         assert_valid_rpc(&resp);
     }
@@ -2788,7 +2819,9 @@ async fn test_batch_solana_with_rich_state() {
     }
 
     // With slot
-    let resp = rpc_p(&app, "/solana", "getBlock", json!([0])).await.unwrap();
+    let resp = rpc_p(&app, "/solana", "getBlock", json!([0]))
+        .await
+        .unwrap();
     assert_valid_rpc(&resp);
 }
 

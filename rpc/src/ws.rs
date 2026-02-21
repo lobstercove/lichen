@@ -699,7 +699,10 @@ async fn handle_socket(socket: WebSocket, state: WsState, ip: IpAddr) {
         let sub_count = subs.len();
         subs.clear();
         if sub_count > 0 {
-            debug!("Cleaned up {} subscriptions on WebSocket disconnect", sub_count);
+            debug!(
+                "Cleaned up {} subscriptions on WebSocket disconnect",
+                sub_count
+            );
         }
     }
     send_task.abort();

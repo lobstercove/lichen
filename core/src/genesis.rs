@@ -72,8 +72,12 @@ pub struct ConsensusParams {
     pub finality_threshold_percent: u64,
 }
 
-fn default_double_vote_pct() -> u64 { 30 }
-fn default_censorship_pct() -> u64 { 25 }
+fn default_double_vote_pct() -> u64 {
+    30
+}
+fn default_censorship_pct() -> u64 {
+    25
+}
 
 /// AUDIT-FIX MEDIUM-8: This Default impl uses **testnet-scale** values
 /// (75 MOLT min stake instead of 75K MOLT). It exists solely for backward
