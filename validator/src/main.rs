@@ -1045,15 +1045,54 @@ fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
 
         let _ = state.put_contract_storage(&margin_pk, pk.as_bytes(), &new_data);
 
-        // Unlock margin back to user (margin ± pnl)
+        // P9-VAL-02 FIX: Settle PnL through the insurance fund instead of
+        // creating money from nothing.  Losses are credited to the fund;
+        // profits are debited from the fund (capped at fund balance).
         let trader: [u8; 32] = new_data[0..32].try_into().unwrap_or([0u8; 32]);
+        let abs_pnl = pnl_raw.unsigned_abs();
+
+        // Read current insurance fund balance
+        let insurance_fund =
+            state.get_program_storage_u64("MARGIN", b"mrg_insurance");
+
         let return_amount = if pnl_raw >= 0 {
-            margin.saturating_add(pnl_raw as u64)
+            // Profitable close: pay profit from insurance fund (cap at fund balance)
+            let capped_profit = abs_pnl.min(insurance_fund);
+            // Debit insurance fund
+            let _ = state.put_contract_storage(
+                &margin_pk,
+                b"mrg_insurance",
+                &insurance_fund.saturating_sub(capped_profit).to_le_bytes(),
+            );
+            // Track cumulative profit
+            let prev_profit =
+                state.get_program_storage_u64("MARGIN", b"mrg_pnl_profit");
+            let _ = state.put_contract_storage(
+                &margin_pk,
+                b"mrg_pnl_profit",
+                &prev_profit.saturating_add(capped_profit).to_le_bytes(),
+            );
+            margin.saturating_add(capped_profit)
         } else {
-            margin.saturating_sub((-pnl_raw) as u64)
+            // Loss close: credit insurance fund with the loss
+            let loss = abs_pnl.min(margin); // can't lose more than margin
+            let _ = state.put_contract_storage(
+                &margin_pk,
+                b"mrg_insurance",
+                &insurance_fund.saturating_add(loss).to_le_bytes(),
+            );
+            // Track cumulative loss
+            let prev_loss =
+                state.get_program_storage_u64("MARGIN", b"mrg_pnl_loss");
+            let _ = state.put_contract_storage(
+                &margin_pk,
+                b"mrg_pnl_loss",
+                &prev_loss.saturating_add(loss).to_le_bytes(),
+            );
+            margin.saturating_sub(loss)
         };
 
-        // Credit user's moltcoin balance
+        // P9-VAL-03 FIX: Use saturating_add to prevent overflow
         let balance_key = format!("balance_{}", hex::encode(trader));
         let current_bal = state.get_program_storage_u64("MOLTCOIN", balance_key.as_bytes());
         let _ = state.put_contract_storage(
@@ -1062,7 +1101,7 @@ fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
                 _ => continue,
             },
             balance_key.as_bytes(),
-            &(current_bal + return_amount).to_le_bytes(),
+            &current_bal.saturating_add(return_amount).to_le_bytes(),
         );
 
         let trigger_type = if sl_price > 0
@@ -9757,5 +9796,137 @@ mod tests {
         let cursor_final =
             state.get_program_storage_u64("DEX", b"dex_sltp_trigger_cursor");
         assert_eq!(cursor_final, 10, "cursor should advance to 10");
+    }
+
+    /// P9-VAL-02 + P9-VAL-03 test: Verify that margin SL/TP closure settles
+    /// PnL through the insurance fund instead of creating money from nothing,
+    /// and uses saturating_add for balance credit.
+    #[test]
+    fn test_margin_sltp_settles_via_insurance_fund() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let state = StateStore::open(temp_dir.path()).expect("open state");
+
+        // Register MARGIN program
+        let margin_pk = Pubkey([50u8; 32]);
+        state
+            .register_symbol(
+                "MARGIN",
+                moltchain_core::state::SymbolRegistryEntry {
+                    symbol: "MARGIN".to_string(),
+                    program: margin_pk,
+                    owner: Pubkey([0u8; 32]),
+                    name: None,
+                    template: None,
+                    metadata: None,
+                },
+            )
+            .unwrap();
+
+        // Register MOLTCOIN program
+        let moltcoin_pk = Pubkey([51u8; 32]);
+        state
+            .register_symbol(
+                "MOLTCOIN",
+                moltchain_core::state::SymbolRegistryEntry {
+                    symbol: "MOLTCOIN".to_string(),
+                    program: moltcoin_pk,
+                    owner: Pubkey([0u8; 32]),
+                    name: None,
+                    template: None,
+                    metadata: None,
+                },
+            )
+            .unwrap();
+
+        // Register DEX program (needed for trigger engine)
+        let dex_pk = Pubkey([42u8; 32]);
+        state
+            .register_symbol(
+                "DEX",
+                moltchain_core::state::SymbolRegistryEntry {
+                    symbol: "DEX".to_string(),
+                    program: dex_pk,
+                    owner: Pubkey([0u8; 32]),
+                    name: None,
+                    template: None,
+                    metadata: None,
+                },
+            )
+            .unwrap();
+
+        // Seed insurance fund with 1000 units
+        state
+            .put_contract_storage(&margin_pk, b"mrg_insurance", &1000u64.to_le_bytes())
+            .unwrap();
+
+        // Create a fake open long position (pid=1) that should be TP-triggered
+        // Position format: trader[32] + pair_id[8]=1 + side[1]=0 + status[1]=0(open)
+        //   + size[8] + margin[8] + entry_price[8] + ...
+        //   + sl@106[8] + tp@114[8]
+        let trader = [1u8; 32];
+        let mut pos_data = vec![0u8; 122];
+        pos_data[0..32].copy_from_slice(&trader);
+        // pair_id = 1 at [40..48]
+        pos_data[40..48].copy_from_slice(&1u64.to_le_bytes());
+        // side=0 (long) at [48]
+        pos_data[48] = 0;
+        // status=0 (open) at [49]
+        pos_data[49] = 0;
+        // size=1_000_000_000 at [50..58]
+        pos_data[50..58].copy_from_slice(&1_000_000_000u64.to_le_bytes());
+        // margin=500 at [58..66]
+        pos_data[58..66].copy_from_slice(&500u64.to_le_bytes());
+        // entry_price=100 at [66..74]
+        pos_data[66..74].copy_from_slice(&100u64.to_le_bytes());
+        // sl_price=0 at [106..114] (no SL)
+        // tp_price=150 at [114..122]
+        pos_data[114..122].copy_from_slice(&150u64.to_le_bytes());
+
+        state
+            .put_contract_storage(&margin_pk, b"margin_pos_1", &pos_data)
+            .unwrap();
+        state
+            .put_contract_storage(&margin_pk, b"position_count", &1u64.to_le_bytes())
+            .unwrap();
+
+        // Set up a trade at price=200 (above TP=150, triggers TP)
+        // dex_trade_1: pair_id=1, price=200
+        let mut trade_data = vec![0u8; 32];
+        trade_data[8..16].copy_from_slice(&1u64.to_le_bytes()); // pair_id
+        trade_data[16..24].copy_from_slice(&200u64.to_le_bytes()); // price
+        state
+            .put_contract_storage(&dex_pk, b"dex_trade_1", &trade_data)
+            .unwrap();
+        state
+            .put_contract_storage(&dex_pk, b"dex_trade_count", &1u64.to_le_bytes())
+            .unwrap();
+
+        // Run the trigger engine
+        run_sltp_triggers_from_state(&state);
+
+        // Verify: position should be closed (status=1)
+        let closed_data = state
+            .get_contract_storage(&margin_pk, b"margin_pos_1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(closed_data[49], 1, "position should be closed");
+
+        // PnL: (200 - 100) * 1B / 1B = 100 profit
+        // return_amount = margin(500) + capped_profit(min(100, 1000)) = 600
+        // insurance_fund should be debited by 100: 1000 - 100 = 900
+        let insurance_after =
+            state.get_program_storage_u64("MARGIN", b"mrg_insurance");
+        assert_eq!(insurance_after, 900, "insurance fund should be debited by profit");
+
+        // Verify PnL tracking
+        let pnl_profit =
+            state.get_program_storage_u64("MARGIN", b"mrg_pnl_profit");
+        assert_eq!(pnl_profit, 100, "cumulative profit should be tracked");
+
+        // Verify user balance credited (with saturating_add, P9-VAL-03)
+        let balance_key = format!("balance_{}", hex::encode(trader));
+        let user_bal =
+            state.get_program_storage_u64("MOLTCOIN", balance_key.as_bytes());
+        assert_eq!(user_bal, 600, "user should receive margin + capped profit");
     }
 }
