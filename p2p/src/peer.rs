@@ -799,6 +799,12 @@ impl NodeIdentity {
             .map_err(|e| format!("Failed to write {}: {}", path.display(), e))?;
         file.sync_all()
             .map_err(|e| format!("Failed to sync {}: {}", path.display(), e))?;
+        // P10-P2P-01: Restrict key/cert file permissions to owner-only
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).ok();
+        }
         Ok(())
     }
 }

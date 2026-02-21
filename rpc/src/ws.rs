@@ -462,7 +462,10 @@ async fn ws_handler(
         }
     }
 
-    ws.on_upgrade(move |socket| handle_socket(socket, state, ip))
+    // P10-RPC-04: Limit inbound WebSocket message size to 1 MB to prevent
+    // memory exhaustion from oversized messages.
+    ws.max_message_size(1_048_576)
+        .on_upgrade(move |socket| handle_socket(socket, state, ip))
 }
 
 /// Handle WebSocket connection

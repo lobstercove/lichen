@@ -65,6 +65,25 @@ impl ReconnectTracker {
     fn record_success(&mut self, addr: SocketAddr) {
         self.backoff.remove(&addr);
     }
+
+    /// P10-VAL-04: Prune stale entries older than 1 hour to prevent unbounded
+    /// memory growth from peers that permanently disappeared.
+    fn prune_stale(&mut self) {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        const STALE_SECS: u64 = 3600; // 1 hour
+        let before = self.backoff.len();
+        self.backoff.retain(|_, (next_attempt, _)| {
+            // Keep entries whose scheduled retry is within the staleness window
+            *next_attempt + STALE_SECS > now
+        });
+        let pruned = before - self.backoff.len();
+        if pruned > 0 {
+            debug!("P2P: Pruned {} stale reconnect tracker entries", pruned);
+        }
+    }
 }
 
 /// Manages peer discovery and gossip
@@ -160,6 +179,9 @@ impl GossipManager {
                 Self::do_gossip(&peer_manager, local_addr, validator_pubkey).await;
 
                 // Reconnect to disconnected seed / known peers
+                // P10-VAL-04: Prune stale backoff entries each tick
+                reconnect_tracker.prune_stale();
+
                 Self::reconnect_peers(
                     &peer_manager,
                     &seed_peers,

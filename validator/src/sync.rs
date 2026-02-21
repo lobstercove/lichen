@@ -231,6 +231,17 @@ impl SyncManager {
     /// Mark a slot as requested
     pub async fn mark_requested(&self, slot: u64) {
         let mut requested = self.requested_slots.lock().await;
+        // P10-VAL-03: Cap requested_slots to prevent unbounded growth during long syncs.
+        // 10K entries ≈ 80 KB, well within reason. If exceeded, clear old entries
+        // (slots already synced will be re-requested if still needed).
+        const MAX_REQUESTED_SLOTS: usize = 10_000;
+        if requested.len() >= MAX_REQUESTED_SLOTS {
+            warn!(
+                "⚠️  requested_slots exceeded {} entries, clearing to reclaim memory",
+                MAX_REQUESTED_SLOTS
+            );
+            requested.clear();
+        }
         requested.insert(slot);
     }
 

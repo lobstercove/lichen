@@ -134,7 +134,10 @@ async fn main() {
                 .unwrap_or_else(|_| "http://localhost:3000".to_string());
             CorsLayer::new()
                 .allow_origin(allowed_origin.parse::<axum::http::HeaderValue>()
-                    .unwrap_or_else(|_| "http://localhost:3000".parse().unwrap()))
+                    .unwrap_or_else(|e| {
+                        eprintln!("Invalid COMPILER_CORS_ORIGIN value: {}", e);
+                        std::process::exit(1);
+                    }))
                 .allow_methods([axum::http::Method::GET, axum::http::Method::POST, axum::http::Method::OPTIONS])
                 .allow_headers([axum::http::header::CONTENT_TYPE, axum::http::header::AUTHORIZATION,
                     axum::http::HeaderName::from_static("x-api-key")])

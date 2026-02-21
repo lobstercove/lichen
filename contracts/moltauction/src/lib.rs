@@ -85,7 +85,7 @@ const AUCTION_SIZE: usize = 169;
 /// Load the marketplace escrow address from storage (set during initialize)
 fn get_marketplace_addr() -> Address {
     match storage_get(MARKETPLACE_ADDR_KEY) {
-        Some(data) if data.len() == 32 => Address(data.try_into().unwrap()),
+        Some(data) if data.len() == 32 => Address(data.try_into().expect("marketplace addr 32-byte slice")),
         _ => {
             log_info(" Marketplace address not set, using contract default");
             // Fallback: derive from a known seed rather than zero address
@@ -240,9 +240,9 @@ pub extern "C" fn place_bid(
         let marketplace_addr = get_marketplace_addr();
         
         match call_token_transfer(
-            Address(payment_token.try_into().unwrap()),
+            Address(payment_token.try_into().expect("payment_token 32-byte address")),
             marketplace_addr,
-            Address(prev_bidder_bytes.try_into().unwrap()),
+            Address(prev_bidder_bytes.try_into().expect("prev_bidder 32-byte address")),
             current_highest
         ) {
             Ok(true) => log_info("Refunded previous bidder"),
@@ -257,7 +257,7 @@ pub extern "C" fn place_bid(
     }
     
     // Transfer bid to marketplace (escrow)
-    let payment_token_addr = Address(auction_data[80..112].try_into().unwrap());
+    let payment_token_addr = Address(auction_data[80..112].try_into().expect("payment_token 32-byte slice"));
     let marketplace_addr = get_marketplace_addr();
     
     match call_token_transfer(
@@ -396,9 +396,9 @@ pub extern "C" fn finalize_auction(
     let seller_amount = highest_bid * (10000 - total_deduction_bps) / 10000;
     
     match call_token_transfer(
-        Address(payment_token.try_into().unwrap()),
+        Address(payment_token.try_into().expect("payment_token 32-byte address")),
         get_marketplace_addr(),
-        Address(seller.try_into().unwrap()),
+        Address(seller.try_into().expect("seller 32-byte address")),
         seller_amount
     ) {
         Ok(true) => log_info("Payment sent to seller"),
@@ -414,7 +414,7 @@ pub extern "C" fn finalize_auction(
             let royalty_amount = highest_bid * royalty_bps.min(1000) / 10000;
             if royalty_amount > 0 {
                 match call_token_transfer(
-                    Address(payment_token.try_into().unwrap()),
+                    Address(payment_token.try_into().expect("royalty payment_token 32-byte address")),
                     get_marketplace_addr(),
                     Address(creator_addr),
                     royalty_amount
@@ -432,8 +432,8 @@ pub extern "C" fn finalize_auction(
     // CROSS-CONTRACT CALL 2: Transfer NFT to winner
     match call_nft_transfer(
         Address(nft_contract),
-        Address(seller.try_into().unwrap()),
-        Address(highest_bidder.try_into().unwrap()),
+        Address(seller.try_into().expect("nft seller 32-byte address")),
+        Address(highest_bidder.try_into().expect("nft winner 32-byte address")),
         token_id
     ) {
         Ok(true) => log_info("NFT transferred to winner"),
@@ -591,7 +591,7 @@ pub extern "C" fn accept_offer(
     let seller_amount = offer_amount * 975 / 1000; // minus 2.5% fee
     
     match call_token_transfer(
-        Address(payment_token.try_into().unwrap()),
+        Address(payment_token.try_into().expect("offer payment_token 32-byte address")),
         Address(offerer),
         Address(seller),
         seller_amount

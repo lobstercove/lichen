@@ -19,7 +19,8 @@ fn get_minter() -> Address {
             addr.copy_from_slice(&bytes);
             Address(addr)
         }
-        _ => panic!("minter not set or invalid"),
+        // AUDIT-FIX P10-SC-04: Return zero address instead of panicking
+        _ => Address([0u8; 32]),
     }
 }
 
@@ -356,6 +357,11 @@ pub extern "C" fn set_base_uri(caller_ptr: *const u8, uri_ptr: *const u8, uri_le
     let mut caller_addr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller_addr.as_mut_ptr(), 32); }
     if caller_addr != get_minter().0 { return 0; }
+    // AUDIT-FIX P10-SC-06: Verify actual transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller_addr {
+        return 0;
+    }
     let mut uri = alloc::vec![0u8; uri_len as usize];
     unsafe { core::ptr::copy_nonoverlapping(uri_ptr, uri.as_mut_ptr(), uri_len as usize); }
     storage_set(b"base_uri", &uri);
@@ -369,6 +375,11 @@ pub extern "C" fn set_max_supply(caller_ptr: *const u8, max_supply: u64) -> u32 
     let mut caller_addr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller_addr.as_mut_ptr(), 32); }
     if caller_addr != get_minter().0 { return 0; }
+    // AUDIT-FIX P10-SC-06: Verify actual transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller_addr {
+        return 0;
+    }
     storage_set(b"max_supply", &u64_to_bytes(max_supply));
     log_info("Max supply set");
     1
@@ -380,6 +391,11 @@ pub extern "C" fn set_royalty(caller_ptr: *const u8, bps: u64) -> u32 {
     let mut caller_addr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller_addr.as_mut_ptr(), 32); }
     if caller_addr != get_minter().0 { return 0; }
+    // AUDIT-FIX P10-SC-06: Verify actual transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller_addr {
+        return 0;
+    }
     storage_set(b"royalty_bps", &u64_to_bytes(bps));
     log_info("Royalty set");
     1
@@ -391,6 +407,11 @@ pub extern "C" fn mp_pause(caller_ptr: *const u8) -> u32 {
     let mut caller_addr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller_addr.as_mut_ptr(), 32); }
     if caller_addr != get_minter().0 { return 0; }
+    // AUDIT-FIX P10-SC-06: Verify actual transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller_addr {
+        return 0;
+    }
     storage_set(b"mp_paused", &[1u8]);
     log_info("MoltPunks paused");
     1
@@ -402,6 +423,11 @@ pub extern "C" fn mp_unpause(caller_ptr: *const u8) -> u32 {
     let mut caller_addr = [0u8; 32];
     unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller_addr.as_mut_ptr(), 32); }
     if caller_addr != get_minter().0 { return 0; }
+    // AUDIT-FIX P10-SC-06: Verify actual transaction signer
+    let real_caller = get_caller();
+    if real_caller.0 != caller_addr {
+        return 0;
+    }
     storage_set(b"mp_paused", &[0u8]);
     log_info("MoltPunks unpaused");
     1

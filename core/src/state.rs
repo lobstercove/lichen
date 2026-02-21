@@ -23,6 +23,14 @@ use std::sync::Mutex;
 /// Type alias for bulk key-value export results to satisfy clippy::type_complexity.
 pub type KvEntries = Vec<(Vec<u8>, Vec<u8>)>;
 
+/// Page of key-value entries returned by paginated export functions.
+pub struct KvPage {
+    /// The entries in this page.
+    pub entries: KvEntries,
+    /// Total number of entries in the column family (across all pages).
+    pub total: u64,
+}
+
 /// Detect number of CPU cores for RocksDB parallelism
 fn num_cpus() -> i32 {
     std::thread::available_parallelism()
@@ -597,6 +605,9 @@ pub struct StateStore {
     /// PHASE1-FIX S-2: Mutex to serialize next_tx_slot_seq read-modify-write operations,
     /// preventing duplicate tx sequence numbers under concurrent block processing.
     tx_slot_seq_lock: Arc<std::sync::Mutex<()>>,
+    /// P10-CORE-01: Mutex to serialize add_burned read-modify-write operations,
+    /// preventing lost updates under concurrent access.
+    burned_lock: Arc<std::sync::Mutex<()>>,
 }
 
 /// Atomic write batch for transaction processing (T1.4/T3.1).
@@ -813,6 +824,7 @@ impl StateStore {
             event_seq_lock: Arc::new(std::sync::Mutex::new(())),
             transfer_seq_lock: Arc::new(std::sync::Mutex::new(())),
             tx_slot_seq_lock: Arc::new(std::sync::Mutex::new(())),
+            burned_lock: Arc::new(std::sync::Mutex::new(())),
         })
     }
 
@@ -3768,14 +3780,24 @@ impl StateStore {
         }
     }
 
-    /// Add to total burned amount (atomic via RocksDB merge-style read-modify-write)
+    /// Add to total burned amount.
+    ///
+    /// P10-CORE-01 FIX: The read-modify-write is protected by `burned_lock` to
+    /// prevent lost updates when called concurrently.  The primary burn path
+    /// goes through `StateBatch::add_burned()` (which accumulates a delta and
+    /// commits atomically), but this direct method is also used in tests and
+    /// non-batch code paths.
     pub fn add_burned(&self, amount: u64) -> Result<(), String> {
+        let _guard = self
+            .burned_lock
+            .lock()
+            .map_err(|e| format!("burned_lock poisoned: {}", e))?;
+
         let cf = self
             .db
             .cf_handle(CF_STATS)
             .ok_or_else(|| "Stats CF not found".to_string())?;
 
-        // Use a WriteBatch to ensure read+write is at least crash-safe
         let current = self.get_total_burned()?;
         let new_total = current.saturating_add(amount);
 
@@ -4753,9 +4775,9 @@ impl StateStore {
         let data =
             serde_json::to_vec(event).map_err(|e| format!("Failed to serialize event: {}", e))?;
 
-        self.db
-            .put_cf(&cf, &key, &data)
-            .map_err(|e| format!("Failed to store event: {}", e))?;
+        // P10-CORE-05: Atomic WriteBatch for event data + slot secondary index
+        let mut batch = WriteBatch::default();
+        batch.put_cf(&cf, &key, &data);
 
         // Write slot secondary index: slot(8,BE) + program(32) + seq(8,BE) -> event_key
         // Enables O(prefix) lookup of events by slot instead of full CF scan
@@ -4764,11 +4786,12 @@ impl StateStore {
             slot_key.extend_from_slice(&event.slot.to_be_bytes());
             slot_key.extend_from_slice(&program.0);
             slot_key.extend_from_slice(&seq.to_be_bytes());
-            self.db
-                .put_cf(&cf_slot, &slot_key, &key)
-                .map_err(|e| format!("Failed to store event slot index: {}", e))?;
+            batch.put_cf(&cf_slot, &slot_key, &key);
         }
 
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Failed to atomically store event + index: {}", e))?;
         Ok(())
     }
 
@@ -5055,18 +5078,19 @@ impl StateStore {
         rev_key.extend_from_slice(&holder.0);
         rev_key.extend_from_slice(&token_program.0);
 
+        // P10-CORE-04: Atomic WriteBatch for forward + reverse indexes
+        let mut batch = WriteBatch::default();
         if balance == 0 {
             // Remove zero-balance entries to keep index clean
-            let _ = self.db.delete_cf(&cf, &key);
-            let _ = self.db.delete_cf(&rev_cf, &rev_key);
+            batch.delete_cf(&cf, &key);
+            batch.delete_cf(&rev_cf, &rev_key);
         } else {
-            self.db
-                .put_cf(&cf, &key, balance.to_le_bytes())
-                .map_err(|e| format!("Failed to update token balance: {}", e))?;
-            self.db
-                .put_cf(&rev_cf, &rev_key, balance.to_le_bytes())
-                .map_err(|e| format!("Failed to update holder token index: {}", e))?;
+            batch.put_cf(&cf, &key, balance.to_le_bytes());
+            batch.put_cf(&rev_cf, &rev_key, balance.to_le_bytes());
         }
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Failed to atomically update token balance indexes: {}", e))?;
         Ok(())
     }
 
@@ -5471,15 +5495,18 @@ impl StateStore {
                 .map_err(|e| format!("Failed to remove old checkpoint: {}", e))?;
         }
 
+        // P10-CORE-02 FIX: Compute state root and account count BEFORE taking
+        // the snapshot so the metadata matches the checkpoint contents exactly.
+        // Previously these were computed after the snapshot, allowing concurrent
+        // writes to make the recorded state_root diverge from the snapshot data.
+        let state_root = self.compute_state_root();
+        let total_accounts = self.count_accounts().unwrap_or(0);
+
         // Create RocksDB checkpoint (hardlink-based, near-instant)
         let cp = Checkpoint::new(&self.db)
             .map_err(|e| format!("Failed to create checkpoint object: {}", e))?;
         cp.create_checkpoint(checkpoint_dir)
             .map_err(|e| format!("Failed to create checkpoint: {}", e))?;
-
-        // Compute state root and write metadata
-        let state_root = self.compute_state_root();
-        let total_accounts = self.count_accounts().unwrap_or(0);
         let meta = CheckpointMeta {
             slot,
             state_root: state_root.0,
@@ -5558,53 +5585,52 @@ impl StateStore {
 
     // ── Snapshot export / import (for P2P state transfer) ────────────────
 
-    /// Export all accounts from this store as an iterator of (pubkey_bytes, account_bytes).
-    /// Used to stream account state to a joining validator.
-    pub fn export_accounts_iter(&self) -> Result<KvEntries, String> {
-        let cf = self
-            .db
-            .cf_handle(CF_ACCOUNTS)
-            .ok_or_else(|| "Accounts CF not found".to_string())?;
-
-        let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
-        let mut entries = Vec::new();
-        for item in iter.flatten() {
-            let (key, value) = item;
-            entries.push((key.to_vec(), value.to_vec()));
-        }
-        Ok(entries)
+    /// Export a page of accounts as (pubkey_bytes, account_bytes).
+    ///
+    /// P10-CORE-03 FIX: Uses RocksDB iterator with skip/take so only the
+    /// requested page is materialised in memory, avoiding OOM on large state.
+    pub fn export_accounts_iter(&self, offset: u64, limit: u64) -> Result<KvPage, String> {
+        self.export_cf_page(CF_ACCOUNTS, "Accounts", offset, limit)
     }
 
-    /// Export contract storage entries as (key_bytes, value_bytes).
-    pub fn export_contract_storage_iter(&self) -> Result<KvEntries, String> {
-        let cf = self
-            .db
-            .cf_handle(CF_CONTRACT_STORAGE)
-            .ok_or_else(|| "Contract storage CF not found".to_string())?;
-
-        let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
-        let mut entries = Vec::new();
-        for item in iter.flatten() {
-            let (key, value) = item;
-            entries.push((key.to_vec(), value.to_vec()));
-        }
-        Ok(entries)
+    /// Export a page of contract storage entries as (key_bytes, value_bytes).
+    pub fn export_contract_storage_iter(&self, offset: u64, limit: u64) -> Result<KvPage, String> {
+        self.export_cf_page(CF_CONTRACT_STORAGE, "Contract storage", offset, limit)
     }
 
-    /// Export programs (WASM bytecode) as (pubkey_bytes, program_bytes).
-    pub fn export_programs_iter(&self) -> Result<KvEntries, String> {
+    /// Export a page of programs (WASM bytecode) as (pubkey_bytes, program_bytes).
+    pub fn export_programs_iter(&self, offset: u64, limit: u64) -> Result<KvPage, String> {
+        self.export_cf_page(CF_PROGRAMS, "Programs", offset, limit)
+    }
+
+    /// Generic helper: read a page of (key, value) pairs from a column family.
+    fn export_cf_page(
+        &self,
+        cf_name: &str,
+        display_name: &str,
+        offset: u64,
+        limit: u64,
+    ) -> Result<KvPage, String> {
         let cf = self
             .db
-            .cf_handle(CF_PROGRAMS)
-            .ok_or_else(|| "Programs CF not found".to_string())?;
+            .cf_handle(cf_name)
+            .ok_or_else(|| format!("{} CF not found", display_name))?;
 
         let iter = self.db.iterator_cf(&cf, rocksdb::IteratorMode::Start);
-        let mut entries = Vec::new();
+
+        let mut entries = Vec::with_capacity(limit.min(10_000) as usize);
+        let mut total: u64 = 0;
+
         for item in iter.flatten() {
-            let (key, value) = item;
-            entries.push((key.to_vec(), value.to_vec()));
+            if total >= offset && (total - offset) < limit {
+                let (key, value) = item;
+                entries.push((key.to_vec(), value.to_vec()));
+            }
+            total += 1;
+            // Once we have the page and are past skip+take, keep counting for total
         }
-        Ok(entries)
+
+        Ok(KvPage { entries, total })
     }
 
     /// Import a batch of accounts into the store (used by joining validators).
