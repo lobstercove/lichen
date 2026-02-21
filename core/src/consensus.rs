@@ -3714,7 +3714,13 @@ mod tests {
             r,
             ts,
         );
-        assert_eq!(e1.timestamp, ts, "timestamp must equal caller-supplied value");
-        assert_eq!(e1.timestamp, e2.timestamp, "two evidence structs with same input must be identical");
+        assert_eq!(
+            e1.timestamp, ts,
+            "timestamp must equal caller-supplied value"
+        );
+        assert_eq!(
+            e1.timestamp, e2.timestamp,
+            "two evidence structs with same input must be identical"
+        );
     }
 }

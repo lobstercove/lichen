@@ -629,7 +629,10 @@ impl TxProcessor {
                 return self.make_result(
                     false,
                     0,
-                    Some("EVM sentinel blockhash is reserved for EVM-wrapped transactions".to_string()),
+                    Some(
+                        "EVM sentinel blockhash is reserved for EVM-wrapped transactions"
+                            .to_string(),
+                    ),
                 );
             }
         }
@@ -3829,9 +3832,16 @@ mod tests {
             message: msg,
         };
         let result = processor.process_transaction(&tx, &validator);
-        assert!(!result.success, "Non-EVM TX with sentinel blockhash should be rejected");
         assert!(
-            result.error.as_deref().unwrap_or("").contains("EVM sentinel blockhash"),
+            !result.success,
+            "Non-EVM TX with sentinel blockhash should be rejected"
+        );
+        assert!(
+            result
+                .error
+                .as_deref()
+                .unwrap_or("")
+                .contains("EVM sentinel blockhash"),
             "Error should mention the sentinel: {:?}",
             result.error,
         );

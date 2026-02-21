@@ -2227,6 +2227,10 @@ mod tests {
         assert!(cap > 0, "MODULE_CACHE_MAX_ENTRIES must be positive");
         // Verify the cache is an LruCache with the expected cap
         let cache = MODULE_CACHE.lock().unwrap();
-        assert_eq!(cache.cap().get(), cap, "cache capacity should match constant");
+        assert_eq!(
+            cache.cap().get(),
+            cap,
+            "cache capacity should match constant"
+        );
     }
 }

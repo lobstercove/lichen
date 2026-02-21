@@ -512,18 +512,33 @@ mod tests {
         std::env::set_var("MOLTCHAIN_KEYPAIR_PASSWORD", password);
         let loaded = KeypairFile::load(&path).unwrap();
         let loaded_kp = loaded.to_keypair().unwrap();
-        assert_eq!(loaded_kp.pubkey(), keypair.pubkey(), "decrypted key should match");
+        assert_eq!(
+            loaded_kp.pubkey(),
+            keypair.pubkey(),
+            "decrypted key should match"
+        );
 
         // The file on disk should now be v2
         let reloaded_json = fs::read_to_string(&path).unwrap();
         let on_disk: KeypairFile = serde_json::from_str(&reloaded_json).unwrap();
-        assert_eq!(on_disk.encryption_version, Some(2), "file should be v2 on disk");
-        assert!(on_disk.encrypted.unwrap_or(false), "file should be encrypted");
+        assert_eq!(
+            on_disk.encryption_version,
+            Some(2),
+            "file should be v2 on disk"
+        );
+        assert!(
+            on_disk.encrypted.unwrap_or(false),
+            "file should be encrypted"
+        );
 
         // Verify it can still be loaded (v2 path)
         let reloaded = KeypairFile::load(&path).unwrap();
         let reloaded_kp = reloaded.to_keypair().unwrap();
-        assert_eq!(reloaded_kp.pubkey(), keypair.pubkey(), "v2 re-load should work");
+        assert_eq!(
+            reloaded_kp.pubkey(),
+            keypair.pubkey(),
+            "v2 re-load should work"
+        );
         std::env::remove_var("MOLTCHAIN_KEYPAIR_PASSWORD");
     }
 }

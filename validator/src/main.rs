@@ -1060,8 +1060,7 @@ fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
         let abs_pnl = pnl_raw.unsigned_abs();
 
         // Read current insurance fund balance
-        let insurance_fund =
-            state.get_program_storage_u64("MARGIN", b"mrg_insurance");
+        let insurance_fund = state.get_program_storage_u64("MARGIN", b"mrg_insurance");
 
         let return_amount = if pnl_raw >= 0 {
             // Profitable close: pay profit from insurance fund (cap at fund balance)
@@ -1073,8 +1072,7 @@ fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
                 &insurance_fund.saturating_sub(capped_profit).to_le_bytes(),
             );
             // Track cumulative profit
-            let prev_profit =
-                state.get_program_storage_u64("MARGIN", b"mrg_pnl_profit");
+            let prev_profit = state.get_program_storage_u64("MARGIN", b"mrg_pnl_profit");
             let _ = state.put_contract_storage(
                 &margin_pk,
                 b"mrg_pnl_profit",
@@ -1090,8 +1088,7 @@ fn run_sltp_trigger_engine(state: &StateStore, from_trade: u64, to_trade: u64) {
                 &insurance_fund.saturating_add(loss).to_le_bytes(),
             );
             // Track cumulative loss
-            let prev_loss =
-                state.get_program_storage_u64("MARGIN", b"mrg_pnl_loss");
+            let prev_loss = state.get_program_storage_u64("MARGIN", b"mrg_pnl_loss");
             let _ = state.put_contract_storage(
                 &margin_pk,
                 b"mrg_pnl_loss",
@@ -6771,9 +6768,15 @@ async fn run_validator() {
                                 continue;
                             }
                             replay_block_transactions(&processor_for_blocks, &pending_block);
-                            run_analytics_bridge_from_state(&state_for_blocks, pending_block.header.slot);
+                            run_analytics_bridge_from_state(
+                                &state_for_blocks,
+                                pending_block.header.slot,
+                            );
                             run_sltp_triggers_from_state(&state_for_blocks);
-                            reset_24h_stats_if_expired(&state_for_blocks, pending_block.header.timestamp);
+                            reset_24h_stats_if_expired(
+                                &state_for_blocks,
+                                pending_block.header.timestamp,
+                            );
                             if state_for_blocks.put_block(&pending_block).is_ok() {
                                 state_for_blocks.set_last_slot(pending_slot).ok();
                                 *last_block_time_for_blocks.lock().await =
@@ -6942,9 +6945,15 @@ async fn run_validator() {
                                     continue;
                                 }
                                 replay_block_transactions(&processor_for_blocks, &pending_block);
-                                run_analytics_bridge_from_state(&state_for_blocks, pending_block.header.slot);
+                                run_analytics_bridge_from_state(
+                                    &state_for_blocks,
+                                    pending_block.header.slot,
+                                );
                                 run_sltp_triggers_from_state(&state_for_blocks);
-                                reset_24h_stats_if_expired(&state_for_blocks, pending_block.header.timestamp);
+                                reset_24h_stats_if_expired(
+                                    &state_for_blocks,
+                                    pending_block.header.timestamp,
+                                );
                                 if state_for_blocks.put_block(&pending_block).is_ok() {
                                     state_for_blocks.set_last_slot(pending_slot).ok();
                                     *last_block_time_for_blocks.lock().await =
@@ -7075,9 +7084,7 @@ async fn run_validator() {
                             // P9-VAL-07: Only replace based on weight/stake evidence,
                             // not on sync state (we_are_behind) or pending queue (has_pending)
                             // to prevent malicious validators from forcing replacements.
-                            if incoming_weight > existing_weight
-                                || oracle_prefers_incoming
-                            {
+                            if incoming_weight > existing_weight || oracle_prefers_incoming {
                                 // Revert old block's financial effects before replacing
                                 revert_block_effects(&state_for_blocks, &existing);
                                 // C7 fix: Also revert user transaction effects
@@ -7088,9 +7095,15 @@ async fn run_validator() {
                                 );
                                 // Replace slot index with the higher-weight block
                                 replay_block_transactions(&processor_for_blocks, &block);
-                                run_analytics_bridge_from_state(&state_for_blocks, block.header.slot);
+                                run_analytics_bridge_from_state(
+                                    &state_for_blocks,
+                                    block.header.slot,
+                                );
                                 run_sltp_triggers_from_state(&state_for_blocks);
-                                reset_24h_stats_if_expired(&state_for_blocks, block.header.timestamp);
+                                reset_24h_stats_if_expired(
+                                    &state_for_blocks,
+                                    block.header.timestamp,
+                                );
                                 if state_for_blocks.put_block(&block).is_ok() {
                                     state_for_blocks.set_last_slot(current_slot).ok();
                                     *last_block_time_for_blocks.lock().await =
@@ -7158,9 +7171,15 @@ async fn run_validator() {
                                             &processor_for_blocks,
                                             &pending_block,
                                         );
-                                        run_analytics_bridge_from_state(&state_for_blocks, pending_block.header.slot);
+                                        run_analytics_bridge_from_state(
+                                            &state_for_blocks,
+                                            pending_block.header.slot,
+                                        );
                                         run_sltp_triggers_from_state(&state_for_blocks);
-                                        reset_24h_stats_if_expired(&state_for_blocks, pending_block.header.timestamp);
+                                        reset_24h_stats_if_expired(
+                                            &state_for_blocks,
+                                            pending_block.header.timestamp,
+                                        );
                                         if state_for_blocks.put_block(&pending_block).is_ok() {
                                             state_for_blocks.set_last_slot(pending_slot).ok();
                                             *last_block_time_for_blocks.lock().await =
@@ -8614,7 +8633,10 @@ async fn run_validator() {
             // before they even enter the mempool.  Only eth_sendRawTransaction may
             // submit TXs with the EVM sentinel; any other path is a bypass attempt.
             if tx.message.recent_blockhash == moltchain_core::Hash([0xEE; 32]) {
-                let is_evm = tx.message.instructions.first()
+                let is_evm = tx
+                    .message
+                    .instructions
+                    .first()
                     .map(|ix| ix.program_id == EVM_PROGRAM_ID)
                     .unwrap_or(false);
                 if !is_evm {
@@ -9836,8 +9858,7 @@ mod tests {
 
         // Initially: trade_count=0, cursor=0 → no-op
         run_sltp_triggers_from_state(&state);
-        let cursor_after_noop =
-            state.get_program_storage_u64("DEX", b"dex_sltp_trigger_cursor");
+        let cursor_after_noop = state.get_program_storage_u64("DEX", b"dex_sltp_trigger_cursor");
         assert_eq!(cursor_after_noop, 0, "cursor should stay 0 when no trades");
 
         // Simulate new trades: set trade_count=5
@@ -9847,14 +9868,12 @@ mod tests {
 
         // Now run triggers — should update cursor to 5
         run_sltp_triggers_from_state(&state);
-        let cursor_after_trades =
-            state.get_program_storage_u64("DEX", b"dex_sltp_trigger_cursor");
+        let cursor_after_trades = state.get_program_storage_u64("DEX", b"dex_sltp_trigger_cursor");
         assert_eq!(cursor_after_trades, 5, "cursor should advance to 5");
 
         // Calling again with same trade_count → no-op (idempotent)
         run_sltp_triggers_from_state(&state);
-        let cursor_idempotent =
-            state.get_program_storage_u64("DEX", b"dex_sltp_trigger_cursor");
+        let cursor_idempotent = state.get_program_storage_u64("DEX", b"dex_sltp_trigger_cursor");
         assert_eq!(cursor_idempotent, 5, "cursor should stay 5 (idempotent)");
 
         // More trades: set trade_count=10
@@ -9862,8 +9881,7 @@ mod tests {
             .put_contract_storage(&dex_pk, b"dex_trade_count", &10u64.to_le_bytes())
             .unwrap();
         run_sltp_triggers_from_state(&state);
-        let cursor_final =
-            state.get_program_storage_u64("DEX", b"dex_sltp_trigger_cursor");
+        let cursor_final = state.get_program_storage_u64("DEX", b"dex_sltp_trigger_cursor");
         assert_eq!(cursor_final, 10, "cursor should advance to 10");
     }
 
@@ -9983,19 +10001,19 @@ mod tests {
         // PnL: (200 - 100) * 1B / 1B = 100 profit
         // return_amount = margin(500) + capped_profit(min(100, 1000)) = 600
         // insurance_fund should be debited by 100: 1000 - 100 = 900
-        let insurance_after =
-            state.get_program_storage_u64("MARGIN", b"mrg_insurance");
-        assert_eq!(insurance_after, 900, "insurance fund should be debited by profit");
+        let insurance_after = state.get_program_storage_u64("MARGIN", b"mrg_insurance");
+        assert_eq!(
+            insurance_after, 900,
+            "insurance fund should be debited by profit"
+        );
 
         // Verify PnL tracking
-        let pnl_profit =
-            state.get_program_storage_u64("MARGIN", b"mrg_pnl_profit");
+        let pnl_profit = state.get_program_storage_u64("MARGIN", b"mrg_pnl_profit");
         assert_eq!(pnl_profit, 100, "cumulative profit should be tracked");
 
         // Verify user balance credited (with saturating_add, P9-VAL-03)
         let balance_key = format!("balance_{}", hex::encode(trader));
-        let user_bal =
-            state.get_program_storage_u64("MOLTCOIN", balance_key.as_bytes());
+        let user_bal = state.get_program_storage_u64("MOLTCOIN", balance_key.as_bytes());
         assert_eq!(user_bal, 600, "user should receive margin + capped profit");
     }
 }

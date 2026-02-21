@@ -704,11 +704,25 @@ mod tests {
         pool2.stake(pk_b, 100, 0).unwrap();
         pool2.distribute_rewards(10);
 
-        assert_eq!(pool2.get_position(&pk_a).unwrap().0.rewards_earned, a_rewards);
-        assert_eq!(pool2.get_position(&pk_b).unwrap().0.rewards_earned, b_rewards);
-        assert_eq!(pool2.get_position(&pk_c).unwrap().0.rewards_earned, c_rewards);
+        assert_eq!(
+            pool2.get_position(&pk_a).unwrap().0.rewards_earned,
+            a_rewards
+        );
+        assert_eq!(
+            pool2.get_position(&pk_b).unwrap().0.rewards_earned,
+            b_rewards
+        );
+        assert_eq!(
+            pool2.get_position(&pk_c).unwrap().0.rewards_earned,
+            c_rewards
+        );
 
         // Verify positions field is BTreeMap (deterministic)
-        assert!(pool.positions.keys().collect::<Vec<_>>().windows(2).all(|w| w[0] <= w[1]));
+        assert!(pool
+            .positions
+            .keys()
+            .collect::<Vec<_>>()
+            .windows(2)
+            .all(|w| w[0] <= w[1]));
     }
 }

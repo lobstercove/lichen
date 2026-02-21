@@ -294,18 +294,42 @@ enum MethodTier {
 fn classify_method(method: &str) -> MethodTier {
     match method {
         // Writes / simulations
-        "sendTransaction" | "simulateTransaction" | "deployContract" | "upgradeContract"
-        | "stake" | "unstake" | "stakeToReefStake" | "unstakeFromReefStake"
-        | "claimUnstakedTokens" | "requestAirdrop" | "setFeeConfig" | "setRentParams"
+        "sendTransaction"
+        | "simulateTransaction"
+        | "deployContract"
+        | "upgradeContract"
+        | "stake"
+        | "unstake"
+        | "stakeToReefStake"
+        | "unstakeFromReefStake"
+        | "claimUnstakedTokens"
+        | "requestAirdrop"
+        | "setFeeConfig"
+        | "setRentParams"
         | "setContractAbi" => MethodTier::Expensive,
 
         // Moderate reads (iterate indexes, join data)
-        "getTransactionsByAddress" | "getTransactionHistory" | "getRecentTransactions"
-        | "getTokenHolders" | "getTokenTransfers" | "getContractEvents" | "getContractLogs"
-        | "getNFTsByOwner" | "getNFTsByCollection" | "getNFTActivity" | "getMarketListings"
-        | "getMarketSales" | "getProgramCalls" | "getProgramStorage" | "getPrograms"
-        | "getAllContracts" | "getAllSymbolRegistry" | "getPredictionMarkets"
-        | "getPredictionLeaderboard" | "batchReverseMoltNames" | "searchMoltNames"
+        "getTransactionsByAddress"
+        | "getTransactionHistory"
+        | "getRecentTransactions"
+        | "getTokenHolders"
+        | "getTokenTransfers"
+        | "getContractEvents"
+        | "getContractLogs"
+        | "getNFTsByOwner"
+        | "getNFTsByCollection"
+        | "getNFTActivity"
+        | "getMarketListings"
+        | "getMarketSales"
+        | "getProgramCalls"
+        | "getProgramStorage"
+        | "getPrograms"
+        | "getAllContracts"
+        | "getAllSymbolRegistry"
+        | "getPredictionMarkets"
+        | "getPredictionLeaderboard"
+        | "batchReverseMoltNames"
+        | "searchMoltNames"
         | "getUnstakingQueue" => MethodTier::Moderate,
 
         // Everything else is a cheap point lookup
@@ -338,8 +362,8 @@ impl RateLimiter {
             // P9-RPC-03: Default tier limits.
             // Cheap: 100% of global cap, Moderate: 40%, Expensive: 10%
             tier_limits: [
-                max_per_second,                      // Cheap
-                max_per_second * 2 / 5,              // Moderate (40%)
+                max_per_second,                         // Cheap
+                max_per_second * 2 / 5,                 // Moderate (40%)
                 std::cmp::max(max_per_second / 10, 50), // Expensive (10%, min 50)
             ],
         }
@@ -1136,7 +1160,10 @@ async fn handle_rpc(
                 MethodTier::Moderate => "moderate",
                 MethodTier::Cheap => "cheap",
             };
-            warn!("P9-RPC-03: {} method rate limit exceeded for IP {}", label, ip);
+            warn!(
+                "P9-RPC-03: {} method rate limit exceeded for IP {}",
+                label, ip
+            );
             return (
                 StatusCode::TOO_MANY_REQUESTS,
                 Json(serde_json::json!({

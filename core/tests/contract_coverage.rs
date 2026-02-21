@@ -71,12 +71,13 @@ fn exec(
         caller,
         contract_addr(),
         value,
-        100,  // slot
+        100, // slot
         storage,
         args.to_vec(),
     );
     let mut runtime = ContractRuntime::new();
-    runtime.execute(contract, function, args, ctx)
+    runtime
+        .execute(contract, function, args, ctx)
         .unwrap_or_else(|e| panic!("WASM execution failed for {function}: {e}"))
 }
 
@@ -116,19 +117,44 @@ fn admin_storage() -> HashMap<Vec<u8>, Vec<u8>> {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const ALL_CONTRACTS: &[&str] = &[
-    "bountyboard", "clawpay", "clawpump", "clawvault", "compute_market",
-    "dex_amm", "dex_analytics", "dex_core", "dex_governance", "dex_margin",
-    "dex_rewards", "dex_router", "lobsterlend", "moltauction", "moltbridge",
-    "moltcoin", "moltdao", "moltmarket", "moltoracle", "moltpunks",
-    "moltswap", "moltyid", "musd_token", "prediction_market", "reef_storage",
-    "weth_token", "wsol_token",
+    "bountyboard",
+    "clawpay",
+    "clawpump",
+    "clawvault",
+    "compute_market",
+    "dex_amm",
+    "dex_analytics",
+    "dex_core",
+    "dex_governance",
+    "dex_margin",
+    "dex_rewards",
+    "dex_router",
+    "lobsterlend",
+    "moltauction",
+    "moltbridge",
+    "moltcoin",
+    "moltdao",
+    "moltmarket",
+    "moltoracle",
+    "moltpunks",
+    "moltswap",
+    "moltyid",
+    "musd_token",
+    "prediction_market",
+    "reef_storage",
+    "weth_token",
+    "wsol_token",
 ];
 
 #[test]
 fn test_all_contracts_load_valid_wasm() {
     for name in ALL_CONTRACTS {
         let code = load_wasm(name);
-        assert!(code.len() > 8, "{name} WASM too small: {} bytes", code.len());
+        assert!(
+            code.len() > 8,
+            "{name} WASM too small: {} bytes",
+            code.len()
+        );
         // Verify WASM magic header
         assert_eq!(&code[0..4], b"\x00asm", "{name} missing WASM magic header");
     }
@@ -198,7 +224,14 @@ mod moltdao {
     #[test]
     fn test_create_proposal_typed() {
         let c = contract();
-        let result = exec(&c, "create_proposal_typed", admin(), &[], admin_storage(), 0);
+        let result = exec(
+            &c,
+            "create_proposal_typed",
+            admin(),
+            &[],
+            admin_storage(),
+            0,
+        );
         let _ = result.success;
     }
 
@@ -212,7 +245,14 @@ mod moltdao {
     #[test]
     fn test_vote_with_reputation() {
         let c = contract();
-        let result = exec(&c, "vote_with_reputation", user_a(), &[], admin_storage(), 0);
+        let result = exec(
+            &c,
+            "vote_with_reputation",
+            user_a(),
+            &[],
+            admin_storage(),
+            0,
+        );
         let _ = result.success;
     }
 
@@ -458,14 +498,28 @@ mod weth_token {
     #[test]
     fn test_get_last_attestation_slot() {
         let c = contract();
-        let result = exec(&c, "get_last_attestation_slot", user_a(), &[], admin_storage(), 0);
+        let result = exec(
+            &c,
+            "get_last_attestation_slot",
+            user_a(),
+            &[],
+            admin_storage(),
+            0,
+        );
         let _ = result.success;
     }
 
     #[test]
     fn test_get_attestation_count() {
         let c = contract();
-        let result = exec(&c, "get_attestation_count", user_a(), &[], admin_storage(), 0);
+        let result = exec(
+            &c,
+            "get_attestation_count",
+            user_a(),
+            &[],
+            admin_storage(),
+            0,
+        );
         let _ = result.success;
     }
 
@@ -613,14 +667,28 @@ mod wsol_token {
     #[test]
     fn test_get_last_attestation_slot() {
         let c = contract();
-        let result = exec(&c, "get_last_attestation_slot", user_a(), &[], admin_storage(), 0);
+        let result = exec(
+            &c,
+            "get_last_attestation_slot",
+            user_a(),
+            &[],
+            admin_storage(),
+            0,
+        );
         let _ = result.success;
     }
 
     #[test]
     fn test_get_attestation_count() {
         let c = contract();
-        let result = exec(&c, "get_attestation_count", user_a(), &[], admin_storage(), 0);
+        let result = exec(
+            &c,
+            "get_attestation_count",
+            user_a(),
+            &[],
+            admin_storage(),
+            0,
+        );
         let _ = result.success;
     }
 
@@ -697,7 +765,14 @@ mod moltoracle {
     #[test]
     fn test_set_authorized_attester() {
         let c = contract();
-        let result = exec(&c, "set_authorized_attester", admin(), &[], admin_storage(), 0);
+        let result = exec(
+            &c,
+            "set_authorized_attester",
+            admin(),
+            &[],
+            admin_storage(),
+            0,
+        );
         let _ = result.success;
     }
 
@@ -760,7 +835,14 @@ mod moltoracle {
     #[test]
     fn test_get_attestation_data() {
         let c = contract();
-        let result = exec(&c, "get_attestation_data", user_a(), &[], admin_storage(), 0);
+        let result = exec(
+            &c,
+            "get_attestation_data",
+            user_a(),
+            &[],
+            admin_storage(),
+            0,
+        );
         let _ = result.success;
     }
 
@@ -774,7 +856,14 @@ mod moltoracle {
     #[test]
     fn test_get_aggregated_price() {
         let c = contract();
-        let result = exec(&c, "get_aggregated_price", user_a(), &[], admin_storage(), 0);
+        let result = exec(
+            &c,
+            "get_aggregated_price",
+            user_a(),
+            &[],
+            admin_storage(),
+            0,
+        );
         let _ = result.success;
     }
 
@@ -1118,7 +1207,8 @@ mod dex_governance {
         let args = serde_json::to_vec(&serde_json::json!({
             "action": "set_preferred_quote",
             "quote": admin().to_base58()
-        })).unwrap();
+        }))
+        .unwrap();
         let result = exec(&c, "call", admin(), &args, admin_storage(), 0);
         let _ = result.success;
     }
@@ -1129,7 +1219,8 @@ mod dex_governance {
         let args = serde_json::to_vec(&serde_json::json!({
             "action": "add_allowed_quote",
             "quote": admin().to_base58()
-        })).unwrap();
+        }))
+        .unwrap();
         let result = exec(&c, "call", admin(), &args, admin_storage(), 0);
         let _ = result.success;
     }
@@ -1140,7 +1231,8 @@ mod dex_governance {
         let args = serde_json::to_vec(&serde_json::json!({
             "action": "remove_allowed_quote",
             "quote": admin().to_base58()
-        })).unwrap();
+        }))
+        .unwrap();
         let result = exec(&c, "call", admin(), &args, admin_storage(), 0);
         let _ = result.success;
     }
@@ -1150,7 +1242,8 @@ mod dex_governance {
         let c = contract();
         let args = serde_json::to_vec(&serde_json::json!({
             "action": "get_allowed_quote_count"
-        })).unwrap();
+        }))
+        .unwrap();
         let result = exec(&c, "call", user_a(), &args, admin_storage(), 0);
         let _ = result.success;
     }
@@ -1160,7 +1253,8 @@ mod dex_governance {
         let c = contract();
         let args = serde_json::to_vec(&serde_json::json!({
             "action": "get_preferred_quote"
-        })).unwrap();
+        }))
+        .unwrap();
         let result = exec(&c, "call", user_a(), &args, admin_storage(), 0);
         let _ = result.success;
     }
@@ -1172,7 +1266,8 @@ mod dex_governance {
             "action": "propose_new_pair",
             "base": admin().to_base58(),
             "quote": user_a().to_base58()
-        })).unwrap();
+        }))
+        .unwrap();
         let result = exec(&c, "call", user_a(), &args, admin_storage(), 0);
         let _ = result.success;
     }
@@ -1183,7 +1278,8 @@ mod dex_governance {
         let args = serde_json::to_vec(&serde_json::json!({
             "action": "propose_fee_change",
             "new_fee": 100
-        })).unwrap();
+        }))
+        .unwrap();
         let result = exec(&c, "call", user_a(), &args, admin_storage(), 0);
         let _ = result.success;
     }
@@ -1195,7 +1291,8 @@ mod dex_governance {
             "action": "vote",
             "proposal_id": 0,
             "support": true
-        })).unwrap();
+        }))
+        .unwrap();
         let result = exec(&c, "call", user_a(), &args, admin_storage(), 0);
         let _ = result.success;
     }
@@ -1206,7 +1303,8 @@ mod dex_governance {
         let args = serde_json::to_vec(&serde_json::json!({
             "action": "finalize_proposal",
             "proposal_id": 0
-        })).unwrap();
+        }))
+        .unwrap();
         let result = exec(&c, "call", admin(), &args, admin_storage(), 0);
         let _ = result.success;
     }
@@ -1217,7 +1315,8 @@ mod dex_governance {
         let args = serde_json::to_vec(&serde_json::json!({
             "action": "execute_proposal",
             "proposal_id": 0
-        })).unwrap();
+        }))
+        .unwrap();
         let result = exec(&c, "call", admin(), &args, admin_storage(), 0);
         let _ = result.success;
     }
@@ -1228,7 +1327,8 @@ mod dex_governance {
         let args = serde_json::to_vec(&serde_json::json!({
             "action": "emergency_delist",
             "pair": admin().to_base58()
-        })).unwrap();
+        }))
+        .unwrap();
         let result = exec(&c, "call", admin(), &args, admin_storage(), 0);
         let _ = result.success;
     }
@@ -1239,7 +1339,8 @@ mod dex_governance {
         let args = serde_json::to_vec(&serde_json::json!({
             "action": "set_listing_requirements",
             "min_liquidity": 1000
-        })).unwrap();
+        }))
+        .unwrap();
         let result = exec(&c, "call", admin(), &args, admin_storage(), 0);
         let _ = result.success;
     }
@@ -1249,7 +1350,8 @@ mod dex_governance {
         let c = contract();
         let args = serde_json::to_vec(&serde_json::json!({
             "action": "emergency_pause"
-        })).unwrap();
+        }))
+        .unwrap();
         let result = exec(&c, "call", admin(), &args, admin_storage(), 0);
         let _ = result.success;
     }
@@ -1261,7 +1363,8 @@ mod dex_governance {
         s.insert(b"paused".to_vec(), vec![1]);
         let args = serde_json::to_vec(&serde_json::json!({
             "action": "emergency_unpause"
-        })).unwrap();
+        }))
+        .unwrap();
         let result = exec(&c, "call", admin(), &args, s, 0);
         let _ = result.success;
     }
@@ -1272,7 +1375,8 @@ mod dex_governance {
         let args = serde_json::to_vec(&serde_json::json!({
             "action": "set_moltyid_address",
             "address": admin().to_base58()
-        })).unwrap();
+        }))
+        .unwrap();
         let result = exec(&c, "call", admin(), &args, admin_storage(), 0);
         let _ = result.success;
     }
@@ -1282,7 +1386,8 @@ mod dex_governance {
         let c = contract();
         let args = serde_json::to_vec(&serde_json::json!({
             "action": "get_proposal_count"
-        })).unwrap();
+        }))
+        .unwrap();
         let result = exec(&c, "call", user_a(), &args, admin_storage(), 0);
         let _ = result.success;
     }
@@ -1293,7 +1398,8 @@ mod dex_governance {
         let args = serde_json::to_vec(&serde_json::json!({
             "action": "get_proposal_info",
             "proposal_id": 0
-        })).unwrap();
+        }))
+        .unwrap();
         let result = exec(&c, "call", user_a(), &args, admin_storage(), 0);
         let _ = result.success;
     }
@@ -1316,7 +1422,10 @@ fn test_all_contracts_initialize() {
         match result {
             Ok(r) => {
                 // Either success or a known initialization error is fine
-                eprintln!("[{name}] initialize: success={}, code={:?}", r.success, r.return_code);
+                eprintln!(
+                    "[{name}] initialize: success={}, code={:?}",
+                    r.success, r.return_code
+                );
             }
             Err(e) => {
                 // Function might not exist — that's OK
