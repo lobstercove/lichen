@@ -955,10 +955,10 @@ pub extern "C" fn initialize_ma_admin(admin_ptr: *const u8) -> u32 {
 /// Pause marketplace. Admin only.
 /// Returns: 0 success, 1 not admin, 2 already paused
 #[no_mangle]
-pub extern "C" fn ma_pause(caller_ptr: *const u8) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
-    if !is_ma_admin(&caller) { return 1; }
+pub extern "C" fn ma_pause() -> u32 {
+    // H-9: Use get_caller() for authenticated caller instead of spoofable parameter
+    let caller = get_caller();
+    if !is_ma_admin(&caller.0) { return 1; }
     if is_ma_paused() { return 2; }
     storage_set(MA_PAUSE_KEY, &[1]);
     log_info("MoltAuction paused");
@@ -968,10 +968,10 @@ pub extern "C" fn ma_pause(caller_ptr: *const u8) -> u32 {
 /// Unpause marketplace. Admin only.
 /// Returns: 0 success, 1 not admin, 2 not paused
 #[no_mangle]
-pub extern "C" fn ma_unpause(caller_ptr: *const u8) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
-    if !is_ma_admin(&caller) { return 1; }
+pub extern "C" fn ma_unpause() -> u32 {
+    // H-9: Use get_caller() for authenticated caller instead of spoofable parameter
+    let caller = get_caller();
+    if !is_ma_admin(&caller.0) { return 1; }
     if !is_ma_paused() { return 2; }
     storage_set(MA_PAUSE_KEY, &[0]);
     log_info("MoltAuction unpaused");
@@ -1394,18 +1394,23 @@ mod tests {
         assert_eq!(initialize_ma_admin(admin.as_ptr()), 0);
         assert_eq!(initialize_ma_admin(non_admin.as_ptr()), 1); // already set
 
-        assert_eq!(ma_pause(non_admin.as_ptr()), 1); // not admin
-        assert_eq!(ma_pause(admin.as_ptr()), 0);
-        assert_eq!(ma_pause(admin.as_ptr()), 2); // already paused
+        // H-9: ma_pause/ma_unpause now use get_caller(), so set_caller is required
+        test_mock::set_caller(non_admin);
+        assert_eq!(ma_pause(), 1); // not admin
+        test_mock::set_caller(admin);
+        assert_eq!(ma_pause(), 0);
+        assert_eq!(ma_pause(), 2); // already paused
 
         // set_reserve blocked when paused
         create_test_auction(&nft, 99, &seller, 100, 999_999);
         test_mock::set_caller(seller);
         assert_eq!(set_reserve_price(seller.as_ptr(), nft.as_ptr(), 99, 5000), 4);
 
-        assert_eq!(ma_unpause(non_admin.as_ptr()), 1); // not admin
-        assert_eq!(ma_unpause(admin.as_ptr()), 0);
-        assert_eq!(ma_unpause(admin.as_ptr()), 2); // not paused
+        test_mock::set_caller(non_admin);
+        assert_eq!(ma_unpause(), 1); // not admin
+        test_mock::set_caller(admin);
+        assert_eq!(ma_unpause(), 0);
+        assert_eq!(ma_unpause(), 2); // not paused
 
         // Works after unpause
         test_mock::set_caller(seller);
