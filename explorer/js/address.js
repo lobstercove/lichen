@@ -606,10 +606,10 @@ function formatTimestamp(value) {
 }
 
 // Convert a slot number to an approximate human-readable expiry date.
-// MoltChain: 2 slots/sec = 500ms per slot. SLOTS_PER_YEAR = 63,072,000.
+// MoltChain: 2.5 slots/sec = 400ms per slot. SLOTS_PER_YEAR = 78,840,000.
 function formatSlotExpiry(expirySlot, registeredSlot) {
-    const SLOTS_PER_YEAR = 63_072_000;
-    const MS_PER_SLOT = 500;
+    const SLOTS_PER_YEAR = 78_840_000;
+    const MS_PER_SLOT = 400;
     const slot = Number(expirySlot || 0);
     if (!slot) return 'Unknown';
 

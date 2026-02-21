@@ -360,8 +360,8 @@ cargo build --release
                     <tr>
                         <td><code>min_validator_stake</code></td>
                         <td>Integer</td>
-                        <td><code>100000000000000</code></td>
-                        <td>Minimum stake in shells (1 MOLT = 1,000,000,000 shells). 100,000 MOLT (100K) — bootstrapped to the first 200 validators at no cost; validator 201+ must self-fund.</td>
+                        <td><code>75000000000000</code></td>
+                        <td>Minimum stake in shells (1 MOLT = 1,000,000,000 shells). 75,000 MOLT (75K) minimum to participate in consensus. Bootstrap validators receive a 100,000 MOLT grant (25K buffer above minimum); validator 201+ must self-fund at least 75,000 MOLT.</td>
                     </tr>
                     <tr>
                         <td><code>slot_duration_ms</code></td>
@@ -673,7 +673,7 @@ cargo build --release
             <h3>Minimum Stake</h3>
             <ul>
                 <li><strong>Bootstrap Grant (first 200 validators):</strong> 100,000 MOLT (<code>100,000,000,000,000</code> shells) — new validators receive this at $0 cost from the treasury</li>
-                <li><strong>Self-funded (validator 201+):</strong> Must provide your own 100,000 MOLT — immediately fully vested, no debt</li>
+                <li><strong>Self-funded (validator 201+):</strong> Must provide your own 75,000 MOLT minimum — immediately fully vested, no debt</li>
                 <li><strong>Vesting (standard):</strong> 50% of earned rewards go to debt repayment, 50% liquid — this is the default split for all bootstrap validators</li>
                 <li><strong>Performance bonus (≥95% uptime):</strong> 75% of earned rewards go to debt repayment, 25% liquid — accelerates graduation by ~1.5× (via <code>PERFORMANCE_BONUS_BPS = 15000</code>)</li>
                 <li><strong>Time cap:</strong> All remaining debt is forgiven after 547 days (~18 months) regardless of repayment progress</li>

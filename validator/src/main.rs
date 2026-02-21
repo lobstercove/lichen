@@ -9247,6 +9247,11 @@ async fn run_validator() {
     // F6.2: Track DEX trade count for WS event emission
     let mut last_dex_trade_count = state.get_program_storage_u64("DEX", b"dex_trade_count");
 
+    // SLOT TIMING FLOOR: Track when the last block was produced to enforce
+    // minimum slot_duration_ms spacing between blocks. Without this, the 2ms
+    // poll loop would produce blocks every ~3ms when the leader bypass is active.
+    let mut last_block_produced_at: Option<std::time::Instant> = None;
+
     loop {
         // TIP-BASED SLOT: Always derive the next slot to produce from the chain tip.
         // This guarantees consecutive slot numbers — no gaps. Every validator agrees
@@ -9633,6 +9638,17 @@ async fn run_validator() {
             }
         }
 
+        // ── SLOT TIMING FLOOR ──
+        // Enforce minimum slot_duration_ms (400ms) spacing between produced blocks.
+        // This is a hard floor that prevents runaway block production regardless
+        // of leader status or heartbeat gate logic. The 2ms poll loop is for
+        // responsiveness, not for block production rate.
+        if let Some(ref last_produced) = last_block_produced_at {
+            if last_produced.elapsed() < Duration::from_millis(slot_duration_ms) {
+                continue;
+            }
+        }
+
         // ── VIEW ROTATION: Wall-clock based for the CURRENT slot ──
         // Every view_change_interval (3 × slot_duration = 1200ms) without anyone
         // producing this slot, rotate the leader. slot_start resets when the
@@ -9713,23 +9729,30 @@ async fn run_validator() {
         }
 
         // ADAPTIVE HEARTBEAT: Early check BEFORE draining the mempool.
-        // When elected leader (view 0) or deadlock breaker, ALWAYS produce —
-        // this prevents the heartbeat timer from suppressing the only validator
-        // that can advance the chain, which was the root cause of chain stalls.
+        // Heartbeats (empty blocks) are rate-limited to every 5 seconds for ALL
+        // leaders including the primary. This prevents runaway empty block production.
+        // Transaction blocks are produced immediately by the elected leader.
+        // The SyncManager decay mechanism independently prevents chain stalls,
+        // so the primary leader does NOT need to bypass the heartbeat gate.
         let is_heartbeat_time = last_activity_time.elapsed() >= Duration::from_secs(5);
-        let is_primary_leader = should_produce && view == 0;
-        if !is_heartbeat_time && !is_primary_leader && !is_deadlock_breaker {
-            // Only skip for secondary view leaders (views 1-15) when idle.
-            // Primary leader and deadlock breaker must always produce to keep
-            // the chain alive.
-            // Peek at mempool without draining it
-            let has_pending = {
-                let pool = mempool.lock().await;
-                pool.size() > 0
-            };
-            if !has_pending {
+
+        // Peek at mempool to determine if this would be a heartbeat or tx block
+        let has_pending = {
+            let pool = mempool.lock().await;
+            pool.size() > 0
+        };
+
+        if !has_pending {
+            // No transactions — this will be a heartbeat block.
+            // ALL heartbeats respect the 5-second timer, even primary leaders.
+            // Only exception: deadlock breaker must produce to unstick a frozen chain.
+            if !is_heartbeat_time && !is_deadlock_breaker {
                 continue;
             }
+        } else if !should_produce && !is_deadlock_breaker {
+            // Has transactions but we were not selected as leader.
+            // This shouldn't normally happen (leader check is above), but guard anyway.
+            continue;
         }
 
         // Update parent_hash from actual latest block (in case chain was synced from P2P)
@@ -10039,6 +10062,7 @@ async fn run_validator() {
         }
 
         parent_hash = block_hash;
+        last_block_produced_at = Some(std::time::Instant::now());
         // (No slot increment — next iteration derives slot from chain tip)
     }
 }

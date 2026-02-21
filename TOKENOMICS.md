@@ -258,7 +258,7 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 | ClawPump graduation | 100K MOLT | $10,000 | OK — agent-friendly, bonding curve still filters spam |
 | Max order (DEX) | 1,000 MOLT | $100 | **Too low** — should be higher for serious trading |
 | DEX rewards | 1M MOLT/mo | $100K/month | **Needs assessment** — that's $1.2M/yr from a finite pool |
-| Min validator stake | 100,000 MOLT | $10,000 | OK — accessible |
+| Min validator stake | 75,000 MOLT | $7,500 | OK — accessible (bootstrap grant is 100K, 25K buffer) |
 | Max validator stake | 1,000,000 MOLT | $100,000 | OK — prevents over-concentration |
 
 ### Parameters that need adjustment at $0.10:

@@ -29,7 +29,7 @@ MoltChain's Contributory Stake system gives the first 200 validators a 100,000 M
 | Status at graduation | `FullyVested` |
 
 - All 200 formation validators get the **same grant** — no tiering, no class inequality.
-- The 100K grant equals `MIN_VALIDATOR_STAKE` — the minimum required to participate in consensus.
+- The 100K grant exceeds `MIN_VALIDATOR_STAKE` (75K) by 25K, giving validators a 25% buffer against slashing before deactivation.
 - Grant is deducted from the 150M Validator Rewards pool in treasury.
 
 ### Phase 2: Mature (Validator 201+)

@@ -191,7 +191,7 @@ Original design: $10K min / $100K max to run a validator. At $0.10 those targets
 
 | # | Parameter | File:Line | Current MOLT | USD at $0.10 | **New MOLT** | USD at $0.10 |
 |---|-----------|-----------|-------------|-------------|------------|-------------|
-| 11 | `MIN_VALIDATOR_STAKE` | consensus.rs:13 | 10,000 | $1,000 | **100,000** | **$10,000** |
+| 11 | `MIN_VALIDATOR_STAKE` | consensus.rs:13 | 10,000 | $1,000 | **75,000** | **$7,500** |
 | 12 | `MAX_VALIDATOR_STAKE` | consensus.rs:~148 | 100,000 | $10,000 | **1,000,000** | **$100,000** |
 
 #### Category D — DEX Contract Parameters
