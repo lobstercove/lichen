@@ -1157,11 +1157,11 @@ fn run_sltp_triggers_from_state(state: &StateStore) {
 
 /// P9-VAL-04: Deterministic analytics bridge — uses state-persisted cursor
 /// so both producers and receivers execute the same analytics writes.
-fn run_analytics_bridge_from_state(state: &StateStore, slot: u64) {
+fn run_analytics_bridge_from_state(state: &StateStore, slot: u64, slot_duration_ms: u64) {
     let cursor = state.get_program_storage_u64("DEX", b"dex_analytics_bridge_cursor");
     let current = state.get_program_storage_u64("DEX", b"dex_trade_count");
     if current > cursor {
-        bridge_dex_trades_to_analytics(state, cursor, current, slot);
+        bridge_dex_trades_to_analytics(state, cursor, current, slot, slot_duration_ms);
         // Persist the new cursor so subsequent blocks pick up from here
         if let Ok(Some(dex_entry)) = state.get_symbol_registry("DEX") {
             let _ = state.put_contract_storage(
@@ -1173,7 +1173,7 @@ fn run_analytics_bridge_from_state(state: &StateStore, slot: u64) {
     }
 }
 
-fn bridge_dex_trades_to_analytics(state: &StateStore, from_trade: u64, to_trade: u64, slot: u64) {
+fn bridge_dex_trades_to_analytics(state: &StateStore, from_trade: u64, to_trade: u64, slot: u64, slot_duration_ms: u64) {
     const PRICE_SCALE: f64 = 1_000_000_000.0;
 
     // Resolve ANALYTICS pubkey via symbol registry
@@ -1189,7 +1189,7 @@ fn bridge_dex_trades_to_analytics(state: &StateStore, from_trade: u64, to_trade:
         .flatten()
         .map(|b| b.header.timestamp)
         .unwrap_or(0);
-    let slot_duration_ms = 400u64; // matches genesis config default
+    // AUDIT-FIX E-1: Use passed-in slot_duration_ms from genesis config
     let now_ts = genesis_ts + (slot * slot_duration_ms / 1000);
 
     // Candle intervals matching dex_analytics: 1m, 5m, 15m, 1h, 4h, 1d, 3d, 1w, 1y
@@ -4078,11 +4078,24 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
                 continue;
             }
 
-            let now_ts = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
+            // AUDIT-FIX E-2: Use deterministic slot-derived timestamp instead of
+            // SystemTime::now() to prevent cross-validator candle boundary disagreements.
             let current_slot = state.get_last_slot().unwrap_or(0);
+            let now_ts = {
+                let genesis_ts = state
+                    .get_block_by_slot(0)
+                    .ok()
+                    .flatten()
+                    .map(|b| b.header.timestamp)
+                    .unwrap_or(0);
+                // Use latest block's timestamp when available, fall back to slot-derived
+                state
+                    .get_block_by_slot(current_slot)
+                    .ok()
+                    .flatten()
+                    .map(|b| b.header.timestamp)
+                    .unwrap_or_else(|| genesis_ts + (current_slot * 400 / 1000))
+            };
 
             // Read current MOLT price from oracle (or use default)
             let molt_usd = match state.get_contract_storage(&oracle_pk, b"price_MOLT") {
@@ -6791,6 +6804,7 @@ async fn run_validator() {
                             run_analytics_bridge_from_state(
                                 &state_for_blocks,
                                 pending_block.header.slot,
+                                genesis_config_for_blocks.consensus.slot_duration_ms.max(1),
                             );
                             run_sltp_triggers_from_state(&state_for_blocks);
                             reset_24h_stats_if_expired(
@@ -6835,7 +6849,7 @@ async fn run_validator() {
                     if can_chain {
                         // Valid next block in chain - replay transactions then store
                         replay_block_transactions(&processor_for_blocks, &block);
-                        run_analytics_bridge_from_state(&state_for_blocks, block.header.slot);
+                        run_analytics_bridge_from_state(&state_for_blocks, block.header.slot, genesis_config_for_blocks.consensus.slot_duration_ms.max(1));
                         run_sltp_triggers_from_state(&state_for_blocks);
                         reset_24h_stats_if_expired(&state_for_blocks, block.header.timestamp);
                         if state_for_blocks.put_block(&block).is_ok() {
@@ -6968,6 +6982,7 @@ async fn run_validator() {
                                 run_analytics_bridge_from_state(
                                     &state_for_blocks,
                                     pending_block.header.slot,
+                                    genesis_config_for_blocks.consensus.slot_duration_ms.max(1),
                                 );
                                 run_sltp_triggers_from_state(&state_for_blocks);
                                 reset_24h_stats_if_expired(
@@ -7104,7 +7119,10 @@ async fn run_validator() {
                             // P9-VAL-07: Only replace based on weight/stake evidence,
                             // not on sync state (we_are_behind) or pending queue (has_pending)
                             // to prevent malicious validators from forcing replacements.
-                            if incoming_weight > existing_weight || oracle_prefers_incoming {
+                            // AUDIT-FIX E-3: Changed || to && so BOTH vote weight AND oracle
+                            // must agree — prevents a single high-stake validator from
+                            // overriding a majority-voted block.
+                            if incoming_weight > existing_weight && oracle_prefers_incoming {
                                 // Revert old block's financial effects before replacing
                                 revert_block_effects(&state_for_blocks, &existing);
                                 // C7 fix: Also revert user transaction effects
@@ -7118,6 +7136,7 @@ async fn run_validator() {
                                 run_analytics_bridge_from_state(
                                     &state_for_blocks,
                                     block.header.slot,
+                                    genesis_config_for_blocks.consensus.slot_duration_ms.max(1),
                                 );
                                 run_sltp_triggers_from_state(&state_for_blocks);
                                 reset_24h_stats_if_expired(
@@ -7194,6 +7213,7 @@ async fn run_validator() {
                                         run_analytics_bridge_from_state(
                                             &state_for_blocks,
                                             pending_block.header.slot,
+                                            genesis_config_for_blocks.consensus.slot_duration_ms.max(1),
                                         );
                                         run_sltp_triggers_from_state(&state_for_blocks);
                                         reset_24h_stats_if_expired(
@@ -9926,7 +9946,7 @@ async fn run_validator() {
             }
 
             // P9-VAL-04: Trade bridge uses state-persisted cursor (deterministic)
-            run_analytics_bridge_from_state(&state, slot);
+            run_analytics_bridge_from_state(&state, slot, slot_duration_ms);
 
             // SL/TP trigger engine: check dormant stop-limit orders and margin
             // position SL/TP levels when new trades occurred.
