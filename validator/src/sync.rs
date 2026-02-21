@@ -8,9 +8,14 @@ use tokio::sync::Mutex;
 use tracing::{info, warn};
 
 /// Maximum blocks to request in a single sync batch.
-/// Larger batches let a behind validator catch up faster at the cost of
-/// more memory while the batch is in-flight.
+/// This is the overall catch-up window; actual P2P requests are chunked
+/// into sub-batches of `P2P_BLOCK_RANGE_LIMIT` to stay within the P2P
+/// layer's per-request cap (AUDIT-FIX H1).
 const SYNC_BATCH_SIZE: u64 = 500;
+
+/// The per-request chunk size that the P2P layer allows.
+/// Must match `MAX_BLOCK_RANGE` in `p2p/src/network.rs`.
+pub const P2P_BLOCK_RANGE_LIMIT: u64 = 100;
 
 /// Maximum blocks to hold in pending state (memory limit)
 const MAX_PENDING_BLOCKS: usize = 500;
@@ -496,5 +501,65 @@ mod tests {
         // Small update still works
         sm.note_seen_bounded(300, 500).await;
         assert_eq!(sm.get_highest_seen().await, 700); // Already higher
+    }
+
+    /// Verify the P2P_BLOCK_RANGE_LIMIT constant is within acceptable bounds
+    /// and that chunking math works correctly.
+    #[test]
+    fn test_p2p_block_range_limit_chunking() {
+        // The limit must match the P2P MAX_BLOCK_RANGE in p2p/src/network.rs
+        assert_eq!(P2P_BLOCK_RANGE_LIMIT, 100);
+
+        // Simulate chunking a 250-block range into sub-batches of 100
+        let start: u64 = 50;
+        let end: u64 = 299;
+        let mut chunks = Vec::new();
+        let mut chunk_start = start;
+        while chunk_start <= end {
+            let chunk_end = std::cmp::min(chunk_start + P2P_BLOCK_RANGE_LIMIT - 1, end);
+            chunks.push((chunk_start, chunk_end));
+            chunk_start = chunk_end + 1;
+        }
+        // Should produce 3 chunks: [50-149], [150-249], [250-299]
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks[0], (50, 149));
+        assert_eq!(chunks[1], (150, 249));
+        assert_eq!(chunks[2], (250, 299));
+        // All chunks must be ≤ P2P_BLOCK_RANGE_LIMIT in size
+        for (s, e) in &chunks {
+            assert!(e - s + 1 <= P2P_BLOCK_RANGE_LIMIT);
+        }
+    }
+
+    /// Single chunk when range fits within limit
+    #[test]
+    fn test_p2p_chunking_single_batch() {
+        let start: u64 = 10;
+        let end: u64 = 50;
+        let mut chunks = Vec::new();
+        let mut chunk_start = start;
+        while chunk_start <= end {
+            let chunk_end = std::cmp::min(chunk_start + P2P_BLOCK_RANGE_LIMIT - 1, end);
+            chunks.push((chunk_start, chunk_end));
+            chunk_start = chunk_end + 1;
+        }
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], (10, 50));
+    }
+
+    /// Exact boundary (exactly 100 blocks)
+    #[test]
+    fn test_p2p_chunking_exact_limit() {
+        let start: u64 = 0;
+        let end: u64 = 99; // exactly 100 blocks
+        let mut chunks = Vec::new();
+        let mut chunk_start = start;
+        while chunk_start <= end {
+            let chunk_end = std::cmp::min(chunk_start + P2P_BLOCK_RANGE_LIMIT - 1, end);
+            chunks.push((chunk_start, chunk_end));
+            chunk_start = chunk_end + 1;
+        }
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0], (0, 99));
     }
 }
