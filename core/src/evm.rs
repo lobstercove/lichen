@@ -425,6 +425,17 @@ impl Database for StateEvmDb {
 
 impl DatabaseCommit for StateEvmDb {
     fn commit(&mut self, changes: RevmHashMap<RevmAddress, Account>) {
+        // P9-CORE-07: Guard against direct state writes bypassing StateBatch atomicity.
+        // In production, EVM state changes must be collected and applied via StateBatch
+        // to ensure atomic block processing. This commit() is retained for revm trait
+        // compatibility but logs a warning when called with actual changes.
+        if !changes.is_empty() {
+            eprintln!(
+                "⚠️  P9-CORE-07: StateEvmDb::commit() called with {} changes — \
+                 these writes bypass StateBatch atomicity. Use collect_changes() instead.",
+                changes.len()
+            );
+        }
         self.commit_errors.clear();
         for (address, account) in changes {
             let address_bytes = revm_address_to_array(address);

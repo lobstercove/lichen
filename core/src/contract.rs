@@ -4,7 +4,7 @@
 use crate::{Hash, Pubkey, StateStore};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 
 /// Type alias for cross-contract call pending storage changes.
 type CccChanges = HashMap<Pubkey, HashMap<Vec<u8>, Option<Vec<u8>>>>;
@@ -18,12 +18,17 @@ use wasmer_middlewares::metering::get_remaining_points;
 use wasmer_middlewares::metering::MeteringPoints;
 use wasmer_middlewares::Metering;
 
-/// PERF-FIX 2: Global WASM compiled-module cache.
+/// PERF-FIX 2 + P9-CORE-04: Global WASM compiled-module cache with LRU eviction.
 /// Stores Cranelift-compiled module bytes keyed by SHA-256 of WASM bytecode.
 /// Eliminates redundant 5-50ms Cranelift compilations on every contract call.
-/// Safe because we are the only writer (serialize after our own compilation).
-static MODULE_CACHE: std::sync::LazyLock<RwLock<HashMap<[u8; 32], Vec<u8>>>> =
-    std::sync::LazyLock::new(|| RwLock::new(HashMap::new()));
+/// LRU eviction prevents unbounded memory growth on long-running validators.
+const MODULE_CACHE_MAX_ENTRIES: usize = 1024;
+static MODULE_CACHE: std::sync::LazyLock<Mutex<lru::LruCache<[u8; 32], Vec<u8>>>> =
+    std::sync::LazyLock::new(|| {
+        Mutex::new(lru::LruCache::new(
+            std::num::NonZeroUsize::new(MODULE_CACHE_MAX_ENTRIES).unwrap(),
+        ))
+    });
 
 // PERF-FIX 7: Thread-local ContractRuntime pool.
 // Avoids creating a new Cranelift compiler + Wasmer Store on every contract call.
@@ -562,6 +567,8 @@ pub fn decode_program_call_activity(data: &[u8]) -> Result<ProgramCallActivity, 
 
 /// Maximum log message length (16 KB)
 const MAX_LOG_LEN: usize = 16_384;
+/// P9-CORE-06: Maximum number of log entries per contract execution
+const MAX_LOG_ENTRIES: usize = 1024;
 /// Maximum storage key length (256 bytes)
 const MAX_KEY_LEN: usize = 256;
 /// Maximum storage value length (64 KB)
@@ -738,13 +745,13 @@ impl ContractRuntime {
         ctx.args = args.to_vec();
         let initial_compute = ctx.compute_remaining;
 
-        // PERF-FIX 2: Compiled-module cache.
+        // PERF-FIX 2 + P9-CORE-04: Compiled-module cache with LRU eviction.
         // Cranelift compilation takes 5-50ms per module. With 27 contracts and
         // thousands of calls, this eliminates >99% of redundant compilations.
-        // Deserialize from cache takes <1ms vs 5-50ms for Module::new.
+        // LRU cap at MODULE_CACHE_MAX_ENTRIES prevents unbounded memory growth.
         let code_hash = Hash::hash(&contract.code);
         let module = {
-            let cache = MODULE_CACHE.read().unwrap_or_else(|e| e.into_inner());
+            let mut cache = MODULE_CACHE.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(cached_bytes) = cache.get(&code_hash.0) {
                 // Hot path: deserialize pre-compiled module (~0.5ms)
                 // SAFETY: We serialized these bytes ourselves from a valid Module.
@@ -757,10 +764,9 @@ impl ContractRuntime {
                 let m = Module::new(&self.store, &contract.code)
                     .map_err(|e| format!("Failed to compile contract: {}", e))?;
                 if let Ok(serialized) = m.serialize() {
-                    let mut cache_w = MODULE_CACHE.write().unwrap_or_else(|e| e.into_inner());
-                    cache_w
-                        .entry(code_hash.0)
-                        .or_insert_with(|| serialized.to_vec());
+                    let mut cache_w = MODULE_CACHE.lock().unwrap_or_else(|e| e.into_inner());
+                    // put() returns the evicted entry (if any) when cache is full
+                    cache_w.put(code_hash.0, serialized.to_vec());
                 }
                 m
             }
@@ -1374,7 +1380,10 @@ fn host_log_msg(mut env: FunctionEnvMut<ContractContext>, msg_ptr: u32, msg_len:
 
     let ctx = env.data_mut();
     deduct_compute(ctx, COMPUTE_LOG);
-    ctx.logs.push(msg);
+    // P9-CORE-06: Cap log entries to prevent unbounded heap growth
+    if ctx.logs.len() < MAX_LOG_ENTRIES {
+        ctx.logs.push(msg);
+    }
 }
 
 /// Emit a structured event.
@@ -2209,5 +2218,15 @@ mod tests {
         };
         assert!(result.success);
         assert_eq!(result.return_code, Some(1));
+    }
+
+    /// P9-CORE-04: Verify MODULE_CACHE uses LRU with bounded capacity
+    #[test]
+    fn test_module_cache_lru_bounded() {
+        let cap = MODULE_CACHE_MAX_ENTRIES;
+        assert!(cap > 0, "MODULE_CACHE_MAX_ENTRIES must be positive");
+        // Verify the cache is an LruCache with the expected cap
+        let cache = MODULE_CACHE.lock().unwrap();
+        assert_eq!(cache.cap().get(), cap, "cache capacity should match constant");
     }
 }
