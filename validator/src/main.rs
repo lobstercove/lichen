@@ -7051,16 +7051,31 @@ async fn run_validator() {
                         // Mark that we're starting sync
                         sync_mgr.start_sync(start, end).await;
 
-                        // Send BlockRangeRequest to all peers
-                        let request_msg = P2PMessage::new(
-                            MessageType::BlockRangeRequest {
-                                start_slot: start,
-                                end_slot: end,
-                            },
-                            local_addr,
-                        );
-                        peer_mgr_for_sync.broadcast(request_msg).await;
-                        info!("📡 Sent block range request: {} to {}", start, end);
+                        // Chunk the range into sub-batches that fit within the
+                        // P2P layer's MAX_BLOCK_RANGE limit (AUDIT-FIX H1).
+                        // Without this, any gap > 100 blocks causes a permanent
+                        // sync deadlock because the responder rejects oversized
+                        // range requests.
+                        let mut chunk_start = start;
+                        while chunk_start <= end {
+                            let chunk_end = std::cmp::min(
+                                chunk_start + sync::P2P_BLOCK_RANGE_LIMIT - 1,
+                                end,
+                            );
+                            let request_msg = P2PMessage::new(
+                                MessageType::BlockRangeRequest {
+                                    start_slot: chunk_start,
+                                    end_slot: chunk_end,
+                                },
+                                local_addr,
+                            );
+                            peer_mgr_for_sync.broadcast(request_msg).await;
+                            info!(
+                                "📡 Sent block range request: {} to {} (chunk of {})",
+                                chunk_start, chunk_end, chunk_end - chunk_start + 1
+                            );
+                            chunk_start = chunk_end + 1;
+                        }
 
                         // Mark slots as requested in sync manager
                         for slot in start..=end {
