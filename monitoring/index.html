@@ -510,10 +510,58 @@
             </div>
         </div>
 
-    </main>
+        <!-- Row 8: MoltyID Identity Monitor -->
+        <div class="panel full-width">
+            <div class="panel-header">
+                <div class="panel-title">
+                    <i class="fas fa-fingerprint"></i> MoltyID Identity Monitor
+                </div>
+                <span class="panel-badge" id="identityMonitorBadge">--</span>
+            </div>
+            <div class="panel-body">
+                <!-- Identity Stats Bar -->
+                <div class="dex-stats-bar" id="identityStatsBar">
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Total Identities</span>
+                        <span class="dex-stat-value" id="idTotalIdentities">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Names Registered</span>
+                        <span class="dex-stat-value" id="idTotalNames">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Newcomer</span>
+                        <span class="dex-stat-value" id="idTierNewcomer">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Verified</span>
+                        <span class="dex-stat-value" id="idTierVerified">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Trusted</span>
+                        <span class="dex-stat-value" id="idTierTrusted">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Established</span>
+                        <span class="dex-stat-value" id="idTierEstablished">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Elite</span>
+                        <span class="dex-stat-value" id="idTierElite">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Legendary</span>
+                        <span class="dex-stat-value" id="idTierLegendary">--</span>
+                    </div>
+                </div>
+                <!-- Trust Tier Distribution -->
+                <div class="identity-tier-grid" id="identityTierGrid">
+                    <!-- Filled by JS -->
+                </div>
+            </div>
+        </div>
 
-    <!-- Incident Response Center -->
-    <section class="dashboard">
+        <!-- Incident Response Center -->
         <div class="panel full-width incident-panel">
             <div class="panel-header">
                 <div class="panel-title">
@@ -605,7 +653,8 @@
                 </div>
             </div>
         </div>
-    </section>
+
+    </main>
 
     <!-- Footer -->
     <footer class="footer">
