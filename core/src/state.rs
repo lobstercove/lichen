@@ -4360,26 +4360,25 @@ impl StateStore {
         }
 
         // 6. Prune dirty_acct:* keys (already processed by compute_state_root)
-        // AUDIT-FIX CP-15: Only delete dirty_acct keys for slots before cutoff
+        // AUDIT-FIX C-1: dirty_acct keys have format "dirty_acct:{pubkey}" (43 bytes total)
+        // with NO slot component. We prune ALL dirty_acct keys since they are only
+        // relevant for the state root computation of the current/recent block, which
+        // has already been computed by the time pruning runs.
         let iter = self.db.iterator_cf(
             &cf,
             rocksdb::IteratorMode::From(b"dirty_acct:", Direction::Forward),
         );
+        let mut dirty_deleted = 0u64;
         for item in iter.flatten() {
             if !item.0.starts_with(b"dirty_acct:") {
                 break;
             }
-            // dirty_acct keys have format: "dirty_acct:{slot_be_bytes}:{pubkey}"
-            // Extract slot from bytes after the prefix (11 bytes = "dirty_acct:")
-            let prefix_len = b"dirty_acct:".len();
-            if item.0.len() >= prefix_len + 8 {
-                if let Ok(slot_bytes) = item.0[prefix_len..prefix_len + 8].try_into() {
-                    let slot = u64::from_be_bytes(slot_bytes);
-                    if slot < cutoff {
-                        batch.delete_cf(&cf, &item.0);
-                        deleted += 1;
-                    }
-                }
+            // Only prune if key length matches expected format (11 prefix + 32 pubkey)
+            // to avoid accidentally deleting unrelated keys
+            if item.0.len() == 43 {
+                batch.delete_cf(&cf, &item.0);
+                dirty_deleted += 1;
+                deleted += 1;
             }
         }
 
@@ -4389,11 +4388,18 @@ impl StateStore {
                 .write(batch)
                 .map_err(|e| format!("Failed to prune stats: {}", e))?;
 
-            // Reset dirty counter after pruning dirty_acct keys
-            if let Some(cf_stats) = self.db.cf_handle(CF_STATS) {
-                let _ = self
-                    .db
-                    .put_cf(&cf_stats, b"dirty_account_count", 0u64.to_le_bytes());
+            // AUDIT-FIX C-2: Only reset dirty counter if we actually pruned dirty
+            // keys, and only to 0 (meaning "no outstanding dirty markers"). The
+            // mark_account_dirty_with_key() function uses a non-zero marker (1)
+            // so any concurrent writes will re-set it to 1 after this reset.
+            // This is safe because the dirty flag is a simple "has any dirty"
+            // indicator, not a count.
+            if dirty_deleted > 0 {
+                if let Some(cf_stats) = self.db.cf_handle(CF_STATS) {
+                    let _ = self
+                        .db
+                        .put_cf(&cf_stats, b"dirty_account_count", 0u64.to_le_bytes());
+                }
             }
         }
 
@@ -5964,5 +5970,65 @@ mod tests {
 
         let acct = state.get_account(&pk).unwrap().unwrap();
         assert_eq!(acct.spendable, new_spendable);
+    }
+
+    /// AUDIT-FIX C-1: prune_slot_stats correctly handles dirty_acct keys
+    /// whose format is "dirty_acct:{pubkey}" (43 bytes, no slot).
+    /// Pruning must not corrupt state by misinterpreting pubkey bytes as slots.
+    #[test]
+    fn test_prune_dirty_acct_correct_format() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        // Write some dirty_acct markers
+        let pk1 = Pubkey([0xAA; 32]);
+        let pk2 = Pubkey([0xBB; 32]);
+        state.mark_account_dirty_with_key(&pk1);
+        state.mark_account_dirty_with_key(&pk2);
+
+        // Verify they exist
+        let cf = state.db.cf_handle(CF_STATS).unwrap();
+        let mut key1 = [0u8; 43];
+        key1[..11].copy_from_slice(b"dirty_acct:");
+        key1[11..43].copy_from_slice(&pk1.0);
+        assert!(state.db.get_cf(&cf, key1).unwrap().is_some());
+
+        // Prune with a high current_slot (should clean all dirty markers)
+        let deleted = state.prune_slot_stats(10000, 100).unwrap();
+        assert!(deleted >= 2, "Should have pruned at least 2 dirty_acct keys, got {}", deleted);
+
+        // Dirty markers should be gone
+        assert!(state.db.get_cf(&cf, key1).unwrap().is_none());
+    }
+
+    /// AUDIT-FIX C-2: dirty_account_count is only reset when dirty keys
+    /// were actually pruned, and new writes after pruning re-set the flag.
+    #[test]
+    fn test_prune_dirty_count_not_unconditional_reset() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        // Create a fee_dist entry so pruning has something to delete even
+        // without dirty_acct keys
+        let cf = state.db.cf_handle(CF_STATS).unwrap();
+        let _ = state.db.put_cf(&cf, b"fee_dist:1", b"data");
+
+        // Set dirty_account_count to 1 (simulating a concurrent write)
+        let _ = state
+            .db
+            .put_cf(&cf, b"dirty_account_count", 1u64.to_le_bytes());
+
+        // Prune — should delete fee_dist:1 but NOT reset dirty_account_count
+        // because no dirty_acct keys were pruned
+        let _ = state.prune_slot_stats(10000, 100).unwrap();
+
+        // dirty_account_count should still be 1 (not reset to 0)
+        let val = state
+            .db
+            .get_cf(&cf, b"dirty_account_count")
+            .unwrap()
+            .map(|v| u64::from_le_bytes(v.try_into().unwrap_or([0; 8])))
+            .unwrap_or(0);
+        assert_eq!(val, 1, "dirty_account_count must not be reset when no dirty_acct keys were pruned");
     }
 }
