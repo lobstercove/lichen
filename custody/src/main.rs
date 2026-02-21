@@ -5339,6 +5339,13 @@ async fn parse_evm_swap_output(
     }
 
     if total_output > 0 {
+        // I-9: Guard against u128→u64 truncation for large EVM amounts
+        if total_output > u64::MAX as u128 {
+            return Err(format!(
+                "Swap output {} exceeds u64::MAX — cannot safely represent",
+                total_output
+            ));
+        }
         Ok(Some(total_output as u64))
     } else {
         Ok(None)

@@ -221,7 +221,13 @@ async fn main() {
         .route("/health", get(health_handler))
         .layer(
             CorsLayer::new()
-                .allow_origin("*".parse::<HeaderValue>().unwrap())
+                // I-5: Restrict CORS to known origins instead of wildcard
+                .allow_origin([
+                    "https://faucet.moltchain.io".parse::<HeaderValue>().unwrap(),
+                    "https://moltchain.io".parse::<HeaderValue>().unwrap(),
+                    "http://localhost:3003".parse::<HeaderValue>().unwrap(),
+                    "http://localhost:3000".parse::<HeaderValue>().unwrap(),
+                ])
                 .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
                 .allow_headers([header::CONTENT_TYPE, header::ACCEPT]),
         )
@@ -483,6 +489,17 @@ fn load_or_generate_keypair() -> Keypair {
             default_path, e
         );
     } else {
+        // I-4: Set restrictive permissions (owner-only read/write)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Err(e) = std::fs::set_permissions(
+                default_path,
+                std::fs::Permissions::from_mode(0o600),
+            ) {
+                warn!("⚠️  Could not set keypair permissions: {}", e);
+            }
+        }
         info!("🔑 Generated new faucet keypair → {}", default_path);
     }
     kp
