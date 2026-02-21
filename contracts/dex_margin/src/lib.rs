@@ -614,8 +614,8 @@ pub fn open_position(
     save_u64(&user_position_count_key(&t), user_count + 1);
     save_u64(&user_position_key(&t, user_count + 1), pos_id);
 
-    // Track global margin volume (notional = size * entry_price / 1e6)
-    let notional = (size as u128 * mark_price as u128 / 1_000_000) as u64;
+    // AUDIT-FIX G-7: Correct divisor to 1e9 (matches all other notional calcs)
+    let notional = (size as u128 * mark_price as u128 / 1_000_000_000) as u64;
     save_u64(TOTAL_VOLUME_KEY, load_u64(TOTAL_VOLUME_KEY).saturating_add(notional));
 
     log_info("Margin position opened");
@@ -695,7 +695,12 @@ pub fn close_position(caller: *const u8, position_id: u64) -> u32 {
             args
         },
     );
-    let _ = call_contract(unlock_call);
+    // AUDIT-FIX G-3: Check unlock return — do NOT mark closed if unlock fails
+    if call_contract(unlock_call).is_err() {
+        log_info("close_position: collateral unlock failed");
+        reentrancy_exit();
+        return 10;
+    }
 
     update_pos_status(&mut data, POS_CLOSED);
     storage_set(&pk, &data);
@@ -889,7 +894,14 @@ pub fn liquidate(_liquidator: *const u8, position_id: u64) -> u32 {
                 args
             },
         );
-        let _ = call_contract(unlock_call);
+        // AUDIT-FIX G-3: Check unlock return — revert if host unlock fails
+        if call_contract(unlock_call).is_err() {
+            // Undo insurance fund credit before reverting
+            save_u64(INSURANCE_FUND_KEY, insurance);
+            log_info("liquidate: collateral unlock failed");
+            reentrancy_exit();
+            return 10;
+        }
     }
 
     // Deduct penalty from locked balance
@@ -903,7 +915,31 @@ pub fn liquidate(_liquidator: *const u8, position_id: u64) -> u32 {
             args
         },
     );
-    let _ = call_contract(deduct_call);
+    // AUDIT-FIX G-3: Check deduct return — revert if host deduct fails
+    if call_contract(deduct_call).is_err() {
+        save_u64(INSURANCE_FUND_KEY, insurance);
+        log_info("liquidate: penalty deduct failed");
+        reentrancy_exit();
+        return 11;
+    }
+
+    // AUDIT-FIX G-4: Actually transfer liquidator reward via token transfer
+    if liquidator_reward > 0 {
+        let molt_addr = load_addr(MOLTCOIN_ADDRESS_KEY);
+        if !is_zero(&molt_addr) {
+            let contract_addr = get_contract_address();
+            if call_token_transfer(
+                Address(molt_addr),
+                contract_addr,
+                Address(liq),
+                liquidator_reward,
+            ).is_err() {
+                log_info("liquidate: reward transfer failed, crediting to insurance");
+                // If transfer fails, add reward to insurance fund instead of losing it
+                save_u64(INSURANCE_FUND_KEY, insurance.saturating_add(insurance_add).saturating_add(liquidator_reward));
+            }
+        }
+    }
 
     update_pos_status(&mut data, POS_LIQUIDATED);
     storage_set(&pk, &data);
@@ -1239,7 +1275,12 @@ pub fn partial_close(caller: *const u8, position_id: u64, close_amount: u64) -> 
             args
         },
     );
-    let _ = call_contract(unlock_call);
+    // AUDIT-FIX G-3: Check unlock return — do NOT mutate position if unlock fails
+    if call_contract(unlock_call).is_err() {
+        log_info("partial_close: collateral unlock failed");
+        reentrancy_exit();
+        return 10;
+    }
 
     // Update position in-place: reduce size and margin, keep it open
     update_pos_size(&mut data, remaining_size);

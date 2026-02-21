@@ -83,6 +83,7 @@ const CHALLENGE_PERIOD_KEY: &[u8] = b"challenge_period";
 const CM_COMPLETED_COUNT_KEY: &[u8] = b"cm_completed_count";
 const CM_PAYMENT_VOLUME_KEY: &[u8] = b"cm_payment_volume";
 const CM_DISPUTE_COUNT_KEY: &[u8] = b"cm_dispute_count";
+const CM_TOKEN_ADDRESS_KEY: &[u8] = b"cm_token_address";
 
 // ============================================================================
 // STORAGE KEY HELPERS
@@ -147,6 +148,21 @@ fn is_admin(caller: &[u8]) -> bool {
         Some(data) => data.as_slice() == caller,
         None => false,
     }
+}
+
+/// Load the configured payment token address, or None if not set.
+fn load_token_address() -> Option<[u8; 32]> {
+    if let Some(tb) = storage_get(CM_TOKEN_ADDRESS_KEY) {
+        if tb.len() == 32 {
+            let mut addr = [0u8; 32];
+            addr.copy_from_slice(&tb);
+            // Check not all zeros
+            if addr.iter().any(|&b| b != 0) {
+                return Some(addr);
+            }
+        }
+    }
+    None
 }
 
 fn is_arbitrator(addr: &[u8; 32]) -> bool {
@@ -356,6 +372,25 @@ pub extern "C" fn submit_job(
     if !check_identity_gate(&req_arr) {
         log_info("Insufficient MoltyID reputation for job submission");
         return 10;
+    }
+
+    // AUDIT-FIX H-1: Actually collect tokens from requester for escrow
+    let token_addr = match load_token_address() {
+        Some(a) => a,
+        None => {
+            log_info("Payment token not configured — admin must call set_token_address");
+            return 12;
+        }
+    };
+    let contract_addr = get_contract_address();
+    if call_token_transfer(
+        Address(token_addr),
+        Address(req_arr),
+        contract_addr,
+        max_price,
+    ).is_err() {
+        log_info("Token transfer failed — requester has insufficient balance");
+        return 13;
     }
 
     let job_id = storage_get(b"job_count")
@@ -754,6 +789,30 @@ pub extern "C" fn remove_arbitrator(caller_ptr: *const u8, arbitrator_ptr: *cons
 }
 
 // ============================================================================
+// AUDIT-FIX H-4: Admin configurable payment token address
+// ============================================================================
+
+/// Admin sets the payment token address used for escrow transfers.
+#[no_mangle]
+pub extern "C" fn set_token_address(caller_ptr: *const u8, token_ptr: *const u8) -> u32 {
+    let mut caller = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32) };
+    let mut token = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(token_ptr, token.as_mut_ptr(), 32) };
+    let real_caller = get_caller();
+    if real_caller.0 != caller {
+        return 200;
+    }
+    if !is_admin(&caller) {
+        log_info("Not admin");
+        return 1;
+    }
+    storage_set(CM_TOKEN_ADDRESS_KEY, &token);
+    log_info("Payment token address set");
+    0
+}
+
+// ============================================================================
 // v2: JOB CANCELLATION
 // ============================================================================
 
@@ -832,7 +891,26 @@ pub extern "C" fn cancel_job(
     job_data[80] = JOB_CANCELLED;
     storage_set(&jk, &job_data);
     let ek = escrow_key(job_id);
+    let escrowed = storage_get(&ek)
+        .map(|d| bytes_to_u64(&d))
+        .unwrap_or(0);
     storage_set(&ek, &u64_to_bytes(0));
+
+    // AUDIT-FIX H-2: Return escrowed tokens to requester
+    if escrowed > 0 {
+        if let Some(token_addr) = load_token_address() {
+            let contract_addr = get_contract_address();
+            if call_token_transfer(
+                Address(token_addr),
+                contract_addr,
+                Address(requester),
+                escrowed,
+            ).is_err() {
+                log_info("cancel_job: token refund transfer failed");
+                return 7;
+            }
+        }
+    }
 
     log_info("Job cancelled, escrow refunded");
     0
@@ -896,16 +974,39 @@ pub extern "C" fn release_payment(job_id: u64) -> u32 {
     storage_set(&jk, &job_data);
 
     let ek = escrow_key(job_id);
-    let _escrowed = storage_get(&ek)
+    let escrowed = storage_get(&ek)
         .map(|d| bytes_to_u64(&d))
         .unwrap_or(0);
     storage_set(&ek, &u64_to_bytes(0));
+
+    // AUDIT-FIX H-3: Actually transfer escrowed tokens to the provider
+    if escrowed > 0 {
+        let mut provider_arr = [0u8; 32];
+        provider_arr.copy_from_slice(&job_data[81..113]);
+        if let Some(token_addr) = load_token_address() {
+            let contract_addr = get_contract_address();
+            if call_token_transfer(
+                Address(token_addr),
+                contract_addr,
+                Address(provider_arr),
+                escrowed,
+            ).is_err() {
+                // Revert: put escrow back and undo status
+                storage_set(&ek, &u64_to_bytes(escrowed));
+                job_data[80] = JOB_COMPLETED;
+                storage_set(&jk, &job_data);
+                log_info("release_payment: token transfer to provider failed");
+                reentrancy_exit();
+                return 6;
+            }
+        }
+    }
 
     // Track completion stats
     let cmc = storage_get(CM_COMPLETED_COUNT_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
     storage_set(CM_COMPLETED_COUNT_KEY, &u64_to_bytes(cmc + 1));
     let cmv = storage_get(CM_PAYMENT_VOLUME_KEY).map(|d| if d.len() >= 8 { bytes_to_u64(&d) } else { 0 }).unwrap_or(0);
-    storage_set(CM_PAYMENT_VOLUME_KEY, &u64_to_bytes(cmv.saturating_add(_escrowed)));
+    storage_set(CM_PAYMENT_VOLUME_KEY, &u64_to_bytes(cmv.saturating_add(escrowed)));
 
     log_info("Payment released to provider");
     reentrancy_exit();
@@ -989,32 +1090,35 @@ pub extern "C" fn resolve_dispute(
     let _to_requester = (escrowed as u128 * requester_pct as u128 / 100) as u64;
     let _to_provider = escrowed.saturating_sub(_to_requester);
 
-    // AUDIT-FIX: Actually transfer tokens to both parties
+    // AUDIT-FIX: Actually transfer tokens to both parties (using shared helper)
     let mut requester_arr = [0u8; 32];
     requester_arr.copy_from_slice(&job_data[0..32]);
     let mut provider_arr = [0u8; 32];
     provider_arr.copy_from_slice(&job_data[81..113]);
-    // Use the configured payment token for transfers
-    if let Some(token_bytes) = storage_get(b"cm_token_address") {
-        if token_bytes.len() == 32 {
-            let mut token_addr = [0u8; 32];
-            token_addr.copy_from_slice(&token_bytes);
-            let contract_addr = get_contract_address();
-            if _to_requester > 0 {
-                let _ = call_token_transfer(
-                    Address(token_addr),
-                    contract_addr,
-                    Address(requester_arr),
-                    _to_requester,
-                );
+    if let Some(token_addr) = load_token_address() {
+        let contract_addr = get_contract_address();
+        if _to_requester > 0 {
+            if call_token_transfer(
+                Address(token_addr),
+                contract_addr,
+                Address(requester_arr),
+                _to_requester,
+            ).is_err() {
+                log_info("resolve_dispute: transfer to requester failed");
+                reentrancy_exit();
+                return 6;
             }
-            if _to_provider > 0 {
-                let _ = call_token_transfer(
-                    Address(token_addr),
-                    contract_addr,
-                    Address(provider_arr),
-                    _to_provider,
-                );
+        }
+        if _to_provider > 0 {
+            if call_token_transfer(
+                Address(token_addr),
+                contract_addr,
+                Address(provider_arr),
+                _to_provider,
+            ).is_err() {
+                log_info("resolve_dispute: transfer to provider failed");
+                reentrancy_exit();
+                return 7;
             }
         }
     }
@@ -1393,8 +1497,61 @@ mod tests {
     use super::*;
     use moltchain_sdk::test_mock;
 
+    /// Common token address used in tests
+    const TEST_TOKEN_ADDR: [u8; 32] = [0xFFu8; 32];
+
     fn setup() {
         test_mock::reset();
+        // AUDIT-FIX H-4: Configure a mock payment token so token-flow functions work
+        storage_set(CM_TOKEN_ADDRESS_KEY, &TEST_TOKEN_ADDR);
+    }
+
+    /// Helper: submit a job with caller mock set correctly
+    fn submit_job_as(requester: &[u8; 32], cu: u64, price: u64, hash: &[u8; 32]) -> u32 {
+        test_mock::set_caller(*requester);
+        submit_job(requester.as_ptr(), cu, price, hash.as_ptr())
+    }
+
+    /// Helper: register a provider with caller mock set correctly
+    fn register_as(provider: &[u8; 32], cap: u64, price: u64) -> u32 {
+        test_mock::set_caller(*provider);
+        register_provider(provider.as_ptr(), cap, price)
+    }
+
+    /// Helper: claim a job with caller mock set correctly
+    fn claim_as(provider: &[u8; 32], job_id: u64) -> u32 {
+        test_mock::set_caller(*provider);
+        claim_job(provider.as_ptr(), job_id)
+    }
+
+    /// Helper: complete a job with caller mock set correctly
+    fn complete_as(provider: &[u8; 32], job_id: u64, result_hash: &[u8; 32]) -> u32 {
+        test_mock::set_caller(*provider);
+        complete_job(provider.as_ptr(), job_id, result_hash.as_ptr())
+    }
+
+    /// Helper: dispute a job with caller mock set correctly
+    fn dispute_as(requester: &[u8; 32], job_id: u64) -> u32 {
+        test_mock::set_caller(*requester);
+        dispute_job(requester.as_ptr(), job_id)
+    }
+
+    /// Helper: cancel a job with caller mock set correctly
+    fn cancel_as(requester: &[u8; 32], job_id: u64) -> u32 {
+        test_mock::set_caller(*requester);
+        cancel_job(requester.as_ptr(), job_id)
+    }
+
+    /// Helper: initialize admin with caller mock set correctly
+    fn initialize_as(admin: &[u8; 32]) -> u32 {
+        test_mock::set_caller(*admin);
+        initialize(admin.as_ptr())
+    }
+
+    /// Helper: resolve dispute with caller mock set correctly
+    fn resolve_as(arb: &[u8; 32], job_id: u64, pct: u64) -> u32 {
+        test_mock::set_caller(*arb);
+        resolve_dispute(arb.as_ptr(), job_id, pct)
     }
 
     #[test]
@@ -1403,25 +1560,21 @@ mod tests {
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let provider_addr = [1u8; 32];
-        let result = register_provider(provider_addr.as_ptr(), 1000, 50);
-        assert_eq!(result, 0);
+        assert_eq!(register_as(&provider_addr, 1000, 50), 0);
 
-        // Verify provider stored
         let pk = provider_key(&provider_addr);
         let prov = test_mock::get_storage(&pk).unwrap();
         assert_eq!(prov.len(), PROVIDER_SIZE);
         assert_eq!(bytes_to_u64(&prov[32..40]), 1000);
         assert_eq!(bytes_to_u64(&prov[40..48]), 50);
-        assert_eq!(prov[56], 1); // active
+        assert_eq!(prov[56], 1);
 
-        // Submit job
         let requester = [2u8; 32];
         let code_hash = [0xAA; 32];
-        let result = submit_job(requester.as_ptr(), 100, 5000, code_hash.as_ptr());
-        assert_eq!(result, 0);
+        assert_eq!(submit_job_as(&requester, 100, 5000, &code_hash), 0);
 
         let ret = test_mock::get_return_data();
-        assert_eq!(bytes_to_u64(&ret), 0); // job_id = 0
+        assert_eq!(bytes_to_u64(&ret), 0);
 
         let jk = job_key(0);
         let job = test_mock::get_storage(&jk).unwrap();
@@ -1436,31 +1589,24 @@ mod tests {
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let provider_addr = [1u8; 32];
-        register_provider(provider_addr.as_ptr(), 1000, 50);
-
+        register_as(&provider_addr, 1000, 50);
         let requester = [2u8; 32];
-        let code_hash = [0xAA; 32];
-        submit_job(requester.as_ptr(), 100, 5000, code_hash.as_ptr());
+        submit_job_as(&requester, 100, 5000, &[0xAA; 32]);
 
-        // Claim job
-        let result = claim_job(provider_addr.as_ptr(), 0);
-        assert_eq!(result, 0);
-
+        assert_eq!(claim_as(&provider_addr, 0), 0);
         let jk = job_key(0);
         let job = test_mock::get_storage(&jk).unwrap();
         assert_eq!(job[80], JOB_CLAIMED);
         assert_eq!(&job[81..113], &provider_addr);
 
-        // Complete job
         test_mock::SLOT.with(|s| *s.borrow_mut() = 200);
         let result_hash = [0xBB; 32];
-        let result = complete_job(provider_addr.as_ptr(), 0, result_hash.as_ptr());
-        assert_eq!(result, 0);
+        assert_eq!(complete_as(&provider_addr, 0, &result_hash), 0);
 
         let job = test_mock::get_storage(&jk).unwrap();
         assert_eq!(job[80], JOB_COMPLETED);
         assert_eq!(&job[113..145], &result_hash);
-        assert_eq!(bytes_to_u64(&job[153..161]), 200); // completed_slot
+        assert_eq!(bytes_to_u64(&job[153..161]), 200);
     }
 
     #[test]
@@ -1469,28 +1615,20 @@ mod tests {
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let provider_addr = [1u8; 32];
-        register_provider(provider_addr.as_ptr(), 1000, 50);
-
+        register_as(&provider_addr, 1000, 50);
         let requester = [2u8; 32];
-        let code_hash = [0xAA; 32];
-        submit_job(requester.as_ptr(), 100, 5000, code_hash.as_ptr());
+        submit_job_as(&requester, 100, 5000, &[0xAA; 32]);
+        claim_as(&provider_addr, 0);
+        complete_as(&provider_addr, 0, &[0xCC; 32]);
 
-        claim_job(provider_addr.as_ptr(), 0);
-        let result_hash = [0xCC; 32];
-        complete_job(provider_addr.as_ptr(), 0, result_hash.as_ptr());
-
-        // Dispute
-        let result = dispute_job(requester.as_ptr(), 0);
-        assert_eq!(result, 0);
-
+        assert_eq!(dispute_as(&requester, 0), 0);
         let jk = job_key(0);
         let job = test_mock::get_storage(&jk).unwrap();
         assert_eq!(job[80], JOB_DISPUTED);
 
-        // Non-requester can't dispute
+        // Non-requester can't dispute (caller mismatch = 200, or wrong requester = 3)
         let other = [9u8; 32];
-        let result = dispute_job(other.as_ptr(), 0);
-        assert_eq!(result, 3); // not requester
+        assert_eq!(dispute_as(&other, 0), 3);
     }
 
     #[test]
@@ -1499,18 +1637,14 @@ mod tests {
         test_mock::SLOT.with(|s| *s.borrow_mut() = 50);
 
         let requester = [2u8; 32];
-        let code_hash = [0xAA; 32];
-        submit_job(requester.as_ptr(), 200, 10000, code_hash.as_ptr());
+        submit_job_as(&requester, 200, 10000, &[0xAA; 32]);
 
         let result = get_job(0);
         assert_eq!(result, 0);
-
         let ret = test_mock::get_return_data();
         assert_eq!(ret.len(), JOB_SIZE);
 
-        // Not found
-        let result = get_job(999);
-        assert_eq!(result, 1);
+        assert_eq!(get_job(999), 1);
     }
 
     #[test]
@@ -1518,18 +1652,15 @@ mod tests {
         setup();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
-        // Set identity admin and configure gate
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(set_identity_admin(admin.as_ptr()), 0);
         let moltyid_addr = [0x42u8; 32];
         assert_eq!(set_moltyid_address(admin.as_ptr(), moltyid_addr.as_ptr()), 0);
         assert_eq!(set_identity_gate(admin.as_ptr(), 100), 0);
 
-        // submit_job should be blocked
         let requester = [2u8; 32];
-        let code_hash = [0xAA; 32];
-        let result = submit_job(requester.as_ptr(), 100, 5000, code_hash.as_ptr());
-        assert_eq!(result, 10);
+        assert_eq!(submit_job_as(&requester, 100, 5000, &[0xAA; 32]), 10);
     }
 
     #[test]
@@ -1538,14 +1669,14 @@ mod tests {
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(set_identity_admin(admin.as_ptr()), 0);
         let moltyid_addr = [0x42u8; 32];
         assert_eq!(set_moltyid_address(admin.as_ptr(), moltyid_addr.as_ptr()), 0);
         assert_eq!(set_identity_gate(admin.as_ptr(), 100), 0);
 
         let provider_addr = [2u8; 32];
-        let result = register_provider(provider_addr.as_ptr(), 1000, 50);
-        assert_eq!(result, 10);
+        assert_eq!(register_as(&provider_addr, 1000, 50), 10);
     }
 
     #[test]
@@ -1553,15 +1684,10 @@ mod tests {
         setup();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
-        // No identity gate configured — should work normally
         let provider_addr = [1u8; 32];
-        let result = register_provider(provider_addr.as_ptr(), 1000, 50);
-        assert_eq!(result, 0);
-
+        assert_eq!(register_as(&provider_addr, 1000, 50), 0);
         let requester = [2u8; 32];
-        let code_hash = [0xAA; 32];
-        let result = submit_job(requester.as_ptr(), 100, 5000, code_hash.as_ptr());
-        assert_eq!(result, 0);
+        assert_eq!(submit_job_as(&requester, 100, 5000, &[0xAA; 32]), 0);
     }
 
     #[test]
@@ -1569,14 +1695,17 @@ mod tests {
         setup();
 
         let admin = [1u8; 32];
+        test_mock::set_caller(admin);
         assert_eq!(set_identity_admin(admin.as_ptr()), 0);
         // Cannot set admin again
         assert_eq!(set_identity_admin(admin.as_ptr()), 1);
 
         let other = [9u8; 32];
+        test_mock::set_caller(other);
         assert_eq!(set_identity_gate(other.as_ptr(), 100), 2);
         assert_eq!(set_moltyid_address(other.as_ptr(), [0x42u8; 32].as_ptr()), 2);
 
+        test_mock::set_caller(admin);
         assert_eq!(set_identity_gate(admin.as_ptr(), 100), 0);
         assert_eq!(set_moltyid_address(admin.as_ptr(), [0x42u8; 32].as_ptr()), 0);
     }
@@ -1589,10 +1718,9 @@ mod tests {
     fn test_initialize_admin() {
         setup();
         let admin = [0xAD; 32];
-        assert_eq!(initialize(admin.as_ptr()), 0);
-        // Cannot re-initialize
+        assert_eq!(initialize_as(&admin), 0);
+        test_mock::set_caller(admin);
         assert_eq!(initialize(admin.as_ptr()), 1);
-        // Verify admin set
         let stored = test_mock::get_storage(ADMIN_KEY).unwrap();
         assert_eq!(stored.as_slice(), &admin);
     }
@@ -1601,25 +1729,23 @@ mod tests {
     fn test_admin_set_timeouts() {
         setup();
         let admin = [0xAD; 32];
-        initialize(admin.as_ptr());
+        initialize_as(&admin);
 
         let other = [9u8; 32];
-        // Non-admin rejected
+        test_mock::set_caller(other);
         assert_eq!(set_claim_timeout(other.as_ptr(), 500), 1);
         assert_eq!(set_complete_timeout(other.as_ptr(), 2000), 1);
         assert_eq!(set_challenge_period(other.as_ptr(), 50), 1);
 
-        // Admin succeeds
+        test_mock::set_caller(admin);
         assert_eq!(set_claim_timeout(admin.as_ptr(), 500), 0);
         assert_eq!(set_complete_timeout(admin.as_ptr(), 2000), 0);
         assert_eq!(set_challenge_period(admin.as_ptr(), 50), 0);
 
-        // Zero rejected
         assert_eq!(set_claim_timeout(admin.as_ptr(), 0), 2);
         assert_eq!(set_complete_timeout(admin.as_ptr(), 0), 2);
         assert_eq!(set_challenge_period(admin.as_ptr(), 0), 2);
 
-        // Verify
         assert_eq!(get_claim_timeout(), 500);
         assert_eq!(get_complete_timeout(), 2000);
         assert_eq!(get_challenge_period(), 50);
@@ -1629,20 +1755,22 @@ mod tests {
     fn test_add_remove_arbitrator() {
         setup();
         let admin = [0xAD; 32];
-        initialize(admin.as_ptr());
+        initialize_as(&admin);
 
         let arb = [0xAA; 32];
         let other = [9u8; 32];
 
-        // Non-admin can't add
+        test_mock::set_caller(other);
         assert_eq!(add_arbitrator(other.as_ptr(), arb.as_ptr()), 1);
-        // Admin adds
+
+        test_mock::set_caller(admin);
         assert_eq!(add_arbitrator(admin.as_ptr(), arb.as_ptr()), 0);
         assert!(is_arbitrator(&arb));
 
-        // Non-admin can't remove
+        test_mock::set_caller(other);
         assert_eq!(remove_arbitrator(other.as_ptr(), arb.as_ptr()), 1);
-        // Admin removes
+
+        test_mock::set_caller(admin);
         assert_eq!(remove_arbitrator(admin.as_ptr(), arb.as_ptr()), 0);
         assert!(!is_arbitrator(&arb));
     }
@@ -1653,16 +1781,12 @@ mod tests {
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let requester = [2u8; 32];
-        let code_hash = [0xAA; 32];
-        let result = submit_job(requester.as_ptr(), 100, 5000, code_hash.as_ptr());
-        assert_eq!(result, 0);
+        assert_eq!(submit_job_as(&requester, 100, 5000, &[0xAA; 32]), 0);
 
-        // Verify escrow stored
         let ek = escrow_key(0);
         let escrowed = test_mock::get_storage(&ek).unwrap();
         assert_eq!(bytes_to_u64(&escrowed), 5000);
 
-        // Query via get_escrow
         assert_eq!(get_escrow(0), 0);
         let ret = test_mock::get_return_data();
         assert_eq!(bytes_to_u64(&ret), 5000);
@@ -1673,8 +1797,7 @@ mod tests {
         setup();
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
         let requester = [2u8; 32];
-        let code_hash = [0xAA; 32];
-        assert_eq!(submit_job(requester.as_ptr(), 100, 0, code_hash.as_ptr()), 11);
+        assert_eq!(submit_job_as(&requester, 100, 0, &[0xAA; 32]), 11);
     }
 
     #[test]
@@ -1683,23 +1806,18 @@ mod tests {
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let requester = [2u8; 32];
-        let code_hash = [0xAA; 32];
-        submit_job(requester.as_ptr(), 100, 5000, code_hash.as_ptr());
+        submit_job_as(&requester, 100, 5000, &[0xAA; 32]);
 
-        // Too early — claim timeout hasn't passed (default 200)
         test_mock::SLOT.with(|s| *s.borrow_mut() = 250);
-        assert_eq!(cancel_job(requester.as_ptr(), 0), 4);
+        assert_eq!(cancel_as(&requester, 0), 4);
 
-        // After timeout
         test_mock::SLOT.with(|s| *s.borrow_mut() = 301);
-        assert_eq!(cancel_job(requester.as_ptr(), 0), 0);
+        assert_eq!(cancel_as(&requester, 0), 0);
 
-        // Verify cancelled
         let jk = job_key(0);
         let job = test_mock::get_storage(&jk).unwrap();
         assert_eq!(job[80], JOB_CANCELLED);
 
-        // Escrow cleared
         let ek = escrow_key(0);
         let escrowed = test_mock::get_storage(&ek).unwrap();
         assert_eq!(bytes_to_u64(&escrowed), 0);
@@ -1711,20 +1829,16 @@ mod tests {
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let provider_addr = [1u8; 32];
-        register_provider(provider_addr.as_ptr(), 1000, 50);
-
+        register_as(&provider_addr, 1000, 50);
         let requester = [2u8; 32];
-        let code_hash = [0xAA; 32];
-        submit_job(requester.as_ptr(), 100, 5000, code_hash.as_ptr());
-        claim_job(provider_addr.as_ptr(), 0);
+        submit_job_as(&requester, 100, 5000, &[0xAA; 32]);
+        claim_as(&provider_addr, 0);
 
-        // Too early — complete timeout hasn't passed (default 1000)
         test_mock::SLOT.with(|s| *s.borrow_mut() = 500);
-        assert_eq!(cancel_job(requester.as_ptr(), 0), 5);
+        assert_eq!(cancel_as(&requester, 0), 5);
 
-        // After complete timeout
         test_mock::SLOT.with(|s| *s.borrow_mut() = 1101);
-        assert_eq!(cancel_job(requester.as_ptr(), 0), 0);
+        assert_eq!(cancel_as(&requester, 0), 0);
 
         let jk = job_key(0);
         let job = test_mock::get_storage(&jk).unwrap();
@@ -1738,11 +1852,10 @@ mod tests {
 
         let requester = [2u8; 32];
         let other = [9u8; 32];
-        let code_hash = [0xAA; 32];
-        submit_job(requester.as_ptr(), 100, 5000, code_hash.as_ptr());
+        submit_job_as(&requester, 100, 5000, &[0xAA; 32]);
 
         test_mock::SLOT.with(|s| *s.borrow_mut() = 400);
-        assert_eq!(cancel_job(other.as_ptr(), 0), 3);
+        assert_eq!(cancel_as(&other, 0), 3);
     }
 
     #[test]
@@ -1751,31 +1864,24 @@ mod tests {
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let provider_addr = [1u8; 32];
-        register_provider(provider_addr.as_ptr(), 1000, 50);
-
+        register_as(&provider_addr, 1000, 50);
         let requester = [2u8; 32];
-        let code_hash = [0xAA; 32];
-        submit_job(requester.as_ptr(), 100, 5000, code_hash.as_ptr());
-        claim_job(provider_addr.as_ptr(), 0);
+        submit_job_as(&requester, 100, 5000, &[0xAA; 32]);
+        claim_as(&provider_addr, 0);
 
         test_mock::SLOT.with(|s| *s.borrow_mut() = 200);
-        let result_hash = [0xBB; 32];
-        complete_job(provider_addr.as_ptr(), 0, result_hash.as_ptr());
+        complete_as(&provider_addr, 0, &[0xBB; 32]);
 
-        // Too early — challenge period not expired (default 100)
         test_mock::SLOT.with(|s| *s.borrow_mut() = 250);
         assert_eq!(release_payment(0), 5);
 
-        // After challenge period
         test_mock::SLOT.with(|s| *s.borrow_mut() = 301);
         assert_eq!(release_payment(0), 0);
 
-        // Verify released
         let jk = job_key(0);
         let job = test_mock::get_storage(&jk).unwrap();
         assert_eq!(job[80], JOB_RELEASED);
 
-        // Escrow cleared
         let ek = escrow_key(0);
         let escrowed = test_mock::get_storage(&ek).unwrap();
         assert_eq!(bytes_to_u64(&escrowed), 0);
@@ -1787,10 +1893,8 @@ mod tests {
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let requester = [2u8; 32];
-        let code_hash = [0xAA; 32];
-        submit_job(requester.as_ptr(), 100, 5000, code_hash.as_ptr());
+        submit_job_as(&requester, 100, 5000, &[0xAA; 32]);
 
-        // Still pending
         assert_eq!(release_payment(0), 3);
     }
 
@@ -1800,28 +1904,25 @@ mod tests {
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let admin = [0xAD; 32];
-        initialize(admin.as_ptr());
+        initialize_as(&admin);
         let arb = [0xAA; 32];
+        test_mock::set_caller(admin);
         add_arbitrator(admin.as_ptr(), arb.as_ptr());
 
         let provider_addr = [1u8; 32];
-        register_provider(provider_addr.as_ptr(), 1000, 50);
+        register_as(&provider_addr, 1000, 50);
         let requester = [2u8; 32];
-        let code_hash = [0xCC; 32];
-        submit_job(requester.as_ptr(), 100, 5000, code_hash.as_ptr());
-        claim_job(provider_addr.as_ptr(), 0);
-        let result_hash = [0xBB; 32];
-        complete_job(provider_addr.as_ptr(), 0, result_hash.as_ptr());
-        dispute_job(requester.as_ptr(), 0);
+        submit_job_as(&requester, 100, 5000, &[0xCC; 32]);
+        claim_as(&provider_addr, 0);
+        complete_as(&provider_addr, 0, &[0xBB; 32]);
+        dispute_as(&requester, 0);
 
-        // Resolve: 100% to requester
-        assert_eq!(resolve_dispute(arb.as_ptr(), 0, 100), 0);
+        assert_eq!(resolve_as(&arb, 0, 100), 0);
 
         let jk = job_key(0);
         let job = test_mock::get_storage(&jk).unwrap();
         assert_eq!(job[80], JOB_RESOLVED);
 
-        // Escrow cleared
         let ek = escrow_key(0);
         let escrowed = test_mock::get_storage(&ek).unwrap();
         assert_eq!(bytes_to_u64(&escrowed), 0);
@@ -1833,23 +1934,20 @@ mod tests {
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let admin = [0xAD; 32];
-        initialize(admin.as_ptr());
+        initialize_as(&admin);
         let arb = [0xAA; 32];
+        test_mock::set_caller(admin);
         add_arbitrator(admin.as_ptr(), arb.as_ptr());
 
         let provider_addr = [1u8; 32];
-        register_provider(provider_addr.as_ptr(), 1000, 50);
+        register_as(&provider_addr, 1000, 50);
         let requester = [2u8; 32];
-        let code_hash = [0xCC; 32];
-        submit_job(requester.as_ptr(), 100, 10000, code_hash.as_ptr());
-        claim_job(provider_addr.as_ptr(), 0);
-        let result_hash = [0xBB; 32];
-        complete_job(provider_addr.as_ptr(), 0, result_hash.as_ptr());
-        dispute_job(requester.as_ptr(), 0);
+        submit_job_as(&requester, 100, 10000, &[0xCC; 32]);
+        claim_as(&provider_addr, 0);
+        complete_as(&provider_addr, 0, &[0xBB; 32]);
+        dispute_as(&requester, 0);
 
-        // 60% to requester, 40% to provider
-        assert_eq!(resolve_dispute(arb.as_ptr(), 0, 60), 0);
-        // Job resolved
+        assert_eq!(resolve_as(&arb, 0, 60), 0);
         let jk = job_key(0);
         let job = test_mock::get_storage(&jk).unwrap();
         assert_eq!(job[80], JOB_RESOLVED);
@@ -1861,20 +1959,18 @@ mod tests {
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let admin = [0xAD; 32];
-        initialize(admin.as_ptr());
+        initialize_as(&admin);
 
         let provider_addr = [1u8; 32];
-        register_provider(provider_addr.as_ptr(), 1000, 50);
+        register_as(&provider_addr, 1000, 50);
         let requester = [2u8; 32];
-        let code_hash = [0xCC; 32];
-        submit_job(requester.as_ptr(), 100, 5000, code_hash.as_ptr());
-        claim_job(provider_addr.as_ptr(), 0);
-        let result_hash = [0xBB; 32];
-        complete_job(provider_addr.as_ptr(), 0, result_hash.as_ptr());
-        dispute_job(requester.as_ptr(), 0);
+        submit_job_as(&requester, 100, 5000, &[0xCC; 32]);
+        claim_as(&provider_addr, 0);
+        complete_as(&provider_addr, 0, &[0xBB; 32]);
+        dispute_as(&requester, 0);
 
-        let fake = [0xFF; 32];
-        assert_eq!(resolve_dispute(fake.as_ptr(), 0, 50), 1);
+        let fake = [0xFE; 32]; // avoid 0xFF which is TEST_TOKEN_ADDR
+        assert_eq!(resolve_as(&fake, 0, 50), 1);
     }
 
     #[test]
@@ -1883,16 +1979,15 @@ mod tests {
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let admin = [0xAD; 32];
-        initialize(admin.as_ptr());
+        initialize_as(&admin);
         let arb = [0xAA; 32];
+        test_mock::set_caller(admin);
         add_arbitrator(admin.as_ptr(), arb.as_ptr());
 
         let requester = [2u8; 32];
-        let code_hash = [0xCC; 32];
-        submit_job(requester.as_ptr(), 100, 5000, code_hash.as_ptr());
+        submit_job_as(&requester, 100, 5000, &[0xCC; 32]);
 
-        // Job is pending, not disputed
-        assert_eq!(resolve_dispute(arb.as_ptr(), 0, 50), 5);
+        assert_eq!(resolve_as(&arb, 0, 50), 5);
     }
 
     #[test]
@@ -1901,19 +1996,20 @@ mod tests {
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let admin = [0xAD; 32];
-        initialize(admin.as_ptr());
+        initialize_as(&admin);
         let arb = [0xAA; 32];
+        test_mock::set_caller(admin);
         add_arbitrator(admin.as_ptr(), arb.as_ptr());
 
         let provider_addr = [1u8; 32];
-        register_provider(provider_addr.as_ptr(), 1000, 50);
+        register_as(&provider_addr, 1000, 50);
         let requester = [2u8; 32];
-        submit_job(requester.as_ptr(), 100, 5000, [0xCC; 32].as_ptr());
-        claim_job(provider_addr.as_ptr(), 0);
-        complete_job(provider_addr.as_ptr(), 0, [0xBB; 32].as_ptr());
-        dispute_job(requester.as_ptr(), 0);
+        submit_job_as(&requester, 100, 5000, &[0xCC; 32]);
+        claim_as(&provider_addr, 0);
+        complete_as(&provider_addr, 0, &[0xBB; 32]);
+        dispute_as(&requester, 0);
 
-        assert_eq!(resolve_dispute(arb.as_ptr(), 0, 101), 2);
+        assert_eq!(resolve_as(&arb, 0, 101), 2);
     }
 
     #[test]
@@ -1922,23 +2018,20 @@ mod tests {
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let provider_addr = [1u8; 32];
-        register_provider(provider_addr.as_ptr(), 1000, 50);
+        register_as(&provider_addr, 1000, 50);
 
-        // Deactivate
+        test_mock::set_caller(provider_addr);
         assert_eq!(deactivate_provider(provider_addr.as_ptr()), 0);
         let pk = provider_key(&provider_addr);
         let prov = test_mock::get_storage(&pk).unwrap();
-        assert_eq!(prov[56], 0); // inactive
+        assert_eq!(prov[56], 0);
 
-        // Double-deactivate rejected
         assert_eq!(deactivate_provider(provider_addr.as_ptr()), 3);
 
-        // Reactivate
         assert_eq!(reactivate_provider(provider_addr.as_ptr()), 0);
         let prov = test_mock::get_storage(&pk).unwrap();
-        assert_eq!(prov[56], 1); // active
+        assert_eq!(prov[56], 1);
 
-        // Double-reactivate rejected
         assert_eq!(reactivate_provider(provider_addr.as_ptr()), 3);
     }
 
@@ -1948,21 +2041,20 @@ mod tests {
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let provider_addr = [1u8; 32];
-        register_provider(provider_addr.as_ptr(), 1000, 50);
+        register_as(&provider_addr, 1000, 50);
 
-        // Update
+        test_mock::set_caller(provider_addr);
         assert_eq!(update_provider(provider_addr.as_ptr(), 2000, 75), 0);
         let pk = provider_key(&provider_addr);
         let prov = test_mock::get_storage(&pk).unwrap();
         assert_eq!(bytes_to_u64(&prov[32..40]), 2000);
         assert_eq!(bytes_to_u64(&prov[40..48]), 75);
 
-        // Zero values rejected
         assert_eq!(update_provider(provider_addr.as_ptr(), 0, 75), 3);
         assert_eq!(update_provider(provider_addr.as_ptr(), 2000, 0), 3);
 
-        // Non-existent provider
-        let fake = [0xFF; 32];
+        let fake = [0xFE; 32];
+        test_mock::set_caller(fake);
         assert_eq!(update_provider(fake.as_ptr(), 100, 100), 1);
     }
 
@@ -1972,21 +2064,21 @@ mod tests {
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let admin = [0xAD; 32];
-        initialize(admin.as_ptr());
+        initialize_as(&admin);
         let arb = [0xAA; 32];
+        test_mock::set_caller(admin);
         add_arbitrator(admin.as_ptr(), arb.as_ptr());
         remove_arbitrator(admin.as_ptr(), arb.as_ptr());
 
         let provider_addr = [1u8; 32];
-        register_provider(provider_addr.as_ptr(), 1000, 50);
+        register_as(&provider_addr, 1000, 50);
         let requester = [2u8; 32];
-        submit_job(requester.as_ptr(), 100, 5000, [0xCC; 32].as_ptr());
-        claim_job(provider_addr.as_ptr(), 0);
-        complete_job(provider_addr.as_ptr(), 0, [0xBB; 32].as_ptr());
-        dispute_job(requester.as_ptr(), 0);
+        submit_job_as(&requester, 100, 5000, &[0xCC; 32]);
+        claim_as(&provider_addr, 0);
+        complete_as(&provider_addr, 0, &[0xBB; 32]);
+        dispute_as(&requester, 0);
 
-        // Removed arbitrator rejected
-        assert_eq!(resolve_dispute(arb.as_ptr(), 0, 50), 1);
+        assert_eq!(resolve_as(&arb, 0, 50), 1);
     }
 
     #[test]
@@ -1995,23 +2087,115 @@ mod tests {
         test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
 
         let provider_addr = [1u8; 32];
-        register_provider(provider_addr.as_ptr(), 1000, 50);
+        register_as(&provider_addr, 1000, 50);
         let requester = [2u8; 32];
-        submit_job(requester.as_ptr(), 100, 5000, [0xCC; 32].as_ptr());
-        claim_job(provider_addr.as_ptr(), 0);
-        complete_job(provider_addr.as_ptr(), 0, [0xBB; 32].as_ptr());
+        submit_job_as(&requester, 100, 5000, &[0xCC; 32]);
+        claim_as(&provider_addr, 0);
+        complete_as(&provider_addr, 0, &[0xBB; 32]);
 
-        // Cannot cancel completed job
         test_mock::SLOT.with(|s| *s.borrow_mut() = 9999);
-        assert_eq!(cancel_job(requester.as_ptr(), 0), 6);
+        assert_eq!(cancel_as(&requester, 0), 6);
     }
 
     #[test]
     fn test_default_timeouts() {
         setup();
-        // No admin set, defaults apply
         assert_eq!(get_claim_timeout(), DEFAULT_CLAIM_TIMEOUT);
         assert_eq!(get_complete_timeout(), DEFAULT_COMPLETE_TIMEOUT);
         assert_eq!(get_challenge_period(), DEFAULT_CHALLENGE_PERIOD);
+    }
+
+    // ========================================================================
+    // AUDIT-FIX: H-1/H-2/H-3/H-4 Token flow tests
+    // ========================================================================
+
+    #[test]
+    fn test_set_token_address_admin_only() {
+        setup();
+        let admin = [0xAD; 32];
+        initialize_as(&admin);
+
+        let token = [0xBB; 32];
+        let other = [9u8; 32];
+        test_mock::set_caller(other);
+        assert_eq!(set_token_address(other.as_ptr(), token.as_ptr()), 1);
+
+        test_mock::set_caller(admin);
+        assert_eq!(set_token_address(admin.as_ptr(), token.as_ptr()), 0);
+        let stored = test_mock::get_storage(CM_TOKEN_ADDRESS_KEY).unwrap();
+        assert_eq!(stored.as_slice(), &token);
+    }
+
+    #[test]
+    fn test_submit_job_requires_token_address() {
+        // Reset without setting token address
+        test_mock::reset();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let requester = [2u8; 32];
+        // No token configured → should fail with 12
+        assert_eq!(submit_job_as(&requester, 100, 5000, &[0xAA; 32]), 12);
+    }
+
+    #[test]
+    fn test_submit_job_escrows_tokens() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let requester = [2u8; 32];
+        // Token address configured in setup, mock call_contract returns Ok
+        assert_eq!(submit_job_as(&requester, 100, 5000, &[0xAA; 32]), 0);
+
+        // Escrow stored
+        let ek = escrow_key(0);
+        let escrowed = test_mock::get_storage(&ek).unwrap();
+        assert_eq!(bytes_to_u64(&escrowed), 5000);
+    }
+
+    #[test]
+    fn test_cancel_job_refunds_tokens() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let requester = [2u8; 32];
+        submit_job_as(&requester, 100, 5000, &[0xAA; 32]);
+
+        // Cancel after timeout
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 301);
+        assert_eq!(cancel_as(&requester, 0), 0);
+
+        // Escrow cleared (tokens were refunded via call_token_transfer)
+        let ek = escrow_key(0);
+        let escrowed = test_mock::get_storage(&ek).unwrap();
+        assert_eq!(bytes_to_u64(&escrowed), 0);
+    }
+
+    #[test]
+    fn test_release_payment_transfers_to_provider() {
+        setup();
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 100);
+
+        let provider_addr = [1u8; 32];
+        register_as(&provider_addr, 1000, 50);
+        let requester = [2u8; 32];
+        submit_job_as(&requester, 100, 5000, &[0xAA; 32]);
+        claim_as(&provider_addr, 0);
+
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 200);
+        complete_as(&provider_addr, 0, &[0xBB; 32]);
+
+        test_mock::SLOT.with(|s| *s.borrow_mut() = 301);
+        assert_eq!(release_payment(0), 0);
+
+        // Escrow cleared (tokens were transferred to provider)
+        let ek = escrow_key(0);
+        let escrowed = test_mock::get_storage(&ek).unwrap();
+        assert_eq!(bytes_to_u64(&escrowed), 0);
+
+        // Completion stats tracked
+        let cmc = test_mock::get_storage(CM_COMPLETED_COUNT_KEY).unwrap();
+        assert_eq!(bytes_to_u64(&cmc), 1);
+        let cmv = test_mock::get_storage(CM_PAYMENT_VOLUME_KEY).unwrap();
+        assert_eq!(bytes_to_u64(&cmv), 5000);
     }
 }
