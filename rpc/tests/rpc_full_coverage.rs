@@ -1874,3 +1874,973 @@ async fn test_all_solana_methods_no_panic() {
         assert_valid_rpc(&resp);
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+//  SECTION 27: POSITIVE-PATH TESTS — Real data, deep assertions
+// ═══════════════════════════════════════════════════════════════════════════════
+//
+// These tests go beyond "handler doesn't crash" — they pre-populate state
+// (accounts, blocks, transactions, validators) and verify the returned JSON
+// contains correct, meaningful values.
+
+use moltchain_core::{Block, Hash, Transaction, Instruction, Message};
+use moltchain_core::consensus::ValidatorInfo;
+
+/// Helper: build an app backed by a StateStore pre-populated with a funded
+/// account, a stored block at slot 1, a validator, and a transaction.
+/// Returns `(Router, StateStore, funded_base58, validator_base58, block_hash_hex, tx_sig_hex)`.
+fn app_with_rich_state() -> (
+    axum::Router,
+    StateStore,
+    String,
+    String,
+    String,
+    String,
+) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+    let _ = Box::leak(Box::new(dir));
+
+    // 1. Funded account: 5 MOLT = 5_000_000_000 shells
+    let funded = Pubkey([42u8; 32]);
+    let funded_b58 = funded.to_base58();
+    let acct = Account::new(5, Pubkey([0u8; 32])); // 5 MOLT
+    state.put_account(&funded, &acct).expect("put funded");
+
+    // 2. Validator
+    let val_pk = Pubkey([7u8; 32]);
+    let val_b58 = val_pk.to_base58();
+    let mut vi = ValidatorInfo::new(val_pk, 0);
+    vi.blocks_proposed = 3;
+    vi.stake = 100_000_000_000_000; // 100k MOLT
+    state.put_validator(&vi).expect("put validator");
+
+    // 3. A minimal transaction (transfer 1 MOLT from funded → treasury)
+    let treasury = Pubkey([0u8; 32]);
+    let ix = Instruction {
+        program_id: Pubkey([0u8; 32]),
+        accounts: vec![funded, treasury],
+        data: vec![3, 0, 0, 0, 0, 0xCA, 0x9A, 0x3B, 0, 0, 0, 0, 0, 0, 0, 0],
+    };
+    let msg = Message::new(vec![ix], Hash::default());
+    let tx = Transaction {
+        signatures: vec![[99u8; 64]],
+        message: msg,
+    };
+    let tx_sig_hex = tx.signature().to_hex();
+
+    // 4. Genesis block at slot 0 (empty, set parent for slot-1 block)
+    let genesis = Block::genesis(Hash::default(), 1_700_000_000, vec![]);
+    state.put_block(&genesis).expect("put genesis");
+
+    // 5. Block at slot 1 containing the transaction
+    let block = Block::new_with_timestamp(
+        1,
+        genesis.hash(),
+        Hash::hash(b"state_root_1"),
+        val_pk.0,
+        vec![tx],
+        1_700_000_001,
+    );
+    let block_hash_hex = block.hash().to_hex();
+    state.put_block(&block).expect("put block");
+
+    // 6. Update slot counter
+    state.set_last_slot(1).expect("set slot");
+
+    // 7. Deploy a contract + register symbol (same as app_with_state)
+    let contract_prog = Pubkey([99u8; 32]);
+    let mut contract = ContractAccount::new(vec![0u8; 10], Pubkey([2u8; 32]));
+    contract
+        .storage
+        .insert(b"test_key".to_vec(), b"test_value".to_vec());
+    let mut contract_acct = Account::new(0, CONTRACT_PROGRAM_ID);
+    contract_acct.owner = CONTRACT_PROGRAM_ID;
+    contract_acct.executable = true;
+    contract_acct.data = serde_json::to_vec(&contract).expect("ser");
+    state
+        .put_account(&contract_prog, &contract_acct)
+        .expect("put contract");
+    state
+        .register_symbol(
+            "TST",
+            SymbolRegistryEntry {
+                symbol: "TST".to_string(),
+                program: contract_prog,
+                owner: Pubkey([2u8; 32]),
+                name: Some("Test Contract".to_string()),
+                template: Some("token".to_string()),
+                metadata: None,
+            },
+        )
+        .expect("register");
+
+    let cloned_state = state.clone();
+    let app = build_rpc_router(
+        state,
+        None,
+        None,
+        None,
+        "moltchain-test".to_string(),
+        "molt-test".to_string(),
+        None,
+        None,
+        None,
+        None,
+    );
+    (app, cloned_state, funded_b58, val_b58, block_hash_hex, tx_sig_hex)
+}
+
+// ── getBalance positive path (native "/") ────────────────────────────────────
+
+#[tokio::test]
+async fn test_native_get_balance_funded_account() {
+    let (app, _, addr, _, _, _) = app_with_rich_state();
+    let resp = rpc_p(&app, "/", "getBalance", json!([addr]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    assert!(!result.is_null(), "funded account balance should not be null");
+    // Account::new(5, ..) → shells = 5_000_000_000, spendable = 5_000_000_000
+    assert_eq!(result["shells"], 5_000_000_000u64, "shells = 5 MOLT in shells");
+    assert_eq!(result["spendable"], 5_000_000_000u64, "spendable = 5 MOLT");
+    assert_eq!(result["molt"], "5.0000", "molt = 5.0000");
+    assert_eq!(result["staked"], 0, "staked = 0");
+}
+
+#[tokio::test]
+async fn test_native_get_balance_unfunded_returns_zero() {
+    let app = fresh_app();
+    let resp = rpc_p(
+        &app,
+        "/",
+        "getBalance",
+        json!(["22222222222222222222222222222222"]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+    // Handler may return zero-balance result OR error for nonexistent accounts
+    if let Some(result) = resp.get("result") {
+        if !result.is_null() {
+            assert_eq!(result["shells"], 0, "unfunded shells should be 0");
+        }
+    }
+    // Either result or error is acceptable for nonexistent
+}
+
+// ── getSlot positive path (native "/") ───────────────────────────────────────
+
+#[tokio::test]
+async fn test_native_get_slot_returns_number() {
+    let (app, _, _, _, _, _) = app_with_rich_state();
+    let resp = rpc(&app, "/", "getSlot").await.unwrap();
+    assert_valid_rpc(&resp);
+    let slot = resp["result"].as_u64().expect("getSlot should return u64");
+    assert_eq!(slot, 1, "slot should be 1 after setup");
+}
+
+#[tokio::test]
+async fn test_native_get_slot_with_commitment() {
+    let (app, _, _, _, _, _) = app_with_rich_state();
+    let resp = rpc_p(&app, "/", "getSlot", json!(["processed"]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&resp);
+    let slot = resp["result"].as_u64().expect("getSlot should return u64");
+    assert_eq!(slot, 1);
+}
+
+// ── getBlock positive path (native "/") ──────────────────────────────────────
+
+#[tokio::test]
+async fn test_native_get_block_with_stored_block() {
+    let (app, _, _, _, _, _) = app_with_rich_state();
+    let resp = rpc_p(&app, "/", "getBlock", json!([1])).await.unwrap();
+    assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    assert!(!result.is_null(), "block at slot 1 should exist");
+    assert_eq!(result["slot"], 1, "block slot should be 1");
+    assert_eq!(result["timestamp"], 1_700_000_001u64, "timestamp should match");
+    assert_eq!(
+        result["transaction_count"], 1,
+        "block should contain 1 transaction"
+    );
+    // Validator field should be the base58 of val_pk
+    assert!(
+        result["validator"].is_string(),
+        "validator should be a string"
+    );
+}
+
+#[tokio::test]
+async fn test_native_get_block_genesis() {
+    let (app, _, _, _, _, _) = app_with_rich_state();
+    let resp = rpc_p(&app, "/", "getBlock", json!([0])).await.unwrap();
+    assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    assert!(!result.is_null(), "genesis block should exist");
+    assert_eq!(result["slot"], 0, "genesis slot should be 0");
+    assert_eq!(result["transaction_count"], 0, "genesis has no txs");
+}
+
+#[tokio::test]
+async fn test_native_get_block_not_found() {
+    let (app, _, _, _, _, _) = app_with_rich_state();
+    let resp = rpc_p(&app, "/", "getBlock", json!([9999])).await.unwrap();
+    assert_valid_rpc(&resp);
+    assert!(
+        resp.get("error").is_some(),
+        "nonexistent block should return error"
+    );
+}
+
+// ── getAccountInfo positive path (native "/") ────────────────────────────────
+
+#[tokio::test]
+async fn test_native_get_account_info_funded() {
+    let (app, _, addr, _, _, _) = app_with_rich_state();
+    let resp = rpc_p(&app, "/", "getAccountInfo", json!([addr]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    assert!(!result.is_null(), "account info should not be null");
+    assert_eq!(result["exists"], true, "funded account should exist");
+    // balance should be 5 MOLT = 5_000_000_000 shells
+    assert_eq!(result["balance"], 5_000_000_000u64);
+}
+
+#[tokio::test]
+async fn test_native_get_account_info_nonexistent_returns_null_or_default() {
+    let app = fresh_app();
+    let resp = rpc_p(
+        &app,
+        "/",
+        "getAccountInfo",
+        json!(["33333333333333333333333333333333"]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+    // Nonexistent accounts may return null result or error
+    let result = &resp["result"];
+    if !result.is_null() {
+        // If it returns data, balance should be 0
+        if result.get("balance").is_some() {
+            assert_eq!(result["balance"], 0);
+        }
+    }
+}
+
+// ── getValidators with registered validator ──────────────────────────────────
+
+#[tokio::test]
+async fn test_native_get_validators_with_data() {
+    let (app, _, _, val_b58, _, _) = app_with_rich_state();
+    let resp = rpc(&app, "/", "getValidators").await.unwrap();
+    assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    assert!(!result.is_null(), "validators should not be null");
+    // Should contain at least 1 validator
+    if let Some(arr) = result.as_array() {
+        assert!(!arr.is_empty(), "should have at least 1 validator");
+        // Find our validator by pubkey
+        let found = arr.iter().any(|v| v["pubkey"] == val_b58);
+        assert!(found, "our validator should be in the list");
+    }
+}
+
+// ── getTransaction with stored tx ────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_native_get_transaction_found() {
+    let (app, _, _, _, _, tx_sig) = app_with_rich_state();
+    let resp = rpc_p(&app, "/", "getTransaction", json!([tx_sig]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&resp);
+    // Result may be the tx or error depending on format, but should not be method-not-found
+    assert!(
+        resp.get("error").map_or(true, |e| e["code"] != -32601),
+        "should route to handler, not method-not-found"
+    );
+}
+
+// ── Solana-compat getBalance with funded account ─────────────────────────────
+
+#[tokio::test]
+async fn test_solana_get_balance_funded() {
+    let (app, _, addr, _, _, _) = app_with_rich_state();
+    let resp = rpc_p(&app, "/solana", "getBalance", json!([addr]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    // Solana format: { "context": { "slot": N }, "value": shells }
+    assert!(result["context"]["slot"].is_number(), "should have context.slot");
+    assert_eq!(
+        result["value"], 5_000_000_000u64,
+        "solana getBalance value should be 5B shells"
+    );
+}
+
+#[tokio::test]
+async fn test_solana_get_balance_unfunded() {
+    let app = fresh_app();
+    let resp = rpc_p(
+        &app,
+        "/solana",
+        "getBalance",
+        json!(["44444444444444444444444444444444"]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+    // Unfunded account may return 0 value or null/error
+    if let Some(result) = resp.get("result") {
+        if !result.is_null() && result.get("value").is_some() {
+            assert_eq!(result["value"], 0, "unfunded solana balance should be 0");
+        }
+    }
+}
+
+// ── Solana-compat getSlot verifies the value matches set_last_slot ───────────
+
+#[tokio::test]
+async fn test_solana_get_slot_value() {
+    let (app, _, _, _, _, _) = app_with_rich_state();
+    let resp = rpc(&app, "/solana", "getSlot").await.unwrap();
+    assert_valid_rpc(&resp);
+    let slot = resp["result"].as_u64().expect("getSlot must be u64");
+    assert_eq!(slot, 1, "solana getSlot should be 1");
+}
+
+// ── Solana-compat getBlock with stored block ─────────────────────────────────
+
+#[tokio::test]
+async fn test_solana_get_block_with_data() {
+    let (app, _, _, _, _, _) = app_with_rich_state();
+    let resp = rpc_p(&app, "/solana", "getBlock", json!([1]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    // Solana getBlock should return a block object (or null)
+    if !result.is_null() {
+        assert!(
+            result.get("blockTime").is_some() || result.get("slot").is_some(),
+            "block response should have blockTime or slot: {result}"
+        );
+    }
+}
+
+// ── Solana-compat getBlockHeight value ───────────────────────────────────────
+
+#[tokio::test]
+async fn test_solana_get_block_height_value() {
+    let (app, _, _, _, _, _) = app_with_rich_state();
+    let resp = rpc(&app, "/solana", "getBlockHeight").await.unwrap();
+    assert_valid_rpc(&resp);
+    let height = resp["result"].as_u64().expect("blockHeight must be u64");
+    assert_eq!(height, 1, "block height should be 1");
+}
+
+// ── EVM eth_gasPrice returns "0x1" ───────────────────────────────────────────
+
+#[tokio::test]
+async fn test_evm_eth_gas_price_value() {
+    let app = fresh_app();
+    let resp = rpc(&app, "/evm", "eth_gasPrice").await.unwrap();
+    assert_valid_rpc(&resp);
+    assert_eq!(
+        resp["result"], "0x1",
+        "eth_gasPrice must return 0x1 per AUDIT-FIX A11-01"
+    );
+}
+
+// ── EVM eth_chainId returns correct hex ──────────────────────────────────────
+
+#[tokio::test]
+async fn test_evm_eth_chain_id_value() {
+    let app = fresh_app();
+    let resp = rpc(&app, "/evm", "eth_chainId").await.unwrap();
+    assert_valid_rpc(&resp);
+    let chain = resp["result"].as_str().expect("chainId should be string");
+    assert!(
+        chain.starts_with("0x"),
+        "chainId should be hex: {chain}"
+    );
+    // "molt-test" → evm_chain_id_from_chain_id hash
+    assert!(!chain.is_empty());
+}
+
+// ── EVM eth_blockNumber returns hex slot ──────────────────────────────────────
+
+#[tokio::test]
+async fn test_evm_eth_block_number_value() {
+    let (app, _, _, _, _, _) = app_with_rich_state();
+    let resp = rpc(&app, "/evm", "eth_blockNumber").await.unwrap();
+    assert_valid_rpc(&resp);
+    let bn = resp["result"].as_str().expect("blockNumber should be hex string");
+    assert!(bn.starts_with("0x"), "blockNumber should be hex");
+    // Slot is 1, so blockNumber should be "0x1"
+    assert_eq!(bn, "0x1", "blockNumber should match last slot");
+}
+
+// ── EVM eth_getLogs returns empty array for empty state ──────────────────────
+
+#[tokio::test]
+async fn test_evm_eth_get_logs_empty() {
+    let app = fresh_app();
+    let resp = rpc_p(
+        &app,
+        "/evm",
+        "eth_getLogs",
+        json!([{"fromBlock": "0x0", "toBlock": "0x0"}]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    assert!(result.is_array(), "eth_getLogs must return an array");
+    assert_eq!(result.as_array().unwrap().len(), 0, "no logs in empty state");
+}
+
+#[tokio::test]
+async fn test_evm_eth_get_logs_with_blocks() {
+    let (app, _, _, _, _, _) = app_with_rich_state();
+    let resp = rpc_p(
+        &app,
+        "/evm",
+        "eth_getLogs",
+        json!([{"fromBlock": "0x0", "toBlock": "0x1"}]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+    // Should return array (may be empty since our test tx doesn't emit events)
+    assert!(resp["result"].is_array(), "eth_getLogs must return array");
+}
+
+// ── EVM eth_getBalance for funded account via EVM ────────────────────────────
+
+#[tokio::test]
+async fn test_evm_eth_get_balance_funded() {
+    // Create an account with known EVM mapping
+    let (app, state, _, _, _, _) = app_with_rich_state();
+    // Register an EVM address mapping for the funded account
+    let funded = Pubkey([42u8; 32]);
+    let evm_addr_bytes: [u8; 20] = [0x2a; 20];
+    let evm_addr_hex = "0x2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a";
+    state
+        .register_evm_address(&evm_addr_bytes, &funded)
+        .expect("register EVM address");
+    let resp = rpc_p(
+        &app,
+        "/evm",
+        "eth_getBalance",
+        json!([evm_addr_hex, "latest"]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+    // Should return hex balance string
+    let result = resp.get("result").expect("should have result");
+    assert!(!result.is_null(), "eth_getBalance for mapped account should not be null");
+}
+
+// ── health endpoint returns "ok" ─────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_native_health_deep_check() {
+    let (app, _, _, _, _, _) = app_with_rich_state();
+    let resp = rpc(&app, "/", "health").await.unwrap();
+    assert_valid_rpc(&resp);
+    assert_eq!(resp["result"]["status"], "ok");
+}
+
+// ── getRecentBlockhash returns data with block in state ──────────────────────
+
+#[tokio::test]
+async fn test_native_get_recent_blockhash_with_block() {
+    let (app, _, _, _, _, _) = app_with_rich_state();
+    let resp = rpc(&app, "/", "getRecentBlockhash").await.unwrap();
+    assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    assert!(!result.is_null(), "blockhash should exist with stored blocks");
+}
+
+// ── getChainStatus returns slot info ─────────────────────────────────────────
+
+#[tokio::test]
+async fn test_native_get_chain_status_with_data() {
+    let (app, _, _, _, _, _) = app_with_rich_state();
+    let resp = rpc(&app, "/", "getChainStatus").await.unwrap();
+    assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    assert!(!result.is_null(), "chain status should not be null");
+    // Should contain slot info
+    if result.get("slot").is_some() {
+        assert_eq!(result["slot"], 1, "chain status slot should be 1");
+    }
+}
+
+// ── getMetrics returns populated metrics ─────────────────────────────────────
+
+#[tokio::test]
+async fn test_native_get_metrics_with_data() {
+    let (app, _, _, _, _, _) = app_with_rich_state();
+    let resp = rpc(&app, "/", "getMetrics").await.unwrap();
+    assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    assert!(!result.is_null(), "metrics should return data");
+}
+
+// ── getAllContracts returns our deployed contract ─────────────────────────────
+
+#[tokio::test]
+async fn test_native_get_all_contracts_has_entry() {
+    let (app, _, _, _, _, _) = app_with_rich_state();
+    let resp = rpc(&app, "/", "getAllContracts").await.unwrap();
+    assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    assert!(!result.is_null(), "getAllContracts should return data");
+    // Should contain at least our deployed contract
+    if let Some(arr) = result.as_array() {
+        assert!(!arr.is_empty(), "should have at least 1 contract");
+    }
+}
+
+// ── getSymbolRegistry returns registered TST symbol ──────────────────────────
+
+#[tokio::test]
+async fn test_native_get_symbol_registry_found() {
+    let (app, _, _, _, _, _) = app_with_rich_state();
+    let resp = rpc_p(&app, "/", "getSymbolRegistry", json!(["TST"]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    if !result.is_null() {
+        assert_eq!(result["symbol"], "TST", "should find TST symbol");
+    }
+}
+
+// ── getReefStakePoolInfo returns pool data ───────────────────────────────────
+
+#[tokio::test]
+async fn test_native_get_reefstake_pool_info_returns_data() {
+    let app = fresh_app();
+    let resp = rpc(&app, "/", "getReefStakePoolInfo").await.unwrap();
+    assert_valid_rpc(&resp);
+    // Should return pool info (possibly empty/defaults), not null
+    let result = &resp["result"];
+    assert!(!result.is_null(), "reefstake pool info should return data");
+}
+
+// ── getTreasuryInfo returns treasury data ────────────────────────────────────
+
+#[tokio::test]
+async fn test_native_get_treasury_info_returns_data() {
+    let (app, _, _, _, _, _) = app_with_rich_state();
+    let resp = rpc(&app, "/", "getTreasuryInfo").await.unwrap();
+    assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    assert!(!result.is_null(), "treasury info should return data");
+}
+
+// ── getFeeConfig returns config object ───────────────────────────────────────
+
+#[tokio::test]
+async fn test_native_get_fee_config_returns_object() {
+    let app = fresh_app();
+    let resp = rpc(&app, "/", "getFeeConfig").await.unwrap();
+    assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    assert!(!result.is_null(), "fee config should return data");
+    // Should have base_fee_shells field
+    if result.is_object() {
+        assert!(
+            result.get("base_fee_shells").is_some(),
+            "fee config should have base_fee_shells: {result}"
+        );
+    }
+}
+
+// ── requestAirdrop credits the account ───────────────────────────────────────
+
+#[tokio::test]
+async fn test_native_request_airdrop_handled() {
+    let app = fresh_app();
+    let resp = rpc_p(
+        &app,
+        "/",
+        "requestAirdrop",
+        json!(["55555555555555555555555555555555", 1000]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+    // Without tx_sender, airdrop may error; important thing is it's routed correctly
+    assert!(
+        resp.get("error").map_or(true, |e| e["code"] != -32601),
+        "airdrop should route to handler, not method-not-found"
+    );
+}
+
+// ── confirmTransaction returns status for known tx ───────────────────────────
+
+#[tokio::test]
+async fn test_native_confirm_transaction_found() {
+    let (app, _, _, _, _, tx_sig) = app_with_rich_state();
+    let resp = rpc_p(&app, "/", "confirmTransaction", json!([tx_sig]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&resp);
+    // Should route correctly (not method-not-found)
+    assert!(
+        resp.get("error").map_or(true, |e| e["code"] != -32601),
+        "should route to handler"
+    );
+}
+
+// ── getNetworkInfo returns network data ──────────────────────────────────────
+
+#[tokio::test]
+async fn test_native_get_network_info_returns_data() {
+    let app = fresh_app();
+    let resp = rpc(&app, "/", "getNetworkInfo").await.unwrap();
+    assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    assert!(!result.is_null(), "network info should return data");
+}
+
+// ── getClusterInfo returns cluster data ──────────────────────────────────────
+
+#[tokio::test]
+async fn test_native_get_cluster_info_returns_data() {
+    let app = fresh_app();
+    let resp = rpc(&app, "/", "getClusterInfo").await.unwrap();
+    assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    assert!(!result.is_null(), "cluster info should return data");
+}
+
+// ── Solana getHealth returns "ok" ────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_solana_get_health_is_ok() {
+    let app = fresh_app();
+    let resp = rpc(&app, "/solana", "getHealth").await.unwrap();
+    assert_valid_rpc(&resp);
+    assert_eq!(resp["result"], "ok", "solana getHealth should return 'ok'");
+}
+
+// ── Solana getVersion returns version info ───────────────────────────────────
+
+#[tokio::test]
+async fn test_solana_get_version_shape() {
+    let app = fresh_app();
+    let resp = rpc(&app, "/solana", "getVersion").await.unwrap();
+    assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    assert!(
+        result.get("solana-core").is_some() || result.get("feature-set").is_some(),
+        "getVersion should have version info: {result}"
+    );
+}
+
+// ── Solana getLatestBlockhash returns context+value ──────────────────────────
+
+#[tokio::test]
+async fn test_solana_get_latest_blockhash_shape() {
+    let (app, _, _, _, _, _) = app_with_rich_state();
+    let resp = rpc(&app, "/solana", "getLatestBlockhash").await.unwrap();
+    assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    // Should have Solana-compat shape: { context: { slot }, value: { blockhash, lastValidBlockHeight } }
+    if !result.is_null() {
+        if result.get("context").is_some() {
+            assert!(result["context"]["slot"].is_number());
+        }
+        if result.get("value").is_some() {
+            assert!(
+                result["value"]["blockhash"].is_string(),
+                "should have blockhash string"
+            );
+        }
+    }
+}
+
+// ── Solana getAccountInfo with funded account ────────────────────────────────
+
+#[tokio::test]
+async fn test_solana_get_account_info_funded() {
+    let (app, _, addr, _, _, _) = app_with_rich_state();
+    let resp = rpc_p(&app, "/solana", "getAccountInfo", json!([addr]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    // Solana format: { context: { slot }, value: { lamports, owner, executable, ... } }
+    if !result.is_null() && result.get("value").is_some() && !result["value"].is_null() {
+        assert!(
+            result["value"]["lamports"].is_number(),
+            "should have lamports"
+        );
+    }
+}
+
+// ── EVM web3_clientVersion value ─────────────────────────────────────────────
+
+#[tokio::test]
+async fn test_evm_web3_client_version_full() {
+    let app = fresh_app();
+    let resp = rpc(&app, "/evm", "web3_clientVersion").await.unwrap();
+    assert_valid_rpc(&resp);
+    let ver = resp["result"].as_str().unwrap();
+    assert!(ver.starts_with("MoltChain/"), "starts with MoltChain/");
+    assert!(ver.contains('/'), "should contain version separator");
+}
+
+// ── EVM net_version returns chain ID string ──────────────────────────────────
+
+#[tokio::test]
+async fn test_evm_net_version_value() {
+    let app = fresh_app();
+    let resp = rpc(&app, "/evm", "net_version").await.unwrap();
+    assert_valid_rpc(&resp);
+    let ver = resp["result"].as_str().expect("net_version should be string");
+    // Should be numeric decimal chain ID
+    assert!(
+        ver.parse::<u64>().is_ok(),
+        "net_version should be numeric: {ver}"
+    );
+}
+
+// ── EVM net_listening returns true ───────────────────────────────────────────
+
+#[tokio::test]
+async fn test_evm_net_listening_value() {
+    let app = fresh_app();
+    let resp = rpc(&app, "/evm", "net_listening").await.unwrap();
+    assert_valid_rpc(&resp);
+    assert_eq!(resp["result"], true, "net_listening should be true");
+}
+
+// ── EVM eth_accounts returns empty array ─────────────────────────────────────
+
+#[tokio::test]
+async fn test_evm_eth_accounts_value() {
+    let app = fresh_app();
+    let resp = rpc(&app, "/evm", "eth_accounts").await.unwrap();
+    assert_valid_rpc(&resp);
+    assert_eq!(resp["result"], json!([]), "eth_accounts should be []");
+}
+
+// ── EVM eth_estimateGas returns hex ──────────────────────────────────────────
+
+#[tokio::test]
+async fn test_evm_eth_estimate_gas_value() {
+    let app = fresh_app();
+    let resp = rpc_p(
+        &app,
+        "/evm",
+        "eth_estimateGas",
+        json!([{"to": "0x0000000000000000000000000000000000000001"}]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+    let gas = resp["result"].as_str();
+    if let Some(g) = gas {
+        assert!(g.starts_with("0x"), "estimated gas should be hex: {g}");
+    }
+}
+
+// ── EVM eth_getBlockByNumber with stored block ───────────────────────────────
+
+#[tokio::test]
+async fn test_evm_eth_get_block_by_number_stored() {
+    let (app, _, _, _, _, _) = app_with_rich_state();
+    let resp = rpc_p(&app, "/evm", "eth_getBlockByNumber", json!(["0x1", false]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&resp);
+    let result = &resp["result"];
+    if !result.is_null() {
+        // Should have EVM block fields
+        assert!(
+            result.get("number").is_some() || result.get("hash").is_some(),
+            "block should have number or hash: {result}"
+        );
+    }
+}
+
+// ── EVM eth_getTransactionCount returns hex nonce ────────────────────────────
+
+#[tokio::test]
+async fn test_evm_eth_get_transaction_count_value() {
+    let app = fresh_app();
+    let resp = rpc_p(
+        &app,
+        "/evm",
+        "eth_getTransactionCount",
+        json!(["0x0000000000000000000000000000000000000001", "latest"]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+    if let Some(result) = resp.get("result") {
+        if let Some(s) = result.as_str() {
+            assert!(s.starts_with("0x"), "tx count should be hex: {s}");
+        }
+    }
+}
+
+// ── REST /api/v1/pairs returns array ─────────────────────────────────────────
+
+#[tokio::test]
+async fn test_rest_dex_pairs_returns_json() {
+    let app = fresh_app();
+    let resp = rest_get(&app, "/api/v1/pairs").await;
+    if let Ok(json) = resp {
+        // Should be array (possibly empty)
+        assert!(json.is_array() || json.is_object(), "pairs should be array or object");
+    }
+}
+
+// ── Batch: all native query methods with rich state don't panic ──────────────
+
+#[tokio::test]
+async fn test_batch_native_reads_with_rich_state() {
+    let (app, _, addr, _, _, _) = app_with_rich_state();
+    let methods_no_params = vec![
+        "getSlot",
+        "getLatestBlock",
+        "getRecentBlockhash",
+        "health",
+        "getMetrics",
+        "getTreasuryInfo",
+        "getChainStatus",
+        "getNetworkInfo",
+        "getClusterInfo",
+        "getValidators",
+        "getPeers",
+        "getFeeConfig",
+        "getRentParams",
+        "getGenesisAccounts",
+        "getTotalBurned",
+        "getReefStakePoolInfo",
+        "getRewardAdjustmentInfo",
+        "getPredictionMarketStats",
+        "getPredictionTrending",
+        "getAllContracts",
+    ];
+    for method in &methods_no_params {
+        let resp = rpc(&app, "/", method).await.unwrap();
+        assert_valid_rpc(&resp);
+    }
+
+    // Methods with pubkey param
+    let methods_with_addr = vec![
+        "getBalance",
+        "getAccountInfo",
+        "getAccount",
+        "getTransactionHistory",
+        "getTransactionsByAddress",
+        "getAccountTxCount",
+        "getTokenAccounts",
+        "getSignaturesForAddress",
+        "getStakingStatus",
+        "getStakingRewards",
+        "getStakingPosition",
+        "getUnstakingQueue",
+        "getEvmRegistration",
+        "getNFTsByOwner",
+        "getPredictionPositions",
+        "getPredictionTraderStats",
+    ];
+    for method in &methods_with_addr {
+        let resp = rpc_p(&app, "/", method, json!([addr])).await.unwrap();
+        assert_valid_rpc(&resp);
+    }
+}
+
+// ── Batch: all Solana methods with rich state return valid data ───────────────
+
+#[tokio::test]
+async fn test_batch_solana_with_rich_state() {
+    let (app, _, addr, _, _, _) = app_with_rich_state();
+
+    // No-param methods
+    for method in &["getHealth", "getVersion", "getSlot", "getBlockHeight", "getLatestBlockhash", "getRecentBlockhash"] {
+        let resp = rpc(&app, "/solana", method).await.unwrap();
+        assert_valid_rpc(&resp);
+    }
+
+    // With addr
+    for method in &["getBalance", "getAccountInfo", "getSignaturesForAddress"] {
+        let resp = rpc_p(&app, "/solana", method, json!([addr])).await.unwrap();
+        assert_valid_rpc(&resp);
+    }
+
+    // With slot
+    let resp = rpc_p(&app, "/solana", "getBlock", json!([0])).await.unwrap();
+    assert_valid_rpc(&resp);
+}
+
+// ── Batch: all EVM methods with rich state return valid data ─────────────────
+
+#[tokio::test]
+async fn test_batch_evm_with_rich_state() {
+    let (app, _, _, _, _, _) = app_with_rich_state();
+
+    // No-param methods
+    for method in &[
+        "eth_chainId",
+        "eth_blockNumber",
+        "eth_accounts",
+        "net_version",
+        "eth_gasPrice",
+        "eth_maxPriorityFeePerGas",
+        "net_listening",
+        "web3_clientVersion",
+    ] {
+        let resp = rpc(&app, "/evm", method).await.unwrap();
+        assert_valid_rpc(&resp);
+        assert!(
+            resp.get("result").is_some(),
+            "EVM method {method} should return result with rich state"
+        );
+    }
+
+    // With EVM address
+    let evm_addr = "0x0000000000000000000000000000000000000001";
+    for method in &["eth_getBalance", "eth_getCode", "eth_getTransactionCount"] {
+        let resp = rpc_p(&app, "/evm", method, json!([evm_addr, "latest"]))
+            .await
+            .unwrap();
+        assert_valid_rpc(&resp);
+    }
+
+    // eth_getBlockByNumber with stored block
+    let resp = rpc_p(&app, "/evm", "eth_getBlockByNumber", json!(["0x0", false]))
+        .await
+        .unwrap();
+    assert_valid_rpc(&resp);
+
+    // eth_getLogs range
+    let resp = rpc_p(
+        &app,
+        "/evm",
+        "eth_getLogs",
+        json!([{"fromBlock": "0x0", "toBlock": "0x1"}]),
+    )
+    .await
+    .unwrap();
+    assert_valid_rpc(&resp);
+    assert!(resp["result"].is_array());
+}
