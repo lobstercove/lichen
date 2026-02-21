@@ -9386,7 +9386,12 @@ async fn run_validator() {
         // FREEZE PRODUCTION WHEN BEHIND: If the network is ahead of us,
         // don't produce blocks (including heartbeats) to avoid creating
         // a divergent chain. Let the block receiver + sync fill the gap.
+        //
+        // FIX: Decay highest_seen toward our tip if no new blocks have arrived
+        // from the network for 10 seconds. This prevents a permanent stall when
+        // no peer can serve the missing blocks (e.g., all validators stalled).
         {
+            sync_manager.decay_highest_seen(tip_slot, 10).await;
             let network_highest = sync_manager.get_highest_seen().await;
             if network_highest > tip_slot + 2 {
                 continue;
@@ -9534,6 +9539,9 @@ async fn run_validator() {
             sp
         };
 
+        // Track whether we're producing as the deadlock breaker (immune to heartbeat gate)
+        let mut is_deadlock_breaker = false;
+
         if !should_produce {
             // Not our turn — wait for the assigned leader to produce.
             // View rotation (wall-clock based above) will eventually make us
@@ -9552,8 +9560,29 @@ async fn run_validator() {
                     slot,
                     slot_start.elapsed().as_millis()
                 );
+                is_deadlock_breaker = true;
                 // Fall through to produce
             } else {
+                continue;
+            }
+        }
+
+        // ADAPTIVE HEARTBEAT: Early check BEFORE draining the mempool.
+        // When elected leader (view 0) or deadlock breaker, ALWAYS produce —
+        // this prevents the heartbeat timer from suppressing the only validator
+        // that can advance the chain, which was the root cause of chain stalls.
+        let is_heartbeat_time = last_activity_time.elapsed() >= Duration::from_secs(5);
+        let is_primary_leader = should_produce && view == 0;
+        if !is_heartbeat_time && !is_primary_leader && !is_deadlock_breaker {
+            // Only skip for secondary view leaders (views 1-15) when idle.
+            // Primary leader and deadlock breaker must always produce to keep
+            // the chain alive.
+            // Peek at mempool without draining it
+            let has_pending = {
+                let pool = mempool.lock().await;
+                pool.size() > 0
+            };
+            if !has_pending {
                 continue;
             }
         }
@@ -9595,15 +9624,7 @@ async fn run_validator() {
             }
         }
 
-        // ADAPTIVE HEARTBEAT: Skip block if mempool empty and not heartbeat time
         let has_user_transactions = !transactions.is_empty();
-        let is_heartbeat_time = last_activity_time.elapsed() >= Duration::from_secs(5);
-
-        if !has_user_transactions && !is_heartbeat_time {
-            // Skip this block - no transactions and not time for heartbeat
-            // NOTE: We do NOT increment slot here - slot only advances when blocks are produced
-            continue;
-        }
 
         // ── FIX-FORK-1: Second guard right before block creation ──
         // Between the early `get_block_by_slot` check and here, the block
