@@ -91,6 +91,11 @@ const MAX_RATE_PER_SLOT: u64 = 25_400; // 100x base rate
 /// AUDIT-FIX G9-01: Moltcoin contract address — required for actual token transfers
 const MOLTCOIN_ADDRESS_KEY: &[u8] = b"ll_molt_addr";
 
+/// P9-SC-01: Compound-style borrow index scale factor.
+/// Global `ll_borrow_index` starts at this value (1e9) and grows with interest.
+/// Per-user `bix:HEXADDR` stores the index when the user last interacted.
+const BORROW_INDEX_SCALE: u64 = 1_000_000_000;
+
 // ============================================================================
 // STORAGE HELPERS
 // ============================================================================
@@ -160,6 +165,71 @@ fn get_deposit_cap() -> u64 {
     load_u64(DEPOSIT_CAP_KEY)
 }
 
+/// P9-SC-01: Settle a user's borrow balance using the global borrow index.
+/// Recalculates: actual_borrow = stored_borrow * global_index / user_index
+/// Stores the updated borrow and checkpoints the current index.
+/// Returns the settled (index-adjusted) borrow balance.
+fn settle_user_borrow(hex: &[u8; 64]) -> u64 {
+    let global_index = load_u64(b"ll_borrow_index");
+    if global_index == 0 {
+        return 0;
+    }
+
+    let borrow_key = make_key(b"bor:", hex);
+    let stored_borrow = load_u64(&borrow_key);
+    if stored_borrow == 0 {
+        return 0;
+    }
+
+    let index_key = make_key(b"bix:", hex);
+    let user_index = load_u64(&index_key);
+    // Legacy borrowers (before this upgrade) have no checkpoint → treat as BORROW_INDEX_SCALE
+    let effective_user_index = if user_index == 0 {
+        BORROW_INDEX_SCALE
+    } else {
+        user_index
+    };
+
+    // If index hasn't changed since user's last interaction, no adjustment needed
+    if global_index == effective_user_index {
+        return stored_borrow;
+    }
+
+    // Recalculate with u128 intermediate to prevent overflow
+    let actual_borrow = (stored_borrow as u128 * global_index as u128
+        / effective_user_index as u128) as u64;
+
+    // Store updated borrow and checkpoint
+    store_u64(&borrow_key, actual_borrow);
+    store_u64(&index_key, global_index);
+
+    actual_borrow
+}
+
+/// P9-SC-01: Compute current borrow without storing (for view functions).
+fn compute_current_borrow(hex: &[u8; 64]) -> u64 {
+    let global_index = load_u64(b"ll_borrow_index");
+    if global_index == 0 {
+        return 0;
+    }
+
+    let borrow_key = make_key(b"bor:", hex);
+    let stored_borrow = load_u64(&borrow_key);
+    if stored_borrow == 0 {
+        return 0;
+    }
+
+    let index_key = make_key(b"bix:", hex);
+    let user_index = load_u64(&index_key);
+    let effective_user_index = if user_index == 0 {
+        BORROW_INDEX_SCALE
+    } else {
+        user_index
+    };
+
+    (stored_borrow as u128 * global_index as u128 / effective_user_index as u128) as u64
+}
+
 // ============================================================================
 // PROTOCOL STATE
 // ============================================================================
@@ -186,6 +256,8 @@ pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
     store_u64(b"ll_total_borrows", 0);
     store_u64(b"ll_last_update", get_timestamp());
     store_u64(b"ll_reserve_factor", 10); // 10% of interest goes to reserves
+    // P9-SC-01: Initialize borrow index for Compound-style per-borrower tracking
+    store_u64(b"ll_borrow_index", BORROW_INDEX_SCALE);
 
     log_info("LobsterLend initialized");
     0
@@ -295,8 +367,8 @@ pub extern "C" fn withdraw(depositor_ptr: *const u8, amount: u64) -> u32 {
     }
 
     // Check health factor after withdrawal
-    let borrow_key = make_key(b"bor:", &hex);
-    let current_borrow = load_u64(&borrow_key);
+    // P9-SC-01: Use index-adjusted borrow for accurate health check
+    let current_borrow = compute_current_borrow(&hex);
     let new_deposit = current_deposit - amount;
 
     if current_borrow > 0 {
@@ -357,8 +429,9 @@ pub extern "C" fn borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
 
     let dep_key = make_key(b"dep:", &hex);
     let deposit_val = load_u64(&dep_key);
+    // P9-SC-01: Settle existing borrow via index before adding new amount
+    let current_borrow = settle_user_borrow(&hex);
     let borrow_key = make_key(b"bor:", &hex);
-    let current_borrow = load_u64(&borrow_key);
 
     let max_borrow = deposit_val * COLLATERAL_FACTOR_PERCENT / 100;
     let new_borrow = match current_borrow.checked_add(amount) {
@@ -387,6 +460,10 @@ pub extern "C" fn borrow(borrower_ptr: *const u8, amount: u64) -> u32 {
     }
 
     store_u64(&borrow_key, new_borrow);
+    // P9-SC-01: Always checkpoint the borrow index (settle_user_borrow skips
+    // when stored_borrow==0, so first-time borrowers need this)
+    let bix_key = make_key(b"bix:", &hex);
+    store_u64(&bix_key, load_u64(b"ll_borrow_index"));
     let new_total_borrows = match total_borrows.checked_add(amount) {
         Some(v) => v,
         None => {
@@ -451,8 +528,9 @@ pub extern "C" fn repay(borrower_ptr: *const u8, amount: u64) -> u32 {
 
     accrue_interest();
 
+    // P9-SC-01: Settle borrow via index to get true amount owed
+    let current_borrow = settle_user_borrow(&hex);
     let borrow_key = make_key(b"bor:", &hex);
-    let current_borrow = load_u64(&borrow_key);
 
     if current_borrow == 0 {
         reentrancy_exit();
@@ -515,8 +593,9 @@ pub extern "C" fn liquidate(
 
     let dep_key = make_key(b"dep:", &hex);
     let deposit = load_u64(&dep_key);
+    // P9-SC-01: Settle borrow via index to check true health
+    let current_borrow = settle_user_borrow(&hex);
     let borrow_key = make_key(b"bor:", &hex);
-    let current_borrow = load_u64(&borrow_key);
 
     if current_borrow == 0 {
         reentrancy_exit();
@@ -635,6 +714,15 @@ fn accrue_interest() {
         // Track protocol reserves
         let reserves = load_u64(b"ll_reserves");
         store_u64(b"ll_reserves", reserves.saturating_add(reserve_amount));
+
+        // P9-SC-01: Update global borrow index proportionally.
+        // index_delta = old_index * rate_per_slot * elapsed_slots / RATE_SCALE
+        // (same factor as interest / total_borrows)
+        let old_index = load_u64(b"ll_borrow_index");
+        let index_delta = ((old_index as u128) * (rate_per_slot as u128)
+            * (elapsed_slots as u128)
+            / (RATE_SCALE as u128)) as u64;
+        store_u64(b"ll_borrow_index", old_index.saturating_add(index_delta));
     }
 
     store_u64(b"ll_last_update", now);
@@ -652,7 +740,8 @@ pub extern "C" fn get_account_info(user_ptr: *const u8) -> u32 {
     let hex = hex_encode_addr(&user);
 
     let deposit = load_u64(&make_key(b"dep:", &hex));
-    let borrow = load_u64(&make_key(b"bor:", &hex));
+    // P9-SC-01: Use index-adjusted borrow for accurate health factor
+    let borrow = compute_current_borrow(&hex);
 
     // Health factor in basis points (10000 = 1.0)
     let health_factor = if borrow == 0 {
@@ -1823,5 +1912,124 @@ mod tests {
         assert_eq!(self_addr.0, CONTRACT_ADDR);
         assert_eq!(withdraw(user.as_ptr(), 100_000), 0);
         assert_eq!(load_u64(b"ll_total_deposits"), 900_000);
+    }
+
+    // ========================================================================
+    // P9-SC-01: Compound-style borrow index tests
+    // ========================================================================
+
+    #[test]
+    fn test_borrow_index_accrues_per_user() {
+        // Verifies that after interest accrues, a borrower's settled borrow
+        // reflects the global index growth, and a new borrower's checkpoint
+        // starts at the current index.
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        // Deposit + borrow
+        let borrower = [2u8; 32];
+        test_mock::set_caller(borrower);
+        test_mock::set_value(10_000_000);
+        deposit(borrower.as_ptr(), 10_000_000);
+        borrow(borrower.as_ptr(), 5_000_000);
+
+        let hex = hex_encode_addr(&borrower);
+        let bor_key = make_key(b"bor:", &hex);
+        let bix_key = make_key(b"bix:", &hex);
+
+        // Stored borrow should be 5_000_000
+        assert_eq!(load_u64(&bor_key), 5_000_000);
+        // Index checkpoint should equal initial scale
+        assert_eq!(load_u64(&bix_key), BORROW_INDEX_SCALE);
+        // Global index should equal initial scale (no interest yet)
+        assert_eq!(load_u64(b"ll_borrow_index"), BORROW_INDEX_SCALE);
+
+        // Advance time by 10 seconds (10_000 ms → 25 slots at 400ms each)
+        // This will trigger interest accrual on the next borrow/repay call.
+        test_mock::set_timestamp(1000 + 10_000);
+
+        // Trigger accrue_interest via a repay(0) — repay of zero on a borrow is
+        // rejected, but accrue_interest runs first. Use a new deposit to trigger.
+        // Actually, let's just call accrue_interest() directly (it's a private fn
+        // but accessible in tests within the same module).
+        accrue_interest();
+
+        // Global index should have grown
+        let new_index = load_u64(b"ll_borrow_index");
+        assert!(
+            new_index > BORROW_INDEX_SCALE,
+            "Global borrow index should have increased after interest accrual: {}",
+            new_index
+        );
+
+        // User's stored borrow hasn't changed yet (lazy settlement)
+        assert_eq!(load_u64(&bor_key), 5_000_000);
+
+        // But settle_user_borrow should return more than 5_000_000
+        let settled = settle_user_borrow(&hex);
+        assert!(
+            settled > 5_000_000,
+            "Settled borrow should exceed original: {}",
+            settled
+        );
+
+        // After settlement, stored borrow should match settled amount
+        assert_eq!(load_u64(&bor_key), settled);
+        // And checkpoint should match current global index
+        assert_eq!(load_u64(&bix_key), new_index);
+
+        // A second settle without further interest should be idempotent
+        let settled2 = settle_user_borrow(&hex);
+        assert_eq!(settled2, settled);
+
+        // Now a second borrower: deposits, borrows. Their checkpoint should be
+        // at the current (higher) global index.
+        let borrower2 = [3u8; 32];
+        test_mock::set_caller(borrower2);
+        test_mock::set_value(10_000_000);
+        deposit(borrower2.as_ptr(), 10_000_000);
+        borrow(borrower2.as_ptr(), 1_000_000);
+
+        let hex2 = hex_encode_addr(&borrower2);
+        let bix_key2 = make_key(b"bix:", &hex2);
+        // Their index checkpoint should be the current global index, not the initial scale
+        assert_eq!(load_u64(&bix_key2), new_index);
+    }
+
+    #[test]
+    fn test_compute_current_borrow_is_read_only() {
+        // Verifies that compute_current_borrow returns the adjusted value
+        // without modifying stored state.
+        setup();
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+        initialize(admin.as_ptr());
+
+        let borrower = [2u8; 32];
+        test_mock::set_caller(borrower);
+        test_mock::set_value(10_000_000);
+        deposit(borrower.as_ptr(), 10_000_000);
+        borrow(borrower.as_ptr(), 5_000_000);
+
+        let hex = hex_encode_addr(&borrower);
+        let bor_key = make_key(b"bor:", &hex);
+        let bix_key = make_key(b"bix:", &hex);
+
+        // Advance time to accrue interest
+        test_mock::set_timestamp(1000 + 10_000);
+        accrue_interest();
+
+        let stored_before = load_u64(&bor_key);
+        let checkpoint_before = load_u64(&bix_key);
+
+        // compute_current_borrow should return adjusted value
+        let computed = compute_current_borrow(&hex);
+        assert!(computed > stored_before);
+
+        // But stored values should NOT change (read-only)
+        assert_eq!(load_u64(&bor_key), stored_before);
+        assert_eq!(load_u64(&bix_key), checkpoint_before);
     }
 }
