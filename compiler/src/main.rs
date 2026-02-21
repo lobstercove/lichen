@@ -3,7 +3,7 @@
 
 use axum::{
     extract::Json,
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::post,
     Router,
@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use tower_http::cors::CorsLayer;
@@ -21,6 +22,32 @@ use tracing::{error, info, warn};
 const MAX_SOURCE_SIZE: usize = 512 * 1024;
 /// Maximum compilation wall-clock time (120 seconds)
 const COMPILE_TIMEOUT: Duration = Duration::from_secs(120);
+/// HTTP header name for API key authentication (P9-INF-01)
+const API_KEY_HEADER: &str = "x-api-key";
+
+/// Shared application state holding the required API key.
+#[derive(Clone)]
+struct AppState {
+    api_key: Arc<String>,
+}
+
+/// P9-INF-01: Validate the X-API-Key header against the configured key.
+/// Returns Ok(()) on success, or an error response on failure.
+fn validate_api_key(headers: &HeaderMap, state: &AppState) -> Result<(), Response> {
+    match headers.get(API_KEY_HEADER).and_then(|v| v.to_str().ok()) {
+        Some(provided) if provided == state.api_key.as_str() => Ok(()),
+        Some(_) => Err((
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Invalid API key"})),
+        )
+            .into_response()),
+        None => Err((
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Missing X-API-Key header"})),
+        )
+            .into_response()),
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct CompileRequest {
@@ -71,19 +98,39 @@ async fn main() {
     // Initialize logging
     tracing_subscriber::fmt::init();
 
+    // P9-INF-01: Require COMPILER_API_KEY environment variable
+    let api_key = std::env::var("COMPILER_API_KEY").unwrap_or_else(|_| {
+        eprintln!("❌ COMPILER_API_KEY environment variable is required");
+        eprintln!("   Set it to a strong random secret (≥32 chars)");
+        std::process::exit(1);
+    });
+    if api_key.len() < 16 {
+        eprintln!("❌ COMPILER_API_KEY must be at least 16 characters");
+        std::process::exit(1);
+    }
+
+    let state = AppState {
+        api_key: Arc::new(api_key),
+    };
+
     let port = std::env::var("PORT")
         .ok()
         .and_then(|p| p.parse().ok())
         .unwrap_or(8900);
 
-    // Build router
+    // Build router — health is unauthenticated; compile requires API key
     let app = Router::new()
-        .route("/compile", post(compile_handler))
+        .route("/compile", post({
+            let state = state.clone();
+            move |headers: HeaderMap, body: Json<CompileRequest>| {
+                compile_handler_authed(headers, body, state)
+            }
+        }))
         .route("/health", axum::routing::get(health_handler))
         .layer(CorsLayer::permissive());
 
     let addr = format!("0.0.0.0:{}", port);
-    info!("🔨 MoltChain Compiler Service starting on {}", addr);
+    info!("🔨 MoltChain Compiler Service starting on {} (auth: enabled)", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap_or_else(|e| {
         eprintln!("❌ Failed to bind to {}: {}", addr, e);
@@ -98,6 +145,19 @@ async fn main() {
 /// Health check endpoint
 async fn health_handler() -> Response {
     (StatusCode::OK, "OK").into_response()
+}
+
+/// P9-INF-01: Authenticated compile handler — validates API key then delegates.
+async fn compile_handler_authed(
+    headers: HeaderMap,
+    body: Json<CompileRequest>,
+    state: AppState,
+) -> Response {
+    if let Err(resp) = validate_api_key(&headers, &state) {
+        warn!("🔒 Compile request rejected: missing or invalid API key");
+        return resp;
+    }
+    compile_handler(body).await
 }
 
 /// Compile handler
@@ -1059,5 +1119,36 @@ mod tests {
         let result = path_to_str(&p);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "/tmp/foo.wasm");
+    }
+
+    // ── P9-INF-01: API key authentication ───────────────────
+
+    #[test]
+    fn test_validate_api_key_rejects_missing_header() {
+        let state = AppState {
+            api_key: Arc::new("test-key-long-enough".to_string()),
+        };
+        let headers = HeaderMap::new();
+        assert!(validate_api_key(&headers, &state).is_err());
+    }
+
+    #[test]
+    fn test_validate_api_key_rejects_wrong_key() {
+        let state = AppState {
+            api_key: Arc::new("correct-key-12345".to_string()),
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(API_KEY_HEADER, "wrong-key-12345".parse().unwrap());
+        assert!(validate_api_key(&headers, &state).is_err());
+    }
+
+    #[test]
+    fn test_validate_api_key_accepts_correct_key() {
+        let state = AppState {
+            api_key: Arc::new("correct-key-12345".to_string()),
+        };
+        let mut headers = HeaderMap::new();
+        headers.insert(API_KEY_HEADER, "correct-key-12345".parse().unwrap());
+        assert!(validate_api_key(&headers, &state).is_ok());
     }
 }
