@@ -1313,9 +1313,9 @@ After cross_contract_call works:
 
 | ID | Severity | File | Finding | Fix Required | Status |
 |----|----------|------|---------|-------------|--------|
-| P10-CORE-01 | MEDIUM | state.rs | `add_burned()` uses read-modify-write (`get_burned` + `set_burned`) without lock — race condition in parallel TX processing causes state-root divergence | Use atomic WriteBatch or per-slot burn accumulator with single flush | [ ] |
-| P10-CORE-02 | MEDIUM | state.rs | Checkpoint `state_root` computed from live DB after snapshot — concurrent writes produce stale root | Compute state_root from snapshot data before any new writes | [ ] |
-| P10-CORE-03 | MEDIUM | state.rs | `export_accounts_iter`, `export_programs_iter`, `export_contract_events_iter` load entire column family into memory — OOM risk on large state | Use RocksDB iterator with streaming/pagination | [ ] |
+| P10-CORE-01 | MEDIUM | state.rs | `add_burned()` uses read-modify-write (`get_burned` + `set_burned`) without lock — race condition in parallel TX processing causes state-root divergence | Use atomic WriteBatch or per-slot burn accumulator with single flush | [x] |
+| P10-CORE-02 | MEDIUM | state.rs | Checkpoint `state_root` computed from live DB after snapshot — concurrent writes produce stale root | Compute state_root from snapshot data before any new writes | [x] |
+| P10-CORE-03 | MEDIUM | state.rs | `export_accounts_iter`, `export_programs_iter`, `export_contract_events_iter` load entire column family into memory — OOM risk on large state | Use RocksDB iterator with streaming/pagination | [x] |
 | P10-CORE-04 | LOW | state.rs | `update_token_balance` non-atomic forward + reverse index writes | Combine into WriteBatch | [x] |
 | P10-CORE-05 | LOW | state.rs | `put_contract_event` non-atomic event + slot secondary index writes | Combine into WriteBatch | [x] |
 | P10-CORE-06 | LOW | state.rs | Inconsistent `Mutex::lock().unwrap()` poison handling across sequence counters — some `expect()`, some `unwrap()` | Standardize on `expect("counter name lock poisoned")` | [x] already consistent (`unwrap_or_else` poison recovery) |
@@ -1324,21 +1324,21 @@ After cross_contract_call works:
 
 | ID | Severity | File | Finding | Fix Required | Status |
 |----|----------|------|---------|-------------|--------|
-| P10-RPC-01 | HIGH | rpc/src/lib.rs | EVM `eth_getBlockByNumber` returns `state_root` as block hash — MetaMask and block explorers show wrong hashes | Return actual `block.hash` from stored block data | [ ] |
-| P10-RPC-02 | HIGH | rpc/src/lib.rs | `eth_getLogs` fabricates `transactionHash` from sequential counter — not the real transaction hash | Map events to actual transaction hashes using block data | [ ] |
-| P10-RPC-03 | HIGH | rpc/src/lib.rs | `eth_getLogs` event data is raw contract bytes, not ABI-encoded — Ethers.js/web3.py fail to decode | ABI-encode event data fields per EVM standards | [ ] |
-| P10-CUST-01 | HIGH | custody/src/main.rs | `threshold_signer` auth token derived from predictable seed (party_id + threshold values) | Use cryptographically random token (`OsRng`) | [ ] |
-| P10-CUST-02 | HIGH | custody/src/main.rs | Threshold signing payload uses `|` delimiter — injectable if message contains `|` | Use length-prefixed encoding or HMAC-based payload construction | [ ] |
-| P10-VAL-01 | MEDIUM | validator/src/main.rs | MoltyID RPC handlers load full `ContractAccount` per query — wasteful for read-only metadata | Add lightweight read path or cache MoltyID data | [ ] |
-| P10-VAL-02 | MEDIUM | validator/src/main.rs | MoltyID vouches lookup is O(identities × vouches) — quadratic scan | Index vouches by target address | [ ] |
-| P10-VAL-03 | MEDIUM | validator/src/main.rs | `sync.rs` `requested_slots` HashSet grows unbounded during long syncs | Add max size (e.g., 10K) with oldest-eviction | [ ] |
-| P10-VAL-04 | MEDIUM | p2p/src/gossip.rs | `ReconnectTracker` backoff map never pruned — grows indefinitely for departed peers | Prune entries older than 1 hour | [ ] |
-| P10-VAL-05 | MEDIUM | validator/src/main.rs | Prediction market queries do linear scan of ALL markets | Index markets by status/creator for O(1) lookup | [ ] |
-| P10-RPC-04 | MEDIUM | rpc/src/lib.rs | WebSocket has no inbound message size limit — single large message can OOM the RPC server | Add `max_message_size` (e.g., 1 MB) to WS config | [ ] |
-| P10-RPC-05 | MEDIUM | rpc/src/lib.rs | `upgradeContract` has no code size limit — allows arbitrarily large WASM uploads | Add `MAX_CONTRACT_SIZE` check (e.g., 512 KB) | [ ] |
-| P10-VAL-06 | MEDIUM | validator/src/main.rs | `keypair_loader.rs` seed bytes not zeroized after use | `seed.zeroize()` after keypair derivation (add zeroize dep) | [ ] |
-| P10-VAL-07 | MEDIUM | validator/src/main.rs | MoltyID directory/search/stats scan full identity storage on every call | Add pagination or index by search fields | [ ] |
-| P10-VAL-08 | MEDIUM | validator/src/main.rs | `updater.rs` tar extraction has no path traversal guard — `../` entries write outside target dir | Validate each tar entry path starts with expected prefix | [ ] |
+| P10-RPC-01 | HIGH | rpc/src/lib.rs | EVM `eth_getBlockByNumber` returns `state_root` as block hash — MetaMask and block explorers show wrong hashes | Return actual `block.hash` from stored block data | [x] |
+| P10-RPC-02 | HIGH | rpc/src/lib.rs | `eth_getLogs` fabricates `transactionHash` from sequential counter — not the real transaction hash | Map events to actual transaction hashes using block data | [x] |
+| P10-RPC-03 | HIGH | rpc/src/lib.rs | `eth_getLogs` event data is raw contract bytes, not ABI-encoded — Ethers.js/web3.py fail to decode | ABI-encode event data fields per EVM standards | [x] |
+| P10-CUST-01 | HIGH | custody/src/main.rs | `threshold_signer` auth token derived from predictable seed (party_id + threshold values) | Use cryptographically random token (`OsRng`) | [x] |
+| P10-CUST-02 | HIGH | custody/src/main.rs | Threshold signing payload uses `|` delimiter — injectable if message contains `|` | Use length-prefixed encoding or HMAC-based payload construction | [x] |
+| P10-VAL-01 | MEDIUM | validator/src/main.rs | MoltyID RPC handlers load full `ContractAccount` per query — wasteful for read-only metadata | Add lightweight read path or cache MoltyID data | [x] |
+| P10-VAL-02 | MEDIUM | validator/src/main.rs | MoltyID vouches lookup is O(identities × vouches) — quadratic scan | Index vouches by target address | [x] |
+| P10-VAL-03 | MEDIUM | validator/src/main.rs | `sync.rs` `requested_slots` HashSet grows unbounded during long syncs | Add max size (e.g., 10K) with oldest-eviction | [x] |
+| P10-VAL-04 | MEDIUM | p2p/src/gossip.rs | `ReconnectTracker` backoff map never pruned — grows indefinitely for departed peers | Prune entries older than 1 hour | [x] |
+| P10-VAL-05 | MEDIUM | validator/src/main.rs | Prediction market queries do linear scan of ALL markets | Index markets by status/creator for O(1) lookup | [x] |
+| P10-RPC-04 | MEDIUM | rpc/src/lib.rs | WebSocket has no inbound message size limit — single large message can OOM the RPC server | Add `max_message_size` (e.g., 1 MB) to WS config | [x] |
+| P10-RPC-05 | MEDIUM | rpc/src/lib.rs | `upgradeContract` has no code size limit — allows arbitrarily large WASM uploads | Add `MAX_CONTRACT_SIZE` check (e.g., 512 KB) | [x] |
+| P10-VAL-06 | MEDIUM | validator/src/main.rs | `keypair_loader.rs` seed bytes not zeroized after use | `seed.zeroize()` after keypair derivation (add zeroize dep) | [x] |
+| P10-VAL-07 | MEDIUM | validator/src/main.rs | MoltyID directory/search/stats scan full identity storage on every call | Add pagination or index by search fields | [x] |
+| P10-VAL-08 | MEDIUM | validator/src/main.rs | `updater.rs` tar extraction has no path traversal guard — `../` entries write outside target dir | Validate each tar entry path starts with expected prefix | [x] |
 | P10-P2P-01 | LOW | p2p/src/peer.rs | TLS key files written with default permissions — readable by other users | Set file permissions to 0o600 after writing | [x] |
 | P10-RPC-06 | LOW | rpc/src/lib.rs | `dex.rs` has duplicate `/api/dex/pairs` endpoint registered | Remove duplicate registration | [x] no duplicate found |
 | P10-VAL-09 | LOW | validator/src/main.rs | `updater.rs` update check interval has no jitter — all validators poll simultaneously | Add random jitter (±30s) to update interval | [x] already has jitter_max_secs=60 |
@@ -1349,14 +1349,14 @@ After cross_contract_call works:
 
 | ID | Severity | File | Finding | Fix Required | Status |
 |----|----------|------|---------|-------------|--------|
-| P10-SC-01 | CRITICAL | contracts/moltdao/src/lib.rs | `create_proposal_typed` records `PROPOSAL_STAKE` (10K MOLT) but **never calls `call_token_transfer` to escrow tokens**. Balance check only verifies holder has enough — no lock. Governance spam protection is broken | After balance check, call `call_token_transfer(token, proposer, dao_treasury, stake)`. On execute/cancel, refund or slash | [ ] |
-| P10-SC-02 | CRITICAL | contracts/moltdao/src/lib.rs | `vote_with_reputation` accepts `reputation` as raw argument — capped at 2000 but **never verified on-chain**. Attacker supplies `reputation=2000` for 3× voting power vs honest voter's 1.1× | Replace `reputation` param with cross-contract call to MoltyID `get_reputation(voter)` | [ ] |
-| P10-SC-03 | HIGH | contracts/moltdao/src/lib.rs | `execute_proposal` marks proposal as executed (`proposal[192] = 1`) **even when cross-contract call fails** — governance action permanently lost with no retry mechanism | On failure, set status to `3` (approved-unexecuted); add `retry_execution` function | [ ] |
-| P10-SC-04 | HIGH | contracts/moltpunks/src/lib.rs | `get_minter()` calls `panic!()` when minter not set — called by 6 functions. Any call before `initialize()` causes unrecoverable WASM abort | Return zero address and check in callers, or add early init guard | [ ] |
-| P10-SC-05 | MEDIUM | contracts/moltdao/src/lib.rs | Default `vote()` wrapper passes `reputation=100` — gives all voters free 1.1× multiplier. Inconsistent with `vote_with_reputation` | Set default reputation to 0 until C-02 is fixed | [ ] |
-| P10-SC-06 | MEDIUM | contracts/moltpunks/src/lib.rs | Admin functions (`set_base_uri`, `set_max_supply`, `set_royalty`, `mp_pause`, `mp_unpause`) compare `caller_ptr` arg against minter but don't call `get_caller()` for verification | Add `get_caller()` check to each admin function | [ ] |
-| P10-SC-07 | MEDIUM | compiler/src/main.rs | CORS origin `parse::<HeaderValue>().unwrap()` panics on invalid `COMPILER_CORS_ORIGIN` env var | Use `.unwrap_or_else()` with descriptive error + exit | [ ] |
-| P10-SC-08 | MEDIUM | faucet/src/main.rs | `TcpListener::bind().await.unwrap()` panics on port conflict with no useful error message | Replace with `.expect("Failed to bind to {addr}")` | [ ] |
+| P10-SC-01 | CRITICAL | contracts/moltdao/src/lib.rs | `create_proposal_typed` records `PROPOSAL_STAKE` (10K MOLT) but **never calls `call_token_transfer` to escrow tokens**. Balance check only verifies holder has enough — no lock. Governance spam protection is broken | After balance check, call `call_token_transfer(token, proposer, dao_treasury, stake)`. On execute/cancel, refund or slash | [x] |
+| P10-SC-02 | CRITICAL | contracts/moltdao/src/lib.rs | `vote_with_reputation` accepts `reputation` as raw argument — capped at 2000 but **never verified on-chain**. Attacker supplies `reputation=2000` for 3× voting power vs honest voter's 1.1× | Replace `reputation` param with cross-contract call to MoltyID `get_reputation(voter)` | [x] |
+| P10-SC-03 | HIGH | contracts/moltdao/src/lib.rs | `execute_proposal` marks proposal as executed (`proposal[192] = 1`) **even when cross-contract call fails** — governance action permanently lost with no retry mechanism | On failure, set status to `3` (approved-unexecuted); add `retry_execution` function | [x] |
+| P10-SC-04 | HIGH | contracts/moltpunks/src/lib.rs | `get_minter()` calls `panic!()` when minter not set — called by 6 functions. Any call before `initialize()` causes unrecoverable WASM abort | Return zero address and check in callers, or add early init guard | [x] |
+| P10-SC-05 | MEDIUM | contracts/moltdao/src/lib.rs | Default `vote()` wrapper passes `reputation=100` — gives all voters free 1.1× multiplier. Inconsistent with `vote_with_reputation` | Set default reputation to 0 until C-02 is fixed | [x] |
+| P10-SC-06 | MEDIUM | contracts/moltpunks/src/lib.rs | Admin functions (`set_base_uri`, `set_max_supply`, `set_royalty`, `mp_pause`, `mp_unpause`) compare `caller_ptr` arg against minter but don't call `get_caller()` for verification | Add `get_caller()` check to each admin function | [x] |
+| P10-SC-07 | MEDIUM | compiler/src/main.rs | CORS origin `parse::<HeaderValue>().unwrap()` panics on invalid `COMPILER_CORS_ORIGIN` env var | Use `.unwrap_or_else()` with descriptive error + exit | [x] |
+| P10-SC-08 | MEDIUM | faucet/src/main.rs | `TcpListener::bind().await.unwrap()` panics on port conflict with no useful error message | Replace with `.expect("Failed to bind to {addr}")` | [x] |
 | P10-SC-09 | LOW | contracts/moltauction/src/lib.rs | 10 locations use `.try_into().unwrap()` — fragile if data layout changes | Replace with `.try_into().expect("description")` for debuggability | [x] |
 | P10-SC-10 | LOW | contracts/dex_governance/src/lib.rs | `verify_reputation` returns `true` for all when MoltyID unconfigured — Sybil-attackable | Fail closed (return false) when MoltyID not configured | [x] |
 
@@ -1390,8 +1390,8 @@ After cross_contract_call works:
 | K. Tests | 14 | 1 | 7 | 5 | 1 | 0 |
 | L. Cross-cutting | 7 | 4 | 1 | 2 | 0 | 7 |
 | Phase 9 (Audit 2) | 106 | 9 | 32 | 43 | 22 | 41 |
-| Phase 10 (Audit 3) | 36 | 2 | 7 | 17 | 10 | 0 |
-| **TOTAL** | **378** | **46** | **123** | **145** | **64** | **84** |
+| Phase 10 (Audit 3) | 36 | 2 | 7 | 17 | 10 | 36 |
+| **TOTAL** | **378** | **46** | **123** | **145** | **64** | **120** |
 
 ### Severity Summary
 
@@ -1422,11 +1422,11 @@ Phase 9 (Audit 2):   [x]×41 [FALSE]×4 [ ]×61            41/102 (4 FALSE)
   P9-E SDK/Frontend: 4/4 HIGH done, 6 MED + 4 LOW remaining (1 FALSE)
   P9-F Infra/Deploy: 9/9 CRIT/HIGH done, 7 MED + 3 LOW remaining (1 FALSE)
 
-Phase 10 (Audit 3):  [ ] [ ] [ ] ... 0/36
-  P10-A Core:        3 MED + 3 LOW                        0/6
-  P10-B Val/P2P/RPC: 5 HIGH + 10 MED + 5 LOW             0/20
-  P10-C Contracts:   2 CRIT + 2 HIGH + 4 MED + 2 LOW     0/10
-                                         GRAND TOTAL:   104/201 (4 FALSE)
+Phase 10 (Audit 3):  [x]×36                              36/36 ✅ ALL COMPLETE
+  P10-A Core:        3 MED + 3 LOW                        6/6  ✅
+  P10-B Val/P2P/RPC: 5 HIGH + 10 MED + 5 LOW             20/20 ✅
+  P10-C Contracts:   2 CRIT + 2 HIGH + 4 MED + 2 LOW     10/10 ✅
+                                         GRAND TOTAL:   140/201 (4 FALSE)
 ```
 
 ---
