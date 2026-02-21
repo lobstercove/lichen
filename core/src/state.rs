@@ -1842,7 +1842,12 @@ impl StateStore {
         }
 
         // Optionally fold burn counter into the same WriteBatch
-        if burn_delta > 0 {
+        // C-4 FIX: acquire burned_lock to prevent lost-update races.
+        let _burned_guard = if burn_delta > 0 {
+            let guard = self
+                .burned_lock
+                .lock()
+                .map_err(|e| format!("burned_lock poisoned: {}", e))?;
             let cf_stats = self
                 .db
                 .cf_handle(CF_STATS)
@@ -1850,7 +1855,10 @@ impl StateStore {
             let current_burned = self.get_total_burned()?;
             let new_total = current_burned.saturating_add(burn_delta);
             batch.put_cf(&cf_stats, b"total_burned", new_total.to_le_bytes());
-        }
+            Some(guard)
+        } else {
+            None
+        };
 
         // Commit everything in one WAL sync
         self.db
@@ -2912,14 +2920,23 @@ impl StateStore {
 
         // If burns accumulated, fold them into the WriteBatch so they
         // commit atomically with the rest of the transaction state.
+        // C-3 FIX: acquire burned_lock to prevent lost-update races with
+        // concurrent add_burned() or other commit_batch() calls.
         let mut wb = batch.batch;
-        if batch.burned_delta > 0 {
+        let _burned_guard = if batch.burned_delta > 0 {
+            let guard = self
+                .burned_lock
+                .lock()
+                .map_err(|e| format!("burned_lock poisoned: {}", e))?;
             if let Some(cf) = self.db.cf_handle(CF_STATS) {
                 let current = self.get_total_burned().unwrap_or(0);
                 let new_total = current.saturating_add(batch.burned_delta);
                 wb.put_cf(&cf, b"total_burned", new_total.to_le_bytes());
             }
-        }
+            Some(guard)
+        } else {
+            None
+        };
 
         // Atomic write — either all succeed or none.
         self.db
@@ -6030,5 +6047,53 @@ mod tests {
             .map(|v| u64::from_le_bytes(v.try_into().unwrap_or([0; 8])))
             .unwrap_or(0);
         assert_eq!(val, 1, "dirty_account_count must not be reset when no dirty_acct keys were pruned");
+    }
+
+    /// AUDIT-FIX C-3: commit_batch holds burned_lock during RMW to prevent
+    /// concurrent add_burned() from losing updates.
+    #[test]
+    fn test_commit_batch_burned_lock_serializes() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        // Direct add_burned to set baseline
+        state.add_burned(100).unwrap();
+        assert_eq!(state.get_total_burned().unwrap(), 100);
+
+        // Now commit a batch with burned_delta = 50
+        let mut batch = state.begin_batch();
+        batch.add_burned(50);
+        state.commit_batch(batch).unwrap();
+
+        // Total should be 150, not 50 (which would happen if lock was missing
+        // and the batch read a stale value overwriting the direct add)
+        assert_eq!(state.get_total_burned().unwrap(), 150);
+
+        // And another direct add should also serialize
+        state.add_burned(25).unwrap();
+        assert_eq!(state.get_total_burned().unwrap(), 175);
+    }
+
+    /// AUDIT-FIX C-4: atomic_put_accounts holds burned_lock during RMW to
+    /// prevent lost updates to the burned counter.
+    #[test]
+    fn test_atomic_put_accounts_burned_lock_serializes() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        // Set baseline
+        state.add_burned(200).unwrap();
+
+        // Put accounts with a burn_delta
+        let pk = Pubkey([0xCC; 32]);
+        let acct = Account::new(10, pk); // 10 MOLT
+        state.atomic_put_accounts(&[(&pk, &acct)], 80).unwrap();
+
+        // Total burned should be 280, not 80
+        assert_eq!(state.get_total_burned().unwrap(), 280);
+
+        // Verify account was also written
+        let loaded = state.get_account(&pk).unwrap().unwrap();
+        assert_eq!(loaded.shells, 10_000_000_000);
     }
 }
