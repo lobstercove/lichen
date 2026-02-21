@@ -521,6 +521,7 @@ fn test_slashing_tracker_records_evidence() {
         v1.pubkey(),
         5,
         reporter.pubkey(),
+        1700000002,
     );
     let added = tracker.add_evidence(evidence);
     assert!(added, "First evidence should be accepted");
@@ -541,6 +542,7 @@ fn test_slashing_duplicate_evidence_rejected() {
         v1.pubkey(),
         5,
         reporter.pubkey(),
+        1700000002,
     );
     tracker.add_evidence(evidence.clone());
     let added_again = tracker.add_evidence(evidence);
@@ -562,6 +564,7 @@ fn test_slashing_different_validators_independent() {
         v1.pubkey(),
         5,
         reporter.pubkey(),
+        1700000002,
     );
     tracker.add_evidence(ev1);
     assert!(tracker.should_slash(&v1.pubkey()));
@@ -1458,6 +1461,7 @@ fn test_slashing_economic_penalty() {
         v1.pubkey(),
         10,
         reporter.pubkey(),
+        1700000004,
     );
     tracker.add_evidence(evidence);
     let slashed_amount = tracker.apply_economic_slashing(&v1.pubkey(), &mut pool);

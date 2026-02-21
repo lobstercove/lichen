@@ -6498,6 +6498,7 @@ async fn run_validator() {
                                 Pubkey(block.header.validator),
                                 block_slot,
                                 validator_pubkey_for_block_slash,
+                                block.header.timestamp,
                             );
 
                             let mut slasher = slashing_for_blocks.lock().await;
@@ -7271,6 +7272,7 @@ async fn run_validator() {
                             vote.validator,
                             vote.slot,
                             validator_pubkey_for_slash_report,
+                            vote.timestamp / 1000,
                         );
 
                         // Add to slashing tracker
@@ -8933,6 +8935,8 @@ async fn run_validator() {
     let validator_pubkey_for_downtime = validator_pubkey;
     let peer_mgr_for_downtime_slash = p2p_peer_manager.clone();
     let local_addr_for_downtime = p2p_config.listen_addr;
+    let genesis_time_for_downtime = genesis_time_secs;
+    let slot_duration_for_downtime = slot_duration_ms;
 
     tokio::spawn(async move {
         let mut interval = time::interval(Duration::from_secs(60));
@@ -8968,6 +8972,11 @@ async fn run_validator() {
                         validator_info.pubkey,
                         current_slot,
                         validator_pubkey_for_downtime,
+                        moltchain_core::block::derive_slot_timestamp(
+                            genesis_time_for_downtime,
+                            current_slot,
+                            slot_duration_for_downtime,
+                        ),
                     );
 
                     let mut slasher = slashing_for_downtime.lock().await;
