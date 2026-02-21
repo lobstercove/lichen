@@ -1316,27 +1316,27 @@ async fn main() -> Result<()> {
             pubkey,
             keypair,
         } => {
-            let path = keypair.unwrap_or_else(|| keypair_mgr.default_keypair_path());
-            let kp = keypair_mgr.load_keypair(&path)?;
+            // AUDIT-FIX I-1: Use requestAirdrop RPC (faucet mint) instead of user self-transfer
             let recipient = if let Some(addr) = pubkey {
                 Pubkey::from_base58(&addr).map_err(|e| anyhow::anyhow!("Invalid address: {}", e))?
             } else {
+                let path = keypair.unwrap_or_else(|| keypair_mgr.default_keypair_path());
+                let kp = keypair_mgr.load_keypair(&path)?;
                 kp.pubkey()
             };
 
-            let shells = molt_to_shells(amount);
             println!("🦞 Requesting {} MOLT airdrop...", amount);
             println!("📥 To: {}", recipient.to_base58());
             println!();
 
-            match client.transfer(&kp, &recipient, shells).await {
+            match client.request_airdrop(&recipient, amount).await {
                 Ok(signature) => {
-                    println!("✅ Airdrop sent!");
+                    println!("✅ Airdrop received!");
                     println!("📝 Signature: {}", signature);
                 }
                 Err(e) => {
                     println!("⚠️  Airdrop failed: {}", e);
-                    println!("💡 Ensure the faucet account has sufficient balance");
+                    println!("💡 Ensure the node is running in testnet/devnet mode");
                 }
             }
         }

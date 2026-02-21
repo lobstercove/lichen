@@ -4127,6 +4127,25 @@ fn encode_shortvec_len(len: usize, out: &mut Vec<u8>) {
     }
 }
 
+/// AUDIT-FIX I-7: Decode a Solana compact-u16 from the start of a byte slice.
+/// Returns (value, bytes_consumed) or None on invalid input.
+fn decode_shortvec_u16(bytes: &[u8]) -> Option<(u16, usize)> {
+    let mut value: u16 = 0;
+    let mut shift = 0u32;
+    for (i, &byte) in bytes.iter().enumerate() {
+        let lo = (byte & 0x7f) as u16;
+        value |= lo.checked_shl(shift)?;
+        shift += 7;
+        if byte & 0x80 == 0 {
+            return Some((value, i + 1));
+        }
+        if shift >= 16 {
+            return None; // overflow for u16
+        }
+    }
+    None
+}
+
 fn build_evm_signed_transaction(
     signing_key: &k256::ecdsa::SigningKey,
     nonce: u64,
@@ -5642,18 +5661,44 @@ async fn execute_solana_rebalance_swap(
         .ok_or_else(|| "jupiter swap tx missing".to_string())?;
 
     // Step 3: Decode, sign, and submit
-    // Jupiter returns a base64-encoded versioned transaction
-    // For now, we pass it directly to Solana RPC signed by our treasury key
+    // Jupiter returns a base64-encoded versioned transaction.
+    // We must decode it, sign the message with our fee payer, and re-encode before sending.
     let fee_payer_path = state
         .config
         .solana_fee_payer_keypair_path
         .as_ref()
         .ok_or_else(|| "missing fee payer for rebalance".to_string())?;
-    let _fee_payer = load_solana_keypair(fee_payer_path)?;
+    let fee_payer = load_solana_keypair(fee_payer_path)?;
 
-    // Submit the partly-signed Jupiter transaction
-    // (Jupiter pre-signs the swap instruction; we need to add our treasury signature)
-    let params = json!([swap_tx_b64, {"encoding": "base64", "skipPreflight": true}]);
+    // AUDIT-FIX I-7: Decode base64 tx, sign with fee_payer, re-encode
+    use base64::Engine;
+    let tx_bytes = base64::engine::general_purpose::STANDARD
+        .decode(swap_tx_b64)
+        .map_err(|e| format!("base64 decode jupiter tx: {}", e))?;
+
+    // Solana transaction layout: compact-u16(num_sigs) | sig[0..N] (each 64 bytes) | message
+    if tx_bytes.is_empty() {
+        return Err("empty jupiter transaction".to_string());
+    }
+    let (num_sigs, header_len) = decode_shortvec_u16(&tx_bytes)
+        .ok_or_else(|| "invalid compact-u16 in jupiter tx".to_string())?;
+    if num_sigs == 0 {
+        return Err("jupiter tx has zero signatures".to_string());
+    }
+    let sigs_end = header_len + (num_sigs as usize) * 64;
+    if sigs_end > tx_bytes.len() {
+        return Err("jupiter tx too short for declared signatures".to_string());
+    }
+    let message_bytes = &tx_bytes[sigs_end..];
+    let fee_payer_sig = fee_payer.sign(message_bytes);
+
+    // Replace first signature (fee payer's placeholder) with real signature
+    let mut signed_tx = tx_bytes.clone();
+    signed_tx[header_len..header_len + 64].copy_from_slice(&fee_payer_sig);
+    let signed_b64 = base64::engine::general_purpose::STANDARD.encode(&signed_tx);
+
+    // Submit the now-properly-signed transaction
+    let params = json!([signed_b64, {"encoding": "base64", "skipPreflight": true}]);
     let result = solana_rpc_call(&state.http, solana_url, "sendTransaction", params).await?;
     result
         .as_str()
@@ -5718,13 +5763,39 @@ async fn execute_ethereum_rebalance_swap(
         chain_id,
     )?;
     let approve_hex = format!("0x{}", hex::encode(&approve_tx));
-    let _approve_result = evm_rpc_call(
+    let approve_result = evm_rpc_call(
         &state.http,
         evm_url,
         "eth_sendRawTransaction",
         json!([approve_hex]),
     )
     .await?;
+
+    // AUDIT-FIX I-8: Wait for approve tx confirmation before sending swap tx.
+    // Without this, the swap can arrive before the allowance is set, causing revert.
+    let approve_tx_hash = approve_result
+        .as_str()
+        .ok_or_else(|| "no tx hash from approve".to_string())?;
+
+    // Poll for up to 90 seconds (36 attempts × 2.5s) for 1 confirmation
+    let mut confirmed = false;
+    for _ in 0..36 {
+        match check_evm_tx_confirmed(&state.http, evm_url, approve_tx_hash, 1).await {
+            Ok(true) => {
+                confirmed = true;
+                break;
+            }
+            Ok(false) => {}
+            Err(_) => {}
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+    }
+    if !confirmed {
+        return Err(format!(
+            "ERC-20 approve tx {} not confirmed after 90s — aborting swap",
+            approve_tx_hash
+        ));
+    }
 
     // Step 2: Execute the swap (simplified — production uses exactInputSingle)
     // For a USDT↔USDC swap on a 0.01% fee tier (stable pair), slippage is minimal

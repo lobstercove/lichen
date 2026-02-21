@@ -302,6 +302,19 @@ impl RpcClient {
         Hash::from_hex(hash_str).map_err(|e| anyhow::anyhow!(e))
     }
 
+    /// AUDIT-FIX I-1: Request airdrop from the faucet via requestAirdrop RPC
+    pub async fn request_airdrop(&self, to: &Pubkey, amount_molt: f64) -> Result<String> {
+        // The RPC accepts whole MOLT amounts as u64
+        let amount_u64 = amount_molt.ceil() as u64;
+        let params = json!([to.to_base58(), amount_u64]);
+        let result = self.call("requestAirdrop", params).await?;
+        let sig = result
+            .as_str()
+            .or_else(|| result.get("signature").and_then(|v| v.as_str()))
+            .unwrap_or("ok");
+        Ok(sig.to_string())
+    }
+
     /// Transfer shells from one account to another
     pub async fn transfer(&self, from: &Keypair, to: &Pubkey, shells: u64) -> Result<String> {
         let recent_blockhash = self.get_recent_blockhash().await?;

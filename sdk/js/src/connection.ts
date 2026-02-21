@@ -466,7 +466,14 @@ export class Connection {
       });
       
       this.ws.on('message', (data: WebSocket.Data) => {
-        const msg = JSON.parse(data.toString());
+        // AUDIT-FIX J-1: Guard against malformed WebSocket messages
+        let msg: any;
+        try {
+          msg = JSON.parse(data.toString());
+        } catch {
+          console.warn('MoltChain WS: ignoring non-JSON message');
+          return;
+        }
         
         if (msg.method === 'subscription') {
           const { subscription, result } = msg.params;
@@ -493,7 +500,13 @@ export class Connection {
     return new Promise((resolve, reject) => {
       const id = this.nextId++;
       const messageHandler = (data: WebSocket.Data) => {
-        const msg = JSON.parse(data.toString());
+        // AUDIT-FIX J-1: Guard against malformed WebSocket messages
+        let msg: any;
+        try {
+          msg = JSON.parse(data.toString());
+        } catch {
+          return; // skip non-JSON frames
+        }
         if (msg.id === id) {
           clearTimeout(timeout);
           this.ws!.off('message', messageHandler);
@@ -533,7 +546,13 @@ export class Connection {
     
     return new Promise((resolve, reject) => {
       const messageHandler = (data: WebSocket.Data) => {
-        const msg = JSON.parse(data.toString());
+        // AUDIT-FIX J-1: Guard against malformed WebSocket messages
+        let msg: any;
+        try {
+          msg = JSON.parse(data.toString());
+        } catch {
+          return; // skip non-JSON frames
+        }
         if (msg.id === id) {
           clearTimeout(timeout);
           this.ws!.off('message', messageHandler);
