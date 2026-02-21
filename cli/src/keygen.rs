@@ -229,7 +229,38 @@ impl KeypairFile {
             // Decrypt based on encryption version (v1=XOR legacy, v2=AES-256-GCM)
             let version = keypair_file.encryption_version.unwrap_or(1);
             keypair_file.private_key = match version {
-                1 => xor_cipher(&keypair_file.private_key, &key),
+                1 => {
+                    // P9-CLI-02: Auto-upgrade unauthenticated XOR cipher to AES-256-GCM
+                    let decrypted = xor_cipher(&keypair_file.private_key, &key);
+                    eprintln!(
+                        "\u{26a0}\u{fe0f}  Legacy XOR encryption (v1) detected — auto-upgrading to AES-256-GCM (v2)."
+                    );
+                    // Re-encrypt with AES-GCM and overwrite the file
+                    let mut upgraded = keypair_file.clone();
+                    upgraded.private_key = decrypted.clone();
+                    upgraded.encrypted = None;
+                    upgraded.salt = None;
+                    upgraded.encryption_version = None;
+                    // Re-save encrypted with v2 — generate a fresh salt
+                    let mut new_salt = [0u8; 16];
+                    getrandom::fill(&mut new_salt).expect("Random salt gen failed");
+                    let new_key = derive_encryption_key(&password, &new_salt);
+                    if let Ok(encrypted_v2) = encrypt_aes_gcm(&decrypted, &new_key) {
+                        let v2_file = KeypairFile {
+                            private_key: encrypted_v2,
+                            public_key: upgraded.public_key.clone(),
+                            public_key_base58: upgraded.public_key_base58.clone(),
+                            encrypted: Some(true),
+                            salt: Some(new_salt.to_vec()),
+                            encryption_version: Some(2),
+                        };
+                        if let Ok(json) = serde_json::to_string_pretty(&v2_file) {
+                            let _ = fs::write(path, json);
+                            eprintln!("   \u{2705} Keypair file upgraded to v2 (AES-256-GCM).");
+                        }
+                    }
+                    decrypted
+                }
                 2 => decrypt_aes_gcm(&keypair_file.private_key, &key)?,
                 other => bail!("Unknown encryption version: {}", other),
             };
@@ -448,5 +479,51 @@ mod tests {
         let kf = KeypairFile::from_keypair(&keypair);
         let restored = kf.to_keypair().unwrap();
         assert_eq!(restored.pubkey(), keypair.pubkey());
+    }
+
+    /// P9-CLI-02: Verify that loading a v1 (XOR) encrypted file auto-upgrades
+    /// it to v2 (AES-256-GCM) on disk.
+    #[test]
+    fn test_xor_v1_auto_upgrades_to_v2_on_load() {
+        let keypair = Keypair::new();
+        let salt = [0xABu8; 16];
+        let password = "test_upgrade_password";
+        let key = derive_encryption_key(password, &salt);
+
+        // Create a v1 (XOR) encrypted file
+        let seed = keypair.to_seed();
+        let encrypted_seed = xor_cipher(&seed, &key);
+        let v1_file = KeypairFile {
+            private_key: encrypted_seed,
+            public_key: keypair.pubkey().0.to_vec(),
+            public_key_base58: keypair.pubkey().to_base58(),
+            encrypted: Some(true),
+            salt: Some(salt.to_vec()),
+            encryption_version: Some(1),
+        };
+
+        // Write to temp file
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("test_v1.json");
+        let json = serde_json::to_string_pretty(&v1_file).unwrap();
+        fs::write(&path, &json).unwrap();
+
+        // Load — should auto-upgrade
+        std::env::set_var("MOLTCHAIN_KEYPAIR_PASSWORD", password);
+        let loaded = KeypairFile::load(&path).unwrap();
+        let loaded_kp = loaded.to_keypair().unwrap();
+        assert_eq!(loaded_kp.pubkey(), keypair.pubkey(), "decrypted key should match");
+
+        // The file on disk should now be v2
+        let reloaded_json = fs::read_to_string(&path).unwrap();
+        let on_disk: KeypairFile = serde_json::from_str(&reloaded_json).unwrap();
+        assert_eq!(on_disk.encryption_version, Some(2), "file should be v2 on disk");
+        assert!(on_disk.encrypted.unwrap_or(false), "file should be encrypted");
+
+        // Verify it can still be loaded (v2 path)
+        let reloaded = KeypairFile::load(&path).unwrap();
+        let reloaded_kp = reloaded.to_keypair().unwrap();
+        assert_eq!(reloaded_kp.pubkey(), keypair.pubkey(), "v2 re-load should work");
+        std::env::remove_var("MOLTCHAIN_KEYPAIR_PASSWORD");
     }
 }
