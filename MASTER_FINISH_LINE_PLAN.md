@@ -32,8 +32,9 @@
 11. [SECTION K: TESTS & COVERAGE](#section-k-tests-coverage)
 12. [SECTION L: CROSS-CUTTING SYSTEMIC ISSUES](#section-l-cross-cutting)
 13. [SECTION M: FINISH_LINE_PLAN.md CROSS-REFERENCE](#section-m-cross-reference)
-14. [EXECUTION ORDER & DEPENDENCY GRAPH](#execution-order)
-15. [PROGRESS DASHBOARD](#progress-dashboard)
+14. [PHASE 9: SECOND FULL SOURCE AUDIT (February 21, 2026)](#phase-9)
+15. [EXECUTION ORDER & DEPENDENCY GRAPH](#execution-order)
+16. [PROGRESS DASHBOARD](#progress-dashboard)
 
 ---
 
@@ -1009,6 +1010,162 @@ The following are **net-new findings** from this code audit that were NOT captur
 
 ---
 
+## PHASE 9: SECOND FULL SOURCE AUDIT (February 21, 2026) {#phase-9}
+
+**Generated:** February 21, 2026 — Second full source audit after Phase 0-8 completion  
+**Method:** Line-by-line audit of every source file, cross-referenced with all Phase 0-8 fixes  
+**Total new findings:** 106 (9 CRITICAL, 32 HIGH, 43 MEDIUM, 22 LOW)
+
+### P9-A: Core Chain (core/src/) — 23 findings
+
+| ID | Severity | File | Finding | Fix Required | Status |
+|----|----------|------|---------|-------------|--------|
+| P9-CORE-01 | CRITICAL | reefstake.rs:437-470 | `distribute_rewards` iterates `HashMap<Pubkey, StakingPosition>` whose order is non-deterministic. The "last position gets remainder" dust-assignment gives tail-residue to a random staker, causing **state-root divergence** across validators | Sort positions by `Pubkey` (collect into `BTreeMap` or sorted `Vec`) before iterating | [ ] |
+| P9-CORE-02 | HIGH | consensus.rs:2306 | `SlashingEvidence::new()` stamps `timestamp` with `SystemTime::now()`. Different validators recording the same offense produce divergent serialized state | Use `derive_slot_timestamp(evidence_slot)` or accept timestamp from caller | [ ] |
+| P9-CORE-03 | HIGH | contract.rs:39,575,607 | Three stale doc comments reference wrong compute limits ("1.4M", "15 million") but actual limit is 10M | Update all three comments to "10 million units" | [ ] |
+| P9-CORE-04 | HIGH | contract.rs:745-770 | `MODULE_CACHE` is a global `RwLock<HashMap>` with no max size or eviction. Grows unbounded on long-running validators with thousands of contracts | Add LRU eviction with configurable max entry count | [ ] |
+| P9-CORE-05 | HIGH | mempool.rs:248 | `cleanup_expired` uses bare subtraction `now - ptx.timestamp`. Future timestamps panic in debug or wrap to u64::MAX in release | Replace with `now.saturating_sub(ptx.timestamp)` | [ ] |
+| P9-CORE-06 | HIGH | contract.rs:1359-1380 | `host_log_msg` has no cap on log entry count. At 10 CU per call with 10M budget, a contract can emit ~1M log messages (~16 GB heap) | Add `MAX_LOG_ENTRIES` constant (e.g., 1024) and silently drop further logs | [ ] |
+| P9-CORE-07 | HIGH | evm.rs:398-480 | `StateEvmDb` implements `DatabaseCommit::commit()` which writes EVM state directly to `StateStore`, bypassing `StateBatch` atomicity | Remove `DatabaseCommit` impl or add `panic!("commit() must not be called")` guard | [ ] |
+| P9-CORE-08 | MEDIUM | block.rs:177-190 | `compute_tx_root` concatenates all tx hashes and takes single SHA-256. Prevents Merkle inclusion proofs for light clients/SPV | Build proper iterative Merkle tree (pairwise hash) | [ ] |
+| P9-CORE-09 | MEDIUM | consensus.rs:2047-2058 | `FinalityTracker` uses `Ordering::Relaxed` for both write and read. RPC thread may observe `finalized_slot > confirmed_slot` | Use `Ordering::Release` on writes and `Ordering::Acquire` on reads | [ ] |
+| P9-CORE-10 | MEDIUM | processor.rs:2596-2626 | `contract_close` clears code but does not remove from `CF_PROGRAMS` index. `get_programs()` returns closed contracts | Add `self.b_delete_program(contract_address)?` after closing | [ ] |
+| P9-CORE-11 | MEDIUM | contract.rs:1402-1414 | `host_emit_event` deserializes as `HashMap<String, String>`, rejecting events with numeric/boolean/nested values | Deserialize as `HashMap<String, serde_json::Value>` | [ ] |
+| P9-CORE-12 | MEDIUM | state.rs:3034-3044 | `StateBatch::apply_evm_changes` directly sets `account.spendable = shells`, bypassing checked arithmetic. Overflow silently capped | Use checked arithmetic and propagate overflow as `Err` | [ ] |
+| P9-CORE-13 | MEDIUM | contract.rs:1441 | `host_get_timestamp` returns `ctx.slot` (slot number), not UNIX timestamp. Contracts expecting seconds-since-epoch get wrong values | Inject block's actual UNIX timestamp into `ContractContext` and return it | [ ] |
+| P9-CORE-14 | MEDIUM | privacy.rs:1-312 | Entire ZK proof module is stubbed: `verify()` returns config flag without cryptographic verification | Gate behind `zk_enabled` feature flag (OFF by default); add startup warning | [ ] |
+| P9-CORE-15 | MEDIUM | evm.rs:262-272 | `u256_to_shells` silently saturates to u64::MAX on overflow. Unchecked variant is public | Deprecate or make `pub(crate)` to limit exposure | [ ] |
+| P9-CORE-16 | MEDIUM | contract.rs:754 | Module cache uses `unsafe { Module::deserialize() }`. Corrupted cache entry could produce UB | Add SHA-256 integrity tag alongside cached bytes; verify before deserializing | [ ] |
+| P9-CORE-17 | MEDIUM | consensus.rs:2134 | `ForkChoice::add_weight()` backward-compat wrapper hardcodes `slot = 0`. Entry pruned after 100 slots | Accept `slot` as parameter or remove legacy wrapper | [ ] |
+| P9-CORE-18 | MEDIUM | contract.rs:1236 | `host_storage_write` enforces `MAX_STORAGE_ENTRIES = 10,000` per call, but limit also applies to reads + new keys combined | Track separate `new_key_count` or use storage-size budget | [ ] |
+| P9-CORE-19 | LOW | mempool.rs:153-186 | `get_top_transactions` destructively pops from BinaryHeap and re-pushes. O(N log N) per call with TOCTOU window | Use indexed snapshot or sorted Vec | [ ] |
+| P9-CORE-20 | LOW | state.rs:1984 | `index_account_transactions` uses non-atomic read-modify-write on per-account tx counters | Fold counter increments into block's WriteBatch | [ ] |
+| P9-CORE-21 | LOW | processor.rs:891-930 | Parallel tx groups collected from `HashMap::into_values()` in non-deterministic order | Collect into BTreeMap or sort by minimum tx index | [ ] |
+| P9-CORE-22 | LOW | consensus.rs:2457 | `apply_economic_slashing` 0-param overload defaults to `ConsensusParams::default()` instead of reading genesis config | Remove 0-param overload; require explicit ConsensusParams | [ ] |
+| P9-CORE-23 | LOW | block.rs:177 | `compute_tx_root` with zero transactions returns `Hash::default()` (all-zeros), indistinguishable from genesis parent hash | Return `Hash::hash(b"empty")` or domain-separated constant | [ ] |
+
+### P9-B: Validator (validator/src/main.rs) — 18 findings
+
+| ID | Severity | File | Finding | Fix Required | Status |
+|----|----------|------|---------|-------------|--------|
+| P9-VAL-01 | CRITICAL | main.rs:9567-9570 | **SL/TP trigger engine runs ONLY on block producer** — mutates contract storage but receivers never execute it. State diverges across validators → chain splits | Encode trigger results as synthetic transactions in block, OR execute deterministically during `replay_block_transactions` | [ ] |
+| P9-VAL-02 | CRITICAL | main.rs:1053-1078 | **Margin SL/TP close creates money from nothing** — profitable PnL credited without counterparty debit. Margin returned without insurance fund settlement | Debit profit from margin pool/insurance fund or settle against counterparty | [ ] |
+| P9-VAL-03 | CRITICAL | main.rs:1075 | **Unchecked arithmetic overflow** — `current_bal + return_amount` uses `+` not `saturating_add`, panics in debug or wraps in release | Replace with `current_bal.saturating_add(return_amount)` | [ ] |
+| P9-VAL-04 | HIGH | main.rs:9541-9547 | **Trade bridge + analytics writes run only on producer** — `bridge_dex_trades_to_analytics` modifies storage but receivers never execute. Analytics state diverges | Move into deterministic post-block hook or separate indexer | [ ] |
+| P9-VAL-05 | HIGH | main.rs:9573-9574 | **`reset_24h_stats_if_expired` runs only on producer with `SystemTime::now()`** — non-deterministic wall-clock modifies state only on producer | Execute deterministically using block timestamp during replay | [ ] |
+| P9-VAL-06 | HIGH | main.rs:660-668 | **DEX ticker emits wrong price for non-primary pairs** — reads globally last trade for ALL affected pairs instead of per-pair | Track last trade ID per pair and use pair-specific trade | [ ] |
+| P9-VAL-07 | HIGH | main.rs:6771-6835 | **Fork choice unconditionally replaces blocks when `we_are_behind`** — malicious validator can force block replacement during sync | Remove `we_are_behind \|\| has_pending` from OR condition; require incoming weight >= existing | [ ] |
+| P9-VAL-08 | HIGH | main.rs:1053-1078 | **Double-close race on margin positions** — user tx + SL/TP trigger can both close same position in same block. Margin returned twice | Check position status OPEN before crediting; use atomic CAS on status byte | [ ] |
+| P9-VAL-09 | MEDIUM | main.rs:862-900 | **SL/TP trigger engine iterates ALL orders/positions every block** — O(n) per block for all ever-created orders. Blocks production on busy DEX | Maintain index of dormant stop-limit orders per pair for O(affected) scans | [ ] |
+| P9-VAL-10 | MEDIUM | main.rs:6419 | **ForkChoice oracle never pruned** — accumulates entries for every block hash, memory grows without bound | Add periodic pruning of entries older than N slots | [ ] |
+| P9-VAL-11 | MEDIUM | main.rs:4012-4018 | **Oracle feeder and trade bridge race on analytics storage** — concurrent read-modify-write can lose volume/trade count updates | Coordinate writes with per-pair lock | [ ] |
+| P9-VAL-12 | MEDIUM | main.rs:9424-9440 | **Failed transactions may leave state mutations** — `process_transactions_parallel` then drops failed txs, but effects may not be rolled back | Verify TxProcessor implements per-transaction rollback | [ ] |
+| P9-VAL-13 | MEDIUM | main.rs:9567-9570 | **SL/TP trigger engine runs synchronously in block production loop** — blocks production for entire scan duration | Run asynchronously (but must be deterministic per P9-VAL-01) | [ ] |
+| P9-VAL-14 | MEDIUM | main.rs:6155-6176 | **Manual RFC 3339 parser has no validation** — month 13 or day 50 produces silently wrong Unix timestamps | Use proper date parsing library or add bounds checks | [ ] |
+| P9-VAL-15 | MEDIUM | main.rs:7098-7115 | **P2P tx validation doesn't verify fee payer** — derives sender from first instruction account, doesn't verify matches fee payer | Derive fee payer from canonical position and verify against signature | [ ] |
+| P9-VAL-16 | LOW | main.rs:9497 | **`rewards_applied` always false** — variable never modified, `if rewards_applied` block is dead code | Remove dead code | [ ] |
+| P9-VAL-17 | LOW | main.rs:1037-1040 | **Biased PnL wraps for extreme losses** — stored `realized_pnl` incorrect for losses > ~4.6 quintillion | Clamp `biased_pnl` to 0..=u64::MAX before casting | [ ] |
+| P9-VAL-18 | LOW | main.rs:7183 | **Vote tracker only keeps last 100 slots** — double-vote with >100 slot gap evades detection | Persist double-vote evidence to disk | [ ] |
+
+### P9-C: P2P, RPC, CLI — 18 findings
+
+| ID | Severity | File | Finding | Fix Required | Status |
+|----|----------|------|---------|-------------|--------|
+| P9-CLI-01 | CRITICAL | cli/src/keygen.rs:48-62 | **Weak KDF**: `derive_encryption_key` uses 100K iterations of raw SHA-256. GPU-accelerable, not memory-hard. Private keys vulnerable to offline attack | Replace with Argon2id or PBKDF2-HMAC-SHA256 ≥600K iterations | [ ] |
+| P9-CLI-02 | CRITICAL | cli/src/keygen.rs:67-72 | **Unauthenticated legacy cipher**: encryption v1 uses XOR with no MAC. Attacker can flip arbitrary bits in encrypted private key undetected | Remove XOR path entirely or auto-upgrade to v2 (AES-256-GCM) | [ ] |
+| P9-RPC-01 | HIGH | rpc/src/lib.rs:7729-7738 | **Sentinel signature bypass**: `eth_sendRawTransaction` wraps EVM txs with placeholder `[0u8;64]` signature and sentinel `[0xEE;32]` blockhash | Add explicit `is_evm_wrapped` flag or dedicated mempool channel | [ ] |
+| P9-RPC-02 | HIGH | rpc/src/lib.rs:2847 | **Unbounded bincode deserialization**: 16-byte crafted payload can specify multi-GB Vec, causing OOM | Use `bincode::options().with_limit(2_MB).deserialize()` | [ ] |
+| P9-NET-01 | HIGH | p2p/src/peer.rs:613 | **16 MB per-stream memory**: `read_to_end(16MB)` per QUIC stream. Malicious peer can open hundreds of concurrent streams → OOM | Add per-connection concurrent-stream limit and reduce per-stream cap | [ ] |
+| P9-NET-02 | HIGH | p2p/src/peer.rs:957-959 | **Mutual TLS downgrade**: `client_auth_mandatory()` returns false, defeating TOFU fingerprint pinning | Return `true` after grace-period flag removed | [ ] |
+| P9-RPC-03 | HIGH | rpc/src/lib.rs:327-340 | **Uniform rate limit for unequal-cost methods**: 5000 req/s treats cheap and expensive methods the same | Implement tiered rate limits: lower limits for expensive methods | [ ] |
+| P9-NET-03 | MEDIUM | p2p/src/peer.rs:614 | **P2P bincode deserialization unbounded**: crafted Vec length prefix can trigger OOM from 16 MB buffer | Use `bincode::options().with_limit(...)` | [ ] |
+| P9-RPC-04 | MEDIUM | rpc/src/lib.rs:5196-5225 | **O(N) scan with no pagination**: `getAllContracts` fetches up to 1000 programs with sequential lookups | Add cursor-based pagination | [ ] |
+| P9-CLI-03 | MEDIUM | cli/src/wallet.rs | **Plaintext wallet index**: `~/.moltchain/wallets/index.json` stores wallet names + pubkeys unencrypted with no permission enforcement | Set file permissions to 0o600 | [ ] |
+| P9-RPC-05 | MEDIUM | rpc/src/lib.rs:9150-9230 | **Airdrop state mutation not recorded in blocks**: `requestAirdrop` calls `put_account` directly, not recorded in consensus state | Construct proper FaucetAirdrop transaction and submit via `submit_transaction` | [ ] |
+| P9-NET-04 | MEDIUM | p2p/src/gossip.rs | **Untrusted `last_seen` timestamp in PeerInfoMsg**: malicious node can set future timestamp, biasing peer selection | Use local receive time instead of remote-supplied `last_seen` | [ ] |
+| P9-RPC-06 | MEDIUM | rpc/src/lib.rs:966-996 | **CORS wildcard config mismatch**: comment says "*" for wildcard but exact matching prevents it from working | Implement actual wildcard support or remove misleading comment | [ ] |
+| P9-CLI-04 | LOW | cli/src/wallet.rs, config.rs | **No file permission enforcement on config/index files** | Apply `std::fs::set_permissions(0o600)` after writing | [ ] |
+| P9-RPC-07 | LOW | rpc/src/lib.rs:2847-2848 | **Silent format fallback**: `sendTransaction` tries bincode then JSON with no indication of format switch | Return format used or require explicit `encoding` parameter | [ ] |
+| P9-NET-05 | LOW | p2p/src/gossip.rs | **No routability check on gossip addresses**: private/loopback/link-local addresses accepted | Filter through `is_globally_routable()` check | [ ] |
+| P9-RPC-08 | LOW | rpc/src/lib.rs:991-996 | **CORS IPv6 origin parsing failure**: `host_only` becomes `[` for IPv6 origins | Parse origins using `url::Url` or handle bracketed IPv6 | [ ] |
+| P9-RPC-09 | LOW | rpc/src/lib.rs:5226-5480 | **deployContract has no code size limit**: allows ~1.5 MB contracts (after base64) that inflate state | Add explicit `MAX_CONTRACT_SIZE` (e.g., 512 KB) check | [ ] |
+
+### P9-D: Smart Contracts — 12 findings
+
+| ID | Severity | Contract | Finding | Fix Required | Status |
+|----|----------|----------|---------|-------------|--------|
+| P9-SC-01 | CRITICAL | lobsterlend:636-637 | **Interest accrues globally but not per-borrower** — `accrue_interest()` increases `total_borrows` but individual balances never updated. Over time `total_borrows` diverges → protocol insolvency | Implement per-borrower interest index tracking (Compound-style `borrowIndex`) | [ ] |
+| P9-SC-02 | HIGH | dex_amm:749-756 | **`collect_fees()` resets fee counters without transferring tokens** — LP fees permanently lost. Comment says "transfer via cross-call" but it doesn't | Add `call_token_transfer` calls for fee_a and fee_b amounts | [ ] |
+| P9-SC-03 | HIGH | dex_margin:1010-1014 | **`withdraw_insurance()` uses admin address as transfer source** instead of contract address. Transfer fails or drains admin funds | Replace with `get_contract_address()` | [ ] |
+| P9-SC-04 | HIGH | moltswap:822 | **`set_protocol_fee()` checks wrong admin key** — uses `IDENTITY_ADMIN_KEY` instead of `MS_ADMIN_KEY`. Pool admin can't configure fees; identity admin gains unauthorized control | Change to `storage_get(MS_ADMIN_KEY)` or `is_ms_admin()` | [ ] |
+| P9-SC-05 | HIGH | moltswap:878-887 | **`set_identity_admin()` has no `get_caller()` verification** — stores admin without verifying tx signer. Combined with P9-SC-04, attacker can become identity admin and redirect fees | Add `get_caller()` check before storage_set | [ ] |
+| P9-SC-06 | HIGH | moltpunks:82-87 | **`mint()` accepts caller address as raw parameter without `get_caller()` verification** — anyone can pass minter's address to mint arbitrary NFTs | Add `get_caller()` verification after parsing caller | [ ] |
+| P9-SC-07 | MEDIUM | moltswap:394-405 | **Reputation bonus subsidy extracted from LP reserves without compensation** — high-rep traders drain LP reserves with no offsetting value | Fund bonus from separate treasury pool, not LP reserves | [ ] |
+| P9-SC-08 | MEDIUM | clawpump:534-575 | **Graduation side effects persist on partial failure** — if `create_pair` succeeds but `add_liquidity` fails, duplicate DEX pairs created on retries | Add `graduation_pending` flag to prevent repeated cross-contract pair creation | [ ] |
+| P9-SC-09 | MEDIUM | prediction_market:1350-1370 | **`initialize()` missing `get_caller()` verification** — attacker can front-run deploy to set arbitrary admin | Add `get_caller()` check before storing admin | [ ] |
+| P9-SC-10 | MEDIUM | moltmarket:95-140 | **`list_nft()` missing pause check and reentrancy guard** — new listings allowed during emergency pause | Add `is_mm_paused()` check and `reentrancy_enter/exit` | [ ] |
+| P9-SC-11 | LOW | moltswap:105-165 | **TWAP oracle redundantly loads pool state** — double `load_pool()` on every swap wastes compute | Refactor `twap_update()` to accept `&Pool` reference | [ ] |
+| P9-SC-12 | LOW | dex_core:~1350 | **Price level scanning is O(n) with up to 1000 tick iterations** — thin markets approach compute limits | Use sorted linked list or skip-list index for O(log n) lookup | [ ] |
+
+### P9-E: SDK & Frontends — 15 findings
+
+| ID | Severity | File | Finding | Fix Required | Status |
+|----|----------|------|---------|-------------|--------|
+| P9-SDK-01 | HIGH | sdk/js/src/transaction.ts:95-100 | `transfer()` accepts `amount: number` — loses precision above 2^53 shells (~9,007 MOLT). Negative values produce cryptic error | Accept `bigint \| number`; validate `amount >= 0`, integer, `< 2^64` | [ ] |
+| P9-SDK-02 | HIGH | sdk/python/keypair.py:47-54 | `save()` writes raw 32-byte Ed25519 seed as cleartext JSON with default file permissions | Encrypt seed before writing or set `chmod 0o600`; add deprecation warning | [ ] |
+| P9-FE-01 | HIGH | wallet/extension/popup.js:413-443 | `exportKeystoreJsonAction()` generates "keystore" JSON with **full secret key in cleartext**. Misleads users into thinking file is protected | Encrypt with AES-256-CTR + PBKDF2 (Ethereum V3 format) | [ ] |
+| P9-FE-02 | HIGH | wallet/extension/popup.js:449-469 | `downloadPrivateKeyAction()` writes cleartext private key to .txt files with no secure-deletion guidance | Add confirmation dialog warning; suggest clipboard copy; offer encrypted export | [ ] |
+| P9-SDK-03 | MEDIUM | sdk/js/src/connection.ts:117-129 | `rpc()` uses `fetch()` with no timeout — hung RPC node blocks caller indefinitely | Add configurable `AbortController` with 30s default timeout | [ ] |
+| P9-SDK-04 | MEDIUM | sdk/python/transaction.py:98 | `transfer()` passes amount to `int.to_bytes(8)` with no bounds check. Negative values crash | Validate `0 <= amount < 2**64` with descriptive error | [ ] |
+| P9-FE-03 | MEDIUM | wallet/js/crypto.js:472-500 | `isValidMnemonic()` returns `true` unconditionally — checksum never verified. Single-word typo silently accepted | Complete checksum verification or call async version | [ ] |
+| P9-FE-04 | MEDIUM | wallet/extension/crypto-service.js:575 | `signTransaction()` creates `seedBytes` never zeroed after use. Intermediate key material persists until GC | Add `seedBytes.fill(0)` in try/finally | [ ] |
+| P9-FE-05 | MEDIUM | wallet/js/wallet.js:1143 | `MOCK_PRICES` hardcoded for portfolio USD valuation. Production users see fabricated dollar amounts | Fetch real prices from oracle or price API with "unavailable" fallback | [ ] |
+| P9-FE-06 | MEDIUM | wallet/extension/inpage-provider.js | Inpage provider unconditionally overwrites `window.ethereum`, breaking MetaMask and other wallets | Check `window.ethereum` first; implement EIP-6963 multi-wallet coexistence | [ ] |
+| P9-FE-07 | MEDIUM | website/script.js:77 | RPC client returns `data.result \|\| data.error` — falsy results (0, false, null) return error object instead | Use `'result' in data ? data.result : throw data.error` | [ ] |
+| P9-FE-08 | LOW | dex/dex.js | ~30 `innerHTML` assignments interpolate values without `escapeHtml()`. Compromised RPC enables XSS | Wrap interpolated values with `escapeHtml()` | [ ] |
+| P9-FE-09 | LOW | wallet/extension/content-script.js | Content script polls every 2s in every tab — drains battery and CPU | Replace with event-driven `chrome.runtime.onMessage` | [ ] |
+| P9-FE-10 | LOW | monitoring/js/monitoring.js:50 | RPC helpers silently return `null` on any error — can't distinguish "no data" from "network failure" | Return typed error or throw | [ ] |
+| P9-FE-11 | LOW | faucet/faucet.js | Arithmetic captcha trivially solvable programmatically. No real bot protection | Add reCAPTCHA, hCaptcha, or proof-of-work challenge | [ ] |
+
+### P9-F: Infrastructure, Deploy, Scripts — 20 findings
+
+| ID | Severity | File | Finding | Fix Required | Status |
+|----|----------|------|---------|-------------|--------|
+| P9-INF-01 | CRITICAL | compiler/src/main.rs:83 | **Compiler service has no sandboxing or auth** — accepts arbitrary code via `/compile`, spawns build processes with full filesystem access. Remote code execution | Add auth (API key), run in container/namespace with restricted perms, drop to unprivileged user | [ ] |
+| P9-INF-02 | CRITICAL | infra/docker-compose.yml:153 | **Grafana default password is "moltchain"** — `GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-moltchain}` | Remove default fallback; require env var or fail to start | [ ] |
+| P9-INF-03 | HIGH | Makefile:142 | **`deploy-mainnet` target invokes `testnet-deploy.sh`** — mainnet deploys use testnet script and defaults | Create dedicated `mainnet-deploy.sh` or parameterize with `--network mainnet` | [ ] |
+| P9-INF-04 | HIGH | .gitignore:11 | **`Cargo.lock` is gitignored for a binary project** — CI/Docker builds get non-reproducible deps | Remove `Cargo.lock` from `.gitignore` and commit it | [ ] |
+| P9-INF-05 | HIGH | infra/Dockerfile.custody:12 | **Custody Dockerfile copies `Cargo.lock` that doesn't exist** — Docker build fails in clean checkouts | Fix after P9-INF-04 by committing Cargo.lock | [ ] |
+| P9-INF-06 | HIGH | infra/nginx/dex.conf:39 | **CORS `Access-Control-Allow-Origin: *` in production HTTPS block** — any origin can make authenticated requests | Replace with whitelist of allowed origins | [ ] |
+| P9-INF-07 | HIGH | infra/alertmanager/alertmanager.yml:73 | **Alertmanager webhook URLs default to `localhost:9099`** — critical alerts silently dropped | Require non-placeholder URLs or fail startup | [ ] |
+| P9-INF-08 | HIGH | compiler/src/main.rs:83 | **Compiler service uses `CorsLayer::permissive()`** — any website can trigger server-side code execution | Restrict CORS to known developer portal origins | [ ] |
+| P9-INF-09 | HIGH | deploy/setup.sh:104 | **Custody signer binds to `0.0.0.0:9201`** — signing service with private keys exposed on all interfaces | Change to `127.0.0.1:$SIGNER_PORT` | [ ] |
+| P9-INF-10 | MEDIUM | compiler/src/main.rs:76 | **Compiler default port 8900 collides with WebSocket port** — one silently fails to bind on same host | Change to non-conflicting port (e.g., 9200) | [ ] |
+| P9-INF-11 | MEDIUM | scripts/health-check.sh:6 | **Health check default port is 9000, not 8899** — fails silently without env var override | Change default to `http://localhost:8899` | [ ] |
+| P9-INF-12 | MEDIUM | infra/nginx/dex.conf:24 | **Dead location blocks after `return 301`** in HTTP server block — unreachable code | Remove dead blocks or move redirect to fallback location | [ ] |
+| P9-INF-13 | MEDIUM | (none) | **No CI/CD pipeline defined** — no `.github/workflows/` etc. Commits reach `main` without automated checks | Add GitHub Actions pipeline for check/test/lint/build | [ ] |
+| P9-INF-14 | MEDIUM | scripts/generate-release-keys.sh:49 | **Release key generator uses wrong entropy path** — `fs::read("/dev/urandom")` reads infinite stream | Use only `OsRng` from rand crate or `read_exact` | [ ] |
+| P9-INF-15 | MEDIUM | infra/Dockerfile.moltchain:13 | **Dockerfile copies entire project source including secrets** — `.git`, `keypairs/` leak into build layers | Add `.dockerignore` excluding `.git/`, `data/`, `keypairs/` | [ ] |
+| P9-INF-16 | MEDIUM | .gitignore:37 | **`deploy-manifest.json` not gitignored** — deployment topology could be accidentally committed | Add to `.gitignore` | [ ] |
+| P9-INF-17 | MEDIUM | fuzz/Cargo.toml | **Fuzz targets excluded from workspace** — `cargo test --workspace` never validates compilation | Add CI step: `cd fuzz && cargo check` | [ ] |
+| P9-INF-18 | LOW | infra/Dockerfile.moltchain:37 | **WASM glob copy silently copies fewer files if contracts fail to build** — no count validation | Add RUN step asserting expected WASM file count | [ ] |
+| P9-INF-19 | LOW | scripts/upgrade-validator.sh:86 | **Upgrade script continues after test failure** — validator with failing tests deployed | Change to `exit 1` on test failure or require `--force` | [ ] |
+| P9-INF-20 | LOW | Dockerfile:86 | **No ENTRYPOINT fallback for faucet** — running standalone always starts validator | Add documentation or environment-based entrypoint dispatcher | [ ] |
+
+### Phase 9 Summary
+
+| Category | CRITICAL | HIGH | MEDIUM | LOW | Total |
+|----------|----------|------|--------|-----|-------|
+| Core (core/src/) | 1 | 6 | 11 | 5 | 23 |
+| Validator (validator/src/) | 3 | 5 | 7 | 3 | 18 |
+| P2P / RPC / CLI | 2 | 5 | 6 | 5 | 18 |
+| Smart Contracts | 1 | 5 | 4 | 2 | 12 |
+| SDK & Frontends | 0 | 4 | 7 | 4 | 15 |
+| Infrastructure | 2 | 7 | 8 | 3 | 20 |
+| **TOTAL** | **9** | **32** | **43** | **22** | **106** |
+
+---
+
 ## EXECUTION ORDER & DEPENDENCY GRAPH {#execution-order}
 
 ### Phase 0: Fix Launch-Fatal Issues (Day 1 — BEFORE anything else)
@@ -1184,7 +1341,16 @@ Phase 5 (Quality):   [x] [x] [x] [x] [x] [x] [x] [x] [x] [x]  10/10 ✅ COMPLETE
 Phase 6 (Frontend):  [x] [x] [x] [x] [x]                5/5 ✅ COMPLETE
 Phase 7 (Testing):   [x] [x] [x] [x] [x] [x]            6/6 ✅ COMPLETE
 Phase 8 (Features):  [x] [x] [x] [x] [x] [x]            6/6 ✅ COMPLETE
-                                              TOTAL:    63/63 ✅ ALL COMPLETE
+                                        Phases 0-8:    63/63 ✅ ALL COMPLETE
+
+Phase 9 (Audit 2):   [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] [ ] ... 0/106
+  P9-A Core:         9 CRITICAL/HIGH, 11 MEDIUM, 5 LOW    0/23
+  P9-B Validator:    8 CRITICAL/HIGH, 7 MEDIUM, 3 LOW     0/18
+  P9-C P2P/RPC/CLI:  7 CRITICAL/HIGH, 6 MEDIUM, 5 LOW    0/18
+  P9-D Contracts:    6 CRITICAL/HIGH, 4 MEDIUM, 2 LOW     0/12
+  P9-E SDK/Frontend: 4 HIGH, 7 MEDIUM, 4 LOW              0/15
+  P9-F Infra/Deploy: 9 CRITICAL/HIGH, 8 MEDIUM, 3 LOW    0/20
+                                         GRAND TOTAL:   63/169
 ```
 
 ---
