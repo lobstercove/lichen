@@ -34,7 +34,8 @@ def _encode_pubkey(pubkey: PublicKey) -> bytes:
 
 
 def _encode_hash(hex_str: str) -> bytes:
-    raw = bytes.fromhex(hex_str)
+    # J-5: Strip 0x prefix for EVM-compatible blockhashes
+    raw = bytes.fromhex(hex_str.removeprefix("0x"))
     if len(raw) != 32:
         raise ValueError("Blockhash must be 32 bytes")
     return raw

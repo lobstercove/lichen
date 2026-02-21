@@ -183,12 +183,14 @@ var rpcCall = moltRpcCall;
 
 // ── Binary Helpers ──
 
+// J-4: Use BigInt for precision above Number.MAX_SAFE_INTEGER
 function readLeU64(bytes) {
     if (!bytes || bytes.length < 8) return null;
-    var value = 0;
-    for (var i = 0; i < 8; i++) {
-        value += bytes[i] * Math.pow(256, i);
-    }
+    var lo = BigInt(bytes[0]) | (BigInt(bytes[1]) << 8n) | (BigInt(bytes[2]) << 16n) | (BigInt(bytes[3]) << 24n);
+    var hi = BigInt(bytes[4]) | (BigInt(bytes[5]) << 8n) | (BigInt(bytes[6]) << 16n) | (BigInt(bytes[7]) << 24n);
+    var value = lo | (hi << 32n);
+    // Return Number when safe, BigInt for large values
+    if (value <= BigInt(Number.MAX_SAFE_INTEGER)) return Number(value);
     return value;
 }
 

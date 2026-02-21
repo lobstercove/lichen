@@ -15,11 +15,12 @@ impl Balance {
     }
     
     /// Create from MOLT (handles negative, NaN, and overflow gracefully)
+    /// J-3: Uses rounding instead of truncation to avoid systematic 1-shell loss
     pub fn from_molt(molt: f64) -> Self {
         if molt.is_nan() || molt < 0.0 {
             return Self { shells: 0 };
         }
-        let shells = molt * 1_000_000_000.0;
+        let shells = (molt * 1_000_000_000.0).round();
         Self {
             shells: shells.min(u64::MAX as f64) as u64,
         }
