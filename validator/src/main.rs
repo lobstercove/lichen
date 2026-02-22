@@ -9404,8 +9404,11 @@ async fn run_validator() {
         Duration::from_secs(60)
     };
 
-    // Adaptive heartbeat: Track last time we had activity (transaction block or heartbeat)
-    let mut last_activity_time = std::time::Instant::now();
+    // HEARTBEAT-FIX: Use the shared last_block_time (Arc<Mutex<Instant>>) instead
+    // of a local-only timer. This ensures the heartbeat gate accounts for blocks
+    // received from other validators via P2P, not just locally-produced blocks.
+    // Without this, validators would produce heartbeats simultaneously because
+    // each validator's local timer doesn't see network blocks.
     let mut slot_start = std::time::Instant::now();
     let mut last_attempted_slot: u64 = 0;
 
@@ -9853,7 +9856,10 @@ async fn run_validator() {
         // Transaction blocks are produced immediately by the elected leader.
         // The SyncManager decay mechanism independently prevents chain stalls,
         // so the primary leader does NOT need to bypass the heartbeat gate.
-        let is_heartbeat_time = last_activity_time.elapsed() >= Duration::from_secs(5);
+        // HEARTBEAT-FIX: Check shared last_block_time to see when ANY block
+        // (local or network-received) last occurred. This prevents simultaneous
+        // heartbeats from multiple validators.
+        let is_heartbeat_time = last_block_time_for_local.lock().await.elapsed() >= Duration::from_secs(5);
 
         // Peek at mempool to determine if this would be a heartbeat or tx block
         let has_pending = {
@@ -9934,8 +9940,8 @@ async fn run_validator() {
 
         let is_heartbeat = !has_user_transactions;
 
-        // Update activity tracking - reset timer after producing block
-        last_activity_time = std::time::Instant::now();
+        // HEARTBEAT-FIX: last_block_time_for_local is updated at L10012 after
+        // block storage — no separate activity timer needed.
 
         if is_heartbeat {
             info!("💓 Slot {} - HEARTBEAT (proving liveness)", slot);
