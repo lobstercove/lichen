@@ -25,7 +25,7 @@ use moltchain_sdk::{
 // CONSTANTS
 // ============================================================================
 
-const REWARD_POOL_PER_MONTH: u64 = 500_000_000_000_000; // 500K MOLT (in shells) — sustainable rate per TOKENOMICS.md
+const REWARD_POOL_PER_MONTH: u64 = 100_000_000_000_000; // 100K MOLT (in shells) — sustainable rate per TOKENOMICS_OVERHAUL_PLAN.md
 const SLOTS_PER_MONTH: u64 = 2_592_000;
 
 // Tier thresholds (cumulative volume in shells)
@@ -1234,9 +1234,9 @@ mod tests {
     // ============================================================================
 
     #[test]
-    fn test_reward_pool_per_month_is_500k() {
-        // H7: REWARD_POOL_PER_MONTH set to 500K MOLT per TOKENOMICS.md
-        assert_eq!(REWARD_POOL_PER_MONTH, 500_000_000_000_000);
+    fn test_reward_pool_per_month_is_100k() {
+        // Reduced from 500K to 100K MOLT per TOKENOMICS_OVERHAUL_PLAN.md
+        assert_eq!(REWARD_POOL_PER_MONTH, 100_000_000_000_000);
     }
 
     #[test]
@@ -1304,5 +1304,23 @@ mod tests {
 
         // Cap verification
         assert!(pending1 <= REWARD_POOL_PER_MONTH);
+    }
+
+    #[test]
+    fn test_builder_grants_stored_as_rewards_pool() {
+        // Verify the REWARDS_POOL_KEY storage mechanism works.
+        // At genesis, set_rewards_pool is called with builder_grants pubkey.
+        let admin = setup();
+        let builder_grants = [0xBB; 32];
+
+        // Simulate genesis setup: set rewards pool address (must be called by admin)
+        test_mock::set_caller(admin);
+        let result = set_rewards_pool(admin.as_ptr(), builder_grants.as_ptr());
+        assert_eq!(result, 0, "set_rewards_pool should succeed");
+
+        // Verify the pool address is stored
+        let stored = storage_get(REWARDS_POOL_KEY).unwrap();
+        assert_eq!(stored.len(), 32);
+        assert_eq!(&stored[..], &builder_grants[..], "rewards pool must be builder_grants");
     }
 }

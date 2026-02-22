@@ -3364,6 +3364,35 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
         }
     }
 
+    // ── DEX Rewards: set builder_grants wallet as rewards pool source ──
+    // The dex_rewards contract pays out MOLT from its stored rewards_pool address.
+    // Wire it to the builder_grants wallet (350M MOLT allocation).
+    if let Some(dex_rewards_pk) = address_map.get("dex_rewards") {
+        let builder_grants_addr = state
+            .get_builder_grants_pubkey()
+            .ok()
+            .flatten()
+            .map(|pk| pk.0)
+            .unwrap_or(admin);
+
+        // set_rewards_pool is a named export: args = [caller 32B][addr 32B]
+        let mut args = Vec::with_capacity(64);
+        args.extend_from_slice(&admin);
+        args.extend_from_slice(&builder_grants_addr);
+        if genesis_exec_contract(
+            state,
+            dex_rewards_pk,
+            deployer_pubkey,
+            "set_rewards_pool",
+            &args,
+            "dex_rewards(builder_grants)",
+        ) {
+            info!("  SET dex_rewards(builder_grants)");
+        } else {
+            warn!("  WARN: Failed to set dex_rewards builder_grants pool");
+        }
+    }
+
     // ── MoltyID: Bootstrap admin reputation ──
     // The admin (deployer) needs reputation >= 1000 to create prediction markets,
     // submit governance proposals, resolve markets, etc. The initial identity
