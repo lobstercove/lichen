@@ -3697,6 +3697,147 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
                 warn!("  WARN: Failed to register {}.molt", gn.label);
             }
         }
+
+        // ── MoltyID: Genesis cross-attestations between system identities ──
+        // After all reserved names are registered (each creating an identity with
+        // 3 skills: Infrastructure, Consensus, Security), have system identities
+        // attest each other's skills to seed the attestation system. This makes
+        // the chain show real attestation data from boot instead of all-zeros.
+        //
+        // Key format matches the contract exactly:
+        //   attestation:  "attest_{identity_hex}_{skill_hash_hex}_{attester_hex}"
+        //   count:        "attest_count_{identity_hex}_{skill_hash_hex}"
+        //
+        // Skill hash is FNV-1a 128-bit (same as contract's skill_name_hash).
+
+        let hex_chars: &[u8; 16] = b"0123456789abcdef";
+
+        /// FNV-1a 128-bit hash (matches contract's skill_name_hash)
+        fn fnv1a_128(data: &[u8]) -> [u8; 16] {
+            const FNV_OFFSET_BASIS: u128 = 0x6c62272e07bb0142_62b821756295c58d;
+            const FNV_PRIME: u128 = 0x0000000001000000_000000000000013B;
+            let mut hash: u128 = FNV_OFFSET_BASIS;
+            for &byte in data {
+                hash ^= byte as u128;
+                hash = hash.wrapping_mul(FNV_PRIME);
+            }
+            hash.to_le_bytes()
+        }
+
+        fn hex_encode_32(bytes: &[u8; 32], hex_chars: &[u8; 16]) -> [u8; 64] {
+            let mut out = [0u8; 64];
+            for i in 0..32 {
+                out[i * 2] = hex_chars[(bytes[i] >> 4) as usize];
+                out[i * 2 + 1] = hex_chars[(bytes[i] & 0x0f) as usize];
+            }
+            out
+        }
+
+        fn hex_encode_16(bytes: &[u8; 16], hex_chars: &[u8; 16]) -> [u8; 32] {
+            let mut out = [0u8; 32];
+            for i in 0..16 {
+                out[i * 2] = hex_chars[(bytes[i] >> 4) as usize];
+                out[i * 2 + 1] = hex_chars[(bytes[i] & 0x0f) as usize];
+            }
+            out
+        }
+
+        // Collect system identities that were registered (up to first 10 for attestation pairs)
+        let attestation_skills: &[&[u8]] = &[b"Infrastructure", b"Consensus", b"Security"];
+        let mut system_addrs: Vec<[u8; 32]> = Vec::new();
+
+        // Use the same pairs from genesis_names: first 10 unique owner addresses
+        let mut seen_addrs = std::collections::HashSet::new();
+        for gn in genesis_names {
+            let owner_addr = if gn.owner_key == "admin" {
+                admin
+            } else {
+                address_map.get(gn.owner_key).map(|p| p.0).unwrap_or(admin)
+            };
+            if seen_addrs.insert(owner_addr) {
+                system_addrs.push(owner_addr);
+                if system_addrs.len() >= 10 {
+                    break;
+                }
+            }
+        }
+
+        let mut attest_count: u64 = 0;
+        let now_ts: u64 = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        // Each system identity attests the NEXT identity's skills (round-robin)
+        for i in 0..system_addrs.len() {
+            let attester = system_addrs[i];
+            let target = system_addrs[(i + 1) % system_addrs.len()];
+            if attester == target {
+                continue;
+            }
+
+            let attester_hex = hex_encode_32(&attester, hex_chars);
+            let target_hex = hex_encode_32(&target, hex_chars);
+
+            for skill_name in attestation_skills {
+                let skill_hash = fnv1a_128(skill_name);
+                let skill_hash_hex = hex_encode_16(&skill_hash, hex_chars);
+
+                // Build attestation key: "attest_{target_hex}_{skill_hash_hex}_{attester_hex}"
+                let mut att_key = Vec::with_capacity(7 + 64 + 1 + 32 + 1 + 64);
+                att_key.extend_from_slice(b"attest_");
+                att_key.extend_from_slice(&target_hex);
+                att_key.push(b'_');
+                att_key.extend_from_slice(&skill_hash_hex);
+                att_key.push(b'_');
+                att_key.extend_from_slice(&attester_hex);
+
+                // Attestation data: level (1 byte) + timestamp (8 bytes)
+                let mut att_data = Vec::with_capacity(9);
+                att_data.push(5u8); // Level 5 (highest) for system attestations
+                att_data.extend_from_slice(&now_ts.to_le_bytes());
+
+                if let Err(_) = state.put_contract_storage(moltyid_pk, &att_key, &att_data) {
+                    continue;
+                }
+
+                // Build attestation count key: "attest_count_{target_hex}_{skill_hash_hex}"
+                let mut count_key = Vec::with_capacity(13 + 64 + 1 + 32);
+                count_key.extend_from_slice(b"attest_count_");
+                count_key.extend_from_slice(&target_hex);
+                count_key.push(b'_');
+                count_key.extend_from_slice(&skill_hash_hex);
+
+                // Read existing count and increment
+                let existing = state
+                    .get_contract_storage(moltyid_pk, &count_key)
+                    .ok()
+                    .flatten()
+                    .map(|d| {
+                        if d.len() >= 8 {
+                            u64::from_le_bytes([d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]])
+                        } else {
+                            0
+                        }
+                    })
+                    .unwrap_or(0);
+                let _ = state.put_contract_storage(
+                    moltyid_pk,
+                    &count_key,
+                    &(existing + 1).to_le_bytes(),
+                );
+
+                attest_count += 1;
+            }
+        }
+
+        if attest_count > 0 {
+            info!(
+                "  ATTEST {} genesis cross-attestations across {} system identities",
+                attest_count,
+                system_addrs.len()
+            );
+        }
     }
 
     info!("──────────────────────────────────────────────────────");

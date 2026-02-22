@@ -1202,7 +1202,7 @@ async function updateContractMonitor() {
                     if (cs) cs = { markets: cs.open_markets || 0, volume: cs.total_volume || 0, collateral: cs.total_collateral || 0, fees: cs.fees_collected || 0 };
                 } else if (c.symbol === 'YID') {
                     const stats = await rpc('getMoltyIdStats');
-                    if (stats) cs = { identities: stats.total_identities || 0, names: stats.total_names || 0, skills: stats.total_skills || 0 };
+                    if (stats) cs = { identities: stats.total_identities || 0, names: stats.total_names || 0, skills: stats.total_skills || 0, attestations: stats.total_attestations || 0 };
                 }
                 if (cs) {
                     const entries = Object.entries(cs).slice(0, 4);

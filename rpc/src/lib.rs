@@ -7416,6 +7416,8 @@ async fn handle_get_moltyid_stats(state: &RpcState) -> Result<serde_json::Value,
     // Acceptable for current identity counts. Consider caching or contract-side
     // aggregate counters if identity count exceeds 100K.
     let mut tier_distribution = [0u64; 6];
+    let mut total_skills: u64 = 0;
+    let mut total_vouches: u64 = 0;
     for (key, value) in &contract.storage {
         if !key.starts_with(b"id:") {
             continue;
@@ -7426,11 +7428,24 @@ async fn handle_get_moltyid_stats(state: &RpcState) -> Result<serde_json::Value,
         let score =
             get_moltyid_reputation(&contract, &identity.owner).unwrap_or(identity.reputation);
         tier_distribution[moltyid_trust_tier(score) as usize] += 1;
+        total_skills += identity.skill_count as u64;
+        total_vouches += identity.vouch_count as u64;
+    }
+
+    // Count attestations from attestation count keys
+    let mut total_attestations: u64 = 0;
+    for (key, value) in &contract.storage {
+        if key.starts_with(b"attest_count_") {
+            total_attestations += read_u64_le(value, 0).unwrap_or(0);
+        }
     }
 
     Ok(serde_json::json!({
         "total_identities": total_identities,
         "total_names": total_names,
+        "total_skills": total_skills,
+        "total_vouches": total_vouches,
+        "total_attestations": total_attestations,
         "tier_distribution": {
             "newcomer": tier_distribution[0],
             "verified": tier_distribution[1],
