@@ -103,7 +103,7 @@ Full mock data for all 7 contracts:
 ### Developer Experience:
 - ✅ **7 Contract Templates** - Full mock data for all contract types
 - ✅ **Realistic Flows** - Mimics actual blockchain behavior
-- ✅ **Fee Simulation** - 50% burn, proper calculation
+- ✅ **Fee Simulation** - 40% burn, proper calculation
 - ✅ **Gas Tracking** - Shows gas limits and usage
 - ✅ **Version Control** - Programs track version numbers
 - ✅ **Owner Permissions** - Only owner can upgrade/close

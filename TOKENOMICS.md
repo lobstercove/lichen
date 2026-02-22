@@ -48,7 +48,7 @@
 | Transaction block reward | **0.1 MOLT** per block | 100,000,000 |
 | Heartbeat block reward | **0.05 MOLT** per empty block | 50,000,000 |
 | Slots per year | 78,840,000 (~400ms slots) | — |
-| Code: `ANNUAL_INFLATION_BPS` | 500 (5%) | — |
+| Code: `ANNUAL_REWARD_DECAY_BPS` | 2000 (20%) | — |
 
 ### Fee Structure
 
@@ -355,11 +355,11 @@ Early Contributors:        100,000,000  (10%)  ← matches ecosystem_partnership
 - Rewards claims don't actually transfer tokens
 - **Fix (in DEX milestone):** Define that dex_rewards draws from the `builder_grants` wallet (350M MOLT), not validator rewards. Builder grants purpose = incentivize ecosystem growth, which trading rewards accomplish.
 
-### 4. `ANNUAL_INFLATION_BPS = 500`
+### 4. `ANNUAL_REWARD_DECAY_BPS = 2000`
 
-The code has a 5% annual inflation constant, but **MOLT is supposed to be non-inflationary**. Block rewards come from the pre-allocated validator rewards pool (100M), not newly minted tokens.
+The code uses a 20% annual reward decay constant. **MOLT is non-inflationary** — block rewards come from the pre-allocated validator rewards pool (100M), not newly minted tokens.
 
-- **Clarify:** This constant should be renamed to `ANNUAL_REWARD_BPS` or `MAX_ANNUAL_REWARD_RATE` to reflect that it's a withdrawal rate from the pool, not inflation. No new MOLT is minted — it's distributed from the reward pool.
+- **Done:** Renamed to `ANNUAL_REWARD_DECAY_BPS = 2000` to reflect that it's a decay rate on the reward pool, not inflation. No new MOLT is minted — it's distributed from the reward pool.
 
 ---
 
@@ -374,7 +374,7 @@ After choosing the $0.10 price, the following parameters need code changes:
 | 3 | `REWARD_POOL_PER_MONTH` → 100K MOLT | contracts/dex_rewards/src/lib.rs | Medium |
 | 4 | `MIN_LISTING_LIQUIDITY` → 10K MOLT | contracts/dex_governance/src/lib.rs | Medium |
 | 5 | Align genesis.rs distribution to multisig.rs | core/src/genesis.rs | **High** |
-| 6 | Rename `ANNUAL_INFLATION_BPS` | core/src/consensus.rs | Low |
+| 6 | ~~Rename `ANNUAL_INFLATION_BPS`~~ **Done → `ANNUAL_REWARD_DECAY_BPS`** | core/src/consensus.rs | ✅ Done |
 | 7 | Define reward source: builder_grants wallet | contracts/dex_rewards/src/lib.rs | **High** |
 | 8 | Fix slashing discrepancy | core/src/genesis.rs | Low |
 

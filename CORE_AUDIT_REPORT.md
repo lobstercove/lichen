@@ -279,7 +279,7 @@ The moltchain-core crate is a Rust blockchain runtime (~15,000 lines of source) 
 - None.
 
 #### 8. Blockchain-Specific Issues
-- **[INFO] B-GEN-1:** Genesis distribution totals 1B MOLT: 40% treasury, 25% builder, 15% validator, 10% founding, 5% partnerships, 5% reserve. This matches the whitepaper.
+- **[INFO] B-GEN-1:** Genesis distribution totals 1B MOLT: 25% community treasury, 35% builder grants, 10% validator rewards, 10% founding moltys, 10% ecosystem partnerships, 10% reserve pool. This matches the whitepaper.
 
 #### 9. Error Handling
 - Adequate.

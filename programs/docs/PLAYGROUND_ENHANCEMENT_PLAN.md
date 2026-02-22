@@ -16,7 +16,7 @@ Transform the Playground into a comprehensive demo matching Solana Playground (b
   - Close: Close contract and withdraw
 - ✅ Fee System
   - BASE_FEE = 1,000,000 shells (0.001 MOLT)
-  - 50% burned, 50% to validator
+  - 40% burned, 30% producer, 10% voters, 10% validator pool, 10% community
 - ✅ Transaction structure with signatures
 - ✅ Gas metering (DEFAULT_GAS_LIMIT = 1,000,000)
 
