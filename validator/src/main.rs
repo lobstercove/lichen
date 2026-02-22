@@ -3450,6 +3450,208 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
         }
     }
 
+    // ── DEX Router: wire dex_core, dex_amm, moltswap addresses ──
+    // Opcode 1 = set_addresses. Format: [1][admin 32B][dex_core 32B][dex_amm 32B][moltswap 32B]
+    if let Some(router_pk) = address_map.get("dex_router") {
+        let dex_core_addr = address_map.get("dex_core").map(|p| p.0).unwrap_or(admin);
+        let dex_amm_addr = address_map.get("dex_amm").map(|p| p.0).unwrap_or(admin);
+        let moltswap_addr = address_map.get("moltswap").map(|p| p.0).unwrap_or(admin);
+        let mut args = Vec::with_capacity(129);
+        args.push(1u8); // opcode 1 = set_addresses
+        args.extend_from_slice(&admin);
+        args.extend_from_slice(&dex_core_addr);
+        args.extend_from_slice(&dex_amm_addr);
+        args.extend_from_slice(&moltswap_addr);
+        if genesis_exec_contract(
+            state,
+            router_pk,
+            deployer_pubkey,
+            "call",
+            &args,
+            "dex_router(set_addresses)",
+        ) {
+            info!("  SET dex_router(set_addresses)");
+        } else {
+            warn!("  WARN: Failed to set dex_router addresses");
+        }
+
+        // ── DEX Router: register genesis routes (10 routes for 5 pairs) ──
+        // Opcode 2 = register_route. 115 bytes:
+        // [opcode 1B][caller 32B][token_in 32B][token_out 32B][route_type 1B][pool_id 8B][secondary_id 8B][split_percent 1B]
+        let wsol_addr = address_map.get("wsol_token").map(|p| p.0).unwrap_or([0u8; 32]);
+        let weth_addr = address_map.get("weth_token").map(|p| p.0).unwrap_or([0u8; 32]);
+
+        // (token_in, token_out, pair_id, pool_id, label)
+        let route_pairs: [([u8; 32], [u8; 32], u64, u64, &str); 5] = [
+            (molt_addr, musd_addr, 1, 1, "MOLT/mUSD"),
+            (wsol_addr, musd_addr, 2, 2, "wSOL/mUSD"),
+            (weth_addr, musd_addr, 3, 3, "wETH/mUSD"),
+            (wsol_addr, molt_addr, 4, 4, "wSOL/MOLT"),
+            (weth_addr, molt_addr, 5, 5, "wETH/MOLT"),
+        ];
+
+        for (token_in, token_out, pair_id, pool_id, label) in &route_pairs {
+            // CLOB route: route_type=0, id=pair_id
+            let mut clob_args = Vec::with_capacity(115);
+            clob_args.push(2u8); // opcode 2 = register_route
+            clob_args.extend_from_slice(&admin);
+            clob_args.extend_from_slice(token_in);
+            clob_args.extend_from_slice(token_out);
+            clob_args.push(0); // route_type: DIRECT_CLOB
+            clob_args.extend_from_slice(&pair_id.to_le_bytes());
+            clob_args.extend_from_slice(&0u64.to_le_bytes()); // secondary_id
+            clob_args.push(0); // split_percent
+            if genesis_exec_contract(
+                state, router_pk, deployer_pubkey, "call", &clob_args,
+                &format!("dex_router(route CLOB {})", label),
+            ) {
+                info!("  ROUTE CLOB {} (pair_id={})", label, pair_id);
+            } else {
+                warn!("  WARN: Failed to register CLOB route {}", label);
+            }
+
+            // AMM route: route_type=1, id=pool_id
+            let mut amm_args = Vec::with_capacity(115);
+            amm_args.push(2u8); // opcode 2 = register_route
+            amm_args.extend_from_slice(&admin);
+            amm_args.extend_from_slice(token_in);
+            amm_args.extend_from_slice(token_out);
+            amm_args.push(1); // route_type: DIRECT_AMM
+            amm_args.extend_from_slice(&pool_id.to_le_bytes());
+            amm_args.extend_from_slice(&0u64.to_le_bytes()); // secondary_id
+            amm_args.push(0); // split_percent
+            if genesis_exec_contract(
+                state, router_pk, deployer_pubkey, "call", &amm_args,
+                &format!("dex_router(route AMM {})", label),
+            ) {
+                info!("  ROUTE AMM {} (pool_id={})", label, pool_id);
+            } else {
+                warn!("  WARN: Failed to register AMM route {}", label);
+            }
+        }
+        info!("  ✅ Registered 10 genesis routes (5 CLOB + 5 AMM)");
+    }
+
+    // ── MoltDAO: wire MoltyID address for identity verification ──
+    // Named export: set_moltyid_address. Args: [admin 32B][moltyid_addr 32B]
+    if let Some(dao_pk) = address_map.get("moltdao") {
+        let moltyid_addr = address_map.get("moltyid").map(|p| p.0).unwrap_or(admin);
+        let mut args = Vec::with_capacity(64);
+        args.extend_from_slice(&admin);
+        args.extend_from_slice(&moltyid_addr);
+        if genesis_exec_contract(
+            state,
+            dao_pk,
+            deployer_pubkey,
+            "set_moltyid_address",
+            &args,
+            "moltdao(moltyid)",
+        ) {
+            info!("  SET moltdao(moltyid)");
+        } else {
+            warn!("  WARN: Failed to set moltdao moltyid address");
+        }
+    }
+
+    // ── MoltSwap: wire MoltyID address for identity verification ──
+    // Named export: set_moltyid_address. Args: [admin 32B][moltyid_addr 32B]
+    if let Some(swap_pk) = address_map.get("moltswap") {
+        let moltyid_addr = address_map.get("moltyid").map(|p| p.0).unwrap_or(admin);
+        let mut args = Vec::with_capacity(64);
+        args.extend_from_slice(&admin);
+        args.extend_from_slice(&moltyid_addr);
+        if genesis_exec_contract(
+            state,
+            swap_pk,
+            deployer_pubkey,
+            "set_moltyid_address",
+            &args,
+            "moltswap(moltyid)",
+        ) {
+            info!("  SET moltswap(moltyid)");
+        } else {
+            warn!("  WARN: Failed to set moltswap moltyid address");
+        }
+    }
+
+    // ── Reef Storage: wire MOLT token address ──
+    // Named export: set_molt_token. Args: [admin 32B][moltcoin_addr 32B]
+    if let Some(reef_pk) = address_map.get("reef_storage") {
+        let mut args = Vec::with_capacity(64);
+        args.extend_from_slice(&admin);
+        args.extend_from_slice(&molt_addr);
+        if genesis_exec_contract(
+            state,
+            reef_pk,
+            deployer_pubkey,
+            "set_molt_token",
+            &args,
+            "reef_storage(moltcoin)",
+        ) {
+            info!("  SET reef_storage(moltcoin)");
+        } else {
+            warn!("  WARN: Failed to set reef_storage molt token address");
+        }
+    }
+
+    // ── LobsterLend: wire MOLT token address ──
+    // Named export: set_moltcoin_address. Args: [admin 32B][moltcoin_addr 32B]
+    if let Some(lend_pk) = address_map.get("lobsterlend") {
+        let mut args = Vec::with_capacity(64);
+        args.extend_from_slice(&admin);
+        args.extend_from_slice(&molt_addr);
+        if genesis_exec_contract(
+            state,
+            lend_pk,
+            deployer_pubkey,
+            "set_moltcoin_address",
+            &args,
+            "lobsterlend(moltcoin)",
+        ) {
+            info!("  SET lobsterlend(moltcoin)");
+        } else {
+            warn!("  WARN: Failed to set lobsterlend moltcoin address");
+        }
+    }
+
+    // ── MoltBridge: wire MOLT token + add first bridge validator ──
+    // Named export: set_token_address. Args: [admin 32B][moltcoin_addr 32B]
+    if let Some(bridge_pk) = address_map.get("moltbridge") {
+        let mut args = Vec::with_capacity(64);
+        args.extend_from_slice(&admin);
+        args.extend_from_slice(&molt_addr);
+        if genesis_exec_contract(
+            state,
+            bridge_pk,
+            deployer_pubkey,
+            "set_token_address",
+            &args,
+            "moltbridge(token)",
+        ) {
+            info!("  SET moltbridge(token)");
+        } else {
+            warn!("  WARN: Failed to set moltbridge token address");
+        }
+
+        // Add deployer as first bridge validator
+        // Named export: add_bridge_validator. Args: [admin 32B][validator_pubkey 32B]
+        let mut val_args = Vec::with_capacity(64);
+        val_args.extend_from_slice(&admin);
+        val_args.extend_from_slice(&admin); // deployer is first bridge validator
+        if genesis_exec_contract(
+            state,
+            bridge_pk,
+            deployer_pubkey,
+            "add_bridge_validator",
+            &val_args,
+            "moltbridge(bridge_validator)",
+        ) {
+            info!("  SET moltbridge(bridge_validator)");
+        } else {
+            warn!("  WARN: Failed to add bridge validator to moltbridge");
+        }
+    }
+
     // ── MoltyID: Bootstrap admin reputation ──
     // The admin (deployer) needs reputation >= 1000 to create prediction markets,
     // submit governance proposals, resolve markets, etc. The initial identity
@@ -4270,6 +4472,74 @@ fn genesis_seed_analytics_prices(state: &StateStore, deployer_pubkey: &Pubkey) {
                 &candle_start.to_le_bytes(),
             );
         }
+    }
+}
+
+// ========================================================================
+//  GENESIS PHASE 4c — Seed dex_margin mark/index prices & enable pairs
+//  Writes mrg_mark_{pair_id}, mrg_idx_{pair_id}, mrg_ena_{pair_id} directly
+//  to dex_margin contract storage so margin trading works from genesis.
+//  Prices match the oracle seeds (MOLT=$0.10, wSOL=$82, wETH=$1,979).
+// ========================================================================
+
+fn genesis_seed_margin_prices(state: &StateStore, deployer_pubkey: &Pubkey) {
+    let margin_pk = match derive_contract_address(deployer_pubkey, "dex_margin") {
+        Some(pk) => pk,
+        None => {
+            warn!("  SKIP margin price seeding: dex_margin not derived");
+            return;
+        }
+    };
+
+    const PRICE_SCALE: u64 = 1_000_000_000;
+    let molt_usd: f64 = 0.10;
+    let wsol_usd: f64 = 82.0;
+    let weth_usd: f64 = 1979.0;
+
+    // Pair IDs match genesis_create_trading_pairs order:
+    //   1=MOLT/mUSD, 2=wSOL/mUSD, 3=wETH/mUSD, 4=wSOL/MOLT, 5=wETH/MOLT
+    let pair_prices: [(u64, f64); 5] = [
+        (1, molt_usd),            // MOLT/mUSD = $0.10
+        (2, wsol_usd),            // wSOL/mUSD = $82
+        (3, weth_usd),            // wETH/mUSD = $1,979
+        (4, wsol_usd / molt_usd), // wSOL/MOLT = 820
+        (5, weth_usd / molt_usd), // wETH/MOLT = 19,790
+    ];
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    for (pair_id, price_f64) in &pair_prices {
+        let price_scaled = (*price_f64 * PRICE_SCALE as f64) as u64;
+
+        // Mark price: mrg_mark_{pair_id} → [price 8B LE][timestamp 8B LE]
+        let mark_key = format!("mrg_mark_{}", pair_id);
+        let mut mark_val = Vec::with_capacity(16);
+        mark_val.extend_from_slice(&price_scaled.to_le_bytes());
+        mark_val.extend_from_slice(&now_secs.to_le_bytes());
+        let _ = state.put_contract_storage(&margin_pk, mark_key.as_bytes(), &mark_val);
+
+        // Index price: mrg_idx_{pair_id} → [price 8B LE][timestamp 8B LE]
+        let idx_key = format!("mrg_idx_{}", pair_id);
+        let mut idx_val = Vec::with_capacity(16);
+        idx_val.extend_from_slice(&price_scaled.to_le_bytes());
+        idx_val.extend_from_slice(&now_secs.to_le_bytes());
+        let _ = state.put_contract_storage(&margin_pk, idx_key.as_bytes(), &idx_val);
+
+        // Enable margin trading: mrg_ena_{pair_id} → [1u64 LE]
+        let ena_key = format!("mrg_ena_{}", pair_id);
+        let _ = state.put_contract_storage(
+            &margin_pk,
+            ena_key.as_bytes(),
+            &1u64.to_le_bytes(),
+        );
+
+        info!(
+            "  MARGIN seeded: pair {} → price {:.4}, mark+index+enabled",
+            pair_id, price_f64
+        );
     }
 }
 
@@ -6016,6 +6286,7 @@ async fn run_validator() {
         genesis_initialize_contracts(&state, &genesis_pubkey, "FIRST-BOOT:");
         genesis_create_trading_pairs(&state, &genesis_pubkey, "FIRST-BOOT:");
         genesis_seed_oracle(&state, &genesis_pubkey, "FIRST-BOOT:");
+        genesis_seed_margin_prices(&state, &genesis_pubkey);
     } else if genesis_exists {
         info!("✓ Genesis state already exists");
         let last_slot = state.get_last_slot().unwrap_or(0);
@@ -6155,6 +6426,17 @@ async fn run_validator() {
 
             // Check if oracle price feeds are present (price_MOLT)
             let molt_price_exists = state.get_program_storage("ORACLE", b"price_MOLT").is_some();
+
+            // Check if margin prices are present (mrg_mark_1 = MOLT/mUSD)
+            let mrg_mark_1_exists = state
+                .get_program_storage("MARGIN", b"mrg_mark_1")
+                .is_some();
+
+            if !mrg_mark_1_exists {
+                info!("🔄 RECONCILE: Margin prices missing — seeding mark/index prices");
+                genesis_seed_margin_prices(&state, &genesis_pk);
+                info!("  ✓ Margin prices seeded for pairs 1-5");
+            }
 
             if !molt_price_exists {
                 info!("🔄 RECONCILE: Oracle price feeds missing — seeding initial prices");
