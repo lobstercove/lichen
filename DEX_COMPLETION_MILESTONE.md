@@ -89,7 +89,7 @@ WETH ──DEX swap──► MOLT     (via WETH/mUSD → mUSD/MOLT route)
 
 ### Fee Burn Mechanism
 
-- 50% of all transaction fees are burned (MOLT is deflationary)
+- 40% of all transaction fees are burned (MOLT is deflationary)
 - MOLT is NOT mintable (1B fixed supply since genesis)
 - MOLT IS burnable (fee burn reduces circulating supply over time)
 
@@ -110,15 +110,16 @@ WETH ──DEX swap──► MOLT     (via WETH/mUSD → mUSD/MOLT route)
 
 | Allocation | MOLT | % | Purpose |
 |-----------|------|---|--------|
-| Community Treasury | 400,000,000 | 40% | Ecosystem growth, governed by DAO |
-| Builder Grants | 250,000,000 | 25% | DEX rewards, launchpad incentives |
-| Validator Rewards | 150,000,000 | 15% | Block production rewards pool |
-| Founding Team | 100,000,000 | 10% | 3-year vesting |
-| Liquidity Bootstrapping | 100,000,000 | 10% | Initial DEX liquidity |
+| Community Treasury | 250,000,000 | 25% | Ecosystem growth, governed by DAO |
+| Builder Grants | 350,000,000 | 35% | DEX rewards, launchpad incentives |
+| Validator Rewards | 100,000,000 | 10% | Block production rewards pool |
+| Founding Team | 100,000,000 | 10% | 6-mo cliff + 18-mo vest |
+| Ecosystem Partnerships | 100,000,000 | 10% | Strategic partners |
+| Reserve Pool | 100,000,000 | 10% | Emergency buffer |
 
 ### Task 0.2 — Rename ANNUAL_INFLATION_BPS
 
-**Problem:** `ANNUAL_INFLATION_BPS = 500` in `consensus.rs` implies MOLT is inflationary. It is NOT — MOLT is fixed supply, not mintable. Block rewards are drawn from the 150M validator rewards pool.
+**Problem:** `ANNUAL_INFLATION_BPS = 500` in `consensus.rs` implies MOLT is inflationary. It is NOT — MOLT is fixed supply, not mintable. Block rewards are drawn from the 100M validator rewards pool.
 
 **Fix:** Rename to `ANNUAL_REWARD_RATE_BPS` across all files. Add comment: "Target annual draw rate from reward pool (informational — not used in calculation)."
 
@@ -133,8 +134,8 @@ WETH ──DEX swap──► MOLT     (via WETH/mUSD → mUSD/MOLT route)
 **The entire system was designed at $1.00/MOLT.** Evidence:
 - `reference_price_usd = 1.0` in `RewardConfig` (consensus.rs line ~54)
 - At $1: deploy = $2.50, base fee = $0.00001 — matching the website/docs exactly
-- Block rewards: 0.9 MOLT = $0.18/block, designed to emit ~1.42% of supply/year at 100% activity
-- Heartbeat: 0.135 MOLT = 15% of tx reward — design comment says "15% of transaction reward"
+- Block rewards: 0.1 MOLT = $0.01/block at $0.10, designed to emit ~1.42% of supply/year at 100% activity
+- Heartbeat: 0.05 MOLT = 50% of tx reward — design comment says "50% of transaction reward"
 - The dynamic price adjustment (PriceOracle, get_adjusted_reward) exists in code but is **dormant** — MockOracle always returns $1.00, never called by the validator
 
 **At $0.10, every value is 10× too cheap in USD.** We must multiply MOLT amounts by 10 to hit the same USD targets.
@@ -155,35 +156,35 @@ These target specific USD prices documented on the website and whitepaper.
 
 #### Category B — Block Rewards (DECISION: 5× recommended)
 
-Block rewards come from the **validator rewards pool (150M MOLT)**, not minted. At $1 the original design intent was:
+Block rewards come from the **validator rewards pool (100M MOLT)**, not minted. At $1 the original design intent was:
 - 0.18 MOLT/block = $0.18 per transaction block
 - 0.027 MOLT/block = $0.027 per heartbeat (15% of tx reward)
 
-> **✅ Applied:** 5× upgrade now live — 0.9 MOLT/tx, 0.135 MOLT/heartbeat
+> **✅ Applied:** 5× upgrade now live — 0.1 MOLT/tx, 0.05 MOLT/heartbeat
 
 **At $0.10, keeping the same MOLT amounts gives validators only $0.018/block — 10× less than designed.**
 
 Pool depletion analysis at various multipliers (assuming 3 validators, 50% tx activity):
 
-| Variant | TX Reward | Heartbeat | USD/block | Annual Draw (MOLT) | Pool Life (150M) |
+| Variant | TX Reward | Heartbeat | USD/block | Annual Draw (MOLT) | Pool Life (100M) |
 |---------|-----------|-----------|-----------|-------------------|------------------|
 | 1× (no change) | 0.18 MOLT | 0.027 MOLT | $0.018 | ~8.1M | **~18.4 years** |
 | 2× | 0.36 MOLT | 0.054 MOLT | $0.036 | ~16.3M | **~9.2 years** |
-| **5× (recommended)** | **0.9 MOLT** | **0.135 MOLT** | **$0.09** | **~40.7M** | **~3.7 years** |
+| **5× (recommended)** | **0.1 MOLT** | **0.05 MOLT** | **$0.01** | **~5.9M** | **~16.9 years** |
 | 10× (full USD match) | 1.8 MOLT | 0.27 MOLT | $0.18 | ~81.3M | **~1.8 years** |
 
 **Recommendation: 5×.** Rationale:
-1. Validators earn $0.09/block — attractive enough for early adoption
-2. Pool lasts ~3.7 years at 50% activity — enough time for fee revenue to grow
+1. Validators earn $0.01/block — attractive enough for early adoption
+2. Pool lasts ~2.5 years at 50% activity — enough time for fee revenue to grow
 3. As DEX volume grows, validators earn more from the 30% fee share (sustainable long-term)
 4. Post-depletion, validators live on fees alone (like Bitcoin post-halving)
 5. The dormant dynamic adjustment mechanism (RewardConfig) can be activated later for fine-tuning
 
 | # | Parameter | File:Line | Current Shells | Current MOLT | **New MOLT** | **New Shells** | USD at $0.10 |
 |---|-----------|-----------|---------------|-------------|------------|--------------|-------------|
-| 8 | `TRANSACTION_BLOCK_REWARD` | consensus.rs:16 | 180,000,000 | 0.18 | **0.9** | **900,000,000** | **$0.09** |
-| 9 | `HEARTBEAT_BLOCK_REWARD` | consensus.rs:19 | 27,000,000 | 0.027 | **0.135** | **135,000,000** | **$0.0135** |
-| 10 | `BLOCK_REWARD` (legacy alias) | consensus.rs:22 | 180,000,000 | 0.18 | **0.9** | **900,000,000** | (match #8) |
+| 8 | `TRANSACTION_BLOCK_REWARD` | consensus.rs:16 | 180,000,000 | 0.18 | **0.1** | **100,000,000** | **$0.01** |
+| 9 | `HEARTBEAT_BLOCK_REWARD` | consensus.rs:19 | 27,000,000 | 0.027 | **0.05** | **50,000,000** | **$0.005** |
+| 10 | `BLOCK_REWARD` (legacy alias) | consensus.rs:22 | 180,000,000 | 0.18 | **0.1** | **100,000,000** | (match #8) |
 
 #### Category C — Staking Thresholds (10×)
 
@@ -203,7 +204,7 @@ Original design: $10K min / $100K max to run a validator. At $0.10 those targets
 | 15 | `GRADUATION_MARKET_CAP` | clawpump:48 | 100,000 MOLT | $10,000 | **1,000,000 MOLT** | **$100,000** | Original $100K target |
 | 16 | `DEFAULT_MAX_BUY_AMOUNT` | clawpump:72 | 10,000 MOLT | $1,000 | **100,000 MOLT** | **$10,000** | Anti-whale cap |
 | 17 | `MIN_LISTING_LIQUIDITY` | dex_governance:31 | 10 MOLT | $1 | **100,000 MOLT** | **$10,000** | Fix 1000× bug + scale |
-| 18 | `REWARD_POOL_PER_MONTH` | dex_rewards:26 | 1,000,000 MOLT | $100K/mo | **1,000,000 MOLT** | **$100K/mo** | Keep same — draws from 250M builder grants, lasts 20+ years |
+| 18 | `REWARD_POOL_PER_MONTH` | dex_rewards:26 | 1,000,000 MOLT | $100K/mo | **100,000 MOLT** | **$10K/mo** | Draws from 350M builder grants, lasts 290+ years |
 | 19 | `TIER_BRONZE_MAX` | dex_rewards:30 | 10,000 MOLT vol | $1K vol | **100,000 MOLT** | **$10K vol** | Scale volume tiers |
 | 20 | `TIER_SILVER_MAX` | dex_rewards:31 | 100,000 MOLT vol | $10K vol | **1,000,000 MOLT** | **$100K vol** | Scale volume tiers |
 | 21 | `TIER_GOLD_MAX` | dex_rewards:32 | 1,000,000 MOLT vol | $100K vol | **10,000,000 MOLT** | **$1M vol** | Scale volume tiers |
@@ -227,7 +228,7 @@ Original design: $10K min / $100K max to run a validator. At $0.10 those targets
 |---|-----------|-----------|---------|-------------|----------|
 | 25 | `reference_price_usd` | consensus.rs:~54 | 1.0 | **0.10** | Must match launch price for dormant oracle |
 | 26 | `ANNUAL_INFLATION_BPS` | consensus.rs:25 | 500 | **Rename → `ANNUAL_REWARD_RATE_BPS`** | Not inflation — pool draw (Task 0.2) |
-| 27 | `REWARD_POOL_MOLT` | main.rs:43 | 150,000,000 | **150,000,000** | No change — genesis allocation |
+| 27 | `REWARD_POOL_MOLT` | main.rs:43 | 150,000,000 | **100,000,000** | Updated — genesis allocation |
 
 #### Category H — Faucet (testnet only)
 
@@ -247,7 +248,7 @@ Original design: $10K min / $100K max to run a validator. At $0.10 those targets
 | AMM fee tiers | dex_amm | 1/5/30/100 bps | Percentage of trade |
 | All margin params | dex_margin | bps | Percentage-based |
 | Lending LTV/rates | lobsterlend | % and bps | Interest rates |
-| Fee burn/producer/voter/treasury | processor/genesis | 50/30/10/10% | Ratios |
+| Fee burn/producer/voter/treasury/community | processor/genesis | 40/30/10/10/10% | Ratios |
 | All slashing percentages | consensus | % | Percentage-based |
 | Reputation scores | moltyid | points | Not MOLT |
 | ClawPump platform fee | clawpump | 1% | Percentage-based |
@@ -264,10 +265,10 @@ Original design: $10K min / $100K max to run a validator. At $0.10 those targets
 
 | Source | Pool | Monthly Draw | Depletes In |
 |--------|------|-------------|-------------|
-| Block rewards (5× at $0.10) | Validator Rewards (150M) | ~3.4M MOLT | **~3.7 years** (50% activity) |
-| DEX trading rewards | Builder Grants (250M) | 1M MOLT | **~20.8 years** |
+| Block rewards (5× at $0.10) | Validator Rewards (100M) | ~3.4M MOLT | **~2.4 years** (50% activity) |
+| DEX trading rewards | Builder Grants (350M) | 100K MOLT | **~290 years** |
 
-**After validator reward pool depletion:** Validators earn from transaction fees only (30% block producer + 10% voter share). At scale, fee revenue exceeds pool rewards. The community treasury (400M) can vote to replenish via governance if needed.
+**After validator reward pool depletion:** Validators earn from transaction fees only (30% block producer + 10% voter share + 10% community share). At scale, fee revenue exceeds pool rewards. The community treasury (250M) can vote to replenish via governance if needed.
 
 #### Complete Readjustment Summary
 
@@ -851,7 +852,7 @@ For `dex_analytics` contract — 9 intervals covering seconds to years:
 | What currency for DEX trading? | **mUSD** — all trading pairs are TOKEN/mUSD |
 | How do users get MOLT? | Bridge USDT/USDC → mUSD, then swap mUSD → MOLT on DEX |
 | How do users get mUSD? | Bridge USDT/USDC from external chains via moltbridge |
-| Is MOLT mintable? | **No** — fixed 1B supply, deflationary via 50% fee burn |
+| Is MOLT mintable? | **No** — fixed 1B supply, deflationary via 40% fee burn |
 | Is MOLT burnable? | **Yes** — fees burn mechanism |
 | What happens on graduation? | Token gets DEX pair (TOKEN/mUSD), AMM pool created, initial liquidity seeded |
 | Where does insurance fund live? | Counter in dex_margin contract storage, withdrawal via governance |

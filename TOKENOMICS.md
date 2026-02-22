@@ -28,25 +28,25 @@
 | Total Supply | **1,000,000,000 MOLT** (1 billion) |
 | Decimals | **9** (1 MOLT = 1,000,000,000 shells) |
 | Mintable | **No** — fixed supply, no inflation minting |
-| Burnable | **Yes** — 50% of all transaction fees burned |
+| Burnable | **Yes** — 40% of all transaction fees burned |
 
 ### Genesis Distribution (multisig.rs — canonical)
 
 | Wallet | MOLT | % | Purpose |
 |--------|------|---|---------|
-| Validator Rewards | 150,000,000 | 15% | Block rewards pool (diminishes over time) |
-| Community Treasury | 400,000,000 | 40% | Governance-allocated spending |
-| Builder Grants | 250,000,000 | 25% | Developer incentives |
+| Validator Rewards | 100,000,000 | 10% | Block rewards pool (diminishes over time) |
+| Community Treasury | 250,000,000 | 25% | Governance-allocated spending |
+| Builder Grants | 350,000,000 | 35% | Developer incentives |
 | Founding Moltys | 100,000,000 | 10% | Team / founding agents |
-| Ecosystem Partnerships | 50,000,000 | 5% | Partnerships, integrations |
-| Reserve Pool | 50,000,000 | 5% | Emergency reserve |
+| Ecosystem Partnerships | 100,000,000 | 10% | Partnerships, integrations |
+| Reserve Pool | 100,000,000 | 10% | Emergency reserve |
 
 ### Current Reward Rates
 
 | Reward Type | Amount per event | In shells |
 |-------------|-----------------|-----------|
-| Transaction block reward | **0.9 MOLT** per block | 900,000,000 |
-| Heartbeat block reward | **0.135 MOLT** per empty block | 135,000,000 |
+| Transaction block reward | **0.1 MOLT** per block | 100,000,000 |
+| Heartbeat block reward | **0.05 MOLT** per empty block | 50,000,000 |
 | Slots per year | 78,840,000 (~400ms slots) | — |
 | Code: `ANNUAL_INFLATION_BPS` | 500 (5%) | — |
 
@@ -66,10 +66,11 @@
 
 | Destination | % |
 |-------------|---|
-| **Burned** | 50% |
+| **Burned** | 40% |
 | Block producer | 30% |
 | Voter validators | 10% |
 | Community treasury | 10% |
+| Community pool | 10% |
 
 ---
 
@@ -80,32 +81,32 @@
 Assuming ~400ms slots, 78.84M slots/year:
 
 **Scenario A — High activity (50% blocks have transactions):**
-- TX blocks: 39.42M × 0.9 MOLT = **35,478,000 MOLT/year**
-- Empty blocks: 39.42M × 0.135 MOLT = **5,321,700 MOLT/year**
-- **Total emission: ~40,799,700 MOLT/year** (~4.08% of supply)
+- TX blocks: 39.42M × 0.1 MOLT = **3,942,000 MOLT/year**
+- Empty blocks: 39.42M × 0.05 MOLT = **1,971,000 MOLT/year**
+- **Total emission: ~5,913,000 MOLT/year** (~0.59% of supply)
 
 **Scenario B — Low activity (10% blocks have transactions):**
-- TX blocks: 7.884M × 0.9 MOLT = **7,095,600 MOLT/year**
-- Empty blocks: 70.956M × 0.135 MOLT = **9,579,060 MOLT/year**
-- **Total emission: ~16,674,660 MOLT/year** (~1.67% of supply)
+- TX blocks: 7.884M × 0.1 MOLT = **788,400 MOLT/year**
+- Empty blocks: 70.956M × 0.05 MOLT = **3,547,800 MOLT/year**
+- **Total emission: ~4,336,200 MOLT/year** (~0.43% of supply)
 
 **Scenario C — Maximum activity (100% blocks have transactions):**
-- TX blocks: 78.84M × 0.9 MOLT = **70,956,000 MOLT/year**
-- **Total emission: ~71M MOLT/year** (~7.1% of supply)
+- TX blocks: 78.84M × 0.1 MOLT = **7,884,000 MOLT/year**
+- **Total emission: ~7.9M MOLT/year** (~0.79% of supply)
 
 > **Note:** With adaptive heartbeat (5s interval instead of 400ms), actual heartbeat
 > block emission is ~12.5x lower than shown. At 5s intervals, heartbeat blocks/year ≈ 6.3M
-> (not 39-71M), so real-world heartbeat emission in Scenario B is closer to 850K MOLT/year.
+> (not 39-71M), so real-world heartbeat emission in Scenario B is closer to 315K MOLT/year.
 
 ### Reward Pool Depletion
 
-The validator reward pool is **150,000,000 MOLT** (15% of supply).
+The validator reward pool is **100,000,000 MOLT** (10% of supply).
 
 | Activity Level | Annual Emission | Years Until Depleted |
 |---------------|----------------|---------------------|
-| Low (10% tx) | 16.7M MOLT/yr | **~9 years** |
-| Medium (50% tx) | 40.8M MOLT/yr | **~3.7 years** |
-| High (100% tx) | 71M MOLT/yr | **~2.1 years** |
+| Low (10% tx) | 4.3M MOLT/yr | **~23 years** |
+| Medium (50% tx) | 5.9M MOLT/yr | **~17 years** |
+| High (100% tx) | 7.9M MOLT/yr | **~12.7 years** |
 
 > **Note:** These are theoretical maximums at base reward rates. In practice, the
 > price-based reward adjustment (oracle) reduces emissions as MOLT price rises
@@ -117,18 +118,18 @@ For burn to matter, we need transaction volume. At 0.001 MOLT base fee:
 
 | Daily Transactions | Fee Burned/Day | Annual Burn |
 |-------------------|---------------|-------------|
-| 100,000 | 50 MOLT | 18,250 MOLT |
-| 1,000,000 | 500 MOLT | 182,500 MOLT |
-| 10,000,000 | 5,000 MOLT | 1,825,000 MOLT |
-| 100,000,000 | 50,000 MOLT | 18,250,000 MOLT |
+| 100,000 | 40 MOLT | 14,600 MOLT |
+| 1,000,000 | 400 MOLT | 146,000 MOLT |
+| 10,000,000 | 4,000 MOLT | 1,460,000 MOLT |
+| 100,000,000 | 40,000 MOLT | 14,600,000 MOLT |
 
-**At the current 0.001 MOLT base fee ($0.0001/tx at $0.10), burn is meaningful at scale.** 10M tx/day burns 1.8M MOLT/year (0.18% of supply). Combined with larger fees (contract deploys at 25 MOLT, NFT collections at 1,000 MOLT, DEX trading fees), the deflationary mechanic becomes substantial.
+**At the current 0.001 MOLT base fee ($0.0001/tx at $0.10), burn is meaningful at scale.** 10M tx/day burns 1.46M MOLT/year (0.15% of supply). Combined with larger fees (contract deploys at 25 MOLT, NFT collections at 1,000 MOLT, DEX trading fees), the deflationary mechanic becomes substantial.
 
 ### DEX Rewards Emission
 
-**dex_rewards: 1,000,000 MOLT/month = 12,000,000 MOLT/year**
+**dex_rewards: 100,000 MOLT/month = 1,200,000 MOLT/year**
 
-This is **massive** — it's nearly the same as maximum block reward emission. If sourced from the validator rewards pool (150M), it depletes in 12.5 years **on its own**. If sourced from builder grants (250M), it adds up fast with block rewards.
+At 100,000 MOLT/month (1.2M/year), this is sustainable. If sourced from builder grants (350M), it lasts ~292 years. If sourced from the validator rewards pool (100M), it lasts ~83 years alongside block rewards.
 
 **This needs a source wallet defined clearly.** Currently the reward claim doesn't even transfer tokens.
 
@@ -141,7 +142,7 @@ This is **massive** — it's nearly the same as maximum block reward emission. I
 We're bootstrapping from zero. The initial price is a **design decision**, not a market-discovered value. Every fee, every reward, and every cost in the system is denominated in MOLT, so the initial price determines:
 
 1. **Is 0.00001 MOLT per tx too cheap or too expensive?**
-2. **Is 0.9 MOLT per block reward sustainable?**
+2. **Is 0.1 MOLT per block reward sustainable?**
 3. **Is 2.5 MOLT to deploy a contract reasonable?**
 4. **Is 1,000 MOLT to stake a DAO proposal accessible?**
 5. **Is 100 MOLT for an NFT collection a fair barrier?**
@@ -150,14 +151,14 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 
 | MOLT Price | Base Fee (USD) | Block Reward (USD) | Deploy Cost (USD) | DAO Stake (USD) | Collection (USD) |
 |-----------|---------------|-------------------|-------------------|----------------|-----------------|
-| $0.001 | $0.00000001 | $0.0009 | $0.0025 | $1.00 | $0.10 |
-| $0.01 | $0.0000001 | $0.009 | $0.025 | $10.00 | $1.00 |
-| **$0.05** | $0.0000005 | $0.045 | $0.125 | $50.00 | $5.00 |
-| **$0.10** | $0.000001 | $0.09 | $0.25 | $100.00 | $10.00 |
-| $0.50 | $0.000005 | $0.45 | $1.25 | $500.00 | $50.00 |
-| $1.00 | $0.00001 | $0.90 | $2.50 | $1,000.00 | $100.00 |
-| $5.00 | $0.00005 | $4.50 | $12.50 | $5,000.00 | $500.00 |
-| $10.00 | $0.0001 | $9.00 | $25.00 | $10,000.00 | $1,000.00 |
+| $0.001 | $0.00000001 | $0.0001 | $0.0025 | $1.00 | $0.10 |
+| $0.01 | $0.0000001 | $0.001 | $0.025 | $10.00 | $1.00 |
+| **$0.05** | $0.0000005 | $0.005 | $0.125 | $50.00 | $5.00 |
+| **$0.10** | $0.000001 | $0.01 | $0.25 | $100.00 | $10.00 |
+| $0.50 | $0.000005 | $0.05 | $1.25 | $500.00 | $50.00 |
+| $1.00 | $0.00001 | $0.10 | $2.50 | $1,000.00 | $100.00 |
+| $5.00 | $0.00005 | $0.50 | $12.50 | $5,000.00 | $500.00 |
+| $10.00 | $0.0001 | $1.00 | $25.00 | $10,000.00 | $1,000.00 |
 
 ---
 
@@ -169,10 +170,10 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 |--------|-------|
 | Fully Diluted Valuation (FDV) | **$10,000,000** |
 | Transaction fee | $0.00001 (near-free) |
-| Block reward | $0.009/block (~$710K/yr at 100% activity) |
+| Block reward | $0.001/block (~$79K/yr at 100% activity) |
 | Contract deploy | $0.25 (dirt cheap) |
 | DAO proposal | $10 (very accessible) |
-| DEX reward pool | $12M/yr in emissions (unsustainable at this price) |
+| DEX reward pool | $12K/yr in emissions |
 | ClawPump token | $0.001 to create (spam risk) |
 | **Assessment** | Too cheap. Spam attacks trivial. DAO governance meaningless. Block rewards don't justify running a validator. |
 
@@ -182,10 +183,10 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 |--------|-------|
 | Fully Diluted Valuation (FDV) | **$100,000,000** |
 | Transaction fee | $0.0001 (sub-penny, agent-friendly) |
-| Block reward | $0.09/block (~$7.1M/yr at 100%) |
+| Block reward | $0.01/block (~$790K/yr at 100%) |
 | Contract deploy | $2.50 (very affordable) |
 | DAO proposal | $100 (moderate barrier) |
-| DEX reward pool | $1.2M/yr emissions (~reasonable) |
+| DEX reward pool | $120K/yr emissions (~reasonable) |
 | ClawPump token | $0.01 to create (cheap but not free) |
 | Founding Moltys holding | $10M |
 | **Assessment** | Reasonable starting point. Cheap enough for agents/developers. Revenue to team through founding allocation. FDV is credible for a working L1. |
@@ -196,10 +197,10 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 |--------|-------|
 | Fully Diluted Valuation (FDV) | **$500,000,000** |
 | Transaction fee | $0.0005 (sub-penny) |
-| Block reward | $0.45/block (~$35.5M/yr at 100%) |
+| Block reward | $0.05/block (~$3.9M/yr at 100%) |
 | Contract deploy | $12.50 (fair) |
 | DAO proposal | $500 (significant barrier) |
-| DEX reward pool | $6M/yr emissions |
+| DEX reward pool | $600K/yr emissions |
 | ClawPump token | $0.05 to create |
 | Founding Moltys holding | $50M |
 | **Assessment** | Ambitious but defensible if tech delivers. Higher barrier for degen spam. DAO becomes serious. Need to deliver to justify this FDV. |
@@ -210,7 +211,7 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 |--------|-------|
 | Fully Diluted Valuation (FDV) | **$1,000,000,000** |
 | Transaction fee | $0.001 (still very cheap) |
-| Block reward | $0.90/block (~$71M/yr at 100%) |
+| Block reward | $0.10/block (~$7.9M/yr at 100%) |
 | Contract deploy | $25.00 (reasonable) |
 | DAO proposal | $1,000 (high barrier) |
 | NFT collection | $1,000.00 (serious) |
@@ -234,21 +235,21 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 
 4. **Sustainable validator economics** — At 50% activity with oracle adjustment: rewards scale with price. At $0.10 reference price, validators earn meaningful revenue split among all active validators. As MOLT price rises, reward rate adjusts down automatically.
 
-5. **Revenue for the team** — Founding Moltys allocation (100M MOLT) = $10M initial value. Ecosystem partnerships (50M) = $5M. Fair compensation for building a working L1.
+5. **Revenue for the team** — Founding Moltys allocation (100M MOLT) = $10M initial value. Ecosystem partnerships (100M) = $10M. Fair compensation for building a working L1.
 
 6. **Growth ceiling** — 10x to $1.00 (= $1B FDV) is achievable with adoption. Still room to run to $10+ with massive adoption, which would be a $10B FDV (comparable to established L1s like Avalanche, Near).
 
 7. **ClawPump is cheap but not free** — Token creation at $0.01 prevents mindless spam but keeps experimentation alive. Graduation at 100K MOLT = $10K market cap = achievable milestone that's still meaningful.
 
-8. **DEX fee economics** — Taker fee of 5bps (0.05%) of a $1000 trade = $0.50. With 50% burn, $0.25 burned per $1000 traded. At $10M daily volume, $1,250/day burned = 456K MOLT/year burned. This starts making the deflationary mechanic real.
+8. **DEX fee economics** — Taker fee of 5bps (0.05%) of a $1000 trade = $0.50. With 40% burn, $0.20 burned per $1000 traded. At $10M daily volume, $1,000/day burned = 365K MOLT/year burned. This starts making the deflationary mechanic real.
 
 ### But: Does _anything_ need readjusting at $0.10?
 
 | Parameter | Current | At $0.10 | Verdict |
 |-----------|---------|----------|---------|
 | Base tx fee | 0.001 MOLT | $0.0001 | OK — sub-penny, agent-friendly |
-| Block reward (tx) | 0.9 MOLT | $0.09/block | OK — oracle adjusts down as price rises |
-| Block reward (heartbeat) | 0.135 MOLT | $0.0135/block | OK — 15% of tx reward, adaptive 5s interval |
+| Block reward (tx) | 0.1 MOLT | $0.01/block | OK — oracle adjusts down as price rises |
+| Block reward (heartbeat) | 0.05 MOLT | $0.005/block | OK — 50% of tx reward, adaptive 5s interval |
 | Contract deploy | 25 MOLT | $2.50 | OK — affordable, not free |
 | Contract upgrade | 10 MOLT | $1.00 | OK |
 | NFT mint | 0.5 MOLT | $0.05 | OK — cheap, not free |
@@ -257,7 +258,7 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 | DAO proposal stake | 1,000 MOLT | $100.00 | OK — serious but not exclusionary |
 | ClawPump graduation | 100K MOLT | $10,000 | OK — agent-friendly, bonding curve still filters spam |
 | Max order (DEX) | 1,000 MOLT | $100 | **Too low** — should be higher for serious trading |
-| DEX rewards | 1M MOLT/mo | $100K/month | **Needs assessment** — that's $1.2M/yr from a finite pool |
+| DEX rewards | 100K MOLT/mo | $10K/month | **Needs assessment** — that's $120K/yr from a finite pool |
 | Min validator stake | 75,000 MOLT | $7,500 | OK — accessible (bootstrap grant is 100K, 25K buffer) |
 | Max validator stake | 1,000,000 MOLT | $100,000 | OK — prevents over-concentration |
 
@@ -265,7 +266,7 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 
 1. **`MAX_ORDER_SIZE` in dex_core** — Currently 1,000 MOLT = $100. For a proper DEX, this should be much higher (e.g., 10,000,000 MOLT = $1M max order). This is the max _per order_, not per position.
 
-2. **`REWARD_POOL_PER_MONTH` in dex_rewards** — 1M MOLT/month = $100K/month = $1.2M/yr. Combined with block rewards, the reward pool depletion depends heavily on network activity and MOLT price (oracle adjustment). The price-based reward adjustment means higher MOLT prices automatically reduce emission, extending the runway.
+2. **`REWARD_POOL_PER_MONTH` in dex_rewards** — 100K MOLT/month = $10K/month = $120K/yr. Combined with block rewards, the reward pool depletion depends heavily on network activity and MOLT price (oracle adjustment). The price-based reward adjustment means higher MOLT prices automatically reduce emission, extending the runway.
 
 3. **`CREATION_FEE` in clawpump** — 0.1 MOLT = $0.01 is probably too cheap. At $0.01, bots will spam thousands of meme tokens. Consider raising to 1-10 MOLT ($0.10-$1.00) to add friction.
 
@@ -281,7 +282,7 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 |-----------|------|---------|----------|-----------|
 | `MAX_ORDER_SIZE` | dex_core/lib.rs | 1,000 MOLT | **10,000,000 MOLT** ($1M) | Proper DEX needs large orders |
 | `CREATION_FEE` | clawpump/lib.rs | 0.1 MOLT | **10 MOLT** ($1.00) | Anti-spam, still accessible |
-| `REWARD_POOL_PER_MONTH` | dex_rewards/lib.rs | 1,000,000 MOLT | **500,000 MOLT** ($50K/mo) | More sustainable, extends pool life |
+| `REWARD_POOL_PER_MONTH` | dex_rewards/lib.rs | 100,000 MOLT | **100,000 MOLT** ($10K/mo) | More sustainable, extends pool life |
 | `MIN_LISTING_LIQUIDITY` | dex_governance/lib.rs | 10 MOLT | **10,000 MOLT** ($1K) | Match the comment, prevent dust listings |
 
 ### Parameters that are fine as-is:
@@ -289,7 +290,7 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 | Parameter | Value at $0.10 | Verdict |
 |-----------|---------------|---------|
 | Base tx fee ($0.0001) | Sub-penny, agent-friendly | Perfect for agents |
-| Block reward ($0.09/block) | Meaningful but not excessive | Good |
+| Block reward ($0.01/block) | Meaningful but not excessive | Good |
 | Contract deploy ($2.50) | Very affordable | Good |
 | DAO proposal ($100) | Serious but fair | Good |
 | Validator stake min ($1,000) | Accessible | Good |
@@ -309,26 +310,26 @@ We're bootstrapping from zero. The initial price is a **design decision**, not a
 ### multisig.rs (used by validator code — CANONICAL)
 
 ```
-validator_rewards:      150,000,000  (15%)
-community_treasury:     400,000,000  (40%)
-builder_grants:         250,000,000  (25%)
+validator_rewards:      100,000,000  (10%)
+community_treasury:     250,000,000  (25%)
+builder_grants:         350,000,000  (35%)
 founding_moltys:        100,000,000  (10%)
-ecosystem_partnerships:  50,000,000   (5%)
-reserve_pool:            50,000,000   (5%)
+ecosystem_partnerships: 100,000,000  (10%)
+reserve_pool:           100,000,000  (10%)
 ```
 
 ### genesis.rs (different names + different amounts)
 
 ```
-Community Treasury:        400,000,000  (40%)  ← matches
-Validator Rewards Pool:    250,000,000  (25%)  ← CONFLICT (150M vs 250M)
-Development Fund:          150,000,000  (15%)  ← CONFLICT (250M "builder_grants" vs 150M "dev fund")
-Ecosystem Growth:          100,000,000  (10%)  ← different name, same amount as founding_moltys
-Foundation Reserve:         50,000,000   (5%)  ← matches reserve_pool
-Early Contributors:         50,000,000   (5%)  ← matches ecosystem_partnerships
+Community Treasury:        250,000,000  (25%)  ← matches
+Validator Rewards Pool:    100,000,000  (10%)  ← matches
+Development Fund:          350,000,000  (35%)  ← matches builder_grants
+Ecosystem Growth:          100,000,000  (10%)  ← matches founding_moltys
+Foundation Reserve:        100,000,000  (10%)  ← matches reserve_pool
+Early Contributors:        100,000,000  (10%)  ← matches ecosystem_partnerships
 ```
 
-**The validator code uses `REWARD_POOL_MOLT = 150,000,000` from multisig.rs.** This means the actual validator rewards pool is 150M, which is what `genesis_auto_deploy` uses.
+**The validator code uses `REWARD_POOL_MOLT = 100,000,000` from multisig.rs.** This means the actual validator rewards pool is 100M, which is what `genesis_auto_deploy` uses.
 
 **Resolution needed:** Align genesis.rs to match multisig.rs, or vice versa. The names and amounts must be consistent. The whitepaper/website should match exactly.
 
@@ -352,11 +353,11 @@ Early Contributors:         50,000,000   (5%)  ← matches ecosystem_partnership
 
 - `REWARD_POOL_PER_MONTH` is defined but there's no defined source wallet
 - Rewards claims don't actually transfer tokens
-- **Fix (in DEX milestone):** Define that dex_rewards draws from the `builder_grants` wallet (250M MOLT), not validator rewards. Builder grants purpose = incentivize ecosystem growth, which trading rewards accomplish.
+- **Fix (in DEX milestone):** Define that dex_rewards draws from the `builder_grants` wallet (350M MOLT), not validator rewards. Builder grants purpose = incentivize ecosystem growth, which trading rewards accomplish.
 
 ### 4. `ANNUAL_INFLATION_BPS = 500`
 
-The code has a 5% annual inflation constant, but **MOLT is supposed to be non-inflationary**. Block rewards come from the pre-allocated validator rewards pool (150M), not newly minted tokens.
+The code has a 5% annual inflation constant, but **MOLT is supposed to be non-inflationary**. Block rewards come from the pre-allocated validator rewards pool (100M), not newly minted tokens.
 
 - **Clarify:** This constant should be renamed to `ANNUAL_REWARD_BPS` or `MAX_ANNUAL_REWARD_RATE` to reflect that it's a withdrawal rate from the pool, not inflation. No new MOLT is minted — it's distributed from the reward pool.
 
@@ -370,7 +371,7 @@ After choosing the $0.10 price, the following parameters need code changes:
 |---|--------|------|----------|
 | 1 | `MAX_ORDER_SIZE` → 10M MOLT | contracts/dex_core/src/lib.rs | Medium |
 | 2 | `CREATION_FEE` → 10 MOLT | contracts/clawpump/src/lib.rs | Medium |
-| 3 | `REWARD_POOL_PER_MONTH` → 500K MOLT | contracts/dex_rewards/src/lib.rs | Medium |
+| 3 | `REWARD_POOL_PER_MONTH` → 100K MOLT | contracts/dex_rewards/src/lib.rs | Medium |
 | 4 | `MIN_LISTING_LIQUIDITY` → 10K MOLT | contracts/dex_governance/src/lib.rs | Medium |
 | 5 | Align genesis.rs distribution to multisig.rs | core/src/genesis.rs | **High** |
 | 6 | Rename `ANNUAL_INFLATION_BPS` | core/src/consensus.rs | Low |
