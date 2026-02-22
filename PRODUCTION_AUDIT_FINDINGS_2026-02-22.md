@@ -29,6 +29,136 @@ Scope updated per follow-up request to implement and verify fixes.
 
 - Existing workspace warnings in unrelated files remain (validator/core test warnings), but no new compile/test failures were introduced by these fixes.
 
+## 2026-02-23 Follow-up Addendum (Template Flow + Contract/RPC Alignment)
+
+Implemented per follow-up request: non-disruptive transaction-template path for prediction market creation, plus targeted alignment review of contract call conventions.
+
+### New implementation
+
+- Added `POST /api/v1/prediction-market/create-template` in [rpc/src/prediction.rs](rpc/src/prediction.rs).
+- Endpoint validates input, resolves `PREDICT` program from symbol registry, builds `ContractInstruction::Call { function: "call", ... }` payload (opcode `1` for `create_market`), and returns an unsigned transaction template for wallet signing.
+- Returned payload is `sendTransaction`-ready (`message.instructions[].data` as byte array, `message.blockhash` set from latest block hash).
+- Existing `POST /api/v1/prediction-market/create` remains disabled for direct writes (consensus safety preserved).
+
+### Alignment checks performed
+
+- Confirmed contract ABI dispatch for prediction creation in [contracts/prediction_market/src/lib.rs](contracts/prediction_market/src/lib.rs#L3403-L3416) matches template builder layout.
+- Confirmed runtime contract invocation semantics in [core/src/processor.rs](core/src/processor.rs#L2699-L2728): `CONTRACT_PROGRAM_ID` + accounts `[caller, contract]` + serialized `ContractInstruction`.
+- Confirmed RPC JSON transaction parser accepts wallet-style shape (`program_id` base58 string, `accounts` base58 strings, `data` byte array, `blockhash` hex) in [rpc/src/lib.rs](rpc/src/lib.rs#L2960-L3055).
+- Confirmed DEX frontend contract-call pattern remains consistent (no bypass reintroduced) in [dex/dex.js](dex/dex.js#L274-L306).
+
+### Validation
+
+- `cargo check -p moltchain-rpc` ✅
+- `cargo test -p moltchain-rpc parse_json_transaction -- --nocapture` ✅ (0 selected, parser path still compiles and links)
+
+### Remaining non-blocking gap (documented)
+
+- `initialLiquidity` cannot be safely auto-bundled in a single deterministic template without race-prone market-id assumptions; current template intentionally separates create and add-liquidity into sequential transactions.
+
+## 2026-02-23 Additional Sweep Addendum (Fee Semantics + Reorg Correctness)
+
+### Fee-to-voters semantics (confirmed)
+
+- `Fee to Voters` is distributed to validators who actually voted for the block at that slot, not burned/retained centrally.
+- Distribution is stake-weighted among eligible voters (active validators in the vote set), not equal split by voter count.
+- Implementation references:
+  - [validator/src/main.rs](validator/src/main.rs#L2500-L2553) — voter set collection, deterministic ordering, stake-weighted share formula.
+  - [validator/src/main.rs](validator/src/main.rs#L2561-L2579) — per-voter account crediting.
+
+### New production-readiness finding
+
+- **HIGH — Fork/reorg reversal remains economically approximate and can mis-refund fees**
+  - Evidence:
+    - [validator/src/main.rs](validator/src/main.rs#L1794-L1799) explicitly documents fee reversal as approximate.
+    - [validator/src/main.rs](validator/src/main.rs#L2002-L2005) refunds fee via `TxProcessor::compute_transaction_fee` during tx reversal.
+    - [core/src/processor.rs](core/src/processor.rs#L764-L767) actual charged fee uses reputation-discounted value (`apply_reputation_fee_discount`).
+  - Why this matters:
+    - On reorg, refund path can diverge from the originally charged amount for discounted payers, creating over/under-refund drift.
+    - Combined with approximate fee-effects reversal, this weakens strict economic determinism under fork stress.
+  - Recommendation:
+    - Persist `fee_paid` per transaction at execution and use that exact value for rollback/refund.
+    - Extend `revert_block_effects` to reverse voter/community allocations exactly (or via deterministic ledgered deltas), not approximately.
+
+## 2026-02-23 Implementation Addendum (Exact Fee Rollback + Deep Contracts/Custody Sweep)
+
+### Implemented now
+
+- **Exact fee persistence on block metadata**
+  - Added `tx_fees_paid: Vec<u64>` to [core/src/block.rs](core/src/block.rs) with `#[serde(default)]` for backward compatibility with legacy blocks.
+  - Producer now stores exact charged fee per successful tx into block metadata in [validator/src/main.rs](validator/src/main.rs).
+
+- **Exact fee replay during apply/reorg**
+  - Fee distribution now sums exact charged fees when present (legacy fallback preserved) in [validator/src/main.rs](validator/src/main.rs).
+  - Reorg fee-effect reversal now uses exact total fee when present in [validator/src/main.rs](validator/src/main.rs).
+  - Per-tx reorg refund now replays exact `fee_paid` by tx index when present (legacy fallback preserved) in [validator/src/main.rs](validator/src/main.rs).
+
+- **Custody hardening**
+  - Removed generated signer auth token value from logs to prevent secret leakage in [custody/src/main.rs](custody/src/main.rs).
+  - Added fail-closed guard for unsupported multi-signer production mode unless explicitly overridden with `CUSTODY_ALLOW_UNSAFE_MULTISIGNER=1` in [custody/src/main.rs](custody/src/main.rs).
+
+- **Contract accounting fix**
+  - In [contracts/clawpump/src/lib.rs](contracts/clawpump/src/lib.rs), graduation platform-revenue accounting now updates only after full successful DEX migration (`create_pair` + `create_pool` + `add_liquidity`).
+
+### Validation
+
+- `cargo check -p moltchain-core` ✅
+- `cargo check -p moltchain-custody` ✅
+- `cargo check --manifest-path contracts/clawpump/Cargo.toml` ✅
+- `cargo check -p moltchain-rpc` ✅
+- `cargo check -p moltchain-validator` ✅
+
+### Deep sweep — additional production gaps (contracts + custody)
+
+- **HIGH — ClawPump graduation cross-contract migration remains non-atomic**
+  - Evidence: [contracts/clawpump/src/lib.rs](contracts/clawpump/src/lib.rs) executes `create_pair`, `create_pool`, `add_liquidity` as three independent external calls.
+  - Risk: partial success can leave cross-protocol divergence (e.g., pair exists without pool/liquidity).
+  - Recommendation: move to idempotent 2-phase migration with explicit phase markers + compensation actions, or a router-side atomic orchestration contract.
+
+- **HIGH — Custody multi-signer path still functionally incomplete for production FROST flow**
+  - Evidence: runtime already documents/warns this in [custody/src/main.rs](custody/src/main.rs), and now fail-closes by default.
+  - Risk: invalid signatures / failed withdrawals if enabled without full 2-round integration.
+  - Recommendation: complete sweep/withdraw wiring for true 2-round FROST and add end-to-end multi-node signing tests before removing fail-closed guard.
+
+- **MEDIUM — Contract action handlers still rely heavily on raw pointer copies (`unsafe`) without uniform bounded-input policy**
+  - Evidence: multiple contracts under [contracts/](contracts/) perform direct pointer reads with variable lengths.
+  - Risk: inconsistent failure semantics and memory-pressure/trap surfaces under malformed input.
+  - Recommendation: standardize max input lengths per opcode/function across all contracts and enforce via shared helper macros + adversarial tests.
+
+### Optimization + extended features backlog (recommended)
+
+- Add deterministic action receipts for cross-contract actions (status, error code, side-effect hash) so retry/compensation is safe and auditable.
+- Add a contract-level migration framework for long-running workflows (state machine phases + resumable idempotent transitions).
+- Add custody signer liveness telemetry and quorum health endpoint (`ready_signers`, `threshold`, `last_successful_round`) to surface pre-failure conditions.
+
+## 2026-02-23 Hardening Follow-up Addendum (Custody + Contracts)
+
+### Additional implemented safeguards
+
+- **Custody webhook fan-out bounded**
+  - Added bounded concurrency for webhook deliveries in [custody/src/main.rs](custody/src/main.rs) via `Semaphore` guard in dispatcher path.
+  - New env control: `CUSTODY_WEBHOOK_MAX_INFLIGHT` (default `64`, capped at `1024`).
+  - Effect: prevents unbounded `tokio::spawn` fan-out under bursty event loads.
+
+- **MoltDAO proposal payload bounds enforced**
+  - Added strict maximum sizes in [contracts/moltdao/src/lib.rs](contracts/moltdao/src/lib.rs):
+    - title ≤ 256 bytes
+    - description ≤ 8 KiB
+    - action payload ≤ 16 KiB
+  - Validation now runs before dynamic allocations/copies in proposal creation path.
+
+### Additional deep-sweep findings (new)
+
+- **MEDIUM — Custody webhook endpoint validation still lacks destination allowlist / egress policy**
+  - Evidence: [custody/src/main.rs](custody/src/main.rs#L6845-L6863) accepts HTTPS (and localhost dev) but does not enforce org allowlist/private-network denylist.
+  - Risk: authenticated operator error/misuse could route signed event payloads to unintended destinations.
+  - Recommendation: add optional hostname allowlist + private CIDR deny-by-default policy for production.
+
+- **MEDIUM — MoltDAO still performs raw pointer copies in multiple entrypoints**
+  - Evidence: [contracts/moltdao/src/lib.rs](contracts/moltdao/src/lib.rs#L317-L333) and other call paths use direct pointer copies from external args.
+  - Risk: while bounded for proposal path now, similar input-bound protections are not yet standardized across all handlers.
+  - Recommendation: introduce shared bounded-copy helpers/macros and apply consistently contract-wide.
+
 ## Executive Summary
 
 The codebase contains strong hardening work in several areas (notably `core/src/state.rs` RocksDB tuning and runtime compute controls), but there are still production blockers and scale risks:

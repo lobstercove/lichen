@@ -91,6 +91,11 @@ const CONSTITUTIONAL_EXECUTION_DELAY: u64 = 604800; // 7-day time-lock
 /// Proposal stake: 10,000 MOLT in shells ($1,000 at $0.10/MOLT — returned if approved, lost if spam)
 const PROPOSAL_STAKE: u64 = 10_000_000_000_000;
 
+/// Max proposal payload sizes (bytes) to prevent oversized allocation abuse.
+const MAX_PROPOSAL_TITLE_BYTES: usize = 256;
+const MAX_PROPOSAL_DESCRIPTION_BYTES: usize = 8 * 1024;
+const MAX_PROPOSAL_ACTION_BYTES: usize = 16 * 1024;
+
 /// Veto threshold: 20% of total voting power active "NO" cancels during time-lock
 const VETO_THRESHOLD_PERCENT: u64 = 20;
 
@@ -323,20 +328,39 @@ pub extern "C" fn create_proposal_typed(
         return 0;
     }
     
-    let mut title = alloc::vec![0u8; title_len as usize];
-    unsafe { core::ptr::copy_nonoverlapping(title_ptr, title.as_mut_ptr(), title_len as usize); }
-    let mut description = alloc::vec![0u8; description_len as usize];
-    unsafe { core::ptr::copy_nonoverlapping(description_ptr, description.as_mut_ptr(), description_len as usize); }
-    let mut target_contract = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(target_contract_ptr, target_contract.as_mut_ptr(), 32); }
-    let mut action = alloc::vec![0u8; action_len as usize];
-    unsafe { core::ptr::copy_nonoverlapping(action_ptr, action.as_mut_ptr(), action_len as usize); }
-    
     // Validate proposal type
     if proposal_type > PROPOSAL_TYPE_CONSTITUTIONAL {
         log_info("Invalid proposal type (0=FastTrack, 1=Standard, 2=Constitutional)");
         return 0;
     }
+
+    let title_len_usize = title_len as usize;
+    let description_len_usize = description_len as usize;
+    let action_len_usize = action_len as usize;
+
+    if title_len_usize == 0 || title_len_usize > MAX_PROPOSAL_TITLE_BYTES {
+        log_info("Invalid title length");
+        return 0;
+    }
+    if description_len_usize > MAX_PROPOSAL_DESCRIPTION_BYTES {
+        log_info("Description too large");
+        return 0;
+    }
+    if action_len_usize > MAX_PROPOSAL_ACTION_BYTES {
+        log_info("Action payload too large");
+        return 0;
+    }
+
+    let mut title = alloc::vec![0u8; title_len_usize];
+    unsafe { core::ptr::copy_nonoverlapping(title_ptr, title.as_mut_ptr(), title_len_usize); }
+    let mut description = alloc::vec![0u8; description_len_usize];
+    unsafe {
+        core::ptr::copy_nonoverlapping(description_ptr, description.as_mut_ptr(), description_len_usize);
+    }
+    let mut target_contract = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(target_contract_ptr, target_contract.as_mut_ptr(), 32); }
+    let mut action = alloc::vec![0u8; action_len_usize];
+    unsafe { core::ptr::copy_nonoverlapping(action_ptr, action.as_mut_ptr(), action_len_usize); }
     
     // Check proposer has enough tokens for proposal stake (1000 MOLT)
     let min_threshold = storage_get(b"min_proposal_threshold")

@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, Mutex, Semaphore};
 use tokio::time::{sleep, Duration};
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -40,6 +40,8 @@ struct CustodyState {
     deposit_rate: Arc<Mutex<DepositRateState>>,
     /// Broadcast channel for webhook/WebSocket events
     event_tx: broadcast::Sender<CustodyWebhookEvent>,
+    /// Cap concurrent webhook deliveries to prevent unbounded task fan-out.
+    webhook_delivery_limiter: Arc<Semaphore>,
 }
 
 /// AUDIT-FIX 1.20: Withdrawal rate limiting state
@@ -439,6 +441,12 @@ async fn main() {
             config.signer_threshold,
             config.signer_endpoints.len()
         );
+        if std::env::var("CUSTODY_ALLOW_UNSAFE_MULTISIGNER").unwrap_or_default() != "1" {
+            panic!(
+                "CRITICAL: Multi-signer mode is not production-ready. \
+                 Set CUSTODY_ALLOW_UNSAFE_MULTISIGNER=1 only for non-production testing."
+            );
+        }
         info!(
             "Multi-signer mode: {}-of-{} threshold (FROST Ed25519 for Solana, packed ECDSA for EVM)",
             config.signer_threshold,
@@ -464,6 +472,14 @@ async fn main() {
     // Webhook/WebSocket event broadcast channel (1024-event buffer)
     let (event_tx, _event_rx) = broadcast::channel::<CustodyWebhookEvent>(1024);
 
+    // Bound concurrent webhook deliveries to avoid runaway task fan-out under bursty events.
+    let webhook_max_inflight = std::env::var("CUSTODY_WEBHOOK_MAX_INFLIGHT")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|v| *v > 0)
+        .unwrap_or(64)
+        .min(1024);
+
     let state = CustodyState {
         db: Arc::new(db),
         next_index_lock: Arc::new(Mutex::new(())),
@@ -479,6 +495,7 @@ async fn main() {
         // AUDIT-FIX W-H4: Deposit rate limiter
         deposit_rate: Arc::new(Mutex::new(DepositRateState::new())),
         event_tx: event_tx.clone(),
+        webhook_delivery_limiter: Arc::new(Semaphore::new(webhook_max_inflight)),
     };
 
     // Spawn webhook dispatcher (delivers events to registered HTTP endpoints)
@@ -1390,9 +1407,7 @@ fn load_config() -> CustodyConfig {
                 let generated = hex::encode(random_bytes);
                 tracing::warn!(
                     "⚠️  CUSTODY_SIGNER_AUTH_TOKEN not set — generated random token. \
-                     For production, set CUSTODY_SIGNER_AUTH_TOKEN explicitly. \
-                     Generated token (distribute to signers): {}",
-                    generated
+                     For production, set CUSTODY_SIGNER_AUTH_TOKEN explicitly."
                 );
                 Some(generated)
             } else {
@@ -7146,9 +7161,18 @@ async fn webhook_dispatcher_loop(
                     let client = state.http.clone();
                     let event_clone = event.clone();
                     let webhook_clone = webhook.clone();
+                    let permit = match state.webhook_delivery_limiter.clone().acquire_owned().await
+                    {
+                        Ok(p) => p,
+                        Err(_) => {
+                            tracing::warn!("webhook delivery limiter closed");
+                            continue;
+                        }
+                    };
 
                     // Fire-and-forget with retry (spawn per delivery to not block others)
                     tokio::spawn(async move {
+                        let _permit = permit;
                         deliver_webhook(&client, &webhook_clone, &event_clone).await;
                     });
                 }

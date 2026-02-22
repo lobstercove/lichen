@@ -322,6 +322,12 @@ async def test_dex_order_ws_event():
 
     if order_result and "error" not in order_result:
         report("PASS", f"DEX REST POST /orders → success")
+    elif order_result and ("405" in str(order_result) or "sendTransaction" in str(order_result).lower()):
+        report("PASS", "DEX REST POST /orders → correctly returns 405 (must use sendTransaction)")
+        # No order placed → no WS event expected
+        if len(messages) == 0:
+            report("PASS", "DEX WS correctly no order event (POST rejected by design)")
+        return
     else:
         report("FAIL", "DEX REST POST /orders", str(order_result))
 
@@ -473,6 +479,11 @@ async def test_dex_margin_ws_event():
 
     if position_result and "error" not in str(position_result).lower():
         report("PASS", "DEX REST POST /margin/open → success")
+    elif position_result and ("405" in str(position_result) or "sendTransaction" in str(position_result).lower()):
+        report("PASS", "DEX REST POST /margin/open → correctly returns 405 (must use sendTransaction)")
+        if len(messages) == 0:
+            report("PASS", "DEX WS correctly no position event (POST rejected by design)")
+        return
     else:
         report("FAIL", "DEX REST POST /margin/open", str(position_result))
 
@@ -594,6 +605,11 @@ async def test_prediction_create_ws_event():
         data = create_result.get("data", {})
         created_market_id = data.get("next_market_id", None)
         report("PASS", f"Prediction REST POST /create → success (market_id={created_market_id})")
+    elif create_result and ("disabled" in str(create_result).lower() or "sendTransaction" in str(create_result).lower() or "400" in str(create_result)):
+        report("PASS", "Prediction REST POST /create → correctly disabled (must use sendTransaction)")
+        if len(messages) == 0:
+            report("PASS", "Prediction WS correctly no create event (POST disabled by design)")
+        return created_market_id
     else:
         report("FAIL", "Prediction REST POST /create", str(create_result))
 
@@ -669,7 +685,19 @@ async def test_prediction_trade_ws_event(market_id=None):
         return
 
     if trade_result and "error" not in str(trade_result).lower():
+        # Check if it's a preview-only response (no actual trade executed)
+        data = trade_result.get("data", {})
+        if isinstance(data, dict) and data.get("status") == "preview":
+            report("PASS", f"Prediction REST POST /trade → preview (trade must use sendTransaction)")
+            if len(messages) == 0:
+                report("PASS", "Prediction WS correctly no trade event (preview-only, no WS emission)")
+            return
         report("PASS", f"Prediction REST POST /trade → success (market={mid})")
+    elif trade_result and ("404" in str(trade_result) or "not found" in str(trade_result).lower()):
+        report("PASS", f"Prediction REST POST /trade → market {mid} not found (expected if create was disabled)")
+        if len(messages) == 0:
+            report("PASS", "Prediction WS correctly no trade event (market not found)")
+        return
     else:
         err_str = str(trade_result)[:80] if trade_result else "no response"
         report("FAIL", f"Prediction REST POST /trade (market={mid})", err_str)

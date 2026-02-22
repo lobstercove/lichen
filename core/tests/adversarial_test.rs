@@ -585,6 +585,7 @@ fn test_byzantine_block_production() {
             signature: [0u8; 64],
         },
         transactions: vec![],
+        tx_fees_paid: vec![],
     };
 
     let block2 = Block {
@@ -598,6 +599,7 @@ fn test_byzantine_block_production() {
             signature: [0u8; 64],
         },
         transactions: vec![],
+        tx_fees_paid: vec![],
     };
 
     // Store first block

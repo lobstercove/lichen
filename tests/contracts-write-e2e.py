@@ -4,6 +4,7 @@ import json
 import os
 import random
 import re
+import struct
 import sys
 import time
 from pathlib import Path
@@ -61,6 +62,88 @@ def load_keypair_flexible(path: Path) -> Keypair:
                 return Keypair.from_seed(bytes.fromhex(key_hex))
 
     raise ValueError(f"unsupported keypair format: {path}")
+
+
+# ─── Opcode-dispatch contract support ───
+DISPATCHER_CONTRACTS = {
+    "dex_core", "dex_amm", "dex_router", "dex_margin",
+    "dex_rewards", "dex_governance", "dex_analytics", "prediction_market",
+}
+
+ABI_CACHE: Dict[str, Any] = {}
+
+
+def load_abi(contract_dir: str) -> Optional[Any]:
+    if contract_dir in ABI_CACHE:
+        return ABI_CACHE[contract_dir]
+    abi_path = ROOT / "contracts" / contract_dir / "abi.json"
+    if not abi_path.exists():
+        return None
+    with open(abi_path) as f:
+        abi = json.load(f)
+    ABI_CACHE[contract_dir] = abi
+    return abi
+
+
+def build_dispatcher_ix(abi: dict, fn_name: str, args: dict) -> bytes:
+    """Build binary instruction for opcode-dispatch contracts."""
+    funcs = abi.get("functions", [])
+    func = next((f for f in funcs if f["name"] == fn_name), None)
+    if not func:
+        raise ValueError(f"Function {fn_name} not found in ABI")
+    opcode = func.get("opcode")
+    if opcode is None:
+        raise ValueError(f"Function {fn_name} has no opcode")
+
+    buf = bytearray([opcode])
+    for param in func.get("params", []):
+        pname = param["name"]
+        ptype = param["type"]
+        val = args.get(pname)
+        if val is None:
+            val = 0
+        if ptype in ("u64", "u128"):
+            buf += struct.pack("<Q", int(val))
+        elif ptype == "u32":
+            buf += struct.pack("<I", int(val))
+        elif ptype == "u16":
+            buf += struct.pack("<H", int(val))
+        elif ptype == "u8":
+            buf += struct.pack("<B", int(val))
+        elif ptype == "bool":
+            buf += struct.pack("<B", 1 if val else 0)
+        elif ptype == "Pubkey":
+            if hasattr(val, 'to_bytes'):
+                buf += val.to_bytes()
+            elif isinstance(val, bytes) and len(val) == 32:
+                buf += val
+            elif isinstance(val, str):
+                decoded = None
+                if len(val) == 64:
+                    try:
+                        decoded = bytes.fromhex(val)
+                    except ValueError:
+                        pass
+                if decoded is None:
+                    try:
+                        decoded = PublicKey(val).to_bytes()
+                    except Exception:
+                        decoded = b'\x00' * 32
+                buf += decoded
+            else:
+                buf += b'\x00' * 32
+        elif ptype == "string":
+            encoded = str(val).encode("utf-8")
+            buf += struct.pack("<H", len(encoded)) + encoded
+        elif ptype == "i64":
+            buf += struct.pack("<q", int(val))
+        elif ptype == "i32":
+            buf += struct.pack("<i", int(val))
+        elif ptype == "i16":
+            buf += struct.pack("<h", int(val))
+        else:
+            buf += struct.pack("<Q", int(val))
+    return bytes(buf)
 
 
 def load_activity_overrides() -> Dict[str, int]:
@@ -199,9 +282,22 @@ async def call_contract(
     program: PublicKey,
     func: str,
     args: Optional[Dict[str, Any]] = None,
+    contract_dir: str = "",
 ) -> str:
-    args_bytes = json.dumps(args or {}).encode()
-    payload = json.dumps({"Call": {"function": func, "args": list(args_bytes), "value": 0}})
+    args = args or {}
+
+    # Detect dispatcher contracts and build appropriate instruction data
+    abi = load_abi(contract_dir) if contract_dir else None
+    is_dispatcher = contract_dir in DISPATCHER_CONTRACTS and abi is not None
+
+    if is_dispatcher:
+        raw_args = build_dispatcher_ix(abi, func, args)
+        envelope_fn = "call"
+    else:
+        raw_args = json.dumps(args).encode()
+        envelope_fn = func
+
+    payload = json.dumps({"Call": {"function": envelope_fn, "args": list(raw_args), "value": 0}})
     ix = Instruction(
         program_id=CONTRACT_PROGRAM,
         accounts=[caller.public_key(), program],
@@ -646,8 +742,8 @@ def scenario_spec(deployer: Keypair, secondary: Keypair, contracts: Dict[str, Pu
         ],
         "prediction_market": [
             {"fn": "initialize", "args": {"admin": provider}, "actor": "deployer"},
-            {"fn": "set_moltyid_address", "args": {"address": str(contracts.get("moltyid", ""))}, "actor": "deployer"},
-            {"fn": "set_musd_address", "args": {"address": str(contracts.get("moltcoin", ""))}, "actor": "deployer"},
+            {"fn": "set_moltyid_address", "args": {"caller": provider, "address": str(contracts.get("moltyid", ""))}, "actor": "deployer"},
+            {"fn": "set_musd_address", "args": {"caller": provider, "address": str(contracts.get("moltcoin", ""))}, "actor": "deployer"},
         ],
         "compute_market": [
             {"fn": "initialize", "args": {"admin": provider}, "actor": "deployer"},
@@ -774,7 +870,7 @@ def scenario_spec(deployer: Keypair, secondary: Keypair, contracts: Dict[str, Pu
         ],
         "dex_core": [
             {"fn": "initialize", "args": {"admin": provider}, "actor": "deployer"},
-            {"fn": "set_preferred_quote", "args": {"caller": provider, "quote_addr": quote_addr}, "actor": "deployer"},
+            {"fn": "set_preferred_quote", "args": {"caller": provider, "quote_address": quote_addr}, "actor": "deployer"},
             {
                 "fn": "create_pair",
                 "args": {
@@ -791,13 +887,13 @@ def scenario_spec(deployer: Keypair, secondary: Keypair, contracts: Dict[str, Pu
             {
                 "fn": "place_order",
                 "args": {
-                    "trader": provider,
+                    "caller": provider,
                     "pair_id": 1,
                     "side": 0,
                     "order_type": 0,
                     "price": 1_000_000_000,
                     "quantity": 10_000,
-                    "expiry_slot": 0,
+                    "expiry": 0,
                 },
                 "actor": "deployer",
             },
@@ -841,9 +937,9 @@ def scenario_spec(deployer: Keypair, secondary: Keypair, contracts: Dict[str, Pu
                 "fn": "set_addresses",
                 "args": {
                     "caller": provider,
-                    "core_addr": dex_core_addr,
-                    "amm_addr": dex_amm_addr,
-                    "legacy_addr": zero_addr,
+                    "core_address": dex_core_addr,
+                    "amm_address": dex_amm_addr,
+                    "legacy_address": zero_addr,
                 },
                 "actor": "deployer",
             },
@@ -854,14 +950,14 @@ def scenario_spec(deployer: Keypair, secondary: Keypair, contracts: Dict[str, Pu
                     "token_in": base_addr,
                     "token_out": quote_addr,
                     "route_type": 1,
-                    "pool_or_pair_id": 1,
+                    "pool_id": 1,
                     "secondary_id": 0,
                     "split_percent": 50,
                 },
                 "actor": "deployer",
             },
             {"fn": "set_route_enabled", "args": {"caller": provider, "route_id": 1, "enabled": True}, "actor": "deployer"},
-            {"fn": "get_best_route", "args": {"token_in": base_addr, "token_out": quote_addr, "_amount": 1_000}, "actor": "deployer"},
+            {"fn": "get_best_route", "args": {"token_in": base_addr, "token_out": quote_addr, "amount": 1_000}, "actor": "deployer"},
             {"fn": "get_route_count", "args": {}, "actor": "deployer"},
         ],
         "dex_margin": [
@@ -875,31 +971,30 @@ def scenario_spec(deployer: Keypair, secondary: Keypair, contracts: Dict[str, Pu
                     "side": 0,
                     "size": 1_000_000_000,
                     "leverage": 2,
-                    "margin_amount": 300_000_000,
+                    "margin": 300_000_000,
                 },
                 "actor": "deployer",
             },
             {"fn": "add_margin", "args": {"caller": provider, "position_id": 1, "amount": 10_000_000}, "actor": "deployer"},
             {"fn": "remove_margin", "args": {"caller": provider, "position_id": 1, "amount": 1_000_000}, "actor": "deployer"},
             {"fn": "close_position", "args": {"caller": provider, "position_id": 1}, "actor": "deployer"},
-            {"fn": "get_position_count", "args": {}, "actor": "deployer"},
+            {"fn": "get_margin_stats", "args": {}, "actor": "deployer"},
         ],
         "dex_rewards": [
             {"fn": "initialize", "args": {"admin": provider}, "actor": "deployer"},
             {"fn": "set_moltcoin_address", "args": {"caller": provider, "addr": quote_addr}, "actor": "deployer"},
             {"fn": "set_rewards_pool", "args": {"caller": provider, "addr": provider}, "actor": "deployer"},
-            {"fn": "set_authorized_caller", "args": {"caller": provider, "contract_addr": provider, "enabled": 1}, "actor": "deployer"},
-            {"fn": "set_reward_rate", "args": {"caller": provider, "pair_id": 1, "rate_per_slot": 100}, "actor": "deployer"},
+            {"fn": "set_reward_rate", "args": {"caller": provider, "pair_id": 1, "rate": 100}, "actor": "deployer"},
             {"fn": "record_trade", "args": {"trader": provider, "fee_paid": 1_000, "volume": 50_000}, "actor": "deployer"},
             {"fn": "register_referral", "args": {"trader": user2, "referrer": provider}, "actor": "deployer"},
             {"fn": "get_total_distributed", "args": {}, "actor": "deployer"},
         ],
         "dex_governance": [
             {"fn": "initialize", "args": {"admin": provider}, "actor": "deployer"},
-            {"fn": "set_moltyid_address", "args": {"caller": provider, "moltyid_addr": str(contracts.get("moltyid") or zero_addr)}, "actor": "deployer"},
-            {"fn": "set_preferred_quote", "args": {"caller": provider, "quote_addr": quote_addr}, "actor": "deployer"},
-            {"fn": "set_listing_requirements", "args": {"caller": provider, "min_liquidity": 1000, "min_holders": 1}, "actor": "deployer"},
-            {"fn": "propose_fee_change", "args": {"proposer": provider, "pair_id": 1, "new_maker_fee": -1, "new_taker_fee": 5}, "actor": "deployer"},
+            {"fn": "set_moltyid_address", "args": {"caller": provider, "address": str(contracts.get("moltyid") or zero_addr)}, "actor": "deployer"},
+            {"fn": "set_preferred_quote", "args": {"caller": provider, "quote_address": quote_addr}, "actor": "deployer"},
+            {"fn": "set_listing_requirements", "args": {"caller": provider, "min_stake": 1000, "voting_period": 1}, "actor": "deployer"},
+            {"fn": "propose_fee_change", "args": {"caller": provider, "pair_id": 1, "maker_fee_bps": -1, "taker_fee_bps": 5}, "actor": "deployer"},
             {"fn": "get_proposal_count", "args": {}, "actor": "deployer"},
         ],
         "dex_analytics": [
@@ -1085,7 +1180,7 @@ async def main() -> int:
                     before_calls, before_events = await get_program_observability(conn, program)
                     before_storage = await get_program_storage_count(conn, program)
 
-                sig = await call_contract(conn, actor, program, function_name, args)
+                sig = await call_contract(conn, actor, program, function_name, args, contract_dir=contract_name)
                 tx_data = await wait_for_transaction(conn, sig, TX_CONFIRM_TIMEOUT_SECS)
 
                 if should_assert_write and STRICT_WRITE_ASSERTIONS:
