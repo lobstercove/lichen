@@ -304,6 +304,8 @@ impl P2PNetwork {
 
             MessageType::Pong => {
                 debug!("P2P: Received pong from {}", peer_addr);
+                // Update peer liveness on pong response
+                self.peer_manager.update_peer_last_seen(&peer_addr).await;
             }
 
             MessageType::BlockRequest { slot } => {

@@ -477,6 +477,13 @@ impl PeerManager {
         }
     }
 
+    /// Update a peer's last_seen timestamp (called on Pong response)
+    pub async fn update_peer_last_seen(&self, peer_addr: &SocketAddr) {
+        if let Some(mut peer) = self.peers.get_mut(peer_addr) {
+            peer.update_last_seen();
+        }
+    }
+
     pub fn prune_ban_list(&self) {
         self.ban_list
             .lock()

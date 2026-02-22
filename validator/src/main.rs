@@ -9011,7 +9011,7 @@ async fn run_validator() {
             time::sleep(Duration::from_secs(2)).await;
 
             // Announce periodically so new validators can discover us
-            let mut interval = time::interval(Duration::from_secs(30));
+            let mut interval = time::interval(Duration::from_secs(10));
             loop {
                 let validator_stake = {
                     let pool = stake_pool_for_announce.read().await;
@@ -9051,6 +9051,18 @@ async fn run_validator() {
                     validator_stake,
                     current_slot
                 );
+            }
+        });
+
+        // Proactive ping loop — send Ping to all peers every 5s for real-time liveness
+        let peer_mgr_for_ping = p2p_pm.clone();
+        let local_addr_for_ping = p2p_config.listen_addr;
+        tokio::spawn(async move {
+            let mut interval = time::interval(Duration::from_secs(5));
+            loop {
+                interval.tick().await;
+                let ping_msg = P2PMessage::new(MessageType::Ping, local_addr_for_ping);
+                peer_mgr_for_ping.broadcast(ping_msg).await;
             }
         });
 
