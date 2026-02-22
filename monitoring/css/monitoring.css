@@ -1447,6 +1447,35 @@ body {
     box-shadow: 0 0 8px rgba(255,107,53,0.1);
 }
 
+/* Prediction Markets detail grid (tier-* classes) */
+.tier-card {
+    background: var(--bg-darker); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 1rem;
+    transition: all 0.3s; position: relative; overflow: hidden;
+}
+.tier-card::before {
+    content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+    background: var(--border); transition: background 0.3s;
+}
+.tier-card:hover { border-color: var(--border-light); background: var(--bg-hover); }
+.tier-card:hover::before { background: var(--primary); }
+.tier-label {
+    font-size: 0.72rem; font-weight: 700; color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.35rem;
+}
+.tier-value {
+    font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace;
+    color: var(--text-primary); margin-bottom: 0.5rem;
+}
+.tier-bar {
+    height: 6px; border-radius: 3px; background: var(--bg-card);
+    overflow: hidden; border: 1px solid var(--border);
+}
+.tier-fill {
+    height: 100%; border-radius: 3px; transition: width 0.6s ease;
+    box-shadow: 0 0 8px rgba(255,107,53,0.1);
+}
+
 @media (max-width: 900px) {
     .grid-2, .grid-3 { grid-template-columns: 1fr; }
     .vitals-bar { flex-wrap: wrap; }

@@ -1192,30 +1192,6 @@ async function updateContractMonitor() {
         const statusClass = deployed ? 'success' : 'warning';
         const statusText = deployed ? 'LIVE' : 'PENDING';
 
-        // Try to fetch contract-specific stats via dedicated RPC methods
-        let statsHtml = '';
-        if (deployed) {
-            try {
-                let cs = null;
-                if (c.symbol === 'PREDMKT' || c.symbol === 'PREDICT') {
-                    cs = await rpc('getPredictionMarketStats');
-                    if (cs) cs = { markets: cs.open_markets || 0, volume: cs.total_volume || 0, collateral: cs.total_collateral || 0, fees: cs.fees_collected || 0 };
-                } else if (c.symbol === 'YID') {
-                    const stats = await rpc('getMoltyIdStats');
-                    if (stats) cs = { identities: stats.total_identities || 0, names: stats.total_names || 0, skills: stats.total_skills || 0, attestations: stats.total_attestations || 0 };
-                }
-                if (cs) {
-                    const entries = Object.entries(cs).slice(0, 4);
-                    if (entries.length > 0) {
-                        statsHtml = '<div class="cm-metrics">' + entries.map(([k, v]) => {
-                            const val = typeof v === 'number' ? formatNum(v) : String(v).slice(0, 12);
-                            return `<div class="cm-metric"><span class="cm-metric-label">${k.replace(/_/g, ' ')}</span><span class="cm-metric-value">${val}</span></div>`;
-                        }).join('') + '</div>';
-                    }
-                }
-            } catch { /* no stats endpoint */ }
-        }
-
         cards.push(`
             <div class="contract-monitor-card" data-cat="${c.cat}">
                 <div class="cm-header">
@@ -1227,7 +1203,6 @@ async function updateContractMonitor() {
                     <span class="cm-badge" style="background:${deployed ? 'rgba(74,222,128,0.12)' : 'rgba(245,158,11,0.12)'};color:${deployed ? '#4ade80' : '#f59e0b'};">${statusText}</span>
                 </div>
                 ${program ? `<div class="cm-addr" title="${escapeHtml(program)}">${escapeHtml(program)}</div>` : ''}
-                ${statsHtml}
             </div>
         `);
     }
