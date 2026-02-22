@@ -3980,6 +3980,40 @@ impl StateStore {
         }
     }
 
+    /// Look up a specific genesis wallet pubkey by role name.
+    ///
+    /// Valid roles: "validator_rewards", "community_treasury", "builder_grants",
+    /// "founding_moltys", "ecosystem_partnerships", "reserve_pool".
+    pub fn get_wallet_pubkey(&self, role: &str) -> Result<Option<Pubkey>, String> {
+        let accounts = self.get_genesis_accounts()?;
+        Ok(accounts.into_iter().find(|(r, _, _, _)| r == role).map(|(_, pk, _, _)| pk))
+    }
+
+    /// Get community treasury wallet pubkey.
+    pub fn get_community_treasury_pubkey(&self) -> Result<Option<Pubkey>, String> {
+        self.get_wallet_pubkey("community_treasury")
+    }
+
+    /// Get builder grants wallet pubkey.
+    pub fn get_builder_grants_pubkey(&self) -> Result<Option<Pubkey>, String> {
+        self.get_wallet_pubkey("builder_grants")
+    }
+
+    /// Get founding moltys wallet pubkey.
+    pub fn get_founding_moltys_pubkey(&self) -> Result<Option<Pubkey>, String> {
+        self.get_wallet_pubkey("founding_moltys")
+    }
+
+    /// Get ecosystem partnerships wallet pubkey.
+    pub fn get_ecosystem_partnerships_pubkey(&self) -> Result<Option<Pubkey>, String> {
+        self.get_wallet_pubkey("ecosystem_partnerships")
+    }
+
+    /// Get reserve pool wallet pubkey.
+    pub fn get_reserve_pool_pubkey(&self) -> Result<Option<Pubkey>, String> {
+        self.get_wallet_pubkey("reserve_pool")
+    }
+
     /// Store rent parameters
     /// PHASE1-FIX S-6: Atomic WriteBatch for both rent parameters.
     pub fn set_rent_params(
@@ -6170,5 +6204,50 @@ mod tests {
         // Verify account was also written
         let loaded = state.get_account(&pk).unwrap().unwrap();
         assert_eq!(loaded.shells, 10_000_000_000);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // TOKENOMICS OVERHAUL: All 6 wallet pubkey accessors
+    // ═══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_all_wallet_pubkeys_stored_and_retrievable() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        // Simulate genesis: store all 6 wallet entries
+        let wallets: Vec<(String, Pubkey, u64, u8)> = vec![
+            ("validator_rewards".into(), Pubkey([0x01; 32]), 100_000_000, 10),
+            ("community_treasury".into(), Pubkey([0x02; 32]), 250_000_000, 25),
+            ("builder_grants".into(), Pubkey([0x03; 32]), 350_000_000, 35),
+            ("founding_moltys".into(), Pubkey([0x04; 32]), 100_000_000, 10),
+            ("ecosystem_partnerships".into(), Pubkey([0x05; 32]), 100_000_000, 10),
+            ("reserve_pool".into(), Pubkey([0x06; 32]), 100_000_000, 10),
+        ];
+        state.set_genesis_accounts(&wallets).unwrap();
+
+        // Also set treasury_pubkey (legacy path)
+        state.set_treasury_pubkey(&Pubkey([0x01; 32])).unwrap();
+
+        // Verify treasury (legacy path)
+        let treasury = state.get_treasury_pubkey().unwrap();
+        assert_eq!(treasury, Some(Pubkey([0x01; 32])));
+
+        // Verify all 6 wallet role-based accessors
+        assert_eq!(state.get_wallet_pubkey("validator_rewards").unwrap(), Some(Pubkey([0x01; 32])));
+        assert_eq!(state.get_community_treasury_pubkey().unwrap(), Some(Pubkey([0x02; 32])));
+        assert_eq!(state.get_builder_grants_pubkey().unwrap(), Some(Pubkey([0x03; 32])));
+        assert_eq!(state.get_founding_moltys_pubkey().unwrap(), Some(Pubkey([0x04; 32])));
+        assert_eq!(state.get_ecosystem_partnerships_pubkey().unwrap(), Some(Pubkey([0x05; 32])));
+        assert_eq!(state.get_reserve_pool_pubkey().unwrap(), Some(Pubkey([0x06; 32])));
+
+        // Unknown role returns None
+        assert_eq!(state.get_wallet_pubkey("nonexistent").unwrap(), None);
+
+        // Verify count and ordering via get_genesis_accounts
+        let loaded = state.get_genesis_accounts().unwrap();
+        assert_eq!(loaded.len(), 6);
+        let total: u64 = loaded.iter().map(|(_, _, amt, _)| amt).sum();
+        assert_eq!(total, 1_000_000_000, "All 6 wallets must sum to 1B MOLT");
     }
 }
