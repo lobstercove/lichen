@@ -68,8 +68,16 @@ const EXIT_CODE_RESTART: i32 = 75;
 
 /// Default number of seconds with no block activity before the watchdog
 /// triggers a restart.  Override with `--watchdog-timeout <secs>`.
-/// Reduced from 120s to 30s for faster recovery from stalls.
-const DEFAULT_WATCHDOG_TIMEOUT_SECS: u64 = 30;
+/// Set to 120s to allow sufficient time for sync recovery under load.
+/// The watchdog is also sync-aware: it won't fire while the node has
+/// pending blocks or is actively syncing.
+const DEFAULT_WATCHDOG_TIMEOUT_SECS: u64 = 120;
+
+/// Maximum duration (seconds) the freeze-production guard can stay active
+/// before forcibly resuming production. Prevents the death spiral where
+/// continuous incoming blocks keep highest_seen elevated and the node
+/// never produces, eventually getting killed by the watchdog.
+const MAX_FREEZE_DURATION_SECS: u64 = 30;
 
 /// Maximum number of automatic restarts before the supervisor gives up.
 /// Override with `--max-restarts <n>`.
@@ -4646,10 +4654,18 @@ fn main() {
 
 /// Synchronous wrapper that sets up the tokio runtime and runs the validator.
 fn run_validator_sync() {
+    // Use at least 4 worker threads, or the number of CPU cores, whichever is
+    // greater. This ensures the RPC server, P2P layer, and block production
+    // each get dedicated threads and don't starve each other under load.
+    let worker_threads = std::thread::available_parallelism()
+        .map(|n| n.get().max(4))
+        .unwrap_or(4);
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
+        .worker_threads(worker_threads)
         .build()
         .expect("Failed to build tokio runtime");
+    eprintln!("Tokio runtime: {} worker threads", worker_threads);
     rt.block_on(run_validator());
 }
 
@@ -6623,6 +6639,14 @@ async fn run_validator() {
 
                 sync_mgr.note_seen(block_slot).await;
 
+                // STABILITY-FIX: Update last_block_time on block RECEIPT, not
+                // just on successful apply. A node that is receiving blocks from
+                // the network is alive — it's behind on sync, not deadlocked.
+                // Without this, the watchdog kills nodes that are actively
+                // receiving and queuing blocks but can't apply them yet because
+                // intermediate blocks are still missing.
+                *last_block_time_for_blocks.lock().await = std::time::Instant::now();
+
                 // FIX-FORK-1: Record that this slot has a valid network block.
                 // The production loop checks this set right before creating its
                 // own block, preventing the TOCTOU fork where a validator
@@ -7092,10 +7116,25 @@ async fn run_validator() {
                             sync_mgr.mark_requested(slot).await;
                         }
 
-                        // Complete sync flag after a delay (will re-trigger if still behind)
+                        // Complete sync flag after a delay.
+                        // STABILITY-FIX: Wait 5s instead of 2s, then check if
+                        // we actually received some blocks before completing.
+                        // If still behind, re-trigger sync instead of silently
+                        // marking sync complete.
                         let sync_mgr_complete = sync_mgr.clone();
+                        let state_for_sync_check = state_for_blocks.clone();
+                        let sync_end = end;
                         tokio::spawn(async move {
-                            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+                            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                            let current = state_for_sync_check.get_last_slot().unwrap_or(0);
+                            let highest = sync_mgr_complete.get_highest_seen().await;
+                            if current < sync_end && highest > current + 2 {
+                                info!(
+                                    "🔄 Sync batch incomplete (at {}, target {}), will re-trigger",
+                                    current, sync_end
+                                );
+                            }
+                            // Always complete to allow re-trigger
                             sync_mgr_complete.complete_sync().await;
                         });
                     }
@@ -9231,21 +9270,29 @@ async fn run_validator() {
 
     let last_block_time_for_watchdog = last_block_time.clone();
     let state_for_watchdog = state.clone();
+    let sync_manager_for_watchdog = sync_manager.clone();
     tokio::spawn(async move {
-        // Give the validator time to start up and sync before monitoring
-        // Reduced startup grace from watchdog_timeout.max(60) to 30s for faster detection
-        time::sleep(Duration::from_secs(30)).await;
-        let mut interval = time::interval(Duration::from_secs(5)); // Check every 5s (was 15s)
+        // Give the validator time to start up and sync before monitoring.
+        // Use 60s startup grace — newly joining nodes need time to discover
+        // peers, request genesis, and begin syncing.
+        time::sleep(Duration::from_secs(60)).await;
+        let mut interval = time::interval(Duration::from_secs(5));
         let mut stale_checks: u32 = 0;
-        let threshold = (watchdog_timeout_secs / 5).max(3) as u32; // 3 checks minimum
+        let threshold = (watchdog_timeout_secs / 5).max(6) as u32; // 6 checks minimum (30s)
         let mut last_known_slot: u64 = 0;
         loop {
             interval.tick().await;
             let elapsed = last_block_time_for_watchdog.lock().await.elapsed();
             let current_slot = state_for_watchdog.get_last_slot().unwrap_or(0);
 
+            // STABILITY-FIX: Don't count stale checks while the sync manager
+            // has pending blocks or is actively syncing. The node is alive —
+            // it's just behind, not deadlocked.
+            let actively_receiving = sync_manager_for_watchdog.is_actively_receiving().await;
+
             if elapsed > Duration::from_secs(watchdog_timeout_secs)
                 && current_slot == last_known_slot
+                && !actively_receiving
             {
                 stale_checks += 1;
                 warn!(
@@ -9260,15 +9307,20 @@ async fn run_validator() {
                         elapsed.as_secs(),
                         EXIT_CODE_RESTART
                     );
-                    // AUDIT-FIX 2.12: Allow pending async I/O and Drop handlers
-                    // a brief window to flush before hard exit. process::exit()
-                    // skips destructors, so we give a small grace period.
                     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     std::process::exit(EXIT_CODE_RESTART);
                 }
             } else {
                 if stale_checks > 0 {
-                    info!("🐺 Watchdog: activity resumed (slot {})", current_slot);
+                    if actively_receiving {
+                        info!(
+                            "🐺 Watchdog: sync active, resetting stale count (slot {}, {} pending)",
+                            current_slot,
+                            sync_manager_for_watchdog.pending_count().await
+                        );
+                    } else {
+                        info!("🐺 Watchdog: activity resumed (slot {})", current_slot);
+                    }
                 }
                 stale_checks = 0;
                 last_known_slot = current_slot;
@@ -9292,6 +9344,11 @@ async fn run_validator() {
     let mut last_activity_time = std::time::Instant::now();
     let mut slot_start = std::time::Instant::now();
     let mut last_attempted_slot: u64 = 0;
+
+    // STABILITY-FIX: Track when the freeze-production guard first engaged.
+    // If frozen for longer than MAX_FREEZE_DURATION_SECS, force-resume
+    // production to break the death spiral.
+    let mut freeze_started_at: Option<std::time::Instant> = None;
 
     // PERF-OPT 5: Leader election cache.
     // Cache the result of select_leader_weighted() to avoid acquiring RwLock
@@ -9446,14 +9503,33 @@ async fn run_validator() {
         // don't produce blocks (including heartbeats) to avoid creating
         // a divergent chain. Let the block receiver + sync fill the gap.
         //
-        // FIX: Decay highest_seen toward our tip if no new blocks have arrived
-        // from the network for 10 seconds. This prevents a permanent stall when
-        // no peer can serve the missing blocks (e.g., all validators stalled).
+        // STABILITY-FIX: Bounded freeze guard. The original code could loop
+        // forever because continuous incoming blocks keep highest_seen elevated
+        // via note_seen(), preventing decay, and eventually the watchdog kills
+        // the process. Now: if frozen for > MAX_FREEZE_DURATION_SECS, force-
+        // decay and resume production to break the death spiral.
         {
             sync_manager.decay_highest_seen(tip_slot, 10).await;
             let network_highest = sync_manager.get_highest_seen().await;
             if network_highest > tip_slot + 2 {
-                continue;
+                // Check bounded freeze timeout
+                let now = std::time::Instant::now();
+                let freeze_start = freeze_started_at.get_or_insert(now);
+                let frozen_secs = freeze_start.elapsed().as_secs();
+                if frozen_secs >= MAX_FREEZE_DURATION_SECS {
+                    warn!(
+                        "🔥 Freeze guard timeout after {}s (tip={}, network={}) — resuming production",
+                        frozen_secs, tip_slot, network_highest
+                    );
+                    sync_manager.force_decay(tip_slot).await;
+                    freeze_started_at = None;
+                    // Fall through to production instead of continue
+                } else {
+                    continue;
+                }
+            } else {
+                // Not frozen or caught up — reset freeze timer
+                freeze_started_at = None;
             }
         }
 

@@ -1006,6 +1006,15 @@ pub async fn start_rpc_server(
     info!("🌐 RPC server starting on {}", addr);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
+
+    // STABILITY-FIX: Limit concurrent connections to prevent RPC load from
+    // starving block production. Without this, a burst of E2E test requests
+    // can saturate all tokio worker threads, causing the validator to fall
+    // behind and eventually crash. 256 concurrent connections is generous
+    // for a testnet while still providing backpressure under extreme load.
+    use tower::limit::ConcurrencyLimitLayer;
+    let app = app.layer(ConcurrencyLimitLayer::new(256));
+
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
