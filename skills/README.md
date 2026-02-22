@@ -36,7 +36,7 @@ cd validator/
 ```
 
 **Expected time:** 2-5 minutes to first block  
-**Expected earnings:** 0.135-0.9 MOLT per block  
+**Expected earnings:** 0.05-0.1 MOLT per block  
 **Learn more:** [validator/SKILL.md](./validator/SKILL.md)
 
 ---

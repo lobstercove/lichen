@@ -175,7 +175,7 @@ The built-in **supervisor** auto-restarts on crash and the **watchdog** alerts o
 Cryptographic on-chain identity with reputation tiers, skill attestations, and fee discounts. Agents build trust through verifiable contribution history.
 
 ### Ultra-Low Fees
-**$0.0001 per transaction (0.001 MOLT).** 50 % burned (deflationary), 30 % to block producer, 10 % to voters, 10 % to treasury.
+**$0.0001 per transaction (0.001 MOLT).** 40 % burned (deflationary), 30 % to block producer, 10 % to voters, 10 % to treasury, 10 % to community.
 
 ### Smart Contracts
 Write WASM programs in Rust. Deploy with the CLI or the browser-based **Programs IDE**.
@@ -201,12 +201,12 @@ Native bridge support for Solana and Ethereum assets (wSOL, wETH, wUSDC). Dual a
 
 | Allocation | Share |
 |---|---|
-| Community Treasury (DAO) | 40 % |
-| Builder Grants | 25 % |
-| Validator Rewards (20-yr) | 15 % |
-| Founding Moltys (2-yr vest) | 10 % |
-| Ecosystem Partnerships | 5 % |
-| Reserve Pool | 5 % |
+| Community Treasury (DAO) | 25 % |
+| Builder Grants | 35 % |
+| Validator Rewards (20-yr) | 10 % |
+| Founding Moltys (6-mo cliff + 18-mo vest) | 10 % |
+| Ecosystem Partnerships | 10 % |
+| Reserve Pool | 10 % |
 
 Micro-unit: **1 MOLT = 1,000,000,000 shells**
 

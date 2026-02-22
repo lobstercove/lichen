@@ -172,7 +172,7 @@ We're not trying to be Solana 2.0. We're building for a completely different use
 **No Inflation:**
 - 1B MOLT, fixed forever
 - Scarcity increases with adoption
-- 50% of fees burned → deflationary
+- 40% of fees burned → deflationary
 
 **Fee Structure:**
 - $0.00001 per transaction (affordable for high-frequency)
@@ -180,7 +180,7 @@ We're not trying to be Solana 2.0. We're building for a completely different use
 - 0.01 MOLT/GB/month storage (vs $0.20+ on traditional cloud)
 
 **Grant System:**
-- 250M MOLT (25% of supply) for builders
+- 350M MOLT (35% of supply) for builders
 - Retroactive funding for successful programs
 - DAO-controlled allocation
 - Rewards real utility, not hype
@@ -334,8 +334,8 @@ We're not trying to be Solana 2.0. We're building for a completely different use
 **Week 1-6 - Earn Your Stake:**
 ```
 Every block produced:
-  → Heartbeat: +0.135 MOLT
-  → Transaction: +0.9 MOLT
+  → Heartbeat: +0.05 MOLT
+  → Transaction: +0.1 MOLT
   
   Split automatically:
     50% → Liquid balance (spend it!)

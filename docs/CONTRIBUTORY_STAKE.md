@@ -59,8 +59,8 @@ Every block produced earns rewards:
 
 **Reward Types:**
 ```rust
-Heartbeat block:    0.135 MOLT
-Transaction block:  0.9 MOLT (6.67× more)
+Heartbeat block:    0.05 MOLT
+Transaction block:  0.1 MOLT (2× more)
 ```
 
 **Automatic 50/50 Split:**
@@ -89,13 +89,13 @@ fn claim_rewards(&mut self) -> (u64, u64) {
 **Example After 100 Heartbeat Blocks:**
 ```
 Blocks produced:    100
-Total earned:       13.5 MOLT (100 × 0.135)
-Debt repayment:     6.75 MOLT (locked, applied to debt)
-Liquid balance:     6.75 MOLT (spendable now!)
+Total earned:       5.0 MOLT (100 × 0.05)
+Debt repayment:     2.5 MOLT (locked, applied to debt)
+Liquid balance:     2.5 MOLT (spendable now!)
 
-Bootstrap debt:     100,000 - 6.75 = 99,993.25 MOLT
-Earned stake:       6.75 MOLT (real, not virtual)
-Progress:           0.00675% vested
+Bootstrap debt:     100,000 - 2.5 = 99,997.5 MOLT
+Earned stake:       2.5 MOLT (real, not virtual)
+Progress:           0.0025% vested
 ```
 
 ### Phase 3: Graduation (Debt = 0)
@@ -133,22 +133,22 @@ StakeInfo {
 
 ```
 Heartbeat blocks per day: 17,280 (1 every 5 seconds)
-Reward per heartbeat:     0.135 MOLT
-Daily earnings:           2,332.80 MOLT
+Reward per heartbeat:     0.05 MOLT
+Daily earnings:           864 MOLT
 
-50% to debt repayment:    1,166.40 MOLT/day
-Days to repay 100k:       100,000 / 1,166.40 = 85.7 days
+50% to debt repayment:    432 MOLT/day
+Days to repay 100k:       100,000 / 432 = 231.5 days
 
-Result: ~86 days to fully vest
+Result: ~232 days to fully vest
 ```
 
 ### Multiple Validators
 
 ```
 2 validators:   Each produces ~50% of blocks
-                Earnings: ~1,166 MOLT/day
-                Debt repayment: ~583 MOLT/day
-                Time to vest: ~172 days (~6 months)
+                Earnings: ~432 MOLT/day
+                Debt repayment: ~216 MOLT/day
+                Time to vest: ~463 days (~15 months)
 
 10 validators:  Leader selection weighted by reputation
                 Varies, but typically 2-3 months
@@ -160,17 +160,17 @@ Result: ~86 days to fully vest
 ### Active Network (With Transactions)
 
 ```
-Transaction block reward: 0.9 MOLT (6.67× heartbeat)
+Transaction block reward: 0.1 MOLT (2× heartbeat)
 
 With 1,000 tx/day:
-  Additional earnings: ~900 MOLT/day
-  Total debt repayment: ~1,616 MOLT/day
-  Time to vest: ~62 days (~2 months)
+  Additional earnings: ~100 MOLT/day
+  Total debt repayment: ~482 MOLT/day
+  Time to vest: ~207 days (~7 months)
 
 With 10,000 tx/day:
-  Additional earnings: ~9,000 MOLT/day
-  Total debt repayment: ~5,612 MOLT/day
-  Time to vest: ~18 days (UNDER 3 WEEKS!) ⚡
+  Additional earnings: ~1,000 MOLT/day
+  Total debt repayment: ~932 MOLT/day
+  Time to vest: ~107 days (~3.5 months) ⚡
 ```
 
 ---
@@ -245,9 +245,9 @@ Rank #1001+:    "Reef Builders" - Community validators
 ║  ┌────────────────────────────────────────────────┐ ║
 ║  │ Earnings Split (Last 24 Hours)                 │ ║
 ║  │                                                 │ ║
-║  │ Total Earned:     2,332.80 MOLT                │ ║
-║  │   → Liquid:       1,166.40 MOLT 💰 (spendable)  │ ║
-║  │   → Debt:         1,166.40 MOLT 🔒 (locked)     │ ║
+║  │ Total Earned:     864 MOLT                   │ ║
+║  │   → Liquid:       432 MOLT 💰 (spendable)     │ ║
+║  │   → Debt:         432 MOLT 🔒 (locked)        │ ║
 ║  └────────────────────────────────────────────────┘ ║
 ║                                                      ║
 ║  Blocks Produced:   15,847                           ║
@@ -343,10 +343,10 @@ fn delegate(
 
 **Reward Split:**
 ```
-Block produced → Validator earns 0.9 MOLT
+Block produced → Validator earns 0.1 MOLT
 
-Commission (10%): 0.018 MOLT to validator
-Delegators (90%): 0.162 MOLT split proportionally
+Commission (10%): 0.01 MOLT to validator
+Delegators (90%): 0.09 MOLT split proportionally
 
 Example with 40k MOLT delegated:
   Validator own stake: 100,000 MOLT (20%)
@@ -355,7 +355,7 @@ Example with 40k MOLT delegated:
   
   Delegator with 1,000 MOLT:
     Share: 1,000 / 50,000 = 2%
-    Reward: 0.162 × 0.02 = 0.00324 MOLT per block
+    Reward: 0.09 × 0.02 = 0.0018 MOLT per block
 ```
 
 ### Liquid Staking (ReefStake)

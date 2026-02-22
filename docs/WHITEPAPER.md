@@ -171,12 +171,12 @@ Validators earn the right to validate blocks by **contributing value to the netw
 ### Genesis Distribution
 
 ```
-Community Treasury:     400,000,000 MOLT (40%)
-Builder Grants:         250,000,000 MOLT (25%)
-Validator Rewards:      150,000,000 MOLT (15%)
+Community Treasury:     250,000,000 MOLT (25%)
+Builder Grants:         350,000,000 MOLT (35%)
+Validator Rewards:      100,000,000 MOLT (10%)
 Founding Moltys:        100,000,000 MOLT (10%) - 2-year vest
-Ecosystem Partnerships:  50,000,000 MOLT (5%)
-Reserve Pool:            50,000,000 MOLT (5%)
+Ecosystem Partnerships: 100,000,000 MOLT (10%)
+Reserve Pool:           100,000,000 MOLT (10%)
 ```
 
 **Vesting Schedule:**
@@ -203,7 +203,7 @@ Reserve Pool:            50,000,000 MOLT (5%)
 - Cross-chain bridge: **0.01 MOLT** per transfer
 
 **Fee Burn Mechanism:**
-- 50% of all fees are permanently burned
+- 40% of all fees are permanently burned
 - Deflationary pressure over time
 - As adoption grows, supply shrinks
 - At 1M daily transactions: ~5 MOLT burned per day = 1,825 MOLT/year
@@ -244,8 +244,8 @@ When validator starts:
 
 **2. Earn Rewards (Every Block)**
 ```
-Produce heartbeat block  → +0.135 MOLT
-Produce transaction block → +0.9 MOLT
+Produce heartbeat block  → +0.05 MOLT
+Produce transaction block → +0.1 MOLT
 
 Rewards automatically split:
   • 50% → Debt Repayment (locked, applied to bootstrap_debt)
@@ -256,12 +256,12 @@ Rewards automatically split:
 ```rust
 Example after 100 heartbeat blocks:
   Blocks produced:  100
-  Total earned:     13.5 MOLT (100 × 0.135)
-  Debt repayment:   6.75 MOLT (locked)
-  Liquid balance:   6.75 MOLT (spendable)
+  Total earned:     5.0 MOLT (100 × 0.05)
+  Debt repayment:   2.5 MOLT (locked)
+  Liquid balance:   2.5 MOLT (spendable)
   
-  Bootstrap debt:   100,000 - 6.75 = 99,993.25 MOLT remaining
-  Progress:         0.00675% vested
+  Bootstrap debt:   100,000 - 2.5 = 99,997.5 MOLT remaining
+  Progress:         0.0025% vested
 ```
 
 **4. Graduation (Debt = 0)**
@@ -278,17 +278,17 @@ When bootstrap_debt reaches 0:
 #### Timeline to Full Vesting
 
 **Single Validator (Heartbeat Only):**
-- 17,280 heartbeats/day × 0.135 MOLT = 2,332.8 MOLT/day
-- 50% locked for repayment = 1,166.4 MOLT/day
-- **~86 days to fully vest** ⚡
+- 17,280 heartbeats/day × 0.05 MOLT = 864 MOLT/day
+- 50% locked for repayment = 432 MOLT/day
+- **~232 days to fully vest** ⚡
 
 **Multiple Validators (Network Growth):**
-- With 2 validators: ~172 days (blocks split)
+- With 2 validators: ~464 days (blocks split)
 - With 10 validators: Varies by leader selection
 - With transaction activity: 2-4 weeks (6.67× faster earnings)
 
 **Active Network (Transaction Blocks):**
-- 0.9 MOLT per transaction block
+- 0.1 MOLT per transaction block
 - 1,000 transactions/day: **2-3 weeks to vest**
 - 10,000 transactions/day: **Under 1 week to vest** 🚀
 
@@ -368,7 +368,7 @@ New Validator: 60% locked, 40% liquid (first 1000 blocks)
   "minted": "2026-03-15T14:32:07Z",
   "validator": "molty_hqR8k3...",
   "debt_repaid": "100,000 MOLT",
-  "time_to_vest": "86 days",
+  "time_to_vest": "232 days",
   "total_blocks": 18,429,
   "founding_validator": true,
   "rank": "Veteran",
@@ -404,7 +404,7 @@ Alice (fully vested validator):
   Delegated stake:  40,000 MOLT (from community)
   Total voting power: 50,000 MOLT
   
-  Block reward: 0.9 MOLT
+  Block reward: 0.1 MOLT
   Alice keeps:  0.018 MOLT (10% commission)
   Delegators:   0.162 MOLT (distributed proportionally)
 ```
@@ -951,7 +951,7 @@ molty gov propose \
 
 ### What DAO Controls
 
-1. **Treasury Spending** - Community treasury has 400M MOLT
+1. **Treasury Spending** - Community treasury has 250M MOLT
 2. **Protocol Upgrades** - New features, optimizations
 3. **Fee Adjustments** - Transaction, storage, compute fees
 4. **Validator Admission** - If controversial validator applications

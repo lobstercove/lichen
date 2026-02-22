@@ -19,11 +19,11 @@
 
 | Constant | Shells | MOLT | USD ($0.10) | Source |
 |----------|--------|------|-------------|--------|
-| TRANSACTION_BLOCK_REWARD | 900,000,000 | 0.9 | $0.09 | core/consensus.rs |
-| HEARTBEAT_BLOCK_REWARD | 135,000,000 | 0.135 | $0.0135 | core/consensus.rs |
+| TRANSACTION_BLOCK_REWARD | 100,000,000 | 0.1 | $0.01 | core/consensus.rs |
+| HEARTBEAT_BLOCK_REWARD | 50,000,000 | 0.05 | $0.005 | core/consensus.rs |
 | ANNUAL_REWARD_RATE_BPS | 500 (5%) | — | — | core/consensus.rs |
 
-> **Note:** Each block is EITHER a transaction block (0.9 MOLT) OR a heartbeat block (0.135 MOLT), never both. Heartbeats fire when there are no user transactions (every ~5s idle). On a new network with minimal volume, most blocks are heartbeats.
+> **Note:** Each block is EITHER a transaction block (0.1 MOLT) OR a heartbeat block (0.05 MOLT), never both. Heartbeats fire when there are no user transactions (every ~5s idle). On a new network with minimal volume, most blocks are heartbeats.
 
 ## Transaction Fees & Protocol Costs
 
@@ -35,7 +35,7 @@
 | NFT mint | 500,000,000 | 0.5 | $0.05 | processor.rs |
 | NFT collection create | 1,000,000,000,000 | 1,000 | $100.00 | processor.rs |
 
-**Fee distribution:** 50% burned, 30% block producer, 10% voters, 10% treasury
+**Fee distribution:** 40% burned, 30% block producer, 10% voters, 10% treasury, 10% community
 
 ## Vesting (Bootstrap Graduation)
 
@@ -43,11 +43,11 @@
 |--------|-------|-------|
 | Bootstrap debt | 100,000 MOLT | Granted at $0 cost |
 | Repayment rate | 50% of all earned rewards | Block rewards + fees |
-| Solo validator ~daily income (heartbeat) | 29,160 MOLT/day | 0.135 × 216,000 slots/day (no user txs) |
-| Solo validator ~daily income (all tx blocks) | 194,400 MOLT/day | 0.9 × 216,000 slots/day (full volume) |
-| Solo repayment rate (heartbeat) | 14,580 MOLT/day | 50% of 29,160 |
-| **Solo graduation (heartbeat-only)** | **~7 days** | 100,000 / 14,580 |
-| **Solo graduation (all tx blocks)** | **~1 day** | 100,000 / 97,200 |
+| Solo validator ~daily income (heartbeat) | 10,800 MOLT/day | 0.05 × 216,000 slots/day (no user txs) |
+| Solo validator ~daily income (all tx blocks) | 21,600 MOLT/day | 0.1 × 216,000 slots/day (full volume) |
+| Solo repayment rate (heartbeat) | 5,400 MOLT/day | 50% of 10,800 |
+| **Solo graduation (heartbeat-only)** | **~19 days** | 100,000 / 5,400 |
+| **Solo graduation (all tx blocks)** | **~9 days** | 100,000 / 10,800 |
 | Graduation condition | bootstrap_debt == 0 | status → FullyVested |
 | Vesting progress | earned / (earned + debt) × 100 | On-chain percentage |
 
@@ -106,7 +106,7 @@
 | Gold | $100K – $1M | 1M – 10M MOLT | 2× |
 | Diamond | > $1M | > 10M MOLT | 3× |
 
-**Reward pool:** 1,000,000 MOLT/month (1M MOLT)
+**Reward pool:** 100,000 MOLT/month (100K MOLT)
 
 ## MoltDAO (Governance)
 
@@ -144,10 +144,10 @@
 Block rewards are split among all active validators (weighted by stake/reputation). With more validators, each individual validator's share decreases.
 
 **Assumptions:**
-- Block reward per heartbeat slot: 0.135 MOLT (most blocks on early network)
-- Block reward per transaction slot: 0.9 MOLT (when user transactions exist)
+- Block reward per heartbeat slot: 0.05 MOLT (most blocks on early network)
+- Block reward per transaction slot: 0.1 MOLT (when user transactions exist)
 - Slots per day: 216,000 (at 400ms slot time)
-- Heartbeat-only daily rewards: 0.135 × 216,000 = 29,160 MOLT/day (total network)
+- Heartbeat-only daily rewards: 0.05 × 216,000 = 10,800 MOLT/day (total network)
 - Bootstrap debt: 100,000 MOLT per validator
 - Repayment: 50% of earned rewards
 
@@ -155,26 +155,26 @@ Block rewards are split among all active validators (weighted by stake/reputatio
 
 | Validators | Daily Income/Validator | Daily Repayment | Days to Graduate |
 |------------|----------------------|-----------------|------------------|
-| 1 | 29,160 MOLT | 14,580 MOLT | ~7 days |
-| 2 | 14,580 MOLT | 7,290 MOLT | ~14 days |
-| 10 | 2,916 MOLT | 1,458 MOLT | ~69 days |
-| 50 | 583 MOLT | 292 MOLT | ~343 days |
-| 100 | 292 MOLT | 146 MOLT | ~685 days |
-| 500 | 58 MOLT | 29 MOLT | **~3,448 days (~9.4 yrs)** |
-| 1,000 | 29 MOLT | 14.6 MOLT | ~6,849 days |
+| 1 | 10,800 MOLT | 5,400 MOLT | ~19 days |
+| 2 | 5,400 MOLT | 2,700 MOLT | ~37 days |
+| 10 | 1,080 MOLT | 540 MOLT | ~185 days |
+| 50 | 216 MOLT | 108 MOLT | ~926 days |
+| 100 | 108 MOLT | 54 MOLT | ~1,852 days |
+| 500 | 21.6 MOLT | 10.8 MOLT | **~9,259 days (~25.4 yrs)** |
+| 1,000 | 10.8 MOLT | 5.4 MOLT | ~18,519 days |
 
 ### All-Transaction-Block Scenario (high volume network)
 
 | Validators | Daily Income/Validator | Daily Repayment | Days to Graduate |
 |------------|----------------------|-----------------|------------------|
-| 1 | 194,400 MOLT | 97,200 MOLT | ~1 day |
-| 10 | 19,440 MOLT | 9,720 MOLT | ~10 days |
-| 50 | 3,888 MOLT | 1,944 MOLT | ~51 days |
-| 100 | 1,944 MOLT | 972 MOLT | ~103 days |
-| 500 | 389 MOLT | 194 MOLT | **~515 days (~1.4 yrs)** |
-| 1,000 | 194 MOLT | 97 MOLT | ~1,031 days |
+| 1 | 21,600 MOLT | 10,800 MOLT | ~9 days |
+| 10 | 2,160 MOLT | 1,080 MOLT | ~93 days |
+| 50 | 432 MOLT | 216 MOLT | ~463 days |
+| 100 | 216 MOLT | 108 MOLT | ~926 days |
+| 500 | 43.2 MOLT | 21.6 MOLT | **~4,630 days (~12.7 yrs)** |
+| 1,000 | 21.6 MOLT | 10.8 MOLT | ~9,259 days |
 
-> **With 500 validators (heartbeat-only):** ~3,448 days (~9.4 years). With high tx volume (all blocks are transaction blocks), ~515 days (~1.4 years). Reality will be somewhere in between, depending on network activity. Transaction fees from DEX trading, ClawPump, and contract calls accelerate graduation.
+> **With 500 validators (heartbeat-only):** ~9,259 days (~25.4 years). With high tx volume (all blocks are transaction blocks), ~4,630 days (~12.7 years). Reality will be somewhere in between, depending on network activity. Transaction fees from DEX trading, ClawPump, and contract calls accelerate graduation.
 
 ### Transaction Fee Impact (500 validators)
 

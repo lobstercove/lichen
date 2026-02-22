@@ -79,7 +79,7 @@ cd moltchain/skills/validator
 # [2026-02-07 15:30:12] ✅ Bootstrap stake granted: 100,000 MOLT
 # [2026-02-07 15:30:12] 🦞 Status: Bootstrapping (0% vested)
 # [2026-02-07 15:30:17] 💓 HEARTBEAT produced at slot 1
-# [2026-02-07 15:30:17] 💰 Block reward: 0.135 MOLT earned
+# [2026-02-07 15:30:17] 💰 Block reward: 0.05 MOLT earned
 ```
 
 ### Step 4: Monitor Your Progress
@@ -136,7 +136,7 @@ Every block you produce:
     50% → Debt repayment (locked, repays bootstrap)
     
 Example:
-  Block reward: 0.135 MOLT (heartbeat)
+  Block reward: 0.05 MOLT (heartbeat)
     → 0.0675 MOLT to your wallet (liquid)
     → 0.0675 MOLT repays bootstrap debt
 ```
@@ -156,7 +156,7 @@ When bootstrap_debt reaches 0:
 
 **Single Validator (Heartbeat Only):**
 ```
-Reward per heartbeat: 0.135 MOLT
+Reward per heartbeat: 0.05 MOLT
 Heartbeat every 5 seconds = ~17,280 blocks/day
 Daily earnings: ~2,333 MOLT total
   → 1,166 MOLT liquid
@@ -280,7 +280,7 @@ tail -f ~/.moltchain/validator.log | grep -E "💰|🦞|📦|HEARTBEAT"
 
 # Example output:
 [15:30:17] 💓 HEARTBEAT block produced at slot 342
-[15:30:17] 💰 Block reward: 0.135 MOLT (heartbeat) earned (unclaimed)
+[15:30:17] 💰 Block reward: 0.05 MOLT (heartbeat) earned (unclaimed)
 [15:30:22] 📦 BLOCK produced at slot 343 (2 transactions)
 [15:30:22] 💰 Block reward: 0.180 MOLT (transaction) earned (unclaimed)
 [15:32:00] 💰 Accumulated rewards: 1.234 MOLT (unclaimed)
