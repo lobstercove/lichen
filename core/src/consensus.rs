@@ -5268,4 +5268,65 @@ mod tests {
     fn test_annual_reward_decay_constant() {
         assert_eq!(ANNUAL_REWARD_DECAY_BPS, 2000, "Decay must be 20% (2000 bps)");
     }
+
+    #[test]
+    fn test_fee_share_goes_through_vesting() {
+        // Producer with bootstrap_debt should receive only ~50% of fee share as
+        // liquid, with the rest repaying debt (same vesting pipeline as block rewards).
+        let mut pool = StakePool::new();
+        let v1 = Pubkey::new([1u8; 32]);
+        // Use bootstrap index 0 + BOOTSTRAP_GRANT_AMOUNT to create validator with debt
+        pool.stake_with_index(v1, BOOTSTRAP_GRANT_AMOUNT, 0, 0).unwrap();
+
+        // Confirm producer has bootstrap debt
+        let info = pool.get_stake(&v1).unwrap();
+        assert!(info.bootstrap_debt > 0, "Bootstrap validator must have bootstrap debt");
+        assert_eq!(info.bootstrap_debt, BOOTSTRAP_GRANT_AMOUNT);
+
+        // Distribute fee reward (simulates 30% producer share)
+        let fee_share = 300_000; // small fee amount in shells
+        pool.distribute_fees(&v1, fee_share, 100);
+
+        // Claim should produce a vesting split: ~50% liquid, ~50% debt repayment
+        let (liquid, debt_payment) = pool.claim_rewards(&v1, 100);
+        assert_eq!(
+            liquid + debt_payment,
+            fee_share,
+            "liquid + debt_payment must equal full fee share"
+        );
+        assert!(
+            liquid > 0 && liquid < fee_share,
+            "With debt, liquid ({}) must be between 0 and full share ({})",
+            liquid,
+            fee_share
+        );
+        assert!(
+            debt_payment > 0,
+            "With debt, some portion must go to debt repayment"
+        );
+        // Standard 50/50 split: liquid = fee_share - (fee_share/2).min(debt)
+        // fee_share/2 = 150_000; debt >> 150_000, so paid = 150_000, liquid = 150_000
+        assert_eq!(liquid, 150_000, "Standard 50/50 split: liquid should be half");
+        assert_eq!(debt_payment, 150_000, "Standard 50/50 split: debt payment should be half");
+    }
+
+    #[test]
+    fn test_fee_share_fully_vested() {
+        // Producer with no bootstrap_debt should receive 100% of fee share as liquid.
+        let mut pool = StakePool::new();
+        let v1 = Pubkey::new([1u8; 32]);
+        // Self-funded validator (index u64::MAX) gets no bootstrap debt
+        pool.stake(v1, MIN_VALIDATOR_STAKE, 0).unwrap();
+
+        // Verify no debt
+        let info = pool.get_stake(&v1).unwrap();
+        assert_eq!(info.bootstrap_debt, 0, "Self-funded validator should have no debt");
+
+        let fee_share = 500_000;
+        pool.distribute_fees(&v1, fee_share, 200);
+        let (liquid, debt_payment) = pool.claim_rewards(&v1, 200);
+
+        assert_eq!(liquid, fee_share, "Fully vested: 100% of fee share should be liquid");
+        assert_eq!(debt_payment, 0, "Fully vested: no debt repayment");
+    }
 }

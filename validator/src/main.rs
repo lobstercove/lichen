@@ -2437,6 +2437,7 @@ async fn apply_block_effects(
     let voters_share = total_fee * fee_config.fee_voters_percent / 100;
     let community_share = total_fee * fee_config.fee_community_percent / 100;
     let mut voters_paid: u64 = 0;
+    let mut fee_liquid: u64 = 0; // actual liquid amount after vesting split
 
     // NOTE: burn was already applied in charge_fee (processor.rs) during
     // transaction processing.  Do NOT call add_burned again here — that
@@ -2448,21 +2449,48 @@ async fn apply_block_effects(
     let mut batch = state.begin_batch();
 
     if producer_share > 0 {
-        let mut producer_account = match state.get_account(&producer) {
-            Ok(Some(account)) => account,
-            _ => Account::new(0, SYSTEM_ACCOUNT_OWNER),
+        // Route producer fee share through vesting pipeline (same as block rewards).
+        // distribute_fees() → add_reward() → claim_rewards() → vesting split.
+        // While bootstrap_debt > 0 only ~50% is liquid; rest repays debt.
+        let (liquid, _debt) = {
+            let mut pool = stake_pool.write().await;
+            let is_active = pool
+                .get_stake(&producer)
+                .map(|info| info.is_active)
+                .unwrap_or(false);
+            if is_active {
+                pool.distribute_fees(&producer, producer_share, slot);
+                let result = pool.claim_rewards(&producer, slot);
+                let pool_snapshot = pool.clone();
+                drop(pool);
+                if let Err(e) = state.put_stake_pool(&pool_snapshot) {
+                    warn!("⚠️  Failed to persist stake pool fee update: {}", e);
+                }
+                result
+            } else {
+                drop(pool);
+                (0u64, 0u64)
+            }
         };
-        producer_account
-            .add_spendable(producer_share)
-            .unwrap_or_else(|e| {
-                warn!("\u{26a0}\u{fe0f}  Overflow crediting producer fees: {}", e);
-            });
-        if let Err(e) = batch.put_account(&producer, &producer_account) {
-            warn!(
-                "⚠️  Failed to credit producer fees for {}: {}",
-                producer.to_base58(),
-                e
-            );
+        fee_liquid = liquid;
+
+        if fee_liquid > 0 {
+            let mut producer_account = match state.get_account(&producer) {
+                Ok(Some(account)) => account,
+                _ => Account::new(0, SYSTEM_ACCOUNT_OWNER),
+            };
+            producer_account
+                .add_spendable(fee_liquid)
+                .unwrap_or_else(|e| {
+                    warn!("\u{26a0}\u{fe0f}  Overflow crediting producer fees: {}", e);
+                });
+            if let Err(e) = batch.put_account(&producer, &producer_account) {
+                warn!(
+                    "⚠️  Failed to credit producer fees for {}: {}",
+                    producer.to_base58(),
+                    e
+                );
+            }
         }
     }
 
@@ -2551,7 +2579,7 @@ async fn apply_block_effects(
         }
     }
 
-    let treasury_share = total_fee.saturating_sub(burn + producer_share + voters_paid + community_share);
+    let treasury_share = total_fee.saturating_sub(burn + fee_liquid + voters_paid + community_share);
 
     // Credit community treasury wallet
     if community_share > 0 {
@@ -2575,14 +2603,16 @@ async fn apply_block_effects(
     }
 
     // charge_fee credited treasury with (fee − burn) for each tx.
-    // We debit what we're distributing out: producer_share + voters_paid + community_share.
+    // We debit what we're distributing out: fee_liquid + voters_paid + community_share.
+    // fee_liquid is the vesting-adjusted producer share (≤ producer_share).
+    // The debt repayment portion stays in treasury as internal bookkeeping.
     // Treasury retains its own share (≈10%) automatically.
     treasury_account.shells = treasury_account
         .shells
-        .saturating_sub(producer_share + voters_paid + community_share);
+        .saturating_sub(fee_liquid + voters_paid + community_share);
     treasury_account.spendable = treasury_account
         .spendable
-        .saturating_sub(producer_share + voters_paid + community_share);
+        .saturating_sub(fee_liquid + voters_paid + community_share);
     if let Err(e) = batch.put_account(&treasury_pubkey, &treasury_account) {
         warn!("⚠️  Failed to update treasury account: {}", e);
         return;
