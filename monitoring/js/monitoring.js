@@ -402,6 +402,16 @@ async function refresh() {
             await updateIdentitiesMonitor();
         }
 
+        // ─ Trading Metrics (every 10s) ─
+        if (!tradingMetricsLoaded || Date.now() % 10000 < REFRESH_MS) {
+            await updateTradingMetrics();
+        }
+
+        // ─ Prediction Markets (every 10s) ─
+        if (!predictionMonitorLoaded || Date.now() % 10000 < REFRESH_MS) {
+            await updatePredictionMonitor();
+        }
+
         // ─ Footer ─
         document.getElementById('lastUpdate').textContent = now();
 
@@ -933,14 +943,14 @@ const DEX_SUBSYSTEMS = [
       metrics: ['pools', 'tvl', 'volume_24h', 'fees_24h'] },
     { id: 'dex_router', symbol: 'DEXROUTER', name: 'Smart Router', desc: 'Optimal routing across CLOB + AMM', icon: 'fas fa-route', color: '#ffd166',
       metrics: ['routes_24h', 'savings', 'split_routes', 'avg_slippage'] },
-    { id: 'dex_margin', symbol: 'DEXMARGIN', name: 'Margin Trading', desc: 'Leveraged positions (up to 10x)', icon: 'fas fa-chart-line', color: '#ef4444',
+    { id: 'dex_margin', symbol: 'DEXMARGIN', name: 'Margin Trading', desc: 'Leveraged positions (up to 100x)', icon: 'fas fa-chart-line', color: '#ef4444',
       metrics: ['positions', 'total_collateral', 'liquidations', 'max_leverage'] },
     { id: 'dex_governance', symbol: 'DEXGOV', name: 'DEX Governance', desc: 'Proposals, voting, fee updates', icon: 'fas fa-landmark', color: '#a78bfa',
       metrics: ['proposals', 'active_votes', 'total_voters', 'treasury'] },
     { id: 'dex_rewards', symbol: 'DEXREWARDS', name: 'Rewards & Staking', desc: 'LP incentives, trading rewards', icon: 'fas fa-gift', color: '#f59e0b',
       metrics: ['stakers', 'total_staked', 'distributed', 'apy'] },
     { id: 'dex_analytics', symbol: 'ANALYTICS', name: 'Analytics Engine', desc: 'OHLCV, trade history, metrics', icon: 'fas fa-chart-area', color: '#60a5fa',
-      metrics: ['candles', 'indexed_trades', 'pairs_tracked', 'uptime'] },
+      metrics: ['records', 'volume', 'tracked', 'uptime'] },
     { id: 'moltswap', symbol: 'MOLTSWAP', name: 'MoltSwap', desc: 'Simple token swap interface', icon: 'fas fa-arrows-rotate', color: '#ff6b35',
       metrics: ['swaps_24h', 'volume', 'unique_users', 'pairs'] },
     { id: 'prediction_market', symbol: 'PREDICT', name: 'Prediction Markets', desc: 'Binary/multi-outcome markets + mUSD', icon: 'fas fa-chart-pie', color: '#e879f9',
@@ -991,7 +1001,7 @@ async function updateDexMonitor() {
                 const stats = await rpc('getDexMarginStats');
                 if (stats) {
                     metricsData = { positions: stats.position_count || 0, total_collateral: stats.total_volume || 0,
-                        liquidations: stats.liquidation_count || 0, max_leverage: '10x' };
+                        liquidations: stats.liquidation_count || 0, max_leverage: (stats.max_leverage || 100) + 'x' };
                     deployed = true;
                 }
             } else if (sub.id === 'prediction_market') {
@@ -1025,8 +1035,8 @@ async function updateDexMonitor() {
             } else if (sub.id === 'dex_analytics') {
                 const stats = await rpc('getDexAnalyticsStats');
                 if (stats) {
-                    metricsData = { candles: stats.record_count || 0, indexed_trades: stats.total_volume || 0,
-                        pairs_tracked: stats.trader_count || 0, uptime: '100%' };
+                    metricsData = { records: stats.record_count || 0, volume: stats.total_volume || 0,
+                        tracked: stats.trader_count || 0, uptime: '100%' };
                     deployed = true;
                 }
             } else if (sub.id === 'moltswap') {
@@ -1052,6 +1062,7 @@ async function updateDexMonitor() {
             proposals: 'Proposals', active_votes: 'Active', total_voters: 'Voters', treasury: 'Treasury',
             stakers: 'Stakers', total_staked: 'Staked', distributed: 'Distributed', apy: 'APY',
             candles: 'Candles', indexed_trades: 'Indexed', pairs_tracked: 'Tracked', uptime: 'Uptime',
+            records: 'Records', tracked: 'Tracked',
             swaps_24h: 'Swaps 24h', volume: 'Volume', unique_users: 'Users',
             markets: 'Markets', collateral: 'Collateral', traders: 'Traders'
         };
@@ -1079,7 +1090,7 @@ async function updateDexMonitor() {
                     <span class="sub-badge ${statusClass}" style="background:${statusClass === 'success' ? 'rgba(6,214,160,0.12)' : 'rgba(255,210,63,0.12)'};color:${statusClass === 'success' ? '#4ade80' : '#f59e0b'};">${statusText}</span>
                 </div>
                 <div class="sub-metrics">${metricsHtml}</div>
-                ${program ? `<div style="font-size:0.65rem;color:var(--text-muted);font-family:'JetBrains Mono',monospace;margin-top:0.35rem;padding:0.2rem 0.5rem;background:var(--bg-card);border-radius:var(--radius-xs);overflow:hidden;text-overflow:ellipsis;">${escapeHtml(truncAddr(program))}</div>` : ''}
+                ${program ? `<div class="cm-addr" title="${escapeHtml(program)}" style="font-size:0.65rem;color:var(--text-muted);font-family:'JetBrains Mono',monospace;margin-top:0.35rem;padding:0.2rem 0.5rem;background:var(--bg-card);border-radius:var(--radius-xs);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(program)}</div>` : ''}
             </div>
         `);
     }
@@ -1115,6 +1126,7 @@ async function updateDexMonitor() {
 // ── Smart Contracts Monitor ─────────────────────────────────
 
 const ALL_CONTRACTS = [
+    { symbol: 'MOLT', name: 'MoltCoin', cat: 'token', icon: 'fas fa-coins', color: '#f59e0b' },
     { symbol: 'MUSD', name: 'mUSD Stablecoin', cat: 'token', icon: 'fas fa-dollar-sign', color: '#4ade80' },
     { symbol: 'WETH', name: 'Wrapped ETH', cat: 'token', icon: 'fab fa-ethereum', color: '#627eea' },
     { symbol: 'WSOL', name: 'Wrapped SOL', cat: 'token', icon: 'fas fa-sun', color: '#9945ff' },
@@ -1295,6 +1307,134 @@ async function updateIdentitiesMonitor() {
     }
 
     identityMonitorLoaded = true;
+}
+
+// ── Trading Metrics Monitor ─────────────────────────────────
+
+let tradingMetricsLoaded = false;
+
+async function updateTradingMetrics() {
+    const badge = document.getElementById('tradingMetricsBadge');
+    const el = id => document.getElementById(id);
+
+    // Fetch all trading data in parallel
+    const [dexCore, amm, margin, router, analytics, moltswap, rewards, governance, metrics] = await Promise.all([
+        rpc('getDexCoreStats').catch(() => null),
+        rpc('getDexAmmStats').catch(() => null),
+        rpc('getDexMarginStats').catch(() => null),
+        rpc('getDexRouterStats').catch(() => null),
+        rpc('getDexAnalyticsStats').catch(() => null),
+        rpc('getMoltswapStats').catch(() => null),
+        rpc('getDexRewardsStats').catch(() => null),
+        rpc('getDexGovernanceStats').catch(() => null),
+        rpc('getMetrics').catch(() => null),
+    ]);
+
+    let activeFeeds = 0;
+
+    // DEX Core
+    if (dexCore) {
+        activeFeeds++;
+        if (el('tradeTotalVolume')) el('tradeTotalVolume').textContent = formatMolt(dexCore.total_volume || 0);
+        if (el('tradeOrderCount')) el('tradeOrderCount').textContent = formatNum(dexCore.order_count || 0);
+        if (el('tradeFills24h')) el('tradeFills24h').textContent = formatNum(dexCore.trade_count || 0);
+        if (el('tradeFeeTreasury')) el('tradeFeeTreasury').textContent = formatMolt(dexCore.fee_treasury || 0);
+        if (el('tradePairCount')) el('tradePairCount').textContent = formatNum(dexCore.pair_count || 0);
+    }
+
+    // AMM
+    if (amm) {
+        activeFeeds++;
+        if (el('tradeAmmPools')) el('tradeAmmPools').textContent = formatNum(amm.pool_count || 0);
+        if (el('tradeAmmSwaps')) el('tradeAmmSwaps').textContent = formatNum(amm.swap_count || 0);
+        if (el('tradeAmmTVL')) el('tradeAmmTVL').textContent = formatMolt(amm.total_volume || 0);
+        if (el('tradeAmmFees')) el('tradeAmmFees').textContent = formatMolt(amm.total_fees || 0);
+    }
+
+    // Margin
+    if (margin) {
+        activeFeeds++;
+        if (el('tradeMarginPos')) el('tradeMarginPos').textContent = formatNum(margin.position_count || 0);
+        if (el('tradeMaxLeverage')) el('tradeMaxLeverage').textContent = (margin.max_leverage || 100) + 'x';
+        if (el('tradeLiquidations')) el('tradeLiquidations').textContent = formatNum(margin.liquidation_count || 0);
+        if (el('tradeInsurance')) el('tradeInsurance').textContent = formatMolt(margin.insurance_fund || 0);
+    }
+
+    // Router
+    if (router) {
+        activeFeeds++;
+        if (el('tradeRoutes')) el('tradeRoutes').textContent = formatNum(router.route_count || 0);
+    }
+
+    // Analytics
+    if (analytics) {
+        activeFeeds++;
+        if (el('tradeAnalyticsRecords')) el('tradeAnalyticsRecords').textContent = formatNum(analytics.record_count || 0);
+        if (el('tradeTrackedPairs')) el('tradeTrackedPairs').textContent = formatNum(analytics.trader_count || 0);
+    }
+
+    // MoltSwap
+    if (moltswap) {
+        activeFeeds++;
+        if (el('tradeMoltSwaps')) el('tradeMoltSwaps').textContent = formatNum(moltswap.swap_count || 0);
+    }
+
+    // Rewards
+    if (rewards) {
+        activeFeeds++;
+        if (el('tradeRewardsDistributed')) el('tradeRewardsDistributed').textContent = formatMolt(rewards.total_distributed || 0);
+        if (el('tradeRewardsEpoch')) el('tradeRewardsEpoch').textContent = formatNum(rewards.epoch || 0);
+    }
+
+    // Governance
+    if (governance) {
+        activeFeeds++;
+        if (el('tradeGovProposals')) el('tradeGovProposals').textContent = formatNum(governance.proposal_count || 0);
+        if (el('tradeGovVoters')) el('tradeGovVoters').textContent = formatNum(governance.voter_count || 0);
+    }
+
+    // Peak TPS from getMetrics
+    if (metrics) {
+        if (el('tradePeakTPS')) el('tradePeakTPS').textContent = (metrics.peak_tps || 0).toFixed(1);
+    }
+
+    if (badge) {
+        badge.textContent = `${activeFeeds}/9 Feeds`;
+        badge.className = 'panel-badge ' + (activeFeeds >= 8 ? 'success' : activeFeeds > 0 ? 'info' : 'warning');
+    }
+
+    tradingMetricsLoaded = true;
+}
+
+// ── Prediction Markets Monitor ──────────────────────────────
+
+let predictionMonitorLoaded = false;
+
+async function updatePredictionMonitor() {
+    const badge = document.getElementById('predictionMarketBadge');
+    const el = id => document.getElementById(id);
+
+    const stats = await rpc('getPredictionMarketStats').catch(() => null);
+    if (!stats) {
+        if (badge) { badge.textContent = 'OFFLINE'; badge.className = 'panel-badge warning'; }
+        return;
+    }
+
+    if (el('predTotalMarkets')) el('predTotalMarkets').textContent = formatNum(stats.total_markets || 0);
+    if (el('predOpenMarkets')) el('predOpenMarkets').textContent = formatNum(stats.open_markets || 0);
+    if (el('predTotalVolume')) el('predTotalVolume').textContent = formatMolt(stats.total_volume || 0);
+    if (el('predTotalCollateral')) el('predTotalCollateral').textContent = formatMolt(stats.total_collateral || 0);
+    if (el('predFeesCollected')) el('predFeesCollected').textContent = formatMolt(stats.fees_collected || 0);
+    if (el('predTotalTraders')) el('predTotalTraders').textContent = formatNum(stats.total_traders || 0);
+    if (el('predStatus')) el('predStatus').textContent = stats.paused ? 'PAUSED' : 'ACTIVE';
+
+    if (badge) {
+        const total = stats.total_markets || 0;
+        badge.textContent = `${formatNum(total)} Markets`;
+        badge.className = 'panel-badge ' + (total > 0 ? 'success' : 'info');
+    }
+
+    predictionMonitorLoaded = true;
 }
 
 // ── Clock ───────────────────────────────────────────────────

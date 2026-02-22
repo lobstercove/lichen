@@ -480,6 +480,7 @@ fn a5_03_consensus_reads_from_genesis_params() {
 fn a5_03_graduated_slashing_math() {
     use moltchain_core::consensus::{
         SlashingEvidence, SlashingOffense, SlashingTracker, StakePool, MIN_VALIDATOR_STAKE,
+        BOOTSTRAP_GRANT_AMOUNT,
     };
     use moltchain_core::genesis::ConsensusParams;
     use moltchain_core::Keypair;
@@ -494,9 +495,15 @@ fn a5_03_graduated_slashing_math() {
 
     let v1 = Keypair::new();
     let reporter = Keypair::new();
-    let stake = MIN_VALIDATOR_STAKE; // 75k MOLT
+    // GRANT-PROTECT: Use BOOTSTRAP_GRANT_AMOUNT (100K) so there is a 25K
+    // slash budget (100K - 75K MIN). The grant protection caps total
+    // economic slashing at this budget — validators can never be slashed
+    // below MIN_VALIDATOR_STAKE.
+    let stake = BOOTSTRAP_GRANT_AMOUNT; // 100K MOLT
+    let slash_budget = stake - MIN_VALIDATOR_STAKE; // 25K MOLT
 
     // Test 1: 300 missed slots → 3% slash (3 × 1%) at tier 3 + DoubleBlock 50%
+    // Expected raw penalty is 53%, but grant protection caps at 25K (25% of 100K)
     {
         let mut tracker = SlashingTracker::new();
         let mut pool = StakePool::new();
@@ -535,13 +542,13 @@ fn a5_03_graduated_slashing_math() {
 
         let slashed =
             tracker.apply_economic_slashing_with_params(&v1.pubkey(), &mut pool, &params, 300);
-        // DoubleBlock = 50% (500B) + Downtime 300/100=3 × 1% = 3% (30B) = 53% (530B)
-        let expected = (stake as u128 * 50 / 100 + stake as u128 * 3 / 100) as u64;
+        // Raw penalty: DoubleBlock 50% + Downtime 3% = 53% of 100K = 53K
+        // But GRANT-PROTECT caps at slash_budget (25K = 100K - 75K)
         assert_eq!(
-            slashed, expected,
-            "REGRESSION A5-03: 300 missed slots should slash 53% (50% double + 3% downtime), \
+            slashed, slash_budget,
+            "REGRESSION A5-03: 53% raw penalty should be capped at slash_budget (25K), \
              got {} expected {}",
-            slashed, expected
+            slashed, slash_budget
         );
     }
 
@@ -585,13 +592,13 @@ fn a5_03_graduated_slashing_math() {
 
         let slashed =
             tracker.apply_economic_slashing_with_params(&v2.pubkey(), &mut pool, &params, 2000);
-        // DoubleBlock = 50% + Downtime capped at max 10% = 60%
-        let expected = (stake as u128 * 50 / 100 + stake as u128 * 10 / 100) as u64;
+        // Raw penalty: DoubleBlock 50% + Downtime capped at 10% = 60% of 100K = 60K
+        // But GRANT-PROTECT caps at slash_budget (25K = 100K - 75K)
         assert_eq!(
-            slashed, expected,
-            "REGRESSION A5-03: 2000 missed slots should cap downtime at 10%, \
-             total 60% (50% double + 10% downtime), got {} expected {}",
-            slashed, expected
+            slashed, slash_budget,
+            "REGRESSION A5-03: 60% raw penalty should be capped at slash_budget (25K), \
+             got {} expected {}",
+            slashed, slash_budget
         );
     }
 }

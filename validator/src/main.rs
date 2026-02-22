@@ -1245,6 +1245,45 @@ fn bridge_dex_trades_to_analytics(
     }
 
     // Write analytics for each pair that had trades
+    //
+    // ANALYTICS-FIX: Also update the global counters (ana_rec_count,
+    // ana_total_volume, ana_pairs_tracked) that the RPC endpoint reads.
+    // Without this, getDexAnalyticsStats always shows the initial values
+    // because the bridge bypassed the contract's record_trade() function.
+    let total_new_trades: u64 = pair_trades.values().map(|(_, _, tc, _, _)| tc).sum();
+    let total_new_volume: u64 = pair_trades.values().map(|(_, vol, _, _, _)| vol).sum();
+    let pairs_count = pair_trades.len() as u64;
+
+    if total_new_trades > 0 {
+        // Read current counters and increment
+        let prev_rec = match state.get_contract_storage(&analytics_pk, b"ana_rec_count") {
+            Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
+            _ => 0,
+        };
+        let prev_vol = match state.get_contract_storage(&analytics_pk, b"ana_total_volume") {
+            Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
+            _ => 0,
+        };
+        let prev_pairs = match state.get_contract_storage(&analytics_pk, b"ana_trader_count") {
+            Ok(Some(d)) if d.len() >= 8 => u64::from_le_bytes(d[0..8].try_into().unwrap_or([0; 8])),
+            _ => 0,
+        };
+
+        let _ = state.put_contract_storage(
+            &analytics_pk, b"ana_rec_count",
+            &prev_rec.saturating_add(total_new_trades).to_le_bytes(),
+        );
+        let _ = state.put_contract_storage(
+            &analytics_pk, b"ana_total_volume",
+            &prev_vol.saturating_add(total_new_volume).to_le_bytes(),
+        );
+        // Use max of pairs_count vs prev — tracks unique pairs seen over time
+        let _ = state.put_contract_storage(
+            &analytics_pk, b"ana_trader_count",
+            &prev_pairs.max(pairs_count).to_le_bytes(),
+        );
+    }
+
     for (pair_id, (last_price, volume, new_trades, high, low)) in &pair_trades {
         // ── ana_lp_{pair_id}: last trade price ──
         let lp_key = format!("ana_lp_{}", pair_id);
@@ -6238,7 +6277,7 @@ async fn run_validator() {
         mpsc::channel::<moltchain_core::SlashingEvidence>(100);
 
     // Create mempool
-    let mempool = Arc::new(Mutex::new(Mempool::new(5000, 300))); // 5000 tx max, 300s expiration
+    let mempool = Arc::new(Mutex::new(Mempool::new(50_000, 300))); // 50K tx max, 300s expiration — handles 5000 concurrent trader bursts
 
     // Start P2P network - need to extract peer manager before starting
     let (p2p_peer_manager, _p2p_handle) = match P2PNetwork::new(
@@ -6501,6 +6540,13 @@ async fn run_validator() {
             info!("🔄 Block receiver started");
             // 1.7: Track (slot, validator) → block_hash to detect double-block equivocation
             let mut seen_blocks: HashMap<(u64, [u8; 32]), Hash> = HashMap::new();
+            // VOTE-DEDUP: Track which slots we've already voted for.
+            // Prevents DoubleVote when fork resolution re-delivers a different
+            // block for a slot we already voted on. This is the ROOT CAUSE of
+            // false byzantine slashing: two different blocks at the same slot
+            // from view rotation both get applied, and voting for both creates
+            // a DoubleVote evidence → 30% stake slash per event → 0 stake.
+            let mut voted_slots: std::collections::HashSet<u64> = std::collections::HashSet::new();
             // A5-02: Fork choice oracle — tracks competing chain heads by
             // cumulative stake weight. Used to break ties when multiple valid
             // blocks exist for the same slot.
@@ -6634,6 +6680,8 @@ async fn run_validator() {
                     if block_slot > prune_below_slot + 2000 {
                         prune_below_slot = block_slot.saturating_sub(1000);
                         seen_blocks.retain(|&(slot, _), _| slot >= prune_below_slot);
+                        // VOTE-DEDUP: Prune voted_slots alongside seen_blocks
+                        voted_slots.retain(|&s| s >= prune_below_slot);
                     }
                 }
 
@@ -6919,6 +6967,15 @@ async fn run_validator() {
                             // Now:        vote → fire-and-forget broadcast → apply effects
                             // This cuts ~10-20ms off the critical path per block.
 
+                            // VOTE-DEDUP: Only vote once per slot. If we already
+                            // voted for this slot (from a different fork block),
+                            // skip voting to prevent DoubleVote evidence.
+                            if voted_slots.contains(&block_slot) {
+                                info!(
+                                    "⚠️  Already voted for slot {} — skipping duplicate vote to prevent DoubleVote",
+                                    block_slot
+                                );
+                            } else {
                             // Cast vote for this block (BFT consensus)
                             let block_hash = block.hash();
                             let mut vote_message = Vec::new();
@@ -6972,6 +7029,10 @@ async fn run_validator() {
                                     pm.broadcast(vote_msg).await;
                                 });
                             }
+
+                            // VOTE-DEDUP: Mark this slot as voted
+                            voted_slots.insert(block_slot);
+                            } // end VOTE-DEDUP else block
 
                             // Now apply block effects (rewards, fees) — safe to run
                             // after vote since effects don't affect block validity.
@@ -7485,8 +7546,19 @@ async fn run_validator() {
                 }
 
                 let mut agg = vote_agg_for_handler.write().await;
-                let vs = validator_set_for_votes.read().await;
+                let mut vs = validator_set_for_votes.write().await;
                 if agg.add_vote_validated(vote.clone(), &vs) {
+                    // STABILITY-FIX: A validated vote proves the validator is online
+                    // and actively processing blocks. Update last_active_slot so the
+                    // downtime detector doesn't falsely flag voting validators that
+                    // simply aren't the current block leader.
+                    if let Some(val) = vs.get_validator_mut(&vote.validator) {
+                        if vote.slot > val.last_active_slot {
+                            val.last_active_slot = vote.slot;
+                        }
+                        val.votes_cast += 1;
+                    }
+
                     // Vote added successfully, check if block reached finality
                     let pool = stake_pool_for_votes.read().await;
                     let vote_count = agg.vote_count(vote.slot, &vote.block_hash);
@@ -8748,7 +8820,7 @@ async fn run_validator() {
     let network_id_for_rpc = genesis_config.chain_id.clone();
 
     // Create transaction submission channel for RPC -> mempool (bounded: backpressure returns HTTP 503)
-    let (rpc_tx_sender, mut rpc_tx_receiver) = mpsc::channel::<Transaction>(5_000);
+    let (rpc_tx_sender, mut rpc_tx_receiver) = mpsc::channel::<Transaction>(50_000);
 
     // Forward RPC transactions to P2P network and mempool
     let mempool_for_rpc_txs = mempool.clone();
@@ -9135,104 +9207,76 @@ async fn run_validator() {
         });
     }
 
-    // Periodic downtime detection and slashing (check every 60s)
+    // Periodic downtime MONITORING (reputation impact only — NO slashing).
+    //
+    // DESIGN RATIONALE (matching Solana/Ethereum approach):
+    // Real blockchains do NOT slash validators for downtime:
+    //   - Solana: No slashing at all; offline validators simply miss rewards
+    //   - Ethereum: Slashing ONLY for provable double-signing/attestation
+    //   - Cosmos: Jailing (temporary removal) for downtime, NOT stake destruction
+    //
+    // Downtime is normal operational behavior (network issues, upgrades, restarts).
+    // Slashing should be reserved for provably malicious Byzantine faults:
+    // double-block production, double-voting, or invalid state transitions.
+    //
+    // This monitor:
+    //   1. Tracks which validators are behind on last_active_slot
+    //   2. Applies a small REPUTATION penalty (not stake) — reducing reward share
+    //   3. Logs warnings for operational visibility
+    //   4. Does NOT create SlashingEvidence, does NOT broadcast, does NOT slash
     let validator_set_for_downtime = validator_set.clone();
-    let slashing_for_downtime = slashing_tracker.clone();
     let state_for_downtime = state.clone();
     let validator_pubkey_for_downtime = validator_pubkey;
-    let peer_mgr_for_downtime_slash = p2p_peer_manager.clone();
-    let local_addr_for_downtime = p2p_config.listen_addr;
-    let genesis_time_for_downtime = genesis_time_secs;
-    let slot_duration_for_downtime = slot_duration_ms;
 
     tokio::spawn(async move {
-        let mut interval = time::interval(Duration::from_secs(60));
+        let mut interval = time::interval(Duration::from_secs(120));
         loop {
             interval.tick().await;
             let current_slot = state_for_downtime.get_last_slot().unwrap_or(0);
 
-            // Check all validators for downtime (offline for 100+ slots)
-            let vs = validator_set_for_downtime.read().await;
+            // Read-only check — no slashing, just reputation tracking
+            let mut vs = validator_set_for_downtime.write().await;
+            let num_validators = vs.validators().len() as u64;
+            // A validator is "behind" if it hasn't been active for 500+ slots (~200s)
+            let downtime_threshold = (200 * num_validators).max(1000);
 
-            // FIX: Detect chain-wide stall — if ALL validators have similar
-            // missed_slots (within 200 of each other), the entire chain was
-            // stalled. Do NOT slash for downtime during a full chain stall.
-            // Only slash when individual validators go offline while the
-            // chain is progressing.
-            let all_missed: Vec<u64> = vs
-                .validators()
-                .iter()
-                .map(|v| current_slot.saturating_sub(v.last_active_slot))
-                .collect();
-            let min_missed = all_missed.iter().copied().min().unwrap_or(0);
-            let max_missed = all_missed.iter().copied().max().unwrap_or(0);
-            // If every validator missed within 200 slots of each other, it's
-            // a chain-wide stall, not individual downtime.
-            let is_chain_stall = max_missed >= 100 && (max_missed.saturating_sub(min_missed)) < 200;
-            if is_chain_stall {
-                debug!("⏸️  Chain-wide stall detected (all validators missed {}-{} slots) — skipping downtime slashing",
-                    min_missed, max_missed);
-                drop(vs);
-                continue;
-            }
+            for validator_info in vs.validators_mut() {
+                if validator_info.pubkey == validator_pubkey_for_downtime {
+                    continue; // Don't monitor ourselves
+                }
 
-            for validator_info in vs.validators() {
                 let missed_slots = current_slot.saturating_sub(validator_info.last_active_slot);
-
-                // Grace period: skip newly-joined validators (200 slots ≈ 80s)
                 let slots_since_join = current_slot.saturating_sub(validator_info.joined_slot);
-                if slots_since_join < 200 {
+
+                // Grace period for new validators (2000 slots ≈ 800s)
+                if slots_since_join < 2000 {
                     continue;
                 }
 
-                // Slash if offline for 100+ slots (~40 seconds at 400ms/slot)
-                if missed_slots >= 100 && validator_info.pubkey != validator_pubkey_for_downtime {
-                    info!(
-                        "⚔️  Validator {} offline for {} slots",
-                        validator_info.pubkey.to_base58(),
-                        missed_slots
-                    );
+                if missed_slots >= downtime_threshold {
+                    // Reputation-only penalty: small reduction proportional to downtime
+                    // Max penalty per cycle: 5 reputation points (out of 1000)
+                    let rep_penalty = ((missed_slots / 500) as u64).min(5);
+                    let old_rep = validator_info.reputation;
+                    validator_info.reputation = validator_info
+                        .reputation
+                        .saturating_sub(rep_penalty)
+                        .max(50); // Floor at 50 — never goes below
 
-                    let evidence = SlashingEvidence::new(
-                        SlashingOffense::Downtime {
-                            last_active_slot: validator_info.last_active_slot,
-                            current_slot,
+                    if rep_penalty > 0 {
+                        warn!(
+                            "⏸️  Validator {} behind by {} slots — reputation {} → {} (no slashing)",
+                            validator_info.pubkey.to_base58(),
                             missed_slots,
-                        },
-                        validator_info.pubkey,
-                        current_slot,
-                        validator_pubkey_for_downtime,
-                        moltchain_core::block::derive_slot_timestamp(
-                            genesis_time_for_downtime,
-                            current_slot,
-                            slot_duration_for_downtime,
-                        ),
-                    );
-
-                    let mut slasher = slashing_for_downtime.lock().await;
-                    if slasher.add_evidence(evidence.clone()) {
-                        info!(
-                            "⚔️  Downtime evidence recorded for {}",
-                            validator_info.pubkey.to_base58()
+                            old_rep,
+                            validator_info.reputation
                         );
-
-                        // Broadcast evidence
-                        if let Some(ref peer_mgr) = peer_mgr_for_downtime_slash {
-                            let evidence_msg = P2PMessage::new(
-                                MessageType::SlashingEvidence(evidence),
-                                local_addr_for_downtime,
-                            );
-                            peer_mgr.broadcast(evidence_msg).await;
-                        }
                     }
-                    drop(slasher);
                 }
             }
+            let vs_snapshot = vs.clone();
             drop(vs);
-
-            // Cleanup old evidence
-            let mut slasher = slashing_for_downtime.lock().await;
-            slasher.prune_old_evidence(current_slot, 1000);
+            let _ = state_for_downtime.save_validator_set(&vs_snapshot);
         }
     });
 
@@ -9550,189 +9594,59 @@ async fn run_validator() {
             continue;
         }
 
-        // Apply slashing penalties if any validators should be slashed.
-        // PERF-FIX 5: Only run the slashing sweep every 100 slots (~40s) instead of
-        // every slot tick (~400ms). This reduces lock contention on validator_set,
-        // stake_pool, and slashing_tracker by ~99% while keeping offense-to-slash
-        // latency well within acceptable bounds.
+        // ── BYZANTINE FAULT SLASHING SWEEP ──
+        //
+        // DESIGN (matching Solana/Ethereum):
+        // Slash ONLY for provably malicious Byzantine faults:
+        //   - DoubleBlock: same validator produced two blocks at the same slot
+        //   - DoubleVote: same validator voted for different blocks at the same slot
+        //   - InvalidStateTransition: provably wrong state root
+        //   - Censorship / Collusion: detected by quorum analysis
+        //
+        // Downtime is NOT a slashable offense. Online validators that aren't
+        // the current leader simply receive lower rewards (reputation-weighted).
+        // This is how Solana, Ethereum 2.0, and other production chains work.
+        //
+        // Run every 100 slots (~40s) to reduce lock contention.
         if slot % 100 == 0 {
             let mut slasher = slashing_tracker.lock().await;
-            // Lock ordering: validator_set before stake_pool (matches global convention
-            // used by announcement handler, vote handlers, leader election, etc.)
             let mut vs = validator_set.write().await;
             let mut pool = stake_pool.write().await;
 
-            // Cleanup expired suspensions and repayment boosts
             slasher.cleanup_expired(slot);
 
-            // AUDIT-FIX E-5: Track validators already slashed this sweep to prevent double-slashing
-            let mut slashed_this_sweep = std::collections::HashSet::new();
-
-            // AUDIT-FIX E-9: Collect all slashing debits in a Vec and write them atomically
-            // at the end of the sweep. This ensures that if the validator crashes mid-sweep,
-            // either ALL debits are persisted or NONE are, keeping account balances consistent
-            // with the stake pool state.
             let mut slash_debits: Vec<(moltchain_core::Pubkey, u64)> = Vec::new();
 
             for validator_info in vs.validators_mut() {
-                // Grace period: don't slash validators that recently joined (200 slots ≈ 80s).
-                // Prevents false-positive slashing during initial sync/handshake.
-                let slots_since_join = slot.saturating_sub(validator_info.joined_slot);
-                if slots_since_join < 200 {
-                    continue;
-                }
-
-                // Skip if validator is temporarily suspended (Tier 2 penalty)
-                if slasher.is_suspended(&validator_info.pubkey, slot) {
-                    continue;
-                }
-
-                // Check for downtime evidence to apply tiered system
-                let has_downtime = slasher
-                    .get_evidence(&validator_info.pubkey)
-                    .map(|ev| {
-                        ev.iter()
-                            .any(|e| matches!(e.offense, SlashingOffense::Downtime { .. }))
-                    })
-                    .unwrap_or(false);
-
-                let has_non_downtime = slasher
+                // Only slash for BYZANTINE faults — never for downtime
+                let has_byzantine_fault = slasher
                     .get_evidence(&validator_info.pubkey)
                     .map(|ev| {
                         ev.iter().any(|e| {
-                            e.severity() >= 70
-                                && !matches!(e.offense, SlashingOffense::Downtime { .. })
+                            matches!(
+                                e.offense,
+                                SlashingOffense::DoubleBlock { .. }
+                                    | SlashingOffense::DoubleVote { .. }
+                                    | SlashingOffense::InvalidStateTransition { .. }
+                                    | SlashingOffense::Censorship { .. }
+                                    | SlashingOffense::Collusion { .. }
+                            )
                         })
                     })
                     .unwrap_or(false);
 
-                // For downtime, record the offense to advance the tier
-                // AUDIT-FIX HIGH-4: Only record a new offense when fresh evidence
-                // has actually been added. Without this gate, the sweep would call
-                // record_downtime_offense every 100 slots on the SAME evidence,
-                // escalating Tier 1 → Tier 2 in just 40 seconds (1 sweep cycle).
-                if has_downtime
-                    && !slasher.is_slashed(&validator_info.pubkey)
-                    && slasher.has_new_downtime_evidence(&validator_info.pubkey)
-                {
-                    let tier = slasher.record_downtime_offense(&validator_info.pubkey, slot);
-
-                    match tier {
-                        1 => {
-                            // Tier 1: Reputation penalty only (warning)
-                            let reputation_penalty =
-                                slasher.calculate_penalty(&validator_info.pubkey);
-                            let old_reputation = validator_info.reputation;
-                            validator_info.reputation = validator_info
-                                .reputation
-                                .saturating_sub(reputation_penalty)
-                                .max(50);
-                            warn!(
-                                "⚠️  DOWNTIME WARNING (Tier 1) {} | Rep: {} -> {} | No stake slashed",
-                                validator_info.pubkey.to_base58(),
-                                old_reputation,
-                                validator_info.reputation
-                            );
-                        }
-                        2 => {
-                            // Tier 2: Small slash (0.5%) + suspension + penalty repayment boost
-                            let slashed_amount = slasher.apply_economic_slashing_with_params(
-                                &validator_info.pubkey,
-                                &mut pool,
-                                &genesis_config.consensus,
-                                slot,
-                            );
-
-                            // Apply suspension
-                            slasher.suspend_validator(&validator_info.pubkey, slot);
-
-                            // Apply penalty repayment boost (90% to debt for ~1 day)
-                            slasher.apply_penalty_repayment_boost(&validator_info.pubkey, slot);
-
-                            // Set penalty boost on StakeInfo so claim_rewards auto-detects it
-                            if let Some(stake_info) = pool.get_stake_mut(&validator_info.pubkey) {
-                                stake_info.penalty_boost_until =
-                                    slot + moltchain_core::consensus::PENALTY_REPAYMENT_BOOST_SLOTS;
-                            }
-
-                            let reputation_penalty =
-                                slasher.calculate_penalty(&validator_info.pubkey);
-                            let old_reputation = validator_info.reputation;
-                            validator_info.reputation = validator_info
-                                .reputation
-                                .saturating_sub(reputation_penalty)
-                                .max(50);
-
-                            if slashed_amount > 0 {
-                                warn!(
-                                    "⚔️  DOWNTIME SLASH (Tier 2) {} | Stake burned: {:.4} MOLT | Rep: {} -> {} | Suspended {} slots | Repayment boost active",
-                                    validator_info.pubkey.to_base58(),
-                                    slashed_amount as f64 / 1_000_000_000.0,
-                                    old_reputation,
-                                    validator_info.reputation,
-                                    moltchain_core::consensus::DOWNTIME_SUSPENSION_SLOTS
-                                );
-
-                                // AUDIT-FIX E-9: Defer slashing debit for atomic persistence
-                                if let Ok(Some(acct)) = state.get_account(&validator_info.pubkey) {
-                                    let debit = slashed_amount.min(acct.staked);
-                                    if debit > 0 {
-                                        slash_debits.push((validator_info.pubkey, debit));
-                                    }
-                                }
-                            }
-                        }
-                        _ => {
-                            // Tier 3+: Full graduated slashing
-                            let slashed_amount = slasher.apply_economic_slashing_with_params(
-                                &validator_info.pubkey,
-                                &mut pool,
-                                &genesis_config.consensus,
-                                slot,
-                            );
-
-                            let reputation_penalty =
-                                slasher.calculate_penalty(&validator_info.pubkey);
-                            let old_reputation = validator_info.reputation;
-                            validator_info.reputation = validator_info
-                                .reputation
-                                .saturating_sub(reputation_penalty)
-                                .max(50);
-
-                            if slashed_amount > 0 {
-                                warn!(
-                                    "⚔️💰 DOWNTIME SLASH (Tier 3) {} | Stake burned: {} MOLT | Rep: {} -> {}",
-                                    validator_info.pubkey.to_base58(),
-                                    slashed_amount / 1_000_000_000,
-                                    old_reputation,
-                                    validator_info.reputation
-                                );
-
-                                if let Ok(Some(acct)) = state.get_account(&validator_info.pubkey) {
-                                    let debit = slashed_amount.min(acct.staked);
-                                    if debit > 0 {
-                                        slash_debits.push((validator_info.pubkey, debit));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    // AUDIT-FIX E-5: Mark this validator as slashed this sweep
-                    slashed_this_sweep.insert(validator_info.pubkey);
-                }
-
-                // For non-downtime severe offenses, apply immediately (no tiering)
-                // AUDIT-FIX E-5: Skip if already slashed for downtime in this sweep
-                if has_non_downtime
-                    && !slasher.is_slashed(&validator_info.pubkey)
-                    && !slashed_this_sweep.contains(&validator_info.pubkey)
-                {
+                if has_byzantine_fault && !slasher.is_slashed(&validator_info.pubkey) {
                     let slashed_amount = slasher.apply_economic_slashing_with_params(
                         &validator_info.pubkey,
                         &mut pool,
                         &genesis_config.consensus,
                         slot,
                     );
+
+                    // GRANT-PROTECT: Floor enforcement is now inside
+                    // apply_economic_slashing_with_params — the returned amount
+                    // already respects MIN_VALIDATOR_STAKE.  Use it directly.
+                    let capped_slash = slashed_amount;
 
                     let reputation_penalty = slasher.calculate_penalty(&validator_info.pubkey);
                     let old_reputation = validator_info.reputation;
@@ -9741,17 +9655,21 @@ async fn run_validator() {
                         .saturating_sub(reputation_penalty)
                         .max(50);
 
-                    if slashed_amount > 0 {
+                    if capped_slash > 0 {
                         warn!(
-                            "⚔️💰 SLASHED {} | Stake burned: {} MOLT | Reputation: {} -> {}",
+                            "⚔️💰 BYZANTINE SLASH {} | Offense: {:?} | Stake burned: {:.4} MOLT | Rep: {} -> {}",
                             validator_info.pubkey.to_base58(),
-                            slashed_amount / 1_000_000_000,
+                            slasher.get_evidence(&validator_info.pubkey)
+                                .and_then(|ev| ev.iter().find(|e| !matches!(e.offense, SlashingOffense::Downtime { .. })))
+                                .map(|e| format!("{:?}", e.offense))
+                                .unwrap_or_default(),
+                            capped_slash as f64 / 1_000_000_000.0,
                             old_reputation,
                             validator_info.reputation
                         );
 
                         if let Ok(Some(acct)) = state.get_account(&validator_info.pubkey) {
-                            let debit = slashed_amount.min(acct.staked);
+                            let debit = capped_slash.min(acct.staked);
                             if debit > 0 {
                                 slash_debits.push((validator_info.pubkey, debit));
                             }
@@ -9789,11 +9707,7 @@ async fn run_validator() {
                 }
             }
 
-            // AUDIT-FIX CRITICAL-2: Clear slashed flag at end of sweep.
-            // Without this, once a validator is marked slashed it is permanently
-            // immune to all future slashing (is_slashed check at top of sweep skips
-            // them). We clear the flag so the sweep can re-evaluate next cycle.
-            // Permanently banned validators (collusion) are NOT cleared.
+            // Clean up slashed flags for next sweep (keep permanent bans)
             {
                 let all_slashed: Vec<_> = slasher.slashed_validators().collect();
                 for pk in all_slashed {
@@ -9803,14 +9717,10 @@ async fn run_validator() {
                 }
             }
 
-            // Clean up ghost validators (fully slashed, inactive for 10K+ slots)
-            let removed = pool.remove_ghost_validators(slot, 10_000);
-            if !removed.is_empty() {
-                for pk in &removed {
-                    vs.remove_validator(pk);
-                    info!("🗑️  Removed ghost validator {}", pk.to_base58());
-                }
-            }
+            // NOTE: We do NOT remove "ghost validators" — validators should
+            // remain in the set even after slashing. They can re-stake to
+            // get back above MIN_VALIDATOR_STAKE. Removal only happens for
+            // permanently banned validators (collusion).
 
             // AUDIT-FIX 0.4: Persist stake pool and validator set after slashing
             // so that slashing effects survive node restarts.
@@ -9970,7 +9880,7 @@ async fn run_validator() {
         // Collect pending transactions from mempool
         let pending_transactions = {
             let mut pool = mempool.lock().await;
-            pool.get_top_transactions(500) // PERF-FIX 8: 100 → 500 TXs per block for parallel throughput
+            pool.get_top_transactions(2000) // PERF: 500 → 2000 TXs per block for 5000-trader HF throughput
         };
 
         // Process transactions in parallel where possible (FIX-2: rayon)

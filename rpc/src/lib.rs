@@ -1008,12 +1008,10 @@ pub async fn start_rpc_server(
     let listener = tokio::net::TcpListener::bind(&addr).await?;
 
     // STABILITY-FIX: Limit concurrent connections to prevent RPC load from
-    // starving block production. Without this, a burst of E2E test requests
-    // can saturate all tokio worker threads, causing the validator to fall
-    // behind and eventually crash. 256 concurrent connections is generous
-    // for a testnet while still providing backpressure under extreme load.
+    // starving block production. 8192 supports 5000+ concurrent traders
+    // while still providing backpressure under extreme load.
     use tower::limit::ConcurrencyLimitLayer;
-    let app = app.layer(ConcurrencyLimitLayer::new(256));
+    let app = app.layer(ConcurrencyLimitLayer::new(8192));
 
     axum::serve(
         listener,
@@ -10163,6 +10161,10 @@ async fn handle_get_dex_amm_stats(state: &RpcState) -> Result<serde_json::Value,
 /// getDexMarginStats — Margin trading stats
 async fn handle_get_dex_margin_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     let c = load_contract_by_symbol(state, "DEXMARGIN")?;
+    // Read global max leverage — if per-pair key mrg_maxl_0 is set use it,
+    // otherwise fall back to the contract's compiled default (100x).
+    let per_pair_max = stats_u64(&c, b"mrg_maxl_0");
+    let max_leverage = if per_pair_max > 0 { per_pair_max } else { 100 }; // MAX_LEVERAGE_ISOLATED = 100
     Ok(serde_json::json!({
         "position_count": stats_u64(&c, b"mrg_pos_count"),
         "total_volume": stats_u64(&c, b"mrg_total_volume"),
@@ -10170,6 +10172,7 @@ async fn handle_get_dex_margin_stats(state: &RpcState) -> Result<serde_json::Val
         "total_pnl_profit": stats_u64(&c, b"mrg_pnl_profit"),
         "total_pnl_loss": stats_u64(&c, b"mrg_pnl_loss"),
         "insurance_fund": stats_u64(&c, b"mrg_insurance"),
+        "max_leverage": max_leverage,
         "paused": c.get_storage(b"mrg_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
     }))
 }

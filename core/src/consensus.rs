@@ -1942,6 +1942,9 @@ impl ValidatorSet {
 
     /// Select leader with explicit randomness seed (e.g., previous block hash).
     /// This is the primary entry point for production validators.
+    ///
+    /// Validators below MIN_VALIDATOR_STAKE are EXCLUDED from leader rotation.
+    /// This prevents 0-stake (slashed) validators from producing blocks.
     pub fn select_leader_weighted_with_seed(
         &self,
         slot: u64,
@@ -1954,7 +1957,29 @@ impl ValidatorSet {
 
         let sorted_validators = self.sorted_validators();
 
-        let weights: Vec<u64> = sorted_validators
+        // Filter: only validators with stake >= MIN_VALIDATOR_STAKE can be leaders
+        let eligible: Vec<&ValidatorInfo> = sorted_validators
+            .iter()
+            .filter(|v| {
+                let stake = stake_pool
+                    .get_stake(&v.pubkey)
+                    .map(|s| s.total_stake())
+                    .unwrap_or(v.stake);
+                stake >= MIN_VALIDATOR_STAKE
+            })
+            .collect();
+
+        // MIN-STAKE GUARD: If no validators meet minimum stake, the chain
+        // halts rather than producing blocks with 0-stake validators.
+        // With GRANT-PROTECT in slashing, this should never happen — but if it
+        // does, halting is the correct safety behavior.
+        if eligible.is_empty() {
+            eprintln!("🛑 HALT: No validators meet MIN_VALIDATOR_STAKE — chain cannot produce blocks safely");
+            return None;
+        }
+        let candidates: Vec<&ValidatorInfo> = eligible;
+
+        let weights: Vec<u64> = candidates
             .iter()
             .map(|v| {
                 let stake = stake_pool
@@ -1995,12 +2020,12 @@ impl ValidatorSet {
                 continue;
             }
             if target < *weight {
-                return Some(sorted_validators[index].pubkey);
+                return Some(candidates[index].pubkey);
             }
             target -= *weight;
         }
 
-        Some(sorted_validators[0].pubkey)
+        Some(candidates[0].pubkey)
     }
 }
 
@@ -2930,8 +2955,13 @@ impl SlashingTracker {
             }
         }
 
-        // Cap total penalty at original stake (can't slash more than 100%)
-        let capped_penalty = total_penalty.min(original_stake);
+        // GRANT-PROTECT: Cap penalty so stake never drops below MIN_VALIDATOR_STAKE.
+        // Bootstrap-granted validators (100K MOLT) have a 25K buffer — that is the
+        // maximum that can ever be slashed economically.  This prevents the chain
+        // from stranding validators at 0 stake where the liveness fallback kicks in
+        // and blocks are produced by validators with no skin-in-the-game.
+        let slash_budget = original_stake.saturating_sub(MIN_VALIDATOR_STAKE);
+        let capped_penalty = total_penalty.min(slash_budget);
         let total_slashed = if capped_penalty > 0 {
             stake_pool.slash_validator(validator, capped_penalty)
         } else {
@@ -3042,16 +3072,18 @@ mod tests {
     }
 
     #[test]
-    fn test_weighted_falls_back_to_round_robin() {
+    fn test_weighted_halts_when_no_min_stake() {
         let mut set = ValidatorSet::new();
-        let pool = StakePool::new(); // empty pool
+        let pool = StakePool::new(); // empty pool — no validator meets MIN_VALIDATOR_STAKE
         let pk1 = Pubkey::new([1u8; 32]);
 
         set.add_validator(ValidatorInfo::new(pk1, 0));
 
-        // With empty stake pool (total_weight=0), should fall back to round-robin
+        // MIN-STAKE GUARD: With no validators meeting MIN_VALIDATOR_STAKE,
+        // leader selection returns None (chain halts) — never produces blocks
+        // with 0-stake validators.
         let leader = set.select_leader_weighted(0, &pool);
-        assert_eq!(leader, Some(pk1));
+        assert_eq!(leader, None, "Should return None when no validator meets MIN_VALIDATOR_STAKE");
     }
 
     #[test]
@@ -4123,6 +4155,62 @@ mod tests {
             e1.timestamp, e2.timestamp,
             "two evidence structs with same input must be identical"
         );
+    }
+
+    // ================================================================
+    // GRANT-PROTECT: Slashing cannot take stake below MIN_VALIDATOR_STAKE
+    // ================================================================
+
+    #[test]
+    fn test_grant_protection_double_vote_cannot_slash_below_min_stake() {
+        // Simulate the exact scenario that was killing validators:
+        // A bootstrap-granted validator (100K MOLT) receives multiple
+        // DoubleVote evidence (30% each). Without protection, 4 events
+        // would slash to 0. With protection, stake stays at MIN_VALIDATOR_STAKE.
+        let mut tracker = SlashingTracker::new();
+        let mut pool = StakePool::new();
+        let pk = Pubkey::new([1u8; 32]);
+        let reporter = Pubkey::new([2u8; 32]);
+        let params = ConsensusParams::default();
+
+        pool.stake(pk, BOOTSTRAP_GRANT_AMOUNT, 0).unwrap(); // 100K MOLT
+        let initial = pool.get_stake(&pk).unwrap().total_stake();
+        assert_eq!(initial, BOOTSTRAP_GRANT_AMOUNT);
+
+        // Add 4 DoubleVote evidence events (each 30% = 120% total without cap)
+        // Push directly to bypass signature verification (test-only)
+        let evidence_list = tracker.evidence.entry(pk).or_default();
+        for slot in 0..4u64 {
+            let vote_1 = Vote::new(slot, Hash::new([0xAA; 32]), pk, [0u8; 64]);
+            let vote_2 = Vote::new(slot, Hash::new([0xBB; 32]), pk, [0u8; 64]);
+            evidence_list.push(SlashingEvidence::new(
+                SlashingOffense::DoubleVote {
+                    slot,
+                    vote_1,
+                    vote_2,
+                },
+                pk,
+                slot,
+                reporter,
+                1_700_000_000 + slot,
+            ));
+        }
+
+        let slashed = tracker.apply_economic_slashing_with_params(
+            &pk, &mut pool, &params, 100,
+        );
+
+        let remaining = pool.get_stake(&pk).unwrap().total_stake();
+        assert!(
+            remaining >= MIN_VALIDATOR_STAKE,
+            "Stake ({}) must never drop below MIN_VALIDATOR_STAKE ({})",
+            remaining, MIN_VALIDATOR_STAKE
+        );
+
+        // The max slashable is the buffer: 100K - 75K = 25K MOLT
+        let max_slashable = BOOTSTRAP_GRANT_AMOUNT - MIN_VALIDATOR_STAKE;
+        assert_eq!(slashed, max_slashable,
+            "Should slash exactly the 25K buffer, not more");
     }
 
     // ================================================================

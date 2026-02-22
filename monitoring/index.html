@@ -571,6 +571,156 @@
         </div>
 
         <!-- Incident Response Center -->
+
+        <!-- Row 9: Trading Metrics -->
+        <div class="panel full-width">
+            <div class="panel-header">
+                <div class="panel-title">
+                    <i class="fas fa-chart-line"></i> Trading Metrics
+                </div>
+                <span class="panel-badge" id="tradingMetricsBadge">--</span>
+            </div>
+            <div class="panel-body">
+                <div class="dex-stats-bar" id="tradingStatsBar">
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Total Volume</span>
+                        <span class="dex-stat-value" id="tradeTotalVolume">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Order Book Orders</span>
+                        <span class="dex-stat-value" id="tradeOrderCount">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Fills 24h</span>
+                        <span class="dex-stat-value" id="tradeFills24h">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">AMM Pools</span>
+                        <span class="dex-stat-value" id="tradeAmmPools">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">AMM Swaps</span>
+                        <span class="dex-stat-value" id="tradeAmmSwaps">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">AMM TVL</span>
+                        <span class="dex-stat-value" id="tradeAmmTVL">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Fee Treasury</span>
+                        <span class="dex-stat-value" id="tradeFeeTreasury">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">AMM Fees</span>
+                        <span class="dex-stat-value" id="tradeAmmFees">--</span>
+                    </div>
+                </div>
+                <div class="dex-stats-bar" style="margin-top:0.75rem;" id="tradingStatsBar2">
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Margin Positions</span>
+                        <span class="dex-stat-value" id="tradeMarginPos">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Max Leverage</span>
+                        <span class="dex-stat-value" id="tradeMaxLeverage">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Liquidations</span>
+                        <span class="dex-stat-value" id="tradeLiquidations">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Insurance Fund</span>
+                        <span class="dex-stat-value" id="tradeInsurance">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Router Routes</span>
+                        <span class="dex-stat-value" id="tradeRoutes">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">MoltSwap Swaps</span>
+                        <span class="dex-stat-value" id="tradeMoltSwaps">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Analytics Records</span>
+                        <span class="dex-stat-value" id="tradeAnalyticsRecords">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Tracked Pairs</span>
+                        <span class="dex-stat-value" id="tradeTrackedPairs">--</span>
+                    </div>
+                </div>
+                <div class="dex-stats-bar" style="margin-top:0.75rem;" id="tradingStatsBar3">
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Rewards Distributed</span>
+                        <span class="dex-stat-value" id="tradeRewardsDistributed">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Rewards Epoch</span>
+                        <span class="dex-stat-value" id="tradeRewardsEpoch">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Governance Proposals</span>
+                        <span class="dex-stat-value" id="tradeGovProposals">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Total Voters</span>
+                        <span class="dex-stat-value" id="tradeGovVoters">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Trading Pairs</span>
+                        <span class="dex-stat-value" id="tradePairCount">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Peak TPS</span>
+                        <span class="dex-stat-value" id="tradePeakTPS">--</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Row 10: Prediction Markets -->
+        <div class="panel full-width">
+            <div class="panel-header">
+                <div class="panel-title">
+                    <i class="fas fa-chart-pie"></i> Prediction Markets
+                </div>
+                <span class="panel-badge" id="predictionMarketBadge">--</span>
+            </div>
+            <div class="panel-body">
+                <div class="dex-stats-bar" id="predictionStatsBar">
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Total Markets</span>
+                        <span class="dex-stat-value" id="predTotalMarkets">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Open Markets</span>
+                        <span class="dex-stat-value" id="predOpenMarkets">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Total Volume</span>
+                        <span class="dex-stat-value" id="predTotalVolume">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Total Collateral</span>
+                        <span class="dex-stat-value" id="predTotalCollateral">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Fees Collected</span>
+                        <span class="dex-stat-value" id="predFeesCollected">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Total Traders</span>
+                        <span class="dex-stat-value" id="predTotalTraders">--</span>
+                    </div>
+                    <div class="dex-stat-item">
+                        <span class="dex-stat-label">Status</span>
+                        <span class="dex-stat-value" id="predStatus">--</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Incident Response Center -->
         <div class="panel full-width incident-panel">
             <div class="panel-header">
                 <div class="panel-title">

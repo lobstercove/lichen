@@ -1451,7 +1451,10 @@ fn test_slashing_economic_penalty() {
     let mut pool = StakePool::new();
     let v1 = Keypair::new();
     let reporter = Keypair::new();
-    pool.stake(v1.pubkey(), MIN_VALIDATOR_STAKE, 0).unwrap();
+    // GRANT-PROTECT: Use BOOTSTRAP_GRANT_AMOUNT (100K) so there is a 25K
+    // slash budget above MIN_VALIDATOR_STAKE (75K). Validators at exactly
+    // MIN_VALIDATOR_STAKE have no buffer and cannot be slashed economically.
+    pool.stake(v1.pubkey(), BOOTSTRAP_GRANT_AMOUNT, 0).unwrap();
     let evidence = SlashingEvidence::new(
         SlashingOffense::DoubleBlock {
             slot: 10,
@@ -1465,7 +1468,9 @@ fn test_slashing_economic_penalty() {
     );
     tracker.add_evidence(evidence);
     let slashed_amount = tracker.apply_economic_slashing(&v1.pubkey(), &mut pool);
-    assert!(slashed_amount > 0, "Slashing should remove stake");
+    assert!(slashed_amount > 0, "Slashing should remove stake from the 25K buffer");
+    let remaining = pool.get_stake(&v1.pubkey()).unwrap().total_stake();
+    assert!(remaining >= MIN_VALIDATOR_STAKE, "Stake must never drop below MIN_VALIDATOR_STAKE");
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
