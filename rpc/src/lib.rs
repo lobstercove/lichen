@@ -1359,6 +1359,15 @@ async fn handle_rpc(
         "getMoltMarketStats" => handle_get_moltmarket_stats(&state).await,
         "getMoltAuctionStats" => handle_get_moltauction_stats(&state).await,
         "getMoltPunksStats" => handle_get_moltpunks_stats(&state).await,
+        // Token contract stats
+        "getMusdStats" => handle_get_musd_stats(&state).await,
+        "getWethStats" => handle_get_weth_stats(&state).await,
+        "getWsolStats" => handle_get_wsol_stats(&state).await,
+        // Platform contract stats — previously missing RPC wiring
+        "getClawVaultStats" => handle_get_clawvault_stats(&state).await,
+        "getMoltBridgeStats" => handle_get_moltbridge_stats(&state).await,
+        "getMoltDaoStats" => handle_get_moltdao_stats(&state).await,
+        "getMoltOracleStats" => handle_get_moltoracle_stats(&state).await,
 
         _ => Err(RpcError {
             code: -32601,
@@ -10327,6 +10336,102 @@ async fn handle_get_moltpunks_stats(state: &RpcState) -> Result<serde_json::Valu
         "transfer_count": stats_u64(&c, b"mp_transfer_count"),
         "burn_count": stats_u64(&c, b"mp_burn_count"),
         "paused": c.get_storage(b"mp_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
+    }))
+}
+
+/// getMusdStats — mUSD stablecoin stats
+async fn handle_get_musd_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    let c = load_contract_by_symbol(state, "MUSD")?;
+    Ok(serde_json::json!({
+        "supply": stats_u64(&c, b"musd_supply"),
+        "total_minted": stats_u64(&c, b"musd_minted"),
+        "total_burned": stats_u64(&c, b"musd_burned"),
+        "mint_events": stats_u64(&c, b"musd_mint_evt"),
+        "burn_events": stats_u64(&c, b"musd_burn_evt"),
+        "transfer_count": stats_u64(&c, b"musd_xfer_cnt"),
+        "attestation_count": stats_u64(&c, b"musd_att_count"),
+        "reserve_attested": stats_u64(&c, b"musd_reserve_att"),
+        "paused": c.get_storage(b"musd_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
+    }))
+}
+
+/// getWethStats — Wrapped ETH stats
+async fn handle_get_weth_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    let c = load_contract_by_symbol(state, "WETH")?;
+    Ok(serde_json::json!({
+        "supply": stats_u64(&c, b"weth_supply"),
+        "total_minted": stats_u64(&c, b"weth_minted"),
+        "total_burned": stats_u64(&c, b"weth_burned"),
+        "mint_events": stats_u64(&c, b"weth_mint_evt"),
+        "burn_events": stats_u64(&c, b"weth_burn_evt"),
+        "transfer_count": stats_u64(&c, b"weth_xfer_cnt"),
+        "attestation_count": stats_u64(&c, b"weth_att_count"),
+        "reserve_attested": stats_u64(&c, b"weth_reserve_att"),
+        "paused": c.get_storage(b"weth_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
+    }))
+}
+
+/// getWsolStats — Wrapped SOL stats
+async fn handle_get_wsol_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    let c = load_contract_by_symbol(state, "WSOL")?;
+    Ok(serde_json::json!({
+        "supply": stats_u64(&c, b"wsol_supply"),
+        "total_minted": stats_u64(&c, b"wsol_minted"),
+        "total_burned": stats_u64(&c, b"wsol_burned"),
+        "mint_events": stats_u64(&c, b"wsol_mint_evt"),
+        "burn_events": stats_u64(&c, b"wsol_burn_evt"),
+        "transfer_count": stats_u64(&c, b"wsol_xfer_cnt"),
+        "attestation_count": stats_u64(&c, b"wsol_att_count"),
+        "reserve_attested": stats_u64(&c, b"wsol_reserve_att"),
+        "paused": c.get_storage(b"wsol_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
+    }))
+}
+
+/// getClawVaultStats — Yield vault stats
+async fn handle_get_clawvault_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    let c = load_contract_by_symbol(state, "CLAWVAULT")?;
+    Ok(serde_json::json!({
+        "total_assets": stats_u64(&c, b"cv_total_assets"),
+        "total_shares": stats_u64(&c, b"cv_total_shares"),
+        "strategy_count": stats_u64(&c, b"cv_strategy_count"),
+        "total_earned": stats_u64(&c, b"cv_total_earned"),
+        "fees_earned": stats_u64(&c, b"cv_fees_earned"),
+        "protocol_fees": stats_u64(&c, b"cv_protocol_fees"),
+        "paused": c.get_storage(b"cv_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
+    }))
+}
+
+/// getMoltBridgeStats — Cross-chain bridge stats
+async fn handle_get_moltbridge_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    let c = load_contract_by_symbol(state, "BRIDGE")?;
+    Ok(serde_json::json!({
+        "nonce": stats_u64(&c, b"bridge_nonce"),
+        "validator_count": stats_u64(&c, b"bridge_validator_count"),
+        "required_confirms": stats_u64(&c, b"bridge_required_confirms"),
+        "locked_amount": stats_u64(&c, b"bridge_locked_amount"),
+        "request_timeout": stats_u64(&c, b"bridge_request_timeout"),
+        "paused": c.get_storage(b"mb_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
+    }))
+}
+
+/// getMoltDaoStats — DAO governance stats
+async fn handle_get_moltdao_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    let c = load_contract_by_symbol(state, "DAO")?;
+    Ok(serde_json::json!({
+        "proposal_count": stats_u64(&c, b"proposal_count"),
+        "min_proposal_threshold": stats_u64(&c, b"min_proposal_threshold"),
+        "paused": c.get_storage(b"dao_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
+    }))
+}
+
+/// getMoltOracleStats — Oracle price feed stats
+async fn handle_get_moltoracle_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
+    let c = load_contract_by_symbol(state, "ORACLE")?;
+    Ok(serde_json::json!({
+        "queries": stats_u64(&c, b"stats_queries"),
+        "feeds": stats_u64(&c, b"stats_feeds"),
+        "attestations": stats_u64(&c, b"stats_attestations"),
+        "paused": c.get_storage(b"oracle_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
     }))
 }
 

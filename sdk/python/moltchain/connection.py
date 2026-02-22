@@ -94,7 +94,11 @@ class Connection:
         """Get current slot"""
         result = await self._rpc("getSlot")
         # RPC returns int directly, not wrapped
-        return result if isinstance(result, int) else result.get("slot", result)
+        if isinstance(result, int):
+            return result
+        if isinstance(result, dict):
+            return result.get("slot", 0)
+        return int(result) if result is not None else 0
     
     async def get_transaction(self, signature: str) -> Dict[str, Any]:
         """Get transaction by signature"""
@@ -114,7 +118,9 @@ class Connection:
     async def get_validators(self) -> List[Dict[str, Any]]:
         """Get all validators"""
         result = await self._rpc("getValidators")
-        return result["validators"]
+        if isinstance(result, dict):
+            return result.get("validators", [])
+        return []
     
     async def get_metrics(self) -> Dict[str, Any]:
         """Get performance metrics"""

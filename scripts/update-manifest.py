@@ -14,7 +14,18 @@ raw = subprocess.check_output([
     })
 ])
 d = json.loads(raw)
-entries = {e['symbol']: e['program'] for e in d['result']['entries']}
+result = d.get('result')
+if not isinstance(result, dict) or 'entries' not in result:
+    print(f"ERROR: unexpected RPC response for getAllSymbolRegistry: {d}")
+    sys.exit(1)
+raw_entries = result['entries']
+if not isinstance(raw_entries, list):
+    print(f"ERROR: entries is not a list: {type(raw_entries)}")
+    sys.exit(1)
+entries = {}
+for e in raw_entries:
+    if isinstance(e, dict) and 'symbol' in e and 'program' in e:
+        entries[e['symbol']] = e['program']
 
 manifest = {
     'deployer': entries.get('MOLT', ''),  # deployer is implied by MOLT owner

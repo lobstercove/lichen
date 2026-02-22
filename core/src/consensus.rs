@@ -1767,6 +1767,100 @@ impl Vote {
     }
 }
 
+// ============================================================================
+// VOTE AUTHORITY — Single Vote Gatekeeper (like Eth2 Slashing Protection DB)
+// ============================================================================
+
+/// Single Vote Authority — prevents double-voting at the signing level.
+///
+/// This struct is the **sole gatekeeper** for vote creation. It atomically
+/// checks whether we've already signed a vote for a slot, and only signs
+/// a new vote if no prior vote exists for that slot. This design mirrors
+/// Ethereum 2.0's slashing-protection database:
+/// - One authority per validator, shared across all tasks via `Arc<Mutex<>>`.
+/// - The signing key lives ONLY inside VoteAuthority — no other code path
+///   can create a valid signed vote.
+/// - Prevents all three DoubleVote scenarios: P2P echo, fork re-evaluation,
+///   and view rotation races.
+pub struct VoteAuthority {
+    /// Signing seed — used to reconstruct Ed25519 keypair for each signing op.
+    signing_seed: [u8; 32],
+    /// Our validator public key.
+    validator_pubkey: Pubkey,
+    /// Map of slot → block_hash for slots we've already voted on.
+    /// This is the slot-level lock: once a slot is recorded, no second vote
+    /// for a DIFFERENT hash can be produced.
+    voted: std::collections::HashMap<u64, Hash>,
+}
+
+impl VoteAuthority {
+    /// Create a new VoteAuthority that owns the signing key.
+    pub fn new(signing_seed: [u8; 32], validator_pubkey: Pubkey) -> Self {
+        Self {
+            signing_seed,
+            validator_pubkey,
+            voted: std::collections::HashMap::new(),
+        }
+    }
+
+    /// Attempt to create a signed vote for the given slot and block hash.
+    ///
+    /// Returns:
+    /// - `Some(vote)` if this is the first vote for this slot → signs and records.
+    /// - `None` if we already voted for this slot (same OR different hash) → refuses to sign.
+    ///
+    /// When the existing vote matches the same hash, this is a benign P2P echo.
+    /// When the existing vote has a DIFFERENT hash, this would be equivocation
+    /// (DoubleVote) — the authority refuses to sign, preventing slashing.
+    pub fn try_vote(&mut self, slot: u64, block_hash: Hash) -> Option<Vote> {
+        if let Some(existing_hash) = self.voted.get(&slot) {
+            if *existing_hash == block_hash {
+                // Benign: already voted for exact same (slot, hash). P2P echo.
+                tracing::debug!(
+                    "VoteAuthority: slot {} already voted (same hash) — skipping",
+                    slot
+                );
+            } else {
+                // DANGER: Different hash at same slot → would be equivocation!
+                tracing::warn!(
+                    "🚨 VoteAuthority REFUSED equivocating vote: slot {} already voted \
+                     hash {}, rejecting hash {}",
+                    slot,
+                    hex::encode(&existing_hash.0[..4]),
+                    hex::encode(&block_hash.0[..4]),
+                );
+            }
+            return None;
+        }
+
+        // First vote for this slot — sign and record atomically.
+        let keypair = crate::Keypair::from_seed(&self.signing_seed);
+        let mut vote_message = Vec::new();
+        vote_message.extend_from_slice(&slot.to_le_bytes());
+        vote_message.extend_from_slice(&block_hash.0);
+        let signature = keypair.sign(&vote_message);
+
+        let vote = Vote::new(slot, block_hash, self.validator_pubkey, signature);
+        self.voted.insert(slot, block_hash);
+        Some(vote)
+    }
+
+    /// Check if we've already voted for a given slot.
+    pub fn has_voted(&self, slot: u64) -> bool {
+        self.voted.contains_key(&slot)
+    }
+
+    /// Prune voted entries older than `min_slot` to bound memory.
+    pub fn prune(&mut self, min_slot: u64) {
+        self.voted.retain(|&s, _| s >= min_slot);
+    }
+
+    /// Number of tracked voted slots (for diagnostics).
+    pub fn voted_count(&self) -> usize {
+        self.voted.len()
+    }
+}
+
 /// Validator information
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidatorInfo {
@@ -4878,5 +4972,134 @@ mod tests {
         );
         assert_eq!(stake.bootstrap_debt, 0);
         assert!(matches!(stake.status, BootstrapStatus::FullyVested));
+    }
+
+    // ========================================================================
+    // VoteAuthority Tests — verifies the Single Vote Gatekeeper pattern
+    // ========================================================================
+
+    #[test]
+    fn test_vote_authority_first_vote_succeeds() {
+        let kp = crate::Keypair::new();
+        let mut va = VoteAuthority::new(kp.to_seed(), kp.pubkey());
+        let hash = Hash::new([42u8; 32]);
+
+        let vote = va.try_vote(1, hash);
+        assert!(vote.is_some(), "First vote for a slot must succeed");
+
+        let v = vote.unwrap();
+        assert_eq!(v.slot, 1);
+        assert_eq!(v.block_hash, hash);
+        assert_eq!(v.validator, kp.pubkey());
+        assert!(v.verify(), "Vote signature must be valid");
+    }
+
+    #[test]
+    fn test_vote_authority_same_hash_returns_none() {
+        let kp = crate::Keypair::new();
+        let mut va = VoteAuthority::new(kp.to_seed(), kp.pubkey());
+        let hash = Hash::new([42u8; 32]);
+
+        let v1 = va.try_vote(1, hash);
+        assert!(v1.is_some());
+
+        // Same slot, same hash → benign P2P echo → returns None
+        let v2 = va.try_vote(1, hash);
+        assert!(v2.is_none(), "Second vote for same (slot, hash) must return None");
+    }
+
+    #[test]
+    fn test_vote_authority_different_hash_returns_none() {
+        let kp = crate::Keypair::new();
+        let mut va = VoteAuthority::new(kp.to_seed(), kp.pubkey());
+        let hash_a = Hash::new([42u8; 32]);
+        let hash_b = Hash::new([99u8; 32]);
+
+        let v1 = va.try_vote(1, hash_a);
+        assert!(v1.is_some());
+
+        // Same slot, DIFFERENT hash → DoubleVote attempt → REFUSED
+        let v2 = va.try_vote(1, hash_b);
+        assert!(v2.is_none(), "Equivocating vote must be REFUSED");
+    }
+
+    #[test]
+    fn test_vote_authority_different_slots_succeed() {
+        let kp = crate::Keypair::new();
+        let mut va = VoteAuthority::new(kp.to_seed(), kp.pubkey());
+
+        let v1 = va.try_vote(1, Hash::new([1u8; 32]));
+        let v2 = va.try_vote(2, Hash::new([2u8; 32]));
+        let v3 = va.try_vote(3, Hash::new([3u8; 32]));
+
+        assert!(v1.is_some());
+        assert!(v2.is_some());
+        assert!(v3.is_some());
+        assert_eq!(va.voted_count(), 3);
+    }
+
+    #[test]
+    fn test_vote_authority_has_voted() {
+        let kp = crate::Keypair::new();
+        let mut va = VoteAuthority::new(kp.to_seed(), kp.pubkey());
+
+        assert!(!va.has_voted(1));
+        va.try_vote(1, Hash::new([1u8; 32]));
+        assert!(va.has_voted(1));
+        assert!(!va.has_voted(2));
+    }
+
+    #[test]
+    fn test_vote_authority_prune() {
+        let kp = crate::Keypair::new();
+        let mut va = VoteAuthority::new(kp.to_seed(), kp.pubkey());
+
+        for slot in 1..=100 {
+            va.try_vote(slot, Hash::new([slot as u8; 32]));
+        }
+        assert_eq!(va.voted_count(), 100);
+
+        va.prune(51);
+        assert_eq!(va.voted_count(), 50, "Prune should remove slots < 51");
+        assert!(!va.has_voted(50));
+        assert!(va.has_voted(51));
+        assert!(va.has_voted(100));
+    }
+
+    #[test]
+    fn test_vote_authority_signatures_are_valid() {
+        let kp = crate::Keypair::new();
+        let mut va = VoteAuthority::new(kp.to_seed(), kp.pubkey());
+
+        // Create votes for multiple slots and verify all signatures
+        for slot in 1..=10 {
+            let hash = Hash::new([slot as u8; 32]);
+            let vote = va.try_vote(slot, hash).expect("First vote must succeed");
+            assert!(vote.verify(), "Vote signature for slot {} must verify", slot);
+        }
+    }
+
+    #[test]
+    fn test_vote_authority_fork_scenario() {
+        // Simulates the dangerous fork re-evaluation scenario:
+        // 1. Producer creates block B for slot 5, votes via VoteAuthority
+        // 2. Fork block B' for slot 5 arrives via P2P (different hash)
+        // 3. VoteAuthority MUST refuse the second vote
+        let kp = crate::Keypair::new();
+        let mut va = VoteAuthority::new(kp.to_seed(), kp.pubkey());
+
+        let producer_hash = Hash::new([0xAA; 32]);
+        let fork_hash = Hash::new([0xBB; 32]);
+
+        // Producer votes first
+        let v1 = va.try_vote(5, producer_hash);
+        assert!(v1.is_some(), "Producer's first vote must succeed");
+
+        // Fork block arrives — VoteAuthority MUST refuse
+        let v2 = va.try_vote(5, fork_hash);
+        assert!(v2.is_none(), "Fork re-vote must be REFUSED to prevent DoubleVote slashing");
+
+        // Verify we recorded the original hash, not the fork
+        assert!(va.has_voted(5));
     }
 }

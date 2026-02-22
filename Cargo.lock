@@ -3400,6 +3400,7 @@ dependencies = [
  "sha3",
  "tempfile",
  "thiserror 1.0.69",
+ "tracing",
  "wasmer",
  "wasmer-compiler-cranelift",
  "wasmer-middlewares",

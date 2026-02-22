@@ -26,9 +26,9 @@ use moltchain_core::{
     Instruction, Keypair, MarketActivity, MarketActivityKind, Mempool, Message, NftActivity,
     NftActivityKind, ProgramCallActivity, Pubkey, SlashingEvidence, SlashingOffense, StakePool,
     StateStore, SymbolRegistryEntry, Transaction, TxProcessor, ValidatorInfo, ValidatorSet, Vote,
-    VoteAggregator, BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE, CONTRACT_UPGRADE_FEE,
-    EVM_PROGRAM_ID, MIN_VALIDATOR_STAKE, NFT_COLLECTION_FEE, NFT_MINT_FEE, SLOTS_PER_EPOCH,
-    SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
+    VoteAggregator, VoteAuthority, BASE_FEE, BOOTSTRAP_GRANT_AMOUNT, CONTRACT_DEPLOY_FEE,
+    CONTRACT_UPGRADE_FEE, EVM_PROGRAM_ID, MIN_VALIDATOR_STAKE, NFT_COLLECTION_FEE, NFT_MINT_FEE,
+    SLOTS_PER_EPOCH, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
 };
 use moltchain_p2p::{
     ConsistencyReportMsg, MessageType, P2PConfig, P2PMessage, P2PNetwork, SnapshotKind,
@@ -6513,12 +6513,28 @@ async fn run_validator() {
         }
     }
 
+    // VOTE-AUTHORITY: Single Vote Gatekeeper (like Eth2 Slashing Protection DB).
+    // Replaces the old voted_slots dedup bandaid with an architectural guarantee:
+    // VoteAuthority is the ONLY code path that can create a signed vote.
+    // It atomically checks whether we've already voted for a slot before signing.
+    // Shared between the block PRODUCER (self-vote) and the block RECEIVER
+    // (received-block vote) via Arc<Mutex<>>. Prevents all DoubleVote scenarios:
+    // 1. P2P echo (own block comes back through network)
+    // 2. Fork re-evaluation (FIX-FORK-2 lets competing block through)
+    // 3. View rotation race (producer + receiver try to vote concurrently)
+    let vote_authority: Arc<tokio::sync::Mutex<VoteAuthority>> =
+        Arc::new(tokio::sync::Mutex::new(VoteAuthority::new(
+            validator_keypair.to_seed(),
+            validator_pubkey,
+        )));
+
     // Start incoming block handler with voting
     if let Some(ref p2p_pm) = p2p_peer_manager {
         let state_for_blocks = state.clone();
         let processor_for_blocks = processor.clone();
-        let validator_pubkey_for_blocks = validator_pubkey;
-        let validator_seed = validator_keypair.to_seed(); // Store seed to reconstruct keypair
+        let _validator_pubkey_for_blocks = validator_pubkey;
+        // VOTE-AUTHORITY: Signing key is now owned by VoteAuthority — no need
+        // for validator_seed in the block receiver task.
         let sync_mgr = sync_manager.clone();
         let peer_mgr_for_sync = p2p_pm.clone();
         let vote_agg_for_blocks = vote_aggregator.clone();
@@ -6536,17 +6552,14 @@ async fn run_validator() {
         let tip_notify_for_blocks = tip_notify_for_blocks.clone();
         let data_dir_for_blocks = data_dir.clone();
         let finality_for_blocks = finality_tracker.clone();
+        let vote_authority_for_rx = vote_authority.clone();
         tokio::spawn(async move {
             info!("🔄 Block receiver started");
             // 1.7: Track (slot, validator) → block_hash to detect double-block equivocation
             let mut seen_blocks: HashMap<(u64, [u8; 32]), Hash> = HashMap::new();
-            // VOTE-DEDUP: Track which slots we've already voted for.
-            // Prevents DoubleVote when fork resolution re-delivers a different
-            // block for a slot we already voted on. This is the ROOT CAUSE of
-            // false byzantine slashing: two different blocks at the same slot
-            // from view rotation both get applied, and voting for both creates
-            // a DoubleVote evidence → 30% stake slash per event → 0 stake.
-            let mut voted_slots: std::collections::HashSet<u64> = std::collections::HashSet::new();
+            // VOTE-AUTHORITY: The shared VoteAuthority (Arc<Mutex<VoteAuthority>>)
+            // is the sole gatekeeper for vote signing. Both the block receiver and
+            // block producer use it. If slot is already voted, try_vote returns None.
             // A5-02: Fork choice oracle — tracks competing chain heads by
             // cumulative stake weight. Used to break ties when multiple valid
             // blocks exist for the same slot.
@@ -6680,8 +6693,8 @@ async fn run_validator() {
                     if block_slot > prune_below_slot + 2000 {
                         prune_below_slot = block_slot.saturating_sub(1000);
                         seen_blocks.retain(|&(slot, _), _| slot >= prune_below_slot);
-                        // VOTE-DEDUP: Prune voted_slots alongside seen_blocks
-                        voted_slots.retain(|&s| s >= prune_below_slot);
+                        // VOTE-AUTHORITY: Prune VoteAuthority's voted map alongside seen_blocks
+                        vote_authority_for_rx.lock().await.prune(prune_below_slot);
                     }
                 }
 
@@ -6967,32 +6980,14 @@ async fn run_validator() {
                             // Now:        vote → fire-and-forget broadcast → apply effects
                             // This cuts ~10-20ms off the critical path per block.
 
-                            // VOTE-DEDUP: Only vote once per slot. If we already
-                            // voted for this slot (from a different fork block),
-                            // skip voting to prevent DoubleVote evidence.
-                            if voted_slots.contains(&block_slot) {
-                                info!(
-                                    "⚠️  Already voted for slot {} — skipping duplicate vote to prevent DoubleVote",
-                                    block_slot
-                                );
-                            } else {
-                            // Cast vote for this block (BFT consensus)
+                            // VOTE-AUTHORITY: Atomically check-then-sign via VoteAuthority.
+                            // This is the ONLY code path that can create a signed vote
+                            // in the block receiver. VoteAuthority prevents all DoubleVote
+                            // scenarios: P2P echo, fork re-evaluation, and view rotation.
                             let block_hash = block.hash();
-                            let mut vote_message = Vec::new();
-                            vote_message.extend_from_slice(&block_slot.to_le_bytes());
-                            vote_message.extend_from_slice(&block_hash.0);
+                            let maybe_vote = vote_authority_for_rx.lock().await.try_vote(block_slot, block_hash);
 
-                            // Reconstruct keypair from seed to sign vote
-                            let keypair_for_vote = Keypair::from_seed(&validator_seed);
-                            let signature = keypair_for_vote.sign(&vote_message);
-
-                            let vote = Vote::new(
-                                block_slot,
-                                block_hash,
-                                validator_pubkey_for_blocks,
-                                signature,
-                            );
-
+                            if let Some(vote) = maybe_vote {
                             // Add our own vote (validated against validator set)
                             {
                                 let mut agg = vote_agg_for_blocks.write().await;
@@ -7029,10 +7024,12 @@ async fn run_validator() {
                                     pm.broadcast(vote_msg).await;
                                 });
                             }
-
-                            // VOTE-DEDUP: Mark this slot as voted
-                            voted_slots.insert(block_slot);
-                            } // end VOTE-DEDUP else block
+                            } else {
+                                info!(
+                                    "⚠️  VoteAuthority: slot {} already voted — skipping (prevents DoubleVote)",
+                                    block_slot
+                                );
+                            }
 
                             // Now apply block effects (rewards, fees) — safe to run
                             // after vote since effects don't affect block validity.
@@ -10078,14 +10075,12 @@ async fn run_validator() {
         let _ = ws_event_tx.send(moltchain_rpc::ws::Event::Block(block.clone()));
 
         // Cast vote for our own block (BFT consensus)
-        let vote = {
-            let mut vote_message = Vec::new();
-            vote_message.extend_from_slice(&slot.to_le_bytes());
-            vote_message.extend_from_slice(&block_hash.0);
-            let signature = validator_keypair.sign(&vote_message);
+        // VOTE-AUTHORITY: Use the shared VoteAuthority to atomically check-then-sign.
+        // If the block receiver already voted for this slot (e.g. P2P echo arrived
+        // before producer finished), VoteAuthority returns None and we skip.
+        let maybe_vote = vote_authority.lock().await.try_vote(slot, block_hash);
 
-            let vote = Vote::new(slot, block_hash, validator_pubkey, signature);
-
+        if let Some(vote) = maybe_vote {
             let mut agg = vote_aggregator.write().await;
             let vs = validator_set.read().await;
             if agg.add_vote_validated(vote.clone(), &vs) {
@@ -10100,23 +10095,27 @@ async fn run_validator() {
                     }
                 }
             }
-            vote
-        };
+
+            // Broadcast self-vote to network (fire-and-forget)
+            if let Some(ref peer_mgr) = p2p_peer_manager {
+                let vote_msg = P2PMessage::new(MessageType::Vote(vote), p2p_config.listen_addr);
+                let pm_vote = peer_mgr.clone();
+                tokio::spawn(async move {
+                    pm_vote.broadcast(vote_msg).await;
+                });
+                info!("📡 Broadcasted block {} + vote to network", slot);
+            }
+        } else {
+            info!(
+                "⚠️  VoteAuthority: slot {} already voted — producer self-vote skipped",
+                slot
+            );
+        }
 
         // Remove included transactions from mempool (PERF: bulk removal, single heap rebuild)
         {
             let mut pool = mempool.lock().await;
             pool.remove_transactions_bulk(&processed_hashes);
-        }
-
-        // Broadcast self-vote to network (fire-and-forget)
-        if let Some(ref peer_mgr) = p2p_peer_manager {
-            let vote_msg = P2PMessage::new(MessageType::Vote(vote), p2p_config.listen_addr);
-            let pm_vote = peer_mgr.clone();
-            tokio::spawn(async move {
-                pm_vote.broadcast(vote_msg).await;
-            });
-            info!("📡 Broadcasted block {} + vote to network", slot);
         }
 
         // AUDIT-FIX E-7: apply_block_effects already called before block creation (above)

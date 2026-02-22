@@ -42,10 +42,22 @@ async function rpc(method, params = [], url = null) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params })
         });
-        const data = await resp.json();
-        if (data.error) return null;  // Don't return error objects as results
+        if (!resp.ok) {
+            console.warn(`RPC ${method}: HTTP ${resp.status}`);
+            return null;
+        }
+        const text = await resp.text();
+        let data;
+        try {
+            data = JSON.parse(text);
+        } catch (parseErr) {
+            console.warn(`RPC ${method}: invalid JSON`, text.slice(0, 200));
+            return null;
+        }
+        if (data.error) return null;
         return data.result ?? null;
     } catch (e) {
+        console.warn(`RPC ${method}: fetch failed`, e.message);
         return null;
     }
 }
@@ -410,6 +422,11 @@ async function refresh() {
         // ─ Prediction Markets (every 10s) ─
         if (!predictionMonitorLoaded || Date.now() % 10000 < REFRESH_MS) {
             await updatePredictionMonitor();
+        }
+
+        // ─ Platform Ecosystem (every 10s) ─
+        if (!ecosystemMonitorLoaded || Date.now() % 10000 < REFRESH_MS) {
+            await updateEcosystemMonitor();
         }
 
         // ─ Footer ─
@@ -1428,6 +1445,44 @@ async function updatePredictionMonitor() {
     if (el('predTotalTraders')) el('predTotalTraders').textContent = formatNum(stats.total_traders || 0);
     if (el('predStatus')) el('predStatus').textContent = stats.paused ? 'PAUSED' : 'ACTIVE';
 
+    // Render detail grid
+    const grid = document.getElementById('predictionDetailGrid');
+    if (grid) {
+        const total = stats.total_markets || 0;
+        const open = stats.open_markets || 0;
+        const closed = total - open;
+        const avgVolPerMarket = total > 0 ? Math.round((stats.total_volume || 0) / total) : 0;
+        const avgCollateral = total > 0 ? Math.round((stats.total_collateral || 0) / total) : 0;
+        grid.innerHTML = `
+            <div class="tier-card">
+                <div class="tier-label">Open / Total</div>
+                <div class="tier-value">${formatNum(open)} / ${formatNum(total)}</div>
+                <div class="tier-bar"><div class="tier-fill" style="width:${total > 0 ? (open/total*100) : 0}%;background:var(--accent-green)"></div></div>
+            </div>
+            <div class="tier-card">
+                <div class="tier-label">Closed / Resolved</div>
+                <div class="tier-value">${formatNum(closed)}</div>
+                <div class="tier-bar"><div class="tier-fill" style="width:${total > 0 ? (closed/total*100) : 0}%;background:var(--accent-purple)"></div></div>
+            </div>
+            <div class="tier-card">
+                <div class="tier-label">Avg Volume / Market</div>
+                <div class="tier-value">${formatMolt(avgVolPerMarket)}</div>
+            </div>
+            <div class="tier-card">
+                <div class="tier-label">Avg Collateral / Market</div>
+                <div class="tier-value">${formatMolt(avgCollateral)}</div>
+            </div>
+            <div class="tier-card">
+                <div class="tier-label">Total Fees Collected</div>
+                <div class="tier-value">${formatMolt(stats.fees_collected || 0)}</div>
+            </div>
+            <div class="tier-card">
+                <div class="tier-label">Unique Traders</div>
+                <div class="tier-value">${formatNum(stats.total_traders || 0)}</div>
+            </div>
+        `;
+    }
+
     if (badge) {
         const total = stats.total_markets || 0;
         badge.textContent = `${formatNum(total)} Markets`;
@@ -1435,6 +1490,166 @@ async function updatePredictionMonitor() {
     }
 
     predictionMonitorLoaded = true;
+}
+
+// ── Platform Ecosystem Monitor ──────────────────────────────
+
+let ecosystemMonitorLoaded = false;
+
+async function updateEcosystemMonitor() {
+    const badge = document.getElementById('ecosystemBadge');
+    const el = id => document.getElementById(id);
+
+    // Fetch all platform contract stats in parallel
+    const [musd, weth, wsol, lend, clawpay, vault, bridge, dao, oracle,
+           reef, market, auction, punks, bounty, compute] = await Promise.all([
+        rpc('getMusdStats').catch(() => null),
+        rpc('getWethStats').catch(() => null),
+        rpc('getWsolStats').catch(() => null),
+        rpc('getLobsterLendStats').catch(() => null),
+        rpc('getClawPayStats').catch(() => null),
+        rpc('getClawVaultStats').catch(() => null),
+        rpc('getMoltBridgeStats').catch(() => null),
+        rpc('getMoltDaoStats').catch(() => null),
+        rpc('getMoltOracleStats').catch(() => null),
+        rpc('getReefStorageStats').catch(() => null),
+        rpc('getMoltMarketStats').catch(() => null),
+        rpc('getMoltAuctionStats').catch(() => null),
+        rpc('getMoltPunksStats').catch(() => null),
+        rpc('getBountyBoardStats').catch(() => null),
+        rpc('getComputeMarketStats').catch(() => null),
+    ]);
+
+    let activeFeeds = 0;
+
+    // Tokens
+    if (musd) {
+        activeFeeds++;
+        if (el('ecoMusdSupply')) el('ecoMusdSupply').textContent = formatMolt(musd.supply || 0);
+        if (el('ecoMusdMinted')) el('ecoMusdMinted').textContent = formatNum(musd.mint_events || 0);
+        if (el('ecoMusdTransfers')) el('ecoMusdTransfers').textContent = formatNum(musd.transfer_count || 0);
+    }
+    if (weth) {
+        activeFeeds++;
+        if (el('ecoWethSupply')) el('ecoWethSupply').textContent = formatMolt(weth.supply || 0);
+    }
+    if (wsol) {
+        activeFeeds++;
+        if (el('ecoWsolSupply')) el('ecoWsolSupply').textContent = formatMolt(wsol.supply || 0);
+    }
+
+    // Platform services
+    if (lend) {
+        activeFeeds++;
+        if (el('ecoLendDeposits')) el('ecoLendDeposits').textContent = formatMolt(lend.total_deposits || 0);
+        if (el('ecoLendBorrows')) el('ecoLendBorrows').textContent = formatMolt(lend.total_borrows || 0);
+    }
+    if (clawpay) {
+        activeFeeds++;
+        if (el('ecoClawPayStreams')) el('ecoClawPayStreams').textContent = formatNum(clawpay.stream_count || 0);
+    }
+    if (vault) {
+        activeFeeds++;
+        if (el('ecoVaultAssets')) el('ecoVaultAssets').textContent = formatMolt(vault.total_assets || 0);
+    }
+
+    // ClawPump (REST only, try RPC gracefully)
+    const pump = await rpc('getClawPumpStats').catch(() => null);
+    if (pump) {
+        activeFeeds++;
+        if (el('ecoPumpTokens')) el('ecoPumpTokens').textContent = formatNum(pump.token_count || 0);
+    }
+
+    // Infrastructure
+    if (bridge) {
+        activeFeeds++;
+        if (el('ecoBridgeTxs')) el('ecoBridgeTxs').textContent = formatNum(bridge.nonce || 0);
+        if (el('ecoBridgeLocked')) el('ecoBridgeLocked').textContent = formatMolt(bridge.locked_amount || 0);
+    }
+    if (dao) {
+        activeFeeds++;
+        if (el('ecoDaoProposals')) el('ecoDaoProposals').textContent = formatNum(dao.proposal_count || 0);
+    }
+    if (oracle) {
+        activeFeeds++;
+        if (el('ecoOracleFeeds')) el('ecoOracleFeeds').textContent = formatNum(oracle.feeds || 0);
+    }
+    if (reef) {
+        activeFeeds++;
+        if (el('ecoReefData')) el('ecoReefData').textContent = formatNum(reef.data_count || 0);
+    }
+
+    // NFT & Marketplace
+    if (market) {
+        activeFeeds++;
+        if (el('ecoMarketListings')) el('ecoMarketListings').textContent = formatNum(market.listing_count || 0);
+    }
+    if (auction) {
+        activeFeeds++;
+        if (el('ecoAuctionVolume')) el('ecoAuctionVolume').textContent = formatMolt(auction.total_volume || 0);
+    }
+    if (punks) {
+        activeFeeds++;
+        if (el('ecoPunksMinted')) el('ecoPunksMinted').textContent = formatNum(punks.total_minted || 0);
+    }
+    if (bounty) {
+        activeFeeds++;
+        if (el('ecoBounties')) el('ecoBounties').textContent = formatNum(bounty.bounty_count || 0);
+    }
+    if (compute) {
+        activeFeeds++;
+        if (el('ecoComputeJobs')) el('ecoComputeJobs').textContent = formatNum(compute.job_count || 0);
+    }
+
+    // Detail grid
+    const grid = document.getElementById('ecosystemDetailGrid');
+    if (grid) {
+        const cards = [];
+        const addCard = (label, value, icon, color) => {
+            cards.push(`<div class="tier-card">
+                <div class="tier-label"><i class="fas fa-${icon}" style="margin-right:4px;color:${color}"></i>${label}</div>
+                <div class="tier-value">${value}</div>
+            </div>`);
+        };
+
+        if (lend) {
+            addCard('Lending TVL', formatMolt((lend.total_deposits || 0) - (lend.total_borrows || 0)), 'piggy-bank', 'var(--accent-green)');
+            addCard('Liquidations', formatNum(lend.liquidation_count || 0), 'gavel', 'var(--accent-red)');
+        }
+        if (clawpay) {
+            addCard('Total Streamed', formatMolt(clawpay.total_streamed || 0), 'stream', 'var(--accent-blue)');
+            addCard('Stream Cancels', formatNum(clawpay.cancel_count || 0), 'times-circle', 'var(--accent-orange)');
+        }
+        if (vault) {
+            addCard('Vault Strategies', formatNum(vault.strategy_count || 0), 'layer-group', 'var(--accent-purple)');
+            addCard('Vault Earnings', formatMolt(vault.total_earned || 0), 'chart-line', 'var(--accent-green)');
+        }
+        if (bridge) {
+            addCard('Bridge Validators', formatNum(bridge.validator_count || 0), 'link', 'var(--accent-blue)');
+            addCard('Required Confirms', formatNum(bridge.required_confirms || 0), 'check-double', 'var(--accent-orange)');
+        }
+        if (bounty) {
+            addCard('Bounties Completed', formatNum(bounty.completed_count || 0), 'trophy', 'var(--accent-green)');
+            addCard('Reward Volume', formatMolt(bounty.reward_volume || 0), 'coins', 'var(--accent-purple)');
+        }
+        if (compute) {
+            addCard('Jobs Completed', formatNum(compute.completed_count || 0), 'microchip', 'var(--accent-green)');
+            addCard('Payment Volume', formatMolt(compute.payment_volume || 0), 'money-bill', 'var(--accent-blue)');
+        }
+        if (reef) {
+            addCard('Storage Bytes', formatNum(reef.total_bytes || 0), 'database', 'var(--accent-purple)');
+            addCard('Challenges', formatNum(reef.challenge_count || 0), 'shield-alt', 'var(--accent-orange)');
+        }
+
+        grid.innerHTML = cards.join('');
+    }
+
+    if (badge) {
+        badge.textContent = `${activeFeeds}/15 Contracts`;
+        badge.className = 'panel-badge ' + (activeFeeds >= 12 ? 'success' : activeFeeds > 0 ? 'info' : 'warning');
+    }
+
+    ecosystemMonitorLoaded = true;
 }
 
 // ── Clock ───────────────────────────────────────────────────
