@@ -8945,7 +8945,7 @@ async fn handle_get_staking_position(
 
 /// Handle getReefStakePoolInfo: Get global ReefStake pool info
 async fn handle_get_reefstake_pool_info(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    use moltchain_core::consensus::{SLOTS_PER_YEAR, TRANSACTION_BLOCK_REWARD};
+    use moltchain_core::consensus::{decayed_reward, SLOTS_PER_YEAR, TRANSACTION_BLOCK_REWARD};
 
     let pool = state.state.get_reefstake_pool().map_err(|e| RpcError {
         code: -32603,
@@ -8957,7 +8957,10 @@ async fn handle_get_reefstake_pool_info(state: &RpcState) -> Result<serde_json::
         let sp = sp_arc.read().await;
         let stats = sp.get_stats();
         let slots_per_day = SLOTS_PER_YEAR / 365;
-        let apy_bp = pool.calculate_apy_bp(slots_per_day, TRANSACTION_BLOCK_REWARD);
+        // Apply 20% annual reward decay based on current slot
+        let current_slot = state.state.get_last_slot().unwrap_or(0);
+        let current_reward = decayed_reward(TRANSACTION_BLOCK_REWARD, current_slot);
+        let apy_bp = pool.calculate_apy_bp(slots_per_day, current_reward);
         (stats.active_validators, apy_bp as f64 / 100.0)
     } else {
         (0, 0.0)

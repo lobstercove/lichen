@@ -40,6 +40,34 @@ pub const ANNUAL_REWARD_RATE_BPS: u64 = 500;
 /// Slots per year (assuming 400ms per slot = ~78.8M slots/year)
 pub const SLOTS_PER_YEAR: u64 = 78_840_000;
 
+/// Annual reward decay rate in basis points (2000 = 20%).
+/// Block rewards decrease by 20% per year since genesis, computed deterministically.
+/// Year 0: 100%, Year 1: 80%, Year 5: 32.8%, Year 10: 10.7%, Year 50: ~0%.
+pub const ANNUAL_REWARD_DECAY_BPS: u64 = 2000;
+
+/// Compute the decayed block reward for a given slot.
+///
+/// Applies compound 20% annual decay: reward_year_n = base × (80/100)^n.
+/// Genesis is slot 0, so `current_slot` IS `slots_since_genesis`.
+/// Capped at 50 iterations (reward is effectively 0 past year 50).
+///
+/// # Examples
+/// ```
+/// use moltchain_core::consensus::decayed_reward;
+/// assert_eq!(decayed_reward(100_000_000, 0), 100_000_000); // year 0
+/// assert_eq!(decayed_reward(100_000_000, 78_840_000), 80_000_000); // year 1
+/// ```
+pub fn decayed_reward(base_reward: u64, current_slot: u64) -> u64 {
+    let years = current_slot / SLOTS_PER_YEAR;
+    let mut reward = base_reward;
+    // 20% decay per year → multiply by 80/100 each year
+    // Cap at 50 iterations (reward is effectively 0 by then)
+    for _ in 0..years.min(50) {
+        reward = reward * 80 / 100;
+    }
+    reward
+}
+
 // ============================================================================
 // GRADUATION - Bootstrap-to-Maturity System
 // ============================================================================
@@ -588,8 +616,11 @@ impl StakeInfo {
         (self.earned_amount as u128 * 100 / total_bootstrap as u128) as u64
     }
 
-    /// Calculate staking APY based on current stake and total staked
-    pub fn calculate_apy(&self, total_staked: u64) -> f64 {
+    /// Calculate staking APY based on current stake, total staked, and current slot.
+    ///
+    /// Applies the 20% annual reward decay to the block reward before computing APY.
+    /// `current_slot` is used to determine how many years of decay have elapsed.
+    pub fn calculate_apy(&self, total_staked: u64, current_slot: u64) -> f64 {
         if total_staked == 0 {
             return 0.0;
         }
@@ -597,7 +628,8 @@ impl StakeInfo {
         // Higher stake concentration = lower individual APY
         // AUDIT-FIX 3.3: APY is display-only (not consensus-critical), f64 is acceptable
         // AUDIT-FIX M8: u128 intermediate before f64 cast
-        let annual_rewards = (BLOCK_REWARD as u128 * SLOTS_PER_YEAR as u128) as f64;
+        let current_reward = decayed_reward(BLOCK_REWARD, current_slot);
+        let annual_rewards = (current_reward as u128 * SLOTS_PER_YEAR as u128) as f64;
         (annual_rewards / total_staked as f64) * 100.0
     }
 
@@ -1011,7 +1043,10 @@ impl StakePool {
         }
     }
 
-    /// Distribute block reward to validator
+    /// Distribute block reward to validator, with 20% annual decay applied.
+    ///
+    /// The base reward (TX or heartbeat) is decayed by 20% per year since genesis.
+    /// Genesis is slot 0, so `slot` is used directly as `slots_since_genesis`.
     pub fn distribute_block_reward(
         &mut self,
         validator: &Pubkey,
@@ -1020,11 +1055,12 @@ impl StakePool {
     ) -> u64 {
         if let Some(stake_info) = self.stakes.get_mut(validator) {
             if stake_info.is_active {
-                let reward = if is_heartbeat {
+                let base = if is_heartbeat {
                     HEARTBEAT_BLOCK_REWARD
                 } else {
                     TRANSACTION_BLOCK_REWARD
                 };
+                let reward = decayed_reward(base, slot);
                 stake_info.add_reward(reward, slot);
                 return reward;
             }
@@ -5138,5 +5174,98 @@ mod tests {
         // Heartbeat block reward should be 0.05 MOLT
         let hb_reward = pool.distribute_block_reward(&v1, 2, true);
         assert_eq!(hb_reward, 50_000_000, "Heartbeat reward must be 0.05 MOLT (50M shells)");
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // TOKENOMICS OVERHAUL: Reward Decay (20% Annual)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_decayed_reward_year_0() {
+        // Year 0 (slot 0 through SLOTS_PER_YEAR-1): no decay, full base reward
+        assert_eq!(decayed_reward(100_000_000, 0), 100_000_000);
+        assert_eq!(decayed_reward(50_000_000, 0), 50_000_000);
+        // Just before the 1-year mark
+        assert_eq!(decayed_reward(100_000_000, SLOTS_PER_YEAR - 1), 100_000_000);
+    }
+
+    #[test]
+    fn test_decayed_reward_year_1() {
+        // Year 1: 80% of base → 100M × 0.8 = 80M
+        assert_eq!(decayed_reward(100_000_000, SLOTS_PER_YEAR), 80_000_000);
+        assert_eq!(decayed_reward(50_000_000, SLOTS_PER_YEAR), 40_000_000);
+        // Mid-year-1 (slot = 1.5 years → still year 1 since integer division)
+        assert_eq!(decayed_reward(100_000_000, SLOTS_PER_YEAR + SLOTS_PER_YEAR / 2), 80_000_000);
+    }
+
+    #[test]
+    fn test_decayed_reward_year_5() {
+        // Year 5: 0.8^5 = 0.32768 → 100M × 0.32768 = 32,768,000
+        // Integer arithmetic: 100M × (80/100)^5
+        let mut expected = 100_000_000u64;
+        for _ in 0..5 {
+            expected = expected * 80 / 100;
+        }
+        assert_eq!(decayed_reward(100_000_000, SLOTS_PER_YEAR * 5), expected);
+        assert_eq!(expected, 32_768_000); // verify exact value
+
+        // Heartbeat: 50M × 0.8^5 = 16,384,000
+        let mut hb_expected = 50_000_000u64;
+        for _ in 0..5 {
+            hb_expected = hb_expected * 80 / 100;
+        }
+        assert_eq!(decayed_reward(50_000_000, SLOTS_PER_YEAR * 5), hb_expected);
+        assert_eq!(hb_expected, 16_384_000);
+    }
+
+    #[test]
+    fn test_decayed_reward_year_50() {
+        // Year 50 (cap): 0.8^50 → effectively 0
+        // After 50 years of 20% decay, 100M becomes ~1,427 shells
+        let reward = decayed_reward(100_000_000, SLOTS_PER_YEAR * 50);
+        assert!(reward < 2_000, "Year 50 reward should be near zero, got {}", reward);
+        // Still > 0 due to integer rounding
+        assert!(reward > 0, "Year 50 tx reward should not be exactly 0");
+
+        // Heartbeat: even smaller
+        let hb = decayed_reward(50_000_000, SLOTS_PER_YEAR * 50);
+        assert!(hb < 1_000, "Year 50 heartbeat should be near zero, got {}", hb);
+    }
+
+    #[test]
+    fn test_decayed_reward_overflow_safe() {
+        // Extremely large slot values should not panic or overflow
+        // Past year 50, decay is capped — no infinite loop
+        assert_eq!(decayed_reward(100_000_000, SLOTS_PER_YEAR * 100), decayed_reward(100_000_000, SLOTS_PER_YEAR * 50));
+        assert_eq!(decayed_reward(100_000_000, u64::MAX), decayed_reward(100_000_000, SLOTS_PER_YEAR * 50));
+        // Zero base reward stays zero
+        assert_eq!(decayed_reward(0, SLOTS_PER_YEAR * 10), 0);
+        // u64::MAX base reward with year 0 — no decay applied, no overflow
+        assert_eq!(decayed_reward(u64::MAX, 0), u64::MAX);
+    }
+
+    #[test]
+    fn test_distribute_block_reward_with_decay() {
+        // Verify distribute_block_reward applies decay at different slots
+        let mut pool = StakePool::new();
+        let v1 = Pubkey::new([1u8; 32]);
+        pool.stake(v1, MIN_VALIDATOR_STAKE, 0).unwrap();
+
+        // Year 0: full reward
+        let r0 = pool.distribute_block_reward(&v1, 100, false);
+        assert_eq!(r0, 100_000_000, "Year 0 TX reward should be 0.1 MOLT");
+
+        // Year 1: 80% reward
+        let r1 = pool.distribute_block_reward(&v1, SLOTS_PER_YEAR, false);
+        assert_eq!(r1, 80_000_000, "Year 1 TX reward should be 0.08 MOLT");
+
+        // Year 1 heartbeat: 80% of 50M = 40M
+        let h1 = pool.distribute_block_reward(&v1, SLOTS_PER_YEAR + 1, true);
+        assert_eq!(h1, 40_000_000, "Year 1 heartbeat should be 0.04 MOLT");
+    }
+
+    #[test]
+    fn test_annual_reward_decay_constant() {
+        assert_eq!(ANNUAL_REWARD_DECAY_BPS, 2000, "Decay must be 20% (2000 bps)");
     }
 }
