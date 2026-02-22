@@ -76,7 +76,7 @@ fn bounded_bincode_deserialize(bytes: &[u8]) -> Result<Transaction, bincode::Err
         .allow_trailing_bytes()
         .deserialize(bytes)
 }
-use moltchain_core::consensus::{ValidatorInfo, HEARTBEAT_BLOCK_REWARD, TRANSACTION_BLOCK_REWARD};
+use moltchain_core::consensus::{decayed_reward, ValidatorInfo, HEARTBEAT_BLOCK_REWARD, TRANSACTION_BLOCK_REWARD};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
@@ -1936,12 +1936,17 @@ async fn handle_get_block(
                     .map(|ix| !matches!(ix.data.first(), Some(2) | Some(3)))
                     .unwrap_or(true)
             });
-            let reward_amount = if block.header.slot == 0 || block.header.validator == [0u8; 32] {
+            let base_reward = if block.header.slot == 0 || block.header.validator == [0u8; 32] {
                 0
             } else if has_user_txs {
                 TRANSACTION_BLOCK_REWARD
             } else {
                 HEARTBEAT_BLOCK_REWARD
+            };
+            let reward_amount = if base_reward > 0 {
+                decayed_reward(base_reward, block.header.slot)
+            } else {
+                0
             };
 
             Ok(serde_json::json!({
@@ -4840,8 +4845,10 @@ async fn handle_get_staking_rewards(
             let pending = stake_info.rewards_earned;
             let claimed = stake_info.total_claimed;
 
-            // Reward rate: MOLT per block for this validator (computed from constants)
-            let base_rate_molt = TRANSACTION_BLOCK_REWARD as f64 / 1_000_000_000.0;
+            // Reward rate: MOLT per block for this validator (with decay)
+            let current_slot = state.state.get_last_slot().unwrap_or(0);
+            let decayed_base = decayed_reward(TRANSACTION_BLOCK_REWARD, current_slot);
+            let base_rate_molt = decayed_base as f64 / 1_000_000_000.0;
             let reward_rate = if stake_info.is_active {
                 if stake_info.bootstrap_debt > 0 {
                     // During vesting: 50% goes to debt repayment, 50% liquid
@@ -9102,7 +9109,8 @@ async fn handle_get_reward_adjustment_info(
     state: &RpcState,
 ) -> Result<serde_json::Value, RpcError> {
     use moltchain_core::consensus::{
-        BOOTSTRAP_GRANT_AMOUNT, HEARTBEAT_BLOCK_REWARD, MIN_VALIDATOR_STAKE, SLOTS_PER_YEAR,
+        decayed_reward, ANNUAL_REWARD_DECAY_BPS, BOOTSTRAP_GRANT_AMOUNT,
+        HEARTBEAT_BLOCK_REWARD, MIN_VALIDATOR_STAKE, SLOTS_PER_YEAR,
         TRANSACTION_BLOCK_REWARD,
     };
 
@@ -9115,20 +9123,32 @@ async fn handle_get_reward_adjustment_info(
     let active_count = stats.active_validators;
     let total_staked = stats.total_staked;
 
-    // Calculate effective APY
-    let annual_tx_rewards = TRANSACTION_BLOCK_REWARD as f64 * SLOTS_PER_YEAR as f64;
+    // Apply reward decay for current slot
+    let current_slot = state.state.get_last_slot().unwrap_or(0);
+    let current_tx_reward = decayed_reward(TRANSACTION_BLOCK_REWARD, current_slot);
+    let current_hb_reward = decayed_reward(HEARTBEAT_BLOCK_REWARD, current_slot);
+
+    // Calculate effective APY using decayed reward
+    let annual_tx_rewards = current_tx_reward as f64 * SLOTS_PER_YEAR as f64;
     let apy = if total_staked > 0 {
         (annual_tx_rewards / total_staked as f64) * 100.0
     } else {
         0.0
     };
 
+    let decay_year = current_slot / SLOTS_PER_YEAR;
+
     Ok(serde_json::json!({
         "currentMultiplier": 1.0,
         "priceOracleActive": true,
-        "transactionBlockReward": TRANSACTION_BLOCK_REWARD,
-        "heartbeatBlockReward": HEARTBEAT_BLOCK_REWARD,
+        "transactionBlockReward": current_tx_reward,
+        "transactionBlockRewardBase": TRANSACTION_BLOCK_REWARD,
+        "heartbeatBlockReward": current_hb_reward,
+        "heartbeatBlockRewardBase": HEARTBEAT_BLOCK_REWARD,
+        "annualRewardDecayBps": ANNUAL_REWARD_DECAY_BPS,
+        "decayYear": decay_year,
         "slotsPerYear": SLOTS_PER_YEAR,
+        "currentSlot": current_slot,
         "minValidatorStake": MIN_VALIDATOR_STAKE,
         "bootstrapGrantAmount": BOOTSTRAP_GRANT_AMOUNT,
         "totalStaked": total_staked,
@@ -9136,6 +9156,21 @@ async fn handle_get_reward_adjustment_info(
         "activeValidators": active_count,
         "unclaimedRewards": stats.total_unclaimed_rewards,
         "estimatedApy": format!("{:.2}", apy),
+        "feeSplit": {
+            "burn_pct": 40,
+            "producer_pct": 30,
+            "voters_pct": 10,
+            "treasury_pct": 10,
+            "community_pct": 10,
+        },
+        "genesisDistribution": {
+            "validator_rewards_pct": 10,
+            "community_treasury_pct": 25,
+            "builder_grants_pct": 35,
+            "founding_moltys_pct": 10,
+            "ecosystem_partnerships_pct": 10,
+            "reserve_pool_pct": 10,
+        },
         "note": "Oracle price feeds active: MOLT, wSOL, wETH via Binance WebSocket real-time feed"
     }))
 }
