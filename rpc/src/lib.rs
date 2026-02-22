@@ -10345,10 +10345,41 @@ async fn handle_get_dex_router_stats(state: &RpcState) -> Result<serde_json::Val
 /// getDexAnalyticsStats — Analytics global stats
 async fn handle_get_dex_analytics_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
     let c = load_contract_by_symbol(state, "ANALYTICS")?;
+
+    // Aggregate candle counts and tracked pairs from storage
+    // Keys: "ana_cc_{pair_id}_{interval}" → u64 candle count
+    // Keys: "ana_24h_{pair_id}" → 24h stats (presence means pair is tracked)
+    let mut total_candles: u64 = 0;
+    let mut tracked_pairs = std::collections::HashSet::new();
+    for (key, value) in &c.storage {
+        if key.starts_with(b"ana_cc_") {
+            // Parse candle count
+            if value.len() >= 8 {
+                total_candles += u64::from_le_bytes([
+                    value[0], value[1], value[2], value[3],
+                    value[4], value[5], value[6], value[7],
+                ]);
+            }
+            // Extract pair_id (between first _ after "ana_cc_" and next _)
+            if let Some(pair_part) = key.get(7..) {
+                if let Some(end) = pair_part.iter().position(|&b| b == b'_') {
+                    tracked_pairs.insert(pair_part[..end].to_vec());
+                }
+            }
+        } else if key.starts_with(b"ana_24h_") {
+            // Also count pairs with 24h stats
+            if let Some(pair_part) = key.get(8..) {
+                tracked_pairs.insert(pair_part.to_vec());
+            }
+        }
+    }
+
     Ok(serde_json::json!({
         "record_count": stats_u64(&c, b"ana_rec_count"),
         "trader_count": stats_u64(&c, b"ana_trader_count"),
         "total_volume": stats_u64(&c, b"ana_total_volume"),
+        "total_candles": total_candles,
+        "tracked_pairs": tracked_pairs.len(),
         "paused": c.get_storage(b"ana_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
     }))
 }
