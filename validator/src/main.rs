@@ -56,11 +56,10 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 const SYSTEM_ACCOUNT_OWNER: Pubkey = Pubkey([0x01; 32]);
 const GENESIS_MINT_PUBKEY: Pubkey = Pubkey([0xFE; 32]);
-/// AUDIT-FIX 3.12: Documented — this is 150M MOLT (15% of 1B supply) per whitepaper.
-/// The `.min(1_000_000_000)` cap in the legacy path is a safety guard that's
-/// redundant (150M < 1B). Kept for backward compat only — new deployments use
-/// the GenesisAccounts distribution path.
-const REWARD_POOL_MOLT: u64 = 150_000_000; // 15% of 1B supply (in MOLT, not shells)
+/// Validator rewards pool: 100M MOLT (10% of 1B supply).
+/// Reduced from 150M (15%) for sustainable treasury with 20% annual reward decay.
+/// The `.min(1_000_000_000)` cap in the legacy path is a safety guard.
+const REWARD_POOL_MOLT: u64 = 100_000_000; // 10% of 1B supply (in MOLT, not shells)
 
 /// Exit code used by the internal health watchdog to signal the supervisor
 /// that the validator should be restarted (deadlock/stall detected).

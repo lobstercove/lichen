@@ -348,12 +348,12 @@ fn a12_01_genesis_distribution_matches_multisig() {
 
     // Canonical allocations from multisig.rs GENESIS_DISTRIBUTION
     let canonical = [
-        ("validator_rewards", 150_000_000u64),
-        ("community_treasury", 400_000_000),
-        ("builder_grants", 250_000_000),
+        ("validator_rewards", 100_000_000u64),
+        ("community_treasury", 250_000_000),
+        ("builder_grants", 350_000_000),
         ("founding_moltys", 100_000_000),
-        ("ecosystem_partnerships", 50_000_000),
-        ("reserve_pool", 50_000_000),
+        ("ecosystem_partnerships", 100_000_000),
+        ("reserve_pool", 100_000_000),
     ];
 
     // Verify multisig.rs has the canonical values

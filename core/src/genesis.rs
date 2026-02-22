@@ -345,18 +345,18 @@ impl GenesisConfig {
         vec![
             GenesisAccount {
                 address: community_treasury.to_string(),
-                balance_molt: 400_000_000,
-                comment: Some("Community Treasury (40%)".to_string()),
+                balance_molt: 250_000_000,
+                comment: Some("Community Treasury (25%)".to_string()),
             },
             GenesisAccount {
                 address: builder_grants.to_string(),
-                balance_molt: 250_000_000,
-                comment: Some("Builder Grants (25%)".to_string()),
+                balance_molt: 350_000_000,
+                comment: Some("Builder Grants (35%)".to_string()),
             },
             GenesisAccount {
                 address: validator_rewards.to_string(),
-                balance_molt: 150_000_000,
-                comment: Some("Validator Rewards Pool (15%)".to_string()),
+                balance_molt: 100_000_000,
+                comment: Some("Validator Rewards Pool (10%)".to_string()),
             },
             GenesisAccount {
                 address: founding_moltys.to_string(),
@@ -365,13 +365,13 @@ impl GenesisConfig {
             },
             GenesisAccount {
                 address: ecosystem_partnerships.to_string(),
-                balance_molt: 50_000_000,
-                comment: Some("Ecosystem Partnerships (5%)".to_string()),
+                balance_molt: 100_000_000,
+                comment: Some("Ecosystem Partnerships (10%)".to_string()),
             },
             GenesisAccount {
                 address: reserve_pool.to_string(),
-                balance_molt: 50_000_000,
-                comment: Some("Reserve Pool (5%)".to_string()),
+                balance_molt: 100_000_000,
+                comment: Some("Reserve Pool (10%)".to_string()),
             },
         ]
     }
@@ -503,12 +503,12 @@ mod tests {
             "Genesis distribution must total 1B MOLT"
         );
         assert_eq!(accounts.len(), 6);
-        assert_eq!(accounts[0].balance_molt, 400_000_000); // 40%
-        assert_eq!(accounts[1].balance_molt, 250_000_000); // 25%
-        assert_eq!(accounts[2].balance_molt, 150_000_000); // 15%
+        assert_eq!(accounts[0].balance_molt, 250_000_000); // 25%
+        assert_eq!(accounts[1].balance_molt, 350_000_000); // 35%
+        assert_eq!(accounts[2].balance_molt, 100_000_000); // 10%
         assert_eq!(accounts[3].balance_molt, 100_000_000); // 10%
-        assert_eq!(accounts[4].balance_molt, 50_000_000); //  5%
-        assert_eq!(accounts[5].balance_molt, 50_000_000); //  5%
+        assert_eq!(accounts[4].balance_molt, 100_000_000); // 10%
+        assert_eq!(accounts[5].balance_molt, 100_000_000); // 10%
     }
 
     #[test]

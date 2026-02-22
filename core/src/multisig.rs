@@ -66,13 +66,14 @@ pub struct DistributionWallet {
 }
 
 /// Whitepaper genesis distribution (ordered: validator_rewards first for backward compat)
+/// Updated: 10/25/35/10/10/10 split for sustainable treasury runway.
 pub const GENESIS_DISTRIBUTION: &[(&str, u64, u8)] = &[
-    ("validator_rewards", 150_000_000, 15),
-    ("community_treasury", 400_000_000, 40),
-    ("builder_grants", 250_000_000, 25),
+    ("validator_rewards", 100_000_000, 10),
+    ("community_treasury", 250_000_000, 25),
+    ("builder_grants", 350_000_000, 35),
     ("founding_moltys", 100_000_000, 10),
-    ("ecosystem_partnerships", 50_000_000, 5),
-    ("reserve_pool", 50_000_000, 5),
+    ("ecosystem_partnerships", 100_000_000, 10),
+    ("reserve_pool", 100_000_000, 10),
 ];
 
 /// Genesis wallet keypair bundle (saved to disk)
@@ -303,9 +304,9 @@ mod tests {
         let dist = wallet.distribution_wallets.as_ref().unwrap();
         assert_eq!(dist.len(), 6);
         assert_eq!(dist[0].role, "validator_rewards");
-        assert_eq!(dist[0].amount_molt, 150_000_000);
+        assert_eq!(dist[0].amount_molt, 100_000_000);
         assert_eq!(dist[1].role, "community_treasury");
-        assert_eq!(dist[1].amount_molt, 400_000_000);
+        assert_eq!(dist[1].amount_molt, 250_000_000);
 
         // Total = 1B
         let total: u64 = dist.iter().map(|d| d.amount_molt).sum();
