@@ -1,6 +1,6 @@
 // Chain Synchronization Manager
 
-use moltchain_core::Block;
+use moltchain_core::{Block, Hash};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Instant;
@@ -288,6 +288,14 @@ impl SyncManager {
     /// Get the number of pending blocks waiting to be applied
     pub async fn pending_count(&self) -> usize {
         self.pending_blocks.lock().await.len()
+    }
+
+    /// Check if any pending block has `parent_hash` matching the given hash.
+    /// Used by fork choice: if pending blocks chain from the incoming block,
+    /// the incoming block leads to a provably longer chain (Nakamoto rule).
+    pub async fn has_pending_child(&self, parent: &Hash) -> bool {
+        let pending = self.pending_blocks.lock().await;
+        pending.values().any(|b| b.header.parent_hash == *parent)
     }
 
     /// Check if a slot has been requested
@@ -653,5 +661,25 @@ mod tests {
         // Complete sync, no pending → not actively receiving
         sm.complete_sync().await;
         assert!(!sm.is_actively_receiving().await);
+    }
+
+    /// STABILITY-FIX: has_pending_child detects if pending blocks chain from a given hash
+    #[tokio::test]
+    async fn test_has_pending_child() {
+        let sm = SyncManager::new();
+        let parent = test_block(10);
+        let parent_hash = parent.hash();
+
+        // No pending → no child
+        assert!(!sm.has_pending_child(&parent_hash).await);
+
+        // Add a block whose parent_hash matches → has child
+        let mut child = Block::new(11, parent_hash, Hash::default(), [0u8; 32], vec![]);
+        sm.add_pending_block(child).await;
+        assert!(sm.has_pending_child(&parent_hash).await);
+
+        // Different hash → no child
+        let other_hash = Hash([99u8; 32]);
+        assert!(!sm.has_pending_child(&other_hash).await);
     }
 }
