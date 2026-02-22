@@ -131,6 +131,12 @@ pub struct PeerManager {
     /// duplicate gossip messages.  Stores SHA-256 hashes of deserialized
     /// message bytes.  VecDeque provides FIFO eviction order.
     seen_messages: Arc<Mutex<SeenMessageCache>>,
+
+    /// Configurable maximum peer connections (replaces const MAX_PEERS)
+    max_peers: usize,
+
+    /// Reserved peer addresses that are never evicted
+    reserved_peers: Vec<SocketAddr>,
 }
 
 impl PeerManager {
@@ -139,6 +145,8 @@ impl PeerManager {
         local_addr: SocketAddr,
         message_tx: mpsc::Sender<(SocketAddr, P2PMessage)>,
         peer_store: Option<Arc<PeerStore>>,
+        max_peers: usize,
+        reserved_peers: Vec<SocketAddr>,
     ) -> Result<Self, String> {
         // Install crypto provider for rustls (required by quinn)
         rustls::crypto::ring::default_provider()
@@ -221,11 +229,23 @@ impl PeerManager {
             fingerprint_store,
             // C2-01: 20K capacity ≈ 640KB — covers ~5 minutes of peak traffic
             seen_messages: Arc::new(Mutex::new(SeenMessageCache::new(20_000))),
+            max_peers,
+            reserved_peers,
         })
     }
 
-    /// Maximum number of concurrent peer connections
+    /// Maximum number of concurrent peer connections (configurable per role)
     pub const MAX_PEERS: usize = 50;
+
+    /// Get the effective max peers for this manager instance
+    pub fn effective_max_peers(&self) -> usize {
+        self.max_peers
+    }
+
+    /// Check if a peer address is reserved (never evicted)
+    pub fn is_reserved(&self, addr: &SocketAddr) -> bool {
+        self.reserved_peers.contains(addr)
+    }
 
     /// Connect to a peer
     pub async fn connect_peer(&self, peer_addr: SocketAddr) -> Result<(), String> {
@@ -240,10 +260,10 @@ impl PeerManager {
         if self.peers.contains_key(&peer_addr) {
             return Ok(());
         }
-        if self.peers.len() >= Self::MAX_PEERS {
+        if self.peers.len() >= self.max_peers {
             return Err(format!(
                 "Max peer limit reached ({}), rejecting {}",
-                Self::MAX_PEERS,
+                self.max_peers,
                 peer_addr
             ));
         }
@@ -388,6 +408,57 @@ impl PeerManager {
         }
     }
 
+    /// Broadcast message to all peers except the specified sender (for relay/re-broadcasting).
+    /// Uses concurrent sends like broadcast() but skips the sender to avoid echo.
+    pub async fn broadcast_except(&self, message: &P2PMessage, except: &SocketAddr) {
+        let peers: Vec<SocketAddr> = self
+            .peers
+            .iter()
+            .map(|entry| *entry.key())
+            .filter(|addr| addr != except)
+            .collect();
+        if peers.is_empty() {
+            return;
+        }
+
+        let bytes = match message.serialize() {
+            Ok(b) => std::sync::Arc::new(b),
+            Err(e) => {
+                warn!("P2P: broadcast_except serialize error: {}", e);
+                return;
+            }
+        };
+
+        let mut conn_tasks: Vec<(SocketAddr, Option<quinn::Connection>)> =
+            Vec::with_capacity(peers.len());
+        for addr in &peers {
+            let conn = self.peers.get(addr).and_then(|p| p.connection.clone());
+            conn_tasks.push((*addr, conn));
+        }
+
+        let mut handles = Vec::with_capacity(conn_tasks.len());
+        for (peer_addr, connection) in conn_tasks {
+            let bytes = bytes.clone();
+            handles.push(tokio::spawn(async move {
+                if let Some(conn) = connection {
+                    match conn.open_uni().await {
+                        Ok(mut stream) => {
+                            if let Err(e) = stream.write_all(&bytes).await {
+                                warn!("P2P: Failed to relay to {}: {}", peer_addr, e);
+                            }
+                            let _ = stream.finish();
+                        }
+                        Err(e) => warn!("P2P: Failed to open relay stream to {}: {}", peer_addr, e),
+                    }
+                }
+            }));
+        }
+
+        for handle in handles {
+            let _ = handle.await;
+        }
+    }
+
     /// Broadcast message to all peers (parallel — PERF-FIX 1)
     /// Uses concurrent sends instead of sequential awaits.
     /// With 500 validators, sequential = 2.5s; parallel = ~50ms.
@@ -508,6 +579,7 @@ impl PeerManager {
         let ban_list = self.ban_list.clone();
         let fingerprint_store = self.fingerprint_store.clone();
         let seen_messages = self.seen_messages.clone();
+        let max_peers = self.max_peers;
 
         tokio::spawn(async move {
             while let Some(connecting) = endpoint.accept().await {
@@ -530,12 +602,12 @@ impl PeerManager {
                                 warn!("P2P: Rejected banned peer {}", peer_addr);
                                 return;
                             }
-                            // Enforce MAX_PEERS on inbound connections too
-                            if peers.len() >= PeerManager::MAX_PEERS {
+                            // Enforce max_peers on inbound connections too
+                            if peers.len() >= max_peers {
                                 warn!(
                                     "P2P: Rejected inbound connection from {} — at max peers ({})",
                                     peer_addr,
-                                    PeerManager::MAX_PEERS
+                                    max_peers
                                 );
                                 return;
                             }
@@ -601,6 +673,7 @@ impl PeerManager {
     /// Clean up stale peers and detect silent connections.
     /// AUDIT-FIX H17: Also removes peers connected longer than timeout
     /// with negative score (indicates repeated failures without recovery).
+    /// Reserved peers are never evicted.
     pub fn cleanup_stale_peers(&self, timeout_secs: u64) {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -609,6 +682,10 @@ impl PeerManager {
         let mut to_remove = Vec::new();
 
         for entry in self.peers.iter() {
+            // Never evict reserved peers
+            if self.reserved_peers.contains(entry.key()) {
+                continue;
+            }
             let age = now.saturating_sub(entry.value().last_seen);
             // Original: remove peers not seen within timeout
             if age > timeout_secs {

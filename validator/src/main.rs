@@ -31,7 +31,7 @@ use moltchain_core::{
     SLOTS_PER_EPOCH, SYSTEM_PROGRAM_ID as CORE_SYSTEM_PROGRAM_ID,
 };
 use moltchain_p2p::{
-    ConsistencyReportMsg, MessageType, P2PConfig, P2PMessage, P2PNetwork, SnapshotKind,
+    ConsistencyReportMsg, MessageType, NodeRole, P2PConfig, P2PMessage, P2PNetwork, SnapshotKind,
     SnapshotRequestMsg, SnapshotResponseMsg, StatusRequestMsg, StatusResponseMsg,
 };
 use moltchain_rpc::start_rpc_server;
@@ -200,6 +200,9 @@ struct SeedNetwork {
 #[derive(Debug, Deserialize)]
 struct SeedEntry {
     address: String,
+    /// Optional role field: "seed", "relay", or "validator"
+    #[serde(default)]
+    role: Option<String>,
 }
 
 fn resolve_peer_list(peers: &[String]) -> Vec<SocketAddr> {
@@ -5570,6 +5573,20 @@ async fn run_validator() {
         cleanup_timeout: 300,
         peer_store_path: Some(peer_store_path.clone()),
         max_known_peers: 200,
+        // P2P role: read from MOLTCHAIN_P2P_ROLE env var, default to Validator
+        role: std::env::var("MOLTCHAIN_P2P_ROLE")
+            .ok()
+            .and_then(|s| s.parse::<NodeRole>().ok())
+            .unwrap_or(NodeRole::Validator),
+        // P2P max_peers: read from MOLTCHAIN_P2P_MAX_PEERS env var, or auto-set by role
+        max_peers: std::env::var("MOLTCHAIN_P2P_MAX_PEERS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok()),
+        // P2P reserved relay peers: read from MOLTCHAIN_P2P_RESERVED_PEERS env var (comma-separated)
+        reserved_relay_peers: std::env::var("MOLTCHAIN_P2P_RESERVED_PEERS")
+            .ok()
+            .map(|s| s.split(',').map(|p| p.trim().to_string()).filter(|p| !p.is_empty()).collect())
+            .unwrap_or_default(),
     };
 
     let has_genesis_block = state.get_block_by_slot(0).unwrap_or(None).is_some();

@@ -11,6 +11,56 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
+/// Node role determines connection limits and relay behavior for a 500-validator network.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeRole {
+    /// Default: connects to 2-3 relays + some peers, max 20 connections
+    Validator,
+    /// High-bandwidth: accepts many connections, re-broadcasts gossip messages
+    Relay,
+    /// Address book: connects to many peers, shares peer lists
+    Seed,
+}
+
+impl Default for NodeRole {
+    fn default() -> Self {
+        NodeRole::Validator
+    }
+}
+
+impl NodeRole {
+    /// Default max peer connections for each role
+    pub fn default_max_peers(&self) -> usize {
+        match self {
+            NodeRole::Validator => 20,
+            NodeRole::Relay => 500,
+            NodeRole::Seed => 1000,
+        }
+    }
+}
+
+impl std::fmt::Display for NodeRole {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NodeRole::Validator => write!(f, "validator"),
+            NodeRole::Relay => write!(f, "relay"),
+            NodeRole::Seed => write!(f, "seed"),
+        }
+    }
+}
+
+impl std::str::FromStr for NodeRole {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "validator" => Ok(NodeRole::Validator),
+            "relay" => Ok(NodeRole::Relay),
+            "seed" => Ok(NodeRole::Seed),
+            other => Err(format!("Unknown node role '{}': expected 'validator', 'relay', or 'seed'", other)),
+        }
+    }
+}
+
 /// P2P network configuration
 #[derive(Debug, Clone)]
 pub struct P2PConfig {
@@ -20,6 +70,12 @@ pub struct P2PConfig {
     pub cleanup_timeout: u64,
     pub peer_store_path: Option<PathBuf>,
     pub max_known_peers: usize,
+    /// Node role determines connection limits and relay behavior
+    pub role: NodeRole,
+    /// Maximum peer connections (if None, auto-set by role)
+    pub max_peers: Option<usize>,
+    /// Reserved relay/seed peer addresses that are never evicted
+    pub reserved_relay_peers: Vec<String>,
 }
 
 impl Default for P2PConfig {
@@ -31,7 +87,17 @@ impl Default for P2PConfig {
             cleanup_timeout: 300,
             peer_store_path: None,
             max_known_peers: 200,
+            role: NodeRole::Validator,
+            max_peers: None,
+            reserved_relay_peers: Vec::new(),
         }
+    }
+}
+
+impl P2PConfig {
+    /// Effective max peers: explicit override or role-based default
+    pub fn effective_max_peers(&self) -> usize {
+        self.max_peers.unwrap_or_else(|| self.role.default_max_peers())
     }
 }
 
@@ -113,6 +179,9 @@ pub struct P2PNetwork {
     /// Local address
     local_addr: SocketAddr,
 
+    /// Node role (determines relay behavior)
+    role: NodeRole,
+
     /// Message receiver (bounded — T4.7)
     message_rx: mpsc::Receiver<(SocketAddr, P2PMessage)>,
 
@@ -167,7 +236,11 @@ impl P2PNetwork {
         snapshot_response_tx: mpsc::Sender<SnapshotResponseMsg>,
         slashing_evidence_tx: mpsc::Sender<moltchain_core::SlashingEvidence>,
     ) -> Result<Self, String> {
-        info!("🦞 P2P: Initializing network on {}", config.listen_addr);
+        let effective_max_peers = config.effective_max_peers();
+        info!(
+            "🦞 P2P: Initializing network on {} (role={}, max_peers={})",
+            config.listen_addr, config.role, effective_max_peers
+        );
 
         // T4.7: Use bounded internal message channel to prevent memory exhaustion from peer floods.
         // Capacity 10K messages provides ~20MB buffer before backpressure kicks in.
@@ -177,9 +250,24 @@ impl P2PNetwork {
             .peer_store_path
             .map(|path| Arc::new(PeerStore::new(path, config.max_known_peers)));
 
-        // Create peer manager
-        let peer_manager =
-            Arc::new(PeerManager::new(config.listen_addr, message_tx, peer_store.clone()).await?);
+        // Resolve reserved relay peer addresses to SocketAddr for eviction protection
+        let reserved_addrs: Vec<SocketAddr> = config
+            .reserved_relay_peers
+            .iter()
+            .filter_map(|s| s.parse().ok())
+            .collect();
+
+        // Create peer manager with configurable max_peers and reserved peers
+        let peer_manager = Arc::new(
+            PeerManager::new(
+                config.listen_addr,
+                message_tx,
+                peer_store.clone(),
+                effective_max_peers,
+                reserved_addrs,
+            )
+            .await?,
+        );
 
         // Start accepting connections
         peer_manager.start_accepting().await;
@@ -198,6 +286,7 @@ impl P2PNetwork {
             peer_manager,
             gossip_manager,
             local_addr: config.listen_addr,
+            role: config.role,
             message_rx,
             block_tx,
             vote_tx,
@@ -234,6 +323,23 @@ impl P2PNetwork {
         peer_addr: SocketAddr,
         message: P2PMessage,
     ) -> Result<(), String> {
+        // Relay/Seed nodes re-broadcast gossip messages to all peers except sender.
+        // The SeenMessageCache in handle_connection already prevents loops.
+        if self.role == NodeRole::Relay || self.role == NodeRole::Seed {
+            if matches!(
+                message.msg_type,
+                MessageType::Block(_)
+                    | MessageType::Vote(_)
+                    | MessageType::Transaction(_)
+                    | MessageType::ValidatorAnnounce { .. }
+                    | MessageType::SlashingEvidence(_)
+            ) {
+                self.peer_manager
+                    .broadcast_except(&message, &peer_addr)
+                    .await;
+            }
+        }
+
         match message.msg_type {
             MessageType::Block(block) => {
                 debug!(
@@ -624,5 +730,82 @@ impl P2PNetwork {
     /// Get connected peers
     pub fn get_peers(&self) -> Vec<SocketAddr> {
         self.peer_manager.get_peers()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_node_role_default_is_validator() {
+        assert_eq!(NodeRole::default(), NodeRole::Validator);
+    }
+
+    #[test]
+    fn test_node_role_default_max_peers() {
+        assert_eq!(NodeRole::Validator.default_max_peers(), 20);
+        assert_eq!(NodeRole::Relay.default_max_peers(), 500);
+        assert_eq!(NodeRole::Seed.default_max_peers(), 1000);
+    }
+
+    #[test]
+    fn test_node_role_display() {
+        assert_eq!(format!("{}", NodeRole::Validator), "validator");
+        assert_eq!(format!("{}", NodeRole::Relay), "relay");
+        assert_eq!(format!("{}", NodeRole::Seed), "seed");
+    }
+
+    #[test]
+    fn test_node_role_from_str() {
+        assert_eq!("validator".parse::<NodeRole>().unwrap(), NodeRole::Validator);
+        assert_eq!("relay".parse::<NodeRole>().unwrap(), NodeRole::Relay);
+        assert_eq!("seed".parse::<NodeRole>().unwrap(), NodeRole::Seed);
+        assert_eq!("RELAY".parse::<NodeRole>().unwrap(), NodeRole::Relay);
+        assert_eq!("Seed".parse::<NodeRole>().unwrap(), NodeRole::Seed);
+        assert!("unknown".parse::<NodeRole>().is_err());
+    }
+
+    #[test]
+    fn test_node_role_roundtrip() {
+        for role in [NodeRole::Validator, NodeRole::Relay, NodeRole::Seed] {
+            let s = format!("{}", role);
+            let parsed: NodeRole = s.parse().unwrap();
+            assert_eq!(parsed, role);
+        }
+    }
+
+    #[test]
+    fn test_p2p_config_effective_max_peers_default() {
+        let config = P2PConfig::default();
+        // Default role=Validator, max_peers=None → 20
+        assert_eq!(config.effective_max_peers(), 20);
+    }
+
+    #[test]
+    fn test_p2p_config_effective_max_peers_override() {
+        let mut config = P2PConfig::default();
+        config.max_peers = Some(100);
+        assert_eq!(config.effective_max_peers(), 100);
+    }
+
+    #[test]
+    fn test_p2p_config_effective_max_peers_relay() {
+        let mut config = P2PConfig::default();
+        config.role = NodeRole::Relay;
+        assert_eq!(config.effective_max_peers(), 500);
+    }
+
+    #[test]
+    fn test_p2p_config_effective_max_peers_seed() {
+        let mut config = P2PConfig::default();
+        config.role = NodeRole::Seed;
+        assert_eq!(config.effective_max_peers(), 1000);
+    }
+
+    #[test]
+    fn test_p2p_config_reserved_peers_empty_by_default() {
+        let config = P2PConfig::default();
+        assert!(config.reserved_relay_peers.is_empty());
     }
 }

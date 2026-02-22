@@ -319,7 +319,7 @@ impl GossipManager {
         let local_peers = self.peer_manager.get_peers();
 
         // Stop discovering if already at max peer count
-        if local_peers.len() >= PeerManager::MAX_PEERS {
+        if local_peers.len() >= self.peer_manager.effective_max_peers() {
             return;
         }
 
