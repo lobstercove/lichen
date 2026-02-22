@@ -2132,19 +2132,26 @@ async fn handle_set_fee_config(
             config.fee_treasury_percent = value;
         }
     }
+    if let Some(value) = obj.get("fee_community_percent").and_then(|v| v.as_u64()) {
+        if value <= 100 {
+            config.fee_community_percent = value;
+        }
+    }
 
     // Validate that fee distribution percentages sum to 100
     let pct_sum = config.fee_burn_percent
         + config.fee_producer_percent
         + config.fee_voters_percent
-        + config.fee_treasury_percent;
+        + config.fee_treasury_percent
+        + config.fee_community_percent;
     if pct_sum != 100 {
         return Err(RpcError {
             code: -32602,
             message: format!(
-                "Fee percentages must sum to 100, got {} (burn={}, producer={}, voters={}, treasury={})",
+                "Fee percentages must sum to 100, got {} (burn={}, producer={}, voters={}, treasury={}, community={})",
                 pct_sum, config.fee_burn_percent, config.fee_producer_percent,
                 config.fee_voters_percent, config.fee_treasury_percent,
+                config.fee_community_percent,
             ),
         });
     }

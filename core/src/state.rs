@@ -4143,6 +4143,11 @@ impl StateStore {
             b"fee_treasury_percent",
             config.fee_treasury_percent.to_le_bytes(),
         );
+        batch.put_cf(
+            &cf,
+            b"fee_community_percent",
+            config.fee_community_percent.to_le_bytes(),
+        );
 
         self.db
             .write(batch)
@@ -4188,6 +4193,8 @@ impl StateStore {
                 .unwrap_or(defaults.fee_voters_percent),
             fee_treasury_percent: read_u64(b"fee_treasury_percent")?
                 .unwrap_or(defaults.fee_treasury_percent),
+            fee_community_percent: read_u64(b"fee_community_percent")?
+                .unwrap_or(defaults.fee_community_percent),
         })
     }
 
@@ -5932,9 +5939,10 @@ mod tests {
             nft_mint_fee: 100_000,
             nft_collection_fee: 200_000,
             fee_burn_percent: 40,
-            fee_producer_percent: 35,
-            fee_voters_percent: 15,
+            fee_producer_percent: 30,
+            fee_voters_percent: 10,
             fee_treasury_percent: 10,
+            fee_community_percent: 10,
         };
 
         state.set_fee_config_full(&config).unwrap();
@@ -5942,8 +5950,10 @@ mod tests {
         let loaded = state.get_fee_config().unwrap();
         assert_eq!(loaded.base_fee, 5_000);
         assert_eq!(loaded.fee_burn_percent, 40);
-        assert_eq!(loaded.fee_producer_percent, 35);
-        assert_eq!(loaded.fee_voters_percent, 15);
+        assert_eq!(loaded.fee_producer_percent, 30);
+        assert_eq!(loaded.fee_voters_percent, 10);
+        assert_eq!(loaded.fee_treasury_percent, 10);
+        assert_eq!(loaded.fee_community_percent, 10);
     }
 
     #[test]

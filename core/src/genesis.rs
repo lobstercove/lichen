@@ -160,6 +160,10 @@ pub struct FeatureFlags {
     #[serde(default = "default_fee_voters_percentage")]
     pub fee_voters_percentage: u64,
 
+    /// Percentage of fees to community treasury (0-100)
+    #[serde(default = "default_fee_community_percentage")]
+    pub fee_community_percentage: u64,
+
     /// Base transaction fee in shells
     pub base_fee_shells: u64,
 
@@ -183,6 +187,9 @@ fn default_fee_producer_percentage() -> u64 {
     30
 }
 fn default_fee_voters_percentage() -> u64 {
+    10
+}
+fn default_fee_community_percentage() -> u64 {
     10
 }
 
@@ -262,17 +269,22 @@ impl GenesisConfig {
         if self.features.fee_voters_percentage > 100 {
             return Err("Fee voters percentage cannot exceed 100%".to_string());
         }
+        if self.features.fee_community_percentage > 100 {
+            return Err("Fee community percentage cannot exceed 100%".to_string());
+        }
         // AUDIT-FIX 0.8: Validate that fee percentages sum to <= 100
         let total_pct = self.features.fee_burn_percentage
             + self.features.fee_producer_percentage
-            + self.features.fee_voters_percentage;
+            + self.features.fee_voters_percentage
+            + self.features.fee_community_percentage;
         if total_pct > 100 {
             return Err(format!(
-                "Fee percentages sum to {}% (burn {}% + producer {}% + voters {}%), must be <= 100%",
+                "Fee percentages sum to {}% (burn {}% + producer {}% + voters {}% + community {}%), must be <= 100%",
                 total_pct,
                 self.features.fee_burn_percentage,
                 self.features.fee_producer_percentage,
                 self.features.fee_voters_percentage,
+                self.features.fee_community_percentage,
             ));
         }
         // AUDIT-FIX 3.23: Reject all-zero fee config (at least one category must be nonzero)
@@ -412,9 +424,10 @@ impl GenesisConfig {
                 seed_nodes: vec!["127.0.0.1:8000".to_string()],
             },
             features: FeatureFlags {
-                fee_burn_percentage: 50,
+                fee_burn_percentage: 40,
                 fee_producer_percentage: 30,
                 fee_voters_percentage: 10,
+                fee_community_percentage: 10,
                 base_fee_shells: 1_000_000, // 0.001 MOLT — $0.0001 at $0.10/MOLT
                 rent_rate_shells_per_kb_month: 10_000, // $0.000001 at $0.10/MOLT
                 rent_free_kb: 1,
@@ -457,9 +470,10 @@ impl GenesisConfig {
                 seed_nodes: vec![],
             },
             features: FeatureFlags {
-                fee_burn_percentage: 50,
+                fee_burn_percentage: 40,
                 fee_producer_percentage: 30,
                 fee_voters_percentage: 10,
+                fee_community_percentage: 10,
                 base_fee_shells: 1_000_000, // 0.001 MOLT — $0.0001 at $0.10/MOLT
                 rent_rate_shells_per_kb_month: 10_000, // $0.000001 at $0.10/MOLT
                 rent_free_kb: 1,

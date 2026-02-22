@@ -614,16 +614,18 @@ fn test_fee_config_roundtrip_full() {
         contract_upgrade_fee: 500_000_000,
         nft_mint_fee: 100_000_000,
         nft_collection_fee: 250_000_000,
-        fee_burn_percent: 50,
+        fee_burn_percent: 40,
         fee_producer_percent: 25,
         fee_voters_percent: 15,
         fee_treasury_percent: 10,
+        fee_community_percent: 10,
     };
     state.set_fee_config_full(&config).unwrap();
     let loaded = state.get_fee_config().unwrap();
     assert_eq!(loaded.base_fee, 500_000);
-    assert_eq!(loaded.fee_burn_percent, 50);
+    assert_eq!(loaded.fee_burn_percent, 40);
     assert_eq!(loaded.fee_treasury_percent, 10);
+    assert_eq!(loaded.fee_community_percent, 10);
 }
 
 #[test]
@@ -1437,7 +1439,8 @@ fn test_fee_config_default_sane_values() {
     let total_pct = config.fee_burn_percent
         + config.fee_producer_percent
         + config.fee_voters_percent
-        + config.fee_treasury_percent;
+        + config.fee_treasury_percent
+        + config.fee_community_percent;
     assert_eq!(total_pct, 100, "Fee distribution must sum to 100%");
 }
 

@@ -267,7 +267,8 @@ cat > "$OUTPUT" <<EOF
     ]
   },
   "features": {
-    "fee_burn_percentage": 50,
+    "fee_burn_percentage": 40,
+    "fee_community_percentage": 10,
     "base_fee_shells": 100000,
     "enable_smart_contracts": true,
     "enable_staking": true,

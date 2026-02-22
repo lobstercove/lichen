@@ -107,8 +107,10 @@ pub struct FeeConfig {
     pub fee_producer_percent: u64,
     /// Percentage of fees to voters (0-100)
     pub fee_voters_percent: u64,
-    /// Percentage of fees to treasury (0-100) per whitepaper: 10%
+    /// Percentage of fees to validator rewards pool (fee recycling, 0-100)
     pub fee_treasury_percent: u64,
+    /// Percentage of fees to community treasury (0-100)
+    pub fee_community_percent: u64,
 }
 
 impl FeeConfig {
@@ -119,10 +121,11 @@ impl FeeConfig {
             contract_upgrade_fee: CONTRACT_UPGRADE_FEE,
             nft_mint_fee: NFT_MINT_FEE,
             nft_collection_fee: NFT_COLLECTION_FEE,
-            fee_burn_percent: 50,
+            fee_burn_percent: 40,
             fee_producer_percent: 30,
             fee_voters_percent: 10,
             fee_treasury_percent: 10,
+            fee_community_percent: 10,
         }
     }
 }
@@ -1415,10 +1418,12 @@ impl TxProcessor {
         let burn_amount = (fee as u128 * fee_config.fee_burn_percent as u128 / 100) as u64;
         let producer_amount = (fee as u128 * fee_config.fee_producer_percent as u128 / 100) as u64;
         let voters_amount = (fee as u128 * fee_config.fee_voters_percent as u128 / 100) as u64;
+        let community_amount = (fee as u128 * fee_config.fee_community_percent as u128 / 100) as u64;
         // AUDIT-FIX 0.8: Use saturating_sub to prevent underflow if percentages exceed 100
         let allocated = burn_amount
             .saturating_add(producer_amount)
-            .saturating_add(voters_amount);
+            .saturating_add(voters_amount)
+            .saturating_add(community_amount);
         let treasury_amount = fee.saturating_sub(allocated);
 
         // Burn portion: permanently remove from circulation (via batch — atomic)
@@ -1426,12 +1431,13 @@ impl TxProcessor {
             self.b_add_burned(burn_amount)?;
         }
 
-        // Producer and voters portions go to treasury for now
+        // Producer, voters, and community portions go to treasury for now
         // (block producer/voter identities are not available in this scope;
         //  validator/src/main.rs distribute_fees handles the actual split at block level)
         let total_to_treasury = treasury_amount
             .saturating_add(producer_amount)
-            .saturating_add(voters_amount);
+            .saturating_add(voters_amount)
+            .saturating_add(community_amount);
 
         if total_to_treasury > 0 {
             let treasury_pubkey = self
@@ -1472,15 +1478,18 @@ impl TxProcessor {
         let burn_amount = (fee as u128 * fee_config.fee_burn_percent as u128 / 100) as u64;
         let producer_amount = (fee as u128 * fee_config.fee_producer_percent as u128 / 100) as u64;
         let voters_amount = (fee as u128 * fee_config.fee_voters_percent as u128 / 100) as u64;
+        let community_amount = (fee as u128 * fee_config.fee_community_percent as u128 / 100) as u64;
         // AUDIT-FIX 0.8: Use saturating_sub to prevent underflow if percentages exceed 100
         let allocated = burn_amount
             .saturating_add(producer_amount)
-            .saturating_add(voters_amount);
+            .saturating_add(voters_amount)
+            .saturating_add(community_amount);
         let treasury_amount = fee.saturating_sub(allocated);
 
         let total_to_treasury = treasury_amount
             .saturating_add(producer_amount)
-            .saturating_add(voters_amount);
+            .saturating_add(voters_amount)
+            .saturating_add(community_amount);
 
         // AUDIT-FIX B-5: Cap the total distributed to prevent shell creation from
         // malformed fee split percentages exceeding 100%.
@@ -5395,5 +5404,22 @@ mod tests {
         let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
         assert!(!result.success, "Empty instruction data should fail");
         assert!(result.error.unwrap().contains("Empty instruction data"));
+    }
+
+    #[test]
+    fn test_fee_split_sums_to_100() {
+        let cfg = FeeConfig::default_from_constants();
+        let total = cfg.fee_burn_percent
+            + cfg.fee_producer_percent
+            + cfg.fee_voters_percent
+            + cfg.fee_treasury_percent
+            + cfg.fee_community_percent;
+        assert_eq!(total, 100, "fee split percentages must sum to 100, got {total}");
+        // Verify individual values match design spec (40/30/10/10/10)
+        assert_eq!(cfg.fee_burn_percent, 40);
+        assert_eq!(cfg.fee_producer_percent, 30);
+        assert_eq!(cfg.fee_voters_percent, 10);
+        assert_eq!(cfg.fee_treasury_percent, 10);
+        assert_eq!(cfg.fee_community_percent, 10);
     }
 }

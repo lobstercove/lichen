@@ -2435,6 +2435,7 @@ async fn apply_block_effects(
     let burn = total_fee * fee_config.fee_burn_percent / 100;
     let producer_share = total_fee * fee_config.fee_producer_percent / 100;
     let voters_share = total_fee * fee_config.fee_voters_percent / 100;
+    let community_share = total_fee * fee_config.fee_community_percent / 100;
     let mut voters_paid: u64 = 0;
 
     // NOTE: burn was already applied in charge_fee (processor.rs) during
@@ -2550,17 +2551,38 @@ async fn apply_block_effects(
         }
     }
 
-    let treasury_share = total_fee.saturating_sub(burn + producer_share + voters_paid);
+    let treasury_share = total_fee.saturating_sub(burn + producer_share + voters_paid + community_share);
+
+    // Credit community treasury wallet
+    if community_share > 0 {
+        if let Ok(Some(community_pubkey)) = state.get_community_treasury_pubkey() {
+            let mut community_account = match batch.get_account(&community_pubkey) {
+                Ok(Some(account)) => account,
+                _ => match state.get_account(&community_pubkey) {
+                    Ok(Some(account)) => account,
+                    _ => Account::new(0, SYSTEM_ACCOUNT_OWNER),
+                },
+            };
+            community_account.add_spendable(community_share).unwrap_or_else(|e| {
+                warn!("⚠️  Overflow crediting community treasury fees: {}", e);
+            });
+            if let Err(e) = batch.put_account(&community_pubkey, &community_account) {
+                warn!("⚠️  Failed to credit community treasury fees: {}", e);
+            }
+        } else {
+            warn!("⚠️  Community treasury pubkey not found — community share stays in validator_rewards");
+        }
+    }
 
     // charge_fee credited treasury with (fee − burn) for each tx.
-    // We only debit what we're distributing out: producer_share + voters_paid.
+    // We debit what we're distributing out: producer_share + voters_paid + community_share.
     // Treasury retains its own share (≈10%) automatically.
     treasury_account.shells = treasury_account
         .shells
-        .saturating_sub(producer_share + voters_paid);
+        .saturating_sub(producer_share + voters_paid + community_share);
     treasury_account.spendable = treasury_account
         .spendable
-        .saturating_sub(producer_share + voters_paid);
+        .saturating_sub(producer_share + voters_paid + community_share);
     if let Err(e) = batch.put_account(&treasury_pubkey, &treasury_account) {
         warn!("⚠️  Failed to update treasury account: {}", e);
         return;
@@ -5311,20 +5333,23 @@ async fn run_validator() {
             fee_burn_percent: genesis_config.features.fee_burn_percentage,
             fee_producer_percent: genesis_config.features.fee_producer_percentage,
             fee_voters_percent: genesis_config.features.fee_voters_percentage,
+            fee_community_percent: genesis_config.features.fee_community_percentage,
             fee_treasury_percent: 100u64
                 .saturating_sub(genesis_config.features.fee_burn_percentage)
                 .saturating_sub(genesis_config.features.fee_producer_percentage)
-                .saturating_sub(genesis_config.features.fee_voters_percentage),
+                .saturating_sub(genesis_config.features.fee_voters_percentage)
+                .saturating_sub(genesis_config.features.fee_community_percentage),
         };
         if let Err(e) = state.set_fee_config_full(&genesis_fee_config) {
             warn!("⚠️  Failed to store fee config: {}", e);
         } else {
-            info!("  ✓ Fee config persisted: base={} shells, burn={}%, producer={}%, voters={}%, treasury={}%",
+            info!("  ✓ Fee config persisted: base={} shells, burn={}%, producer={}%, voters={}%, treasury={}%, community={}%",
                 genesis_fee_config.base_fee,
                 genesis_fee_config.fee_burn_percent,
                 genesis_fee_config.fee_producer_percent,
                 genesis_fee_config.fee_voters_percent,
                 genesis_fee_config.fee_treasury_percent,
+                genesis_fee_config.fee_community_percent,
             );
         }
 
@@ -6764,10 +6789,12 @@ async fn run_validator() {
                             fee_burn_percent: gc.features.fee_burn_percentage,
                             fee_producer_percent: gc.features.fee_producer_percentage,
                             fee_voters_percent: gc.features.fee_voters_percentage,
+                            fee_community_percent: gc.features.fee_community_percentage,
                             fee_treasury_percent: 100u64
                                 .saturating_sub(gc.features.fee_burn_percentage)
                                 .saturating_sub(gc.features.fee_producer_percentage)
-                                .saturating_sub(gc.features.fee_voters_percentage),
+                                .saturating_sub(gc.features.fee_voters_percentage)
+                                .saturating_sub(gc.features.fee_community_percentage),
                         };
                         state_for_blocks
                             .set_fee_config_full(&genesis_fee_config)
