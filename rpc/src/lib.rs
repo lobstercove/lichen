@@ -9138,6 +9138,24 @@ async fn handle_get_reward_adjustment_info(
 
     let decay_year = current_slot / SLOTS_PER_YEAR;
 
+    // Load wallet pubkeys and balances for full transparency
+    let wallet_info = |role: &str| -> serde_json::Value {
+        let (pubkey_str, balance) = match state.state.get_wallet_pubkey(role) {
+            Ok(Some(pk)) => {
+                let bal = state.state.get_account(&pk)
+                    .ok().flatten()
+                    .map(|a| a.shells).unwrap_or(0);
+                (pk.to_base58(), bal)
+            }
+            _ => ("unknown".to_string(), 0),
+        };
+        serde_json::json!({
+            "pubkey": pubkey_str,
+            "balance_shells": balance,
+            "balance_molt": balance as f64 / 1_000_000_000.0,
+        })
+    };
+
     Ok(serde_json::json!({
         "currentMultiplier": 1.0,
         "priceOracleActive": true,
@@ -9170,6 +9188,14 @@ async fn handle_get_reward_adjustment_info(
             "founding_moltys_pct": 10,
             "ecosystem_partnerships_pct": 10,
             "reserve_pool_pct": 10,
+        },
+        "wallets": {
+            "validator_rewards": wallet_info("validator_rewards"),
+            "community_treasury": wallet_info("community_treasury"),
+            "builder_grants": wallet_info("builder_grants"),
+            "founding_moltys": wallet_info("founding_moltys"),
+            "ecosystem_partnerships": wallet_info("ecosystem_partnerships"),
+            "reserve_pool": wallet_info("reserve_pool"),
         },
         "note": "Oracle price feeds active: MOLT, wSOL, wETH via Binance WebSocket real-time feed"
     }))

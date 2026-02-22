@@ -3399,8 +3399,9 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
     }
 
     // ── DEX Rewards: set builder_grants wallet as rewards pool source ──
-    // The dex_rewards contract pays out MOLT from its stored rewards_pool address.
-    // Wire it to the builder_grants wallet (350M MOLT allocation).
+    // The dex_rewards contract pays out MOLT from its own balance (self-custody).
+    // Wire builder_grants as the source, then seed the contract with 1 year of
+    // rewards (1.2M MOLT = 100K/month × 12) so claims work from day one.
     if let Some(dex_rewards_pk) = address_map.get("dex_rewards") {
         let builder_grants_addr = state
             .get_builder_grants_pubkey()
@@ -3424,6 +3425,28 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
             info!("  SET dex_rewards(builder_grants)");
         } else {
             warn!("  WARN: Failed to set dex_rewards builder_grants pool");
+        }
+
+        // Seed the contract with 1 year of rewards from builder_grants.
+        // Contract uses self-custody: it pays from its own address, so it needs
+        // MOLT deposited into the contract's account.
+        let seed_molt: u64 = 1_200_000; // 100K/month × 12 months
+        let seed_shells = seed_molt * 1_000_000_000;
+        let bg_pubkey = Pubkey(builder_grants_addr);
+        if let Ok(Some(mut bg_acct)) = state.get_account(&bg_pubkey) {
+            if bg_acct.spendable >= seed_shells {
+                bg_acct.deduct_spendable(seed_shells).ok();
+                state.put_account(&bg_pubkey, &bg_acct).ok();
+
+                let mut contract_acct = state.get_account(dex_rewards_pk)
+                    .ok().flatten()
+                    .unwrap_or_else(|| Account::new(0, *dex_rewards_pk));
+                contract_acct.add_spendable(seed_shells).ok();
+                state.put_account(dex_rewards_pk, &contract_acct).ok();
+                info!("  💰 Seeded dex_rewards contract with {} MOLT from builder_grants (1 year of rewards)", seed_molt);
+            } else {
+                warn!("  WARN: builder_grants has insufficient balance to seed dex_rewards");
+            }
         }
     }
 

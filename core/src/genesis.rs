@@ -338,13 +338,13 @@ impl GenesisConfig {
         self.initial_accounts.iter().map(|a| a.balance_molt).sum()
     }
 
-    /// Generate genesis distribution per whitepaper:
-    ///   40% Community Treasury (400M MOLT)
-    ///   25% Builder Grants (250M MOLT)
-    ///   15% Validator Rewards Pool (150M MOLT)
+    /// Generate genesis distribution per tokenomics overhaul:
+    ///   25% Community Treasury (250M MOLT)
+    ///   35% Builder Grants (350M MOLT)
+    ///   10% Validator Rewards Pool (100M MOLT)
     ///   10% Founding Moltys (100M MOLT)
-    ///    5% Ecosystem Partnerships (50M MOLT)
-    ///    5% Reserve Pool (50M MOLT)
+    ///   10% Ecosystem Partnerships (100M MOLT)
+    ///   10% Reserve Pool (100M MOLT)
     /// Total: 1,000,000,000 MOLT
     pub fn generate_genesis_distribution(
         community_treasury: &str,
