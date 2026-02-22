@@ -9438,10 +9438,26 @@ async fn run_validator() {
         let tip_slot = state.get_last_slot().unwrap_or(0);
         slot = tip_slot + 1;
 
+        // LEADER-SEED-FIX: Refresh parent_hash from chain tip BEFORE leader election.
+        // Previously this was done AFTER leader election (after all `continue` guards),
+        // meaning parent_hash could be stale for validators that weren't producing.
+        // With a stale seed, validators disagree on leader selection → neither produces
+        // → unnecessary view rotation delays and potential simultaneous production.
+        // Now every validator uses the same parent_hash seed for the same tip.
+        if tip_slot > 0 {
+            if let Ok(Some(latest_block)) = state.get_block_by_slot(tip_slot) {
+                parent_hash = latest_block.hash();
+            }
+        } else if let Ok(Some(genesis_block)) = state.get_block_by_slot(0) {
+            parent_hash = genesis_block.hash();
+        }
+
         // Reset view timer when chain tip advances (new slot to fill)
         if slot != last_attempted_slot {
             slot_start = std::time::Instant::now();
             last_attempted_slot = slot;
+            // Invalidate leader cache when slot changes
+            cached_leader = None;
         }
 
         // PERF-OPT 1: Event-driven wakeup instead of busy-poll.
@@ -9880,17 +9896,7 @@ async fn run_validator() {
             continue;
         }
 
-        // Update parent_hash from actual latest block (in case chain was synced from P2P)
-        if tip_slot > 0 {
-            if let Ok(Some(latest_block)) = state.get_block_by_slot(tip_slot) {
-                parent_hash = latest_block.hash();
-            }
-        } else {
-            // We have genesis, use it as parent
-            if let Ok(Some(genesis_block)) = state.get_block_by_slot(0) {
-                parent_hash = genesis_block.hash();
-            }
-        }
+        // parent_hash already refreshed at top of loop (LEADER-SEED-FIX)
 
         // Collect pending transactions from mempool
         let pending_transactions = {
@@ -10050,6 +10056,10 @@ async fn run_validator() {
         // broadcasts, analytics writes) on the blocking thread pool so the
         // block production loop is not stalled.
         {
+            // DEX-WS-FIX: Read trade count from shared state (not local-only).
+            // This ensures DEX WS events are emitted for trades in blocks produced
+            // by ANY validator (including blocks received via P2P and applied by
+            // the block receiver), not just blocks this validator produced.
             let current_trade_count = state.get_program_storage_u64("DEX", b"dex_trade_count");
 
             // F6.2: Emit DEX WebSocket events for new trades/orders
