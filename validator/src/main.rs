@@ -5569,6 +5569,41 @@ async fn run_validator() {
 
             info!("  ✓ Genesis distribution complete — 1B MOLT allocated per whitepaper");
 
+            // ── Store governed wallet configs for multi-sig spending ──
+            // ecosystem_partnerships: threshold 2 (standard multi-sig)
+            // reserve_pool: threshold 3 (supermajority — requires broad agreement)
+            // All genesis distribution wallet keypair holders are authorized signers.
+            {
+                use moltchain_core::multisig::GovernedWalletConfig;
+                let mut all_signers: Vec<Pubkey> = dist_wallets
+                    .iter()
+                    .filter(|dw| dw.keypair_path.is_some())
+                    .map(|dw| dw.pubkey)
+                    .collect();
+                // Always include the genesis admin as an authorized signer
+                if !all_signers.contains(&genesis_pubkey) {
+                    all_signers.push(genesis_pubkey);
+                }
+
+                for dw in dist_wallets.iter() {
+                    if dw.role == "ecosystem_partnerships" {
+                        let config = GovernedWalletConfig::new(2, all_signers.clone(), "ecosystem_partnerships");
+                        if let Err(e) = state.set_governed_wallet_config(&dw.pubkey, &config) {
+                            error!("Failed to store ecosystem_partnerships governed config: {e}");
+                        } else {
+                            info!("  ✓ ecosystem_partnerships governed wallet: threshold={}, {} signers", config.threshold, config.signers.len());
+                        }
+                    } else if dw.role == "reserve_pool" {
+                        let config = GovernedWalletConfig::new(3, all_signers.clone(), "reserve_pool");
+                        if let Err(e) = state.set_governed_wallet_config(&dw.pubkey, &config) {
+                            error!("Failed to store reserve_pool governed config: {e}");
+                        } else {
+                            info!("  ✓ reserve_pool governed wallet: threshold={}, {} signers [SUPERMAJORITY]", config.threshold, config.signers.len());
+                        }
+                    }
+                }
+            }
+
             // ── Auto-fund genesis/deployer with 10K MOLT from treasury ──
             // Eliminates the need for scripts/fund-deployer.py.
             // The deployer needs operational funds for contract deployment gas fees.

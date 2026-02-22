@@ -49,6 +49,63 @@ impl MultiSigConfig {
     }
 }
 
+// ============================================================================
+// GOVERNED WALLET SYSTEM
+// ============================================================================
+
+/// Configuration for a governed distribution wallet.
+///
+/// Governed wallets (ecosystem_partnerships, reserve_pool) require multi-sig
+/// approval for any transfer. Standard transfers (type 0) are blocked.
+/// Transfers go through the on-chain proposal system (types 21/22).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GovernedWalletConfig {
+    /// Required number of approvals to execute a transfer
+    pub threshold: u8,
+    /// Authorized signer public keys
+    pub signers: Vec<Pubkey>,
+    /// Human-readable label (e.g. "ecosystem_partnerships")
+    pub label: String,
+}
+
+impl GovernedWalletConfig {
+    pub fn new(threshold: u8, signers: Vec<Pubkey>, label: &str) -> Self {
+        GovernedWalletConfig {
+            threshold,
+            signers,
+            label: label.to_string(),
+        }
+    }
+
+    /// Check if a pubkey is an authorized signer for this wallet.
+    pub fn is_authorized(&self, signer: &Pubkey) -> bool {
+        self.signers.contains(signer)
+    }
+}
+
+/// An on-chain multi-sig transfer proposal for governed wallets.
+///
+/// Created via system instruction type 21 (propose_governed_transfer).
+/// Approved via system instruction type 22 (approve_governed_transfer).
+/// Auto-executes when approvals meet the threshold.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GovernedProposal {
+    /// Unique proposal ID (auto-incrementing)
+    pub id: u64,
+    /// Source wallet public key (the governed wallet)
+    pub source: Pubkey,
+    /// Recipient public key
+    pub recipient: Pubkey,
+    /// Transfer amount in shells
+    pub amount: u64,
+    /// Pubkeys that have approved this proposal
+    pub approvals: Vec<Pubkey>,
+    /// Required threshold (snapshot from config at creation time)
+    pub threshold: u8,
+    /// Whether this proposal has been executed
+    pub executed: bool,
+}
+
 /// Whitepaper distribution wallet allocation
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DistributionWallet {

@@ -1585,6 +1585,9 @@ impl TxProcessor {
             18 => self.system_set_contract_abi(ix),
             19 => self.system_faucet_airdrop(ix),
             20 => self.system_register_symbol(ix),
+            // Governed wallet multi-sig proposal system
+            21 => self.system_propose_governed_transfer(ix),
+            22 => self.system_approve_governed_transfer(ix),
             _ => Err(format!("Unknown system instruction: {}", instruction_type)),
         }
     }
@@ -1601,6 +1604,16 @@ impl TxProcessor {
 
         let from = &ix.accounts[0];
         let to = &ix.accounts[1];
+
+        // Guard: governed wallets (ecosystem_partnerships, reserve_pool) cannot
+        // use standard transfers. They require the multi-sig proposal flow
+        // (instruction types 21/22).
+        if self.state.get_governed_wallet_config(from).ok().flatten().is_some() {
+            return Err(format!(
+                "Transfer from governed wallet {} requires multi-sig proposal (use type 21/22)",
+                from.to_base58()
+            ));
+        }
 
         let amount_bytes: [u8; 8] = ix.data[1..9]
             .try_into()
@@ -1756,6 +1769,180 @@ impl TxProcessor {
         };
 
         self.b_register_symbol(symbol, entry)?;
+        Ok(())
+    }
+
+    // ========================================================================
+    // GOVERNED WALLET MULTI-SIG TRANSFER SYSTEM (types 21/22)
+    // ========================================================================
+
+    /// System instruction type 21: Propose a governed transfer.
+    ///
+    /// The proposer (accounts[0]) must be an authorized signer for the governed
+    /// wallet (accounts[1]). Creates an on-chain proposal. If the governed
+    /// wallet's threshold is 1, auto-executes immediately.
+    ///
+    /// Instruction format:
+    ///   data[0]    = 21
+    ///   data[1..9] = amount in shells (u64 LE)
+    ///   accounts   = [proposer, governed_wallet, recipient]
+    fn system_propose_governed_transfer(&self, ix: &Instruction) -> Result<(), String> {
+        if ix.accounts.len() < 3 {
+            return Err("ProposeGovernedTransfer requires [proposer, source, recipient]".to_string());
+        }
+        if ix.data.len() < 9 {
+            return Err("ProposeGovernedTransfer: missing amount".to_string());
+        }
+
+        let proposer = &ix.accounts[0];
+        let source = &ix.accounts[1];
+        let recipient = &ix.accounts[2];
+
+        let amount = u64::from_le_bytes(
+            ix.data[1..9]
+                .try_into()
+                .map_err(|_| "Invalid amount encoding".to_string())?,
+        );
+
+        if amount == 0 {
+            return Err("ProposeGovernedTransfer: amount must be > 0".to_string());
+        }
+
+        // Load governed wallet config — source must be a governed wallet
+        let config = self
+            .state
+            .get_governed_wallet_config(source)
+            .map_err(|e| format!("Failed to load governed wallet config: {}", e))?
+            .ok_or_else(|| {
+                format!(
+                    "Account {} is not a governed wallet",
+                    source.to_base58()
+                )
+            })?;
+
+        // Proposer must be an authorized signer
+        if !config.is_authorized(proposer) {
+            return Err(format!(
+                "Proposer {} is not an authorized signer for governed wallet {}",
+                proposer.to_base58(),
+                config.label
+            ));
+        }
+
+        // Verify source has sufficient balance
+        let source_acct = self
+            .b_get_account(source)?
+            .ok_or_else(|| "Governed wallet account not found".to_string())?;
+        if source_acct.spendable < amount {
+            return Err(format!(
+                "Governed wallet has insufficient spendable balance: {} < {}",
+                source_acct.spendable, amount
+            ));
+        }
+
+        let threshold = config.threshold;
+
+        // If threshold is 1, the proposer's approval is sufficient — auto-execute
+        if threshold <= 1 {
+            return self.b_transfer(source, recipient, amount);
+        }
+
+        // Create proposal
+        let proposal_id = self
+            .state
+            .next_governed_proposal_id()
+            .map_err(|e| format!("Failed to get proposal ID: {}", e))?;
+
+        let proposal = crate::multisig::GovernedProposal {
+            id: proposal_id,
+            source: *source,
+            recipient: *recipient,
+            amount,
+            approvals: vec![*proposer],
+            threshold,
+            executed: false,
+        };
+
+        self.state
+            .set_governed_proposal(&proposal)
+            .map_err(|e| format!("Failed to store proposal: {}", e))?;
+
+        Ok(())
+    }
+
+    /// System instruction type 22: Approve a governed transfer proposal.
+    ///
+    /// The approver (accounts[0]) must be an authorized signer. When the
+    /// approval count reaches the threshold, the transfer auto-executes.
+    ///
+    /// Instruction format:
+    ///   data[0]    = 22
+    ///   data[1..9] = proposal_id (u64 LE)
+    ///   accounts   = [approver]
+    fn system_approve_governed_transfer(&self, ix: &Instruction) -> Result<(), String> {
+        if ix.accounts.is_empty() {
+            return Err("ApproveGovernedTransfer requires [approver]".to_string());
+        }
+        if ix.data.len() < 9 {
+            return Err("ApproveGovernedTransfer: missing proposal_id".to_string());
+        }
+
+        let approver = &ix.accounts[0];
+        let proposal_id = u64::from_le_bytes(
+            ix.data[1..9]
+                .try_into()
+                .map_err(|_| "Invalid proposal ID encoding".to_string())?,
+        );
+
+        // Load proposal
+        let mut proposal = self
+            .state
+            .get_governed_proposal(proposal_id)
+            .map_err(|e| format!("Failed to load proposal: {}", e))?
+            .ok_or_else(|| format!("Governed proposal {} not found", proposal_id))?;
+
+        if proposal.executed {
+            return Err(format!("Governed proposal {} already executed", proposal_id));
+        }
+
+        // Load config for the source wallet
+        let config = self
+            .state
+            .get_governed_wallet_config(&proposal.source)
+            .map_err(|e| format!("Failed to load governed wallet config: {}", e))?
+            .ok_or_else(|| "Source is no longer a governed wallet".to_string())?;
+
+        // Approver must be authorized
+        if !config.is_authorized(approver) {
+            return Err(format!(
+                "Approver {} is not authorized for this governed wallet",
+                approver.to_base58()
+            ));
+        }
+
+        // Prevent duplicate approval
+        if proposal.approvals.contains(approver) {
+            return Err(format!(
+                "Approver {} has already approved proposal {}",
+                approver.to_base58(),
+                proposal_id
+            ));
+        }
+
+        proposal.approvals.push(*approver);
+
+        // Check if threshold is met
+        if proposal.approvals.len() >= proposal.threshold as usize {
+            // Auto-execute the transfer
+            self.b_transfer(&proposal.source, &proposal.recipient, proposal.amount)?;
+            proposal.executed = true;
+        }
+
+        // Save updated proposal
+        self.state
+            .set_governed_proposal(&proposal)
+            .map_err(|e| format!("Failed to update proposal: {}", e))?;
+
         Ok(())
     }
 
@@ -5421,5 +5608,189 @@ mod tests {
         assert_eq!(cfg.fee_voters_percent, 10);
         assert_eq!(cfg.fee_treasury_percent, 10);
         assert_eq!(cfg.fee_community_percent, 10);
+    }
+
+    // ====================================================================
+    // GOVERNED WALLET MULTI-SIG TESTS
+    // ====================================================================
+
+    #[test]
+    fn test_ecosystem_grant_requires_multisig() {
+        // Standard transfer from a governed wallet must be rejected.
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let eco_kp = Keypair::generate();
+        let eco = eco_kp.pubkey();
+        let recipient = Pubkey([99u8; 32]);
+
+        // Fund the ecosystem wallet
+        let eco_acct = Account::new(Account::molt_to_shells(1000), Pubkey([0u8; 32]));
+        state.put_account(&eco, &eco_acct).unwrap();
+
+        // Configure as governed wallet (threshold=2, signers=[alice, eco])
+        let config = crate::multisig::GovernedWalletConfig::new(
+            2,
+            vec![alice, eco],
+            "ecosystem_partnerships",
+        );
+        state.set_governed_wallet_config(&eco, &config).unwrap();
+
+        // Standard transfer (type 0) from governed wallet → REJECTED
+        let tx = make_transfer_tx(&eco_kp, eco, recipient, 100, genesis_hash);
+        let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
+        assert!(
+            !result.success,
+            "Standard transfer from governed wallet should be rejected"
+        );
+        assert!(
+            result.error.as_ref().unwrap().contains("multi-sig proposal"),
+            "Error should mention multi-sig requirement, got: {}",
+            result.error.unwrap()
+        );
+
+        // Recipient should NOT have received anything
+        assert_eq!(state.get_balance(&recipient).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_governed_proposal_lifecycle() {
+        // Propose → approve → auto-execute lifecycle for governed wallet.
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let eco_kp = Keypair::generate();
+        let eco = eco_kp.pubkey();
+        let recipient = Pubkey([99u8; 32]);
+
+        // Fund participants
+        let fund = Account::molt_to_shells(1000);
+        state.put_account(&eco, &Account::new(fund, Pubkey([0u8; 32]))).unwrap();
+        state.put_account(&alice, &Account::new(fund, alice)).unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+
+        // Configure governed wallet (threshold=2, signers=[alice, bob, eco])
+        let config = crate::multisig::GovernedWalletConfig::new(
+            2,
+            vec![alice, bob, eco],
+            "ecosystem_partnerships",
+        );
+        state.set_governed_wallet_config(&eco, &config).unwrap();
+
+        let transfer_amount = Account::molt_to_shells(50);
+
+        // Step 1: Alice proposes a governed transfer (type 21)
+        let mut propose_data = vec![21u8];
+        propose_data.extend_from_slice(&transfer_amount.to_le_bytes());
+        let propose_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, eco, recipient],
+            data: propose_data,
+        };
+        let propose_tx = make_signed_tx(&alice_kp, propose_ix, genesis_hash);
+        let result = processor.process_transaction(&propose_tx, &Pubkey([42u8; 32]));
+        assert!(result.success, "Proposal should succeed: {:?}", result.error);
+
+        // Verify proposal exists but is NOT executed yet
+        let proposal = state.get_governed_proposal(1).unwrap().unwrap();
+        assert_eq!(proposal.approvals.len(), 1);
+        assert_eq!(proposal.approvals[0], alice);
+        assert!(!proposal.executed, "Proposal should not be executed with only 1 approval");
+        assert_eq!(state.get_balance(&recipient).unwrap(), 0, "Recipient should not have funds yet");
+
+        // Step 2: Bob approves (type 22) → reaches threshold → auto-executes
+        let mut approve_data = vec![22u8];
+        approve_data.extend_from_slice(&1u64.to_le_bytes()); // proposal_id = 1
+        let approve_ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data: approve_data,
+        };
+        let approve_tx = make_signed_tx(&bob_kp, approve_ix, genesis_hash);
+        let result = processor.process_transaction(&approve_tx, &Pubkey([42u8; 32]));
+        assert!(result.success, "Approval should succeed: {:?}", result.error);
+
+        // Verify proposal is now executed
+        let proposal = state.get_governed_proposal(1).unwrap().unwrap();
+        assert!(proposal.executed, "Proposal should be executed after meeting threshold");
+        assert_eq!(proposal.approvals.len(), 2);
+
+        // Verify transfer happened
+        assert_eq!(
+            state.get_balance(&recipient).unwrap(),
+            transfer_amount,
+            "Recipient should have received the transfer"
+        );
+    }
+
+    #[test]
+    fn test_reserve_pool_requires_supermajority() {
+        // Reserve pool with threshold=3 requires more approvals than ecosystem (threshold=2).
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let bob_kp = Keypair::generate();
+        let bob = bob_kp.pubkey();
+        let reserve_kp = Keypair::generate();
+        let reserve = reserve_kp.pubkey();
+        let recipient = Pubkey([88u8; 32]);
+
+        // Fund participants
+        let fund = Account::molt_to_shells(1000);
+        state.put_account(&reserve, &Account::new(fund, Pubkey([0u8; 32]))).unwrap();
+        state.put_account(&alice, &Account::new(fund, alice)).unwrap();
+        state.put_account(&bob, &Account::new(fund, bob)).unwrap();
+
+        // Configure reserve_pool as governed wallet (threshold=3 — supermajority)
+        let config = crate::multisig::GovernedWalletConfig::new(
+            3,
+            vec![alice, bob, reserve],
+            "reserve_pool",
+        );
+        state.set_governed_wallet_config(&reserve, &config).unwrap();
+
+        let transfer_amount = Account::molt_to_shells(10);
+
+        // Propose
+        let mut data = vec![21u8];
+        data.extend_from_slice(&transfer_amount.to_le_bytes());
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice, reserve, recipient],
+            data,
+        };
+        let tx = make_signed_tx(&alice_kp, ix, genesis_hash);
+        let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
+        assert!(result.success);
+
+        // First approval (Bob) — still not enough (2 of 3)
+        let mut data = vec![22u8];
+        data.extend_from_slice(&1u64.to_le_bytes());
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![bob],
+            data,
+        };
+        let tx = make_signed_tx(&bob_kp, ix, genesis_hash);
+        let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
+        assert!(result.success);
+
+        // Verify NOT executed yet (2 approvals, need 3)
+        let proposal = state.get_governed_proposal(1).unwrap().unwrap();
+        assert!(!proposal.executed, "Should NOT be executed with only 2/3 approvals");
+        assert_eq!(state.get_balance(&recipient).unwrap(), 0);
+
+        // Third approval (reserve keypair) → threshold met → auto-execute
+        let mut data = vec![22u8];
+        data.extend_from_slice(&1u64.to_le_bytes());
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![reserve],
+            data,
+        };
+        let tx = make_signed_tx(&reserve_kp, ix, genesis_hash);
+        let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
+        assert!(result.success, "Third approval should succeed: {:?}", result.error);
+
+        // Verify executed
+        let proposal = state.get_governed_proposal(1).unwrap().unwrap();
+        assert!(proposal.executed, "Should be executed with 3/3 approvals");
+        assert_eq!(state.get_balance(&recipient).unwrap(), transfer_amount);
     }
 }

@@ -1231,6 +1231,7 @@ async fn handle_rpc(
         "getMetrics" => handle_get_metrics(&state).await,
         "getTreasuryInfo" => handle_get_treasury_info(&state).await,
         "getGenesisAccounts" => handle_get_genesis_accounts(&state).await,
+        "getGovernedProposal" => handle_get_governed_proposal(&state, req.params).await,
         "getRecentBlockhash" => handle_get_recent_blockhash(&state).await,
         "health" => Ok(serde_json::json!({"status": "ok"})),
 
@@ -4203,6 +4204,51 @@ async fn handle_get_genesis_accounts(state: &RpcState) -> Result<serde_json::Val
     }
 
     Ok(serde_json::json!({ "accounts": result }))
+}
+
+/// Get a governed wallet proposal by ID.
+///
+/// Params: [proposal_id] (integer)
+async fn handle_get_governed_proposal(
+    state: &RpcState,
+    params: Option<serde_json::Value>,
+) -> Result<serde_json::Value, RpcError> {
+    let params = params.ok_or_else(|| RpcError {
+        code: -32602,
+        message: "Missing params: expected [proposal_id]".to_string(),
+    })?;
+
+    let proposal_id = params
+        .as_array()
+        .and_then(|a| a.first())
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| RpcError {
+            code: -32602,
+            message: "Invalid params: proposal_id must be a positive integer".to_string(),
+        })?;
+
+    let proposal = state
+        .state
+        .get_governed_proposal(proposal_id)
+        .map_err(|e| RpcError {
+            code: -32000,
+            message: format!("Database error: {}", e),
+        })?
+        .ok_or_else(|| RpcError {
+            code: -32001,
+            message: format!("Proposal {} not found", proposal_id),
+        })?;
+
+    Ok(serde_json::json!({
+        "id": proposal.id,
+        "source": proposal.source.to_base58(),
+        "recipient": proposal.recipient.to_base58(),
+        "amount": proposal.amount,
+        "amount_molt": proposal.amount / 1_000_000_000,
+        "approvals": proposal.approvals.iter().map(|p| p.to_base58()).collect::<Vec<_>>(),
+        "threshold": proposal.threshold,
+        "executed": proposal.executed,
+    }))
 }
 
 // ============================================================================

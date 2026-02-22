@@ -4074,6 +4074,109 @@ impl StateStore {
         Ok(Some((cliff_end, vest_end, total_amount)))
     }
 
+    // ========================================================================
+    // GOVERNED WALLET MULTI-SIG SYSTEM
+    // ========================================================================
+
+    /// Store a governed wallet configuration (multi-sig config for distribution wallets).
+    /// Key: `governed_wallet:<base58_pubkey>` in CF_STATS.
+    pub fn set_governed_wallet_config(
+        &self,
+        wallet_pubkey: &Pubkey,
+        config: &crate::multisig::GovernedWalletConfig,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!("governed_wallet:{}", wallet_pubkey.to_base58());
+        let data = serde_json::to_vec(config)
+            .map_err(|e| format!("Failed to serialize governed wallet config: {}", e))?;
+        self.db
+            .put_cf(&cf, key.as_bytes(), data)
+            .map_err(|e| format!("Failed to store governed wallet config: {}", e))
+    }
+
+    /// Load governed wallet configuration. Returns None if wallet is not governed.
+    pub fn get_governed_wallet_config(
+        &self,
+        wallet_pubkey: &Pubkey,
+    ) -> Result<Option<crate::multisig::GovernedWalletConfig>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!("governed_wallet:{}", wallet_pubkey.to_base58());
+        match self.db.get_cf(&cf, key.as_bytes()) {
+            Ok(Some(data)) => {
+                let config: crate::multisig::GovernedWalletConfig =
+                    serde_json::from_slice(&data)
+                        .map_err(|e| format!("Failed to deserialize governed config: {}", e))?;
+                Ok(Some(config))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(format!("DB error loading governed wallet config: {}", e)),
+        }
+    }
+
+    /// Get the next governed proposal ID (auto-incrementing counter).
+    pub fn next_governed_proposal_id(&self) -> Result<u64, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let current = match self.db.get_cf(&cf, b"governed_proposal_counter") {
+            Ok(Some(data)) if data.len() == 8 => {
+                u64::from_le_bytes(data[..8].try_into().unwrap())
+            }
+            _ => 0,
+        };
+        let next = current + 1;
+        self.db
+            .put_cf(&cf, b"governed_proposal_counter", next.to_le_bytes())
+            .map_err(|e| format!("Failed to update proposal counter: {}", e))?;
+        Ok(next)
+    }
+
+    /// Store a governed transfer proposal.
+    pub fn set_governed_proposal(
+        &self,
+        proposal: &crate::multisig::GovernedProposal,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!("governed_proposal:{}", proposal.id);
+        let data = serde_json::to_vec(proposal)
+            .map_err(|e| format!("Failed to serialize governed proposal: {}", e))?;
+        self.db
+            .put_cf(&cf, key.as_bytes(), data)
+            .map_err(|e| format!("Failed to store governed proposal: {}", e))
+    }
+
+    /// Load a governed transfer proposal by ID.
+    pub fn get_governed_proposal(
+        &self,
+        id: u64,
+    ) -> Result<Option<crate::multisig::GovernedProposal>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        let key = format!("governed_proposal:{}", id);
+        match self.db.get_cf(&cf, key.as_bytes()) {
+            Ok(Some(data)) => {
+                let proposal: crate::multisig::GovernedProposal =
+                    serde_json::from_slice(&data)
+                        .map_err(|e| format!("Failed to deserialize proposal: {}", e))?;
+                Ok(Some(proposal))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(format!("DB error loading governed proposal: {}", e)),
+        }
+    }
+
     /// Store rent parameters
     /// PHASE1-FIX S-6: Atomic WriteBatch for both rent parameters.
     pub fn set_rent_params(
