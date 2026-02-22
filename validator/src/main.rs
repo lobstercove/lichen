@@ -2642,6 +2642,40 @@ async fn apply_block_effects(
         );
     }
 
+    // ── Founding moltys periodic vesting unlock ──
+    // Check if any locked founding moltys should be unlocked based on block timestamp.
+    // Schedule: 6-month cliff, then 18-month linear vest to month 24.
+    if let Ok(Some((cliff_end, vest_end, total_amount))) = state.get_founding_vesting_params() {
+        let block_time = block.header.timestamp;
+        if block_time >= cliff_end {
+            if let Ok(Some(fm_pubkey)) = state.get_founding_moltys_pubkey() {
+                if let Ok(Some(mut fm_acct)) = state.get_account(&fm_pubkey) {
+                    let target_unlocked =
+                        moltchain_core::consensus::founding_vesting_unlocked(
+                            total_amount, cliff_end, vest_end, block_time,
+                        );
+                    let already_unlocked = total_amount.saturating_sub(fm_acct.locked);
+                    if target_unlocked > already_unlocked {
+                        let new_unlock = target_unlocked - already_unlocked;
+                        fm_acct.spendable = fm_acct.spendable.saturating_add(new_unlock);
+                        fm_acct.locked = fm_acct.locked.saturating_sub(new_unlock);
+                        if let Err(e) = state.put_account(&fm_pubkey, &fm_acct) {
+                            warn!("⚠️  Failed to update founding moltys vesting: {}", e);
+                        } else if new_unlock > 1_000_000_000 {
+                            // Only log for significant unlocks (> 1 MOLT)
+                            info!(
+                                "🔓 Founding moltys vest: unlocked {:.2} MOLT (total {:.2}M / {:.2}M)",
+                                new_unlock as f64 / 1_000_000_000.0,
+                                target_unlocked as f64 / 1_000_000_000_000_000_000.0,
+                                total_amount as f64 / 1_000_000_000_000_000_000.0,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // record_block_activity is called in emit_program_and_nft_events, not here
 }
 
@@ -5466,7 +5500,16 @@ async fn run_validator() {
                 // Create distribution account
                 let mut acct = Account::new(0, SYSTEM_ACCOUNT_OWNER);
                 acct.shells = amount_shells;
-                acct.spendable = amount_shells;
+
+                // Founding moltys: 6-month cliff + 18-month linear vest.
+                // Entire allocation starts locked (spendable = 0).
+                if dw.role == "founding_moltys" {
+                    acct.spendable = 0;
+                    acct.locked = amount_shells;
+                } else {
+                    acct.spendable = amount_shells;
+                }
+
                 if let Err(e) = state.put_account(&dw.pubkey, &acct) {
                     error!("Failed to create {} account: {e}", dw.role);
                 }
@@ -5482,6 +5525,14 @@ async fn run_validator() {
                     }
                     info!(
                         "  ✓ {} ({}%): {} MOLT → {} [TREASURY]",
+                        dw.role,
+                        dw.percentage,
+                        dw.amount_molt,
+                        dw.pubkey.to_base58()
+                    );
+                } else if dw.role == "founding_moltys" {
+                    info!(
+                        "  ✓ {} ({}%): {} MOLT → {} [LOCKED — 6mo cliff + 18mo vest]",
                         dw.role,
                         dw.percentage,
                         dw.amount_molt,
@@ -5694,6 +5745,29 @@ async fn run_validator() {
         }
         info!("✓ Genesis block created and stored (slot 0)");
         info!("  Genesis hash: {}", genesis_block.hash());
+
+        // ── Store founding moltys vesting schedule ──
+        // Uses genesis block timestamp as the anchor for cliff/vest end times.
+        {
+            use moltchain_core::consensus::{FOUNDING_CLIFF_SECONDS, FOUNDING_VEST_TOTAL_SECONDS};
+            if let Some(fm_dw) = genesis_wallet
+                .distribution_wallets
+                .as_ref()
+                .and_then(|ws| ws.iter().find(|dw| dw.role == "founding_moltys"))
+            {
+                let cliff_end = genesis_timestamp + FOUNDING_CLIFF_SECONDS;
+                let vest_end = genesis_timestamp + FOUNDING_VEST_TOTAL_SECONDS;
+                let total_shells = Account::molt_to_shells(fm_dw.amount_molt);
+                if let Err(e) = state.set_founding_vesting_params(cliff_end, vest_end, total_shells) {
+                    error!("Failed to store founding vesting params: {e}");
+                } else {
+                    info!(
+                        "  ✓ Founding moltys vesting: cliff={}, vest_end={}, total={}M MOLT",
+                        cliff_end, vest_end, fm_dw.amount_molt / 1_000_000
+                    );
+                }
+            }
+        }
 
         // Auto-deploy all compiled contracts from contracts/ directory
         genesis_auto_deploy(&state, &genesis_pubkey, "FIRST-BOOT:");

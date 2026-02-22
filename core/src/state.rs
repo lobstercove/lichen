@@ -4014,6 +4014,66 @@ impl StateStore {
         self.get_wallet_pubkey("reserve_pool")
     }
 
+    /// Store founding moltys vesting parameters (absolute Unix timestamps + total amount).
+    ///
+    /// `cliff_end`: Unix timestamp when the 6-month cliff ends (first unlock).
+    /// `vest_end`: Unix timestamp when vesting is fully complete (month 24).
+    /// `total_amount_shells`: Total founding moltys allocation in shells.
+    pub fn set_founding_vesting_params(
+        &self,
+        cliff_end: u64,
+        vest_end: u64,
+        total_amount_shells: u64,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+
+        let mut batch = rocksdb::WriteBatch::default();
+        batch.put_cf(&cf, b"founding_vest_cliff_end", cliff_end.to_le_bytes());
+        batch.put_cf(&cf, b"founding_vest_end", vest_end.to_le_bytes());
+        batch.put_cf(
+            &cf,
+            b"founding_vest_total_amount",
+            total_amount_shells.to_le_bytes(),
+        );
+
+        self.db
+            .write(batch)
+            .map_err(|e| format!("Failed to store founding vesting params: {}", e))
+    }
+
+    /// Load founding moltys vesting parameters.
+    /// Returns `Ok(Some((cliff_end, vest_end, total_amount_shells)))` if set.
+    pub fn get_founding_vesting_params(&self) -> Result<Option<(u64, u64, u64)>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+
+        let cliff_end = match self.db.get_cf(&cf, b"founding_vest_cliff_end") {
+            Ok(Some(data)) if data.len() == 8 => {
+                u64::from_le_bytes(data[..8].try_into().unwrap())
+            }
+            _ => return Ok(None),
+        };
+        let vest_end = match self.db.get_cf(&cf, b"founding_vest_end") {
+            Ok(Some(data)) if data.len() == 8 => {
+                u64::from_le_bytes(data[..8].try_into().unwrap())
+            }
+            _ => return Ok(None),
+        };
+        let total_amount = match self.db.get_cf(&cf, b"founding_vest_total_amount") {
+            Ok(Some(data)) if data.len() == 8 => {
+                u64::from_le_bytes(data[..8].try_into().unwrap())
+            }
+            _ => return Ok(None),
+        };
+
+        Ok(Some((cliff_end, vest_end, total_amount)))
+    }
+
     /// Store rent parameters
     /// PHASE1-FIX S-6: Atomic WriteBatch for both rent parameters.
     pub fn set_rent_params(

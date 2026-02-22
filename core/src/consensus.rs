@@ -45,6 +45,50 @@ pub const SLOTS_PER_YEAR: u64 = 78_840_000;
 /// Year 0: 100%, Year 1: 80%, Year 5: 32.8%, Year 10: 10.7%, Year 50: ~0%.
 pub const ANNUAL_REWARD_DECAY_BPS: u64 = 2000;
 
+// ============================================================================
+// FOUNDING MOLTYS VESTING
+// ============================================================================
+
+/// Founding moltys cliff period: 6 months in seconds (6 × 30 × 86400).
+/// No tokens unlock until this duration has elapsed since genesis.
+pub const FOUNDING_CLIFF_SECONDS: u64 = 6 * 30 * 24 * 3600; // 15,552,000
+
+/// Founding moltys total vest duration: 24 months in seconds (24 × 30 × 86400).
+/// The linear vest runs from month 6 to month 24 (18 months of linear unlock).
+pub const FOUNDING_VEST_TOTAL_SECONDS: u64 = 24 * 30 * 24 * 3600; // 62,208,000
+
+/// Compute the cumulative amount of founding moltys that should be unlocked
+/// at `current_time` (Unix seconds).
+///
+/// Schedule: 6-month cliff, then 18-month linear vest (to month 24).
+///   - Before cliff_end: 0
+///   - Between cliff_end and vest_end: linear proportion
+///   - At or after vest_end: total_amount (fully vested)
+///
+/// `cliff_end` and `vest_end` are absolute Unix timestamps computed at genesis:
+///   cliff_end = genesis_time + FOUNDING_CLIFF_SECONDS
+///   vest_end  = genesis_time + FOUNDING_VEST_TOTAL_SECONDS
+pub fn founding_vesting_unlocked(
+    total_amount: u64,
+    cliff_end: u64,
+    vest_end: u64,
+    current_time: u64,
+) -> u64 {
+    if current_time < cliff_end {
+        return 0;
+    }
+    if current_time >= vest_end {
+        return total_amount;
+    }
+    let linear_period = vest_end - cliff_end;
+    if linear_period == 0 {
+        return total_amount;
+    }
+    let elapsed = current_time - cliff_end;
+    // Use u128 to avoid overflow on large amounts × elapsed
+    (total_amount as u128 * elapsed as u128 / linear_period as u128) as u64
+}
+
 /// Compute the decayed block reward for a given slot.
 ///
 /// Applies compound 20% annual decay: reward_year_n = base × (80/100)^n.
@@ -5328,5 +5372,117 @@ mod tests {
 
         assert_eq!(liquid, fee_share, "Fully vested: 100% of fee share should be liquid");
         assert_eq!(debt_payment, 0, "Fully vested: no debt repayment");
+    }
+
+    // ============================================================
+    // Founding moltys vesting tests
+    // ============================================================
+
+    #[test]
+    fn test_founding_moltys_locked_at_genesis() {
+        // At genesis (time 0), no tokens should be unlocked.
+        let total = 100_000_000 * 1_000_000_000u64; // 100M MOLT in shells
+        let genesis_time = 1_700_000_000u64; // arbitrary genesis timestamp
+        let cliff_end = genesis_time + FOUNDING_CLIFF_SECONDS;
+        let vest_end = genesis_time + FOUNDING_VEST_TOTAL_SECONDS;
+
+        // Right at genesis: 0 unlocked
+        let unlocked = founding_vesting_unlocked(total, cliff_end, vest_end, genesis_time);
+        assert_eq!(unlocked, 0, "At genesis, no founding moltys should be unlocked");
+
+        // 1 second after genesis: still 0 (within cliff)
+        let unlocked = founding_vesting_unlocked(total, cliff_end, vest_end, genesis_time + 1);
+        assert_eq!(unlocked, 0, "During cliff period, no tokens unlock");
+    }
+
+    #[test]
+    fn test_founding_moltys_cliff_not_reached() {
+        // No tokens unlock before the 6-month cliff ends.
+        let total = 100_000_000 * 1_000_000_000u64;
+        let genesis_time = 1_700_000_000u64;
+        let cliff_end = genesis_time + FOUNDING_CLIFF_SECONDS;
+        let vest_end = genesis_time + FOUNDING_VEST_TOTAL_SECONDS;
+
+        // 1 second before cliff ends: still 0
+        let unlocked =
+            founding_vesting_unlocked(total, cliff_end, vest_end, cliff_end - 1);
+        assert_eq!(unlocked, 0, "1 second before cliff: no tokens unlock");
+
+        // Halfway through cliff: still 0
+        let halfway = genesis_time + FOUNDING_CLIFF_SECONDS / 2;
+        let unlocked = founding_vesting_unlocked(total, cliff_end, vest_end, halfway);
+        assert_eq!(unlocked, 0, "Halfway through cliff: no tokens unlock");
+    }
+
+    #[test]
+    fn test_founding_moltys_partial_vest() {
+        // After cliff, tokens unlock linearly over 18 months.
+        let total = 100_000_000 * 1_000_000_000u64; // 100M MOLT
+        let genesis_time = 1_700_000_000u64;
+        let cliff_end = genesis_time + FOUNDING_CLIFF_SECONDS;
+        let vest_end = genesis_time + FOUNDING_VEST_TOTAL_SECONDS;
+
+        // Right at cliff end: 0% of linear period elapsed → 0 unlocked
+        let unlocked = founding_vesting_unlocked(total, cliff_end, vest_end, cliff_end);
+        assert_eq!(unlocked, 0, "At cliff end, linear period hasn't started yielding");
+
+        // 1 second after cliff: tiny amount unlocked
+        let unlocked = founding_vesting_unlocked(total, cliff_end, vest_end, cliff_end + 1);
+        assert!(unlocked > 0, "1 second after cliff, some tokens should unlock");
+        assert!(unlocked < total / 1_000, "1 second after cliff: unlocked should be tiny");
+
+        // Halfway through linear period (9 months after cliff = 15 months total)
+        let linear_period = vest_end - cliff_end; // 18 months in seconds
+        let halfway_linear = cliff_end + linear_period / 2;
+        let unlocked = founding_vesting_unlocked(total, cliff_end, vest_end, halfway_linear);
+        // Should be approximately 50% of total
+        let expected_half = total / 2;
+        let tolerance = total / 1000; // 0.1% tolerance for integer rounding
+        assert!(
+            unlocked >= expected_half - tolerance && unlocked <= expected_half + tolerance,
+            "Halfway through linear vest: expected ~{} but got {}",
+            expected_half,
+            unlocked
+        );
+
+        // 3/4 through linear period (13.5 months after cliff)
+        let three_quarter = cliff_end + linear_period * 3 / 4;
+        let unlocked = founding_vesting_unlocked(total, cliff_end, vest_end, three_quarter);
+        let expected_75 = total * 3 / 4;
+        assert!(
+            unlocked >= expected_75 - tolerance && unlocked <= expected_75 + tolerance,
+            "75% through linear vest: expected ~{} but got {}",
+            expected_75,
+            unlocked
+        );
+    }
+
+    #[test]
+    fn test_founding_moltys_fully_vested() {
+        // After 24 months total, 100% should be unlocked.
+        let total = 100_000_000 * 1_000_000_000u64;
+        let genesis_time = 1_700_000_000u64;
+        let cliff_end = genesis_time + FOUNDING_CLIFF_SECONDS;
+        let vest_end = genesis_time + FOUNDING_VEST_TOTAL_SECONDS;
+
+        // Exactly at vest_end: fully vested
+        let unlocked = founding_vesting_unlocked(total, cliff_end, vest_end, vest_end);
+        assert_eq!(unlocked, total, "At vest end, 100% should be unlocked");
+
+        // Well past vest_end (10 years later)
+        let unlocked =
+            founding_vesting_unlocked(total, cliff_end, vest_end, vest_end + 10 * 365 * 86400);
+        assert_eq!(unlocked, total, "Long after vest end, still 100%");
+
+        // 1 second before vest_end: almost fully vested but not quite
+        let unlocked = founding_vesting_unlocked(total, cliff_end, vest_end, vest_end - 1);
+        assert!(
+            unlocked < total,
+            "1 second before vest end: should be slightly less than total"
+        );
+        assert!(
+            unlocked > total * 99 / 100,
+            "1 second before vest end: should be >99% vested"
+        );
     }
 }
