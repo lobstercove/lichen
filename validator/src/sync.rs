@@ -78,14 +78,20 @@ impl SyncManager {
         let slot = block.header.slot;
         let mut pending = self.pending_blocks.lock().await;
 
-        // Memory protection: if too many pending blocks, drop oldest
+        // Memory protection: if too many pending blocks, drop NEWEST (highest slot).
+        // Gap-filling blocks (lowest slots) are the ones we need most to reconnect
+        // the chain. Dropping them creates an unrecoverable hole. Newer blocks can
+        // be re-fetched once we catch up.
         if pending.len() >= MAX_PENDING_BLOCKS {
-            if let Some(oldest_slot) = pending.keys().min().copied() {
-                pending.remove(&oldest_slot);
-                warn!(
-                    "⚠️  Dropped old pending block {} (memory limit)",
-                    oldest_slot
-                );
+            if let Some(newest_slot) = pending.keys().max().copied() {
+                // Don't evict the block we're about to insert
+                if newest_slot != slot {
+                    pending.remove(&newest_slot);
+                    warn!(
+                        "⚠️  Dropped newest pending block {} (memory limit, keeping gap-fillers)",
+                        newest_slot
+                    );
+                }
             }
         }
 
@@ -140,6 +146,32 @@ impl SyncManager {
                 *ts = Instant::now();
             }
         }
+    }
+
+    /// Force-decay `highest_seen_slot` to current tip, ignoring the timestamp.
+    /// Used by the bounded freeze guard to break out of the death spiral when
+    /// the node has been frozen for too long.
+    pub async fn force_decay(&self, current_tip: u64) {
+        let mut highest = self.highest_seen_slot.lock().await;
+        if *highest > current_tip {
+            let old = *highest;
+            *highest = current_tip;
+            warn!(
+                "📉 Force-decayed highest_seen from {} to {} (freeze timeout)",
+                old, current_tip
+            );
+            let mut ts = self.highest_seen_updated_at.lock().await;
+            *ts = Instant::now();
+        }
+    }
+
+    /// Returns true if the sync manager has pending blocks or is actively
+    /// syncing. Used by the watchdog to avoid killing a node that is alive
+    /// but behind on the chain.
+    pub async fn is_actively_receiving(&self) -> bool {
+        let has_pending = !self.pending_blocks.lock().await.is_empty();
+        let is_syncing = *self.is_syncing.lock().await;
+        has_pending || is_syncing
     }
 
     /// Check if we need to start syncing (returns next batch to sync)
@@ -561,5 +593,65 @@ mod tests {
         }
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0], (0, 99));
+    }
+
+    /// Helper: create a minimal test block for the given slot
+    fn test_block(slot: u64) -> Block {
+        use moltchain_core::Hash;
+        Block::new(slot, Hash::default(), Hash::default(), [0u8; 32], vec![])
+    }
+
+    /// STABILITY-FIX: Verify pending block eviction drops NEWEST, not oldest.
+    /// Gap-filling blocks (lowest slots) must be preserved because they are
+    /// needed to reconnect the chain.
+    #[tokio::test]
+    async fn test_pending_eviction_drops_newest() {
+        let sm = SyncManager::new();
+        // Fill beyond MAX_PENDING_BLOCKS by adding blocks 0..=MAX_PENDING_BLOCKS
+        for slot in 0..=(MAX_PENDING_BLOCKS as u64) {
+            sm.add_pending_block(test_block(slot)).await;
+        }
+        let pending = sm.pending_blocks.lock().await;
+        // Should have MAX_PENDING_BLOCKS entries (one was evicted)
+        assert_eq!(pending.len(), MAX_PENDING_BLOCKS);
+        // The lowest slot (0) should still be present (gap-filler preserved)
+        assert!(pending.contains_key(&0), "Lowest slot should be preserved");
+    }
+
+    /// STABILITY-FIX: force_decay should reset highest_seen regardless of timestamp
+    #[tokio::test]
+    async fn test_force_decay() {
+        let sm = SyncManager::new();
+        sm.note_seen(500).await;
+        assert_eq!(sm.get_highest_seen().await, 500);
+
+        // force_decay should work even if highest_seen was just updated
+        sm.force_decay(100).await;
+        assert_eq!(sm.get_highest_seen().await, 100);
+
+        // Should be idempotent when already at tip
+        sm.force_decay(100).await;
+        assert_eq!(sm.get_highest_seen().await, 100);
+    }
+
+    /// STABILITY-FIX: is_actively_receiving should reflect sync/pending state
+    #[tokio::test]
+    async fn test_is_actively_receiving() {
+        let sm = SyncManager::new();
+        // No pending blocks, not syncing → not actively receiving
+        assert!(!sm.is_actively_receiving().await);
+
+        // Add a pending block → actively receiving
+        sm.add_pending_block(test_block(10)).await;
+        assert!(sm.is_actively_receiving().await);
+
+        // Clear pending, start sync → still actively receiving
+        sm.pending_blocks.lock().await.clear();
+        sm.start_sync(1, 100).await;
+        assert!(sm.is_actively_receiving().await);
+
+        // Complete sync, no pending → not actively receiving
+        sm.complete_sync().await;
+        assert!(!sm.is_actively_receiving().await);
     }
 }
