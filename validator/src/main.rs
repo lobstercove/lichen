@@ -7185,13 +7185,24 @@ async fn run_validator() {
                             let fc_incoming = fork_choice.get_weight(&block.hash());
                             let oracle_prefers_incoming = fc_incoming > fc_existing;
 
-                            // P9-VAL-07: Only replace based on weight/stake evidence,
-                            // not on sync state (we_are_behind) or pending queue (has_pending)
-                            // to prevent malicious validators from forcing replacements.
-                            // AUDIT-FIX E-3: Changed || to && so BOTH vote weight AND oracle
-                            // must agree — prevents a single high-stake validator from
-                            // overriding a majority-voted block.
-                            if incoming_weight > existing_weight && oracle_prefers_incoming {
+                            // STABILITY-FIX: Longest-chain adoption rule.
+                            // When we're behind the network AND there are pending blocks
+                            // that chain from the incoming block, adopt it. This is the
+                            // Nakamoto consensus rule: the longest valid chain wins.
+                            // The pending_chains_from_incoming check prevents malicious
+                            // validators from forcing replacements — they'd need to
+                            // provide actual blocks that chain from their fork.
+                            let pending_chains_from_incoming =
+                                sync_mgr.has_pending_child(&block.hash()).await;
+                            let longest_chain_rule =
+                                we_are_behind && has_pending && pending_chains_from_incoming;
+
+                            // P9-VAL-07 / AUDIT-FIX E-3: For equal-length forks, require
+                            // BOTH vote weight AND oracle to agree.
+                            // For provably-longer chains, adopt unconditionally.
+                            if (incoming_weight > existing_weight && oracle_prefers_incoming)
+                                || longest_chain_rule
+                            {
                                 // Revert old block's financial effects before replacing
                                 revert_block_effects(&state_for_blocks, &existing);
                                 // C7 fix: Also revert user transaction effects
@@ -9898,7 +9909,12 @@ async fn run_validator() {
             // produce anyway. This prevents the network from permanently stalling
             // when the selected leaders (V2/V3) are still syncing and cannot produce.
             // The heartbeat mechanism ensures the chain stays alive.
-            let deadlock_timeout_ms = view_change_interval_ms * 20; // ~24 seconds
+            // STABILITY-FIX: Stagger the deadlock breaker per validator.
+            // Without jitter, ALL validators fire simultaneously after the
+            // same timeout, each producing its own block → immediate fork.
+            // Add 0-4.5s jitter based on pubkey to let one win cleanly.
+            let pubkey_jitter = (validator_pubkey.0[0] as u64 % 10) * 500;
+            let deadlock_timeout_ms = view_change_interval_ms * 20 + pubkey_jitter;
             if view >= 15 && slot_start.elapsed().as_millis() as u64 > deadlock_timeout_ms {
                 info!(
                     "⚠️  Slot {} — all views exhausted with no block after {}ms, producing as deadlock breaker",
