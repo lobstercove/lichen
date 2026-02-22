@@ -3072,12 +3072,18 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
         .map(|p| p.0)
         .unwrap_or([0u8; 32]);
 
-    // DAO: governance_token = MOLT address, treasury = deployer (initially),
+    // DAO: governance_token = MOLT address, treasury = community_treasury wallet,
     // min_proposal_threshold = 10,000 MOLT in shells (10_000 * 1e9)
+    let dao_treasury = state
+        .get_community_treasury_pubkey()
+        .ok()
+        .flatten()
+        .map(|pk| pk.0)
+        .unwrap_or(admin); // Fallback to deployer if community_treasury not set yet
     let dao_threshold: u64 = 10_000_000_000_000; // 10,000 MOLT
     let mut dao_args = Vec::with_capacity(72);
     dao_args.extend_from_slice(&molt_addr); // governance_token (32B)
-    dao_args.extend_from_slice(&admin); // treasury (32B = deployer)
+    dao_args.extend_from_slice(&dao_treasury); // treasury (32B = community_treasury wallet)
     dao_args.extend_from_slice(&dao_threshold.to_le_bytes()); // min_proposal_threshold (8B)
 
     // MoltSwap: token_a = MOLT, token_b = MUSD

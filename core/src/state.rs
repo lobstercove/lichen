@@ -6260,4 +6260,31 @@ mod tests {
         let total: u64 = loaded.iter().map(|(_, _, amt, _)| amt).sum();
         assert_eq!(total, 1_000_000_000, "All 6 wallets must sum to 1B MOLT");
     }
+
+    #[test]
+    fn test_dao_treasury_wired_to_community_treasury() {
+        // Verify that community_treasury pubkey is fetchable and distinct,
+        // confirming it can be used as the DAO treasury address at genesis.
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let community_pk = Pubkey([0xCC; 32]);
+        let validator_rewards_pk = Pubkey([0xAA; 32]);
+
+        // Store genesis accounts with community_treasury (4th element is percentage u8)
+        let accounts: Vec<(String, Pubkey, u64, u8)> = vec![
+            ("validator_rewards".to_string(), validator_rewards_pk, 100_000_000, 10),
+            ("community_treasury".to_string(), community_pk, 250_000_000, 25),
+        ];
+        state.set_genesis_accounts(&accounts).unwrap();
+        state.set_treasury_pubkey(&validator_rewards_pk).unwrap();
+
+        // DAO should use community_treasury, NOT validator_rewards
+        let dao_treasury = state
+            .get_community_treasury_pubkey()
+            .unwrap()
+            .expect("community_treasury must be set");
+        assert_eq!(dao_treasury, community_pk, "DAO treasury must be community_treasury wallet");
+        assert_ne!(dao_treasury, validator_rewards_pk, "DAO treasury must NOT be validator_rewards");
+    }
 }
