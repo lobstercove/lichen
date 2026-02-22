@@ -3967,6 +3967,13 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
             }
         }
 
+        // Collect all attestation storage writes to also update embedded ContractAccount
+        struct AttestEntry {
+            key: Vec<u8>,
+            value: Vec<u8>,
+        }
+        let mut attest_entries: Vec<AttestEntry> = Vec::new();
+
         let mut attest_count: u64 = 0;
         let now_ts: u64 = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -4005,6 +4012,7 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
                 if let Err(_) = state.put_contract_storage(moltyid_pk, &att_key, &att_data) {
                     continue;
                 }
+                attest_entries.push(AttestEntry { key: att_key, value: att_data });
 
                 // Build attestation count key: "attest_count_{target_hex}_{skill_hash_hex}"
                 let mut count_key = Vec::with_capacity(13 + 64 + 1 + 32);
@@ -4026,17 +4034,33 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
                         }
                     })
                     .unwrap_or(0);
+                let new_count = (existing + 1).to_le_bytes().to_vec();
                 let _ = state.put_contract_storage(
                     moltyid_pk,
                     &count_key,
-                    &(existing + 1).to_le_bytes(),
+                    &new_count,
                 );
+                attest_entries.push(AttestEntry { key: count_key, value: new_count });
 
                 attest_count += 1;
             }
         }
 
+        // Also update embedded ContractAccount storage so RPC reads see it
         if attest_count > 0 {
+            if let Ok(Some(yid_account)) = state.get_account(moltyid_pk) {
+                if let Ok(mut yid_contract) = serde_json::from_slice::<ContractAccount>(&yid_account.data) {
+                    for entry in &attest_entries {
+                        yid_contract.set_storage(entry.key.clone(), entry.value.clone());
+                    }
+                    if let Ok(data) = serde_json::to_vec(&yid_contract) {
+                        let mut updated = yid_account;
+                        updated.data = data;
+                        let _ = state.put_account(moltyid_pk, &updated);
+                    }
+                }
+            }
+
             info!(
                 "  ATTEST {} genesis cross-attestations across {} system identities",
                 attest_count,
@@ -4514,6 +4538,9 @@ fn genesis_seed_margin_prices(state: &StateStore, deployer_pubkey: &Pubkey) {
         .unwrap_or_default()
         .as_secs();
 
+    // Collect all storage writes to also update embedded ContractAccount
+    let mut margin_entries: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+
     for (pair_id, price_f64) in &pair_prices {
         let price_scaled = (*price_f64 * PRICE_SCALE as f64) as u64;
 
@@ -4523,6 +4550,7 @@ fn genesis_seed_margin_prices(state: &StateStore, deployer_pubkey: &Pubkey) {
         mark_val.extend_from_slice(&price_scaled.to_le_bytes());
         mark_val.extend_from_slice(&now_secs.to_le_bytes());
         let _ = state.put_contract_storage(&margin_pk, mark_key.as_bytes(), &mark_val);
+        margin_entries.push((mark_key.into_bytes(), mark_val));
 
         // Index price: mrg_idx_{pair_id} → [price 8B LE][timestamp 8B LE]
         let idx_key = format!("mrg_idx_{}", pair_id);
@@ -4530,19 +4558,36 @@ fn genesis_seed_margin_prices(state: &StateStore, deployer_pubkey: &Pubkey) {
         idx_val.extend_from_slice(&price_scaled.to_le_bytes());
         idx_val.extend_from_slice(&now_secs.to_le_bytes());
         let _ = state.put_contract_storage(&margin_pk, idx_key.as_bytes(), &idx_val);
+        margin_entries.push((idx_key.into_bytes(), idx_val));
 
         // Enable margin trading: mrg_ena_{pair_id} → [1u64 LE]
         let ena_key = format!("mrg_ena_{}", pair_id);
+        let ena_val = 1u64.to_le_bytes().to_vec();
         let _ = state.put_contract_storage(
             &margin_pk,
             ena_key.as_bytes(),
-            &1u64.to_le_bytes(),
+            &ena_val,
         );
+        margin_entries.push((ena_key.into_bytes(), ena_val));
 
         info!(
             "  MARGIN seeded: pair {} → price {:.4}, mark+index+enabled",
             pair_id, price_f64
         );
+    }
+
+    // Also update embedded ContractAccount storage so RPC reads see it
+    if let Ok(Some(margin_account)) = state.get_account(&margin_pk) {
+        if let Ok(mut margin_contract) = serde_json::from_slice::<ContractAccount>(&margin_account.data) {
+            for (key, value) in &margin_entries {
+                margin_contract.set_storage(key.clone(), value.clone());
+            }
+            if let Ok(data) = serde_json::to_vec(&margin_contract) {
+                let mut updated = margin_account;
+                updated.data = data;
+                let _ = state.put_account(&margin_pk, &updated);
+            }
+        }
     }
 }
 

@@ -643,9 +643,10 @@ pub extern "C" fn call() {
                 moltchain_sdk::set_return_data(&u64_to_bytes(r as u64));
             }
         }
-        // 2: register_route(caller[32], token_in[32], token_out[32], type, pool_id, sec_id, split_pct)
+        // 2: register_route(caller[32], token_in[32], token_out[32], type[1], pool_id[8], sec_id[8], split_pct[1])
+        // Minimum: 1 + 32 + 32 + 32 + 1 + 8 + 8 = 114 (split_pct optional at byte 114)
         2 => {
-            if args.len() >= 122 {
+            if args.len() >= 114 {
                 let rtype = args[97];
                 let pool_id = bytes_to_u64(&args[98..106]);
                 let sec_id = bytes_to_u64(&args[106..114]);
