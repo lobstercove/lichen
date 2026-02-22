@@ -1271,104 +1271,138 @@ body {
 
 /* ─── DEX Operations Monitor ──────────────────────────────── */
 .dex-stats-bar {
-    display: flex; gap: 0.5rem; flex-wrap: wrap;
-    margin-bottom: 1rem;
+    display: flex; gap: 0.75rem; flex-wrap: wrap;
+    margin-bottom: 1.25rem;
+    padding: 0.75rem;
+    background: var(--bg-darker);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
 }
 .dex-stat-item {
-    flex: 1; min-width: 120px;
-    text-align: center; padding: 0.75rem;
-    background: var(--bg-tertiary); border-radius: 8px;
-    border: 1px solid var(--border-color);
+    flex: 1; min-width: 110px;
+    text-align: center; padding: 0.6rem 0.5rem;
+    background: var(--bg-card); border-radius: var(--radius-xs);
+    border: 1px solid var(--border);
+    transition: border-color 0.2s;
 }
-.dex-stat-label { display: block; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 0.25rem; }
-.dex-stat-value { display: block; font-size: 1.05rem; font-weight: 700; font-family: var(--font-mono); }
+.dex-stat-item:hover { border-color: var(--border-light); }
+.dex-stat-label { display: block; font-size: 0.65rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-muted); margin-bottom: 0.3rem; }
+.dex-stat-value { display: block; font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; color: var(--text-primary); }
 
 .dex-subsystem-grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
     gap: 0.75rem;
 }
 .dex-subsystem-card {
-    background: var(--bg-tertiary); border: 1px solid var(--border-color);
-    border-radius: 10px; padding: 1rem; transition: border-color 0.2s;
+    background: var(--bg-darker); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 1rem; transition: all 0.3s;
+    position: relative; overflow: hidden;
 }
-.dex-subsystem-card:hover { border-color: var(--orange-primary, #ff6b35); }
+.dex-subsystem-card::before {
+    content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+    background: var(--border); transition: background 0.3s;
+}
+.dex-subsystem-card:hover { border-color: var(--border-light); background: var(--bg-hover); }
+.dex-subsystem-card:hover::before { background: var(--primary); }
 .dex-subsystem-card .sub-header {
     display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.75rem;
 }
 .dex-subsystem-card .sub-icon {
-    width: 36px; height: 36px; border-radius: 8px;
+    width: 36px; height: 36px; border-radius: var(--radius-sm);
     display: flex; align-items: center; justify-content: center;
     font-size: 0.9rem; flex-shrink: 0;
 }
-.dex-subsystem-card .sub-name { font-weight: 600; font-size: 0.9rem; }
+.dex-subsystem-card .sub-name { font-weight: 600; font-size: 0.9rem; color: var(--text-primary); }
 .dex-subsystem-card .sub-desc { font-size: 0.72rem; color: var(--text-muted); }
 .dex-subsystem-card .sub-badge {
-    margin-left: auto; padding: 0.15rem 0.5rem; border-radius: 6px;
-    font-size: 0.68rem; font-weight: 600;
+    margin-left: auto; padding: 0.2rem 0.6rem; border-radius: 12px;
+    font-size: 0.65rem; font-weight: 700; letter-spacing: 0.05em;
+    display: flex; align-items: center; gap: 0.35rem;
+}
+.dex-subsystem-card .sub-badge::before {
+    content: ''; width: 6px; height: 6px; border-radius: 50%;
+    background: currentColor; flex-shrink: 0;
 }
 .dex-subsystem-card .sub-metrics {
     display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
     gap: 0.5rem;
 }
 .dex-subsystem-card .sub-metric {
-    text-align: center; padding: 0.4rem;
-    background: rgba(0,0,0,0.15); border-radius: 6px;
+    text-align: center; padding: 0.5rem 0.4rem;
+    background: var(--bg-card); border-radius: var(--radius-xs);
+    border: 1px solid var(--border);
 }
-.dex-subsystem-card .sub-metric-label { display: block; font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase; }
-.dex-subsystem-card .sub-metric-value { display: block; font-size: 0.88rem; font-weight: 600; font-family: var(--font-mono); }
+.dex-subsystem-card .sub-metric-label { display: block; font-size: 0.6rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; }
+.dex-subsystem-card .sub-metric-value { display: block; font-size: 0.88rem; font-weight: 600; font-family: 'JetBrains Mono', monospace; color: var(--text-primary); margin-top: 0.15rem; }
 
 /* ─── Smart Contracts Monitor ─────────────────────────────── */
 .contract-cat-bar {
     display: flex; gap: 0.35rem; flex-wrap: wrap;
     margin-bottom: 1rem;
+    padding: 0.5rem 0.75rem;
+    background: var(--bg-darker);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
 }
 .contract-cat-btn {
-    padding: 0.35rem 0.8rem; border-radius: 6px;
-    font-size: 0.75rem; font-weight: 500;
-    background: var(--bg-tertiary); color: var(--text-muted);
-    border: 1px solid transparent; cursor: pointer;
+    padding: 0.35rem 0.8rem; border-radius: 12px;
+    font-size: 0.75rem; font-weight: 600;
+    background: transparent; color: var(--text-muted);
+    border: 1px solid var(--border); cursor: pointer;
     transition: all 0.2s;
 }
-.contract-cat-btn:hover { color: #fff; background: var(--bg-secondary); }
-.contract-cat-btn.active { background: var(--orange-primary, #ff6b35); color: #fff; border-color: var(--orange-primary, #ff6b35); }
+.contract-cat-btn:hover { color: var(--text-primary); background: var(--bg-hover); border-color: var(--border-light); }
+.contract-cat-btn.active { background: rgba(255,107,53,0.15); color: var(--primary); border-color: rgba(255,107,53,0.3); }
 
 .contract-monitor-grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-    gap: 0.6rem;
+    gap: 0.75rem;
 }
 .contract-monitor-card {
-    background: var(--bg-tertiary); border: 1px solid var(--border-color);
-    border-radius: 10px; padding: 0.85rem; display: flex; flex-direction: column; gap: 0.5rem;
-    transition: border-color 0.2s;
+    background: var(--bg-darker); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 0.85rem 1rem; display: flex; flex-direction: column; gap: 0.5rem;
+    transition: all 0.3s; position: relative; overflow: hidden;
 }
-.contract-monitor-card:hover { border-color: var(--orange-primary, #ff6b35); }
+.contract-monitor-card::before {
+    content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+    background: var(--border); transition: background 0.3s;
+}
+.contract-monitor-card:hover { border-color: var(--border-light); background: var(--bg-hover); }
+.contract-monitor-card:hover::before { background: var(--primary); }
 .contract-monitor-card .cm-header {
-    display: flex; align-items: center; gap: 0.5rem;
+    display: flex; align-items: center; gap: 0.6rem;
 }
 .contract-monitor-card .cm-icon {
-    width: 32px; height: 32px; border-radius: 8px;
+    width: 34px; height: 34px; border-radius: var(--radius-sm);
     display: flex; align-items: center; justify-content: center;
-    font-size: 0.8rem; flex-shrink: 0;
+    font-size: 0.85rem; flex-shrink: 0;
 }
-.contract-monitor-card .cm-name { font-weight: 600; font-size: 0.85rem; }
-.contract-monitor-card .cm-symbol { font-size: 0.7rem; color: var(--text-muted); font-family: var(--font-mono); }
+.contract-monitor-card .cm-name { font-weight: 600; font-size: 0.85rem; color: var(--text-primary); }
+.contract-monitor-card .cm-symbol { font-size: 0.68rem; color: var(--text-muted); font-family: 'JetBrains Mono', monospace; }
 .contract-monitor-card .cm-badge {
-    margin-left: auto; padding: 0.12rem 0.45rem; border-radius: 5px;
-    font-size: 0.65rem; font-weight: 600;
+    margin-left: auto; padding: 0.15rem 0.5rem; border-radius: 12px;
+    font-size: 0.62rem; font-weight: 700; letter-spacing: 0.05em;
+    display: flex; align-items: center; gap: 0.3rem;
+}
+.contract-monitor-card .cm-badge::before {
+    content: ''; width: 5px; height: 5px; border-radius: 50%;
+    background: currentColor; flex-shrink: 0;
 }
 .contract-monitor-card .cm-addr {
-    font-size: 0.68rem; color: var(--text-muted); font-family: var(--font-mono);
+    font-size: 0.68rem; color: var(--text-muted); font-family: 'JetBrains Mono', monospace;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    padding: 0.25rem 0.5rem; background: var(--bg-card); border-radius: var(--radius-xs);
 }
 .contract-monitor-card .cm-metrics {
     display: flex; gap: 0.5rem; flex-wrap: wrap;
 }
 .contract-monitor-card .cm-metric {
     flex: 1; min-width: 70px; text-align: center;
-    padding: 0.3rem; background: rgba(0,0,0,0.15); border-radius: 5px;
+    padding: 0.35rem 0.3rem; background: var(--bg-card); border-radius: var(--radius-xs);
+    border: 1px solid var(--border);
 }
-.contract-monitor-card .cm-metric-label { display: block; font-size: 0.6rem; color: var(--text-muted); }
-.contract-monitor-card .cm-metric-value { display: block; font-size: 0.8rem; font-weight: 600; font-family: var(--font-mono); }
+.contract-monitor-card .cm-metric-label { display: block; font-size: 0.58rem; font-weight: 700; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.contract-monitor-card .cm-metric-value { display: block; font-size: 0.8rem; font-weight: 600; font-family: 'JetBrains Mono', monospace; color: var(--text-primary); margin-top: 0.1rem; }
 
 /* ─── Responsive ───────────────────────────────────────────── */
 @media (max-width: 1200px) {
@@ -1381,22 +1415,36 @@ body {
 /* ─── MoltyID Identity Monitor ────────────────────────────── */
 .identity-tier-grid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-    gap: 0.75rem; margin-top: 0.5rem;
+    gap: 0.75rem; margin-top: 0.75rem;
 }
 .identity-tier-card {
-    background: var(--bg-tertiary); border: 1px solid var(--border-color);
-    border-radius: 10px; padding: 0.85rem 1rem;
+    background: var(--bg-darker); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 1rem;
+    transition: all 0.3s; position: relative; overflow: hidden;
 }
+.identity-tier-card::before {
+    content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+    background: var(--border); transition: background 0.3s;
+}
+.identity-tier-card:hover { border-color: var(--border-light); background: var(--bg-hover); }
+.identity-tier-card:hover::before { background: var(--primary); }
 .identity-tier-header {
-    display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;
+    display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.6rem;
 }
-.identity-tier-name { flex: 1; font-size: 0.85rem; font-weight: 600; }
-.identity-tier-count { font-size: 1.05rem; font-weight: 700; font-family: var(--font-mono); }
+.identity-tier-header i {
+    width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
+    border-radius: var(--radius-xs); font-size: 0.8rem;
+    background: rgba(107,122,153,0.1);
+}
+.identity-tier-name { flex: 1; font-size: 0.85rem; font-weight: 600; color: var(--text-primary); }
+.identity-tier-count { font-size: 1.1rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
 .identity-tier-bar-bg {
-    height: 6px; border-radius: 3px; background: var(--bg-secondary); overflow: hidden;
+    height: 6px; border-radius: 3px; background: var(--bg-card); overflow: hidden;
+    border: 1px solid var(--border);
 }
 .identity-tier-bar {
-    height: 100%; border-radius: 3px; transition: width 0.4s ease;
+    height: 100%; border-radius: 3px; transition: width 0.6s ease;
+    box-shadow: 0 0 8px rgba(255,107,53,0.1);
 }
 
 @media (max-width: 900px) {
