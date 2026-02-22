@@ -20,17 +20,21 @@ pub const MIN_VALIDATOR_STAKE: u64 = 75_000 * 1_000_000_000; // 75k MOLT in shel
 /// Bootstrap grant amount (100,000 MOLT) — the initial stake granted to the first 200 validators
 pub const BOOTSTRAP_GRANT_AMOUNT: u64 = 100_000 * 1_000_000_000; // 100k MOLT in shells
 
-/// Transaction block reward (0.9 MOLT per block with transactions — $0.09 at $0.10/MOLT)
-pub const TRANSACTION_BLOCK_REWARD: u64 = 900_000_000; // 0.9 MOLT
+/// Transaction block reward (0.1 MOLT per block with transactions — $0.01 at $0.10/MOLT)
+/// Reduced from 0.9 MOLT to achieve sustainable ~200+ year treasury runway.
+/// At 17,280 blocks/day with 3 validators, each earns ~576 blocks × 0.1 = 57.6 MOLT/day.
+pub const TRANSACTION_BLOCK_REWARD: u64 = 100_000_000; // 0.1 MOLT
 
-/// Heartbeat block reward (0.135 MOLT per heartbeat — 15% of transaction reward)
-pub const HEARTBEAT_BLOCK_REWARD: u64 = 135_000_000; // 0.135 MOLT
+/// Heartbeat block reward (0.05 MOLT per heartbeat — 50% of transaction reward)
+/// Reduced from 0.135 MOLT. Heartbeats are empty blocks and should pay less.
+pub const HEARTBEAT_BLOCK_REWARD: u64 = 50_000_000; // 0.05 MOLT
 
 /// Legacy constant for backward compatibility (uses transaction reward)
 pub const BLOCK_REWARD: u64 = TRANSACTION_BLOCK_REWARD;
 
-/// Target annual reward pool draw rate (5% = 500 basis points — informational only)
-/// MOLT is NOT inflationary — rewards are drawn from the 150M validator rewards pool
+/// Target annual reward pool draw rate (informational only)
+/// MOLT is NOT inflationary — rewards are drawn from the validator rewards pool.
+/// With 0.1/0.05 MOLT rewards + 20% annual decay, the pool lasts 200+ years.
 pub const ANNUAL_REWARD_RATE_BPS: u64 = 500;
 
 /// Slots per year (assuming 400ms per slot = ~78.8M slots/year)
@@ -5101,5 +5105,38 @@ mod tests {
 
         // Verify we recorded the original hash, not the fork
         assert!(va.has_voted(5));
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // TOKENOMICS OVERHAUL: Block Reward Constants
+    // ═══════════════════════════════════════════════════════════════════════
+
+    #[test]
+    fn test_block_reward_constants() {
+        // TX block reward: 0.1 MOLT = 100,000,000 shells
+        assert_eq!(TRANSACTION_BLOCK_REWARD, 100_000_000);
+        // Heartbeat block reward: 0.05 MOLT = 50,000,000 shells
+        assert_eq!(HEARTBEAT_BLOCK_REWARD, 50_000_000);
+        // BLOCK_REWARD alias = TRANSACTION_BLOCK_REWARD
+        assert_eq!(BLOCK_REWARD, TRANSACTION_BLOCK_REWARD);
+        // Heartbeat must be less than transaction reward
+        assert!(HEARTBEAT_BLOCK_REWARD < TRANSACTION_BLOCK_REWARD);
+        // Heartbeat is exactly 50% of transaction reward
+        assert_eq!(HEARTBEAT_BLOCK_REWARD, TRANSACTION_BLOCK_REWARD / 2);
+    }
+
+    #[test]
+    fn test_distribute_block_reward_values() {
+        let mut pool = StakePool::new();
+        let v1 = Pubkey::new([1u8; 32]);
+        pool.stake(v1, MIN_VALIDATOR_STAKE, 0).unwrap();
+
+        // Transaction block reward should be 0.1 MOLT
+        let tx_reward = pool.distribute_block_reward(&v1, 1, false);
+        assert_eq!(tx_reward, 100_000_000, "TX block reward must be 0.1 MOLT (100M shells)");
+
+        // Heartbeat block reward should be 0.05 MOLT
+        let hb_reward = pool.distribute_block_reward(&v1, 2, true);
+        assert_eq!(hb_reward, 50_000_000, "Heartbeat reward must be 0.05 MOLT (50M shells)");
     }
 }
