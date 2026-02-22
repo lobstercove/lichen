@@ -13,7 +13,9 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 use crate::RpcState;
@@ -25,6 +27,7 @@ use crate::RpcState;
 const PREDICT_PROGRAM: &str = "PREDICT";
 // F12.10 FIX: Prediction market uses MUSD_UNIT (1e6), not DEX PRICE_SCALE (1e9)
 const PRICE_SCALE: u64 = 1_000_000;
+const DEFAULT_CLOSE_SLOTS: u64 = 1_512_000; // ~7 days at 400ms/slot
 
 // ─────────────────────────────────────────────────────────────────────────────
 // JSON Response Types
@@ -88,6 +91,62 @@ fn read_u64_key(state: &RpcState, key: &[u8]) -> u64 {
 
 fn current_slot(state: &RpcState) -> u64 {
     state.state.get_last_slot().unwrap_or(0)
+}
+
+fn latest_blockhash_hex(state: &RpcState) -> Result<String, String> {
+    let slot = state
+        .state
+        .get_last_slot()
+        .map_err(|e| format!("Database error: {}", e))?;
+    if slot == 0 {
+        return Err("No blocks yet".to_string());
+    }
+
+    let block = state
+        .state
+        .get_block_by_slot(slot)
+        .map_err(|e| format!("Database error: {}", e))?
+        .ok_or_else(|| "Latest block not found".to_string())?;
+    Ok(block.hash().to_hex())
+}
+
+fn map_category(category: &str) -> Option<u8> {
+    match category.trim().to_ascii_lowercase().as_str() {
+        "politics" => Some(0),
+        "sports" => Some(1),
+        "crypto" => Some(2),
+        "science" => Some(3),
+        "entertainment" => Some(4),
+        "economics" => Some(5),
+        "tech" => Some(6),
+        "custom" => Some(7),
+        _ => None,
+    }
+}
+
+fn build_create_market_args(
+    creator: &moltchain_core::Pubkey,
+    category: u8,
+    close_slot: u64,
+    outcome_count: u8,
+    question: &str,
+) -> Vec<u8> {
+    let q_bytes = question.as_bytes();
+    let mut args = Vec::with_capacity(79 + q_bytes.len());
+    args.push(1); // opcode: create_market
+    args.extend_from_slice(&creator.0);
+    args.push(category);
+    args.extend_from_slice(&close_slot.to_le_bytes());
+    args.push(outcome_count);
+
+    let mut hasher = Sha256::new();
+    hasher.update(q_bytes);
+    let digest = hasher.finalize();
+    args.extend_from_slice(&digest[..32]);
+
+    args.extend_from_slice(&(q_bytes.len() as u32).to_le_bytes());
+    args.extend_from_slice(q_bytes);
+    args
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -186,14 +245,35 @@ struct CreateMarketRequest {
     question: String,
     category: String,
     #[serde(rename = "initialLiquidity")]
+    #[serde(default)]
     initial_liquidity: u64,
     creator: String,
     /// Optional outcome names for multi-outcome markets (2-8). Omit for binary (Yes/No).
     #[serde(default)]
     outcomes: Vec<String>,
+    /// Optional explicit outcome count (2-8). If omitted, derives from outcomes length.
+    #[serde(rename = "outcomeCount")]
+    #[serde(default)]
+    outcome_count: Option<u8>,
+    /// Optional market close slot. Defaults to current_slot + 7 days.
+    #[serde(rename = "closeSlot")]
+    #[serde(default)]
+    close_slot: Option<u64>,
     /// FIX F13: Admin token required for market creation
     #[serde(default)]
     admin_token: Option<String>,
+}
+
+#[derive(Serialize)]
+struct CreateMarketTemplateJson {
+    rpc_method: &'static str,
+    unsigned_transaction: serde_json::Value,
+    unsigned_transaction_base64: String,
+    prediction_program: String,
+    next_market_id_hint: u64,
+    close_slot: u64,
+    outcome_count: u8,
+    notes: Vec<String>,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -689,6 +769,113 @@ async fn post_create(
     )
 }
 
+/// POST /prediction-market/create-template — Build unsigned tx template for market creation.
+/// Returns a wallet-signable transaction payload that must be submitted via sendTransaction.
+async fn post_create_template(
+    State(state): State<Arc<RpcState>>,
+    Json(req): Json<CreateMarketRequest>,
+) -> Response {
+    let creator = match moltchain_core::Pubkey::from_base58(req.creator.trim()) {
+        Ok(pk) => pk,
+        Err(_) => return api_err("creator must be a valid base58 pubkey"),
+    };
+
+    if req.question.trim().is_empty() {
+        return api_err("question is required");
+    }
+
+    let category = match map_category(&req.category) {
+        Some(c) => c,
+        None => {
+            return api_err(
+                "invalid category (expected one of: politics, sports, crypto, science, entertainment, economics, tech, custom)",
+            )
+        }
+    };
+
+    let derived_outcomes = if req.outcomes.len() >= 2 {
+        req.outcomes.len() as u8
+    } else {
+        2
+    };
+    let outcome_count = req.outcome_count.unwrap_or(derived_outcomes);
+    if !(2..=8).contains(&outcome_count) {
+        return api_err("outcome_count must be between 2 and 8");
+    }
+
+    let slot = current_slot(&state);
+    if slot == 0 {
+        return api_err("chain is not ready: no slots available");
+    }
+
+    let close_slot = req.close_slot.unwrap_or(slot.saturating_add(DEFAULT_CLOSE_SLOTS));
+    if close_slot <= slot {
+        return api_err("close_slot must be greater than current slot");
+    }
+
+    let blockhash_hex = match latest_blockhash_hex(&state) {
+        Ok(h) => h,
+        Err(e) => return api_err(&e),
+    };
+
+    let symbol_entry = match state.state.get_symbol_registry(PREDICT_PROGRAM) {
+        Ok(Some(entry)) => entry,
+        Ok(None) => return api_err("prediction market symbol not found in registry"),
+        Err(e) => return api_err(&format!("database error: {}", e)),
+    };
+
+    let args = build_create_market_args(
+        &creator,
+        category,
+        close_slot,
+        outcome_count,
+        req.question.trim(),
+    );
+
+    let contract_call =
+        match moltchain_core::ContractInstruction::call("call".to_string(), args, 0).serialize() {
+            Ok(data) => data,
+            Err(e) => return api_err(&format!("failed to build contract call: {}", e)),
+        };
+
+    let tx_json = serde_json::json!({
+        "signatures": [],
+        "message": {
+            "instructions": [
+                {
+                    "program_id": moltchain_core::CONTRACT_PROGRAM_ID.to_base58(),
+                    "accounts": [creator.to_base58(), symbol_entry.program.to_base58()],
+                    "data": contract_call,
+                }
+            ],
+            "blockhash": blockhash_hex,
+        }
+    });
+
+    let tx_json_bytes = match serde_json::to_vec(&tx_json) {
+        Ok(bytes) => bytes,
+        Err(e) => return api_err(&format!("failed to encode transaction JSON: {}", e)),
+    };
+    let tx_b64 = general_purpose::STANDARD.encode(tx_json_bytes);
+
+    let template = CreateMarketTemplateJson {
+        rpc_method: "sendTransaction",
+        unsigned_transaction: tx_json,
+        unsigned_transaction_base64: tx_b64,
+        prediction_program: symbol_entry.program.to_base58(),
+        next_market_id_hint: read_u64_key(&state, b"pm_market_count").saturating_add(1),
+        close_slot,
+        outcome_count,
+        notes: vec![
+            "Sign with wallet, then submit via sendTransaction.".to_string(),
+            "initialLiquidity is not auto-applied here; add liquidity in a follow-up transaction after market creation confirms.".to_string(),
+            "next_market_id_hint is informational and can change under concurrent market creations.".to_string(),
+        ],
+    };
+
+    ApiResponse::ok(template, slot).into_response()
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Per-trader stats & leaderboard
 // ─────────────────────────────────────────────────────────────────────────────
@@ -923,4 +1110,5 @@ pub(crate) fn build_prediction_router() -> Router<Arc<RpcState>> {
         .route("/trending", get(get_trending))
         .route("/trade", post(post_trade))
         .route("/create", post(post_create))
+        .route("/create-template", post(post_create_template))
 }

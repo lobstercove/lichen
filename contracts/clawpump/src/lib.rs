@@ -560,11 +560,10 @@ pub extern "C" fn buy(buyer_ptr: *const u8, token_id: u64, molt_amount: u64) -> 
             );
             let seed_ok = call_contract(seed_call).is_ok();
 
-            // Track platform revenue from graduation
-            let prev_revenue = load_u64(b"cp_graduation_revenue");
-            store_u64(b"cp_graduation_revenue", prev_revenue.saturating_add(platform_molt));
-
             if pair_ok && pool_ok && seed_ok {
+                // Track platform revenue only after full successful migration.
+                let prev_revenue = load_u64(b"cp_graduation_revenue");
+                store_u64(b"cp_graduation_revenue", prev_revenue.saturating_add(platform_molt));
                 log_info("Token graduated! DEX pair created, pool seeded with liquidity");
                 data[64] = 1; // AUDIT-FIX: Only mark graduated on full success
                 storage_set(&token_key, &data);

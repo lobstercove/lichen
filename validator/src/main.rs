@@ -1764,6 +1764,30 @@ fn block_vote_weight(
     0
 }
 
+fn block_fee_at_index(block: &Block, tx_index: usize, fallback_fee: u64) -> u64 {
+    if block.tx_fees_paid.len() == block.transactions.len() {
+        block
+            .tx_fees_paid
+            .get(tx_index)
+            .copied()
+            .unwrap_or(fallback_fee)
+    } else {
+        fallback_fee
+    }
+}
+
+fn block_total_fees_paid(block: &Block, fee_config: &FeeConfig) -> u64 {
+    if block.tx_fees_paid.len() == block.transactions.len() {
+        block.tx_fees_paid.iter().copied().sum()
+    } else {
+        block
+            .transactions
+            .iter()
+            .map(|tx| TxProcessor::compute_transaction_fee(tx, fee_config))
+            .sum()
+    }
+}
+
 /// Replay transactions from a received P2P block to update local state.
 /// The producing validator already executed these transactions; receivers
 /// must replay them so that fee charges and balance mutations are applied
@@ -1853,11 +1877,7 @@ fn revert_block_effects(state: &StateStore, old_block: &Block) {
     let fee_config = state
         .get_fee_config()
         .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
-    let total_fee: u64 = old_block
-        .transactions
-        .iter()
-        .map(|tx| TxProcessor::compute_transaction_fee(tx, &fee_config))
-        .sum();
+    let total_fee = block_total_fees_paid(old_block, &fee_config);
 
     if total_fee > 0 {
         let producer_share = total_fee * fee_config.fee_producer_percent / 100;
@@ -1923,7 +1943,7 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
     // so we can restore them from checkpoint if needed.
     let mut non_revertible_accounts: Vec<moltchain_core::Pubkey> = Vec::new();
 
-    for tx in old_block.transactions.iter().rev() {
+    for (tx_index, tx) in old_block.transactions.iter().enumerate().rev() {
         // AUDIT-FIX 0.5: Detect non-system-transfer instructions that can't be reverted
         let has_non_revertible = tx.message.instructions.iter().any(|ix| {
             if ix.program_id != SYSTEM_PROGRAM_ID {
@@ -2007,7 +2027,8 @@ fn revert_block_transactions(state: &StateStore, old_block: &Block, data_dir: &s
         // 2. Refund fee to fee payer
         if let Some(first_ix) = tx.message.instructions.first() {
             if let Some(&fee_payer) = first_ix.accounts.first() {
-                let fee = TxProcessor::compute_transaction_fee(tx, &fee_config);
+                let fallback_fee = TxProcessor::compute_transaction_fee(tx, &fee_config);
+                let fee = block_fee_at_index(old_block, tx_index, fallback_fee);
                 if fee > 0 {
                     let payer = overlay.entry(fee_payer).or_insert_with(|| {
                         state
@@ -2393,11 +2414,7 @@ async fn apply_block_effects(
     let fee_config = state
         .get_fee_config()
         .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
-    let total_fee: u64 = block
-        .transactions
-        .iter()
-        .map(|tx| TxProcessor::compute_transaction_fee(tx, &fee_config))
-        .sum();
+    let total_fee = block_total_fees_paid(block, &fee_config);
 
     if total_fee == 0 {
         return;
@@ -10689,9 +10706,11 @@ async fn run_validator() {
             processor.process_transactions_parallel(&pending_transactions, &validator_pubkey);
 
         let mut transactions: Vec<Transaction> = Vec::new();
+        let mut tx_fees_paid: Vec<u64> = Vec::new();
         for (tx, result) in pending_transactions.into_iter().zip(results.into_iter()) {
             if result.success {
                 transactions.push(tx);
+                tx_fees_paid.push(result.fee_paid);
             } else {
                 warn!(
                     "⚠️  Dropping transaction {}: {}",
@@ -10761,6 +10780,7 @@ async fn run_validator() {
             transactions.clone(),
             wall_clock_timestamp,
         );
+        block.tx_fees_paid = tx_fees_paid;
 
         // Step 2: Apply block effects (rewards, stake updates, etc.)
         apply_block_effects(

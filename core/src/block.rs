@@ -68,6 +68,14 @@ pub struct Block {
 
     /// Transactions in this block
     pub transactions: Vec<Transaction>,
+
+    /// Exact fee charged per transaction at execution time.
+    ///
+    /// This is used for deterministic fee distribution and exact reorg rollback.
+    /// Legacy blocks may not contain this field; in that case runtime falls back
+    /// to deterministic recomputation.
+    #[serde(default)]
+    pub tx_fees_paid: Vec<u64>,
 }
 
 impl Block {
@@ -85,6 +93,7 @@ impl Block {
                 signature: [0u8; 64],
             },
             transactions,
+            tx_fees_paid: Vec::new(),
         }
     }
 
@@ -108,6 +117,7 @@ impl Block {
                 signature: [0u8; 64],
             },
             transactions,
+            tx_fees_paid: Vec::new(),
         }
     }
 
@@ -132,6 +142,7 @@ impl Block {
                 signature: [0u8; 64],
             },
             transactions,
+            tx_fees_paid: Vec::new(),
         }
     }
 

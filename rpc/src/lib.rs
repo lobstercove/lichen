@@ -6715,80 +6715,42 @@ fn parse_moltyid_achievement_record(input: &[u8]) -> Option<MoltyIdAchievementRe
     })
 }
 
-/// P10-VAL-01: Loads full ContractAccount (including storage map) for read-only
-/// RPC queries. Acceptable — no write overhead for reads. If ContractAccount
-/// grows large in production, consider a lightweight path that only reads the
-/// needed storage keys via get_contract_storage() instead of deserializing the
-/// entire account.
-fn load_moltyid_contract(state: &RpcState) -> Result<(Pubkey, ContractAccount), RpcError> {
-    let symbol_entry = state
-        .state
-        .get_symbol_registry(MOLTYID_SYMBOL)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Database error: {}", e),
-        })?
-        .ok_or_else(|| RpcError {
-            code: -32001,
-            message: "MoltyID symbol not found in registry".to_string(),
-        })?;
-
-    let account = state
-        .state
-        .get_account(&symbol_entry.program)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Database error: {}", e),
-        })?
-        .ok_or_else(|| RpcError {
-            code: -32001,
-            message: "MoltyID program account not found".to_string(),
-        })?;
-
-    let contract =
-        serde_json::from_slice::<ContractAccount>(&account.data).map_err(|e| RpcError {
-            code: -32002,
-            message: format!("Invalid MoltyID account data: {}", e),
-        })?;
-
-    Ok((symbol_entry.program, contract))
-}
-
+/// CF-based MoltyID identity read — no full account deserialization.
 fn get_moltyid_identity(
-    contract: &ContractAccount,
+    state: &RpcState,
     pubkey: &Pubkey,
 ) -> Option<MoltyIdIdentityRecord> {
-    contract
-        .storage
-        .get(&moltyid_identity_key(pubkey))
-        .and_then(|value| parse_moltyid_identity_record(value))
+    state.state
+        .get_program_storage(MOLTYID_SYMBOL, &moltyid_identity_key(pubkey))
+        .and_then(|value| parse_moltyid_identity_record(&value))
 }
 
-fn get_moltyid_reputation(contract: &ContractAccount, pubkey: &Pubkey) -> Option<u64> {
-    contract
-        .storage
-        .get(&moltyid_reputation_key(pubkey))
-        .and_then(|value| read_u64_le(value, 0))
+fn get_moltyid_reputation(state: &RpcState, pubkey: &Pubkey) -> Option<u64> {
+    state.state
+        .get_program_storage(MOLTYID_SYMBOL, &moltyid_reputation_key(pubkey))
+        .and_then(|value| read_u64_le(&value, 0))
 }
 
 fn get_moltyid_name(
-    contract: &ContractAccount,
+    state: &RpcState,
     pubkey: &Pubkey,
     current_slot: u64,
 ) -> Option<String> {
-    let raw_name = contract.storage.get(&moltyid_reverse_name_key(pubkey))?;
-    let label = String::from_utf8(raw_name.clone()).ok()?;
-    let record = contract
-        .storage
-        .get(&format!("name:{}", label).into_bytes())?;
+    let raw_name = state.state.get_program_storage(MOLTYID_SYMBOL, &moltyid_reverse_name_key(pubkey))?;
+    let label = String::from_utf8(raw_name).ok()?;
+    let record = state.state.get_program_storage(MOLTYID_SYMBOL, &format!("name:{}", label).into_bytes())?;
     if record.len() < 48 {
         return None;
     }
-    let expiry_slot = read_u64_le(record, 40)?;
+    let expiry_slot = read_u64_le(&record, 40)?;
     if current_slot >= expiry_slot {
         return None;
     }
     Some(format!("{}.molt", label))
+}
+
+fn moltyid_cf_get(state: &RpcState, key: &[u8]) -> Option<Vec<u8>> {
+    state.state.get_program_storage(MOLTYID_SYMBOL, key)
 }
 
 async fn handle_get_moltyid_identity(
@@ -6796,17 +6758,16 @@ async fn handle_get_moltyid_identity(
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
     let pubkey = extract_single_pubkey(&params, "getMoltyIdIdentity")?;
-    let (_, contract) = load_moltyid_contract(state)?;
     let current_slot = state.state.get_last_slot().unwrap_or(0);
 
-    let identity = match get_moltyid_identity(&contract, &pubkey) {
+    let identity = match get_moltyid_identity(state, &pubkey) {
         Some(identity) => identity,
         None => return Ok(serde_json::Value::Null),
     };
 
-    let score = get_moltyid_reputation(&contract, &pubkey).unwrap_or(identity.reputation);
+    let score = get_moltyid_reputation(state, &pubkey).unwrap_or(identity.reputation);
     let tier = moltyid_trust_tier(score);
-    let molt_name = get_moltyid_name(&contract, &pubkey, current_slot);
+    let molt_name = get_moltyid_name(state, &pubkey, current_slot);
 
     Ok(serde_json::json!({
         "address": pubkey.to_base58(),
@@ -6831,10 +6792,9 @@ async fn handle_get_moltyid_reputation(
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
     let pubkey = extract_single_pubkey(&params, "getMoltyIdReputation")?;
-    let (_, contract) = load_moltyid_contract(state)?;
 
-    let score = get_moltyid_reputation(&contract, &pubkey)
-        .or_else(|| get_moltyid_identity(&contract, &pubkey).map(|identity| identity.reputation))
+    let score = get_moltyid_reputation(state, &pubkey)
+        .or_else(|| get_moltyid_identity(state, &pubkey).map(|identity| identity.reputation))
         .unwrap_or(0);
     let tier = moltyid_trust_tier(score);
 
@@ -6851,21 +6811,18 @@ async fn handle_get_moltyid_skills(
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
     let pubkey = extract_single_pubkey(&params, "getMoltyIdSkills")?;
-    let (_, contract) = load_moltyid_contract(state)?;
 
-    let identity = match get_moltyid_identity(&contract, &pubkey) {
+    let identity = match get_moltyid_identity(state, &pubkey) {
         Some(identity) => identity,
         None => return Ok(serde_json::json!([])),
     };
 
     let mut skills = Vec::new();
     for index in 0..identity.skill_count {
-        if let Some(raw) = contract.storage.get(&moltyid_skill_key(&pubkey, index)) {
-            if let Some(skill) = parse_moltyid_skill_record(raw) {
-                let attestations = contract
-                    .storage
-                    .get(&moltyid_attestation_count_key(&pubkey, &skill.name))
-                    .and_then(|value| read_u64_le(value, 0))
+        if let Some(raw) = moltyid_cf_get(state, &moltyid_skill_key(&pubkey, index)) {
+            if let Some(skill) = parse_moltyid_skill_record(&raw) {
+                let attestations = moltyid_cf_get(state, &moltyid_attestation_count_key(&pubkey, &skill.name))
+                    .and_then(|value| read_u64_le(&value, 0))
                     .unwrap_or(0);
 
                 skills.push(serde_json::json!({
@@ -6887,21 +6844,20 @@ async fn handle_get_moltyid_vouches(
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
     let pubkey = extract_single_pubkey(&params, "getMoltyIdVouches")?;
-    let (_, contract) = load_moltyid_contract(state)?;
     let current_slot = state.state.get_last_slot().unwrap_or(0);
 
-    let identity = match get_moltyid_identity(&contract, &pubkey) {
+    let identity = match get_moltyid_identity(state, &pubkey) {
         Some(identity) => identity,
         None => return Ok(serde_json::json!({"received": [], "given": []})),
     };
 
     let mut received = Vec::new();
     for index in 0..identity.vouch_count {
-        if let Some(raw) = contract.storage.get(&moltyid_vouch_key(&pubkey, index)) {
-            if let Some(vouch) = parse_moltyid_vouch_record(raw) {
+        if let Some(raw) = moltyid_cf_get(state, &moltyid_vouch_key(&pubkey, index)) {
+            if let Some(vouch) = parse_moltyid_vouch_record(&raw) {
                 received.push(serde_json::json!({
                     "voucher": vouch.voucher.to_base58(),
-                    "voucher_name": get_moltyid_name(&contract, &vouch.voucher, current_slot),
+                    "voucher_name": get_moltyid_name(state, &vouch.voucher, current_slot),
                     "timestamp": vouch.timestamp,
                 }));
             }
@@ -6910,20 +6866,22 @@ async fn handle_get_moltyid_vouches(
 
     let mut given = Vec::new();
     for index in 0..identity.vouch_count {
-        if let Some(raw) = contract.storage.get(&moltyid_vouch_given_key(&pubkey, index)) {
-            if let Some((vouchee, timestamp)) = parse_moltyid_vouch_given_record(raw) {
+        if let Some(raw) = moltyid_cf_get(state, &moltyid_vouch_given_key(&pubkey, index)) {
+            if let Some((vouchee, timestamp)) = parse_moltyid_vouch_given_record(&raw) {
                 given.push(serde_json::json!({
                     "vouchee": vouchee.to_base58(),
-                    "vouchee_name": get_moltyid_name(&contract, &vouchee, current_slot),
+                    "vouchee_name": get_moltyid_name(state, &vouchee, current_slot),
                     "timestamp": timestamp,
                 }));
             }
         }
     }
 
-    // Backward compatibility for pre-indexed historical data.
+    // Backward compatibility for pre-indexed historical data — scan CF entries.
     if given.is_empty() {
-        for (key, value) in &contract.storage {
+        let program = resolve_symbol_pubkey(state, MOLTYID_SYMBOL)?;
+        let entries = state.state.get_contract_storage_entries(&program, 10_000, None).unwrap_or_default();
+        for (key, value) in &entries {
             if !key.starts_with(b"id:") {
                 continue;
             }
@@ -6931,15 +6889,12 @@ async fn handle_get_moltyid_vouches(
                 continue;
             };
             for index in 0..vouchee_identity.vouch_count {
-                if let Some(raw_vouch) = contract
-                    .storage
-                    .get(&moltyid_vouch_key(&vouchee_identity.owner, index))
-                {
-                    if let Some(vouch) = parse_moltyid_vouch_record(raw_vouch) {
+                if let Some(raw_vouch) = moltyid_cf_get(state, &moltyid_vouch_key(&vouchee_identity.owner, index)) {
+                    if let Some(vouch) = parse_moltyid_vouch_record(&raw_vouch) {
                         if vouch.voucher == pubkey {
                             given.push(serde_json::json!({
                                 "vouchee": vouchee_identity.owner.to_base58(),
-                                "vouchee_name": get_moltyid_name(&contract, &vouchee_identity.owner, current_slot),
+                                "vouchee_name": get_moltyid_name(state, &vouchee_identity.owner, current_slot),
                                 "timestamp": vouch.timestamp,
                             }));
                         }
@@ -6960,19 +6915,15 @@ async fn handle_get_moltyid_achievements(
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
     let pubkey = extract_single_pubkey(&params, "getMoltyIdAchievements")?;
-    let (_, contract) = load_moltyid_contract(state)?;
 
-    if get_moltyid_identity(&contract, &pubkey).is_none() {
+    if get_moltyid_identity(state, &pubkey).is_none() {
         return Ok(serde_json::json!([]));
     }
 
     let mut achievements = Vec::new();
     for achievement_id in 1u8..=8u8 {
-        if let Some(raw) = contract
-            .storage
-            .get(&moltyid_achievement_key(&pubkey, achievement_id))
-        {
-            if let Some(achievement) = parse_moltyid_achievement_record(raw) {
+        if let Some(raw) = moltyid_cf_get(state, &moltyid_achievement_key(&pubkey, achievement_id)) {
+            if let Some(achievement) = parse_moltyid_achievement_record(&raw) {
                 achievements.push(serde_json::json!({
                     "id": achievement.id,
                     "name": moltyid_achievement_name(achievement.id),
@@ -6990,26 +6941,23 @@ async fn handle_get_moltyid_profile(
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
     let pubkey = extract_single_pubkey(&params, "getMoltyIdProfile")?;
-    let (_, contract) = load_moltyid_contract(state)?;
     let current_slot = state.state.get_last_slot().unwrap_or(0);
 
-    let identity = match get_moltyid_identity(&contract, &pubkey) {
+    let identity = match get_moltyid_identity(state, &pubkey) {
         Some(identity) => identity,
         None => return Ok(serde_json::Value::Null),
     };
 
-    let reputation = get_moltyid_reputation(&contract, &pubkey).unwrap_or(identity.reputation);
+    let reputation = get_moltyid_reputation(state, &pubkey).unwrap_or(identity.reputation);
     let tier = moltyid_trust_tier(reputation);
-    let molt_name = get_moltyid_name(&contract, &pubkey, current_slot);
+    let molt_name = get_moltyid_name(state, &pubkey, current_slot);
 
     let mut skills = Vec::new();
     for index in 0..identity.skill_count {
-        if let Some(raw) = contract.storage.get(&moltyid_skill_key(&pubkey, index)) {
-            if let Some(skill) = parse_moltyid_skill_record(raw) {
-                let attestations = contract
-                    .storage
-                    .get(&moltyid_attestation_count_key(&pubkey, &skill.name))
-                    .and_then(|value| read_u64_le(value, 0))
+        if let Some(raw) = moltyid_cf_get(state, &moltyid_skill_key(&pubkey, index)) {
+            if let Some(skill) = parse_moltyid_skill_record(&raw) {
+                let attestations = moltyid_cf_get(state, &moltyid_attestation_count_key(&pubkey, &skill.name))
+                    .and_then(|value| read_u64_le(&value, 0))
                     .unwrap_or(0);
 
                 skills.push(serde_json::json!({
@@ -7025,11 +6973,11 @@ async fn handle_get_moltyid_profile(
 
     let mut received_vouches = Vec::new();
     for index in 0..identity.vouch_count {
-        if let Some(raw) = contract.storage.get(&moltyid_vouch_key(&pubkey, index)) {
-            if let Some(vouch) = parse_moltyid_vouch_record(raw) {
+        if let Some(raw) = moltyid_cf_get(state, &moltyid_vouch_key(&pubkey, index)) {
+            if let Some(vouch) = parse_moltyid_vouch_record(&raw) {
                 received_vouches.push(serde_json::json!({
                     "voucher": vouch.voucher.to_base58(),
-                    "voucher_name": get_moltyid_name(&contract, &vouch.voucher, current_slot),
+                    "voucher_name": get_moltyid_name(state, &vouch.voucher, current_slot),
                     "timestamp": vouch.timestamp,
                 }));
             }
@@ -7038,11 +6986,11 @@ async fn handle_get_moltyid_profile(
 
     let mut given_vouches = Vec::new();
     for index in 0..identity.vouch_count {
-        if let Some(raw) = contract.storage.get(&moltyid_vouch_given_key(&pubkey, index)) {
-            if let Some((vouchee, timestamp)) = parse_moltyid_vouch_given_record(raw) {
+        if let Some(raw) = moltyid_cf_get(state, &moltyid_vouch_given_key(&pubkey, index)) {
+            if let Some((vouchee, timestamp)) = parse_moltyid_vouch_given_record(&raw) {
                 given_vouches.push(serde_json::json!({
                     "vouchee": vouchee.to_base58(),
-                    "vouchee_name": get_moltyid_name(&contract, &vouchee, current_slot),
+                    "vouchee_name": get_moltyid_name(state, &vouchee, current_slot),
                     "timestamp": timestamp,
                 }));
             }
@@ -7050,7 +6998,9 @@ async fn handle_get_moltyid_profile(
     }
 
     if given_vouches.is_empty() {
-        for (key, value) in &contract.storage {
+        let program = resolve_symbol_pubkey(state, MOLTYID_SYMBOL)?;
+        let entries = state.state.get_contract_storage_entries(&program, 10_000, None).unwrap_or_default();
+        for (key, value) in &entries {
             if !key.starts_with(b"id:") {
                 continue;
             }
@@ -7058,15 +7008,12 @@ async fn handle_get_moltyid_profile(
                 continue;
             };
             for index in 0..vouchee_identity.vouch_count {
-                if let Some(raw_vouch) = contract
-                    .storage
-                    .get(&moltyid_vouch_key(&vouchee_identity.owner, index))
-                {
-                    if let Some(vouch) = parse_moltyid_vouch_record(raw_vouch) {
+                if let Some(raw_vouch) = moltyid_cf_get(state, &moltyid_vouch_key(&vouchee_identity.owner, index)) {
+                    if let Some(vouch) = parse_moltyid_vouch_record(&raw_vouch) {
                         if vouch.voucher == pubkey {
                             given_vouches.push(serde_json::json!({
                                 "vouchee": vouchee_identity.owner.to_base58(),
-                                "vouchee_name": get_moltyid_name(&contract, &vouchee_identity.owner, current_slot),
+                                "vouchee_name": get_moltyid_name(state, &vouchee_identity.owner, current_slot),
                                 "timestamp": vouch.timestamp,
                             }));
                         }
@@ -7078,11 +7025,8 @@ async fn handle_get_moltyid_profile(
 
     let mut achievements = Vec::new();
     for achievement_id in 1u8..=8u8 {
-        if let Some(raw) = contract
-            .storage
-            .get(&moltyid_achievement_key(&pubkey, achievement_id))
-        {
-            if let Some(achievement) = parse_moltyid_achievement_record(raw) {
+        if let Some(raw) = moltyid_cf_get(state, &moltyid_achievement_key(&pubkey, achievement_id)) {
+            if let Some(achievement) = parse_moltyid_achievement_record(&raw) {
                 achievements.push(serde_json::json!({
                     "id": achievement.id,
                     "name": moltyid_achievement_name(achievement.id),
@@ -7092,22 +7036,16 @@ async fn handle_get_moltyid_profile(
         }
     }
 
-    let endpoint = contract
-        .storage
-        .get(&format!("endpoint:{}", moltyid_hex(&pubkey)).into_bytes())
-        .and_then(|raw| String::from_utf8(raw.clone()).ok());
+    let endpoint = moltyid_cf_get(state, &format!("endpoint:{}", moltyid_hex(&pubkey)).into_bytes())
+        .and_then(|raw| String::from_utf8(raw).ok());
 
-    let metadata = contract
-        .storage
-        .get(&format!("metadata:{}", moltyid_hex(&pubkey)).into_bytes())
-        .and_then(|raw| String::from_utf8(raw.clone()).ok())
+    let metadata = moltyid_cf_get(state, &format!("metadata:{}", moltyid_hex(&pubkey)).into_bytes())
+        .and_then(|raw| String::from_utf8(raw).ok())
         .map(|text| {
             serde_json::from_str::<serde_json::Value>(&text).unwrap_or(serde_json::json!(text))
         });
 
-    let availability = contract
-        .storage
-        .get(&format!("availability:{}", moltyid_hex(&pubkey)).into_bytes())
+    let availability = moltyid_cf_get(state, &format!("availability:{}", moltyid_hex(&pubkey)).into_bytes())
         .and_then(|raw| raw.first().copied())
         .unwrap_or(0);
 
@@ -7117,10 +7055,8 @@ async fn handle_get_moltyid_profile(
         _ => "offline",
     };
 
-    let rate = contract
-        .storage
-        .get(&format!("rate:{}", moltyid_hex(&pubkey)).into_bytes())
-        .and_then(|raw| read_u64_le(raw, 0))
+    let rate = moltyid_cf_get(state, &format!("rate:{}", moltyid_hex(&pubkey)).into_bytes())
+        .and_then(|raw| read_u64_le(&raw, 0))
         .unwrap_or(0);
 
     let mut contributions = serde_json::Map::new();
@@ -7135,10 +7071,8 @@ async fn handle_get_moltyid_profile(
     ];
     for (index, label) in labels.iter().enumerate() {
         let key = format!("cont:{}:{}", moltyid_hex(&pubkey), index).into_bytes();
-        let value = contract
-            .storage
-            .get(&key)
-            .and_then(|raw| read_u64_le(raw, 0))
+        let value = moltyid_cf_get(state, &key)
+            .and_then(|raw| read_u64_le(&raw, 0))
             .unwrap_or(0);
         contributions.insert((*label).to_string(), serde_json::json!(value));
     }
@@ -7198,17 +7132,16 @@ async fn handle_resolve_molt_name(
         return Ok(serde_json::Value::Null);
     }
 
-    let (_, contract) = load_moltyid_contract(state)?;
     let current_slot = state.state.get_last_slot().unwrap_or(0);
     let key = format!("name:{}", label).into_bytes();
 
-    let Some(record) = contract.storage.get(&key) else {
+    let Some(record) = moltyid_cf_get(state, &key) else {
         return Ok(serde_json::Value::Null);
     };
     if record.len() < 48 {
         return Ok(serde_json::Value::Null);
     }
-    let expiry_slot = read_u64_le(record, 40).unwrap_or(0);
+    let expiry_slot = read_u64_le(&record, 40).unwrap_or(0);
     if current_slot >= expiry_slot {
         return Ok(serde_json::Value::Null);
     }
@@ -7219,7 +7152,7 @@ async fn handle_resolve_molt_name(
     Ok(serde_json::json!({
         "name": format!("{}.molt", label),
         "owner": owner.to_base58(),
-        "registered_slot": read_u64_le(record, 32).unwrap_or(0),
+        "registered_slot": read_u64_le(&record, 32).unwrap_or(0),
         "expiry_slot": expiry_slot,
     }))
 }
@@ -7229,9 +7162,8 @@ async fn handle_reverse_molt_name(
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
     let pubkey = extract_single_pubkey(&params, "reverseMoltName")?;
-    let (_, contract) = load_moltyid_contract(state)?;
     let current_slot = state.state.get_last_slot().unwrap_or(0);
-    match get_moltyid_name(&contract, &pubkey, current_slot) {
+    match get_moltyid_name(state, &pubkey, current_slot) {
         Some(name) => Ok(serde_json::json!({"name": name})),
         None => Ok(serde_json::Value::Null),
     }
@@ -7251,7 +7183,6 @@ async fn handle_batch_reverse_molt_names(
         message: "Invalid params: expected [pubkey1, pubkey2, ...]".to_string(),
     })?;
 
-    let (_, contract) = load_moltyid_contract(state)?;
     let current_slot = state.state.get_last_slot().unwrap_or(0);
 
     let mut output = serde_json::Map::new();
@@ -7260,7 +7191,7 @@ async fn handle_batch_reverse_molt_names(
             continue;
         };
         let parsed = Pubkey::from_base58(address_str).ok();
-        let name = parsed.and_then(|pubkey| get_moltyid_name(&contract, &pubkey, current_slot));
+        let name = parsed.and_then(|pubkey| get_moltyid_name(state, &pubkey, current_slot));
         output.insert(
             address_str.to_string(),
             name.map(serde_json::Value::String)
@@ -7277,11 +7208,12 @@ async fn handle_search_molt_names(
 ) -> Result<serde_json::Value, RpcError> {
     let prefix_raw = extract_single_string(&params, "searchMoltNames", "prefix")?;
     let prefix = normalize_molt_label(&prefix_raw);
-    let (_, contract) = load_moltyid_contract(state)?;
+    let program = resolve_symbol_pubkey(state, MOLTYID_SYMBOL)?;
     let current_slot = state.state.get_last_slot().unwrap_or(0);
+    let entries = state.state.get_contract_storage_entries(&program, 100_000, None).unwrap_or_default();
 
     let mut names = Vec::new();
-    for (key, value) in &contract.storage {
+    for (key, value) in &entries {
         if !key.starts_with(b"name:") || key.starts_with(b"name_rev:") {
             continue;
         }
@@ -7313,7 +7245,7 @@ async fn handle_get_moltyid_agent_directory(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    let (_, contract) = load_moltyid_contract(state)?;
+    let program = resolve_symbol_pubkey(state, MOLTYID_SYMBOL)?;
     let current_slot = state.state.get_last_slot().unwrap_or(0);
 
     let mut filter_type: Option<u8> = None;
@@ -7345,8 +7277,9 @@ async fn handle_get_moltyid_agent_directory(
         }
     }
 
+    let entries = state.state.get_contract_storage_entries(&program, 10_000, None).unwrap_or_default();
     let mut agents = Vec::new();
-    for (key, value) in &contract.storage {
+    for (key, value) in &entries {
         if !key.starts_with(b"id:") {
             continue;
         }
@@ -7363,16 +7296,14 @@ async fn handle_get_moltyid_agent_directory(
         }
 
         let pubkey = identity.owner;
-        let reputation = get_moltyid_reputation(&contract, &pubkey).unwrap_or(identity.reputation);
+        let reputation = get_moltyid_reputation(state, &pubkey).unwrap_or(identity.reputation);
         if let Some(minimum) = min_reputation {
             if reputation < minimum {
                 continue;
             }
         }
 
-        let availability = contract
-            .storage
-            .get(&format!("availability:{}", moltyid_hex(&pubkey)).into_bytes())
+        let availability = moltyid_cf_get(state, &format!("availability:{}", moltyid_hex(&pubkey)).into_bytes())
             .and_then(|raw| raw.first().copied())
             .unwrap_or(0);
         let is_available = availability == 1;
@@ -7382,23 +7313,19 @@ async fn handle_get_moltyid_agent_directory(
             }
         }
 
-        let rate = contract
-            .storage
-            .get(&format!("rate:{}", moltyid_hex(&pubkey)).into_bytes())
-            .and_then(|raw| read_u64_le(raw, 0))
+        let rate = moltyid_cf_get(state, &format!("rate:{}", moltyid_hex(&pubkey)).into_bytes())
+            .and_then(|raw| read_u64_le(&raw, 0))
             .unwrap_or(0);
 
-        let endpoint = contract
-            .storage
-            .get(&format!("endpoint:{}", moltyid_hex(&pubkey)).into_bytes())
-            .and_then(|raw| String::from_utf8(raw.clone()).ok());
+        let endpoint = moltyid_cf_get(state, &format!("endpoint:{}", moltyid_hex(&pubkey)).into_bytes())
+            .and_then(|raw| String::from_utf8(raw).ok());
 
         let tier = moltyid_trust_tier(reputation);
 
         agents.push(serde_json::json!({
             "address": pubkey.to_base58(),
             "name": identity.name,
-            "molt_name": get_moltyid_name(&contract, &pubkey, current_slot),
+            "molt_name": get_moltyid_name(state, &pubkey, current_slot),
             "agent_type": identity.agent_type,
             "agent_type_name": moltyid_agent_type_name(identity.agent_type),
             "reputation": reputation,
@@ -7414,8 +7341,6 @@ async fn handle_get_moltyid_agent_directory(
             "updated_at": identity.updated_at,
         }));
 
-        // P10-VAL-07: Cap collected entries to prevent excessive memory use
-        // on large identity sets. 10K is well above any realistic directory page.
         if agents.len() >= 10_000 {
             break;
         }
@@ -9689,55 +9614,11 @@ async fn handle_request_airdrop(
 const PREDICT_SYMBOL: &str = "PREDICT";
 const PM_PRICE_SCALE: f64 = 1_000_000_000.0;
 
-fn load_prediction_contract(state: &RpcState) -> Result<ContractAccount, RpcError> {
-    let symbol_entry = state
-        .state
-        .get_symbol_registry(PREDICT_SYMBOL)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Database error: {}", e),
-        })?
-        .ok_or_else(|| RpcError {
-            code: -32001,
-            message: "Prediction market symbol not found in registry".to_string(),
-        })?;
-
-    let account = state
-        .state
-        .get_account(&symbol_entry.program)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("Database error: {}", e),
-        })?
-        .ok_or_else(|| RpcError {
-            code: -32001,
-            message: "Prediction market program account not found".to_string(),
-        })?;
-
-    serde_json::from_slice::<ContractAccount>(&account.data).map_err(|e| RpcError {
-        code: -32002,
-        message: format!("Invalid prediction market data: {}", e),
-    })
-}
-
 fn pm_u64(data: &[u8], off: usize) -> u64 {
     if data.len() < off + 8 {
         return 0;
     }
     u64::from_le_bytes(data[off..off + 8].try_into().unwrap_or([0; 8]))
-}
-
-fn pm_read_u64(contract: &ContractAccount, key: &[u8]) -> u64 {
-    contract
-        .get_storage(key)
-        .and_then(|d| {
-            if d.len() >= 8 {
-                Some(pm_u64(&d, 0))
-            } else {
-                None
-            }
-        })
-        .unwrap_or(0)
 }
 
 /// getPredictionMarketStats — Platform stats
@@ -9760,8 +9641,7 @@ async fn handle_get_prediction_markets(
     state: &RpcState,
     params: Option<serde_json::Value>,
 ) -> Result<serde_json::Value, RpcError> {
-    let contract = load_prediction_contract(state)?;
-    let total = pm_read_u64(&contract, b"pm_market_count");
+    let total = state.state.get_program_storage_u64(PREDICT_SYMBOL, b"pm_market_count");
 
     // Parse optional filter params
     let (cat_filter, status_filter, limit, offset) = match &params {
@@ -9809,7 +9689,7 @@ async fn handle_get_prediction_markets(
     let mut markets = Vec::new();
     for id in 1..=total {
         let key = format!("pm_m_{}", id);
-        let data = match contract.get_storage(key.as_bytes()) {
+        let data = match state.state.get_program_storage(PREDICT_SYMBOL, key.as_bytes()) {
             Some(d) if d.len() >= 192 => d,
             _ => continue,
         };
@@ -9828,8 +9708,8 @@ async fn handle_get_prediction_markets(
         }
 
         let q_key = format!("pm_q_{}", id);
-        let question = contract
-            .get_storage(q_key.as_bytes())
+        let question = state.state
+            .get_program_storage(PREDICT_SYMBOL, q_key.as_bytes())
             .and_then(|d| String::from_utf8(d).ok())
             .unwrap_or_default();
 
@@ -9885,9 +9765,8 @@ async fn handle_get_prediction_market(
         }
     };
 
-    let contract = load_prediction_contract(state)?;
     let key = format!("pm_m_{}", market_id);
-    let data = contract.get_storage(key.as_bytes()).ok_or(RpcError {
+    let data = state.state.get_program_storage(PREDICT_SYMBOL, key.as_bytes()).ok_or(RpcError {
         code: -32001,
         message: format!("Market {} not found", market_id),
     })?;
@@ -9925,8 +9804,8 @@ async fn handle_get_prediction_market(
     };
 
     let q_key = format!("pm_q_{}", market_id);
-    let question = contract
-        .get_storage(q_key.as_bytes())
+    let question = state.state
+        .get_program_storage(PREDICT_SYMBOL, q_key.as_bytes())
         .and_then(|d| String::from_utf8(d).ok())
         .unwrap_or_default();
 
@@ -9936,13 +9815,13 @@ async fn handle_get_prediction_market(
         let o_key = format!("pm_o_{}_{}", market_id, oi);
         let on_key = format!("pm_on_{}_{}", market_id, oi);
 
-        let name = contract
-            .get_storage(on_key.as_bytes())
+        let name = state.state
+            .get_program_storage(PREDICT_SYMBOL, on_key.as_bytes())
             .and_then(|d| String::from_utf8(d).ok())
             .unwrap_or_else(|| if oi == 0 { "Yes".into() } else { "No".into() });
 
-        let (pool_y, pool_n) = contract
-            .get_storage(o_key.as_bytes())
+        let (pool_y, pool_n) = state.state
+            .get_program_storage(PREDICT_SYMBOL, o_key.as_bytes())
             .map(|d| {
                 if d.len() >= 16 {
                     (pm_u64(&d, 0), pm_u64(&d, 8))
@@ -10009,21 +9888,19 @@ async fn handle_get_prediction_positions(
         }
     };
 
-    let contract = load_prediction_contract(state)?;
-
     let count_key = format!("pm_userc_{}", address);
-    let count = pm_read_u64(&contract, count_key.as_bytes());
+    let count = state.state.get_program_storage_u64(PREDICT_SYMBOL, count_key.as_bytes());
 
     let mut positions = Vec::new();
     for idx in 0..count {
         let um_key = format!("pm_user_{}_{}", address, idx);
-        let market_id = match contract.get_storage(um_key.as_bytes()) {
+        let market_id = match state.state.get_program_storage(PREDICT_SYMBOL, um_key.as_bytes()) {
             Some(d) if d.len() >= 8 => pm_u64(&d, 0),
             _ => continue,
         };
 
         let mkt_key = format!("pm_m_{}", market_id);
-        let mkt_data = match contract.get_storage(mkt_key.as_bytes()) {
+        let mkt_data = match state.state.get_program_storage(PREDICT_SYMBOL, mkt_key.as_bytes()) {
             Some(d) if d.len() >= 192 => d,
             _ => continue,
         };
@@ -10031,7 +9908,7 @@ async fn handle_get_prediction_positions(
 
         for oi in 0..outcome_count {
             let pos_key = format!("pm_p_{}_{}_{}", market_id, address, oi);
-            if let Some(pd) = contract.get_storage(pos_key.as_bytes()) {
+            if let Some(pd) = state.state.get_program_storage(PREDICT_SYMBOL, pos_key.as_bytes()) {
                 if pd.len() >= 16 {
                     let shares = pm_u64(&pd, 0);
                     let cost = pm_u64(&pd, 8);
@@ -10072,9 +9949,8 @@ async fn handle_get_prediction_trader_stats(
         }
     };
 
-    let contract = load_prediction_contract(state)?;
     let key = format!("pm_ts_{}", address);
-    match contract.get_storage(key.as_bytes()) {
+    match state.state.get_program_storage(PREDICT_SYMBOL, key.as_bytes()) {
         Some(d) if d.len() >= 24 => Ok(serde_json::json!({
             "address": address,
             "total_volume": pm_u64(&d, 0) as f64 / PM_PRICE_SCALE,
@@ -10103,18 +9979,17 @@ async fn handle_get_prediction_leaderboard(
     };
     let limit = limit.min(50);
 
-    let contract = load_prediction_contract(state)?;
-    let total_traders = pm_read_u64(&contract, b"pm_total_traders");
+    let total_traders = state.state.get_program_storage_u64(PREDICT_SYMBOL, b"pm_total_traders");
     let scan_max = (total_traders as usize).min(500);
 
     let mut entries: Vec<(String, u64, u64)> = Vec::with_capacity(scan_max);
     for i in 0..scan_max as u64 {
         let lk = format!("pm_tl_{}", i);
-        if let Some(addr_data) = contract.get_storage(lk.as_bytes()) {
+        if let Some(addr_data) = state.state.get_program_storage(PREDICT_SYMBOL, lk.as_bytes()) {
             if addr_data.len() >= 32 {
                 let addr_hex = hex::encode(&addr_data[..32]);
                 let tk = format!("pm_ts_{}", addr_hex);
-                if let Some(sd) = contract.get_storage(tk.as_bytes()) {
+                if let Some(sd) = state.state.get_program_storage(PREDICT_SYMBOL, tk.as_bytes()) {
                     if sd.len() >= 24 {
                         let vol = pm_u64(&sd, 0);
                         let trades = pm_u64(&sd, 8);
@@ -10149,8 +10024,7 @@ async fn handle_get_prediction_leaderboard(
 
 /// getPredictionTrending — Active markets ranked by 24h volume
 async fn handle_get_prediction_trending(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let contract = load_prediction_contract(state)?;
-    let total = pm_read_u64(&contract, b"pm_market_count");
+    let total = state.state.get_program_storage_u64(PREDICT_SYMBOL, b"pm_market_count");
 
     let cat_map = |c: u8| -> &'static str {
         match c {
@@ -10168,7 +10042,7 @@ async fn handle_get_prediction_trending(state: &RpcState) -> Result<serde_json::
     let mut markets = Vec::new();
     for id in 1..=total {
         let key = format!("pm_m_{}", id);
-        let data = match contract.get_storage(key.as_bytes()) {
+        let data = match state.state.get_program_storage(PREDICT_SYMBOL, key.as_bytes()) {
             Some(d) if d.len() >= 192 => d,
             _ => continue,
         };
@@ -10177,16 +10051,16 @@ async fn handle_get_prediction_trending(state: &RpcState) -> Result<serde_json::
         } // only active
 
         let q_key = format!("pm_q_{}", id);
-        let question = contract
-            .get_storage(q_key.as_bytes())
+        let question = state.state
+            .get_program_storage(PREDICT_SYMBOL, q_key.as_bytes())
             .and_then(|d| String::from_utf8(d).ok())
             .unwrap_or_default();
 
         let vol24_key = format!("pm_mv24_{}", id);
-        let vol24 = pm_read_u64(&contract, vol24_key.as_bytes());
+        let vol24 = state.state.get_program_storage_u64(PREDICT_SYMBOL, vol24_key.as_bytes());
 
         let tc_key = format!("pm_mtc_{}", id);
-        let traders = pm_read_u64(&contract, tc_key.as_bytes());
+        let traders = state.state.get_program_storage_u64(PREDICT_SYMBOL, tc_key.as_bytes());
 
         markets.push((
             id,
@@ -10246,11 +10120,10 @@ async fn handle_get_prediction_market_analytics(
         }
     };
 
-    let contract = load_prediction_contract(state)?;
     let tc_key = format!("pm_mtc_{}", market_id);
-    let traders = pm_read_u64(&contract, tc_key.as_bytes());
+    let traders = state.state.get_program_storage_u64(PREDICT_SYMBOL, tc_key.as_bytes());
     let vol24_key = format!("pm_mv24_{}", market_id);
-    let vol24 = pm_read_u64(&contract, vol24_key.as_bytes());
+    let vol24 = state.state.get_program_storage_u64(PREDICT_SYMBOL, vol24_key.as_bytes());
 
     Ok(serde_json::json!({
         "market_id": market_id,
