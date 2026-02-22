@@ -211,10 +211,11 @@ async function displayBlock(block) {
         }
         if (totalFee > 0) {
             feeCard.style.display = '';
-            const burned = Math.floor(totalFee * 0.5);
+            const burned = Math.floor(totalFee * 0.4);
             const producer = Math.floor(totalFee * 0.3);
             const voters = Math.floor(totalFee * 0.1);
-            const treasury = totalFee - burned - producer - voters;
+            const treasury = Math.floor(totalFee * 0.1);
+            const community = totalFee - burned - producer - voters - treasury;
             const fmt = (shells) => {
                 const molt = shells / 1_000_000_000;
                 return molt.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 9 }) + ' MOLT';
@@ -224,6 +225,9 @@ async function displayBlock(block) {
             document.getElementById('feeProducerDisplay').textContent = fmt(producer);
             document.getElementById('feeVotersDisplay').textContent = fmt(voters);
             document.getElementById('feeTreasuryDisplay').textContent = fmt(treasury);
+            if (document.getElementById('feeCommunityDisplay')) {
+                document.getElementById('feeCommunityDisplay').textContent = fmt(community);
+            }
         }
     }
 
