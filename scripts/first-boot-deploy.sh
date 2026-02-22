@@ -201,11 +201,11 @@ async def go():
         # sqrt_price in Q32: (1 << 32) * sqrt(real_price)
         # Prices aligned with genesis oracle: MOLT=\$0.10, wSOL=\$170, wETH=\$2,500
         pools = [
-            {'pair_id': 1, 'fee_bps': 30, 'sqrt_price': 1_358_187_913},      # MOLT/mUSD $0.10
-            {'pair_id': 2, 'fee_bps': 30, 'sqrt_price': 55_999_522_252},     # wSOL/mUSD $170
-            {'pair_id': 3, 'fee_bps': 30, 'sqrt_price': 214_748_364_800},    # wETH/mUSD $2,500
-            {'pair_id': 4, 'fee_bps': 30, 'sqrt_price': 177_086_038_199},    # wSOL/MOLT 1,700
-            {'pair_id': 5, 'fee_bps': 30, 'sqrt_price': 679_093_956_564},    # wETH/MOLT 25,000
+            {'pair_id': 1, 'fee_bps': 30, 'sqrt_price': 1_358_187_913},      # MOLT/mUSD 0.10
+            {'pair_id': 2, 'fee_bps': 30, 'sqrt_price': 55_999_522_252},     # wSOL/mUSD 170
+            {'pair_id': 3, 'fee_bps': 30, 'sqrt_price': 214_748_364_800},    # wETH/mUSD 2500
+            {'pair_id': 4, 'fee_bps': 30, 'sqrt_price': 177_086_038_199},    # wSOL/MOLT 1700
+            {'pair_id': 5, 'fee_bps': 30, 'sqrt_price': 679_093_956_564},    # wETH/MOLT 25000
         ]
         for pool in pools:
             try:

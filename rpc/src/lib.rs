@@ -7398,44 +7398,40 @@ async fn handle_get_moltyid_agent_directory(
 }
 
 async fn handle_get_moltyid_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let (_, contract) = load_moltyid_contract(state)?;
+    let program = resolve_symbol_pubkey(state, "YID")?;
 
-    let total_identities = contract
-        .storage
-        .get(b"mid_identity_count".as_ref())
-        .and_then(|value| read_u64_le(value, 0))
-        .unwrap_or(0);
+    let total_identities = cf_stats_u64(state, "YID", b"mid_identity_count");
+    let total_names = cf_stats_u64(state, "YID", b"molt_name_count");
 
-    let total_names = contract
-        .storage
-        .get(b"molt_name_count".as_ref())
-        .and_then(|value| read_u64_le(value, 0))
-        .unwrap_or(0);
-
-    // PERF-NOTE (P10-VAL-07): Full storage scan for tier distribution.
+    // PERF-NOTE (P10-VAL-07): Full CF storage scan for tier distribution.
     // Acceptable for current identity counts. Consider caching or contract-side
     // aggregate counters if identity count exceeds 100K.
+    let entries = state
+        .state
+        .get_contract_storage_entries(&program, 100_000, None)
+        .unwrap_or_default();
+
     let mut tier_distribution = [0u64; 6];
     let mut total_skills: u64 = 0;
     let mut total_vouches: u64 = 0;
-    for (key, value) in &contract.storage {
-        if !key.starts_with(b"id:") {
-            continue;
-        }
-        let Some(identity) = parse_moltyid_identity_record(value) else {
-            continue;
-        };
-        let score =
-            get_moltyid_reputation(&contract, &identity.owner).unwrap_or(identity.reputation);
-        tier_distribution[moltyid_trust_tier(score) as usize] += 1;
-        total_skills += identity.skill_count as u64;
-        total_vouches += identity.vouch_count as u64;
-    }
-
-    // Count attestations from attestation count keys
     let mut total_attestations: u64 = 0;
-    for (key, value) in &contract.storage {
-        if key.starts_with(b"attest_count_") {
+
+    for (key, value) in &entries {
+        if key.starts_with(b"id:") {
+            let Some(identity) = parse_moltyid_identity_record(value) else {
+                continue;
+            };
+            // Read reputation from CF
+            let rep_key = moltyid_reputation_key(&identity.owner);
+            let score = state
+                .state
+                .get_program_storage("YID", &rep_key)
+                .and_then(|v| read_u64_le(&v, 0))
+                .unwrap_or(identity.reputation);
+            tier_distribution[moltyid_trust_tier(score) as usize] += 1;
+            total_skills += identity.skill_count as u64;
+            total_vouches += identity.vouch_count as u64;
+        } else if key.starts_with(b"attest_count_") {
             total_attestations += read_u64_le(value, 0).unwrap_or(0);
         }
     }
@@ -9706,20 +9702,16 @@ fn pm_read_u64(contract: &ContractAccount, key: &[u8]) -> u64 {
 
 /// getPredictionMarketStats — Platform stats
 async fn handle_get_prediction_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let contract = load_prediction_contract(state)?;
-    let paused = contract
-        .get_storage(b"pm_paused")
-        .map(|d| d.first().copied().unwrap_or(0) != 0)
-        .unwrap_or(false);
+    resolve_symbol_pubkey(state, "PREDICT")?;
 
     Ok(serde_json::json!({
-        "total_markets": pm_read_u64(&contract, b"pm_market_count"),
-        "open_markets": pm_read_u64(&contract, b"pm_open_markets"),
-        "total_volume": pm_read_u64(&contract, b"pm_total_volume") as f64 / PM_PRICE_SCALE,
-        "total_collateral": pm_read_u64(&contract, b"pm_total_collateral") as f64 / PM_PRICE_SCALE,
-        "fees_collected": pm_read_u64(&contract, b"pm_fees_collected") as f64 / PM_PRICE_SCALE,
-        "total_traders": pm_read_u64(&contract, b"pm_total_traders"),
-        "paused": paused,
+        "total_markets": cf_stats_u64(state, "PREDICT", b"pm_market_count"),
+        "open_markets": cf_stats_u64(state, "PREDICT", b"pm_open_markets"),
+        "total_volume": cf_stats_u64(state, "PREDICT", b"pm_total_volume") as f64 / PM_PRICE_SCALE,
+        "total_collateral": cf_stats_u64(state, "PREDICT", b"pm_total_collateral") as f64 / PM_PRICE_SCALE,
+        "fees_collected": cf_stats_u64(state, "PREDICT", b"pm_fees_collected") as f64 / PM_PRICE_SCALE,
+        "total_traders": cf_stats_u64(state, "PREDICT", b"pm_total_traders"),
+        "paused": cf_stats_bool(state, "PREDICT", b"pm_paused"),
     }))
 }
 
@@ -10231,143 +10223,134 @@ async fn handle_get_prediction_market_analytics(
 // DEX & PLATFORM STATS JSON-RPC HANDLERS
 // ═══════════════════════════════════════════════════════════════════════════════
 
-fn load_contract_by_symbol(state: &RpcState, symbol: &str) -> Result<ContractAccount, RpcError> {
-    let entry = state
+/// Read a u64 from CF_CONTRACT_STORAGE (fast path, always current).
+/// This is the authoritative source — post-block hooks (SL/TP engine,
+/// analytics bridge, candle resets) write to CF only, NOT to embedded storage.
+fn cf_stats_u64(state: &RpcState, symbol: &str, key: &[u8]) -> u64 {
+    state.state.get_program_storage_u64(symbol, key)
+}
+
+/// Read a bool flag from CF_CONTRACT_STORAGE.
+fn cf_stats_bool(state: &RpcState, symbol: &str, key: &[u8]) -> bool {
+    state
+        .state
+        .get_program_storage(symbol, key)
+        .map(|d| d.first().copied().unwrap_or(0) != 0)
+        .unwrap_or(false)
+}
+
+/// Resolve a symbol to its program Pubkey.
+fn resolve_symbol_pubkey(state: &RpcState, symbol: &str) -> Result<Pubkey, RpcError> {
+    state
         .state
         .get_symbol_registry(symbol)
         .map_err(|e| RpcError {
             code: -32000,
             message: format!("DB error: {}", e),
         })?
+        .map(|e| e.program)
         .ok_or_else(|| RpcError {
             code: -32001,
             message: format!("{} symbol not found", symbol),
-        })?;
-    let account = state
-        .state
-        .get_account(&entry.program)
-        .map_err(|e| RpcError {
-            code: -32000,
-            message: format!("DB error: {}", e),
-        })?
-        .ok_or_else(|| RpcError {
-            code: -32001,
-            message: format!("{} account not found", symbol),
-        })?;
-    serde_json::from_slice::<ContractAccount>(&account.data).map_err(|e| RpcError {
-        code: -32002,
-        message: format!("Invalid contract data: {}", e),
-    })
-}
-
-fn stats_u64(contract: &ContractAccount, key: &[u8]) -> u64 {
-    contract
-        .get_storage(key)
-        .and_then(|d| {
-            if d.len() >= 8 {
-                Some(u64::from_le_bytes(d[..8].try_into().unwrap_or([0; 8])))
-            } else {
-                None
-            }
         })
-        .unwrap_or(0)
 }
 
 /// getDexCoreStats — DEX core exchange stats
 async fn handle_get_dex_core_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let c = load_contract_by_symbol(state, "DEX")?;
+    resolve_symbol_pubkey(state, "DEX")?; // verify symbol exists
     Ok(serde_json::json!({
-        "pair_count": stats_u64(&c, b"dex_pair_count"),
-        "order_count": stats_u64(&c, b"dex_order_count"),
-        "trade_count": stats_u64(&c, b"dex_trade_count"),
-        "total_volume": stats_u64(&c, b"dex_total_volume"),
-        "fee_treasury": stats_u64(&c, b"dex_fee_treasury"),
-        "paused": c.get_storage(b"dex_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
+        "pair_count": cf_stats_u64(state, "DEX", b"dex_pair_count"),
+        "order_count": cf_stats_u64(state, "DEX", b"dex_order_count"),
+        "trade_count": cf_stats_u64(state, "DEX", b"dex_trade_count"),
+        "total_volume": cf_stats_u64(state, "DEX", b"dex_total_volume"),
+        "fee_treasury": cf_stats_u64(state, "DEX", b"dex_fee_treasury"),
+        "paused": cf_stats_bool(state, "DEX", b"dex_paused"),
     }))
 }
 
 /// getDexAmmStats — AMM pool stats
 async fn handle_get_dex_amm_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let c = load_contract_by_symbol(state, "DEXAMM")?;
+    resolve_symbol_pubkey(state, "DEXAMM")?;
     Ok(serde_json::json!({
-        "pool_count": stats_u64(&c, b"amm_pool_count"),
-        "position_count": stats_u64(&c, b"amm_pos_count"),
-        "swap_count": stats_u64(&c, b"amm_swap_count"),
-        "total_volume": stats_u64(&c, b"amm_total_volume"),
-        "total_fees": stats_u64(&c, b"amm_total_fees"),
-        "paused": c.get_storage(b"amm_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
+        "pool_count": cf_stats_u64(state, "DEXAMM", b"amm_pool_count"),
+        "position_count": cf_stats_u64(state, "DEXAMM", b"amm_pos_count"),
+        "swap_count": cf_stats_u64(state, "DEXAMM", b"amm_swap_count"),
+        "total_volume": cf_stats_u64(state, "DEXAMM", b"amm_total_volume"),
+        "total_fees": cf_stats_u64(state, "DEXAMM", b"amm_total_fees"),
+        "paused": cf_stats_bool(state, "DEXAMM", b"amm_paused"),
     }))
 }
 
 /// getDexMarginStats — Margin trading stats
 async fn handle_get_dex_margin_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let c = load_contract_by_symbol(state, "DEXMARGIN")?;
-    // Read global max leverage — if per-pair key mrg_maxl_0 is set use it,
-    // otherwise fall back to the contract's compiled default (100x).
-    let per_pair_max = stats_u64(&c, b"mrg_maxl_0");
-    let max_leverage = if per_pair_max > 0 { per_pair_max } else { 100 }; // MAX_LEVERAGE_ISOLATED = 100
+    resolve_symbol_pubkey(state, "DEXMARGIN")?;
+    let per_pair_max = cf_stats_u64(state, "DEXMARGIN", b"mrg_maxl_0");
+    let max_leverage = if per_pair_max > 0 { per_pair_max } else { 100 };
     Ok(serde_json::json!({
-        "position_count": stats_u64(&c, b"mrg_pos_count"),
-        "total_volume": stats_u64(&c, b"mrg_total_volume"),
-        "liquidation_count": stats_u64(&c, b"mrg_liq_count"),
-        "total_pnl_profit": stats_u64(&c, b"mrg_pnl_profit"),
-        "total_pnl_loss": stats_u64(&c, b"mrg_pnl_loss"),
-        "insurance_fund": stats_u64(&c, b"mrg_insurance"),
+        "position_count": cf_stats_u64(state, "DEXMARGIN", b"mrg_pos_count"),
+        "total_volume": cf_stats_u64(state, "DEXMARGIN", b"mrg_total_volume"),
+        "liquidation_count": cf_stats_u64(state, "DEXMARGIN", b"mrg_liq_count"),
+        "total_pnl_profit": cf_stats_u64(state, "DEXMARGIN", b"mrg_pnl_profit"),
+        "total_pnl_loss": cf_stats_u64(state, "DEXMARGIN", b"mrg_pnl_loss"),
+        "insurance_fund": cf_stats_u64(state, "DEXMARGIN", b"mrg_insurance"),
         "max_leverage": max_leverage,
-        "paused": c.get_storage(b"mrg_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
+        "paused": cf_stats_bool(state, "DEXMARGIN", b"mrg_paused"),
     }))
 }
 
 /// getDexRewardsStats — Rewards program stats
 async fn handle_get_dex_rewards_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let c = load_contract_by_symbol(state, "DEXREWARDS")?;
+    resolve_symbol_pubkey(state, "DEXREWARDS")?;
     Ok(serde_json::json!({
-        "trade_count": stats_u64(&c, b"rew_trade_count"),
-        "trader_count": stats_u64(&c, b"rew_trader_count"),
-        "total_volume": stats_u64(&c, b"rew_total_volume"),
-        "total_distributed": stats_u64(&c, b"rew_total_dist"),
-        "epoch": stats_u64(&c, b"rew_epoch"),
-        "paused": c.get_storage(b"rew_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
+        "trade_count": cf_stats_u64(state, "DEXREWARDS", b"rew_trade_count"),
+        "trader_count": cf_stats_u64(state, "DEXREWARDS", b"rew_trader_count"),
+        "total_volume": cf_stats_u64(state, "DEXREWARDS", b"rew_total_volume"),
+        "total_distributed": cf_stats_u64(state, "DEXREWARDS", b"rew_total_dist"),
+        "epoch": cf_stats_u64(state, "DEXREWARDS", b"rew_epoch"),
+        "paused": cf_stats_bool(state, "DEXREWARDS", b"rew_paused"),
     }))
 }
 
 /// getDexRouterStats — Router stats
 async fn handle_get_dex_router_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let c = load_contract_by_symbol(state, "DEXROUTER")?;
+    resolve_symbol_pubkey(state, "DEXROUTER")?;
     Ok(serde_json::json!({
-        "route_count": stats_u64(&c, b"rtr_route_count"),
-        "swap_count": stats_u64(&c, b"rtr_swap_count"),
-        "total_volume": stats_u64(&c, b"rtr_total_volume"),
-        "paused": c.get_storage(b"rtr_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
+        "route_count": cf_stats_u64(state, "DEXROUTER", b"rtr_route_count"),
+        "swap_count": cf_stats_u64(state, "DEXROUTER", b"rtr_swap_count"),
+        "total_volume": cf_stats_u64(state, "DEXROUTER", b"rtr_total_volume"),
+        "paused": cf_stats_bool(state, "DEXROUTER", b"rtr_paused"),
     }))
 }
 
 /// getDexAnalyticsStats — Analytics global stats
 async fn handle_get_dex_analytics_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let c = load_contract_by_symbol(state, "ANALYTICS")?;
+    let program = resolve_symbol_pubkey(state, "ANALYTICS")?;
 
-    // Aggregate candle counts and tracked pairs from storage
+    // Aggregate candle counts and tracked pairs from CF_CONTRACT_STORAGE
     // Keys: "ana_cc_{pair_id}_{interval}" → u64 candle count
     // Keys: "ana_24h_{pair_id}" → 24h stats (presence means pair is tracked)
     let mut total_candles: u64 = 0;
     let mut tracked_pairs = std::collections::HashSet::new();
-    for (key, value) in &c.storage {
+
+    // Iterate all storage entries for the ANALYTICS contract in CF
+    let entries = state
+        .state
+        .get_contract_storage_entries(&program, 10_000, None)
+        .unwrap_or_default();
+    for (key, value) in &entries {
         if key.starts_with(b"ana_cc_") {
-            // Parse candle count
             if value.len() >= 8 {
                 total_candles += u64::from_le_bytes([
                     value[0], value[1], value[2], value[3],
                     value[4], value[5], value[6], value[7],
                 ]);
             }
-            // Extract pair_id (between first _ after "ana_cc_" and next _)
             if let Some(pair_part) = key.get(7..) {
                 if let Some(end) = pair_part.iter().position(|&b| b == b'_') {
                     tracked_pairs.insert(pair_part[..end].to_vec());
                 }
             }
         } else if key.starts_with(b"ana_24h_") {
-            // Also count pairs with 24h stats
             if let Some(pair_part) = key.get(8..) {
                 tracked_pairs.insert(pair_part.to_vec());
             }
@@ -10375,12 +10358,12 @@ async fn handle_get_dex_analytics_stats(state: &RpcState) -> Result<serde_json::
     }
 
     Ok(serde_json::json!({
-        "record_count": stats_u64(&c, b"ana_rec_count"),
-        "trader_count": stats_u64(&c, b"ana_trader_count"),
-        "total_volume": stats_u64(&c, b"ana_total_volume"),
+        "record_count": cf_stats_u64(state, "ANALYTICS", b"ana_rec_count"),
+        "trader_count": cf_stats_u64(state, "ANALYTICS", b"ana_trader_count"),
+        "total_volume": cf_stats_u64(state, "ANALYTICS", b"ana_total_volume"),
         "total_candles": total_candles,
         "tracked_pairs": tracked_pairs.len(),
-        "paused": c.get_storage(b"ana_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
+        "paused": cf_stats_bool(state, "ANALYTICS", b"ana_paused"),
     }))
 }
 
@@ -10391,210 +10374,210 @@ async fn handle_get_dex_analytics_stats(state: &RpcState) -> Result<serde_json::
 /// `stats_u64()` helper performs a point-lookup, making this endpoint suitable for frequent
 /// polling without performance concerns.
 async fn handle_get_dex_governance_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let c = load_contract_by_symbol(state, "DEXGOV")?;
+    resolve_symbol_pubkey(state, "DEXGOV")?;
     Ok(serde_json::json!({
-        "proposal_count": stats_u64(&c, b"gov_prop_count"),
-        "total_votes": stats_u64(&c, b"gov_total_votes"),
-        "voter_count": stats_u64(&c, b"gov_voter_count"),
-        "paused": c.get_storage(b"gov_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
+        "proposal_count": cf_stats_u64(state, "DEXGOV", b"gov_prop_count"),
+        "total_votes": cf_stats_u64(state, "DEXGOV", b"gov_total_votes"),
+        "voter_count": cf_stats_u64(state, "DEXGOV", b"gov_voter_count"),
+        "paused": cf_stats_bool(state, "DEXGOV", b"gov_paused"),
     }))
 }
 
 /// getMoltswapStats — Legacy swap stats
 async fn handle_get_moltswap_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let c = load_contract_by_symbol(state, "MOLTSWAP")?;
+    resolve_symbol_pubkey(state, "MOLTSWAP")?;
     Ok(serde_json::json!({
-        "swap_count": stats_u64(&c, b"ms_swap_count"),
-        "volume_a": stats_u64(&c, b"ms_volume_a"),
-        "volume_b": stats_u64(&c, b"ms_volume_b"),
-        "paused": c.get_storage(b"ms_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
+        "swap_count": cf_stats_u64(state, "MOLTSWAP", b"ms_swap_count"),
+        "volume_a": cf_stats_u64(state, "MOLTSWAP", b"ms_volume_a"),
+        "volume_b": cf_stats_u64(state, "MOLTSWAP", b"ms_volume_b"),
+        "paused": cf_stats_bool(state, "MOLTSWAP", b"ms_paused"),
     }))
 }
 
 /// getLobsterLendStats — Lending protocol stats
 async fn handle_get_lobsterlend_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let c = load_contract_by_symbol(state, "LEND")?;
+    resolve_symbol_pubkey(state, "LEND")?;
     Ok(serde_json::json!({
-        "total_deposits": stats_u64(&c, b"ll_total_deposits"),
-        "total_borrows": stats_u64(&c, b"ll_total_borrows"),
-        "reserves": stats_u64(&c, b"ll_reserves"),
-        "deposit_count": stats_u64(&c, b"ll_dep_count"),
-        "borrow_count": stats_u64(&c, b"ll_bor_count"),
-        "liquidation_count": stats_u64(&c, b"ll_liq_count"),
-        "paused": c.get_storage(b"ll_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
+        "total_deposits": cf_stats_u64(state, "LEND", b"ll_total_deposits"),
+        "total_borrows": cf_stats_u64(state, "LEND", b"ll_total_borrows"),
+        "reserves": cf_stats_u64(state, "LEND", b"ll_reserves"),
+        "deposit_count": cf_stats_u64(state, "LEND", b"ll_dep_count"),
+        "borrow_count": cf_stats_u64(state, "LEND", b"ll_bor_count"),
+        "liquidation_count": cf_stats_u64(state, "LEND", b"ll_liq_count"),
+        "paused": cf_stats_bool(state, "LEND", b"ll_paused"),
     }))
 }
 
 /// getClawPayStats — Streaming payments stats
 async fn handle_get_clawpay_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let c = load_contract_by_symbol(state, "CLAWPAY")?;
+    resolve_symbol_pubkey(state, "CLAWPAY")?;
     Ok(serde_json::json!({
-        "stream_count": stats_u64(&c, b"stream_count"),
-        "total_streamed": stats_u64(&c, b"cp_total_streamed"),
-        "total_withdrawn": stats_u64(&c, b"cp_total_withdrawn"),
-        "cancel_count": stats_u64(&c, b"cp_cancel_count"),
-        "paused": c.get_storage(b"cp_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
+        "stream_count": cf_stats_u64(state, "CLAWPAY", b"stream_count"),
+        "total_streamed": cf_stats_u64(state, "CLAWPAY", b"cp_total_streamed"),
+        "total_withdrawn": cf_stats_u64(state, "CLAWPAY", b"cp_total_withdrawn"),
+        "cancel_count": cf_stats_u64(state, "CLAWPAY", b"cp_cancel_count"),
+        "paused": cf_stats_bool(state, "CLAWPAY", b"cp_paused"),
     }))
 }
 
 /// getBountyBoardStats — Bounty platform stats
 async fn handle_get_bountyboard_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let c = load_contract_by_symbol(state, "BOUNTY")?;
+    resolve_symbol_pubkey(state, "BOUNTY")?;
     Ok(serde_json::json!({
-        "bounty_count": stats_u64(&c, b"bounty_count"),
-        "completed_count": stats_u64(&c, b"bb_completed_count"),
-        "reward_volume": stats_u64(&c, b"bb_reward_volume"),
-        "cancel_count": stats_u64(&c, b"bb_cancel_count"),
+        "bounty_count": cf_stats_u64(state, "BOUNTY", b"bounty_count"),
+        "completed_count": cf_stats_u64(state, "BOUNTY", b"bb_completed_count"),
+        "reward_volume": cf_stats_u64(state, "BOUNTY", b"bb_reward_volume"),
+        "cancel_count": cf_stats_u64(state, "BOUNTY", b"bb_cancel_count"),
     }))
 }
 
 /// getComputeMarketStats — Compute marketplace stats
 async fn handle_get_compute_market_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let c = load_contract_by_symbol(state, "COMPUTE")?;
+    resolve_symbol_pubkey(state, "COMPUTE")?;
     Ok(serde_json::json!({
-        "job_count": stats_u64(&c, b"job_count"),
-        "completed_count": stats_u64(&c, b"cm_completed_count"),
-        "payment_volume": stats_u64(&c, b"cm_payment_volume"),
-        "dispute_count": stats_u64(&c, b"cm_dispute_count"),
+        "job_count": cf_stats_u64(state, "COMPUTE", b"job_count"),
+        "completed_count": cf_stats_u64(state, "COMPUTE", b"cm_completed_count"),
+        "payment_volume": cf_stats_u64(state, "COMPUTE", b"cm_payment_volume"),
+        "dispute_count": cf_stats_u64(state, "COMPUTE", b"cm_dispute_count"),
     }))
 }
 
 /// getReefStorageStats — Decentralized storage stats
 async fn handle_get_reef_storage_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let c = load_contract_by_symbol(state, "REEF")?;
+    resolve_symbol_pubkey(state, "REEF")?;
     Ok(serde_json::json!({
-        "data_count": stats_u64(&c, b"data_count"),
-        "total_bytes": stats_u64(&c, b"reef_total_bytes"),
-        "challenge_count": stats_u64(&c, b"reef_challenge_count"),
+        "data_count": cf_stats_u64(state, "REEF", b"data_count"),
+        "total_bytes": cf_stats_u64(state, "REEF", b"reef_total_bytes"),
+        "challenge_count": cf_stats_u64(state, "REEF", b"reef_challenge_count"),
     }))
 }
 
 /// getMoltMarketStats — NFT marketplace stats
 async fn handle_get_moltmarket_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let c = load_contract_by_symbol(state, "MARKET")?;
+    resolve_symbol_pubkey(state, "MARKET")?;
     Ok(serde_json::json!({
-        "listing_count": stats_u64(&c, b"mm_listing_count"),
-        "sale_count": stats_u64(&c, b"mm_sale_count"),
-        "sale_volume": stats_u64(&c, b"mm_sale_volume"),
-        "paused": c.get_storage(b"mm_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
+        "listing_count": cf_stats_u64(state, "MARKET", b"mm_listing_count"),
+        "sale_count": cf_stats_u64(state, "MARKET", b"mm_sale_count"),
+        "sale_volume": cf_stats_u64(state, "MARKET", b"mm_sale_volume"),
+        "paused": cf_stats_bool(state, "MARKET", b"mm_paused"),
     }))
 }
 
 /// getMoltAuctionStats — Auction stats
 async fn handle_get_moltauction_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let c = load_contract_by_symbol(state, "AUCTION")?;
+    resolve_symbol_pubkey(state, "AUCTION")?;
     Ok(serde_json::json!({
-        "auction_count": stats_u64(&c, b"ma_auction_count"),
-        "total_volume": stats_u64(&c, b"ma_total_volume"),
-        "total_sales": stats_u64(&c, b"ma_total_sales"),
-        "paused": c.get_storage(b"ma_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
+        "auction_count": cf_stats_u64(state, "AUCTION", b"ma_auction_count"),
+        "total_volume": cf_stats_u64(state, "AUCTION", b"ma_total_volume"),
+        "total_sales": cf_stats_u64(state, "AUCTION", b"ma_total_sales"),
+        "paused": cf_stats_bool(state, "AUCTION", b"ma_paused"),
     }))
 }
 
 /// getMoltPunksStats — NFT collection stats
 async fn handle_get_moltpunks_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let c = load_contract_by_symbol(state, "PUNKS")?;
+    resolve_symbol_pubkey(state, "PUNKS")?;
     Ok(serde_json::json!({
-        "total_minted": stats_u64(&c, b"total_minted"),
-        "transfer_count": stats_u64(&c, b"mp_transfer_count"),
-        "burn_count": stats_u64(&c, b"mp_burn_count"),
-        "paused": c.get_storage(b"mp_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
+        "total_minted": cf_stats_u64(state, "PUNKS", b"total_minted"),
+        "transfer_count": cf_stats_u64(state, "PUNKS", b"mp_transfer_count"),
+        "burn_count": cf_stats_u64(state, "PUNKS", b"mp_burn_count"),
+        "paused": cf_stats_bool(state, "PUNKS", b"mp_paused"),
     }))
 }
 
 /// getMusdStats — mUSD stablecoin stats
 async fn handle_get_musd_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let c = load_contract_by_symbol(state, "MUSD")?;
+    resolve_symbol_pubkey(state, "MUSD")?;
     Ok(serde_json::json!({
-        "supply": stats_u64(&c, b"musd_supply"),
-        "total_minted": stats_u64(&c, b"musd_minted"),
-        "total_burned": stats_u64(&c, b"musd_burned"),
-        "mint_events": stats_u64(&c, b"musd_mint_evt"),
-        "burn_events": stats_u64(&c, b"musd_burn_evt"),
-        "transfer_count": stats_u64(&c, b"musd_xfer_cnt"),
-        "attestation_count": stats_u64(&c, b"musd_att_count"),
-        "reserve_attested": stats_u64(&c, b"musd_reserve_att"),
-        "paused": c.get_storage(b"musd_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
+        "supply": cf_stats_u64(state, "MUSD", b"musd_supply"),
+        "total_minted": cf_stats_u64(state, "MUSD", b"musd_minted"),
+        "total_burned": cf_stats_u64(state, "MUSD", b"musd_burned"),
+        "mint_events": cf_stats_u64(state, "MUSD", b"musd_mint_evt"),
+        "burn_events": cf_stats_u64(state, "MUSD", b"musd_burn_evt"),
+        "transfer_count": cf_stats_u64(state, "MUSD", b"musd_xfer_cnt"),
+        "attestation_count": cf_stats_u64(state, "MUSD", b"musd_att_count"),
+        "reserve_attested": cf_stats_u64(state, "MUSD", b"musd_reserve_att"),
+        "paused": cf_stats_bool(state, "MUSD", b"musd_paused"),
     }))
 }
 
 /// getWethStats — Wrapped ETH stats
 async fn handle_get_weth_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let c = load_contract_by_symbol(state, "WETH")?;
+    resolve_symbol_pubkey(state, "WETH")?;
     Ok(serde_json::json!({
-        "supply": stats_u64(&c, b"weth_supply"),
-        "total_minted": stats_u64(&c, b"weth_minted"),
-        "total_burned": stats_u64(&c, b"weth_burned"),
-        "mint_events": stats_u64(&c, b"weth_mint_evt"),
-        "burn_events": stats_u64(&c, b"weth_burn_evt"),
-        "transfer_count": stats_u64(&c, b"weth_xfer_cnt"),
-        "attestation_count": stats_u64(&c, b"weth_att_count"),
-        "reserve_attested": stats_u64(&c, b"weth_reserve_att"),
-        "paused": c.get_storage(b"weth_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
+        "supply": cf_stats_u64(state, "WETH", b"weth_supply"),
+        "total_minted": cf_stats_u64(state, "WETH", b"weth_minted"),
+        "total_burned": cf_stats_u64(state, "WETH", b"weth_burned"),
+        "mint_events": cf_stats_u64(state, "WETH", b"weth_mint_evt"),
+        "burn_events": cf_stats_u64(state, "WETH", b"weth_burn_evt"),
+        "transfer_count": cf_stats_u64(state, "WETH", b"weth_xfer_cnt"),
+        "attestation_count": cf_stats_u64(state, "WETH", b"weth_att_count"),
+        "reserve_attested": cf_stats_u64(state, "WETH", b"weth_reserve_att"),
+        "paused": cf_stats_bool(state, "WETH", b"weth_paused"),
     }))
 }
 
 /// getWsolStats — Wrapped SOL stats
 async fn handle_get_wsol_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let c = load_contract_by_symbol(state, "WSOL")?;
+    resolve_symbol_pubkey(state, "WSOL")?;
     Ok(serde_json::json!({
-        "supply": stats_u64(&c, b"wsol_supply"),
-        "total_minted": stats_u64(&c, b"wsol_minted"),
-        "total_burned": stats_u64(&c, b"wsol_burned"),
-        "mint_events": stats_u64(&c, b"wsol_mint_evt"),
-        "burn_events": stats_u64(&c, b"wsol_burn_evt"),
-        "transfer_count": stats_u64(&c, b"wsol_xfer_cnt"),
-        "attestation_count": stats_u64(&c, b"wsol_att_count"),
-        "reserve_attested": stats_u64(&c, b"wsol_reserve_att"),
-        "paused": c.get_storage(b"wsol_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
+        "supply": cf_stats_u64(state, "WSOL", b"wsol_supply"),
+        "total_minted": cf_stats_u64(state, "WSOL", b"wsol_minted"),
+        "total_burned": cf_stats_u64(state, "WSOL", b"wsol_burned"),
+        "mint_events": cf_stats_u64(state, "WSOL", b"wsol_mint_evt"),
+        "burn_events": cf_stats_u64(state, "WSOL", b"wsol_burn_evt"),
+        "transfer_count": cf_stats_u64(state, "WSOL", b"wsol_xfer_cnt"),
+        "attestation_count": cf_stats_u64(state, "WSOL", b"wsol_att_count"),
+        "reserve_attested": cf_stats_u64(state, "WSOL", b"wsol_reserve_att"),
+        "paused": cf_stats_bool(state, "WSOL", b"wsol_paused"),
     }))
 }
 
 /// getClawVaultStats — Yield vault stats
 async fn handle_get_clawvault_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let c = load_contract_by_symbol(state, "CLAWVAULT")?;
+    resolve_symbol_pubkey(state, "CLAWVAULT")?;
     Ok(serde_json::json!({
-        "total_assets": stats_u64(&c, b"cv_total_assets"),
-        "total_shares": stats_u64(&c, b"cv_total_shares"),
-        "strategy_count": stats_u64(&c, b"cv_strategy_count"),
-        "total_earned": stats_u64(&c, b"cv_total_earned"),
-        "fees_earned": stats_u64(&c, b"cv_fees_earned"),
-        "protocol_fees": stats_u64(&c, b"cv_protocol_fees"),
-        "paused": c.get_storage(b"cv_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
+        "total_assets": cf_stats_u64(state, "CLAWVAULT", b"cv_total_assets"),
+        "total_shares": cf_stats_u64(state, "CLAWVAULT", b"cv_total_shares"),
+        "strategy_count": cf_stats_u64(state, "CLAWVAULT", b"cv_strategy_count"),
+        "total_earned": cf_stats_u64(state, "CLAWVAULT", b"cv_total_earned"),
+        "fees_earned": cf_stats_u64(state, "CLAWVAULT", b"cv_fees_earned"),
+        "protocol_fees": cf_stats_u64(state, "CLAWVAULT", b"cv_protocol_fees"),
+        "paused": cf_stats_bool(state, "CLAWVAULT", b"cv_paused"),
     }))
 }
 
 /// getMoltBridgeStats — Cross-chain bridge stats
 async fn handle_get_moltbridge_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let c = load_contract_by_symbol(state, "BRIDGE")?;
+    resolve_symbol_pubkey(state, "BRIDGE")?;
     Ok(serde_json::json!({
-        "nonce": stats_u64(&c, b"bridge_nonce"),
-        "validator_count": stats_u64(&c, b"bridge_validator_count"),
-        "required_confirms": stats_u64(&c, b"bridge_required_confirms"),
-        "locked_amount": stats_u64(&c, b"bridge_locked_amount"),
-        "request_timeout": stats_u64(&c, b"bridge_request_timeout"),
-        "paused": c.get_storage(b"mb_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
+        "nonce": cf_stats_u64(state, "BRIDGE", b"bridge_nonce"),
+        "validator_count": cf_stats_u64(state, "BRIDGE", b"bridge_validator_count"),
+        "required_confirms": cf_stats_u64(state, "BRIDGE", b"bridge_required_confirms"),
+        "locked_amount": cf_stats_u64(state, "BRIDGE", b"bridge_locked_amount"),
+        "request_timeout": cf_stats_u64(state, "BRIDGE", b"bridge_request_timeout"),
+        "paused": cf_stats_bool(state, "BRIDGE", b"mb_paused"),
     }))
 }
 
 /// getMoltDaoStats — DAO governance stats
 async fn handle_get_moltdao_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let c = load_contract_by_symbol(state, "DAO")?;
+    resolve_symbol_pubkey(state, "DAO")?;
     Ok(serde_json::json!({
-        "proposal_count": stats_u64(&c, b"proposal_count"),
-        "min_proposal_threshold": stats_u64(&c, b"min_proposal_threshold"),
-        "paused": c.get_storage(b"dao_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
+        "proposal_count": cf_stats_u64(state, "DAO", b"proposal_count"),
+        "min_proposal_threshold": cf_stats_u64(state, "DAO", b"min_proposal_threshold"),
+        "paused": cf_stats_bool(state, "DAO", b"dao_paused"),
     }))
 }
 
 /// getMoltOracleStats — Oracle price feed stats
 async fn handle_get_moltoracle_stats(state: &RpcState) -> Result<serde_json::Value, RpcError> {
-    let c = load_contract_by_symbol(state, "ORACLE")?;
+    resolve_symbol_pubkey(state, "ORACLE")?;
     Ok(serde_json::json!({
-        "queries": stats_u64(&c, b"stats_queries"),
-        "feeds": stats_u64(&c, b"stats_feeds"),
-        "attestations": stats_u64(&c, b"stats_attestations"),
-        "paused": c.get_storage(b"oracle_paused").map(|d| d.first().copied().unwrap_or(0) != 0).unwrap_or(false),
+        "queries": cf_stats_u64(state, "ORACLE", b"stats_queries"),
+        "feeds": cf_stats_u64(state, "ORACLE", b"stats_feeds"),
+        "attestations": cf_stats_u64(state, "ORACLE", b"stats_attestations"),
+        "paused": cf_stats_bool(state, "ORACLE", b"oracle_paused"),
     }))
 }
 

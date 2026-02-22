@@ -280,6 +280,14 @@ fn create_test_app_with_moltyid() -> (axum::Router, String, String) {
         )
         .expect("register symbol");
 
+    // Mirror all storage entries to CF_CONTRACT_STORAGE so CF-based stats
+    // handlers return the same values as the embedded storage.
+    for (key, value) in &contract.storage {
+        state
+            .put_contract_storage(&moltyid_program, key, value)
+            .expect("put CF storage");
+    }
+
     let app = build_rpc_router(
         state,
         None,

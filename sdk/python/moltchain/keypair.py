@@ -58,16 +58,19 @@ class Keypair:
             seed = plaintext[:32]
             return cls.from_seed(seed)
 
-        # Legacy cleartext (v1) — support both "seed" and "privateKey" formats
+        # Legacy cleartext (v1) — support "seed", "privateKey", and "secret_key" formats
         if "seed" in data:
             seed = bytes(data["seed"])
         elif "privateKey" in data:
             raw = bytes(data["privateKey"])
             # Rust NaCl keypair is 64 bytes (seed[32] + public[32]); extract seed
             seed = raw[:32]
+        elif "secret_key" in data:
+            # Genesis-generated keypairs store seed as hex string
+            seed = bytes.fromhex(data["secret_key"])
         else:
             raise ValueError(
-                f"Keypair file missing 'seed' or 'privateKey' field: {path}"
+                f"Keypair file missing 'seed', 'privateKey', or 'secret_key' field: {path}"
             )
         return cls.from_seed(seed)
 
