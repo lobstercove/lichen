@@ -68,6 +68,7 @@ if [ "$NETWORK" = "all" ]; then
     pkill -f "target/release/moltchain-validator" 2>/dev/null || true
     pkill -f "target/debug/moltchain-validator" 2>/dev/null || true
     pkill -f "moltchain-custody" 2>/dev/null || true
+    pkill -f "moltchain-faucet" 2>/dev/null || true
 else
     stop_network "$NETWORK"
 fi
@@ -75,9 +76,9 @@ fi
 sleep 1
 
 # Verify
-if pgrep -f "moltchain-validator" >/dev/null 2>&1; then
-    echo -e "${YELLOW}⚠  Some validator processes may still be running:${NC}"
-    pgrep -la "moltchain-validator" 2>/dev/null || true
+if pgrep -f "moltchain-validator\|moltchain-faucet" >/dev/null 2>&1; then
+    echo -e "${YELLOW}⚠  Some processes may still be running:${NC}"
+    pgrep -la "moltchain-validator\|moltchain-faucet" 2>/dev/null || true
 else
-    echo -e "${GREEN}✅ All validators stopped.${NC}"
+    echo -e "${GREEN}✅ All validators and services stopped.${NC}"
 fi

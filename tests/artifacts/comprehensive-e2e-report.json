@@ -1,3345 +1,3345 @@
 {
   "summary": {
-    "pass": 63,
-    "fail": 475,
-    "skip": 129
+    "pass": 646,
+    "fail": 11,
+    "skip": 10
   },
-  "elapsed_seconds": 77.0,
+  "elapsed_seconds": 734.3,
   "results": [
     {
       "status": "PASS",
       "msg": "validator healthy",
-      "ts": 1771755630
+      "ts": 1771781019
     },
     {
       "status": "PASS",
-      "msg": "current slot: 489",
-      "ts": 1771755630
+      "msg": "current slot: 763",
+      "ts": 1771781019
     },
     {
       "status": "SKIP",
       "msg": "deployer airdrop skipped: RPC Error: requestAirdrop is disabled in multi-validator mode (3 validators active). Submit a signed transaction via sendTransaction instead.",
-      "ts": 1771755630
+      "ts": 1771781019
     },
     {
       "status": "SKIP",
       "msg": "secondary airdrop skipped: RPC Error: requestAirdrop is disabled in multi-validator mode (3 validators active). Submit a signed transaction via sendTransaction instead.",
-      "ts": 1771755630
+      "ts": 1771781019
     },
     {
       "status": "PASS",
       "msg": "discovered 27/27 contracts",
-      "ts": 1771755630
+      "ts": 1771781019
     },
     {
       "status": "PASS",
-      "msg": "moltcoin.initialize sig=dafd57eeb1240710...",
-      "ts": 1771755631
+      "msg": "moltcoin.initialize sig=343bfa12d11d194c...",
+      "ts": 1771781021
     },
     {
       "status": "PASS",
-      "msg": "moltcoin.mint sig=5431c0fd0af2095c...",
-      "ts": 1771755632
+      "msg": "moltcoin.mint sig=ae60bd40e26e2e07...",
+      "ts": 1771781023
     },
     {
       "status": "PASS",
-      "msg": "moltcoin.transfer sig=509bbedf0598cec3...",
-      "ts": 1771755636
+      "msg": "moltcoin.transfer sig=7ab8cb8b5fb4034b...",
+      "ts": 1771781024
     },
     {
       "status": "PASS",
-      "msg": "moltcoin.burn sig=d031f79c443a7001...",
-      "ts": 1771755636
+      "msg": "moltcoin.burn sig=8f66d75cc7615ea4...",
+      "ts": 1771781025
     },
     {
       "status": "PASS",
-      "msg": "moltcoin.approve sig=673c0913154d4494...",
-      "ts": 1771755637
+      "msg": "moltcoin.approve sig=1f51b47609a5e9f2...",
+      "ts": 1771781026
     },
     {
       "status": "PASS",
-      "msg": "moltcoin.balance_of sig=60db2ecadabe4c72...",
-      "ts": 1771755637
+      "msg": "moltcoin.balance_of sig=436716093a5be227...",
+      "ts": 1771781027
     },
     {
       "status": "PASS",
-      "msg": "moltcoin.total_supply sig=6c3b6e3cf5e377a6...",
-      "ts": 1771755638
+      "msg": "moltcoin.total_supply sig=65132656ce08cd88...",
+      "ts": 1771781027
     },
     {
       "status": "PASS",
-      "msg": "musd_token.initialize sig=d7d54985fb1e5914...",
-      "ts": 1771755641
+      "msg": "musd_token.initialize sig=9defb1d6b99d54fe...",
+      "ts": 1771781031
     },
     {
       "status": "PASS",
-      "msg": "musd_token.mint sig=cdbcccb0060c2ce2...",
-      "ts": 1771755641
+      "msg": "musd_token.mint sig=9e45d1d7ef9e5ae9...",
+      "ts": 1771781031
     },
     {
       "status": "PASS",
-      "msg": "musd_token.transfer sig=b1d37a235425ed88...",
-      "ts": 1771755644
+      "msg": "musd_token.transfer sig=ed9e05a1ca903147...",
+      "ts": 1771781034
     },
     {
       "status": "PASS",
-      "msg": "musd_token.approve sig=0eadb5e04b6623bf...",
-      "ts": 1771755644
+      "msg": "musd_token.approve sig=299fea175fc170ac...",
+      "ts": 1771781039
     },
     {
       "status": "PASS",
-      "msg": "musd_token.burn sig=b2f4608dd7ace466...",
-      "ts": 1771755644
+      "msg": "musd_token.burn sig=6ee9825e55448aff...",
+      "ts": 1771781039
     },
     {
       "status": "PASS",
-      "msg": "musd_token.balance_of sig=615ec8de4d55c0bf...",
-      "ts": 1771755645
+      "msg": "musd_token.balance_of sig=eecd72c694471100...",
+      "ts": 1771781039
     },
     {
       "status": "PASS",
-      "msg": "musd_token.total_supply sig=256b8b0cf31e8b80...",
-      "ts": 1771755645
+      "msg": "musd_token.total_supply sig=096de852126eed0b...",
+      "ts": 1771781043
     },
     {
       "status": "PASS",
-      "msg": "musd_token.allowance sig=414fdc49dab42e45...",
-      "ts": 1771755645
+      "msg": "musd_token.allowance sig=1c5810f95a55669b...",
+      "ts": 1771781043
     },
     {
       "status": "PASS",
-      "msg": "musd_token.total_minted sig=8125fe7f56720f2f...",
-      "ts": 1771755647
+      "msg": "musd_token.total_minted sig=8d0189c055b795ab...",
+      "ts": 1771781044
     },
     {
       "status": "PASS",
-      "msg": "musd_token.total_burned sig=6a1f97aa4168ed56...",
-      "ts": 1771755648
+      "msg": "musd_token.total_burned sig=736484244bf7987f...",
+      "ts": 1771781044
     },
     {
       "status": "FAIL",
       "msg": "musd_token.transfer_from error=RPC Error: Payer account does not exist on-chain. Fund it first.",
-      "ts": 1771755648
+      "ts": 1771781044
     },
     {
       "status": "PASS",
-      "msg": "musd_token.emergency_pause sig=02506e1859c4f6b5...",
-      "ts": 1771755648
+      "msg": "musd_token.emergency_pause sig=feb67ce2bd504ffb...",
+      "ts": 1771781045
     },
     {
       "status": "PASS",
-      "msg": "musd_token.emergency_unpause sig=0f6d01ecbc0c71ac...",
-      "ts": 1771755652
+      "msg": "musd_token.emergency_unpause sig=43816974ce821935...",
+      "ts": 1771781047
     },
     {
       "status": "PASS",
-      "msg": "musd_token.get_transfer_count sig=3a9953b243055c78...",
-      "ts": 1771755655
+      "msg": "musd_token.get_transfer_count sig=fc8a988742d9a335...",
+      "ts": 1771781047
     },
     {
       "status": "PASS",
-      "msg": "musd_token.get_attestation_count sig=f6441563e01e766e...",
-      "ts": 1771755657
+      "msg": "musd_token.get_attestation_count sig=3e1f69b66f0c69f5...",
+      "ts": 1771781049
     },
     {
       "status": "PASS",
-      "msg": "musd_token.get_epoch_remaining sig=4b997f7d9ea73009...",
-      "ts": 1771755658
+      "msg": "musd_token.get_epoch_remaining sig=ceba3bc155249600...",
+      "ts": 1771781050
     },
     {
       "status": "PASS",
-      "msg": "musd_token.get_last_attestation_slot sig=bb2945cd420492ef...",
-      "ts": 1771755658
+      "msg": "musd_token.get_last_attestation_slot sig=9bdfbda9b329c42d...",
+      "ts": 1771781050
     },
     {
       "status": "PASS",
-      "msg": "musd_token.get_reserve_ratio sig=4b1b46d7c132a899...",
-      "ts": 1771755659
+      "msg": "musd_token.get_reserve_ratio sig=bcd581beadb7d1f2...",
+      "ts": 1771781051
     },
     {
       "status": "PASS",
-      "msg": "musd_token.attest_reserves sig=0b759eb7cbe5b5b1...",
-      "ts": 1771755659
+      "msg": "musd_token.attest_reserves sig=edfe5af857737d77...",
+      "ts": 1771781053
     },
     {
       "status": "PASS",
-      "msg": "musd_token.transfer_admin sig=3226eaa5b236ea8f...",
-      "ts": 1771755660
+      "msg": "musd_token.transfer_admin sig=97d74488ac404fd2...",
+      "ts": 1771781054
     },
     {
       "status": "PASS",
-      "msg": "weth_token.initialize sig=0eb4fd84df89fad6...",
-      "ts": 1771755661
+      "msg": "weth_token.initialize sig=93bdcf665c4ec1bb...",
+      "ts": 1771781057
     },
     {
       "status": "PASS",
-      "msg": "weth_token.mint sig=71439db4f33b49a0...",
-      "ts": 1771755663
+      "msg": "weth_token.mint sig=dff2135c85bcfb58...",
+      "ts": 1771781059
     },
     {
       "status": "PASS",
-      "msg": "weth_token.transfer sig=a1558b040db8b08d...",
-      "ts": 1771755663
+      "msg": "weth_token.transfer sig=3bdc45cc5ff468fe...",
+      "ts": 1771781060
     },
     {
       "status": "PASS",
-      "msg": "weth_token.approve sig=fc324844c24f25c2...",
-      "ts": 1771755664
+      "msg": "weth_token.approve sig=19904c82fff7247e...",
+      "ts": 1771781062
     },
     {
       "status": "PASS",
-      "msg": "weth_token.burn sig=17a7613bc6854871...",
-      "ts": 1771755665
+      "msg": "weth_token.burn sig=610ebb5db86794ab...",
+      "ts": 1771781064
     },
     {
       "status": "PASS",
-      "msg": "weth_token.balance_of sig=0f73bc619a14ee4c...",
-      "ts": 1771755666
+      "msg": "weth_token.balance_of sig=bb8fe490a1a114f6...",
+      "ts": 1771781064
     },
     {
       "status": "PASS",
-      "msg": "weth_token.total_supply sig=6dcc96c2637abb8d...",
-      "ts": 1771755668
+      "msg": "weth_token.total_supply sig=3aa2ada77c502bad...",
+      "ts": 1771781064
     },
     {
       "status": "PASS",
-      "msg": "weth_token.allowance sig=4f2f91b07644c1df...",
-      "ts": 1771755670
+      "msg": "weth_token.allowance sig=40bbe1ceb99c6287...",
+      "ts": 1771781066
     },
     {
       "status": "PASS",
-      "msg": "weth_token.total_minted sig=4df0eaf7f0854720...",
-      "ts": 1771755671
+      "msg": "weth_token.total_minted sig=b505bc12b992a1ba...",
+      "ts": 1771781068
     },
     {
       "status": "PASS",
-      "msg": "weth_token.total_burned sig=10bbc25f1b95b772...",
-      "ts": 1771755671
+      "msg": "weth_token.total_burned sig=85e036cefdadcf0b...",
+      "ts": 1771781068
     },
     {
       "status": "FAIL",
       "msg": "weth_token.transfer_from error=RPC Error: Payer account does not exist on-chain. Fund it first.",
-      "ts": 1771755671
+      "ts": 1771781068
     },
     {
       "status": "PASS",
-      "msg": "weth_token.emergency_pause sig=cc50e165aa9a3cc1...",
-      "ts": 1771755672
+      "msg": "weth_token.emergency_pause sig=2da974e336d2d39a...",
+      "ts": 1771781069
     },
     {
       "status": "PASS",
-      "msg": "weth_token.emergency_unpause sig=8ccbc9ac56b7792c...",
-      "ts": 1771755673
+      "msg": "weth_token.emergency_unpause sig=b245eff930faae75...",
+      "ts": 1771781069
     },
     {
       "status": "PASS",
-      "msg": "weth_token.get_transfer_count sig=a9ead808ab131ab9...",
-      "ts": 1771755673
+      "msg": "weth_token.get_transfer_count sig=a09e9b3f1037726e...",
+      "ts": 1771781073
     },
     {
       "status": "PASS",
-      "msg": "weth_token.get_attestation_count sig=b87357160ba1b30c...",
-      "ts": 1771755677
+      "msg": "weth_token.get_attestation_count sig=71d06fb36dec1154...",
+      "ts": 1771781073
     },
     {
       "status": "PASS",
-      "msg": "weth_token.get_epoch_remaining sig=a806ba9255535f08...",
-      "ts": 1771755677
+      "msg": "weth_token.get_epoch_remaining sig=d1ed1fcaa2e08ddc...",
+      "ts": 1771781076
     },
     {
       "status": "PASS",
-      "msg": "weth_token.get_last_attestation_slot sig=32fa35fad9f90376...",
-      "ts": 1771755678
+      "msg": "weth_token.get_last_attestation_slot sig=c979419046dee4ba...",
+      "ts": 1771781079
     },
     {
       "status": "PASS",
-      "msg": "weth_token.get_reserve_ratio sig=ad5bab1a3fa628dc...",
-      "ts": 1771755679
+      "msg": "weth_token.get_reserve_ratio sig=769552e18781de2b...",
+      "ts": 1771781080
     },
     {
       "status": "PASS",
-      "msg": "weth_token.attest_reserves sig=6da34e36a84dc9ee...",
-      "ts": 1771755680
+      "msg": "weth_token.attest_reserves sig=be942bd667f4b91a...",
+      "ts": 1771781081
     },
     {
       "status": "PASS",
-      "msg": "weth_token.transfer_admin sig=6b16709a6db8b307...",
-      "ts": 1771755682
+      "msg": "weth_token.transfer_admin sig=4f068ae491aa8528...",
+      "ts": 1771781083
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.initialize sig=d010c0f86484e4b7...",
-      "ts": 1771755683
+      "msg": "wsol_token.initialize sig=bb7e45f2c7339ecf...",
+      "ts": 1771781084
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.mint sig=98ee0f650010e827...",
-      "ts": 1771755684
+      "msg": "wsol_token.mint sig=5df63d8453ba7522...",
+      "ts": 1771781088
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.transfer sig=a6c959496e9277a4...",
-      "ts": 1771755685
+      "msg": "wsol_token.transfer sig=e52fcc557076dac8...",
+      "ts": 1771781089
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.approve sig=d2b1a7c7a6309128...",
-      "ts": 1771755685
+      "msg": "wsol_token.approve sig=2b053214bef43747...",
+      "ts": 1771781090
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.burn sig=0cc6b0c2d221c18b...",
-      "ts": 1771755685
+      "msg": "wsol_token.burn sig=ca2bd76554fa9b1e...",
+      "ts": 1771781090
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.balance_of sig=cd33784c112bd945...",
-      "ts": 1771755686
+      "msg": "wsol_token.balance_of sig=c6f336dc3c42be6b...",
+      "ts": 1771781091
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.total_supply sig=e3e9e3d819816895...",
-      "ts": 1771755686
+      "msg": "wsol_token.total_supply sig=123c5642119fd451...",
+      "ts": 1771781091
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.allowance sig=9be0a602618337d2...",
-      "ts": 1771755687
+      "msg": "wsol_token.allowance sig=12fa9359d76ebcd3...",
+      "ts": 1771781091
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.total_minted sig=ce8515a61b8979c7...",
-      "ts": 1771755687
+      "msg": "wsol_token.total_minted sig=4e446fc8218c06ca...",
+      "ts": 1771781094
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.total_burned sig=9a5394e7a4d42eb2...",
-      "ts": 1771755687
+      "msg": "wsol_token.total_burned sig=dd7b2e24fb034f90...",
+      "ts": 1771781094
     },
     {
       "status": "FAIL",
       "msg": "wsol_token.transfer_from error=RPC Error: Payer account does not exist on-chain. Fund it first.",
-      "ts": 1771755687
+      "ts": 1771781094
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.emergency_pause sig=79bc9ba292a30cca...",
-      "ts": 1771755690
+      "msg": "wsol_token.emergency_pause sig=4d4ad97418144199...",
+      "ts": 1771781098
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.emergency_unpause sig=63de935a9227ed9e...",
-      "ts": 1771755691
+      "msg": "wsol_token.emergency_unpause sig=aaebf64f99e0daca...",
+      "ts": 1771781098
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.get_transfer_count sig=0c3a016c8790de46...",
-      "ts": 1771755691
+      "msg": "wsol_token.get_transfer_count sig=8fc2c5f84de7dfb7...",
+      "ts": 1771781099
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.get_attestation_count sig=aedfd43ef0417611...",
-      "ts": 1771755692
+      "msg": "wsol_token.get_attestation_count sig=ee683aecaa86c0e1...",
+      "ts": 1771781101
     },
     {
       "status": "PASS",
-      "msg": "wsol_token.get_epoch_remaining sig=c2b97b7186d183a5...",
-      "ts": 1771755692
+      "msg": "wsol_token.get_epoch_remaining sig=4a27c84e878f19be...",
+      "ts": 1771781101
     },
     {
-      "status": "FAIL",
-      "msg": "wsol_token.get_last_attestation_slot not confirmed in 15s",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "wsol_token.get_last_attestation_slot sig=ef2cb6bfc0acf56a...",
+      "ts": 1771781104
     },
     {
-      "status": "FAIL",
-      "msg": "wsol_token.get_reserve_ratio error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "wsol_token.get_reserve_ratio sig=f452dcd091408567...",
+      "ts": 1771781106
     },
     {
-      "status": "FAIL",
-      "msg": "wsol_token.attest_reserves error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "wsol_token.attest_reserves sig=3f493ece32265971...",
+      "ts": 1771781109
     },
     {
-      "status": "FAIL",
-      "msg": "wsol_token.transfer_admin error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "wsol_token.transfer_admin sig=3548ac14cde208c8...",
+      "ts": 1771781111
     },
     {
-      "status": "FAIL",
-      "msg": "clawpump.initialize error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpump.initialize sig=65c055922d109131...",
+      "ts": 1771781112
     },
     {
-      "status": "FAIL",
-      "msg": "clawpump.create_token error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpump.create_token sig=1f8fe640891f3f01...",
+      "ts": 1771781113
     },
     {
-      "status": "FAIL",
-      "msg": "clawpump.buy error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpump.buy sig=19e86e4833a77998...",
+      "ts": 1771781114
     },
     {
-      "status": "FAIL",
-      "msg": "clawpump.sell error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpump.sell sig=7591725e0200e0f7...",
+      "ts": 1771781115
     },
     {
-      "status": "FAIL",
-      "msg": "clawpump.get_token_info error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpump.get_token_info sig=7b2b536be83658b1...",
+      "ts": 1771781115
     },
     {
-      "status": "FAIL",
-      "msg": "clawpump.get_token_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpump.get_token_count sig=eeaf0a200f97c1e2...",
+      "ts": 1771781118
     },
     {
-      "status": "FAIL",
-      "msg": "clawpump.get_platform_stats error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpump.get_platform_stats sig=9a10c9e8b7d6590a...",
+      "ts": 1771781125
     },
     {
-      "status": "FAIL",
-      "msg": "clawpump.get_buy_quote error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpump.get_buy_quote sig=f57ffe7006bcdb9a...",
+      "ts": 1771781126
     },
     {
-      "status": "FAIL",
-      "msg": "clawpump.get_graduation_info error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpump.get_graduation_info sig=44e6dcd5ac96bbbf...",
+      "ts": 1771781132
     },
     {
-      "status": "FAIL",
-      "msg": "clawpump.set_buy_cooldown error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpump.set_buy_cooldown sig=a3de28c26de4c806...",
+      "ts": 1771781132
     },
     {
-      "status": "FAIL",
-      "msg": "clawpump.set_sell_cooldown error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpump.set_sell_cooldown sig=a54af793faa0d4dd...",
+      "ts": 1771781133
     },
     {
-      "status": "FAIL",
-      "msg": "clawpump.set_max_buy error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpump.set_max_buy sig=b28ce52daf2a9b4e...",
+      "ts": 1771781135
     },
     {
-      "status": "FAIL",
-      "msg": "clawpump.set_creator_royalty error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpump.set_creator_royalty sig=01e7f4e6b4c80d27...",
+      "ts": 1771781136
     },
     {
-      "status": "FAIL",
-      "msg": "clawpump.set_dex_addresses error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpump.set_dex_addresses sig=b78f784bd0985f1d...",
+      "ts": 1771781138
     },
     {
-      "status": "FAIL",
-      "msg": "clawpump.pause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpump.pause sig=794e3f9a5a7a98b6...",
+      "ts": 1771781138
     },
     {
-      "status": "FAIL",
-      "msg": "clawpump.unpause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpump.unpause sig=17052c1eb836685e...",
+      "ts": 1771781139
     },
     {
-      "status": "FAIL",
-      "msg": "clawpump.withdraw_fees error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpump.withdraw_fees sig=63732268fb51e154...",
+      "ts": 1771781139
     },
     {
-      "status": "FAIL",
-      "msg": "clawpump.freeze_token error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpump.freeze_token sig=5083327596fab6d2...",
+      "ts": 1771781140
     },
     {
-      "status": "FAIL",
-      "msg": "clawpump.unfreeze_token error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpump.unfreeze_token sig=56e00d654a2a678b...",
+      "ts": 1771781145
     },
     {
-      "status": "FAIL",
-      "msg": "lobsterlend.initialize error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "lobsterlend.initialize sig=58abb59127eee9bc...",
+      "ts": 1771781146
     },
     {
-      "status": "FAIL",
-      "msg": "lobsterlend.deposit error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "lobsterlend.deposit sig=cfa5368c9e71bd68...",
+      "ts": 1771781150
     },
     {
-      "status": "FAIL",
-      "msg": "lobsterlend.borrow error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "lobsterlend.borrow sig=b79aac5d256f06fd...",
+      "ts": 1771781154
     },
     {
-      "status": "FAIL",
-      "msg": "lobsterlend.repay error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "lobsterlend.repay sig=422744438d43c0e1...",
+      "ts": 1771781156
     },
     {
-      "status": "FAIL",
-      "msg": "lobsterlend.withdraw error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "lobsterlend.withdraw sig=df70ac58d192af78...",
+      "ts": 1771781156
     },
     {
-      "status": "FAIL",
-      "msg": "lobsterlend.get_protocol_stats error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "lobsterlend.get_protocol_stats sig=e5bfddc41459a7f4...",
+      "ts": 1771781157
     },
     {
-      "status": "FAIL",
-      "msg": "lobsterlend.get_account_info error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "lobsterlend.get_account_info sig=5599f344fb365920...",
+      "ts": 1771781157
     },
     {
-      "status": "FAIL",
-      "msg": "lobsterlend.get_interest_rate error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "lobsterlend.get_interest_rate sig=6f193409403bdb72...",
+      "ts": 1771781160
     },
     {
-      "status": "FAIL",
-      "msg": "lobsterlend.set_deposit_cap error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "lobsterlend.set_deposit_cap sig=8ecba17ef93f4ecf...",
+      "ts": 1771781165
     },
     {
-      "status": "FAIL",
-      "msg": "lobsterlend.set_reserve_factor error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "lobsterlend.set_reserve_factor sig=112e816f404b7a30...",
+      "ts": 1771781166
     },
     {
-      "status": "FAIL",
-      "msg": "lobsterlend.pause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "lobsterlend.pause sig=e8ee756ed833c247...",
+      "ts": 1771781166
     },
     {
-      "status": "FAIL",
-      "msg": "lobsterlend.unpause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "lobsterlend.unpause sig=f5e8cf9c245ead36...",
+      "ts": 1771781169
     },
     {
-      "status": "FAIL",
-      "msg": "lobsterlend.withdraw_reserves error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "lobsterlend.withdraw_reserves sig=30dcbcc809d3da79...",
+      "ts": 1771781169
     },
     {
-      "status": "FAIL",
-      "msg": "lobsterlend.liquidate error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "lobsterlend.liquidate sig=aee949e9fb7aaf3b...",
+      "ts": 1771781170
     },
     {
-      "status": "FAIL",
-      "msg": "lobsterlend.flash_borrow error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "lobsterlend.flash_borrow sig=1a72e1687f8a069f...",
+      "ts": 1771781171
     },
     {
-      "status": "FAIL",
-      "msg": "lobsterlend.flash_repay error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "lobsterlend.flash_repay sig=859d603f98c1e417...",
+      "ts": 1771781173
     },
     {
-      "status": "FAIL",
-      "msg": "lobsterlend.get_deposit_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "lobsterlend.get_deposit_count sig=0ffc7f40f778f25c...",
+      "ts": 1771781177
     },
     {
-      "status": "FAIL",
-      "msg": "lobsterlend.get_borrow_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "lobsterlend.get_borrow_count sig=e40bcc8adb258cdd...",
+      "ts": 1771781177
     },
     {
-      "status": "FAIL",
-      "msg": "lobsterlend.get_liquidation_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "lobsterlend.get_liquidation_count sig=afeca683518f592e...",
+      "ts": 1771781177
     },
     {
-      "status": "FAIL",
-      "msg": "lobsterlend.get_platform_stats error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "lobsterlend.get_platform_stats sig=0996dbe974468885...",
+      "ts": 1771781178
     },
     {
-      "status": "FAIL",
-      "msg": "moltmarket.initialize error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltmarket.initialize sig=76cebf7be97f537d...",
+      "ts": 1771781179
     },
     {
-      "status": "FAIL",
-      "msg": "moltmarket.list_nft error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltmarket.list_nft sig=0a944dcbbd5df7c8...",
+      "ts": 1771781180
     },
     {
-      "status": "FAIL",
-      "msg": "moltmarket.get_listing error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltmarket.get_listing sig=3afc65f05743bd51...",
+      "ts": 1771781181
     },
     {
-      "status": "FAIL",
-      "msg": "moltmarket.cancel_listing error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltmarket.cancel_listing sig=20021cedc3921f8d...",
+      "ts": 1771781182
     },
     {
-      "status": "FAIL",
-      "msg": "moltmarket.get_marketplace_stats error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltmarket.get_marketplace_stats sig=6cbbb299b7e0a5cd...",
+      "ts": 1771781187
     },
     {
-      "status": "FAIL",
-      "msg": "moltmarket.set_marketplace_fee error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltmarket.set_marketplace_fee sig=7cfc43ad50eeea31...",
+      "ts": 1771781187
     },
     {
-      "status": "FAIL",
-      "msg": "moltmarket.list_nft_with_royalty error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltmarket.list_nft_with_royalty sig=4e2cc65e2149b099...",
+      "ts": 1771781188
     },
     {
       "status": "FAIL",
-      "msg": "moltmarket.make_offer error=All connection attempts failed",
-      "ts": 1771755707
+      "msg": "moltmarket.make_offer error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771781188
     },
     {
       "status": "FAIL",
-      "msg": "moltmarket.cancel_offer error=All connection attempts failed",
-      "ts": 1771755707
+      "msg": "moltmarket.cancel_offer error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771781188
     },
     {
       "status": "FAIL",
-      "msg": "moltmarket.buy_nft error=All connection attempts failed",
-      "ts": 1771755707
+      "msg": "moltmarket.buy_nft error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771781188
     },
     {
-      "status": "FAIL",
-      "msg": "moltmarket.accept_offer error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltmarket.accept_offer sig=980d4e8aaf943590...",
+      "ts": 1771781189
     },
     {
-      "status": "FAIL",
-      "msg": "moltmarket.mm_pause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltmarket.mm_pause sig=5bbbdd715775786f...",
+      "ts": 1771781192
     },
     {
-      "status": "FAIL",
-      "msg": "moltmarket.mm_unpause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltmarket.mm_unpause sig=542179e525a79b30...",
+      "ts": 1771781194
     },
     {
-      "status": "FAIL",
-      "msg": "moltmarket.get_marketplace_stats error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltmarket.get_marketplace_stats sig=c9f915eecc6e45dd...",
+      "ts": 1771781194
     },
     {
-      "status": "FAIL",
-      "msg": "moltauction.initialize error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltauction.initialize sig=952bba289ef0b603...",
+      "ts": 1771781195
     },
     {
-      "status": "FAIL",
-      "msg": "moltauction.initialize_ma_admin error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltauction.initialize_ma_admin sig=2ea17616ca338d1a...",
+      "ts": 1771781199
     },
     {
-      "status": "FAIL",
-      "msg": "moltauction.create_auction error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltauction.create_auction sig=a97616a665b8d383...",
+      "ts": 1771781200
     },
     {
       "status": "FAIL",
-      "msg": "moltauction.place_bid error=All connection attempts failed",
-      "ts": 1771755707
+      "msg": "moltauction.place_bid error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771781200
     },
     {
-      "status": "FAIL",
-      "msg": "moltauction.set_reserve_price error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltauction.set_reserve_price sig=496c5fec87b4937d...",
+      "ts": 1771781200
     },
     {
-      "status": "FAIL",
-      "msg": "moltauction.set_royalty error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltauction.set_royalty sig=09d475c5bb82459e...",
+      "ts": 1771781202
     },
     {
-      "status": "FAIL",
-      "msg": "moltauction.get_auction_info error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltauction.get_auction_info sig=2d3051441c02cfcc...",
+      "ts": 1771781202
     },
     {
-      "status": "FAIL",
-      "msg": "moltauction.get_collection_stats error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltauction.get_collection_stats sig=755be377f2c86fbd...",
+      "ts": 1771781202
     },
     {
-      "status": "FAIL",
-      "msg": "moltauction.update_collection_stats error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltauction.update_collection_stats sig=7be0d46f9c734050...",
+      "ts": 1771781203
     },
     {
-      "status": "FAIL",
-      "msg": "moltauction.cancel_auction error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltauction.cancel_auction sig=4efc573626b9b2e4...",
+      "ts": 1771781203
     },
     {
-      "status": "FAIL",
-      "msg": "moltauction.finalize_auction error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltauction.finalize_auction sig=340e292de99e6c22...",
+      "ts": 1771781208
     },
     {
       "status": "FAIL",
-      "msg": "moltauction.make_offer error=All connection attempts failed",
-      "ts": 1771755707
+      "msg": "moltauction.make_offer error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771781208
     },
     {
-      "status": "FAIL",
-      "msg": "moltauction.accept_offer error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltauction.accept_offer sig=b3aea89a762044fb...",
+      "ts": 1771781209
     },
     {
-      "status": "FAIL",
-      "msg": "moltauction.ma_pause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltauction.ma_pause sig=f5ddbb603b2243b8...",
+      "ts": 1771781214
     },
     {
-      "status": "FAIL",
-      "msg": "moltauction.ma_unpause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltauction.ma_unpause sig=61078b27a2c5fde6...",
+      "ts": 1771781215
     },
     {
-      "status": "FAIL",
-      "msg": "moltauction.get_auction_stats error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltauction.get_auction_stats sig=b1c7a7961c827797...",
+      "ts": 1771781215
     },
     {
-      "status": "FAIL",
-      "msg": "moltbridge.initialize error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltbridge.initialize sig=e0d46a446fbd89a1...",
+      "ts": 1771781217
     },
     {
-      "status": "FAIL",
-      "msg": "moltbridge.add_bridge_validator error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltbridge.add_bridge_validator sig=6e7b51a2ec4cd1a1...",
+      "ts": 1771781219
     },
     {
-      "status": "FAIL",
-      "msg": "moltbridge.set_required_confirmations error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltbridge.set_required_confirmations sig=8b353c352b122117...",
+      "ts": 1771781219
     },
     {
-      "status": "FAIL",
-      "msg": "moltbridge.set_request_timeout error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltbridge.set_request_timeout sig=fdff4067680adfe5...",
+      "ts": 1771781222
     },
     {
-      "status": "FAIL",
-      "msg": "moltbridge.get_bridge_status error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltbridge.get_bridge_status sig=67641d2fd7aa6412...",
+      "ts": 1771781223
     },
     {
-      "status": "FAIL",
-      "msg": "moltbridge.remove_bridge_validator error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltbridge.remove_bridge_validator sig=76bfa5bf5cf72d38...",
+      "ts": 1771781223
     },
     {
-      "status": "FAIL",
-      "msg": "moltbridge.lock_tokens error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltbridge.lock_tokens sig=0e7f9f3b07806ffe...",
+      "ts": 1771781224
     },
     {
-      "status": "FAIL",
-      "msg": "moltbridge.submit_mint error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltbridge.submit_mint sig=37b775a854c70cd3...",
+      "ts": 1771781224
     },
     {
-      "status": "FAIL",
-      "msg": "moltbridge.has_confirmed_mint error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltbridge.has_confirmed_mint sig=2faedd68858b8e4a...",
+      "ts": 1771781225
     },
     {
-      "status": "FAIL",
-      "msg": "moltbridge.submit_unlock error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltbridge.submit_unlock sig=80d3c6d802775772...",
+      "ts": 1771781225
     },
     {
-      "status": "FAIL",
-      "msg": "moltbridge.has_confirmed_unlock error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltbridge.has_confirmed_unlock sig=4be3f7ec180d81b4...",
+      "ts": 1771781225
     },
     {
-      "status": "FAIL",
-      "msg": "moltbridge.is_source_tx_used error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltbridge.is_source_tx_used sig=6a682c8af792fa9a...",
+      "ts": 1771781227
     },
     {
-      "status": "FAIL",
-      "msg": "moltbridge.is_burn_proof_used error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltbridge.is_burn_proof_used sig=575dcbacf60308be...",
+      "ts": 1771781228
     },
     {
-      "status": "FAIL",
-      "msg": "moltbridge.confirm_mint error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltbridge.confirm_mint sig=cb6da4ed797ba734...",
+      "ts": 1771781229
     },
     {
-      "status": "FAIL",
-      "msg": "moltbridge.confirm_unlock error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltbridge.confirm_unlock sig=f22a571615cb9670...",
+      "ts": 1771781231
     },
     {
-      "status": "FAIL",
-      "msg": "moltbridge.cancel_expired_request error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltbridge.cancel_expired_request sig=91f3e9534cb8830b...",
+      "ts": 1771781235
     },
     {
-      "status": "FAIL",
-      "msg": "moltbridge.set_moltyid_address error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltbridge.set_moltyid_address sig=4f45d60d272ca8e8...",
+      "ts": 1771781236
     },
     {
-      "status": "FAIL",
-      "msg": "moltbridge.set_identity_gate error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltbridge.set_identity_gate sig=c2b7673b92fc28b1...",
+      "ts": 1771781237
     },
     {
-      "status": "FAIL",
-      "msg": "moltbridge.mb_pause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltbridge.mb_pause sig=0dd7a62b26ec559a...",
+      "ts": 1771781237
     },
     {
-      "status": "FAIL",
-      "msg": "moltbridge.mb_unpause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltbridge.mb_unpause sig=7062dfeb18004dda...",
+      "ts": 1771781238
     },
     {
-      "status": "FAIL",
-      "msg": "reef_storage.initialize error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "reef_storage.initialize sig=e932cd79b6afffca...",
+      "ts": 1771781239
     },
     {
-      "status": "FAIL",
-      "msg": "reef_storage.register_provider error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "reef_storage.register_provider sig=cdd34a3aefdde330...",
+      "ts": 1771781239
     },
     {
-      "status": "FAIL",
-      "msg": "reef_storage.set_storage_price error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "reef_storage.set_storage_price sig=f0d91d6268d25cd9...",
+      "ts": 1771781242
     },
     {
-      "status": "FAIL",
-      "msg": "reef_storage.store_data error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "reef_storage.store_data sig=5e1816ca8885dfb2...",
+      "ts": 1771781243
     },
     {
-      "status": "FAIL",
-      "msg": "reef_storage.confirm_storage error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "reef_storage.confirm_storage sig=b0fcf5933381ee08...",
+      "ts": 1771781243
     },
     {
-      "status": "FAIL",
-      "msg": "reef_storage.get_storage_info error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "reef_storage.get_storage_info sig=2af394c80b2c6077...",
+      "ts": 1771781244
     },
     {
-      "status": "FAIL",
-      "msg": "reef_storage.get_storage_price error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "reef_storage.get_storage_price sig=64b93d1616a71bfd...",
+      "ts": 1771781245
     },
     {
-      "status": "FAIL",
-      "msg": "reef_storage.get_provider_stake error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "reef_storage.get_provider_stake sig=92d4d2a3373b96d5...",
+      "ts": 1771781247
     },
     {
-      "status": "FAIL",
-      "msg": "reef_storage.claim_storage_rewards error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "reef_storage.claim_storage_rewards sig=ef97b88430c36f19...",
+      "ts": 1771781248
     },
     {
-      "status": "FAIL",
-      "msg": "reef_storage.stake_collateral error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "reef_storage.stake_collateral sig=c036f38a34658b9d...",
+      "ts": 1771781248
     },
     {
-      "status": "FAIL",
-      "msg": "reef_storage.issue_challenge error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "reef_storage.issue_challenge sig=0e2c80285089f2ba...",
+      "ts": 1771781248
     },
     {
-      "status": "FAIL",
-      "msg": "reef_storage.respond_challenge error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "reef_storage.respond_challenge sig=1b297fd7fa7d59da...",
+      "ts": 1771781251
     },
     {
-      "status": "FAIL",
-      "msg": "reef_storage.set_challenge_window error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "reef_storage.set_challenge_window sig=b04f51749401d43a...",
+      "ts": 1771781251
     },
     {
-      "status": "FAIL",
-      "msg": "reef_storage.set_slash_percent error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "reef_storage.set_slash_percent sig=30520224c328d586...",
+      "ts": 1771781254
     },
     {
-      "status": "FAIL",
-      "msg": "reef_storage.slash_provider error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "reef_storage.slash_provider sig=9a083bfd869c0e3c...",
+      "ts": 1771781254
     },
     {
-      "status": "FAIL",
-      "msg": "reef_storage.get_platform_stats error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "reef_storage.get_platform_stats sig=1da5799d095766ad...",
+      "ts": 1771781255
     },
     {
-      "status": "FAIL",
-      "msg": "clawvault.initialize error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawvault.initialize sig=23412abb62ad50b8...",
+      "ts": 1771781256
     },
     {
-      "status": "FAIL",
-      "msg": "clawvault.set_protocol_addresses error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawvault.set_protocol_addresses sig=fabda753e70f4422...",
+      "ts": 1771781256
     },
     {
-      "status": "FAIL",
-      "msg": "clawvault.add_strategy error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawvault.add_strategy sig=9ecc2ec4715c2bf6...",
+      "ts": 1771781260
     },
     {
-      "status": "FAIL",
-      "msg": "clawvault.deposit error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawvault.deposit sig=40529a68f3d314fd...",
+      "ts": 1771781263
     },
     {
-      "status": "FAIL",
-      "msg": "clawvault.withdraw error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawvault.withdraw sig=b4622e03d801ab38...",
+      "ts": 1771781268
     },
     {
-      "status": "FAIL",
-      "msg": "clawvault.get_vault_stats error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawvault.get_vault_stats sig=9349e13e42d2a4af...",
+      "ts": 1771781270
     },
     {
-      "status": "FAIL",
-      "msg": "clawvault.get_user_position error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawvault.get_user_position sig=6def22271177827c...",
+      "ts": 1771781275
     },
     {
-      "status": "FAIL",
-      "msg": "clawvault.get_strategy_info error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawvault.get_strategy_info sig=27afa516beeb1689...",
+      "ts": 1771781277
     },
     {
-      "status": "FAIL",
-      "msg": "clawvault.harvest error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawvault.harvest sig=6c02868b044e3961...",
+      "ts": 1771781277
     },
     {
-      "status": "FAIL",
-      "msg": "clawvault.set_deposit_cap error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawvault.set_deposit_cap sig=f85c9798260f3db4...",
+      "ts": 1771781279
     },
     {
-      "status": "FAIL",
-      "msg": "clawvault.set_deposit_fee error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawvault.set_deposit_fee sig=a41e7f9e98b0b570...",
+      "ts": 1771781280
     },
     {
-      "status": "FAIL",
-      "msg": "clawvault.set_withdrawal_fee error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawvault.set_withdrawal_fee sig=04a4777a458f8f9b...",
+      "ts": 1771781280
     },
     {
-      "status": "FAIL",
-      "msg": "clawvault.set_risk_tier error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawvault.set_risk_tier sig=ed7b9a9449109cb9...",
+      "ts": 1771781285
     },
     {
-      "status": "FAIL",
-      "msg": "clawvault.update_strategy_allocation error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawvault.update_strategy_allocation sig=9ee449e2dc17048c...",
+      "ts": 1771781286
     },
     {
-      "status": "FAIL",
-      "msg": "clawvault.remove_strategy error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawvault.remove_strategy sig=7a3c48e2406e7afc...",
+      "ts": 1771781286
     },
     {
-      "status": "FAIL",
-      "msg": "clawvault.withdraw_protocol_fees error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawvault.withdraw_protocol_fees sig=31e71eaa14bcf299...",
+      "ts": 1771781290
     },
     {
-      "status": "FAIL",
-      "msg": "clawvault.cv_pause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawvault.cv_pause sig=baa53ef24fbde536...",
+      "ts": 1771781291
     },
     {
-      "status": "FAIL",
-      "msg": "clawvault.cv_unpause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawvault.cv_unpause sig=1bf3d891addbfcfc...",
+      "ts": 1771781292
     },
     {
-      "status": "FAIL",
-      "msg": "clawpay.initialize_cp_admin error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpay.initialize_cp_admin sig=4506121a11ad6f62...",
+      "ts": 1771781292
     },
     {
-      "status": "FAIL",
-      "msg": "clawpay.set_identity_admin error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpay.set_identity_admin sig=ebfa4b09a78fd875...",
+      "ts": 1771781293
     },
     {
-      "status": "FAIL",
-      "msg": "clawpay.set_moltyid_address error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpay.set_moltyid_address sig=1cd274342aeee673...",
+      "ts": 1771781295
     },
     {
-      "status": "FAIL",
-      "msg": "clawpay.set_identity_gate error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpay.set_identity_gate sig=8a2bfefa67904194...",
+      "ts": 1771781296
     },
     {
-      "status": "FAIL",
-      "msg": "clawpay.create_stream error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpay.create_stream sig=6e24853ecbc595d9...",
+      "ts": 1771781296
     },
     {
-      "status": "FAIL",
-      "msg": "clawpay.create_stream_with_cliff error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpay.create_stream_with_cliff sig=14c1ea0aee076c51...",
+      "ts": 1771781301
     },
     {
-      "status": "FAIL",
-      "msg": "clawpay.get_stream error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpay.get_stream sig=c3c5c19f6b19a820...",
+      "ts": 1771781301
     },
     {
-      "status": "FAIL",
-      "msg": "clawpay.get_stream_info error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpay.get_stream_info sig=c912ee2fe423253c...",
+      "ts": 1771781302
     },
     {
-      "status": "FAIL",
-      "msg": "clawpay.get_withdrawable error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpay.get_withdrawable sig=1ddba82f3b1e6f2c...",
+      "ts": 1771781312
     },
     {
       "status": "FAIL",
-      "msg": "clawpay.withdraw_from_stream error=All connection attempts failed",
-      "ts": 1771755707
+      "msg": "clawpay.withdraw_from_stream error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771781312
     },
     {
       "status": "FAIL",
-      "msg": "clawpay.transfer_stream error=All connection attempts failed",
-      "ts": 1771755707
+      "msg": "clawpay.transfer_stream error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771781312
     },
     {
-      "status": "FAIL",
-      "msg": "clawpay.cancel_stream error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpay.cancel_stream sig=9c50ad2b48ac870f...",
+      "ts": 1771781312
     },
     {
-      "status": "FAIL",
-      "msg": "clawpay.pause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpay.pause sig=366117600263530c...",
+      "ts": 1771781312
     },
     {
-      "status": "FAIL",
-      "msg": "clawpay.unpause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpay.unpause sig=1a7772520471cfe0...",
+      "ts": 1771781314
     },
     {
-      "status": "FAIL",
-      "msg": "clawpay.get_stream_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpay.get_stream_count sig=e19e524529991f2d...",
+      "ts": 1771781316
     },
     {
-      "status": "FAIL",
-      "msg": "clawpay.get_platform_stats error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "clawpay.get_platform_stats sig=2a860ff05bf1a386...",
+      "ts": 1771781316
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.initialize error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.initialize sig=b29cf92970caf8ee...",
+      "ts": 1771781317
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.register_identity error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.register_identity sig=6bbe1c76c25437ed...",
+      "ts": 1771781318
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.get_identity error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.get_identity sig=19b4b7b88d954577...",
+      "ts": 1771781318
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.get_identity_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.get_identity_count sig=2827ca4a9f54ac36...",
+      "ts": 1771781320
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.set_endpoint error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.set_endpoint sig=2b38328c84065dec...",
+      "ts": 1771781320
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.get_endpoint error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.get_endpoint sig=fdb6d5588c499126...",
+      "ts": 1771781320
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.set_metadata error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.set_metadata sig=9972465e1fe9d110...",
+      "ts": 1771781321
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.get_metadata error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.get_metadata sig=492802a83d6d6dc9...",
+      "ts": 1771781321
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.set_availability error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.set_availability sig=7c2549c5c0dd35ae...",
+      "ts": 1771781323
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.get_availability error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.get_availability sig=24d96e56fd1dde43...",
+      "ts": 1771781323
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.set_rate error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.set_rate sig=e5da8a3aa0ef5ebe...",
+      "ts": 1771781323
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.get_rate error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.get_rate sig=04858153e78dd141...",
+      "ts": 1771781324
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.add_skill error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.add_skill sig=c58e77ac24f84aef...",
+      "ts": 1771781325
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.get_skills error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.get_skills sig=cf730b1cc0031185...",
+      "ts": 1771781325
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.vouch error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.vouch sig=d971f5fa1a3d6a69...",
+      "ts": 1771781327
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.get_vouches error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.get_vouches sig=2ad57d5749ae9353...",
+      "ts": 1771781327
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.set_delegate error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.set_delegate sig=7d16c3d71f561e04...",
+      "ts": 1771781328
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.get_delegate error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.get_delegate sig=163052b093b706a2...",
+      "ts": 1771781329
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.revoke_delegate error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.revoke_delegate sig=bf620de5ec28c8f3...",
+      "ts": 1771781329
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.update_reputation error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.update_reputation sig=731c1ca90aefac1a...",
+      "ts": 1771781329
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.update_reputation_typed error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.update_reputation_typed sig=56a30ca3ddb2c575...",
+      "ts": 1771781331
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.get_reputation error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.get_reputation sig=f411efbf05185d26...",
+      "ts": 1771781333
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.get_trust_tier error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.get_trust_tier sig=fc6a7531afa480a1...",
+      "ts": 1771781334
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.update_agent_type error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.update_agent_type sig=59d5539ec0ec39b7...",
+      "ts": 1771781335
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.deactivate_identity error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.deactivate_identity sig=e890f38bc225d736...",
+      "ts": 1771781335
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.get_agent_profile error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.get_agent_profile sig=1d134da788251ed7...",
+      "ts": 1771781336
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.set_recovery_guardians error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.set_recovery_guardians sig=74766336cc396cc9...",
+      "ts": 1771781337
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.register_name error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.register_name sig=89d904d1b1b9e323...",
+      "ts": 1771781338
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.resolve_name error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.resolve_name sig=5155d0969b991628...",
+      "ts": 1771781340
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.reverse_resolve error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.reverse_resolve sig=2897d930db15b4a5...",
+      "ts": 1771781341
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.get_achievements error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.get_achievements sig=cce806f179da5161...",
+      "ts": 1771781341
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.get_attestations error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.get_attestations sig=85581cd81f2980a4...",
+      "ts": 1771781342
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.add_skill_as error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.add_skill_as sig=6410f2c1d54d8ae3...",
+      "ts": 1771781345
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.set_endpoint_as error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.set_endpoint_as sig=63a3167e6a88388d...",
+      "ts": 1771781346
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.set_metadata_as error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.set_metadata_as sig=4cecfbad4b173fbd...",
+      "ts": 1771781346
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.set_availability_as error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.set_availability_as sig=b47fc90370864b49...",
+      "ts": 1771781348
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.set_rate_as error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.set_rate_as sig=ea1ec8abc4704d14...",
+      "ts": 1771781351
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.update_agent_type_as error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.update_agent_type_as sig=2255f949ce8135a6...",
+      "ts": 1771781352
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.attest_skill error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.attest_skill sig=3fd459cf252eb0f6...",
+      "ts": 1771781353
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.revoke_attestation error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.revoke_attestation sig=eed56d50d99472a5...",
+      "ts": 1771781353
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.approve_recovery error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.approve_recovery sig=16ee9c79ccdf14ef...",
+      "ts": 1771781354
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.execute_recovery error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.execute_recovery sig=bae152388c52fa3d...",
+      "ts": 1771781357
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.award_contribution_achievement error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.award_contribution_achievement sig=47a13089495d0b43...",
+      "ts": 1771781358
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.create_name_auction error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.create_name_auction sig=642c8e91c4557e13...",
+      "ts": 1771781359
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.bid_name_auction error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.bid_name_auction sig=c607a87dbc39482f...",
+      "ts": 1771781359
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.get_name_auction error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.get_name_auction sig=64a3e6a929ef7099...",
+      "ts": 1771781360
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.finalize_name_auction error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.finalize_name_auction sig=3802f9795b89dc84...",
+      "ts": 1771781360
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.transfer_name error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.transfer_name sig=59ed7a5308b77bc6...",
+      "ts": 1771781361
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.renew_name error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.renew_name sig=e3482c8ee8040926...",
+      "ts": 1771781363
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.release_name error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.release_name sig=955f313107231015...",
+      "ts": 1771781364
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.transfer_name_as error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.transfer_name_as sig=06f7a33172519e42...",
+      "ts": 1771781368
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.renew_name_as error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.renew_name_as sig=f88c659eae56bf80...",
+      "ts": 1771781370
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.release_name_as error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.release_name_as sig=80135bb502216a23...",
+      "ts": 1771781371
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.admin_register_reserved_name error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.admin_register_reserved_name sig=a4034e32d3b5806b...",
+      "ts": 1771781372
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.transfer_admin error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.transfer_admin sig=440c874ae4eb619c...",
+      "ts": 1771781372
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.mid_pause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.mid_pause sig=6312a3a117489472...",
+      "ts": 1771781374
     },
     {
-      "status": "FAIL",
-      "msg": "moltyid.mid_unpause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltyid.mid_unpause sig=f1de89c83075dcd1...",
+      "ts": 1771781375
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.initialize error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.initialize sig=a152ca085389cf81...",
+      "ts": 1771781375
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.set_protocol_fee error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.set_protocol_fee sig=6b55b341656e1997...",
+      "ts": 1771781380
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.set_platform_fee error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.set_platform_fee sig=c1c89f9293288aae...",
+      "ts": 1771781380
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.create_pool error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.create_pool sig=61cbfb9f65b81d68...",
+      "ts": 1771781384
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.add_liquidity error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.add_liquidity sig=2d140762a57662fb...",
+      "ts": 1771781388
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.swap error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.swap sig=fbd8c7de60d77fdc...",
+      "ts": 1771781388
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.swap_a_for_b error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.swap_a_for_b sig=c0f6d4cc88294e4c...",
+      "ts": 1771781388
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.swap_b_for_a error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.swap_b_for_a sig=3ee335f753cd4c18...",
+      "ts": 1771781389
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.swap_a_for_b_with_deadline error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.swap_a_for_b_with_deadline sig=6c772856d270585a...",
+      "ts": 1771781389
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.swap_b_for_a_with_deadline error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.swap_b_for_a_with_deadline sig=aa4d577a392b8c36...",
+      "ts": 1771781393
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.get_pool_info error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.get_pool_info sig=9eaac4cf2fddba94...",
+      "ts": 1771781393
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.get_pool_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.get_pool_count sig=3031549bf2e96393...",
+      "ts": 1771781394
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.get_quote error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.get_quote sig=061be17af4fca620...",
+      "ts": 1771781394
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.get_reserves error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.get_reserves sig=4ded3f6f9f896d7a...",
+      "ts": 1771781394
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.get_liquidity_balance error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.get_liquidity_balance sig=4e625d61ca6345da...",
+      "ts": 1771781396
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.get_total_liquidity error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.get_total_liquidity sig=00b3a02171c6efe8...",
+      "ts": 1771781396
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.get_protocol_fees error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.get_protocol_fees sig=168c5f2869ebdcbe...",
+      "ts": 1771781396
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.get_flash_loan_fee error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.get_flash_loan_fee sig=7556f16da2ea870d...",
+      "ts": 1771781398
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.get_twap_cumulatives error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.get_twap_cumulatives sig=2813110dc687fff3...",
+      "ts": 1771781398
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.get_twap_snapshot_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.get_twap_snapshot_count sig=39c3565225bdff15...",
+      "ts": 1771781399
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.flash_loan_borrow error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.flash_loan_borrow sig=9932e75402ac4b26...",
+      "ts": 1771781406
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.flash_loan_repay error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.flash_loan_repay sig=0241e3888f8c5c5d...",
+      "ts": 1771781409
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.flash_loan_abort error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.flash_loan_abort sig=94017b9979d2f882...",
+      "ts": 1771781410
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.remove_liquidity error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.remove_liquidity sig=8c21d1ed60336845...",
+      "ts": 1771781412
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.ms_pause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.ms_pause sig=43c762d1e2e15e39...",
+      "ts": 1771781412
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.ms_unpause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.ms_unpause sig=5b1841861c12fc72...",
+      "ts": 1771781417
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.get_swap_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.get_swap_count sig=8f3b7c544f19daa4...",
+      "ts": 1771781417
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.get_total_volume error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.get_total_volume sig=a69811c2430329a3...",
+      "ts": 1771781418
     },
     {
-      "status": "FAIL",
-      "msg": "moltswap.get_swap_stats error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltswap.get_swap_stats sig=a2c2e3e2df48a642...",
+      "ts": 1771781423
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.initialize error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltoracle.initialize sig=a3f4deb290bad27e...",
+      "ts": 1771781424
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.register_feed error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltoracle.register_feed sig=61962db8e6098593...",
+      "ts": 1771781426
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.submit_price error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltoracle.submit_price sig=d7e4f86d45d039a2...",
+      "ts": 1771781427
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.get_price error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltoracle.get_price sig=06045bbc350e9559...",
+      "ts": 1771781431
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.register_feed error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltoracle.register_feed sig=d2184287b156faff...",
+      "ts": 1771781433
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.submit_price error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltoracle.submit_price sig=de244ae0708f490c...",
+      "ts": 1771781435
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.get_price error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltoracle.get_price sig=495648b6bd030137...",
+      "ts": 1771781438
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.get_feed_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltoracle.get_feed_count sig=8f5e273c17b32a4a...",
+      "ts": 1771781438
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.get_feed_list error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltoracle.get_feed_list sig=1ab7407bdcec24b1...",
+      "ts": 1771781439
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.set_update_interval error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltoracle.set_update_interval sig=8840454d699674d5...",
+      "ts": 1771781441
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.add_reporter error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltoracle.add_reporter sig=5422b0b177cd2e2c...",
+      "ts": 1771781442
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.remove_reporter error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltoracle.remove_reporter sig=a35c5815f925fe81...",
+      "ts": 1771781443
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.get_oracle_stats error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltoracle.get_oracle_stats sig=d921469d23ce5361...",
+      "ts": 1771781443
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.mo_pause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltoracle.mo_pause sig=5977afcfa64d0ef0...",
+      "ts": 1771781444
     },
     {
-      "status": "FAIL",
-      "msg": "moltoracle.mo_unpause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltoracle.mo_unpause sig=bea5a8d82847cd59...",
+      "ts": 1771781444
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.initialize error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltdao.initialize sig=f833131e4cf6d3dd...",
+      "ts": 1771781445
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.set_quorum error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltdao.set_quorum sig=c4878f16ac5b6a78...",
+      "ts": 1771781447
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.set_voting_period error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltdao.set_voting_period sig=8ed9d591cf8fb2b7...",
+      "ts": 1771781450
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.create_proposal error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltdao.create_proposal sig=e14341fc23be2105...",
+      "ts": 1771781455
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.cast_vote error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltdao.cast_vote sig=2eb244aee2eb8979...",
+      "ts": 1771781455
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.get_proposal error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltdao.get_proposal sig=c1f380d3d2c2bc06...",
+      "ts": 1771781459
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.get_proposal_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltdao.get_proposal_count sig=2bd608bb76ced51e...",
+      "ts": 1771781459
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.get_vote error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltdao.get_vote sig=1477a344ddda9c0a...",
+      "ts": 1771781462
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.get_vote_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltdao.get_vote_count sig=49c1b6291d0248cc...",
+      "ts": 1771781463
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.finalize_proposal error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltdao.finalize_proposal sig=5c241ba3f27fdefa...",
+      "ts": 1771781463
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.set_timelock_delay error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltdao.set_timelock_delay sig=8559fa221fdc4f19...",
+      "ts": 1771781465
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.execute_proposal error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltdao.execute_proposal sig=ce7793eca5a2b4d5...",
+      "ts": 1771781473
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.get_dao_stats error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltdao.get_dao_stats sig=890a5c1d9aed7dd0...",
+      "ts": 1771781477
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.get_active_proposals error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltdao.get_active_proposals sig=f0b02e5e2608fc91...",
+      "ts": 1771781477
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.get_total_supply error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltdao.get_total_supply sig=4275c455b3e4ce51...",
+      "ts": 1771781480
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.get_treasury_balance error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltdao.get_treasury_balance sig=1857e1c87d46b98f...",
+      "ts": 1771781480
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.veto_proposal error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltdao.veto_proposal sig=0f0cd216b2eb7046...",
+      "ts": 1771781481
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.cancel_proposal error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltdao.cancel_proposal sig=a4a54bb790066509...",
+      "ts": 1771781481
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.treasury_transfer error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltdao.treasury_transfer sig=1feabce4c19922a9...",
+      "ts": 1771781482
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.dao_pause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltdao.dao_pause sig=6bf2a2e0be6ac966...",
+      "ts": 1771781483
     },
     {
-      "status": "FAIL",
-      "msg": "moltdao.dao_unpause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltdao.dao_unpause sig=7a2d7965de9f7707...",
+      "ts": 1771781485
     },
     {
-      "status": "FAIL",
-      "msg": "moltpunks.initialize error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltpunks.initialize sig=1bed95369490d091...",
+      "ts": 1771781486
     },
     {
-      "status": "FAIL",
-      "msg": "moltpunks.mint_punk error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltpunks.mint_punk sig=7723c7ac677e7e66...",
+      "ts": 1771781486
     },
     {
-      "status": "FAIL",
-      "msg": "moltpunks.transfer_punk error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltpunks.transfer_punk sig=f66c54d076a57d37...",
+      "ts": 1771781490
     },
     {
-      "status": "FAIL",
-      "msg": "moltpunks.get_punk_metadata error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltpunks.get_punk_metadata sig=0933b9c3346c8878...",
+      "ts": 1771781490
     },
     {
-      "status": "FAIL",
-      "msg": "moltpunks.get_total_supply error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltpunks.get_total_supply sig=1c5887b50cc6ba59...",
+      "ts": 1771781497
     },
     {
-      "status": "FAIL",
-      "msg": "moltpunks.get_owner_of error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltpunks.get_owner_of sig=bd5d1c74ae6ff1ae...",
+      "ts": 1771781497
     },
     {
-      "status": "FAIL",
-      "msg": "moltpunks.set_base_uri error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltpunks.set_base_uri sig=3c83b5ca152a3bfa...",
+      "ts": 1771781497
     },
     {
-      "status": "FAIL",
-      "msg": "moltpunks.set_max_supply error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltpunks.set_max_supply sig=d78073715a6a91a4...",
+      "ts": 1771781498
     },
     {
-      "status": "FAIL",
-      "msg": "moltpunks.get_punks_by_owner error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltpunks.get_punks_by_owner sig=c40732b04e26b3e8...",
+      "ts": 1771781500
     },
     {
-      "status": "FAIL",
-      "msg": "moltpunks.set_royalty error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltpunks.set_royalty sig=2080c17353b5db0c...",
+      "ts": 1771781501
     },
     {
-      "status": "FAIL",
-      "msg": "moltpunks.balance_of error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltpunks.balance_of sig=bb2a4527ec92ea8e...",
+      "ts": 1771781502
     },
     {
-      "status": "FAIL",
-      "msg": "moltpunks.approve error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltpunks.approve sig=faa043f0b5824eb6...",
+      "ts": 1771781507
     },
     {
-      "status": "FAIL",
-      "msg": "moltpunks.burn error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltpunks.burn sig=25fa658e16f694ab...",
+      "ts": 1771781507
     },
     {
-      "status": "FAIL",
-      "msg": "moltpunks.mp_pause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltpunks.mp_pause sig=22d66ca9003ade26...",
+      "ts": 1771781507
     },
     {
-      "status": "FAIL",
-      "msg": "moltpunks.mp_unpause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltpunks.mp_unpause sig=709dba637a1312c6...",
+      "ts": 1771781508
     },
     {
-      "status": "FAIL",
-      "msg": "moltpunks.get_collection_stats error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "moltpunks.get_collection_stats sig=98cb38933f696288...",
+      "ts": 1771781508
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.initialize error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "compute_market.initialize sig=732b5b7fdd8638e2...",
+      "ts": 1771781509
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.register_provider error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "compute_market.register_provider sig=b8b6f83950f2b35f...",
+      "ts": 1771781511
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.create_job error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "compute_market.create_job sig=ab3f40b0341df6fc...",
+      "ts": 1771781512
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.accept_job error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "compute_market.accept_job sig=aaff4a0d4e14a521...",
+      "ts": 1771781512
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.submit_result error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "compute_market.submit_result sig=0751994ed421458b...",
+      "ts": 1771781513
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.confirm_result error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "compute_market.confirm_result sig=a0ef186150691221...",
+      "ts": 1771781513
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.get_job_info error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "compute_market.get_job_info sig=d58618240d2921ed...",
+      "ts": 1771781514
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.get_provider_info error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "compute_market.get_provider_info sig=724d2537dca8c509...",
+      "ts": 1771781516
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.get_job_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "compute_market.get_job_count sig=f922ed812bdf0659...",
+      "ts": 1771781516
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.set_platform_fee error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "compute_market.set_platform_fee sig=c4a4335edf6b6a4e...",
+      "ts": 1771781516
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.cm_pause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "compute_market.cm_pause sig=57ebb030f52fc102...",
+      "ts": 1771781517
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.cm_unpause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "compute_market.cm_unpause sig=af7613d6efc6d3cd...",
+      "ts": 1771781517
     },
     {
-      "status": "FAIL",
-      "msg": "compute_market.get_platform_stats error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "compute_market.get_platform_stats sig=e9138e3aa0839a6b...",
+      "ts": 1771781518
     },
     {
-      "status": "FAIL",
-      "msg": "bountyboard.initialize error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "bountyboard.initialize sig=a4a9a1b610b0b995...",
+      "ts": 1771781525
     },
     {
-      "status": "FAIL",
-      "msg": "bountyboard.create_bounty error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "bountyboard.create_bounty sig=6d357c3ff3eccc86...",
+      "ts": 1771781526
     },
     {
-      "status": "FAIL",
-      "msg": "bountyboard.get_bounty error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "bountyboard.get_bounty sig=93c31e266f3c14b0...",
+      "ts": 1771781527
     },
     {
-      "status": "FAIL",
-      "msg": "bountyboard.get_bounty_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "bountyboard.get_bounty_count sig=bca2b03ff437f954...",
+      "ts": 1771781528
     },
     {
       "status": "FAIL",
-      "msg": "bountyboard.submit_work error=All connection attempts failed",
-      "ts": 1771755707
+      "msg": "bountyboard.submit_work error=RPC Error: Payer account does not exist on-chain. Fund it first.",
+      "ts": 1771781528
     },
     {
-      "status": "FAIL",
-      "msg": "bountyboard.approve_submission error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "bountyboard.approve_submission sig=cda3de1ffb95f48e...",
+      "ts": 1771781531
     },
     {
-      "status": "FAIL",
-      "msg": "bountyboard.cancel_bounty error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "bountyboard.cancel_bounty sig=f0b70d68b00c12a5...",
+      "ts": 1771781531
     },
     {
-      "status": "FAIL",
-      "msg": "bountyboard.set_platform_fee error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "bountyboard.set_platform_fee sig=d2b5b5e7a263b18e...",
+      "ts": 1771781531
     },
     {
-      "status": "FAIL",
-      "msg": "bountyboard.bb_pause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "bountyboard.bb_pause sig=c63991fed2ecb5d2...",
+      "ts": 1771781532
     },
     {
-      "status": "FAIL",
-      "msg": "bountyboard.bb_unpause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "bountyboard.bb_unpause sig=4c4755cfc38eec1a...",
+      "ts": 1771781532
     },
     {
-      "status": "FAIL",
-      "msg": "bountyboard.get_platform_stats error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "bountyboard.get_platform_stats sig=45416becbd5ba937...",
+      "ts": 1771781537
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.initialize error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_core.initialize sig=1e5776d8d879f5fd...",
+      "ts": 1771781538
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.create_pair error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_core.create_pair sig=85eab534452af047...",
+      "ts": 1771781538
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.set_preferred_quote error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_core.set_preferred_quote sig=932f2ee909735f2d...",
+      "ts": 1771781543
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.add_allowed_quote error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_core.add_allowed_quote sig=a2d5543f2fbe7ee2...",
+      "ts": 1771781544
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.get_allowed_quote_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_core.get_allowed_quote_count sig=d2c76fbd90ad4925...",
+      "ts": 1771781545
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.remove_allowed_quote error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_core.remove_allowed_quote sig=05e4dfbefb9737a1...",
+      "ts": 1771781547
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.update_pair_fees error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_core.update_pair_fees sig=2d25ed7c9ba03cc2...",
+      "ts": 1771781548
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.get_pair_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_core.get_pair_count sig=9f2d307d42d8d00a...",
+      "ts": 1771781549
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.get_preferred_quote error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_core.get_preferred_quote sig=a0d59c792c7a3bdf...",
+      "ts": 1771781552
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.get_pair_info error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_core.get_pair_info sig=67b210c3577d7029...",
+      "ts": 1771781554
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.get_trade_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_core.get_trade_count sig=ad1ff8c38d70d9fa...",
+      "ts": 1771781556
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.get_fee_treasury error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_core.get_fee_treasury sig=3288728e8e5fa165...",
+      "ts": 1771781557
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.place_order error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_core.place_order sig=b4505464a0049a12...",
+      "ts": 1771781558
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.get_order error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_core.get_order sig=dc93904a04218315...",
+      "ts": 1771781561
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.get_best_bid error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_core.get_best_bid sig=ede8bc8dd4626524...",
+      "ts": 1771781562
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.get_best_ask error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_core.get_best_ask sig=4173bf92562e7a03...",
+      "ts": 1771781562
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.get_spread error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_core.get_spread sig=00d67f7d4749dc4c...",
+      "ts": 1771781562
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.modify_order error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_core.modify_order sig=1d83a7ba9c5a1d22...",
+      "ts": 1771781567
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.cancel_order error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_core.cancel_order sig=c15cbb732fd35f52...",
+      "ts": 1771781568
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.cancel_all_orders error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_core.cancel_all_orders sig=8ab333c4e3c9c612...",
+      "ts": 1771781568
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.pause_pair error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_core.pause_pair sig=e53764e0386fcfaf...",
+      "ts": 1771781573
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.unpause_pair error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_core.unpause_pair sig=58abe3e26ef483ed...",
+      "ts": 1771781573
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.emergency_pause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_core.emergency_pause sig=c677c42e9a90fa00...",
+      "ts": 1771781581
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.emergency_unpause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_core.emergency_unpause sig=b9c5ced9f1b50052...",
+      "ts": 1771781583
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.get_total_volume error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_core.get_total_volume sig=3c3aa665e56d6267...",
+      "ts": 1771781584
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.get_user_orders error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_core.get_user_orders sig=f676a2ae17ea7b04...",
+      "ts": 1771781584
     },
     {
-      "status": "FAIL",
-      "msg": "dex_core.get_open_order_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_core.get_open_order_count sig=d1a2fc96c2a73687...",
+      "ts": 1771781584
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.initialize error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_amm.initialize sig=c353749f4c935e5f...",
+      "ts": 1771781585
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.create_pool error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_amm.create_pool sig=74ef57041ef00e96...",
+      "ts": 1771781585
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.set_protocol_fee error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_amm.set_protocol_fee sig=11d77d04ab4fcf03...",
+      "ts": 1771781586
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.add_liquidity error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_amm.add_liquidity sig=8a041f3512062a1a...",
+      "ts": 1771781588
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.get_pool_info error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_amm.get_pool_info sig=355a9f750b881bf9...",
+      "ts": 1771781588
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.get_position error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_amm.get_position sig=0a7aa6e4daad01bc...",
+      "ts": 1771781589
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.get_pool_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_amm.get_pool_count sig=b1423b2221182e4a...",
+      "ts": 1771781589
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.get_position_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_amm.get_position_count sig=a07c5ec87ec3fe1e...",
+      "ts": 1771781590
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.get_tvl error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_amm.get_tvl sig=dc585324019246c9...",
+      "ts": 1771781590
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.quote_swap error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_amm.quote_swap sig=defa17930565b071...",
+      "ts": 1771781591
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.swap_exact_in error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_amm.swap_exact_in sig=4b2c8e3cc1c7ac53...",
+      "ts": 1771781592
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.swap_exact_out error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_amm.swap_exact_out sig=81361faadec69df1...",
+      "ts": 1771781592
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.collect_fees error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_amm.collect_fees sig=e4e9b1966bfd7e75...",
+      "ts": 1771781592
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.remove_liquidity error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_amm.remove_liquidity sig=5c6088653ab50e82...",
+      "ts": 1771781593
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.emergency_pause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_amm.emergency_pause sig=8db759b9357973f4...",
+      "ts": 1771781594
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.emergency_unpause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_amm.emergency_unpause sig=ca0c80b1e31e0410...",
+      "ts": 1771781595
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.get_total_volume error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_amm.get_total_volume sig=b0752744d01a9262...",
+      "ts": 1771781596
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.get_swap_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_amm.get_swap_count sig=c9a9b729f5c7491b...",
+      "ts": 1771781596
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.get_total_fees_collected error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_amm.get_total_fees_collected sig=3bcc4089b768aa39...",
+      "ts": 1771781597
     },
     {
-      "status": "FAIL",
-      "msg": "dex_amm.get_amm_stats error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_amm.get_amm_stats sig=4d0fb1fd28121b46...",
+      "ts": 1771781597
     },
     {
-      "status": "FAIL",
-      "msg": "dex_analytics.initialize error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_analytics.initialize sig=5206f2e103d941c3...",
+      "ts": 1771781597
     },
     {
-      "status": "FAIL",
-      "msg": "dex_analytics.record_trade error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_analytics.record_trade sig=737b25b8973967e8...",
+      "ts": 1771781598
     },
     {
-      "status": "FAIL",
-      "msg": "dex_analytics.get_ohlcv error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_analytics.get_ohlcv sig=8832716ff80be681...",
+      "ts": 1771781598
     },
     {
-      "status": "FAIL",
-      "msg": "dex_analytics.get_24h_stats error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_analytics.get_24h_stats sig=10fecae2c5a0b704...",
+      "ts": 1771781599
     },
     {
-      "status": "FAIL",
-      "msg": "dex_analytics.get_trader_stats error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_analytics.get_trader_stats sig=ca537913279b30d4...",
+      "ts": 1771781599
     },
     {
-      "status": "FAIL",
-      "msg": "dex_analytics.get_last_price error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_analytics.get_last_price sig=74bf2a9960e56d5d...",
+      "ts": 1771781599
     },
     {
-      "status": "FAIL",
-      "msg": "dex_analytics.get_record_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_analytics.get_record_count sig=fafdd614a8a55243...",
+      "ts": 1771781602
     },
     {
-      "status": "FAIL",
-      "msg": "dex_analytics.emergency_pause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_analytics.emergency_pause sig=e440cdb5f01cb294...",
+      "ts": 1771781602
     },
     {
-      "status": "FAIL",
-      "msg": "dex_analytics.emergency_unpause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_analytics.emergency_unpause sig=91e40e1dd5aeb2b1...",
+      "ts": 1771781603
     },
     {
-      "status": "FAIL",
-      "msg": "dex_analytics.get_trader_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_analytics.get_trader_count sig=5353bc96a8c4267d...",
+      "ts": 1771781605
     },
     {
-      "status": "FAIL",
-      "msg": "dex_analytics.get_global_stats error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_analytics.get_global_stats sig=a332924bee4aa1e3...",
+      "ts": 1771781605
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.initialize error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_governance.initialize sig=38b64d641c7707bf...",
+      "ts": 1771781611
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.set_preferred_quote error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_governance.set_preferred_quote sig=6e6b5b5f6240c445...",
+      "ts": 1771781611
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.add_allowed_quote error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_governance.add_allowed_quote sig=14864bde5d6490af...",
+      "ts": 1771781611
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.get_allowed_quote_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_governance.get_allowed_quote_count sig=0764ab2ac058fb0c...",
+      "ts": 1771781614
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.remove_allowed_quote error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_governance.remove_allowed_quote sig=d72d04ed12e38f69...",
+      "ts": 1771781615
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.set_moltyid_address error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_governance.set_moltyid_address sig=ac9f98162d8ac6b1...",
+      "ts": 1771781617
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.set_listing_requirements error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_governance.set_listing_requirements sig=6ddf4c5a70cc6d54...",
+      "ts": 1771781619
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.propose_new_pair error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_governance.propose_new_pair sig=0afe6d02e49248ec...",
+      "ts": 1771781620
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.propose_fee_change error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_governance.propose_fee_change sig=4901fcd5037f93ab...",
+      "ts": 1771781623
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.vote error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_governance.vote sig=c295c6cf5c370251...",
+      "ts": 1771781626
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.get_proposal_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_governance.get_proposal_count sig=29d71fc6b76c7c22...",
+      "ts": 1771781627
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.get_preferred_quote error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_governance.get_preferred_quote sig=359306454e50756f...",
+      "ts": 1771781627
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.get_proposal_info error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_governance.get_proposal_info sig=e1d9b42d6919ad7d...",
+      "ts": 1771781629
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.finalize_proposal error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_governance.finalize_proposal sig=31bd1435f39c4cb7...",
+      "ts": 1771781630
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.execute_proposal error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_governance.execute_proposal sig=745e9346d5753b34...",
+      "ts": 1771781630
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.emergency_delist error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_governance.emergency_delist sig=82b6b7b5a5cdb850...",
+      "ts": 1771781631
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.emergency_pause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_governance.emergency_pause sig=7e8daab87b8e80e6...",
+      "ts": 1771781632
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.emergency_unpause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_governance.emergency_unpause sig=aa4f7098c89186ee...",
+      "ts": 1771781633
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.get_governance_stats error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_governance.get_governance_stats sig=22a0a0b7ec417bc3...",
+      "ts": 1771781639
     },
     {
-      "status": "FAIL",
-      "msg": "dex_governance.get_voter_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_governance.get_voter_count sig=31c433ae0eec1e0f...",
+      "ts": 1771781640
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.initialize error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_margin.initialize sig=942799c4652edd50...",
+      "ts": 1771781640
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.set_moltcoin_address error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_margin.set_moltcoin_address sig=fe52417b2379fc47...",
+      "ts": 1771781641
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.set_mark_price error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_margin.set_mark_price sig=0839f645ad6f32ec...",
+      "ts": 1771781643
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.set_max_leverage error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_margin.set_max_leverage sig=229fc030bed28c57...",
+      "ts": 1771781644
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.set_maintenance_margin error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_margin.set_maintenance_margin sig=dd069458f78faabf...",
+      "ts": 1771781644
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.open_position error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_margin.open_position sig=be3f1aeaaa036e01...",
+      "ts": 1771781645
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.get_position_info error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_margin.get_position_info sig=d4bddef0179254a9...",
+      "ts": 1771781647
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.get_margin_ratio error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_margin.get_margin_ratio sig=bfa9585fe13ce5fd...",
+      "ts": 1771781649
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.get_tier_info error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_margin.get_tier_info sig=41ed060fcb6ec3a2...",
+      "ts": 1771781651
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.add_margin error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_margin.add_margin sig=f1faecd6959d08ae...",
+      "ts": 1771781652
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.remove_margin error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_margin.remove_margin sig=ae757a441adb03b4...",
+      "ts": 1771781652
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.liquidate error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_margin.liquidate sig=84bde3577a49324f...",
+      "ts": 1771781653
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.close_position error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_margin.close_position sig=4c305a897ca2be12...",
+      "ts": 1771781653
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.withdraw_insurance error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_margin.withdraw_insurance sig=435be98134bdc756...",
+      "ts": 1771781653
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.emergency_pause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_margin.emergency_pause sig=c000d66dd48d1a69...",
+      "ts": 1771781654
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.emergency_unpause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_margin.emergency_unpause sig=74c31ec6d61981fa...",
+      "ts": 1771781654
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.get_total_volume error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_margin.get_total_volume sig=de7ba633f295d7d5...",
+      "ts": 1771781655
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.get_user_positions error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_margin.get_user_positions sig=0761aa141560ddad...",
+      "ts": 1771781656
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.get_total_pnl error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_margin.get_total_pnl sig=61e6bb70bee3fd17...",
+      "ts": 1771781657
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.get_liquidation_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_margin.get_liquidation_count sig=686cffa066a724fc...",
+      "ts": 1771781657
     },
     {
-      "status": "FAIL",
-      "msg": "dex_margin.get_margin_stats error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_margin.get_margin_stats sig=f6715f8e02601fd5...",
+      "ts": 1771781660
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.initialize error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_rewards.initialize sig=7312ff2c93704dd5...",
+      "ts": 1771781660
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.set_moltcoin_address error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_rewards.set_moltcoin_address sig=90cb95c89863181c...",
+      "ts": 1771781661
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.set_rewards_pool error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_rewards.set_rewards_pool sig=6e352d3f3626ce9c...",
+      "ts": 1771781661
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.set_reward_rate error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_rewards.set_reward_rate sig=d99f79867e661496...",
+      "ts": 1771781662
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.set_referral_rate error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_rewards.set_referral_rate sig=249605336c5a9399...",
+      "ts": 1771781662
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.register_referral error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_rewards.register_referral sig=7f390affd569b67f...",
+      "ts": 1771781663
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.record_trade error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_rewards.record_trade sig=a3d220916d569b3c...",
+      "ts": 1771781664
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.accrue_lp_rewards error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_rewards.accrue_lp_rewards sig=9abfd4eb3aa794d7...",
+      "ts": 1771781667
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.claim_trading_rewards error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_rewards.claim_trading_rewards sig=23c72380d2e26701...",
+      "ts": 1771781667
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.claim_lp_rewards error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_rewards.claim_lp_rewards sig=9e060d866b832a31...",
+      "ts": 1771781668
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.get_pending_rewards error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_rewards.get_pending_rewards sig=62dfa585f7948bed...",
+      "ts": 1771781670
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.get_trading_tier error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_rewards.get_trading_tier sig=fad3b6dc47cf1212...",
+      "ts": 1771781672
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.get_referral_rate error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_rewards.get_referral_rate sig=1588ac3f8b4847fa...",
+      "ts": 1771781674
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.get_total_distributed error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_rewards.get_total_distributed sig=0a58746ba62cfbc6...",
+      "ts": 1771781674
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.emergency_pause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_rewards.emergency_pause sig=208fe5b634decfe0...",
+      "ts": 1771781675
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.emergency_unpause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_rewards.emergency_unpause sig=95511ce596bc82d8...",
+      "ts": 1771781680
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.get_trader_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_rewards.get_trader_count sig=a0669fd2123c1a4c...",
+      "ts": 1771781680
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.get_total_volume error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_rewards.get_total_volume sig=e7a62617c0635655...",
+      "ts": 1771781680
     },
     {
-      "status": "FAIL",
-      "msg": "dex_rewards.get_reward_stats error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_rewards.get_reward_stats sig=0c5535df191e9409...",
+      "ts": 1771781685
     },
     {
-      "status": "FAIL",
-      "msg": "dex_router.initialize error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_router.initialize sig=01908803399defb2...",
+      "ts": 1771781688
     },
     {
-      "status": "FAIL",
-      "msg": "dex_router.set_addresses error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_router.set_addresses sig=78d405e7f1936d07...",
+      "ts": 1771781690
     },
     {
-      "status": "FAIL",
-      "msg": "dex_router.register_route error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_router.register_route sig=594f66f179ee9eaa...",
+      "ts": 1771781694
     },
     {
-      "status": "FAIL",
-      "msg": "dex_router.get_route_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_router.get_route_count sig=9c07dff2ad03b34b...",
+      "ts": 1771781694
     },
     {
-      "status": "FAIL",
-      "msg": "dex_router.get_swap_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_router.get_swap_count sig=92276eabb4af8fb3...",
+      "ts": 1771781694
     },
     {
-      "status": "FAIL",
-      "msg": "dex_router.get_route_info error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_router.get_route_info sig=9da9ebaa7166d138...",
+      "ts": 1771781696
     },
     {
-      "status": "FAIL",
-      "msg": "dex_router.get_best_route error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_router.get_best_route sig=7d9586fbd8d5b017...",
+      "ts": 1771781697
     },
     {
-      "status": "FAIL",
-      "msg": "dex_router.set_route_enabled error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_router.set_route_enabled sig=098f2fe9fa32440b...",
+      "ts": 1771781699
     },
     {
-      "status": "FAIL",
-      "msg": "dex_router.swap error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_router.swap sig=f0e022935d02c553...",
+      "ts": 1771781702
     },
     {
-      "status": "FAIL",
-      "msg": "dex_router.multi_hop_swap error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_router.multi_hop_swap sig=7a5e450bb403d13c...",
+      "ts": 1771781702
     },
     {
-      "status": "FAIL",
-      "msg": "dex_router.emergency_pause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_router.emergency_pause sig=9e81eed4f4932572...",
+      "ts": 1771781703
     },
     {
-      "status": "FAIL",
-      "msg": "dex_router.emergency_unpause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_router.emergency_unpause sig=f0d98221485e525d...",
+      "ts": 1771781704
     },
     {
-      "status": "FAIL",
-      "msg": "dex_router.get_total_volume_routed error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_router.get_total_volume_routed sig=29468d0abc9a3a36...",
+      "ts": 1771781706
     },
     {
-      "status": "FAIL",
-      "msg": "dex_router.get_router_stats error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "dex_router.get_router_stats sig=da9af7311f2ab4c6...",
+      "ts": 1771781708
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.initialize error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.initialize sig=ab9be665dd2d21e0...",
+      "ts": 1771781710
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.set_moltyid_address error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.set_moltyid_address sig=d3f2084573399564...",
+      "ts": 1771781710
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.set_oracle_address error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.set_oracle_address sig=bb412298db3ddebb...",
+      "ts": 1771781710
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.set_musd_address error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.set_musd_address sig=5689b609ed6ffe8a...",
+      "ts": 1771781713
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.set_dex_gov_address error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.set_dex_gov_address sig=57674ad6a76b6e78...",
+      "ts": 1771781713
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.create_market error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.create_market sig=fa3f5fc642889e5c...",
+      "ts": 1771781718
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.get_market_count error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.get_market_count sig=dc479b595c7e2d2b...",
+      "ts": 1771781719
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.get_market error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.get_market sig=7bdeea17c41e0304...",
+      "ts": 1771781720
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.get_price error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.get_price sig=4847ae09061d1e38...",
+      "ts": 1771781720
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.get_outcome_pool error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.get_outcome_pool sig=329ec7b637b665c3...",
+      "ts": 1771781721
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.get_pool_reserves error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.get_pool_reserves sig=2aa26fccec70e36a...",
+      "ts": 1771781723
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.get_platform_stats error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.get_platform_stats sig=95aee2cabf12d9d3...",
+      "ts": 1771781728
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.quote_buy error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.quote_buy sig=897387e84f563710...",
+      "ts": 1771781728
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.quote_sell error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.quote_sell sig=464946a8f3883df3...",
+      "ts": 1771781729
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.add_initial_liquidity error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.add_initial_liquidity sig=33f5d53c8c0b30a7...",
+      "ts": 1771781731
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.add_liquidity error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.add_liquidity sig=17aebc268f00b52f...",
+      "ts": 1771781736
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.buy_shares error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.buy_shares sig=e08c6b2a3be2bb7e...",
+      "ts": 1771781737
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.sell_shares error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.sell_shares sig=b525366d4f56148f...",
+      "ts": 1771781738
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.get_price_history error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.get_price_history sig=5715efdbfb35c57f...",
+      "ts": 1771781738
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.mint_complete_set error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.mint_complete_set sig=4b51164e137389a0...",
+      "ts": 1771781739
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.redeem_complete_set error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.redeem_complete_set sig=692b5808d6b32182...",
+      "ts": 1771781740
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.get_position error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.get_position sig=fb4be43849c98b0e...",
+      "ts": 1771781740
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.get_user_markets error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.get_user_markets sig=328faf94b43e99d0...",
+      "ts": 1771781742
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.get_lp_balance error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.get_lp_balance sig=611c7ac58ed49416...",
+      "ts": 1771781742
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.withdraw_liquidity error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.withdraw_liquidity sig=5cfbe1566699d1c3...",
+      "ts": 1771781743
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.submit_resolution error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.submit_resolution sig=c96046a460deca24...",
+      "ts": 1771781744
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.challenge_resolution error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.challenge_resolution sig=a9495cdea9502f25...",
+      "ts": 1771781746
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.finalize_resolution error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.finalize_resolution sig=89143b68449be03a...",
+      "ts": 1771781750
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.dao_resolve error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.dao_resolve sig=c7a77642c32c35a4...",
+      "ts": 1771781750
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.dao_void error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.dao_void sig=9df13dd5b3dd8ec8...",
+      "ts": 1771781750
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.redeem_shares error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.redeem_shares sig=ceda9fe0811be756...",
+      "ts": 1771781751
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.reclaim_collateral error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.reclaim_collateral sig=15bf0a7887928aa0...",
+      "ts": 1771781751
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.close_market error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.close_market sig=27d39d493a6e844f...",
+      "ts": 1771781752
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.emergency_pause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.emergency_pause sig=0f0f238ba11b2ce7...",
+      "ts": 1771781753
     },
     {
-      "status": "FAIL",
-      "msg": "prediction_market.emergency_unpause error=All connection attempts failed",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.emergency_unpause sig=2d76af9a5b90f590...",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "prediction_market.rest_price_history skip (API: <urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "prediction_market.rest_price_history count=0 (no trades yet)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getDexCoreStats skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getDexCoreStats -> {'pair_count': 5, 'order_count': 0, 'trade_count': 0, 'total_volume': 0, 'fee_treasury': 0, 'paused': True}",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getDexAmmStats skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getDexAmmStats -> {'pool_count': 7, 'position_count': 0, 'swap_count': 2, 'total_volume': 20000, 'total_fees': 60, 'paused': False}",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getDexMarginStats skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getDexMarginStats -> {'position_count': 2, 'total_volume': 200000000, 'liquidation_count': 0, 'total_pnl_profit': 0, 'total_pnl_loss': 0, 'insurance_fund': 0, 'max_leverage': 100, 'paused': False}",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getDexRewardsStats skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getDexRewardsStats -> {'trade_count': 0, 'trader_count': 0, 'total_volume': 0, 'total_distributed': 0, 'epoch': 0, 'paused': False}",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getDexRouterStats skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getDexRouterStats -> {'route_count': 0, 'swap_count': 0, 'total_volume': 0, 'paused': False}",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getDexAnalyticsStats skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getDexAnalyticsStats -> {'record_count': 2, 'trader_count': 1, 'total_volume': 10000, 'paused': False}",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getDexGovernanceStats skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getDexGovernanceStats -> {'proposal_count': 0, 'total_votes': 0, 'voter_count': 0, 'paused': False}",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getMoltswapStats skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getMoltswapStats -> {'swap_count': 0, 'volume_a': 0, 'volume_b': 0, 'paused': False}",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getLobsterLendStats skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getLobsterLendStats -> {'total_deposits': 0, 'total_borrows': 0, 'reserves': 0, 'deposit_count': 0, 'borrow_count': 0, 'liquidation_count': 0, 'paused': False}",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getClawPayStats skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getClawPayStats -> {'stream_count': 0, 'total_streamed': 0, 'total_withdrawn': 0, 'cancel_count': 0, 'paused': False}",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getBountyBoardStats skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getBountyBoardStats -> {'bounty_count': 0, 'completed_count': 0, 'reward_volume': 0, 'cancel_count': 0}",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getComputeMarketStats skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getComputeMarketStats -> {'job_count': 0, 'completed_count': 0, 'payment_volume': 0, 'dispute_count': 0}",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getReefStorageStats skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getReefStorageStats -> {'data_count': 0, 'total_bytes': 0, 'challenge_count': 0}",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getMoltMarketStats skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getMoltMarketStats -> {'listing_count': 0, 'sale_count': 0, 'sale_volume': 0, 'paused': False}",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getMoltAuctionStats skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getMoltAuctionStats -> {'auction_count': 0, 'total_volume': 0, 'total_sales': 0, 'paused': False}",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getMoltPunksStats skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getMoltPunksStats -> {'total_minted': 0, 'transfer_count': 0, 'burn_count': 0, 'paused': False}",
+      "ts": 1771781753
     },
     {
       "status": "SKIP",
-      "msg": "rest/api/v1/dex/stats/core skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "msg": "rest/api/v1/dex/stats/core skip (HTTP Error 404: Not Found)",
+      "ts": 1771781753
     },
     {
       "status": "SKIP",
-      "msg": "rest/api/v1/dex/stats/amm skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "msg": "rest/api/v1/dex/stats/amm skip (HTTP Error 404: Not Found)",
+      "ts": 1771781753
     },
     {
       "status": "SKIP",
-      "msg": "rest/api/v1/dex/stats/margin skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "msg": "rest/api/v1/dex/stats/margin skip (HTTP Error 404: Not Found)",
+      "ts": 1771781753
     },
     {
       "status": "SKIP",
-      "msg": "rest/api/v1/dex/stats/router skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "msg": "rest/api/v1/dex/stats/router skip (HTTP Error 404: Not Found)",
+      "ts": 1771781753
     },
     {
       "status": "SKIP",
-      "msg": "rest/api/v1/dex/stats/rewards skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "msg": "rest/api/v1/dex/stats/rewards skip (HTTP Error 404: Not Found)",
+      "ts": 1771781753
     },
     {
       "status": "SKIP",
-      "msg": "rest/api/v1/dex/stats/analytics skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "msg": "rest/api/v1/dex/stats/analytics skip (HTTP Error 404: Not Found)",
+      "ts": 1771781753
     },
     {
       "status": "SKIP",
-      "msg": "rest/api/v1/dex/stats/governance skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "msg": "rest/api/v1/dex/stats/governance skip (HTTP Error 404: Not Found)",
+      "ts": 1771781753
     },
     {
       "status": "SKIP",
-      "msg": "rest/api/v1/dex/stats/moltswap skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "msg": "rest/api/v1/dex/stats/moltswap skip (HTTP Error 404: Not Found)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getBlock skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getBlock -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getLatestBlock skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getLatestBlock -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getAccount skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getAccount -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getAccountInfo skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getAccountInfo -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getTransactionsByAddress skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getTransactionsByAddress -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getAccountTxCount skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getAccountTxCount -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getRecentTransactions skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getRecentTransactions -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getTokenAccounts skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getTokenAccounts -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getTotalBurned skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getTotalBurned -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getValidators skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getValidators -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getMetrics skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getMetrics -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getTreasuryInfo skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getTreasuryInfo -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getGenesisAccounts skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getGenesisAccounts -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getFeeConfig skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getFeeConfig -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getRentParams skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getRentParams -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getPeers skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getPeers -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getNetworkInfo skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getNetworkInfo -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getClusterInfo skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getClusterInfo -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getValidatorInfo skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getValidatorInfo accepted (code=-32602)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getValidatorPerformance skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getValidatorPerformance accepted (code=-32602)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getChainStatus skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getChainStatus -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getStakingStatus skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getStakingStatus -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getStakingRewards skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getStakingRewards -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getStakingPosition skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getStakingPosition -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getReefStakePoolInfo skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getReefStakePoolInfo -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getUnstakingQueue skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getUnstakingQueue -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getRewardAdjustmentInfo skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getRewardAdjustmentInfo -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getAllContracts skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getAllContracts -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getContractInfo skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getContractInfo -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getContractLogs skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getContractLogs -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getPrograms skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getPrograms -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getProgramStats skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getProgramStats accepted (code=-32602)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getMoltyIdStats skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getMoltyIdStats -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getMoltyIdIdentity skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getMoltyIdIdentity -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getMoltyIdReputation skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getMoltyIdReputation -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getMoltyIdSkills skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getMoltyIdSkills -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getMoltyIdProfile skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getMoltyIdProfile -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getMoltyIdAchievements skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getMoltyIdAchievements -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getMoltyIdAgentDirectory skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getMoltyIdAgentDirectory -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.resolveMoltName skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.resolveMoltName -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.searchMoltNames skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.searchMoltNames -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getEvmRegistration skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getEvmRegistration -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getSymbolRegistry skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getSymbolRegistry -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getCollection skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getCollection accepted (code=-32602)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getNFTsByOwner skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getNFTsByOwner -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getNFTsByCollection skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getNFTsByCollection accepted (code=-32602)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getNFTActivity skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getNFTActivity -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getMarketListings skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getMarketListings -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getMarketSales skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getMarketSales -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getTokenBalance skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getTokenBalance accepted (code=-32602)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getTokenHolders skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getTokenHolders accepted (code=-32602)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getTokenTransfers skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getTokenTransfers -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getPredictionMarketStats skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getPredictionMarketStats -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getPredictionMarkets skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getPredictionMarkets -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getPredictionLeaderboard skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getPredictionLeaderboard -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rpc.getPredictionTrending skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rpc.getPredictionTrending -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rest.GET/api/v1/dex/pairs skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rest.GET/api/v1/dex/pairs accepted (HTTP 404)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rest.GET/api/v1/dex/tickers skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rest.GET/api/v1/dex/tickers accepted (HTTP 404)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rest.GET/api/v1/dex/pools skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rest.GET/api/v1/dex/pools accepted (HTTP 404)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rest.GET/api/v1/dex/orders skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rest.GET/api/v1/dex/orders accepted (HTTP 404)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rest.GET/api/v1/dex/leaderboard skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rest.GET/api/v1/dex/leaderboard accepted (HTTP 404)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rest.GET/api/v1/dex/routes skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rest.GET/api/v1/dex/routes accepted (HTTP 404)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rest.GET/api/v1/dex/governance/proposals skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rest.GET/api/v1/dex/governance/proposals accepted (HTTP 404)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rest.GET/api/v1/prediction-market/stats skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rest.GET/api/v1/prediction-market/stats -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rest.GET/api/v1/prediction-market/markets skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rest.GET/api/v1/prediction-market/markets -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rest.GET/api/v1/prediction-market/leaderboard skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rest.GET/api/v1/prediction-market/leaderboard -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "rest.GET/api/v1/prediction-market/trending skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "rest.GET/api/v1/prediction-market/trending -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "ws.subscribe(Slots) skip ([Errno 61] Connection refused)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "ws.subscribe(Slots) -> handshake returned non-101 (WS may not be enabled)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "ws.subscribe(Blocks) skip ([Errno 61] Connection refused)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "ws.subscribe(Blocks) -> handshake returned non-101 (WS may not be enabled)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "ws.subscribe(Transactions) skip ([Errno 61] Connection refused)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "ws.subscribe(Transactions) -> handshake returned non-101 (WS may not be enabled)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "ws.subscribe(Validators) skip ([Errno 61] Connection refused)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "ws.subscribe(Validators) -> handshake returned non-101 (WS may not be enabled)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "ws.subscribe(Epochs) skip ([Errno 61] Connection refused)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "ws.subscribe(Epochs) -> handshake returned non-101 (WS may not be enabled)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "ws.subscribe(NftMints) skip ([Errno 61] Connection refused)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "ws.subscribe(NftMints) -> handshake returned non-101 (WS may not be enabled)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "ws.subscribe(NftTransfers) skip ([Errno 61] Connection refused)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "ws.subscribe(NftTransfers) -> handshake returned non-101 (WS may not be enabled)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "ws.subscribe(MarketListings) skip ([Errno 61] Connection refused)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "ws.subscribe(MarketListings) -> handshake returned non-101 (WS may not be enabled)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "ws.subscribe(MarketSales) skip ([Errno 61] Connection refused)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "ws.subscribe(MarketSales) -> handshake returned non-101 (WS may not be enabled)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "ws.subscribe(BridgeLocks) skip ([Errno 61] Connection refused)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "ws.subscribe(BridgeLocks) -> handshake returned non-101 (WS may not be enabled)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "ws.subscribe(BridgeMints) skip ([Errno 61] Connection refused)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "ws.subscribe(BridgeMints) -> handshake returned non-101 (WS may not be enabled)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "ws.subscribe(Governance) skip ([Errno 61] Connection refused)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "ws.subscribe(Governance) -> handshake returned non-101 (WS may not be enabled)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "ws.subscribe(TokenBalance) skip ([Errno 61] Connection refused)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "ws.subscribe(TokenBalance) -> handshake returned non-101 (WS may not be enabled)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "sol_compat.getAccountInfo skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "sol_compat.getAccountInfo -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "sol_compat.getBalance skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "sol_compat.getBalance -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "sol_compat.getBlockHeight skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "sol_compat.getBlockHeight accepted (code=-32601)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "sol_compat.getBlockTime skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "sol_compat.getBlockTime accepted (code=-32601)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "sol_compat.getEpochInfo skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "sol_compat.getEpochInfo accepted (code=-32601)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "sol_compat.getSlot skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "sol_compat.getSlot -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "sol_compat.getVersion skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "sol_compat.getVersion accepted (code=-32601)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "sol_compat.getHealth skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "sol_compat.getHealth accepted (code=-32601)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "sol_compat.getRecentBlockhash skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "sol_compat.getRecentBlockhash -> ok",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "sol_compat.getSignaturesForAddress skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "sol_compat.getSignaturesForAddress accepted (code=-32601)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "sol_compat.getTransaction skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "sol_compat.getTransaction accepted (code=-32001)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "sol_compat.getMinimumBalanceForRentExemption skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "sol_compat.getMinimumBalanceForRentExemption accepted (code=-32601)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "sol_compat.getFeeForMessage skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "sol_compat.getFeeForMessage accepted (code=-32601)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "evm_compat.eth_blockNumber skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "evm_compat.eth_blockNumber accepted (code=-32601)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "evm_compat.eth_chainId skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "evm_compat.eth_chainId accepted (code=-32601)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "evm_compat.eth_getBalance skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "evm_compat.eth_getBalance accepted (code=-32601)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "evm_compat.eth_getBlockByNumber skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "evm_compat.eth_getBlockByNumber accepted (code=-32601)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "evm_compat.eth_gasPrice skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "evm_compat.eth_gasPrice accepted (code=-32601)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "evm_compat.net_version skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "evm_compat.net_version accepted (code=-32601)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "evm_compat.web3_clientVersion skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "evm_compat.web3_clientVersion accepted (code=-32601)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "evm_compat.eth_getCode skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "evm_compat.eth_getCode accepted (code=-32601)",
+      "ts": 1771781753
     },
     {
-      "status": "SKIP",
-      "msg": "evm_compat.eth_estimateGas skip (<urlopen error [Errno 61] Connection refused>)",
-      "ts": 1771755707
+      "status": "PASS",
+      "msg": "evm_compat.eth_estimateGas accepted (code=-32601)",
+      "ts": 1771781753
     }
   ]
 }

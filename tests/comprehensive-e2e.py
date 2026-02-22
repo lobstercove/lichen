@@ -955,18 +955,28 @@ async def main() -> int:
             report("SKIP", f"{label} airdrop skipped: {e}")
 
     # Ensure secondary has funds via deployer transfer as fallback
+    # In multi-validator mode requestAirdrop is disabled, so we fund the
+    # secondary account by sending a signed transfer from the deployer
+    # (which was auto-funded with 10K MOLT at genesis).
     try:
         bal = await conn.get_balance(secondary.public_key())
-        bal_val = bal.get("balance", bal) if isinstance(bal, dict) else bal
-        if isinstance(bal_val, (int, float)) and bal_val < 1_000_000_000:
+        # RPC returns {"shells": N, ...} — extract the shells balance
+        if isinstance(bal, dict):
+            bal_val = bal.get("shells", bal.get("balance", 0))
+        else:
+            bal_val = bal
+        bal_val = int(bal_val) if isinstance(bal_val, (int, float, str)) else 0
+        if bal_val < 1_000_000_000:
             blockhash = await conn.get_recent_blockhash()
             ix = TransactionBuilder.transfer(deployer.public_key(), secondary.public_key(), 10_000_000_000)
             tx = TransactionBuilder().add(ix).set_recent_blockhash(blockhash).build_and_sign(deployer)
             sig = await conn.send_transaction(tx)
             await wait_tx(conn, sig)
             report("PASS", f"secondary funded via transfer (10 MOLT)")
+        else:
+            report("PASS", f"secondary already funded ({bal_val} shells)")
     except Exception as e:
-        report("SKIP", f"secondary transfer fallback: {e}")
+        report("FAIL", f"secondary transfer fallback: {e}")
 
     # Discover contracts
     contracts = await discover_contracts(conn)

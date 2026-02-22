@@ -342,11 +342,35 @@ if [ "$RESTART" = true ]; then
         python3 "$FUND_SCRIPT" 2>&1 | sed 's/^/   /'
     fi
 
+    # ── Start faucet service ──
+    # The faucet sends signed transfer transactions (works in multi-validator mode).
+    # Its keypair was auto-generated and funded at genesis.
+    FAUCET_BIN="${REPO_ROOT}/target/release/moltchain-faucet"
+    if [ -x "$FAUCET_BIN" ]; then
+        # Copy faucet keypair from genesis-keys to repo root
+        FAUCET_KEY=$(find "$REPO_ROOT/data/state-8000/genesis-keys" -name "faucet-*.json" -type f 2>/dev/null | head -1)
+        if [ -n "$FAUCET_KEY" ]; then
+            cp "$FAUCET_KEY" "$REPO_ROOT/faucet-keypair.json"
+            echo "   ✓ Copied faucet keypair to faucet-keypair.json"
+        fi
+        echo "   Starting faucet service on port 9100..."
+        cd "$REPO_ROOT"
+        FAUCET_KEYPAIR="$REPO_ROOT/faucet-keypair.json" \
+        RPC_URL="http://127.0.0.1:8899" \
+        NETWORK="$NETWORK" \
+        nohup "$FAUCET_BIN" > /tmp/moltchain-faucet.log 2>&1 &
+        FAUCET_PID=$!
+        echo "   ✓ Faucet PID: $FAUCET_PID"
+    else
+        echo "   ⚠  Faucet binary not found — build with: cargo build --release --bin moltchain-faucet"
+    fi
+
     echo ""
     echo -e "${GREEN}Stack restarted (dev mode — fingerprint = SHA-256(pubkey)). Check logs:${NC}"
     echo "   tail -f /tmp/moltchain-v1.log"
     echo "   tail -f /tmp/moltchain-v2.log"
     echo "   tail -f /tmp/moltchain-v3.log"
+    echo "   tail -f /tmp/moltchain-faucet.log"
 else
     echo "Next steps:"
     echo "   cd $REPO_ROOT"

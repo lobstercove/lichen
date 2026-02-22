@@ -5653,6 +5653,49 @@ async fn run_validator() {
                     warn!("  ⚠️  Treasury has insufficient funds for deployer auto-fund");
                 }
             }
+
+            // ── Auto-generate & fund faucet keypair with 1000 MOLT from treasury ──
+            // The faucet service sends signed transfer transactions to requesting
+            // users. It needs its own wallet with MOLT. We generate a deterministic
+            // keypair here, save it to genesis-keys, and fund it from treasury.
+            let faucet_fund_molt: u64 = 1_000;
+            let faucet_fund_shells = Account::molt_to_shells(faucet_fund_molt);
+            let faucet_kp = Keypair::generate();
+            let faucet_pubkey = faucet_kp.pubkey();
+            // Save faucet keypair to genesis-keys directory
+            let faucet_keypair_path = genesis_keypairs_dir.join(
+                format!("faucet-{}.json", genesis_config.chain_id)
+            );
+            let faucet_seed = faucet_kp.to_seed();
+            let faucet_seed_json = serde_json::json!({
+                "seed": hex::encode(&faucet_seed),
+                "pubkey": faucet_pubkey.to_base58(),
+                "role": "faucet"
+            });
+            if let Err(e) = std::fs::write(&faucet_keypair_path, serde_json::to_string_pretty(&faucet_seed_json).unwrap_or_default()) {
+                error!("Failed to save faucet keypair: {e}");
+            }
+            // Fund faucet from treasury
+            if let Some(treasury_dw) = dist_wallets.iter().find(|dw| dw.role == "validator_rewards") {
+                let mut treasury_acct = state.get_account(&treasury_dw.pubkey).ok().flatten()
+                    .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
+                if treasury_acct.spendable >= faucet_fund_shells {
+                    treasury_acct.deduct_spendable(faucet_fund_shells).ok();
+                    if let Err(e) = state.put_account(&treasury_dw.pubkey, &treasury_acct) {
+                        error!("Failed to debit treasury for faucet fund: {e}");
+                    }
+                    let mut faucet_acct = Account::new(0, faucet_pubkey);
+                    faucet_acct.add_spendable(faucet_fund_shells).ok();
+                    if let Err(e) = state.put_account(&faucet_pubkey, &faucet_acct) {
+                        error!("Failed to credit faucet account: {e}");
+                    }
+                    info!("  ✓ Auto-funded faucet with {} MOLT → {} (keypair: {})",
+                          faucet_fund_molt, faucet_pubkey.to_base58(),
+                          faucet_keypair_path.display());
+                } else {
+                    warn!("  ⚠️  Treasury has insufficient funds for faucet auto-fund");
+                }
+            }
         }
         // Legacy: single treasury (backward compat for old wallet files)
         else if let Some(treasury_pubkey) = genesis_wallet.treasury_pubkey {
