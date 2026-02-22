@@ -967,7 +967,7 @@ const DEX_SUBSYSTEMS = [
     { id: 'dex_rewards', symbol: 'DEXREWARDS', name: 'Rewards & Staking', desc: 'LP incentives, trading rewards', icon: 'fas fa-gift', color: '#f59e0b',
       metrics: ['stakers', 'total_staked', 'distributed', 'apy'] },
     { id: 'dex_analytics', symbol: 'ANALYTICS', name: 'Analytics Engine', desc: 'OHLCV, trade history, metrics', icon: 'fas fa-chart-area', color: '#60a5fa',
-      metrics: ['records', 'volume', 'tracked', 'uptime'] },
+      metrics: ['candles', 'pairs', 'records', 'traders'] },
     { id: 'moltswap', symbol: 'MOLTSWAP', name: 'MoltSwap', desc: 'Simple token swap interface', icon: 'fas fa-arrows-rotate', color: '#ff6b35',
       metrics: ['swaps_24h', 'volume', 'unique_users', 'pairs'] },
     { id: 'prediction_market', symbol: 'PREDICT', name: 'Prediction Markets', desc: 'Binary/multi-outcome markets + mUSD', icon: 'fas fa-chart-pie', color: '#e879f9',
@@ -1052,8 +1052,8 @@ async function updateDexMonitor() {
             } else if (sub.id === 'dex_analytics') {
                 const stats = await rpc('getDexAnalyticsStats');
                 if (stats) {
-                    metricsData = { records: stats.record_count || 0, volume: stats.total_volume || 0,
-                        tracked: stats.trader_count || 0, uptime: '100%' };
+                    metricsData = { candles: stats.total_candles || 0, pairs: stats.tracked_pairs || 0,
+                        records: stats.record_count || 0, traders: stats.trader_count || 0 };
                     deployed = true;
                 }
             } else if (sub.id === 'moltswap') {
@@ -1387,7 +1387,7 @@ async function updateTradingMetrics() {
     if (analytics) {
         activeFeeds++;
         if (el('tradeAnalyticsRecords')) el('tradeAnalyticsRecords').textContent = formatNum(analytics.record_count || 0);
-        if (el('tradeTrackedPairs')) el('tradeTrackedPairs').textContent = formatNum(analytics.trader_count || 0);
+        if (el('tradeTrackedPairs')) el('tradeTrackedPairs').textContent = formatNum(analytics.tracked_pairs || 0);
     }
 
     // MoltSwap
@@ -1412,6 +1412,7 @@ async function updateTradingMetrics() {
 
     // Peak TPS from getMetrics
     if (metrics) {
+        activeFeeds++;
         if (el('tradePeakTPS')) el('tradePeakTPS').textContent = (metrics.peak_tps || 0).toFixed(1);
     }
 
