@@ -6238,7 +6238,7 @@ async fn run_validator() {
         mpsc::channel::<moltchain_core::SlashingEvidence>(100);
 
     // Create mempool
-    let mempool = Arc::new(Mutex::new(Mempool::new(1000, 300))); // 1000 tx max, 300s expiration
+    let mempool = Arc::new(Mutex::new(Mempool::new(5000, 300))); // 5000 tx max, 300s expiration
 
     // Start P2P network - need to extract peer manager before starting
     let (p2p_peer_manager, _p2p_handle) = match P2PNetwork::new(
@@ -8748,7 +8748,7 @@ async fn run_validator() {
     let network_id_for_rpc = genesis_config.chain_id.clone();
 
     // Create transaction submission channel for RPC -> mempool (bounded: backpressure returns HTTP 503)
-    let (rpc_tx_sender, mut rpc_tx_receiver) = mpsc::channel::<Transaction>(1_000);
+    let (rpc_tx_sender, mut rpc_tx_receiver) = mpsc::channel::<Transaction>(5_000);
 
     // Forward RPC transactions to P2P network and mempool
     let mempool_for_rpc_txs = mempool.clone();

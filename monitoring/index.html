@@ -493,6 +493,15 @@
                 <span class="panel-badge" id="contractMonitorBadge">--</span>
             </div>
             <div class="panel-body">
+                <!-- Deployment progress -->
+                <div style="margin-bottom:1rem;">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.4rem;">
+                        <span id="contractDeployText" style="font-size:0.75rem;color:var(--text-muted);">Loading...</span>
+                    </div>
+                    <div style="height:6px;background:var(--bg-darker);border-radius:3px;overflow:hidden;border:1px solid var(--border);">
+                        <div id="contractDeployProgress" style="height:100%;width:0%;border-radius:3px;background:var(--gradient-1);transition:width 0.6s ease;"></div>
+                    </div>
+                </div>
                 <!-- Category filters -->
                 <div class="contract-cat-bar">
                     <button class="contract-cat-btn active" data-cat="all">All</button>

@@ -943,7 +943,7 @@ const DEX_SUBSYSTEMS = [
       metrics: ['candles', 'indexed_trades', 'pairs_tracked', 'uptime'] },
     { id: 'moltswap', symbol: 'MOLTSWAP', name: 'MoltSwap', desc: 'Simple token swap interface', icon: 'fas fa-arrows-rotate', color: '#ff6b35',
       metrics: ['swaps_24h', 'volume', 'unique_users', 'pairs'] },
-    { id: 'prediction_market', symbol: 'PREDMKT', name: 'Prediction Markets', desc: 'Binary/multi-outcome markets + mUSD', icon: 'fas fa-chart-pie', color: '#e879f9',
+    { id: 'prediction_market', symbol: 'PREDICT', name: 'Prediction Markets', desc: 'Binary/multi-outcome markets + mUSD', icon: 'fas fa-chart-pie', color: '#e879f9',
       metrics: ['markets', 'volume', 'collateral', 'traders'] },
 ];
 
@@ -1076,10 +1076,10 @@ async function updateDexMonitor() {
                         <div class="sub-name">${sub.name}</div>
                         <div class="sub-desc">${sub.desc}</div>
                     </div>
-                    <span class="sub-badge ${statusClass}" style="background:var(--${statusClass === 'success' ? 'green' : 'yellow'}-bg, ${sub.color}18);color:${statusClass === 'success' ? '#4ade80' : '#f59e0b'};">${statusText}</span>
+                    <span class="sub-badge ${statusClass}" style="background:${statusClass === 'success' ? 'rgba(6,214,160,0.12)' : 'rgba(255,210,63,0.12)'};color:${statusClass === 'success' ? '#4ade80' : '#f59e0b'};">${statusText}</span>
                 </div>
                 <div class="sub-metrics">${metricsHtml}</div>
-                ${program ? `<div style="font-size:0.65rem;color:var(--text-muted);font-family:var(--font-mono);margin-top:0.25rem;overflow:hidden;text-overflow:ellipsis;">${escapeHtml(truncAddr(program))}</div>` : ''}
+                ${program ? `<div style="font-size:0.65rem;color:var(--text-muted);font-family:'JetBrains Mono',monospace;margin-top:0.35rem;padding:0.2rem 0.5rem;background:var(--bg-card);border-radius:var(--radius-xs);overflow:hidden;text-overflow:ellipsis;">${escapeHtml(truncAddr(program))}</div>` : ''}
             </div>
         `);
     }
@@ -1115,7 +1115,6 @@ async function updateDexMonitor() {
 // ── Smart Contracts Monitor ─────────────────────────────────
 
 const ALL_CONTRACTS = [
-    { symbol: 'MOLT', name: 'MoltCoin', cat: 'token', icon: 'fas fa-coins', color: '#ff6b35' },
     { symbol: 'MUSD', name: 'mUSD Stablecoin', cat: 'token', icon: 'fas fa-dollar-sign', color: '#4ade80' },
     { symbol: 'WETH', name: 'Wrapped ETH', cat: 'token', icon: 'fab fa-ethereum', color: '#627eea' },
     { symbol: 'WSOL', name: 'Wrapped SOL', cat: 'token', icon: 'fas fa-sun', color: '#9945ff' },
@@ -1141,7 +1140,7 @@ const ALL_CONTRACTS = [
     { symbol: 'REEF', name: 'Reef Storage', cat: 'infra', icon: 'fas fa-database', color: '#22d3ee' },
     { symbol: 'PUNKS', name: 'MoltPunks', cat: 'nft', icon: 'fas fa-image', color: '#f43f5e' },
     { symbol: 'YID', name: 'MoltyID', cat: 'identity', icon: 'fas fa-fingerprint', color: '#818cf8' },
-    { symbol: 'PREDMKT', name: 'Prediction Markets', cat: 'defi', icon: 'fas fa-chart-pie', color: '#e879f9' },
+    { symbol: 'PREDICT', name: 'Prediction Markets', cat: 'defi', icon: 'fas fa-chart-pie', color: '#e879f9' },
 ];
 
 let contractMonitorLoaded = false;
@@ -1169,12 +1168,9 @@ async function updateContractMonitor() {
         if (deployed) {
             try {
                 let cs = null;
-                if (c.symbol === 'PREDMKT') {
+                if (c.symbol === 'PREDMKT' || c.symbol === 'PREDICT') {
                     cs = await rpc('getPredictionMarketStats');
                     if (cs) cs = { markets: cs.open_markets || 0, volume: cs.total_volume || 0, collateral: cs.total_collateral || 0, fees: cs.fees_collected || 0 };
-                } else if (c.symbol === 'MOLT') {
-                    const bal = await rpc('getBalance', [program]);
-                    if (bal != null) cs = { balance: typeof bal === 'number' ? formatMolt(bal) : '—' };
                 } else if (c.symbol === 'YID') {
                     const stats = await rpc('getMoltyIdStats');
                     if (stats) cs = { identities: stats.total_identities || 0, names: stats.total_names || 0, skills: stats.total_skills || 0 };
@@ -1214,6 +1210,16 @@ async function updateContractMonitor() {
         badge.textContent = `${deployedCount}/${ALL_CONTRACTS.length} Deployed`;
         badge.className = 'panel-badge ' + (deployedCount >= ALL_CONTRACTS.length ? 'success' : deployedCount >= ALL_CONTRACTS.length / 2 ? 'info' : 'warning');
     }
+
+    // Update deployment progress bar
+    const progressBar = document.getElementById('contractDeployProgress');
+    if (progressBar) {
+        const pct = Math.round((deployedCount / ALL_CONTRACTS.length) * 100);
+        progressBar.style.width = pct + '%';
+        progressBar.style.background = deployedCount >= ALL_CONTRACTS.length ? 'var(--gradient-3)' : 'var(--gradient-1)';
+    }
+    const progressText = document.getElementById('contractDeployText');
+    if (progressText) progressText.textContent = `${deployedCount} of ${ALL_CONTRACTS.length} contracts deployed (${Math.round((deployedCount / ALL_CONTRACTS.length) * 100)}%)`;
 
     // Wire category filter buttons
     document.querySelectorAll('.contract-cat-btn').forEach(btn => {
@@ -1272,12 +1278,12 @@ async function updateIdentitiesMonitor() {
             const pct = Math.round((t.count / maxCount) * 100);
             return `<div class="identity-tier-card">
                 <div class="identity-tier-header">
-                    <i class="${t.icon}" style="color:${t.color};"></i>
+                    <i class="${t.icon}" style="color:${t.color};background:${t.color}15;"></i>
                     <span class="identity-tier-name">${t.name}</span>
                     <span class="identity-tier-count" style="color:${t.color};">${formatNum(t.count)}</span>
                 </div>
                 <div class="identity-tier-bar-bg">
-                    <div class="identity-tier-bar" style="width:${pct}%;background:${t.color};"></div>
+                    <div class="identity-tier-bar" style="width:${pct}%;background:${t.color};box-shadow:0 0 8px ${t.color}40;"></div>
                 </div>
             </div>`;
         }).join('');

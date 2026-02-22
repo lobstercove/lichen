@@ -1,33 +1,33 @@
 {
-  "deployer": "6w9C2WbKJCHQEUvuL94vSzxjDLyTsfwTNAntAfZgSsZp",
-  "deployed_at": "2026-02-22T06:31:04.403760Z",
+  "deployer": "FzrZuFkH9GM2iy1WybF6nf6gcUpPTTY4gjkgpfD3YJBb",
+  "deployed_at": "2026-02-22T07:08:39.703145Z",
   "contracts": {
-    "musd_token": "g8a7WNWYWxd1N1AYjQNdKUcvrMnZ783ugx837du3XUC",
-    "wsol_token": "FFFoV8LhdDJ3q5rfmy9vgGn1swZqWq57gKb7Y6er8mUz",
-    "weth_token": "DfefE51VY81auWWmqWbo41c1d5BxsnMWCVY6QAqG3eg4",
-    "dex_core": "E1jXn9Lu8YW4N2Hw1cDNTkeK8MkjPHfyd4nRZkhqMVPZ",
-    "dex_amm": "GwWTQsCJJQ9vQGKYMvAziRv2G9WW1HpZiSMz3Jztkgna",
-    "dex_router": "CG4GcfjigQnSMMSQ8rGcLLjpnWt2ca286dgF8Jcd4AnJ",
-    "dex_margin": "2AxsM4VvS6Ry4U3Uy7ydMUnSe99xG9xGHxaXdBzrJUv5",
-    "dex_rewards": "EwygcfTvr2tkbkM6YXHFMac63192FsZzdbyi6ptu7Gaf",
-    "dex_governance": "Er5DqbUBUrQkRM5KQ9i6d3n636psFvAyk13SaYuDZphs",
-    "dex_analytics": "5rqgvWXcGcmSmHTmPJJcDJkD6RXEcvuY9cVzXNv4Face",
-    "prediction_market": "31NdqrCi9BtGeNDLuMUuTewoXJn5i5cr7B1ncsqJiZau"
+    "musd_token": "ovsWsHVsGNhcCtb1XKUtnYJ1sYiGzUss7MeTDBs4GG5",
+    "wsol_token": "5KR961Re2eid443oujSntvEwPKQ3YEP82LsyzZ2rHe4K",
+    "weth_token": "DQ9RLMSABQDk63Hbt5wgtpaneQUV9M2iWTeRo7dTjYB2",
+    "dex_core": "8yFjz2yqR9deASUFqQbF6X4RYuhMrre7zEkNzJvfjK8p",
+    "dex_amm": "HNRPqvBefmwt4JUu1xBF5MEyUct4pmY1VxxeyCuM8ibq",
+    "dex_router": "9JtHVeRFJp8NJnx7p6ZxGCRggtr4GoLm7vXsfbjeRTXS",
+    "dex_margin": "CUNKb4vbKf8rmyAiXwZ4KFsmW2foTb1ShTMGL3oGzUQg",
+    "dex_rewards": "9hGdNMSgwBbGSg4dNSTnskLFec1cfvMLYSz3bhiRoWpD",
+    "dex_governance": "FH8XgJC363SgiHgjmYTyhLFDHHadvBQX6rcaCM6syMyJ",
+    "dex_analytics": "7dUZxs1hcfaybPSNsANFTurjW2EQxguyJD9jkCw1SbHG",
+    "prediction_market": "5kCapojbZUzDtSnUsWPo6ZTRyb5guEWN4q5Y69buYk2D"
   },
   "token_contracts": {
-    "mUSD": "g8a7WNWYWxd1N1AYjQNdKUcvrMnZ783ugx837du3XUC",
-    "wSOL": "FFFoV8LhdDJ3q5rfmy9vgGn1swZqWq57gKb7Y6er8mUz",
-    "wETH": "DfefE51VY81auWWmqWbo41c1d5BxsnMWCVY6QAqG3eg4"
+    "mUSD": "ovsWsHVsGNhcCtb1XKUtnYJ1sYiGzUss7MeTDBs4GG5",
+    "wSOL": "5KR961Re2eid443oujSntvEwPKQ3YEP82LsyzZ2rHe4K",
+    "wETH": "DQ9RLMSABQDk63Hbt5wgtpaneQUV9M2iWTeRo7dTjYB2"
   },
   "dex_contracts": {
-    "dex_core": "E1jXn9Lu8YW4N2Hw1cDNTkeK8MkjPHfyd4nRZkhqMVPZ",
-    "dex_amm": "GwWTQsCJJQ9vQGKYMvAziRv2G9WW1HpZiSMz3Jztkgna",
-    "dex_router": "CG4GcfjigQnSMMSQ8rGcLLjpnWt2ca286dgF8Jcd4AnJ",
-    "dex_margin": "2AxsM4VvS6Ry4U3Uy7ydMUnSe99xG9xGHxaXdBzrJUv5",
-    "dex_rewards": "EwygcfTvr2tkbkM6YXHFMac63192FsZzdbyi6ptu7Gaf",
-    "dex_governance": "Er5DqbUBUrQkRM5KQ9i6d3n636psFvAyk13SaYuDZphs",
-    "dex_analytics": "5rqgvWXcGcmSmHTmPJJcDJkD6RXEcvuY9cVzXNv4Face",
-    "prediction_market": "31NdqrCi9BtGeNDLuMUuTewoXJn5i5cr7B1ncsqJiZau"
+    "dex_core": "8yFjz2yqR9deASUFqQbF6X4RYuhMrre7zEkNzJvfjK8p",
+    "dex_amm": "HNRPqvBefmwt4JUu1xBF5MEyUct4pmY1VxxeyCuM8ibq",
+    "dex_router": "9JtHVeRFJp8NJnx7p6ZxGCRggtr4GoLm7vXsfbjeRTXS",
+    "dex_margin": "CUNKb4vbKf8rmyAiXwZ4KFsmW2foTb1ShTMGL3oGzUQg",
+    "dex_rewards": "9hGdNMSgwBbGSg4dNSTnskLFec1cfvMLYSz3bhiRoWpD",
+    "dex_governance": "FH8XgJC363SgiHgjmYTyhLFDHHadvBQX6rcaCM6syMyJ",
+    "dex_analytics": "7dUZxs1hcfaybPSNsANFTurjW2EQxguyJD9jkCw1SbHG",
+    "prediction_market": "5kCapojbZUzDtSnUsWPo6ZTRyb5guEWN4q5Y69buYk2D"
   },
   "trading_pairs": [
     "MOLT/mUSD",

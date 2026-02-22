@@ -1118,7 +1118,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function updateTickerDisplay() {
-        const t = document.querySelector('.ticker-price'), ch = document.querySelector('.ticker-change');
+        const tp = document.querySelector('.ticker-pair'), t = document.querySelector('.ticker-price'), ch = document.querySelector('.ticker-change');
+        if (tp && state.activePair) tp.textContent = state.activePair.id || 'MOLT/mUSD';
         if (t) t.textContent = formatPrice(state.lastPrice);
         if (ch && state.activePair) { const c = state.activePair.change || 0; ch.textContent = `${c >= 0 ? '+' : ''}${c.toFixed(2)}%`; ch.className = `ticker-change ${c >= 0 ? 'positive' : 'negative'}`; }
     }
