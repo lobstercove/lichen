@@ -1584,3 +1584,44 @@ fn test_state_transfer_insufficient() {
     let result = state.transfer(&a.pubkey(), &b.pubkey(), 200);
     assert!(result.is_err(), "Transfer more than balance should fail");
 }
+
+#[test]
+fn test_genesis_auto_fund_from_treasury() {
+    // Verify the auto-fund mechanism: debit treasury, credit deployer with 10K MOLT.
+    let (state, _tmp, _) = create_test_state();
+    let treasury_pk = Pubkey([0x01; 32]);
+    let deployer_pk = Pubkey([0x02; 32]);
+
+    // Create treasury with 100M MOLT
+    let treasury_shells = Account::molt_to_shells(100_000_000);
+    let mut treasury_acct = Account::new(0, treasury_pk);
+    treasury_acct.shells = treasury_shells;
+    treasury_acct.spendable = treasury_shells;
+    state.put_account(&treasury_pk, &treasury_acct).unwrap();
+
+    // Create deployer with 0 balance (post-distribution state)
+    let deployer_acct = Account::new(0, deployer_pk);
+    state.put_account(&deployer_pk, &deployer_acct).unwrap();
+
+    // Simulate auto-fund: 10K MOLT
+    let ops_fund_molt: u64 = 10_000;
+    let ops_fund_shells = Account::molt_to_shells(ops_fund_molt);
+
+    let mut t = state.get_account(&treasury_pk).unwrap().unwrap();
+    assert!(t.spendable >= ops_fund_shells);
+    t.deduct_spendable(ops_fund_shells).unwrap();
+    state.put_account(&treasury_pk, &t).unwrap();
+
+    let mut d = state.get_account(&deployer_pk).unwrap().unwrap();
+    d.add_spendable(ops_fund_shells).unwrap();
+    state.put_account(&deployer_pk, &d).unwrap();
+
+    // Verify deployer has exactly 10K MOLT
+    let deployer_final = state.get_account(&deployer_pk).unwrap().unwrap();
+    assert_eq!(deployer_final.spendable, ops_fund_shells);
+    assert_eq!(deployer_final.shells, ops_fund_shells);
+
+    // Verify treasury deducted
+    let treasury_final = state.get_account(&treasury_pk).unwrap().unwrap();
+    assert_eq!(treasury_final.spendable, treasury_shells - ops_fund_shells);
+}

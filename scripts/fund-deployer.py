@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Fund the genesis/deployer account from the validator_rewards treasury."""
+"""
+DEPRECATED: Genesis auto-funding is now built into the validator.
+During genesis boot, the validator automatically transfers 10K MOLT from the
+validator_rewards treasury to the deployer account. This script is kept for
+reference and manual use only.
+
+Original purpose: Fund the genesis/deployer account from the validator_rewards treasury.
+"""
 import asyncio
 import json
 import sys

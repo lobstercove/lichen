@@ -5517,6 +5517,33 @@ async fn run_validator() {
             }
 
             info!("  ✓ Genesis distribution complete — 1B MOLT allocated per whitepaper");
+
+            // ── Auto-fund genesis/deployer with 10K MOLT from treasury ──
+            // Eliminates the need for scripts/fund-deployer.py.
+            // The deployer needs operational funds for contract deployment gas fees.
+            let ops_fund_molt: u64 = 10_000;
+            let ops_fund_shells = Account::molt_to_shells(ops_fund_molt);
+            if let Some(treasury_dw) = dist_wallets.iter().find(|dw| dw.role == "validator_rewards") {
+                let mut treasury_acct = state.get_account(&treasury_dw.pubkey).ok().flatten()
+                    .unwrap_or_else(|| Account::new(0, SYSTEM_ACCOUNT_OWNER));
+                if treasury_acct.spendable >= ops_fund_shells {
+                    treasury_acct.deduct_spendable(ops_fund_shells).ok();
+                    if let Err(e) = state.put_account(&treasury_dw.pubkey, &treasury_acct) {
+                        error!("Failed to debit treasury for auto-fund: {e}");
+                    }
+
+                    let mut genesis_acct = state.get_account(&genesis_pubkey).ok().flatten()
+                        .unwrap_or_else(|| Account::new(0, genesis_pubkey));
+                    genesis_acct.add_spendable(ops_fund_shells).ok();
+                    if let Err(e) = state.put_account(&genesis_pubkey, &genesis_acct) {
+                        error!("Failed to credit deployer for auto-fund: {e}");
+                    }
+
+                    info!("  ✓ Auto-funded genesis/deployer with {} MOLT from treasury", ops_fund_molt);
+                } else {
+                    warn!("  ⚠️  Treasury has insufficient funds for deployer auto-fund");
+                }
+            }
         }
         // Legacy: single treasury (backward compat for old wallet files)
         else if let Some(treasury_pubkey) = genesis_wallet.treasury_pubkey {
