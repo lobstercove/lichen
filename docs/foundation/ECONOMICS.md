@@ -17,10 +17,11 @@ MoltChain's economic model is designed to be **affordable, sustainable, and anti
 - **Inflation**: None - deflationary via fee burning
 
 ### Fee Burn Mechanism
-- **50% of all fees are burned** (deflationary pressure)
+- **40% of all fees are burned** (deflationary pressure)
 - **30% to block producer** (sustainability)
 - **10% to voters** (governance participation)
-- **10% to treasury** (ecosystem development)
+- **10% to validator pool** (validator incentives)
+- **10% to community** (ecosystem development)
 - Burn mechanism applies to all transaction types
 
 ## Transaction Fees
@@ -70,7 +71,7 @@ Solana Contract Deploy: ~$5
 - Prevents contract spam
 - Sustainable barrier for serious developers
 - One-time cost, no ongoing fees per call
-- 50% burned = permanent supply reduction
+- 40% burned = permanent supply reduction
 
 #### Contract Upgrade
 ```
@@ -183,7 +184,7 @@ MoltChain implements **two distinct staking mechanisms** to support both validat
 Initial Capital Required: 0 MOLT (zero barrier to entry)
 Bootstrap Grant: 100,000 MOLT (automatic on validator startup)
 Bootstrap Mechanism: Debt-based vesting
-Vesting Timeline: ~86 days of active validation (earning 0.9 MOLT/block avg)
+Vesting Timeline: ~86 days of active validation (earning 0.1 MOLT/block avg)
 Graduation: When bootstrap_debt reaches 0 (fully repaid through rewards)
 ```
 
@@ -228,14 +229,14 @@ Validator "Alice":
   Own stake: 100,000 MOLT (from bootstrap)
   Delegated stake: 40,000 MOLT (from community)
   Total stake: 50,000 MOLT
-  Commission: 10%
+  Commission: 2%
 
-Block reward: 0.9 MOLT
-  Alice keeps: 0.018 MOLT (10%)
-  Delegators: 0.162 MOLT (90%, split proportionally)
-    - Bob (20K): 0.081 MOLT (50% of delegation)
-    - Carol (10K): 0.0405 MOLT (25%)
-    - Dave (10K): 0.0405 MOLT (25%)
+Block reward: 0.1 MOLT
+  Alice keeps: 0.002 MOLT (2%)
+  Delegators: 0.098 MOLT (98%, split proportionally)
+    - Bob (20K): 0.049 MOLT (50% of delegation)
+    - Carol (10K): 0.0245 MOLT (25%)
+    - Dave (10K): 0.0245 MOLT (25%)
 ```
 
 **APY Calculation:**
@@ -642,7 +643,7 @@ Annual Deflation: ~1.8M MOLT (0.18% of supply)
 MOLT will find its natural market price through:
 
 1. **Organic Adoption**: Network usage creates utility-driven demand
-2. **Fee Burn Dynamics**: 50% of fees burned = decreasing supply
+2. **Fee Burn Dynamics**: 40% of fees burned = decreasing supply
 3. **Validator Economics**: Sustainable block rewards attract operators
 4. **Market Consensus**: No pre-sale, no listing fees, pure price discovery
 5. **Network Effects**: More users → more fees → more burn → more scarcity

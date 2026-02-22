@@ -304,14 +304,16 @@ async function displayTransaction(tx) {
     document.getElementById('feeNote').textContent = isFeeFree
         ? 'System reward/repay transactions are fee-free'
         : 'Fee split is applied to this transaction';
-    const feeBurned = Math.floor(fee * 0.5);
+    const feeBurned = Math.floor(fee * 0.4);
     const feeProducer = Math.floor(fee * 0.3);
     const feeVoters = Math.floor(fee * 0.1);
-    const feeTreasury = fee - feeBurned - feeProducer - feeVoters;
-    document.getElementById('feeBurned').textContent = formatMolt(feeBurned) + ' (50%)';
+    const feeValidatorPool = Math.floor(fee * 0.1);
+    const feeCommunity = fee - feeBurned - feeProducer - feeVoters - feeValidatorPool;
+    document.getElementById('feeBurned').textContent = formatMolt(feeBurned) + ' (40%)';
     document.getElementById('feeProducer').textContent = formatMolt(feeProducer) + ' (30%)';
     document.getElementById('feeVoters').textContent = formatMolt(feeVoters) + ' (10%)';
-    document.getElementById('feeTreasury').textContent = formatMolt(feeTreasury) + ' (10%)';
+    document.getElementById('feeValidatorPool').textContent = formatMolt(feeValidatorPool) + ' (10%)';
+    document.getElementById('feeCommunity').textContent = formatMolt(feeCommunity) + ' (10%)';
     
     // Recent blockhash
     document.getElementById('recentBlockhash').textContent = formatHash(recentBlockhash);

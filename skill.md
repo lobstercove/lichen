@@ -1015,7 +1015,7 @@ Audit trail: execution slot, results, and fees stored under `gov_exec_*` keys fo
 - `dex-amm`: `create_pool` -> `add_liquidity` -> `swap_exact_in`/`swap_exact_out` -> `collect_fees` -> `remove_liquidity`
 - `dex-router`: `get_best_route` -> `swap` / `multi_hop_swap` / `swap_exact_out`
 - `dex-governance`: proposal flow (`propose_new_pair`, `propose_fee_change`) -> vote -> `execute_proposal` (see 7.7.3 dispatch table); emergency path `emergency_delist`
-- `dex-rewards`: referral + rewards loop (`register_referral`, `get_pending_rewards`, `claim_trading_rewards`, `claim_lp_rewards`). **Monthly epoch cap**: 500,000 MOLT/month; resets after 2,592,000 slots; trades receive 0 reward once budget exhausted.
+- `dex-rewards`: referral + rewards loop (`register_referral`, `get_pending_rewards`, `claim_trading_rewards`, `claim_lp_rewards`). **Monthly epoch cap**: 100,000 MOLT/month; resets after 2,592,000 slots; trades receive 0 reward once budget exhausted.
 - `dex-margin`: `open_margin_position` -> `add_margin`/`remove_margin` -> ratio checks (`get_margin_ratio`) -> `close_margin_position`/`partial_close`; liquidation keeper via `get_liquidatable_positions`; query via `query_user_open_position` [opcode 26]
 - `dex-analytics`: ingest (`record_trade`, `update_price_feed`) and query (`get_ohlcv`, `get_24h_stats`, `get_all_pairs_stats`, `get_leaderboard`)
 
@@ -1208,7 +1208,7 @@ Custody event taxonomy (for bots, automations, and alerting):
 - Argument placeholders in this playbook must be replaced by ABI-validated values per network deployment.
 - Oracle outages block margin operations (`close_position`, `partial_close`, `remove_margin`) — agents must implement retry-with-backoff rather than assuming zero PnL.
 - Prediction market sell returns `(0, 0)` when pool reserves are too low (≤1) — check return_data before assuming trade executed.
-- DEX rewards are epoch-capped at 500,000 MOLT/month — trades after budget exhaustion receive 0 reward until next epoch.
+- DEX rewards are epoch-capped at 100,000 MOLT/month — trades after budget exhaustion receive 0 reward until next epoch.
 
 ---
 

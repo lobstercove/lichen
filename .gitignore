@@ -136,3 +136,4 @@ docs/archive/
 # ── Browser automation data ────────────────────────────────
 browser/
 moltchain/
+faucet-keypair.json

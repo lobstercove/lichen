@@ -1617,7 +1617,7 @@ async function loadStaking() {
         const totalStakeMOLT = totalStake / 1_000_000_000;
         
         // Bootstrap grant info
-        const BOOTSTRAP_GRANT = 1000; // 1K MOLT
+        const BOOTSTRAP_GRANT = 100000; // 100K MOLT
         const bootstrapDebt = myValidator.bootstrap_debt || 0;
         const debtMOLT = bootstrapDebt / 1_000_000_000;
         

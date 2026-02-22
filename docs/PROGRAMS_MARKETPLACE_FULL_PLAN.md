@@ -14,7 +14,7 @@ Status: Locked economics, full coverage plan
 ### Fee model
 - Flat fee per tx type, no gas, no compute units.
 - Optional priority tip (future) for faster inclusion; tips go to block producer.
-- Fee split for protocol fees: 50% burn, 30% producer, 10% voters, 10% treasury.
+- Fee split for protocol fees: 40% burn, 30% producer, 10% voters, 10% validator pool, 10% community.
 
 ### Base fee alignment
 - Base fee must be 100,000 shells (0.0001 MOLT) everywhere.

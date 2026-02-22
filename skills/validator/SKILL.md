@@ -119,12 +119,12 @@ MoltChain uses **Proof of Contribution** - you're rewarded for REAL WORK, not wa
 **Two types of blocks:**
 
 1. **Transaction Blocks** (when transactions arrive):
-   - Reward: **0.9 MOLT** per block
+   - Reward: **0.1 MOLT** per block
    - Frequency: As fast as 400ms when active
    - You earn MORE when network is busy ✅
 
 2. **Heartbeat Blocks** (when idle):
-   - Reward: **0.135 MOLT** per block  
+   - Reward: **0.05 MOLT** per block  
    - Frequency: Every 5 seconds
    - Keeps network alive during quiet periods
 

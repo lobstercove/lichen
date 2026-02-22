@@ -149,14 +149,13 @@ Status: 🔮 FUTURE
 
 **Year 1 (2026):**
 ```
-Genesis Treasury:      1,000,000,000 MOLT (100%)
-  - Validator grants:   -250,000,000 MOLT (25%)
-  - Builder grants:     -250,000,000 MOLT (25%)
-  - Liquidity pools:    -200,000,000 MOLT (20%)
-  - Strategic reserve:   =300,000,000 MOLT (30%)
-
-Circulating Supply:      700,000,000 MOLT (70%)
-Locked in Treasury:      300,000,000 MOLT (30%)
+Genesis Treasury:        1,000,000,000 MOLT (100%)
+  - Validator rewards:    -100,000,000 MOLT (10%)
+  - Community treasury:   -250,000,000 MOLT (25%)
+  - Builder grants:       -350,000,000 MOLT (35%)
+  - Founding moltys:      -100,000,000 MOLT (10%)
+  - Ecosystem partners:   -100,000,000 MOLT (10%)
+  - Reserve pool:         -100,000,000 MOLT (10%)
 ```
 
 **Year 2 (2027):**
@@ -175,7 +174,7 @@ Full decentralization:
 - DAO controls remaining treasury
 - No central foundation control
 - Community votes on spending
-- Deflationary pressure (50% fees burned)
+- Deflationary pressure (40% fees burned)
   
 Expected circulating: 900-950M MOLT (90-95%)
 Remaining treasury: 50-100M MOLT (5-10% emergency reserve)
@@ -185,8 +184,8 @@ Remaining treasury: 50-100M MOLT (5-10% emergency reserve)
 
 **Fee Burning** ([core/src/consensus.rs](../core/src/consensus.rs)):
 ```rust
-// 50% of all transaction fees are BURNED (permanently removed)
-let burn_amount = fee_amount * 50 / 100;
+// 40% of all transaction fees are BURNED (permanently removed)
+let burn_amount = fee_amount * 40 / 100;
 // Burned MOLT is gone forever - reduces total supply
 ```
 
@@ -295,7 +294,7 @@ Year 2+: Full DAO (on-chain voting)
 1. **All 1B MOLT start in genesis treasury** - single account holds entire supply
 2. **No pre-mine for founders** - fair distribution via work (validators) and grants (builders)
 3. **Gradual unlock** - 3-5 years to fully distribute supply
-4. **Deflationary** - 50% of fees burned permanently
+4. **Deflationary** - 40% of fees burned permanently
 5. **Transparent** - All treasury movements visible on-chain
 6. **Trading starts** - Month 2-3 with DEX launch
 7. **Price discovery** - Market-driven via AMM (no fixed price)

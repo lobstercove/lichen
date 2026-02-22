@@ -38,7 +38,7 @@ MoltChain implements a **three-phase staking system** designed for agent economi
 
 ### Economic Impact
 
-- **Total Grants**: 250M MOLT (25% of 1B supply) reserved for builder grants
+- **Total Grants**: 350M MOLT (35% of 1B supply) reserved for builder grants
 - **Validator Allocation**: ~100 grants × 100K MOLT = 10M MOLT total
 - **Unlock Timeline**: Vests as validators earn rewards (organic distribution)
 
@@ -105,14 +105,14 @@ Alice's Stats:
   Total stake:      50,000 MOLT
   Commission:       10%
 
-Block Reward: 0.9 MOLT
+Block Reward: 0.1 MOLT
 
 Distribution:
-  Alice:      0.018 MOLT (10% commission)
-  Delegators: 0.162 MOLT (split proportionally by stake)
-    - Bob (20K MOLT): 0.081 MOLT (50% of delegation)
-    - Carol (10K MOLT): 0.0405 MOLT (25% of delegation)
-    - Dave (10K MOLT): 0.0405 MOLT (25% of delegation)
+  Alice:      0.002 MOLT (10% commission)
+  Delegators: 0.018 MOLT (split proportionally by stake)
+    - Bob (20K MOLT): 0.009 MOLT (50% of delegation)
+    - Carol (10K MOLT): 0.0045 MOLT (25% of delegation)
+    - Dave (10K MOLT): 0.0045 MOLT (25% of delegation)
 ```
 
 ### APY Calculation
@@ -264,7 +264,7 @@ Why not 100%?
 
 **Deflationary Pressure**:
 - Staked MOLT locked (reduced circulating supply)
-- 50% of fees burned (permanent reduction)
+- 40% of fees burned (permanent reduction)
 - Combined effect: Strong upward price pressure
 
 **Example**:

@@ -21,7 +21,7 @@
 |----------|--------|------|-------------|--------|
 | TRANSACTION_BLOCK_REWARD | 100,000,000 | 0.1 | $0.01 | core/consensus.rs |
 | HEARTBEAT_BLOCK_REWARD | 50,000,000 | 0.05 | $0.005 | core/consensus.rs |
-| ANNUAL_REWARD_RATE_BPS | 500 (5%) | — | — | core/consensus.rs |
+| ANNUAL_REWARD_DECAY_BPS | 2000 (20%) | — | — | core/consensus.rs |
 
 > **Note:** Each block is EITHER a transaction block (0.1 MOLT) OR a heartbeat block (0.05 MOLT), never both. Heartbeats fire when there are no user transactions (every ~5s idle). On a new network with minimal volume, most blocks are heartbeats.
 
