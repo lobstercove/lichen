@@ -1,0 +1,41 @@
+{
+  "deployer": "F2DttKrZthzsVUJV29sXMiouiJ4iEWEhMw4wASFBpUn4",
+  "deployed_at": "2026-02-22T00:04:13.425331Z",
+  "contracts": {
+    "musd_token": "9iAoyBth5k2PzGJJnsJeuhk7NftoZ7jQaQQA5GADnwku",
+    "wsol_token": "CH9exUskvVaSAtxmqibnAaNYvBMhxoH894kcacvSkJWP",
+    "weth_token": "C3tUQLGpHCTLGn7KU4Cfr6LVVyVfDsx1MtjCgHNoCBGv",
+    "dex_core": "3NquWyYLEsepTrrATvh5ejpjEBTwJnxcGBLdrD9gSyjw",
+    "dex_amm": "7R5J5fKuxiDmXnS8zYyLbac2XpY4P1qPgYPNyEopvrBz",
+    "dex_router": "9T51Xu4rDQFvgjufPuFQMau7Wae5wF5dZgzrHrZ7FaFk",
+    "dex_margin": "AugJE1qi4WQeLpQjq3nfBFWcyxUrQjXMxc8z71tzYzTM",
+    "dex_rewards": "DAFTtd4pAaKZHdRYha7bq2s7pUmyU9ib2XmYAoAEGJMK",
+    "dex_governance": "B2xHz3qBwba4cTRukYVnSdrkmoYUL8GVozr7wrM9LWYC",
+    "dex_analytics": "D9ykV3P2z1YZfVUTyJ7J9TfoHJ8aTwbbNDN1FvgbkQ3V",
+    "prediction_market": "GpSbFG4jwdLCVLN7gZpDRcqbqkpgPzRpv2VxtzpwMML2"
+  },
+  "token_contracts": {
+    "mUSD": "9iAoyBth5k2PzGJJnsJeuhk7NftoZ7jQaQQA5GADnwku",
+    "wSOL": "CH9exUskvVaSAtxmqibnAaNYvBMhxoH894kcacvSkJWP",
+    "wETH": "C3tUQLGpHCTLGn7KU4Cfr6LVVyVfDsx1MtjCgHNoCBGv"
+  },
+  "dex_contracts": {
+    "dex_core": "3NquWyYLEsepTrrATvh5ejpjEBTwJnxcGBLdrD9gSyjw",
+    "dex_amm": "7R5J5fKuxiDmXnS8zYyLbac2XpY4P1qPgYPNyEopvrBz",
+    "dex_router": "9T51Xu4rDQFvgjufPuFQMau7Wae5wF5dZgzrHrZ7FaFk",
+    "dex_margin": "AugJE1qi4WQeLpQjq3nfBFWcyxUrQjXMxc8z71tzYzTM",
+    "dex_rewards": "DAFTtd4pAaKZHdRYha7bq2s7pUmyU9ib2XmYAoAEGJMK",
+    "dex_governance": "B2xHz3qBwba4cTRukYVnSdrkmoYUL8GVozr7wrM9LWYC",
+    "dex_analytics": "D9ykV3P2z1YZfVUTyJ7J9TfoHJ8aTwbbNDN1FvgbkQ3V",
+    "prediction_market": "GpSbFG4jwdLCVLN7gZpDRcqbqkpgPzRpv2VxtzpwMML2"
+  },
+  "trading_pairs": [
+    "MOLT/mUSD",
+    "wSOL/mUSD",
+    "wETH/mUSD",
+    "REEF/mUSD",
+    "wSOL/MOLT",
+    "wETH/MOLT",
+    "REEF/MOLT"
+  ]
+}
