@@ -251,6 +251,30 @@ fn vouch_key(pubkey: &[u8], index: u16) -> Vec<u8> {
     key
 }
 
+fn vouch_given_key(voucher: &[u8], index: u16) -> Vec<u8> {
+    let hex = hex_encode_addr(voucher);
+    let mut key = Vec::with_capacity(13 + 64 + 6);
+    key.extend_from_slice(b"vouch_given:");
+    key.extend_from_slice(&hex);
+    key.push(b':');
+    let mut buf = [0u8; 5];
+    let mut n = index;
+    let mut len = 0;
+    if n == 0 {
+        key.push(b'0');
+    } else {
+        while n > 0 {
+            buf[len] = b'0' + (n % 10) as u8;
+            n /= 10;
+            len += 1;
+        }
+        for i in (0..len).rev() {
+            key.push(buf[i]);
+        }
+    }
+    key
+}
+
 fn reputation_key(pubkey: &[u8]) -> Vec<u8> {
     let hex = hex_encode_addr(pubkey);
     let mut key = Vec::with_capacity(4 + 64);
@@ -716,6 +740,7 @@ pub extern "C" fn register_identity(
     record[99..107].copy_from_slice(&rep_bytes);
     // Bytes 107..115: created_at
     let ts_bytes = u64_to_bytes(now);
+
     record[107..115].copy_from_slice(&ts_bytes);
     // Bytes 115..123: updated_at
     record[115..123].copy_from_slice(&ts_bytes);
@@ -1296,6 +1321,12 @@ pub extern "C" fn vouch(voucher_ptr: *const u8, vouchee_ptr: *const u8) -> u32 {
         0
     };
 
+    let voucher_vouch_count = if voucher_record.len() >= 126 {
+        (voucher_record[124] as u16) | ((voucher_record[125] as u16) << 8)
+    } else {
+        0
+    };
+
     if vouchee_vouch_count as usize >= MAX_VOUCHES {
         log_info("Vouchee has reached maximum vouches");
         reentrancy_exit();
@@ -1336,11 +1367,22 @@ pub extern "C" fn vouch(voucher_ptr: *const u8, vouchee_ptr: *const u8) -> u32 {
     let vk = vouch_key(&vouchee, vouchee_vouch_count);
     storage_set(&vk, &vouch_data);
 
+    // Reverse index for O(1) "given vouches" lookup in RPC:
+    // key: vouch_given:{voucher_hex}:{index} -> [vouchee(32), timestamp(8)]
+    let gvk = vouch_given_key(&voucher, voucher_vouch_count);
+    let mut gv_data = Vec::with_capacity(40);
+    gv_data.extend_from_slice(&vouchee);
+    gv_data.extend_from_slice(&ts_bytes);
+    storage_set(&gvk, &gv_data);
+
     // Deduct reputation from voucher
     let new_voucher_rep = voucher_rep - VOUCH_COST;
     let voucher_rep_bytes = u64_to_bytes(new_voucher_rep);
-    if voucher_record.len() >= 107 {
+    if voucher_record.len() >= 126 {
         voucher_record[99..107].copy_from_slice(&voucher_rep_bytes);
+        let new_voucher_count = voucher_vouch_count + 1;
+        voucher_record[124] = (new_voucher_count & 0xFF) as u8;
+        voucher_record[125] = ((new_voucher_count >> 8) & 0xFF) as u8;
         voucher_record[115..123].copy_from_slice(&ts_bytes);
     }
     storage_set(&voucher_id_key, &voucher_record);

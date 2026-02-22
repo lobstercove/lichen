@@ -7,7 +7,7 @@ use ed25519_dalek::{Signer, VerifyingKey};
 use frost_ed25519 as frost;
 use hmac::Mac;
 use moltchain_core::{Hash, Instruction, Keypair, Message, Pubkey, Transaction, SYSTEM_PROGRAM_ID};
-use rocksdb::{ColumnFamilyDescriptor, Options, DB};
+use rocksdb::{BlockBasedOptions, Cache, ColumnFamilyDescriptor, Options, SliceTransform, DB};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -756,24 +756,82 @@ fn open_db<P: AsRef<Path>>(path: P) -> Result<DB, String> {
     let mut opts = Options::default();
     opts.create_if_missing(true);
     opts.create_missing_column_families(true);
+    opts.set_max_open_files(2048);
+    opts.set_keep_log_file_num(5);
+    opts.set_max_total_wal_size(128 * 1024 * 1024);
+
+    let shared_cache = Cache::new_lru_cache(256 * 1024 * 1024);
+
+    let point_lookup_opts = || -> Options {
+        let mut cf_opts = Options::default();
+        let mut bbo = BlockBasedOptions::default();
+        bbo.set_bloom_filter(10.0, false);
+        bbo.set_block_cache(&shared_cache);
+        bbo.set_cache_index_and_filter_blocks(true);
+        bbo.set_pin_l0_filter_and_index_blocks_in_cache(true);
+        cf_opts.set_block_based_table_factory(&bbo);
+        cf_opts.set_write_buffer_size(32 * 1024 * 1024);
+        cf_opts.set_max_write_buffer_number(3);
+        cf_opts.set_level_compaction_dynamic_level_bytes(true);
+        cf_opts
+    };
+
+    let prefix_scan_opts = |prefix_len: usize| -> Options {
+        let mut cf_opts = Options::default();
+        let mut bbo = BlockBasedOptions::default();
+        bbo.set_bloom_filter(10.0, false);
+        bbo.set_block_cache(&shared_cache);
+        bbo.set_cache_index_and_filter_blocks(true);
+        bbo.set_pin_l0_filter_and_index_blocks_in_cache(true);
+        cf_opts.set_block_based_table_factory(&bbo);
+        cf_opts.set_prefix_extractor(SliceTransform::create_fixed_prefix(prefix_len));
+        cf_opts.set_memtable_prefix_bloom_ratio(0.1);
+        cf_opts.set_write_buffer_size(32 * 1024 * 1024);
+        cf_opts.set_max_write_buffer_number(3);
+        cf_opts.set_level_compaction_dynamic_level_bytes(true);
+        cf_opts
+    };
+
+    let write_heavy_opts = || -> Options {
+        let mut cf_opts = Options::default();
+        let mut bbo = BlockBasedOptions::default();
+        bbo.set_bloom_filter(10.0, false);
+        bbo.set_block_cache(&shared_cache);
+        bbo.set_cache_index_and_filter_blocks(true);
+        cf_opts.set_block_based_table_factory(&bbo);
+        cf_opts.set_write_buffer_size(64 * 1024 * 1024);
+        cf_opts.set_max_write_buffer_number(4);
+        cf_opts.set_level_compaction_dynamic_level_bytes(true);
+        cf_opts
+    };
+
+    let small_cf_opts = || -> Options {
+        let mut cf_opts = Options::default();
+        let mut bbo = BlockBasedOptions::default();
+        bbo.set_block_cache(&shared_cache);
+        cf_opts.set_block_based_table_factory(&bbo);
+        cf_opts.set_write_buffer_size(4 * 1024 * 1024);
+        cf_opts.set_max_write_buffer_number(2);
+        cf_opts
+    };
 
     let cfs = vec![
-        ColumnFamilyDescriptor::new(CF_DEPOSITS, Options::default()),
-        ColumnFamilyDescriptor::new(CF_INDEXES, Options::default()),
-        ColumnFamilyDescriptor::new(CF_ADDRESS_INDEX, Options::default()),
-        ColumnFamilyDescriptor::new(CF_DEPOSIT_EVENTS, Options::default()),
-        ColumnFamilyDescriptor::new(CF_SWEEP_JOBS, Options::default()),
-        ColumnFamilyDescriptor::new(CF_ADDRESS_BALANCES, Options::default()),
-        ColumnFamilyDescriptor::new(CF_TOKEN_BALANCES, Options::default()),
-        ColumnFamilyDescriptor::new(CF_CREDIT_JOBS, Options::default()),
-        ColumnFamilyDescriptor::new(CF_WITHDRAWAL_JOBS, Options::default()),
-        ColumnFamilyDescriptor::new(CF_AUDIT_EVENTS, Options::default()),
-        ColumnFamilyDescriptor::new(CF_CURSORS, Options::default()),
-        ColumnFamilyDescriptor::new(CF_RESERVE_LEDGER, Options::default()),
-        ColumnFamilyDescriptor::new(CF_REBALANCE_JOBS, Options::default()),
-        ColumnFamilyDescriptor::new(CF_STATUS_INDEX, Options::default()),
-        ColumnFamilyDescriptor::new(CF_TX_INTENTS, Options::default()),
-        ColumnFamilyDescriptor::new(CF_WEBHOOKS, Options::default()),
+        ColumnFamilyDescriptor::new(CF_DEPOSITS, point_lookup_opts()),
+        ColumnFamilyDescriptor::new(CF_INDEXES, point_lookup_opts()),
+        ColumnFamilyDescriptor::new(CF_ADDRESS_INDEX, prefix_scan_opts(8)),
+        ColumnFamilyDescriptor::new(CF_DEPOSIT_EVENTS, write_heavy_opts()),
+        ColumnFamilyDescriptor::new(CF_SWEEP_JOBS, point_lookup_opts()),
+        ColumnFamilyDescriptor::new(CF_ADDRESS_BALANCES, point_lookup_opts()),
+        ColumnFamilyDescriptor::new(CF_TOKEN_BALANCES, prefix_scan_opts(7)),
+        ColumnFamilyDescriptor::new(CF_CREDIT_JOBS, point_lookup_opts()),
+        ColumnFamilyDescriptor::new(CF_WITHDRAWAL_JOBS, point_lookup_opts()),
+        ColumnFamilyDescriptor::new(CF_AUDIT_EVENTS, write_heavy_opts()),
+        ColumnFamilyDescriptor::new(CF_CURSORS, small_cf_opts()),
+        ColumnFamilyDescriptor::new(CF_RESERVE_LEDGER, write_heavy_opts()),
+        ColumnFamilyDescriptor::new(CF_REBALANCE_JOBS, point_lookup_opts()),
+        ColumnFamilyDescriptor::new(CF_STATUS_INDEX, prefix_scan_opts(7)),
+        ColumnFamilyDescriptor::new(CF_TX_INTENTS, prefix_scan_opts(7)),
+        ColumnFamilyDescriptor::new(CF_WEBHOOKS, point_lookup_opts()),
     ];
 
     DB::open_cf_descriptors(&opts, path, cfs).map_err(|e| format!("db open: {}", e))

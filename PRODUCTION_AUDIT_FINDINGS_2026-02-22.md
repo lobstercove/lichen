@@ -4,6 +4,31 @@ Date: 2026-02-22
 Scope reviewed: core runtime, contracts, RPC/WS paths, custody service, wallet frontend extension  
 Constraint honored: findings and recommendations only, no code changes
 
+## 2026-02-23 Implementation Addendum
+
+Scope updated per follow-up request to implement and verify fixes.
+
+### Completed fixes
+
+- Placeholder ZK gate hardened in [core/src/privacy.rs](core/src/privacy.rs) by making placeholder-proof toggle non-public and test-only via `#[cfg(test)]` helper.
+- Consensus-bypass prediction create path removed from live mutation flow in [rpc/src/prediction.rs](rpc/src/prediction.rs); endpoint now rejects direct state writes and instructs transaction-based creation.
+- Wallet popup RPC-derived rendering hardened in [wallet/extension/src/popup/popup.js](wallet/extension/src/popup/popup.js) by escaping dynamic content in activity and staking templates.
+- Custody RocksDB CF tuning implemented in [custody/src/main.rs](custody/src/main.rs) with shared block cache, bloom/index caching, prefix extractors, and per-CF option presets.
+- MoltyID given-vouch reverse index implemented in [contracts/moltyid/src/lib.rs](contracts/moltyid/src/lib.rs) and consumed in [rpc/src/lib.rs](rpc/src/lib.rs) to replace hot-path O(n²) scans (with compatibility fallback).
+
+### Verification performed
+
+- `cargo check -p moltchain-core` ✅
+- `cargo check -p moltchain-rpc` ✅
+- `cargo check -p moltchain-custody` ✅
+- `cargo test -p moltchain-rpc --lib` ✅ (7 passed)
+- `cargo test -p moltchain-custody` ✅ (38 passed)
+- `cargo test -p moltchain-core privacy --lib` ✅ (module compiles; no matching test filter cases)
+
+### Notes
+
+- Existing workspace warnings in unrelated files remain (validator/core test warnings), but no new compile/test failures were introduced by these fixes.
+
 ## Executive Summary
 
 The codebase contains strong hardening work in several areas (notably `core/src/state.rs` RocksDB tuning and runtime compute controls), but there are still production blockers and scale risks:

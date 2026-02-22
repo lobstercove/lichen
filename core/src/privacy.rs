@@ -50,7 +50,7 @@ pub struct ShieldedPool {
     /// C10 fix: ZK proof verification is placeholder — disabled by default.
     /// Set to true ONLY for unit tests. Real ZK proofs must be implemented
     /// before enabling in production.
-    pub allow_placeholder_proofs: bool,
+    allow_placeholder_proofs: bool,
 }
 
 impl ShieldedPool {
@@ -61,6 +61,11 @@ impl ShieldedPool {
             total_shielded: 0,
             allow_placeholder_proofs: false,
         }
+    }
+
+    #[cfg(test)]
+    fn enable_placeholder_proofs_for_tests(&mut self) {
+        self.allow_placeholder_proofs = true;
     }
 
     /// Verify a zero-knowledge proof.
@@ -222,7 +227,7 @@ mod tests {
     /// Create a test pool with placeholder proofs enabled (tests only)
     fn test_pool() -> ShieldedPool {
         let mut pool = ShieldedPool::new();
-        pool.allow_placeholder_proofs = true;
+        pool.enable_placeholder_proofs_for_tests();
         pool
     }
 

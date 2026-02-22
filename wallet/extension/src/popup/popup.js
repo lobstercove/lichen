@@ -660,19 +660,26 @@ async function loadActivity() {
       const amountStr = isFeeOnly ? `${feeAmt} MOLT` : `${sign}${amt} MOLT`;
       const feeTag = isFeeOnly ? '<span style="display:inline-block;margin-left:0.3rem;padding:0.05rem 0.35rem;border-radius:4px;font-size:0.6rem;background:rgba(245,158,11,0.15);color:#f59e0b;font-weight:600;vertical-align:middle;">FEE</span>' : '';
 
+      const safeType = escapeHtml(type);
+      const safeDisplayAddr = escapeHtml(displayAddr);
+      const safeShortSig = escapeHtml(shortSig);
+      const safeSig = escapeHtml(sig);
+      const safeAmountStr = escapeHtml(amountStr);
+      const safeTs = escapeHtml(ts);
+
       return `
-        <div class="popup-activity-item" style="cursor:pointer;" title="${sig}">
+        <div class="popup-activity-item" style="cursor:pointer;" title="${safeSig}">
           <div style="display:flex;align-items:center;gap:8px;">
             <div style="width:28px;height:28px;border-radius:50%;background:${color}22;display:flex;align-items:center;justify-content:center;flex-shrink:0;">
               <i class="fas ${icon}" style="color:${color};font-size:0.75rem;"></i>
             </div>
             <div style="flex:1;min-width:0;">
-              <div style="font-weight:600;font-size:0.85rem;">${type}${displayAddr ? `<span style="margin-left:0.35rem;font-size:0.7rem;opacity:0.5;">${displayAddr}</span>` : ''}</div>
-              <div style="font-size:0.7rem;opacity:0.5;">${shortSig}</div>
+              <div style="font-weight:600;font-size:0.85rem;">${safeType}${safeDisplayAddr ? `<span style="margin-left:0.35rem;font-size:0.7rem;opacity:0.5;">${safeDisplayAddr}</span>` : ''}</div>
+              <div style="font-size:0.7rem;opacity:0.5;">${safeShortSig}</div>
             </div>
             <div style="text-align:right;">
-              <div style="font-weight:600;font-size:0.85rem;color:${color};">${amountStr}${feeTag}</div>
-              <div style="font-size:0.65rem;opacity:0.5;">${ts}</div>
+              <div style="font-weight:600;font-size:0.85rem;color:${color};">${safeAmountStr}${feeTag}</div>
+              <div style="font-size:0.65rem;opacity:0.5;">${safeTs}</div>
             </div>
           </div>
         </div>
@@ -782,8 +789,8 @@ async function loadExtensionStaking() {
 
     statsEl.innerHTML = cards.map(c => `
       <div style="background:var(--card-bg);padding:0.6rem;border-radius:8px;border:1px solid var(--border);">
-        <div style="color:var(--text-muted);font-size:0.65rem;margin-bottom:0.25rem;">${c.label}</div>
-        <div style="font-size:0.9rem;font-weight:600;color:${c.color};">${c.value}</div>
+        <div style="color:var(--text-muted);font-size:0.65rem;margin-bottom:0.25rem;">${escapeHtml(c.label)}</div>
+        <div style="font-size:0.9rem;font-weight:600;color:${c.color};">${escapeHtml(c.value)}</div>
       </div>
     `).join('');
 
@@ -798,10 +805,12 @@ async function loadExtensionStaking() {
       const apyLabel = apyVal != null && apyVal > 0
         ? apyVal.toFixed(1) + '% APY'
         : tierMultipliers[i] + ' rewards';
+      const safeName = escapeHtml(name);
+      const safeApyLabel = escapeHtml(apyLabel);
       return `
         <div style="background:var(--card-bg);padding:0.5rem;border-radius:8px;border:2px solid ${isActive ? tierColors[i] : 'var(--border)'};text-align:center;">
-          <div style="font-size:0.7rem;font-weight:600;color:${tierColors[i]};">${name}</div>
-          <div style="font-size:0.65rem;color:var(--text-muted);">${apyLabel}</div>
+          <div style="font-size:0.7rem;font-weight:600;color:${tierColors[i]};">${safeName}</div>
+          <div style="font-size:0.65rem;color:var(--text-muted);">${safeApyLabel}</div>
         </div>`;
     }).join('');
 

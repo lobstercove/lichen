@@ -148,6 +148,7 @@ struct RpcState {
     /// DEX real-time event broadcaster (WS push to subscribers)
     _dex_broadcaster: Arc<dex_ws::DexEventBroadcaster>,
     /// Prediction market real-time event broadcaster
+    #[allow(dead_code)]
     prediction_broadcaster: Arc<ws::PredictionEventBroadcaster>,
     /// Cached validators list — refreshed at most once per slot (~400ms).
     /// Avoids 6+ full CF_VALIDATORS scans per RPC cycle.
@@ -6609,6 +6610,10 @@ fn moltyid_vouch_key(pubkey: &Pubkey, index: u16) -> Vec<u8> {
     format!("vouch:{}:{}", moltyid_hex(pubkey), index).into_bytes()
 }
 
+fn moltyid_vouch_given_key(pubkey: &Pubkey, index: u16) -> Vec<u8> {
+    format!("vouch_given:{}:{}", moltyid_hex(pubkey), index).into_bytes()
+}
+
 fn moltyid_achievement_key(pubkey: &Pubkey, achievement_id: u8) -> Vec<u8> {
     format!("ach:{}:{:02}", moltyid_hex(pubkey), achievement_id).into_bytes()
 }
@@ -6688,6 +6693,16 @@ fn parse_moltyid_vouch_record(input: &[u8]) -> Option<MoltyIdVouchRecord> {
         voucher: Pubkey(voucher),
         timestamp: read_u64_le(input, 32)?,
     })
+}
+
+fn parse_moltyid_vouch_given_record(input: &[u8]) -> Option<(Pubkey, u64)> {
+    if input.len() < 40 {
+        return None;
+    }
+    let mut vouchee = [0u8; 32];
+    vouchee.copy_from_slice(&input[0..32]);
+    let timestamp = read_u64_le(input, 32)?;
+    Some((Pubkey(vouchee), timestamp))
 }
 
 fn parse_moltyid_achievement_record(input: &[u8]) -> Option<MoltyIdAchievementRecord> {
@@ -6893,30 +6908,41 @@ async fn handle_get_moltyid_vouches(
         }
     }
 
-    // TODO-PERF (P10-VAL-02): O(n²) scan — iterates all identities × vouches
-    // to find given vouches for this pubkey. For large identity sets, add a
-    // reverse index "vouch_given:<voucher_hex>:<index>" → vouchee to enable
-    // O(1) lookup per given vouch.
     let mut given = Vec::new();
-    for (key, value) in &contract.storage {
-        if !key.starts_with(b"id:") {
-            continue;
+    for index in 0..identity.vouch_count {
+        if let Some(raw) = contract.storage.get(&moltyid_vouch_given_key(&pubkey, index)) {
+            if let Some((vouchee, timestamp)) = parse_moltyid_vouch_given_record(raw) {
+                given.push(serde_json::json!({
+                    "vouchee": vouchee.to_base58(),
+                    "vouchee_name": get_moltyid_name(&contract, &vouchee, current_slot),
+                    "timestamp": timestamp,
+                }));
+            }
         }
-        let Some(vouchee_identity) = parse_moltyid_identity_record(value) else {
-            continue;
-        };
-        for index in 0..vouchee_identity.vouch_count {
-            if let Some(raw_vouch) = contract
-                .storage
-                .get(&moltyid_vouch_key(&vouchee_identity.owner, index))
-            {
-                if let Some(vouch) = parse_moltyid_vouch_record(raw_vouch) {
-                    if vouch.voucher == pubkey {
-                        given.push(serde_json::json!({
-                            "vouchee": vouchee_identity.owner.to_base58(),
-                            "vouchee_name": get_moltyid_name(&contract, &vouchee_identity.owner, current_slot),
-                            "timestamp": vouch.timestamp,
-                        }));
+    }
+
+    // Backward compatibility for pre-indexed historical data.
+    if given.is_empty() {
+        for (key, value) in &contract.storage {
+            if !key.starts_with(b"id:") {
+                continue;
+            }
+            let Some(vouchee_identity) = parse_moltyid_identity_record(value) else {
+                continue;
+            };
+            for index in 0..vouchee_identity.vouch_count {
+                if let Some(raw_vouch) = contract
+                    .storage
+                    .get(&moltyid_vouch_key(&vouchee_identity.owner, index))
+                {
+                    if let Some(vouch) = parse_moltyid_vouch_record(raw_vouch) {
+                        if vouch.voucher == pubkey {
+                            given.push(serde_json::json!({
+                                "vouchee": vouchee_identity.owner.to_base58(),
+                                "vouchee_name": get_moltyid_name(&contract, &vouchee_identity.owner, current_slot),
+                                "timestamp": vouch.timestamp,
+                            }));
+                        }
                     }
                 }
             }
@@ -7011,25 +7037,39 @@ async fn handle_get_moltyid_profile(
     }
 
     let mut given_vouches = Vec::new();
-    for (key, value) in &contract.storage {
-        if !key.starts_with(b"id:") {
-            continue;
+    for index in 0..identity.vouch_count {
+        if let Some(raw) = contract.storage.get(&moltyid_vouch_given_key(&pubkey, index)) {
+            if let Some((vouchee, timestamp)) = parse_moltyid_vouch_given_record(raw) {
+                given_vouches.push(serde_json::json!({
+                    "vouchee": vouchee.to_base58(),
+                    "vouchee_name": get_moltyid_name(&contract, &vouchee, current_slot),
+                    "timestamp": timestamp,
+                }));
+            }
         }
-        let Some(vouchee_identity) = parse_moltyid_identity_record(value) else {
-            continue;
-        };
-        for index in 0..vouchee_identity.vouch_count {
-            if let Some(raw_vouch) = contract
-                .storage
-                .get(&moltyid_vouch_key(&vouchee_identity.owner, index))
-            {
-                if let Some(vouch) = parse_moltyid_vouch_record(raw_vouch) {
-                    if vouch.voucher == pubkey {
-                        given_vouches.push(serde_json::json!({
-                            "vouchee": vouchee_identity.owner.to_base58(),
-                            "vouchee_name": get_moltyid_name(&contract, &vouchee_identity.owner, current_slot),
-                            "timestamp": vouch.timestamp,
-                        }));
+    }
+
+    if given_vouches.is_empty() {
+        for (key, value) in &contract.storage {
+            if !key.starts_with(b"id:") {
+                continue;
+            }
+            let Some(vouchee_identity) = parse_moltyid_identity_record(value) else {
+                continue;
+            };
+            for index in 0..vouchee_identity.vouch_count {
+                if let Some(raw_vouch) = contract
+                    .storage
+                    .get(&moltyid_vouch_key(&vouchee_identity.owner, index))
+                {
+                    if let Some(vouch) = parse_moltyid_vouch_record(raw_vouch) {
+                        if vouch.voucher == pubkey {
+                            given_vouches.push(serde_json::json!({
+                                "vouchee": vouchee_identity.owner.to_base58(),
+                                "vouchee_name": get_moltyid_name(&contract, &vouchee_identity.owner, current_slot),
+                                "timestamp": vouch.timestamp,
+                            }));
+                        }
                     }
                 }
             }

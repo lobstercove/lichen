@@ -181,6 +181,7 @@ struct TradeRequest {
 }
 
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct CreateMarketRequest {
     question: String,
     category: String,
@@ -673,183 +674,19 @@ async fn post_trade(State(state): State<Arc<RpcState>>, Json(req): Json<TradeReq
 }
 
 /// POST /prediction-market/create — Create a new market
-/// Persists the market into contract storage so it can be traded against.
 ///
-/// L3-01/D5-01 fix: Guarded with require_single_validator to prevent
-/// state divergence in multi-validator mode. This handler writes directly
-/// to CF_CONTRACT_STORAGE, which is a consensus bypass. In multi-validator
-/// mode, market creation must go through sendTransaction.
+/// SECURITY: direct state writes are intentionally disabled.
+/// Market creation must go through `sendTransaction` so all writes execute
+/// under consensus and deterministic contract logic.
 async fn post_create(
     State(state): State<Arc<RpcState>>,
     Json(req): Json<CreateMarketRequest>,
 ) -> Response {
-    // L3-01: Block in multi-validator mode — direct writes bypass consensus
-    if let Err(e) = crate::require_single_validator(&state, "prediction/create") {
-        return api_err(&e.message);
-    }
-
-    let slot = current_slot(&state);
-
-    // FIX F13: Require admin authentication for market creation
-    let guard = match state.admin_token.read() {
-        Ok(g) => g,
-        Err(_) => return api_err("Internal error: admin token lock poisoned"),
-    };
-    match guard.as_ref() {
-        Some(required) => match &req.admin_token {
-            Some(provided) => {
-                let a = provided.as_bytes();
-                let b = required.as_bytes();
-                if a.len() != b.len()
-                    || a.iter()
-                        .zip(b.iter())
-                        .fold(0u8, |acc, (x, y)| acc | (x ^ y))
-                        != 0
-                {
-                    return api_err("Invalid admin_token");
-                }
-            }
-            None => {
-                return api_err(
-                    "Missing admin_token — market creation requires admin authentication",
-                )
-            }
-        },
-        None => return api_err("Admin endpoints disabled: no admin_token configured"),
-    }
-    drop(guard);
-
-    if req.question.is_empty() || req.question.len() > 512 {
-        return api_err("Question must be 1-512 characters");
-    }
-
-    // F-12: Reject zero initial_liquidity — prevents division-by-zero in CPMM pool math
-    if req.initial_liquidity == 0 {
-        return api_err("initial_liquidity must be greater than zero");
-    }
-
-    let cat_id = match req.category.as_str() {
-        "politics" => 0u8,
-        "sports" => 1,
-        "crypto" => 2,
-        "science" => 3,
-        "entertainment" => 4,
-        "economics" => 5,
-        "tech" => 6,
-        _ => 7,
-    };
-
-    // ── Resolve program Pubkey + compute next ID via CF_CONTRACT_STORAGE ─
-    let entry = match state.state.get_symbol_registry(PREDICT_PROGRAM) {
-        Ok(Some(e)) => e,
-        _ => return api_err("Prediction market contract not found"),
-    };
-    let program_pubkey = entry.program;
-
-    let market_count = read_u64_key(&state, b"pm_market_count");
-    let new_id = market_count + 1;
-
-    // Determine outcome names — binary (Yes/No) or multi-outcome
-    let outcome_names: Vec<String> = if req.outcomes.is_empty() {
-        vec!["Yes".to_string(), "No".to_string()]
-    } else {
-        if req.outcomes.len() < 2 || req.outcomes.len() > 8 {
-            return api_err("Outcomes must be 2-8 entries");
-        }
-        for name in &req.outcomes {
-            if name.is_empty() || name.len() > 64 {
-                return api_err("Each outcome name must be 1-64 characters");
-            }
-        }
-        req.outcomes.clone()
-    };
-    let outcome_count = outcome_names.len() as u8;
-
-    // ── Build 192-byte market record ─────────────────────────────────────
-    let mut record = vec![0u8; 192];
-    record[0..8].copy_from_slice(&new_id.to_le_bytes()); // market_id
-                                                         // [8..40] creator — leave zeroed (REST preview creator)
-    record[40..48].copy_from_slice(&slot.to_le_bytes()); // created_slot
-    record[48..56].copy_from_slice(&(slot + 100_000).to_le_bytes()); // close_slot
-    record[56..64].copy_from_slice(&0u64.to_le_bytes()); // resolve_slot
-    record[64] = 1; // status = active
-    record[65] = outcome_count; // outcome_count (2-8)
-    record[66] = 0xFF; // winning_outcome = none
-    record[67] = cat_id; // category
-    let init_liq = req.initial_liquidity;
-    record[68..76].copy_from_slice(&init_liq.to_le_bytes()); // total_collateral
-                                                             // [76..84] total_volume = 0, [164..172] fees_collected = 0 (already zeroed)
-
-    // ── Persist directly to CF_CONTRACT_STORAGE (avoids full ContractAccount deser) ─
-    let mkt_key = format!("pm_m_{}", new_id);
-    if let Err(e) = state
-        .state
-        .put_contract_storage(&program_pubkey, mkt_key.as_bytes(), &record)
-    {
-        return api_err(&format!("Failed to persist market: {}", e));
-    }
-    if let Err(e) =
-        state
-            .state
-            .put_contract_storage(&program_pubkey, b"pm_market_count", &new_id.to_le_bytes())
-    {
-        return api_err(&format!("Failed to persist market count: {}", e));
-    }
-
-    // Question text
-    let q_key = format!("pm_q_{}", new_id);
-    let _ = state.state.put_contract_storage(
-        &program_pubkey,
-        q_key.as_bytes(),
-        req.question.as_bytes(),
-    );
-
-    // Outcome pools — split liquidity equally across all outcomes
-    let per_outcome = init_liq / outcome_count as u64;
-    for (i, name) in outcome_names.iter().enumerate() {
-        let mut pool_data = vec![0u8; 16];
-        pool_data[0..8].copy_from_slice(&per_outcome.to_le_bytes());
-        pool_data[8..16].copy_from_slice(&per_outcome.to_le_bytes());
-
-        let o_key = format!("pm_o_{}_{}", new_id, i);
-        let _ = state
-            .state
-            .put_contract_storage(&program_pubkey, o_key.as_bytes(), &pool_data);
-
-        let on_key = format!("pm_on_{}_{}", new_id, i);
-        let _ =
-            state
-                .state
-                .put_contract_storage(&program_pubkey, on_key.as_bytes(), name.as_bytes());
-    }
-
-    #[derive(Serialize)]
-    struct CreateResult {
-        next_market_id: u64,
-        question: String,
-        category: &'static str,
-        initial_liquidity: f64,
-        creator: String,
-        status: &'static str,
-    }
-
-    // Emit prediction market WS event
-    state
-        .prediction_broadcaster
-        .emit_market_created(new_id, &req.question, slot);
-
-    ApiResponse::ok(
-        CreateResult {
-            next_market_id: new_id,
-            question: req.question,
-            category: category_name(cat_id),
-            initial_liquidity: req.initial_liquidity as f64 / PRICE_SCALE as f64,
-            creator: req.creator,
-            status: "created",
-        },
-        slot,
+    let _ = state;
+    let _ = req;
+    api_err(
+        "prediction-market/create is disabled for safety. Submit a signed transaction via sendTransaction to create markets under consensus.",
     )
-    .into_response()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
