@@ -380,6 +380,10 @@ const CF_TOKEN_BALANCES: &str = "token_balances";
 const CF_CREDIT_JOBS: &str = "credit_jobs";
 const CF_WITHDRAWAL_JOBS: &str = "withdrawal_jobs";
 const CF_AUDIT_EVENTS: &str = "audit_events";
+const CF_AUDIT_EVENTS_BY_TIME: &str = "audit_events_by_time";
+const CF_AUDIT_EVENTS_BY_TYPE_TIME: &str = "audit_events_by_type_time";
+const CF_AUDIT_EVENTS_BY_ENTITY_TIME: &str = "audit_events_by_entity_time";
+const CF_AUDIT_EVENTS_BY_TX_TIME: &str = "audit_events_by_tx_time";
 const CF_CURSORS: &str = "cursors";
 const CF_RESERVE_LEDGER: &str = "reserve_ledger";
 const CF_REBALANCE_JOBS: &str = "rebalance_jobs";
@@ -472,6 +476,11 @@ async fn main() {
 
     // AUDIT-FIX M4: On startup, check for stale TX intents from a previous crash
     recover_stale_intents(&db);
+    // Backfill secondary event indexes for pre-index data.
+    // Safe to run on every boot; missing keys are inserted idempotently.
+    if let Err(e) = backfill_audit_event_indexes(&db) {
+        tracing::warn!("audit event index backfill failed: {}", e);
+    }
 
     // Webhook/WebSocket event broadcast channel (1024-event buffer)
     let (event_tx, _event_rx) = broadcast::channel::<CustodyWebhookEvent>(1024);
@@ -847,6 +856,10 @@ fn open_db<P: AsRef<Path>>(path: P) -> Result<DB, String> {
         ColumnFamilyDescriptor::new(CF_CREDIT_JOBS, point_lookup_opts()),
         ColumnFamilyDescriptor::new(CF_WITHDRAWAL_JOBS, point_lookup_opts()),
         ColumnFamilyDescriptor::new(CF_AUDIT_EVENTS, write_heavy_opts()),
+        ColumnFamilyDescriptor::new(CF_AUDIT_EVENTS_BY_TIME, write_heavy_opts()),
+        ColumnFamilyDescriptor::new(CF_AUDIT_EVENTS_BY_TYPE_TIME, prefix_scan_opts(12)),
+        ColumnFamilyDescriptor::new(CF_AUDIT_EVENTS_BY_ENTITY_TIME, prefix_scan_opts(12)),
+        ColumnFamilyDescriptor::new(CF_AUDIT_EVENTS_BY_TX_TIME, prefix_scan_opts(12)),
         ColumnFamilyDescriptor::new(CF_CURSORS, small_cf_opts()),
         ColumnFamilyDescriptor::new(CF_RESERVE_LEDGER, write_heavy_opts()),
         ColumnFamilyDescriptor::new(CF_REBALANCE_JOBS, point_lookup_opts()),
@@ -989,6 +1002,112 @@ fn recover_stale_intents(db: &DB) {
     }
 }
 
+fn backfill_audit_event_indexes(db: &DB) -> Result<(), String> {
+    let events_cf = db
+        .cf_handle(CF_AUDIT_EVENTS)
+        .ok_or_else(|| "missing audit_events cf".to_string())?;
+    let time_cf = db
+        .cf_handle(CF_AUDIT_EVENTS_BY_TIME)
+        .ok_or_else(|| "missing audit_events_by_time cf".to_string())?;
+    let type_time_cf = db
+        .cf_handle(CF_AUDIT_EVENTS_BY_TYPE_TIME)
+        .ok_or_else(|| "missing audit_events_by_type_time cf".to_string())?;
+    let entity_time_cf = db
+        .cf_handle(CF_AUDIT_EVENTS_BY_ENTITY_TIME)
+        .ok_or_else(|| "missing audit_events_by_entity_time cf".to_string())?;
+    let tx_time_cf = db
+        .cf_handle(CF_AUDIT_EVENTS_BY_TX_TIME)
+        .ok_or_else(|| "missing audit_events_by_tx_time cf".to_string())?;
+
+    let mut scanned = 0usize;
+    let mut inserted = 0usize;
+
+    for item in db.iterator_cf(events_cf, rocksdb::IteratorMode::Start) {
+        let (key, value) = item.map_err(|e| format!("db iter: {}", e))?;
+        let event: Value = match serde_json::from_slice(&value) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        scanned += 1;
+
+        let key_id = std::str::from_utf8(&key).unwrap_or("").to_string();
+        let event_id = event
+            .get("event_id")
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.is_empty())
+            .unwrap_or(&key_id)
+            .to_string();
+        let event_type = event
+            .get("event_type")
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.is_empty())
+            .unwrap_or("unknown")
+            .to_string();
+        let entity_id = event
+            .get("entity_id")
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.is_empty())
+            .unwrap_or("unknown")
+            .to_string();
+        let tx_hash = event
+            .get("tx_hash")
+            .and_then(|v| v.as_str())
+            .filter(|v| !v.is_empty())
+            .map(|v| v.to_string());
+        let ts_ms = event
+            .get("timestamp_ms")
+            .and_then(|v| v.as_i64())
+            .or_else(|| {
+                event
+                    .get("timestamp")
+                    .and_then(|v| v.as_i64())
+                    .map(|s| s.saturating_mul(1000))
+            })
+            .unwrap_or(0)
+            .max(0);
+
+        let time_key = format!("{:020}:{}", ts_ms, event_id);
+        if matches!(db.get_cf(time_cf, time_key.as_bytes()), Ok(None)) {
+            db.put_cf(time_cf, time_key.as_bytes(), event_id.as_bytes())
+                .map_err(|e| format!("time index put: {}", e))?;
+            inserted += 1;
+        }
+
+        let type_key = format!("type:{}:{:020}:{}", event_type, ts_ms, event_id);
+        if matches!(db.get_cf(type_time_cf, type_key.as_bytes()), Ok(None)) {
+            db.put_cf(type_time_cf, type_key.as_bytes(), event_id.as_bytes())
+                .map_err(|e| format!("type index put: {}", e))?;
+            inserted += 1;
+        }
+
+        let entity_key = format!("entity:{}:{:020}:{}", entity_id, ts_ms, event_id);
+        if matches!(db.get_cf(entity_time_cf, entity_key.as_bytes()), Ok(None)) {
+            db.put_cf(entity_time_cf, entity_key.as_bytes(), event_id.as_bytes())
+                .map_err(|e| format!("entity index put: {}", e))?;
+            inserted += 1;
+        }
+
+        if let Some(tx_hash) = tx_hash {
+            let tx_key = format!("tx:{}:{:020}:{}", tx_hash, ts_ms, event_id);
+            if matches!(db.get_cf(tx_time_cf, tx_key.as_bytes()), Ok(None)) {
+                db.put_cf(tx_time_cf, tx_key.as_bytes(), event_id.as_bytes())
+                    .map_err(|e| format!("tx index put: {}", e))?;
+                inserted += 1;
+            }
+        }
+    }
+
+    if scanned > 0 {
+        tracing::info!(
+            "audit event index backfill complete: scanned={}, inserted={}",
+            scanned,
+            inserted
+        );
+    }
+
+    Ok(())
+}
+
 fn store_deposit(db: &DB, record: &DepositRequest) -> Result<(), String> {
     let cf = db
         .cf_handle(CF_DEPOSITS)
@@ -1064,7 +1183,9 @@ fn derive_deposit_address(
 ) -> Result<String, String> {
     match (chain, asset) {
         ("sol", _) | ("solana", _) => derive_solana_address(path, master_seed),
-        ("eth", _) | ("ethereum", _) => derive_evm_address(path, master_seed),
+        ("eth", _) | ("ethereum", _) | ("bsc", _) | ("bnb", _) => {
+            derive_evm_address(path, master_seed)
+        }
         _ => Err(format!("Unsupported chain: {}", chain)),
     }
 }
@@ -1074,12 +1195,16 @@ fn derive_deposit_address(
 fn bip44_coin_type(chain: &str) -> Result<u32, String> {
     match chain {
         "sol" | "solana" => Ok(501),
-        "eth" | "ethereum" => Ok(60),
+        "eth" | "ethereum" | "bsc" | "bnb" => Ok(60),
         "btc" | "bitcoin" => Ok(0),
         "ltc" | "litecoin" => Ok(2),
         "molt" | "moltchain" => Ok(9999), // unregistered — use high range
         _ => Err(format!("Unknown coin type for chain: {}", chain)),
     }
+}
+
+fn is_evm_chain(chain: &str) -> bool {
+    matches!(chain, "eth" | "ethereum" | "bsc" | "bnb")
 }
 
 /// F2-01: Build BIP-44-structured derivation path.
@@ -1702,7 +1827,7 @@ async fn process_solana_token_deposit(
 }
 
 async fn process_evm_deposits(state: &CustodyState, url: &str) -> Result<(), String> {
-    let deposits = list_pending_deposits_for_chains(&state.db, &["ethereum", "eth"])?;
+    let deposits = list_pending_deposits_for_chains(&state.db, &["ethereum", "eth", "bsc", "bnb"])?;
     let block_number = evm_get_block_number(&state.http, url).await?;
 
     process_evm_erc20_deposits(state, url, &deposits, block_number).await?;
@@ -2266,7 +2391,7 @@ async fn check_sweep_confirmation(
         return solana_get_signature_confirmed(&state.http, url, tx_hash).await;
     }
 
-    if job.chain == "eth" || job.chain == "ethereum" {
+    if is_evm_chain(&job.chain) {
         let url = state
             .config
             .evm_rpc_url
@@ -3017,7 +3142,7 @@ async fn broadcast_sweep(state: &CustodyState, job: &SweepJob) -> Result<Option<
         return broadcast_solana_sweep(state, url, job).await;
     }
 
-    if job.chain == "eth" || job.chain == "ethereum" {
+    if is_evm_chain(&job.chain) {
         let url = state
             .config
             .evm_rpc_url
@@ -3837,9 +3962,22 @@ fn record_audit_event_ext(
 ) -> Result<(), String> {
     let event_id = Uuid::new_v4().to_string();
     let timestamp = chrono::Utc::now().timestamp();
+    let timestamp_ms = chrono::Utc::now().timestamp_millis();
     let cf = db
         .cf_handle(CF_AUDIT_EVENTS)
         .ok_or_else(|| "missing audit_events cf".to_string())?;
+    let index_cf = db
+        .cf_handle(CF_AUDIT_EVENTS_BY_TIME)
+        .ok_or_else(|| "missing audit_events_by_time cf".to_string())?;
+    let type_index_cf = db
+        .cf_handle(CF_AUDIT_EVENTS_BY_TYPE_TIME)
+        .ok_or_else(|| "missing audit_events_by_type_time cf".to_string())?;
+    let entity_index_cf = db
+        .cf_handle(CF_AUDIT_EVENTS_BY_ENTITY_TIME)
+        .ok_or_else(|| "missing audit_events_by_entity_time cf".to_string())?;
+    let tx_index_cf = db
+        .cf_handle(CF_AUDIT_EVENTS_BY_TX_TIME)
+        .ok_or_else(|| "missing audit_events_by_tx_time cf".to_string())?;
     let payload = serde_json::json!({
         "event_id": &event_id,
         "event_type": event_type,
@@ -3848,10 +3986,33 @@ fn record_audit_event_ext(
         "tx_hash": tx_hash,
         "data": data,
         "timestamp": timestamp,
+        "timestamp_ms": timestamp_ms,
     });
     let bytes = serde_json::to_vec(&payload).map_err(|e| format!("encode: {}", e))?;
     db.put_cf(cf, event_id.as_bytes(), bytes)
         .map_err(|e| format!("db put: {}", e))?;
+
+    // Scale-safe read index for event history pagination.
+    // Key format preserves chronological ordering in RocksDB iteration.
+    let index_key = format!("{:020}:{}", timestamp_ms.max(0), event_id);
+    db.put_cf(index_cf, index_key.as_bytes(), event_id.as_bytes())
+        .map_err(|e| format!("db put index: {}", e))?;
+    let type_index_key = format!("type:{}:{:020}:{}", event_type, timestamp_ms.max(0), event_id);
+    db.put_cf(type_index_cf, type_index_key.as_bytes(), event_id.as_bytes())
+        .map_err(|e| format!("db put type index: {}", e))?;
+    let entity = if entity_id.is_empty() {
+        "unknown"
+    } else {
+        entity_id
+    };
+    let entity_index_key = format!("entity:{}:{:020}:{}", entity, timestamp_ms.max(0), event_id);
+    db.put_cf(entity_index_cf, entity_index_key.as_bytes(), event_id.as_bytes())
+        .map_err(|e| format!("db put entity index: {}", e))?;
+    if let Some(hash) = tx_hash.filter(|h| !h.is_empty()) {
+        let tx_index_key = format!("tx:{}:{:020}:{}", hash, timestamp_ms.max(0), event_id);
+        db.put_cf(tx_index_cf, tx_index_key.as_bytes(), event_id.as_bytes())
+            .map_err(|e| format!("db put tx index: {}", e))?;
+    }
 
     // Emit to broadcast channel for webhooks + WebSocket subscribers
     if let Some(tx) = event_tx {
@@ -6981,7 +7142,7 @@ async fn delete_webhook(
 }
 
 /// GET /events — Paginated audit event history (most recent first).
-/// Query params: ?limit=50&after=<event_id>&event_type=<filter>
+/// Query params: ?limit=50&after=<cursor_or_event_id>&event_type=<filter>&entity_id=<id>&tx_hash=<hash>
 /// AUDIT-FIX F8.11: `after` param now implemented for cursor-based pagination.
 async fn list_events(
     State(state): State<CustodyState>,
@@ -6996,23 +7157,226 @@ async fn list_events(
         .unwrap_or(50)
         .min(500);
     let event_type_filter = params.get("event_type").cloned();
+    let entity_id_filter = params.get("entity_id").cloned();
+    let tx_hash_filter = params.get("tx_hash").cloned();
     let after_cursor = params.get("after").cloned();
 
-    let cf = state
+    let events_cf = state
         .db
         .cf_handle(CF_AUDIT_EVENTS)
         .ok_or_else(|| Json(ErrorResponse::db("missing audit_events cf")))?;
+    let index_cf = state
+        .db
+        .cf_handle(CF_AUDIT_EVENTS_BY_TIME)
+        .ok_or_else(|| Json(ErrorResponse::db("missing audit_events_by_time cf")))?;
+    let type_index_cf = state
+        .db
+        .cf_handle(CF_AUDIT_EVENTS_BY_TYPE_TIME)
+        .ok_or_else(|| Json(ErrorResponse::db("missing audit_events_by_type_time cf")))?;
+    let entity_index_cf = state
+        .db
+        .cf_handle(CF_AUDIT_EVENTS_BY_ENTITY_TIME)
+        .ok_or_else(|| Json(ErrorResponse::db("missing audit_events_by_entity_time cf")))?;
+    let tx_index_cf = state
+        .db
+        .cf_handle(CF_AUDIT_EVENTS_BY_TX_TIME)
+        .ok_or_else(|| Json(ErrorResponse::db("missing audit_events_by_tx_time cf")))?;
 
     let mut events = Vec::new();
-    let mut past_cursor = after_cursor.is_none(); // if no cursor, start collecting immediately
-    let iter = state.db.iterator_cf(cf, rocksdb::IteratorMode::End);
-    for item in iter {
+    let mut next_cursor: Option<String> = None;
+
+    // Cursor can be raw index key (preferred) or legacy event_id.
+    // Index selection priority: tx_hash > entity_id > event_type > global time.
+    let mut use_filter_index = false;
+    let mut filter_prefix = String::new();
+    let filter_kind = if tx_hash_filter.is_some() {
+        "tx"
+    } else if entity_id_filter.is_some() {
+        "entity"
+    } else if event_type_filter.is_some() {
+        "type"
+    } else {
+        "global"
+    };
+    let resolved_after = if let Some(after) = after_cursor.as_deref() {
+        if filter_kind != "global" {
+            use_filter_index = true;
+            filter_prefix = match filter_kind {
+                "tx" => format!("tx:{}:", tx_hash_filter.as_deref().unwrap_or("")),
+                "entity" => {
+                    format!("entity:{}:", entity_id_filter.as_deref().unwrap_or(""))
+                }
+                _ => format!("type:{}:", event_type_filter.as_deref().unwrap_or("")),
+            };
+
+            if after.starts_with("type:") || after.starts_with("entity:") || after.starts_with("tx:") {
+                Some(after.to_string())
+            } else {
+                match state.db.get_cf(events_cf, after.as_bytes()) {
+                    Ok(Some(bytes)) => {
+                        let evt: Option<Value> = serde_json::from_slice::<Value>(&bytes).ok();
+                        let ts_ms = evt
+                            .as_ref()
+                            .and_then(|v| v.get("timestamp_ms"))
+                            .and_then(|v| v.as_i64())
+                            .or_else(|| {
+                                evt.as_ref()
+                                    .and_then(|v| v.get("timestamp"))
+                                    .and_then(|v| v.as_i64())
+                                    .map(|s| s.saturating_mul(1000))
+                            })
+                            .unwrap_or(0)
+                            .max(0);
+
+                        let prefix = match filter_kind {
+                            "tx" => format!("tx:{}:", tx_hash_filter.as_deref().unwrap_or("")),
+                            "entity" => {
+                                format!("entity:{}:", entity_id_filter.as_deref().unwrap_or(""))
+                            }
+                            _ => {
+                                format!("type:{}:", event_type_filter.as_deref().unwrap_or(""))
+                            }
+                        };
+                        Some(format!("{}{:020}:{}", prefix, ts_ms, after))
+                    }
+                    _ => None,
+                }
+            }
+        } else if after.contains(':') {
+            Some(after.to_string())
+        } else {
+            match state.db.get_cf(events_cf, after.as_bytes()) {
+                Ok(Some(bytes)) => {
+                    let evt: Option<Value> = serde_json::from_slice::<Value>(&bytes).ok();
+                    let ts_ms = evt
+                        .as_ref()
+                        .and_then(|v| v.get("timestamp_ms"))
+                        .and_then(|v| v.as_i64())
+                        .or_else(|| {
+                            evt.as_ref()
+                                .and_then(|v| v.get("timestamp"))
+                                .and_then(|v| v.as_i64())
+                                .map(|s| s.saturating_mul(1000))
+                        })
+                        .unwrap_or(0)
+                        .max(0);
+                    Some(format!("{:020}:{}", ts_ms, after))
+                }
+                _ => None,
+            }
+        }
+    } else {
+        if filter_kind != "global" {
+            filter_prefix = match filter_kind {
+                "tx" => format!("tx:{}:", tx_hash_filter.as_deref().unwrap_or("")),
+                "entity" => {
+                    format!("entity:{}:", entity_id_filter.as_deref().unwrap_or(""))
+                }
+                _ => format!("type:{}:", event_type_filter.as_deref().unwrap_or("")),
+            };
+            use_filter_index = true;
+        }
+        None
+    };
+
+    let upper_bound = if resolved_after.is_none() && use_filter_index {
+        let mut b = filter_prefix.as_bytes().to_vec();
+        b.push(0xFF);
+        Some(b)
+    } else {
+        None
+    };
+    let iter_mode = if let Some(cursor_key) = resolved_after.as_ref() {
+        rocksdb::IteratorMode::From(cursor_key.as_bytes(), rocksdb::Direction::Reverse)
+    } else if let Some(ref b) = upper_bound {
+        rocksdb::IteratorMode::From(b, rocksdb::Direction::Reverse)
+    } else {
+        rocksdb::IteratorMode::End
+    };
+
+    let mut skipped_cursor = false;
+    let filter_prefix_bytes = filter_prefix.as_bytes();
+    let source_cf = if use_filter_index {
+        match filter_kind {
+            "tx" => tx_index_cf,
+            "entity" => entity_index_cf,
+            "type" => type_index_cf,
+            _ => type_index_cf,
+        }
+    } else {
+        index_cf
+    };
+    for item in state.db.iterator_cf(source_cf, iter_mode) {
         if events.len() >= limit {
             break;
         }
-        let (key, value) = item.map_err(|e| Json(ErrorResponse::db(&format!("iter: {}", e))))?;
-        if let Ok(event) = serde_json::from_slice::<Value>(&value) {
-            // F8.11: Skip events until we pass the cursor
+        let (index_key, value) = item.map_err(|e| Json(ErrorResponse::db(&format!("iter: {}", e))))?;
+
+        if use_filter_index && !index_key.starts_with(filter_prefix_bytes) {
+            break;
+        }
+
+        if let Some(cursor_key) = resolved_after.as_ref() {
+            if !skipped_cursor && index_key.as_ref() == cursor_key.as_bytes() {
+                skipped_cursor = true;
+                continue;
+            }
+        }
+
+        let event_id = match std::str::from_utf8(&value) {
+            Ok(v) if !v.is_empty() => v,
+            _ => continue,
+        };
+
+        let event_value = match state.db.get_cf(events_cf, event_id.as_bytes()) {
+            Ok(Some(v)) => v,
+            _ => continue,
+        };
+
+        let event = match serde_json::from_slice::<Value>(&event_value) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+
+        if let Some(ref filter) = event_type_filter {
+            if filter_kind != "type"
+                && event.get("event_type").and_then(|v| v.as_str()) != Some(filter.as_str())
+            {
+                continue;
+            }
+        }
+        if let Some(ref filter) = entity_id_filter {
+            if filter_kind != "entity"
+                && event.get("entity_id").and_then(|v| v.as_str()) != Some(filter.as_str())
+            {
+                continue;
+            }
+        }
+        if let Some(ref filter) = tx_hash_filter {
+            if filter_kind != "tx"
+                && event.get("tx_hash").and_then(|v| v.as_str()) != Some(filter.as_str())
+            {
+                continue;
+            }
+        }
+
+        next_cursor = Some(String::from_utf8_lossy(&index_key).to_string());
+        events.push(event);
+    }
+
+    // Fallback for pre-index legacy data.
+    if events.is_empty() {
+        let mut past_cursor = after_cursor.is_none();
+        for item in state.db.iterator_cf(events_cf, rocksdb::IteratorMode::End) {
+            if events.len() >= limit {
+                break;
+            }
+            let (key, value) = item.map_err(|e| Json(ErrorResponse::db(&format!("iter: {}", e))))?;
+            let event = match serde_json::from_slice::<Value>(&value) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+
             if !past_cursor {
                 let key_str = std::str::from_utf8(&key).unwrap_or("");
                 let event_id = event.get("event_id").and_then(|v| v.as_str()).unwrap_or("");
@@ -7023,16 +7387,32 @@ async fn list_events(
                 }
                 continue;
             }
+
             if let Some(ref filter) = event_type_filter {
                 if event.get("event_type").and_then(|v| v.as_str()) != Some(filter.as_str()) {
                     continue;
                 }
             }
+            if let Some(ref filter) = entity_id_filter {
+                if event.get("entity_id").and_then(|v| v.as_str()) != Some(filter.as_str()) {
+                    continue;
+                }
+            }
+            if let Some(ref filter) = tx_hash_filter {
+                if event.get("tx_hash").and_then(|v| v.as_str()) != Some(filter.as_str()) {
+                    continue;
+                }
+            }
+
             events.push(event);
         }
     }
 
-    Ok(Json(json!({ "events": events, "count": events.len() })))
+    Ok(Json(json!({
+        "events": events,
+        "count": events.len(),
+        "next_cursor": next_cursor,
+    })))
 }
 
 // ── Webhook DB Helpers ──
@@ -7457,6 +7837,14 @@ mod tests {
         assert!(result.is_err());
     }
 
+    #[test]
+    fn test_derive_deposit_address_bnb_uses_evm_format() {
+        let address =
+            derive_deposit_address("bnb", "usdt", "m/44'/60'/0'/0/0", "test_seed").unwrap();
+        assert!(address.starts_with("0x"));
+        assert_eq!(address.len(), 42);
+    }
+
     /// F2-01: BIP-44 coin type mapping test
     #[test]
     fn test_bip44_coin_type() {
@@ -7464,6 +7852,8 @@ mod tests {
         assert_eq!(bip44_coin_type("solana").unwrap(), 501);
         assert_eq!(bip44_coin_type("eth").unwrap(), 60);
         assert_eq!(bip44_coin_type("ethereum").unwrap(), 60);
+        assert_eq!(bip44_coin_type("bsc").unwrap(), 60);
+        assert_eq!(bip44_coin_type("bnb").unwrap(), 60);
         assert_eq!(bip44_coin_type("btc").unwrap(), 0);
         assert_eq!(bip44_coin_type("bitcoin").unwrap(), 0);
         assert_eq!(bip44_coin_type("molt").unwrap(), 9999);
@@ -7489,8 +7879,20 @@ mod tests {
         );
         assert!(path_eth.ends_with("/0/5"), "Index 5: {}", path_eth);
 
+        let path_bnb = bip44_derivation_path("bnb", "user123", 7).unwrap();
+        assert!(
+            path_bnb.starts_with("m/44'/60'/"),
+            "BNB path must use coin_type 60: {}",
+            path_bnb
+        );
+        assert!(path_bnb.ends_with("/0/7"), "Index 7: {}", path_bnb);
+
         // Same user on different chains gets different paths (different coin types)
         assert_ne!(path_sol, path_eth);
+
+        // BNB/BSC reuses EVM derivation coin type (same path given same index/user)
+        let path_bsc = bip44_derivation_path("bsc", "user123", 5).unwrap();
+        assert_eq!(path_eth, path_bsc);
 
         // Same user, different index
         let path_sol_1 = bip44_derivation_path("solana", "user123", 1).unwrap();
