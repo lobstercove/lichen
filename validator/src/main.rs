@@ -56,6 +56,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 const SYSTEM_ACCOUNT_OWNER: Pubkey = Pubkey([0x01; 32]);
 const GENESIS_MINT_PUBKEY: Pubkey = Pubkey([0xFE; 32]);
+const LEGACY_CONTRACT_DEPLOY_FEE_SHELLS: u64 = 2_500_000_000;
 /// Validator rewards pool: 100M MOLT (10% of 1B supply).
 /// Reduced from 150M (15%) for sustainable treasury with 20% annual reward decay.
 /// The `.min(1_000_000_000)` cap in the legacy path is a safety guard.
@@ -1908,7 +1909,12 @@ fn replay_block_transactions(processor: &TxProcessor, block: &Block) {
 /// Fee distribution reversal is approximate — voter shares remain (small
 /// amounts relative to block reward). This prevents the worst case of the
 /// wrong producer keeping an entire block reward.
-fn revert_block_effects(state: &StateStore, old_block: &Block) {
+async fn revert_block_effects(
+    state: &StateStore,
+    validator_set: &Arc<RwLock<ValidatorSet>>,
+    stake_pool: &Arc<RwLock<StakePool>>,
+    old_block: &Block,
+) {
     // AUDIT-FIX 2.20: Read-all → compute-all → write-all pattern to prevent
     // TOCTOU races from concurrent revert/apply operations.
     let old_producer = Pubkey(old_block.header.validator);
@@ -2001,6 +2007,41 @@ fn revert_block_effects(state: &StateStore, old_block: &Block) {
             "revert_block_effects: failed to clear fee hash for slot {}: {}",
             slot, e
         );
+    }
+
+    // Keep validator production counters aligned with canonical chain.
+    {
+        let mut vs = validator_set.write().await;
+        if let Some(val_info) = vs.get_validator_mut(&old_producer) {
+            val_info.blocks_proposed = val_info.blocks_proposed.saturating_sub(1);
+        }
+
+        let vs_snapshot = vs.clone();
+        drop(vs);
+        if let Err(e) = state.save_validator_set(&vs_snapshot) {
+            warn!(
+                "⚠️  Failed to persist validator set counter revert for {}: {}",
+                old_producer.to_base58(),
+                e
+            );
+        }
+    }
+
+    {
+        let mut pool = stake_pool.write().await;
+        if let Some(stake_info) = pool.get_stake_mut(&old_producer) {
+            stake_info.blocks_produced = stake_info.blocks_produced.saturating_sub(1);
+        }
+
+        let pool_snapshot = pool.clone();
+        drop(pool);
+        if let Err(e) = state.put_stake_pool(&pool_snapshot) {
+            warn!(
+                "⚠️  Failed to persist stake pool counter revert for {}: {}",
+                old_producer.to_base58(),
+                e
+            );
+        }
     }
 
     info!(
@@ -2258,6 +2299,18 @@ async fn apply_block_effects(
     let slot = block.header.slot;
     let has_user_transactions = block_has_user_transactions(block);
     let is_heartbeat = !has_user_transactions;
+    let reward_already = if !skip_rewards {
+        match state.get_reward_distribution_hash(slot) {
+            Ok(Some(_)) => true, // per-slot guard: any reward for this slot = skip
+            Ok(None) => false,
+            Err(e) => {
+                warn!("⚠️  Failed to read reward distribution hash: {}", e);
+                false
+            }
+        }
+    } else {
+        false
+    };
 
     let stake_amount = {
         let pool = stake_pool.read().await;
@@ -2269,7 +2322,9 @@ async fn apply_block_effects(
     {
         let mut vs = validator_set.write().await;
         if let Some(val_info) = vs.get_validator_mut(&producer) {
-            val_info.blocks_proposed += 1;
+            if !reward_already {
+                val_info.blocks_proposed += 1;
+            }
             val_info.last_active_slot = slot;
             val_info.update_reputation(true);
         } else {
@@ -2286,7 +2341,7 @@ async fn apply_block_effects(
                     pubkey: producer,
                     stake: stake_amount,
                     reputation: 100,
-                    blocks_proposed: 1,
+                    blocks_proposed: if reward_already { 0 } else { 1 },
                     votes_cast: 0,
                     correct_votes: 0,
                     joined_slot: slot,
@@ -2312,15 +2367,6 @@ async fn apply_block_effects(
     // No treasury private key needed — the protocol itself authorizes it.
     let block_hash = block.hash();
     if !skip_rewards {
-        let reward_already = match state.get_reward_distribution_hash(slot) {
-            Ok(Some(_)) => true, // per-slot guard: any reward for this slot = skip
-            Ok(None) => false,
-            Err(e) => {
-                warn!("⚠️  Failed to read reward distribution hash: {}", e);
-                false
-            }
-        };
-
         if !reward_already {
             // Read MOLT price from on-chain oracle; falls back to $0.10 if unavailable
             let reward_config = moltchain_core::consensus::RewardConfig::new();
@@ -2840,6 +2886,7 @@ const GENESIS_CONTRACT_CATALOG: &[(&str, &str, &str, &str)] = &[
     ("musd_token", "MUSD", "Wrapped USD", "wrapped"),
     ("wsol_token", "WSOL", "Wrapped SOL", "wrapped"),
     ("weth_token", "WETH", "Wrapped ETH", "wrapped"),
+    ("wbnb_token", "WBNB", "Wrapped BNB", "wrapped"),
     // DEX
     ("dex_core", "DEX", "MoltChain DEX Core", "dex"),
     ("dex_amm", "DEXAMM", "DEX AMM Engine", "dex"),
@@ -2866,6 +2913,7 @@ const GENESIS_CONTRACT_CATALOG: &[(&str, &str, &str, &str)] = &[
     ("bountyboard", "BOUNTY", "BountyBoard", "bounty"),
     ("compute_market", "COMPUTE", "Compute Market", "compute"),
     ("reef_storage", "REEF", "Reef Storage", "storage"),
+    ("shielded_pool", "SHIELDED", "Shielded Pool", "shielded"),
     // Prediction Markets
     ("prediction_market", "PREDICT", "Prediction Markets", "defi"),
 ];
@@ -3263,6 +3311,11 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
             function: "initialize",
             args: named_init_args(&admin),
         },
+        InitSpec {
+            dir_name: "wbnb_token",
+            function: "initialize",
+            args: named_init_args(&admin),
+        },
         // ── Layer 1: Identity ──
         InitSpec {
             dir_name: "moltyid",
@@ -3587,14 +3640,17 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
         // [opcode 1B][caller 32B][token_in 32B][token_out 32B][route_type 1B][pool_id 8B][secondary_id 8B][split_percent 1B]
         let wsol_addr = address_map.get("wsol_token").map(|p| p.0).unwrap_or([0u8; 32]);
         let weth_addr = address_map.get("weth_token").map(|p| p.0).unwrap_or([0u8; 32]);
+        let wbnb_addr = address_map.get("wbnb_token").map(|p| p.0).unwrap_or([0u8; 32]);
 
         // (token_in, token_out, pair_id, pool_id, label)
-        let route_pairs: [([u8; 32], [u8; 32], u64, u64, &str); 5] = [
+        let route_pairs: [([u8; 32], [u8; 32], u64, u64, &str); 7] = [
             (molt_addr, musd_addr, 1, 1, "MOLT/mUSD"),
             (wsol_addr, musd_addr, 2, 2, "wSOL/mUSD"),
             (weth_addr, musd_addr, 3, 3, "wETH/mUSD"),
             (wsol_addr, molt_addr, 4, 4, "wSOL/MOLT"),
             (weth_addr, molt_addr, 5, 5, "wETH/MOLT"),
+            (wbnb_addr, musd_addr, 6, 6, "wBNB/mUSD"),
+            (wbnb_addr, molt_addr, 7, 7, "wBNB/MOLT"),
         ];
 
         for (token_in, token_out, pair_id, pool_id, label) in &route_pairs {
@@ -3843,6 +3899,11 @@ fn genesis_initialize_contracts(state: &StateStore, deployer_pubkey: &Pubkey, la
             GenesisName {
                 label: "weth",
                 owner_key: "weth_token",
+                agent_type: 0,
+            },
+            GenesisName {
+                label: "wbnb",
+                owner_key: "wbnb_token",
                 agent_type: 0,
             },
             // ── DEX ──
@@ -4224,6 +4285,9 @@ fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey, la
     let weth_addr = derive_contract_address(deployer_pubkey, "weth_token")
         .map(|p| p.0)
         .unwrap_or([0u8; 32]);
+    let wbnb_addr = derive_contract_address(deployer_pubkey, "wbnb_token")
+        .map(|p| p.0)
+        .unwrap_or([0u8; 32]);
 
     // Resolve dex_governance for allowed-quote setup
     let dex_gov_pk = derive_contract_address(deployer_pubkey, "dex_governance");
@@ -4236,13 +4300,15 @@ fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey, la
     let lot_size: u64 = 1_000_000;
     let min_order: u64 = 1_000;
 
-    // All genesis CLOB pairs: 3 mUSD-quoted + 2 MOLT-quoted = 5 pairs
-    let pairs: [(&str, [u8; 32], [u8; 32]); 5] = [
+    // All genesis CLOB pairs: 4 mUSD-quoted + 3 MOLT-quoted = 7 pairs
+    let pairs: [(&str, [u8; 32], [u8; 32]); 7] = [
         ("MOLT/mUSD", molt_addr, musd_addr),
         ("wSOL/mUSD", wsol_addr, musd_addr),
         ("wETH/mUSD", weth_addr, musd_addr),
         ("wSOL/MOLT", wsol_addr, molt_addr),
         ("wETH/MOLT", weth_addr, molt_addr),
+        ("wBNB/mUSD", wbnb_addr, musd_addr),
+        ("wBNB/MOLT", wbnb_addr, molt_addr),
     ];
 
     let mut created_pairs: usize = 0;
@@ -4322,20 +4388,24 @@ fn genesis_create_trading_pairs(state: &StateStore, deployer_pubkey: &Pubkey, la
     // Args: [0x01][caller 32B][token_a 32B][token_b 32B][fee_tier 1B][initial_sqrt_price 8B]
     // fee_tier = 2 (30bps)
     // sqrt_price in Q32 fixed-point: value = (1 << 32) * sqrt(real_price)
-    // Prices aligned with genesis oracle seeds: MOLT=$0.10, wSOL=$82, wETH=$1,979
+    // Prices aligned with genesis oracle seeds: MOLT=$0.10, wSOL=$82, wETH=$1,979, wBNB=$300
     //   MOLT/mUSD  = $0.10         → sqrt_price =  1_358_187_913
     //   wSOL/mUSD  = $82           → sqrt_price = 38_892_583_020
     //   wETH/mUSD  = $1,979        → sqrt_price = 191_065_712_575
     //   wSOL/MOLT  = 820 MOLT      → sqrt_price = 122_989_146_433
     //   wETH/MOLT  = 19,790 MOLT   → sqrt_price = 604_202_834_500
+    //   wBNB/mUSD  = $300          → sqrt_price = 74_391_015_735
+    //   wBNB/MOLT  = 3,000 MOLT    → sqrt_price = 235_245_047_176
     let fee_tier: u8 = 2; // FEE_TIER_30BPS
 
-    let pool_configs: [(&str, [u8; 32], [u8; 32], u64); 5] = [
+    let pool_configs: [(&str, [u8; 32], [u8; 32], u64); 7] = [
         ("MOLT/mUSD", molt_addr, musd_addr, 1_358_187_913), // $0.10
         ("wSOL/mUSD", wsol_addr, musd_addr, 38_892_583_020), // $82
         ("wETH/mUSD", weth_addr, musd_addr, 191_065_712_575), // $1,979
         ("wSOL/MOLT", wsol_addr, molt_addr, 122_989_146_433), // 820 MOLT
         ("wETH/MOLT", weth_addr, molt_addr, 604_202_834_500), // 19,790 MOLT
+        ("wBNB/mUSD", wbnb_addr, musd_addr, 74_391_015_735), // $300
+        ("wBNB/MOLT", wbnb_addr, molt_addr, 235_245_047_176), // 3,000 MOLT
     ];
 
     for (label, token_a, token_b, sqrt_price) in &pool_configs {
@@ -4437,13 +4507,14 @@ fn genesis_seed_oracle(state: &StateStore, deployer_pubkey: &Pubkey, label: &str
         warn!("  SKIP initial price submission failed");
     }
 
-    // ── Step 3: Seed external asset price feeds (wSOL, wETH) ──
+    // ── Step 3: Seed external asset price feeds (wSOL, wETH, wBNB) ──
     // These provide reference prices for oracle-priced DEX pairs.
     // Prices are approximate current market values; the background
     // WebSocket price feeder will update them to live prices immediately.
-    let external_feeds: [(&[u8], u64, &str); 2] = [
+    let external_feeds: [(&[u8], u64, &str); 3] = [
         (b"wSOL", 8_200_000_000, "$82.00"),      // $82 at 8 decimals
         (b"wETH", 197_900_000_000, "$1,979.00"), // $1,979 at 8 decimals
+        (b"wBNB", 30_000_000_000, "$300.00"),    // $300 at 8 decimals
     ];
 
     for (ext_asset, ext_price, display_price) in &external_feeds {
@@ -4499,7 +4570,7 @@ fn genesis_seed_oracle(state: &StateStore, deployer_pubkey: &Pubkey, label: &str
     genesis_seed_analytics_prices(state, deployer_pubkey);
 
     info!("──────────────────────────────────────────────────────");
-    info!("  Genesis oracle seeding complete (MOLT + wSOL + wETH)");
+    info!("  Genesis oracle seeding complete (MOLT + wSOL + wETH + wBNB)");
     info!("──────────────────────────────────────────────────────");
 }
 
@@ -4522,17 +4593,21 @@ fn genesis_seed_analytics_prices(state: &StateStore, deployer_pubkey: &Pubkey) {
     const PRICE_SCALE: u64 = 1_000_000_000;
 
     // Pair IDs match genesis_create_trading_pairs order:
-    //   1=MOLT/mUSD, 2=wSOL/mUSD, 3=wETH/mUSD, 4=wSOL/MOLT, 5=wETH/MOLT
+    //   1=MOLT/mUSD, 2=wSOL/mUSD, 3=wETH/mUSD, 4=wSOL/MOLT, 5=wETH/MOLT,
+    //   6=wBNB/mUSD, 7=wBNB/MOLT
     let molt_usd: f64 = 0.10;
     let wsol_usd: f64 = 82.0;
     let weth_usd: f64 = 1979.0;
+    let wbnb_usd: f64 = 300.0;
 
-    let pair_prices: [(u64, f64); 5] = [
+    let pair_prices: [(u64, f64); 7] = [
         (1, molt_usd),            // MOLT/mUSD = $0.10
         (2, wsol_usd),            // wSOL/mUSD = $82
         (3, weth_usd),            // wETH/mUSD = $1,979
         (4, wsol_usd / molt_usd), // wSOL/MOLT = 820
         (5, weth_usd / molt_usd), // wETH/MOLT = 19,790
+        (6, wbnb_usd),            // wBNB/mUSD = $300
+        (7, wbnb_usd / molt_usd), // wBNB/MOLT = 3,000
     ];
 
     for (pair_id, price_f64) in &pair_prices {
@@ -4610,7 +4685,7 @@ fn genesis_seed_analytics_prices(state: &StateStore, deployer_pubkey: &Pubkey) {
 //  GENESIS PHASE 4c — Seed dex_margin mark/index prices & enable pairs
 //  Writes mrg_mark_{pair_id}, mrg_idx_{pair_id}, mrg_ena_{pair_id} directly
 //  to dex_margin contract storage so margin trading works from genesis.
-//  Prices match the oracle seeds (MOLT=$0.10, wSOL=$82, wETH=$1,979).
+//  Prices match the oracle seeds (MOLT=$0.10, wSOL=$82, wETH=$1,979, wBNB=$300).
 // ========================================================================
 
 fn genesis_seed_margin_prices(state: &StateStore, deployer_pubkey: &Pubkey) {
@@ -4626,15 +4701,19 @@ fn genesis_seed_margin_prices(state: &StateStore, deployer_pubkey: &Pubkey) {
     let molt_usd: f64 = 0.10;
     let wsol_usd: f64 = 82.0;
     let weth_usd: f64 = 1979.0;
+    let wbnb_usd: f64 = 300.0;
 
     // Pair IDs match genesis_create_trading_pairs order:
-    //   1=MOLT/mUSD, 2=wSOL/mUSD, 3=wETH/mUSD, 4=wSOL/MOLT, 5=wETH/MOLT
-    let pair_prices: [(u64, f64); 5] = [
+    //   1=MOLT/mUSD, 2=wSOL/mUSD, 3=wETH/mUSD, 4=wSOL/MOLT, 5=wETH/MOLT,
+    //   6=wBNB/mUSD, 7=wBNB/MOLT
+    let pair_prices: [(u64, f64); 7] = [
         (1, molt_usd),            // MOLT/mUSD = $0.10
         (2, wsol_usd),            // wSOL/mUSD = $82
         (3, weth_usd),            // wETH/mUSD = $1,979
         (4, wsol_usd / molt_usd), // wSOL/MOLT = 820
         (5, weth_usd / molt_usd), // wETH/MOLT = 19,790
+        (6, wbnb_usd),            // wBNB/mUSD = $300
+        (7, wbnb_usd / molt_usd), // wBNB/MOLT = 3,000
     ];
 
     let now_secs = std::time::SystemTime::now()
@@ -4713,12 +4792,13 @@ fn genesis_seed_margin_prices(state: &StateStore, deployer_pubkey: &Pubkey) {
 /// This gives 6 decimal precision, far exceeding oracle's 8-decimal format.
 const MICRO_SCALE: f64 = 1_000_000.0;
 
-/// Binance WebSocket aggTrade stream URL for SOL and ETH
-const BINANCE_WS_URL: &str = "wss://stream.binance.com:9443/ws/solusdt@aggTrade/ethusdt@aggTrade";
+/// Binance WebSocket aggTrade stream URL for SOL, ETH, and BNB
+const BINANCE_WS_URL: &str =
+    "wss://stream.binance.com:9443/ws/solusdt@aggTrade/ethusdt@aggTrade/bnbusdt@aggTrade";
 
 /// Binance REST fallback URL
 const BINANCE_REST_URL: &str =
-    "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22]";
+    "https://api.binance.com/api/v3/ticker/price?symbols=[%22SOLUSDT%22,%22ETHUSDT%22,%22BNBUSDT%22]";
 
 /// REST ticker response
 #[derive(Deserialize)]
@@ -4763,15 +4843,17 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
         // Lock-free atomic price storage shared between WS reader and storage writer
         let wsol_micro = Arc::new(AtomicU64::new(0));
         let weth_micro = Arc::new(AtomicU64::new(0));
+        let wbnb_micro = Arc::new(AtomicU64::new(0));
         let ws_healthy = Arc::new(AtomicBool::new(false));
 
         // Spawn WebSocket reader task
         {
             let ws_wsol = wsol_micro.clone();
             let ws_weth = weth_micro.clone();
+            let ws_wbnb = wbnb_micro.clone();
             let ws_flag = ws_healthy.clone();
             tokio::spawn(async move {
-                binance_ws_loop(ws_wsol, ws_weth, ws_flag).await;
+                binance_ws_loop(ws_wsol, ws_weth, ws_wbnb, ws_flag).await;
             });
         }
 
@@ -4789,6 +4871,7 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
         // Track last-written prices to skip no-op writes
         let mut prev_wsol: u64 = 0;
         let mut prev_weth: u64 = 0;
+        let mut prev_wbnb: u64 = 0;
 
         // Storage writer loop: 1-second tick
         let mut write_tick = time::interval(Duration::from_secs(1));
@@ -4799,9 +4882,12 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
             // Read current prices from atomics
             let mut cur_wsol = wsol_micro.load(Ordering::Relaxed);
             let mut cur_weth = weth_micro.load(Ordering::Relaxed);
+            let mut cur_wbnb = wbnb_micro.load(Ordering::Relaxed);
 
             // REST fallback if WebSocket is not healthy or no prices yet
-            if !ws_healthy.load(Ordering::Relaxed) || (cur_wsol == 0 && cur_weth == 0) {
+            if !ws_healthy.load(Ordering::Relaxed)
+                || (cur_wsol == 0 && cur_weth == 0 && cur_wbnb == 0)
+            {
                 if let Ok(resp) = http.get(BINANCE_REST_URL).send().await {
                     if let Ok(tickers) = resp.json::<Vec<BinanceTicker>>().await {
                         for t in &tickers {
@@ -4819,6 +4905,10 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
                                     weth_micro.store(micro, Ordering::Relaxed);
                                     cur_weth = micro;
                                 }
+                                "BNBUSDT" => {
+                                    wbnb_micro.store(micro, Ordering::Relaxed);
+                                    cur_wbnb = micro;
+                                }
                                 _ => {}
                             }
                         }
@@ -4829,16 +4919,19 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
             // Track whether prices actually changed — oracle feed storage writes
             // are skipped when unchanged, but candle writes ALWAYS proceed so
             // that new candle periods are created at correct time boundaries.
-            let prices_changed = cur_wsol != prev_wsol || cur_weth != prev_weth;
+            let prices_changed =
+                cur_wsol != prev_wsol || cur_weth != prev_weth || cur_wbnb != prev_wbnb;
             if prices_changed {
                 prev_wsol = cur_wsol;
                 prev_weth = cur_weth;
+                prev_wbnb = cur_wbnb;
             }
 
             let wsol_usd = cur_wsol as f64 / MICRO_SCALE;
             let weth_usd = cur_weth as f64 / MICRO_SCALE;
+            let wbnb_usd = cur_wbnb as f64 / MICRO_SCALE;
 
-            if wsol_usd <= 0.0 && weth_usd <= 0.0 {
+            if wsol_usd <= 0.0 && weth_usd <= 0.0 && wbnb_usd <= 0.0 {
                 continue;
             }
 
@@ -4876,7 +4969,8 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
 
             // Write oracle prices for each external asset — only when changed
             if prices_changed {
-                let oracle_feeds: [(&[u8], f64); 2] = [(b"wSOL", wsol_usd), (b"wETH", weth_usd)];
+                let oracle_feeds: [(&[u8], f64); 3] =
+                    [(b"wSOL", wsol_usd), (b"wETH", weth_usd), (b"wBNB", wbnb_usd)];
 
                 for (asset, price_usd) in &oracle_feeds {
                     if *price_usd <= 0.0 {
@@ -4901,8 +4995,9 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
             }
 
             // Update dex_analytics for oracle-priced pairs
-            // Pair 1=MOLT/mUSD, 2=wSOL/mUSD, 3=wETH/mUSD, 4=wSOL/MOLT, 5=wETH/MOLT
-            let pair_prices: [(u64, f64); 5] = [
+            // Pair 1=MOLT/mUSD, 2=wSOL/mUSD, 3=wETH/mUSD, 4=wSOL/MOLT, 5=wETH/MOLT,
+            // 6=wBNB/mUSD, 7=wBNB/MOLT
+            let pair_prices: [(u64, f64); 7] = [
                 (1, molt_usd), // MOLT/mUSD (fixed oracle price)
                 (2, wsol_usd), // wSOL/mUSD
                 (3, weth_usd), // wETH/mUSD
@@ -4922,6 +5017,15 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
                         0.0
                     },
                 ), // wETH/MOLT
+                (6, wbnb_usd), // wBNB/mUSD
+                (
+                    7,
+                    if molt_usd > 0.0 {
+                        wbnb_usd / molt_usd
+                    } else {
+                        0.0
+                    },
+                ), // wBNB/MOLT
             ];
 
             // ── Phase C: Write oracle price bands to dex_core storage ──
@@ -5028,8 +5132,8 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
             }
 
             debug!(
-                "🔮 Oracle prices updated: wSOL=${:.2} wETH=${:.2}",
-                wsol_usd, weth_usd
+                "🔮 Oracle prices updated: wSOL=${:.2} wETH=${:.2} wBNB=${:.2}",
+                wsol_usd, weth_usd, wbnb_usd
             );
         }
     });
@@ -5038,7 +5142,12 @@ fn spawn_oracle_price_feeder(state: StateStore, deployer_pubkey: Pubkey) {
 /// Binance WebSocket reader loop with auto-reconnect.
 /// Connects to aggTrade streams, parses prices, stores in atomics.
 /// On disconnect, retries with exponential backoff (1s → 30s max).
-async fn binance_ws_loop(wsol: Arc<AtomicU64>, weth: Arc<AtomicU64>, healthy: Arc<AtomicBool>) {
+async fn binance_ws_loop(
+    wsol: Arc<AtomicU64>,
+    weth: Arc<AtomicU64>,
+    wbnb: Arc<AtomicU64>,
+    healthy: Arc<AtomicBool>,
+) {
     let mut backoff_secs: u64 = 1;
 
     loop {
@@ -5067,6 +5176,7 @@ async fn binance_ws_loop(wsol: Arc<AtomicU64>, weth: Arc<AtomicU64>, healthy: Ar
                                         match sym {
                                             "SOLUSDT" => wsol.store(micro, Ordering::Relaxed),
                                             "ETHUSDT" => weth.store(micro, Ordering::Relaxed),
+                                            "BNBUSDT" => wbnb.store(micro, Ordering::Relaxed),
                                             _ => {}
                                         }
                                     }
@@ -6682,6 +6792,32 @@ async fn run_validator() {
         }
 
         // ================================================================
+        // STARTUP RECONCILIATION: Correct legacy deploy-fee typo in DB.
+        // Some nodes persisted 2.5 MOLT instead of canonical 25 MOLT.
+        // ================================================================
+        {
+            match state.get_fee_config() {
+                Ok(mut cfg) if cfg.contract_deploy_fee == LEGACY_CONTRACT_DEPLOY_FEE_SHELLS => {
+                    warn!(
+                        "🔧 RECONCILE: correcting legacy contract deploy fee {} -> {} shells",
+                        cfg.contract_deploy_fee, CONTRACT_DEPLOY_FEE
+                    );
+                    cfg.contract_deploy_fee = CONTRACT_DEPLOY_FEE;
+                    if let Err(e) = state.set_fee_config_full(&cfg) {
+                        error!("  ✗ Failed to reconcile contract deploy fee: {}", e);
+                    } else {
+                        info!(
+                            "  ✓ Contract deploy fee reconciled to {} shells (25 MOLT)",
+                            CONTRACT_DEPLOY_FEE
+                        );
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => warn!("⚠️  Unable to read fee config for reconciliation: {}", e),
+            }
+        }
+
+        // ================================================================
         // STARTUP RECONCILIATION: Seed analytics prices if missing.
         // genesis_seed_analytics_prices was added after genesis block 0
         // was already created, so the data was never written. This check
@@ -8268,7 +8404,13 @@ async fn run_validator() {
                                 || longest_chain_rule
                             {
                                 // Revert old block's financial effects before replacing
-                                revert_block_effects(&state_for_blocks, &existing);
+                                revert_block_effects(
+                                    &state_for_blocks,
+                                    &validator_set_for_blocks,
+                                    &stake_pool_for_blocks,
+                                    &existing,
+                                )
+                                .await;
                                 // C7 fix: Also revert user transaction effects
                                 revert_block_transactions(
                                     &state_for_blocks,
@@ -9562,10 +9704,9 @@ async fn run_validator() {
                                     if let Some(local_val) =
                                         vs.get_validator_mut(&remote_val.pubkey)
                                     {
-                                        // Update existing: prefer higher stats
-                                        if remote_val.blocks_proposed > local_val.blocks_proposed {
-                                            local_val.blocks_proposed = remote_val.blocks_proposed;
-                                        }
+                                        // Keep local blocks_proposed authoritative from locally
+                                        // validated canonical blocks. Importing max counters from
+                                        // remote snapshots can permanently inflate one validator.
                                         if remote_val.last_active_slot > local_val.last_active_slot
                                         {
                                             local_val.last_active_slot =

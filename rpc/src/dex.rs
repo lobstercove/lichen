@@ -527,6 +527,7 @@ fn build_token_symbol_map(state: &crate::RpcState) -> HashMap<String, String> {
         ("MUSD", "mUSD"),
         ("WSOL", "wSOL"),
         ("WETH", "wETH"),
+        ("WBNB", "wBNB"),
         ("REEF", "REEF"),
         ("PUNKS", "PUNKS"),
         ("BOUNTY", "BOUNTY"),
@@ -972,6 +973,7 @@ async fn get_pairs(State(state): State<Arc<RpcState>>, Query(q): Query<PairsQuer
                         let oracle_asset = match base_sym.as_str() {
                             "wSOL" | "SOL" => Some("wSOL"),
                             "wETH" | "ETH" => Some("wETH"),
+                            "wBNB" | "BNB" => Some("wBNB"),
                             "MOLT" => Some("MOLT"),
                             _ => None,
                         };
@@ -1375,6 +1377,7 @@ async fn get_pair_ticker(State(state): State<Arc<RpcState>>, Path(pair_id): Path
                 let oracle_asset = base_sym.and_then(|s| match s.as_str() {
                     "wSOL" | "SOL" => Some("wSOL"),
                     "wETH" | "ETH" => Some("wETH"),
+                    "wBNB" | "BNB" => Some("wBNB"),
                     "MOLT" => Some("MOLT"),
                     _ => None,
                 });
@@ -2040,7 +2043,10 @@ async fn post_router_swap(
     // Fallback: if no explicit route found, scan all AMM pools for a matching pair
     if best_route.is_none() {
         let pool_count = read_u64(&state, DEX_AMM_PROGRAM, "amm_pool_count");
-        for pid in 0..pool_count {
+        // Hard cap fallback scan to keep quote latency bounded when pool_count is very large.
+        // Route registry remains the primary path; this is best-effort compatibility fallback.
+        let scan_limit = pool_count.min(10_000);
+        for pid in 0..scan_limit {
             let pk = format!("amm_pool_{}", pid);
             if let Some(data) = read_bytes(&state, DEX_AMM_PROGRAM, &pk) {
                 if data.len() >= 96 {
@@ -2524,7 +2530,7 @@ async fn post_vote(Path(_proposal_id): Path<u64>) -> Response {
 /// GET /api/v1/oracle/prices — All oracle price feeds
 async fn get_oracle_prices(State(state): State<Arc<RpcState>>) -> Response {
     let slot = current_slot(&state);
-    let assets = ["MOLT", "wSOL", "wETH"];
+    let assets = ["MOLT", "wSOL", "wETH", "wBNB"];
     let mut feeds = Vec::new();
 
     for asset in &assets {

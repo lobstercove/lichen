@@ -104,7 +104,7 @@ else
     
     # Check which contracts need building
     DEX_AND_TOKEN_CONTRACTS=(
-        musd_token wsol_token weth_token
+        musd_token wsol_token weth_token wbnb_token
         dex_core dex_amm dex_router
         dex_governance dex_margin dex_rewards dex_analytics
         prediction_market
@@ -154,7 +154,7 @@ echo -e "\n${CYAN}[4/5]${NC} Deploying core infrastructure contracts..."
 CORE_CONTRACTS=(
     moltcoin moltdao moltswap moltbridge moltmarket moltoracle
     moltauction moltpunks moltyid lobsterlend clawpay clawpump
-    clawvault bountyboard compute_market reef_storage
+    clawvault bountyboard compute_market reef_storage shielded_pool
 )
 
 if [ -f "${TOOLS_DIR}/deploy_contract.py" ]; then

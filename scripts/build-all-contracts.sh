@@ -66,6 +66,7 @@ WRAPPED_TOKEN_CONTRACTS=(
     musd_token
     wsol_token
     weth_token
+        wbnb_token
 )
 
 # Parse args
@@ -112,6 +113,7 @@ FAILED=0
 SKIPPED=0
 TOTAL=${#CONTRACTS[@]}
 FAILED_LIST=()
+TEST_FAILED=0
 
 for contract in "${CONTRACTS[@]}"; do
     CONTRACT_DIR="${CONTRACTS_DIR}/${contract}"
@@ -218,4 +220,9 @@ for contract in "${CONTRACTS[@]}"; do
     fi
 done
 
-exit $FAILED
+EXIT_CODE=$FAILED
+if $RUN_TESTS && [ $TEST_FAILED -gt 0 ]; then
+    EXIT_CODE=1
+fi
+
+exit $EXIT_CODE
