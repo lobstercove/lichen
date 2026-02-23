@@ -1376,7 +1376,7 @@ async def main() -> int:
         report("PASS", f"zk.keys found at {ZK_KEY_DIR}")
 
     if zk_prove_exists and zk_key_dir_exists:
-        from moltchain import shield_instruction, unshield_instruction
+        from moltchain import shield_instruction, unshield_instruction, transfer_instruction
 
         # ── 3.1  Query initial shielded pool state (JSON-RPC) ──
         try:
@@ -1697,6 +1697,213 @@ async def main() -> int:
         except Exception as e:
             report("SKIP", f"zk.rest.merkle-root skip ({e})")
 
+        # ══════════════════════════════════════════════════════════════
+        # 3.21–3.28  SHIELDED TRANSFER (pool → pool, 2-in-2-out)
+        # ══════════════════════════════════════════════════════════════
+        # We need 2 input notes. Note A was the first shield (test 3.4/3.5).
+        # After unshield (test 3.15) it was spent. So we shield two fresh
+        # notes (B and C) and then transfer them into two new output notes.
+
+        # ── 3.21  Shield second note (note B) ──
+        shield_b_json = None
+        shield_b_sig = None
+        shield_b_amount = 300_000_000  # 0.3 MOLT
+        try:
+            result = subprocess.run(
+                [ZK_PROVE_BIN, "shield", "--amount", str(shield_b_amount), "--pk-dir", ZK_KEY_DIR],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode != 0:
+                report("FAIL", f"zk.transfer.shield_b exit={result.returncode}")
+            else:
+                shield_b_json = json.loads(result.stdout)
+                commitment_b = bytes.fromhex(shield_b_json["commitment"])
+                proof_b = bytes.fromhex(shield_b_json["proof"])
+                ix = shield_instruction(deployer.public_key(), shield_b_amount, commitment_b, proof_b)
+                blockhash = await conn.get_recent_blockhash()
+                tx = TransactionBuilder().add(ix).set_recent_blockhash(blockhash).build_and_sign(deployer)
+                shield_b_sig = await conn.send_transaction(tx)
+                tx_result = await wait_tx(conn, shield_b_sig)
+                if tx_result:
+                    report("PASS", f"zk.transfer.shield_b confirmed")
+                else:
+                    report("FAIL", "zk.transfer.shield_b not confirmed")
+                    shield_b_sig = None
+        except Exception as e:
+            report("FAIL", f"zk.transfer.shield_b error={e}")
+
+        # ── 3.22  Shield third note (note C) ──
+        shield_c_json = None
+        shield_c_sig = None
+        shield_c_amount = 200_000_000  # 0.2 MOLT
+        try:
+            result = subprocess.run(
+                [ZK_PROVE_BIN, "shield", "--amount", str(shield_c_amount), "--pk-dir", ZK_KEY_DIR],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode != 0:
+                report("FAIL", f"zk.transfer.shield_c exit={result.returncode}")
+            else:
+                shield_c_json = json.loads(result.stdout)
+                commitment_c = bytes.fromhex(shield_c_json["commitment"])
+                proof_c = bytes.fromhex(shield_c_json["proof"])
+                ix = shield_instruction(deployer.public_key(), shield_c_amount, commitment_c, proof_c)
+                blockhash = await conn.get_recent_blockhash()
+                tx = TransactionBuilder().add(ix).set_recent_blockhash(blockhash).build_and_sign(deployer)
+                shield_c_sig = await conn.send_transaction(tx)
+                tx_result = await wait_tx(conn, shield_c_sig)
+                if tx_result:
+                    report("PASS", f"zk.transfer.shield_c confirmed")
+                else:
+                    report("FAIL", "zk.transfer.shield_c not confirmed")
+                    shield_c_sig = None
+        except Exception as e:
+            report("FAIL", f"zk.transfer.shield_c error={e}")
+
+        # ── 3.23  Get pool state before transfer ──
+        pre_transfer_count = 0
+        pre_transfer_shielded = 0
+        if shield_b_sig and shield_c_sig:
+            await asyncio.sleep(1)
+            try:
+                pool_pre = await conn._rpc("getShieldedPoolState")
+                pre_transfer_count = int(pool_pre.get("commitmentCount", 0))
+                pre_transfer_shielded = int(pool_pre.get("totalShielded", 0))
+                report("PASS", f"zk.transfer.pre_state count={pre_transfer_count} shielded={pre_transfer_shielded}")
+            except Exception as e:
+                report("FAIL", f"zk.transfer.pre_state error={e}")
+
+        # ── 3.24  Get Merkle root and paths for both notes ──
+        transfer_witness = None
+        if shield_b_json and shield_c_json and shield_b_sig and shield_c_sig:
+            try:
+                # Note B is at index (pre_transfer_count - 2), note C at (pre_transfer_count - 1)
+                idx_b = pre_transfer_count - 2
+                idx_c = pre_transfer_count - 1
+
+                mr_resp = await conn._rpc("getShieldedMerkleRoot")
+                transfer_merkle_root = mr_resp.get("merkleRoot", "00" * 32)
+
+                path_b = await conn._rpc("getShieldedMerklePath", [idx_b])
+                path_c = await conn._rpc("getShieldedMerklePath", [idx_c])
+
+                # Build transfer witness JSON
+                # Output: note D gets 350M shells, note E gets 150M shells (total = 500M = 300M + 200M)
+                out_d_amount = 350_000_000
+                out_e_amount = 150_000_000
+                transfer_witness = {
+                    "merkle_root": transfer_merkle_root,
+                    "inputs": [
+                        {
+                            "amount": shield_b_amount,
+                            "blinding": shield_b_json["blinding"],
+                            "serial": shield_b_json["serial"],
+                            "spending_key": shield_b_json["spending_key"],
+                            "merkle_path": path_b.get("siblings", []),
+                            "path_bits": path_b.get("pathBits", []),
+                        },
+                        {
+                            "amount": shield_c_amount,
+                            "blinding": shield_c_json["blinding"],
+                            "serial": shield_c_json["serial"],
+                            "spending_key": shield_c_json["spending_key"],
+                            "merkle_path": path_c.get("siblings", []),
+                            "path_bits": path_c.get("pathBits", []),
+                        },
+                    ],
+                    "outputs": [
+                        {"amount": out_d_amount},
+                        {"amount": out_e_amount},
+                    ],
+                }
+                report("PASS", f"zk.transfer.witness_built outputs={out_d_amount}+{out_e_amount}")
+            except Exception as e:
+                report("FAIL", f"zk.transfer.witness error={e}")
+
+        # ── 3.25  Generate transfer proof via zk-prove CLI ──
+        transfer_json = None
+        if transfer_witness:
+            try:
+                tmp_fd, tmp_witness_file = tempfile.mkstemp(suffix=".json")
+                with _os.fdopen(tmp_fd, "w") as f:
+                    json.dump(transfer_witness, f)
+                result = subprocess.run(
+                    [ZK_PROVE_BIN, "transfer", "--pk-dir", ZK_KEY_DIR,
+                     "--transfer-json", tmp_witness_file],
+                    capture_output=True, text=True, timeout=180,
+                )
+                _os.unlink(tmp_witness_file)
+                if result.returncode != 0:
+                    report("FAIL", f"zk.prove.transfer exit={result.returncode} stderr={result.stderr[:300]}")
+                else:
+                    transfer_json = json.loads(result.stdout)
+                    report("PASS", f"zk.prove.transfer nullifiers={transfer_json['nullifier_a'][:12]}..+{transfer_json['nullifier_b'][:12]}..")
+            except Exception as e:
+                report("FAIL", f"zk.prove.transfer error={e}")
+
+        # ── 3.26  Submit shielded transfer transaction ──
+        transfer_sig = None
+        if transfer_json:
+            try:
+                null_a = bytes.fromhex(transfer_json["nullifier_a"])
+                null_b = bytes.fromhex(transfer_json["nullifier_b"])
+                comm_c = bytes.fromhex(transfer_json["commitment_c"])
+                comm_d = bytes.fromhex(transfer_json["commitment_d"])
+                mr_bytes = bytes.fromhex(transfer_json["merkle_root"])
+                proof = bytes.fromhex(transfer_json["proof"])
+                ix = transfer_instruction(
+                    deployer.public_key(),
+                    [null_a, null_b],
+                    [comm_c, comm_d],
+                    mr_bytes,
+                    proof,
+                )
+                blockhash = await conn.get_recent_blockhash()
+                tx = TransactionBuilder().add(ix).set_recent_blockhash(blockhash).build_and_sign(deployer)
+                transfer_sig = await conn.send_transaction(tx)
+                tx_result = await wait_tx(conn, transfer_sig)
+                if tx_result:
+                    report("PASS", f"zk.tx.transfer confirmed sig={transfer_sig[:16]}...")
+                else:
+                    report("FAIL", "zk.tx.transfer not confirmed")
+                    transfer_sig = None
+            except Exception as e:
+                report("FAIL", f"zk.tx.transfer error={e}")
+
+        # ── 3.27  Verify pool state after transfer ──
+        if transfer_sig:
+            await asyncio.sleep(1)
+            try:
+                pool_post = await conn._rpc("getShieldedPoolState")
+                post_count = int(pool_post.get("commitmentCount", 0))
+                post_shielded = int(pool_post.get("totalShielded", 0))
+                # Transfer adds 2 new commitments
+                if post_count == pre_transfer_count + 2:
+                    report("PASS", f"zk.transfer.commitment_count {pre_transfer_count} -> {post_count}")
+                else:
+                    report("FAIL", f"zk.transfer.commitment_count expected={pre_transfer_count + 2} got={post_count}")
+                # Total shielded unchanged (value conservation)
+                if post_shielded == pre_transfer_shielded:
+                    report("PASS", f"zk.transfer.value_conserved shielded={post_shielded}")
+                else:
+                    report("FAIL", f"zk.transfer.value_conserved expected={pre_transfer_shielded} got={post_shielded}")
+            except Exception as e:
+                report("FAIL", f"zk.transfer.post_state error={e}")
+
+        # ── 3.28  Verify transfer nullifiers are spent ──
+        if transfer_json and transfer_sig:
+            try:
+                resp_a = await conn._rpc("isNullifierSpent", [transfer_json["nullifier_a"]])
+                resp_b = await conn._rpc("isNullifierSpent", [transfer_json["nullifier_b"]])
+                spent_a = resp_a.get("spent", False) if isinstance(resp_a, dict) else resp_a
+                spent_b = resp_b.get("spent", False) if isinstance(resp_b, dict) else resp_b
+                if spent_a and spent_b:
+                    report("PASS", "zk.transfer.nullifiers_spent both spent")
+                else:
+                    report("FAIL", f"zk.transfer.nullifiers_spent a={spent_a} b={spent_b}")
+            except Exception as e:
+                report("FAIL", f"zk.transfer.nullifiers_spent error={e}")
+
     # ─── Summary ───
     elapsed = time.time() - t_start
     total_named = sum(len(s) for s in named_scenarios.values())
@@ -1706,7 +1913,7 @@ async def main() -> int:
     n_ws = len(ws_sub_types)
     n_sol = len(sol_rpc_methods)
     n_evm = len(evm_rpc_methods)
-    n_zk = 20  # Phase 3: up to 20 ZK sub-tests
+    n_zk = 28  # Phase 3: up to 28 ZK sub-tests (shield+unshield+transfer)
     extras = 1 + 16 + 8 + n_ext_rpc + n_ext_rest + n_ws + n_sol + n_evm + n_zk
     print(f"\n{'=' * 70}")
     print(f"  SUMMARY: PASS={PASS}  FAIL={FAIL}  SKIP={SKIP}")
