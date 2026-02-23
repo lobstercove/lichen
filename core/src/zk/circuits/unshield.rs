@@ -28,29 +28,13 @@
 //! the Transfer circuit to split the note first.
 
 use ark_bn254::Fr;
-use ark_crypto_primitives::sponge::constraints::CryptographicSpongeVar;
-use ark_crypto_primitives::sponge::poseidon::constraints::PoseidonSpongeVar;
 use ark_crypto_primitives::sponge::poseidon::PoseidonConfig;
 use ark_r1cs_std::fields::fp::FpVar;
 use ark_r1cs_std::prelude::*;
 use ark_relations::r1cs::{ConstraintSynthesizer, ConstraintSystemRef, SynthesisError};
 
+use crate::zk::circuits::utils::poseidon_hash_var;
 use crate::zk::merkle::{poseidon_config, TREE_DEPTH};
-
-/// Compute Poseidon(left, right) in-circuit using the given sponge config.
-/// Mirrors the native `poseidon_hash_fr(left, right)`.
-fn poseidon_hash_var(
-    cs: ConstraintSystemRef<Fr>,
-    config: &PoseidonConfig<Fr>,
-    left: &FpVar<Fr>,
-    right: &FpVar<Fr>,
-) -> Result<FpVar<Fr>, SynthesisError> {
-    let mut sponge = PoseidonSpongeVar::new(cs, config);
-    sponge.absorb(left)?;
-    sponge.absorb(right)?;
-    let out = sponge.squeeze_field_elements(1)?;
-    Ok(out[0].clone())
-}
 
 /// Unshield circuit: proves correct withdrawal from shielded pool
 #[derive(Clone, Debug)]
