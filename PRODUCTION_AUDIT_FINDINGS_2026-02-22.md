@@ -159,6 +159,33 @@ Implemented per follow-up request: non-disruptive transaction-template path for 
   - Risk: while bounded for proposal path now, similar input-bound protections are not yet standardized across all handlers.
   - Recommendation: introduce shared bounded-copy helpers/macros and apply consistently contract-wide.
 
+## 2026-02-23 Continuation Addendum (Bounded Input Rollout + Webhook Destination Policy)
+
+### Newly implemented
+
+- **Contract pointer-read hardening rolled out in priority contracts**
+  - Added internal safe address-read helper (`read_address32`) and replaced direct external pointer copies in:
+    - [contracts/moltdao/src/lib.rs](contracts/moltdao/src/lib.rs)
+    - [contracts/compute_market/src/lib.rs](contracts/compute_market/src/lib.rs)
+    - [contracts/clawpay/src/lib.rs](contracts/clawpay/src/lib.rs)
+  - MoltDAO now also uses bounded variable-length reader (`read_bounded_bytes`) for proposal and execute paths, with max-size enforcement before allocation/copy.
+
+- **Custody webhook destination allowlist added**
+  - Added optional config `CUSTODY_WEBHOOK_ALLOWED_HOSTS` to [custody/src/main.rs](custody/src/main.rs).
+  - Webhook registration now validates destination host membership when allowlist is configured (while preserving local dev `http://localhost` support).
+  - Added URL host parser/validator helpers and integrated validation into `POST /webhooks` path.
+
+### Validation run
+
+- `cargo check --manifest-path contracts/moltdao/Cargo.toml` ✅
+- `cargo check --manifest-path contracts/compute_market/Cargo.toml` ✅
+- `cargo check --manifest-path contracts/clawpay/Cargo.toml` ✅
+- `cargo check --manifest-path custody/Cargo.toml` ✅
+
+### Residual note
+
+- Contract pointer safety is now materially improved in the three highest-risk contract surfaces, but full standardization across all contract crates remains a recommended follow-up for complete uniformity.
+
 ## Executive Summary
 
 The codebase contains strong hardening work in several areas (notably `core/src/state.rs` RocksDB tuning and runtime compute controls), but there are still production blockers and scale risks:

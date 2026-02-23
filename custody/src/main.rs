@@ -198,6 +198,10 @@ struct CustodyConfig {
     /// Required for multi-signer EVM withdrawals.
     /// Set via CUSTODY_EVM_MULTISIG_ADDRESS env var.
     evm_multisig_address: Option<String>,
+    /// Optional outbound webhook host allowlist.
+    /// When set, webhook URLs must resolve to one of these hosts.
+    /// Set via CUSTODY_WEBHOOK_ALLOWED_HOSTS=hooks.example.com,events.example.com
+    webhook_allowed_hosts: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1303,6 +1307,16 @@ fn load_config() -> CustodyConfig {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or_else(|| default_signer_threshold(signer_endpoints.len()));
+    let webhook_allowed_hosts = std::env::var("CUSTODY_WEBHOOK_ALLOWED_HOSTS")
+        .ok()
+        .map(|value| {
+            value
+                .split(',')
+                .map(|entry| entry.trim().to_ascii_lowercase())
+                .filter(|entry| !entry.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
 
     CustodyConfig {
         db_path,
@@ -1447,6 +1461,34 @@ fn load_config() -> CustodyConfig {
         },
         frost_pubkey_package_hex: std::env::var("CUSTODY_FROST_PUBKEY_PACKAGE").ok(),
         evm_multisig_address: std::env::var("CUSTODY_EVM_MULTISIG_ADDRESS").ok(),
+        webhook_allowed_hosts,
+    }
+}
+
+fn webhook_host_from_url(raw_url: &str) -> Result<String, String> {
+    let parsed = reqwest::Url::parse(raw_url).map_err(|e| format!("invalid webhook url: {}", e))?;
+    parsed
+        .host_str()
+        .map(|host| host.to_ascii_lowercase())
+        .ok_or_else(|| "webhook url must include a valid host".to_string())
+}
+
+fn validate_webhook_destination(config: &CustodyConfig, raw_url: &str) -> Result<(), String> {
+    if raw_url.starts_with("http://localhost") {
+        return Ok(());
+    }
+    if config.webhook_allowed_hosts.is_empty() {
+        return Ok(());
+    }
+
+    let host = webhook_host_from_url(raw_url)?;
+    if config.webhook_allowed_hosts.iter().any(|allowed| allowed == &host) {
+        Ok(())
+    } else {
+        Err(format!(
+            "webhook host '{}' is not in CUSTODY_WEBHOOK_ALLOWED_HOSTS",
+            host
+        ))
     }
 }
 
@@ -6873,6 +6915,9 @@ async fn create_webhook(
             "webhook url must use HTTPS (http://localhost allowed for dev)",
         )));
     }
+    if let Err(e) = validate_webhook_destination(&state.config, &payload.url) {
+        return Err(Json(ErrorResponse::invalid(&e)));
+    }
 
     let webhook = WebhookRegistration {
         id: Uuid::new_v4().to_string(),
@@ -7346,6 +7391,7 @@ mod tests {
             api_auth_token: Some("test_api_token".to_string()),
             frost_pubkey_package_hex: None,
             evm_multisig_address: None,
+            webhook_allowed_hosts: vec![],
         }
     }
 

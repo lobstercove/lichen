@@ -127,6 +127,15 @@ fn get_cliff(stream_id: u64) -> u64 {
     storage_get(&ck).map(|d| bytes_to_u64(&d)).unwrap_or(0)
 }
 
+fn read_address32(ptr: *const u8) -> Option<[u8; 32]> {
+    if ptr.is_null() {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(ptr, out.as_mut_ptr(), 32); }
+    Some(out)
+}
+
 // ============================================================================
 // STREAM LAYOUT
 // ============================================================================
@@ -243,10 +252,20 @@ pub extern "C" fn create_stream(
     }
     log_info("Creating payment stream...");
 
-    let mut sender = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(sender_ptr, sender.as_mut_ptr(), 32); }
-    let mut recipient = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(recipient_ptr, recipient.as_mut_ptr(), 32); }
+    let sender = match read_address32(sender_ptr) {
+        Some(v) => v,
+        None => {
+            reentrancy_exit();
+            return 40;
+        }
+    };
+    let recipient = match read_address32(recipient_ptr) {
+        Some(v) => v,
+        None => {
+            reentrancy_exit();
+            return 40;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -387,8 +406,13 @@ pub extern "C" fn withdraw_from_stream(
     }
     log_info("Withdrawing from stream...");
 
-    let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    let caller = match read_address32(caller_ptr) {
+        Some(v) => v,
+        None => {
+            reentrancy_exit();
+            return 40;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -533,8 +557,13 @@ pub extern "C" fn cancel_stream(
     }
     log_info("Cancelling payment stream...");
 
-    let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    let caller = match read_address32(caller_ptr) {
+        Some(v) => v,
+        None => {
+            reentrancy_exit();
+            return 40;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -756,10 +785,20 @@ pub extern "C" fn create_stream_with_cliff(
         return 20;
     }
 
-    let mut sender = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(sender_ptr, sender.as_mut_ptr(), 32); }
-    let mut recipient = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(recipient_ptr, recipient.as_mut_ptr(), 32); }
+    let sender = match read_address32(sender_ptr) {
+        Some(v) => v,
+        None => {
+            reentrancy_exit();
+            return 40;
+        }
+    };
+    let recipient = match read_address32(recipient_ptr) {
+        Some(v) => v,
+        None => {
+            reentrancy_exit();
+            return 40;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -865,10 +904,20 @@ pub extern "C" fn transfer_stream(
         return 0;
     }
 
-    let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
-    let mut new_recipient = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(new_recipient_ptr, new_recipient.as_mut_ptr(), 32); }
+    let caller = match read_address32(caller_ptr) {
+        Some(v) => v,
+        None => {
+            reentrancy_exit();
+            return 1;
+        }
+    };
+    let new_recipient = match read_address32(new_recipient_ptr) {
+        Some(v) => v,
+        None => {
+            reentrancy_exit();
+            return 1;
+        }
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -923,8 +972,10 @@ pub extern "C" fn transfer_stream(
 /// Returns: 0 success, 1 already set
 #[no_mangle]
 pub extern "C" fn initialize_cp_admin(admin_ptr: *const u8) -> u32 {
-    let mut admin = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32); }
+    let admin = match read_address32(admin_ptr) {
+        Some(v) => v,
+        None => return 40,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -946,10 +997,14 @@ pub extern "C" fn initialize_cp_admin(admin_ptr: *const u8) -> u32 {
 /// Returns: 0 success, 1 not admin, 2 zero address, 200 caller spoof
 #[no_mangle]
 pub extern "C" fn set_token_address(caller_ptr: *const u8, token_addr_ptr: *const u8) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
-    let mut token_addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(token_addr_ptr, token_addr.as_mut_ptr(), 32); }
+    let caller = match read_address32(caller_ptr) {
+        Some(v) => v,
+        None => return 40,
+    };
+    let token_addr = match read_address32(token_addr_ptr) {
+        Some(v) => v,
+        None => return 40,
+    };
 
     let real_caller = get_caller();
     if real_caller.0 != caller {
@@ -975,10 +1030,14 @@ pub extern "C" fn set_token_address(caller_ptr: *const u8, token_addr_ptr: *cons
 /// Returns: 0 success, 1 not admin, 2 zero address, 200 caller spoof
 #[no_mangle]
 pub extern "C" fn set_self_address(caller_ptr: *const u8, self_addr_ptr: *const u8) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
-    let mut self_addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(self_addr_ptr, self_addr.as_mut_ptr(), 32); }
+    let caller = match read_address32(caller_ptr) {
+        Some(v) => v,
+        None => return 40,
+    };
+    let self_addr = match read_address32(self_addr_ptr) {
+        Some(v) => v,
+        None => return 40,
+    };
 
     let real_caller = get_caller();
     if real_caller.0 != caller {
@@ -1002,8 +1061,10 @@ pub extern "C" fn set_self_address(caller_ptr: *const u8, self_addr_ptr: *const 
 /// Returns: 0 success, 1 not admin, 2 already paused
 #[no_mangle]
 pub extern "C" fn pause(caller_ptr: *const u8) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    let caller = match read_address32(caller_ptr) {
+        Some(v) => v,
+        None => return 40,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1026,8 +1087,10 @@ pub extern "C" fn pause(caller_ptr: *const u8) -> u32 {
 /// Returns: 0 success, 1 not admin, 2 not paused
 #[no_mangle]
 pub extern "C" fn unpause(caller_ptr: *const u8) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    let caller = match read_address32(caller_ptr) {
+        Some(v) => v,
+        None => return 40,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1083,8 +1146,10 @@ const MOLTYID_ADDR_KEY: &[u8] = b"moltyid_address";
 /// Only callable once (first caller becomes admin).
 #[no_mangle]
 pub extern "C" fn set_identity_admin(admin_ptr: *const u8) -> u32 {
-    let mut admin = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(admin_ptr, admin.as_mut_ptr(), 32); }
+    let admin = match read_address32(admin_ptr) {
+        Some(v) => v,
+        None => return 40,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1106,10 +1171,14 @@ pub extern "C" fn set_identity_admin(admin_ptr: *const u8) -> u32 {
 /// Only callable by the identity admin.
 #[no_mangle]
 pub extern "C" fn set_moltyid_address(caller_ptr: *const u8, moltyid_addr_ptr: *const u8) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
-    let mut moltyid_addr = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(moltyid_addr_ptr, moltyid_addr.as_mut_ptr(), 32); }
+    let caller = match read_address32(caller_ptr) {
+        Some(v) => v,
+        None => return 40,
+    };
+    let moltyid_addr = match read_address32(moltyid_addr_ptr) {
+        Some(v) => v,
+        None => return 40,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();
@@ -1134,8 +1203,10 @@ pub extern "C" fn set_moltyid_address(caller_ptr: *const u8, moltyid_addr_ptr: *
 /// Only callable by the identity admin.
 #[no_mangle]
 pub extern "C" fn set_identity_gate(caller_ptr: *const u8, min_reputation: u64) -> u32 {
-    let mut caller = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(caller_ptr, caller.as_mut_ptr(), 32); }
+    let caller = match read_address32(caller_ptr) {
+        Some(v) => v,
+        None => return 40,
+    };
 
     // AUDIT-FIX: verify caller matches transaction signer
     let real_caller = get_caller();

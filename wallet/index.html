@@ -418,6 +418,9 @@
                     <button class="dashboard-tab" data-tab="identity">
                         <i class="fas fa-fingerprint"></i> Identity
                     </button>
+                    <button class="dashboard-tab" data-tab="shield">
+                        <i class="fas fa-shield-alt"></i> Shield
+                    </button>
                 </div>
 
                 <!-- Tab Content -->
@@ -482,6 +485,110 @@
                 <div class="tab-content" data-tab="identity">
                     <div id="identityContent">
                         <!-- MoltyID identity loaded dynamically -->
+                    </div>
+                </div>
+
+                <!-- Shield (ZKP) tab content -->
+                <div class="tab-content" data-tab="shield">
+                    <div id="shieldedStatusMsg" style="display: none; margin-bottom: 1rem;"></div>
+
+                    <!-- ZK Privacy Banner -->
+                    <div style="background: linear-gradient(135deg, rgba(168, 85, 247, 0.12), rgba(99, 102, 241, 0.12)); padding: 1.25rem 1.5rem; border-radius: 12px; margin-bottom: 1.25rem; border: 1px solid rgba(168, 85, 247, 0.2);">
+                        <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.5rem;">
+                            <i class="fas fa-user-shield" style="font-size: 1.25rem; color: #a855f7;"></i>
+                            <h3 style="margin: 0; font-size: 1.05rem;">Zero-Knowledge Privacy</h3>
+                            <span style="background: rgba(6, 214, 160, 0.2); color: #06d6a0; font-size: 0.7rem; padding: 2px 8px; border-radius: 10px; font-weight: 600;">Groth16/BN254</span>
+                        </div>
+                        <p style="margin: 0; font-size: 0.85rem; color: var(--text-muted);">
+                            Shield MOLT to make transactions fully private. Amounts, senders and recipients are hidden using zero-knowledge proofs.
+                        </p>
+                    </div>
+
+                    <!-- Shielded Balance Card -->
+                    <div style="background: var(--bg-darker); border-radius: 12px; padding: 1.25rem 1.5rem; margin-bottom: 1.25rem; border: 1px solid var(--border);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                            <div>
+                                <div style="font-size: 0.8rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.25rem;">Shielded Balance</div>
+                                <div id="shieldedBalanceValue" style="font-size: 1.5rem; font-weight: 700; font-family: 'JetBrains Mono', monospace;">0.0000 MOLT</div>
+                                <div id="shieldedBalanceShellsValue" style="font-size: 0.8rem; color: var(--text-muted); font-family: 'JetBrains Mono', monospace;">0 shells</div>
+                            </div>
+                            <div style="display: flex; gap: 0.5rem;">
+                                <button class="btn btn-primary btn-small" onclick="openShieldModal()" style="font-size: 0.85rem;">
+                                    <i class="fas fa-arrow-down"></i> Shield
+                                </button>
+                                <button class="btn btn-secondary btn-small" onclick="openUnshieldModal()" style="font-size: 0.85rem;">
+                                    <i class="fas fa-arrow-up"></i> Unshield
+                                </button>
+                            </div>
+                        </div>
+                        <div style="display: flex; gap: 0.75rem;">
+                            <button class="btn btn-primary" onclick="openShieldedTransferModal()" style="flex: 1; font-size: 0.9rem;">
+                                <i class="fas fa-paper-plane"></i> Private Transfer
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Shielded Address & Keys -->
+                    <div style="background: var(--bg-darker); border-radius: 12px; padding: 1.25rem 1.5rem; margin-bottom: 1.25rem; border: 1px solid var(--border);">
+                        <h4 style="margin: 0 0 0.75rem 0; font-size: 0.9rem; display: flex; align-items: center; gap: 0.5rem;">
+                            <i class="fas fa-key" style="color: #a855f7;"></i> Shielded Keys
+                        </h4>
+                        <div style="margin-bottom: 0.75rem;">
+                            <label style="display: block; font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.25rem;">Shielded Address</label>
+                            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                <code id="shieldedAddressDisplay" style="flex: 1; font-size: 0.8rem; background: var(--bg-dark); padding: 0.5rem 0.75rem; border-radius: 6px; word-break: break-all; border: 1px solid var(--border);">Not initialized</code>
+                                <button class="btn-icon" onclick="copyShieldedAddress()" title="Copy shielded address" style="flex-shrink: 0;">
+                                    <i class="fas fa-copy"></i>
+                                </button>
+                            </div>
+                        </div>
+                        <div style="margin-bottom: 0.75rem;">
+                            <label style="display: block; font-size: 0.75rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.25rem;">Viewing Key</label>
+                            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                <code style="flex: 1; font-size: 0.8rem; background: var(--bg-dark); padding: 0.5rem 0.75rem; border-radius: 6px; border: 1px solid var(--border); color: var(--text-muted);">Share with auditors for selective disclosure</code>
+                                <button class="btn-icon" onclick="copyViewingKey()" title="Copy viewing key" style="flex-shrink: 0;">
+                                    <i class="fas fa-eye"></i>
+                                </button>
+                            </div>
+                        </div>
+                        <div style="font-size: 0.8rem; color: var(--text-muted); background: rgba(168, 85, 247, 0.08); padding: 0.5rem 0.75rem; border-radius: 6px;">
+                            <i class="fas fa-info-circle" style="color: #a855f7;"></i>
+                            Your spending key never leaves this device. Viewing key enables auditors to see your shielded activity without spending.
+                        </div>
+                    </div>
+
+                    <!-- Pool Statistics -->
+                    <div style="background: var(--bg-darker); border-radius: 12px; padding: 1.25rem 1.5rem; margin-bottom: 1.25rem; border: 1px solid var(--border);">
+                        <h4 style="margin: 0 0 0.75rem 0; font-size: 0.9rem; display: flex; align-items: center; gap: 0.5rem;">
+                            <i class="fas fa-chart-pie" style="color: #06d6a0;"></i> Pool Statistics
+                        </h4>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;">
+                            <div style="background: var(--bg-dark); padding: 0.75rem; border-radius: 8px; text-align: center;">
+                                <div style="font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.25rem;">Total Shielded</div>
+                                <div id="poolTotalShielded" style="font-size: 1rem; font-weight: 600; font-family: 'JetBrains Mono', monospace;">—</div>
+                            </div>
+                            <div style="background: var(--bg-dark); padding: 0.75rem; border-radius: 8px; text-align: center;">
+                                <div style="font-size: 0.7rem; color: var(--text-muted); text-transform: uppercase; margin-bottom: 0.25rem;">Commitments</div>
+                                <div id="poolCommitmentCount" style="font-size: 1rem; font-weight: 600; font-family: 'JetBrains Mono', monospace;">—</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Owned Notes List -->
+                    <div style="background: var(--bg-darker); border-radius: 12px; padding: 1.25rem 1.5rem; border: 1px solid var(--border);">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
+                            <h4 style="margin: 0; font-size: 0.9rem; display: flex; align-items: center; gap: 0.5rem;">
+                                <i class="fas fa-file-invoice" style="color: #f59e0b;"></i> Shielded Notes
+                            </h4>
+                            <span id="ownedNoteCount" style="font-size: 0.8rem; color: var(--text-muted);">0 unspent / 0 total</span>
+                        </div>
+                        <div id="shieldedNotesList">
+                            <div style="text-align: center; padding: 2rem; color: var(--text-muted);">
+                                <i class="fas fa-shield-alt" style="font-size: 2rem; opacity: 0.3; margin-bottom: 0.75rem; display: block;"></i>
+                                <p style="margin: 0 0 0.25rem 0;">No shielded notes yet</p>
+                                <p style="font-size: 0.85rem; margin: 0;">Shield MOLT to create your first private note</p>
+                            </div>
+                        </div>
                     </div>
                 </div>
 
@@ -880,10 +987,128 @@
         </div>
     </div>
 
+    <!-- Shield Modal -->
+    <div id="shieldModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3><i class="fas fa-arrow-down" style="color: #a855f7;"></i> Shield MOLT</h3>
+                <button class="modal-close" onclick="closeModal('shieldModal')">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div style="background: rgba(168, 85, 247, 0.08); padding: 0.75rem 1rem; border-radius: 8px; margin-bottom: 1rem; font-size: 0.85rem; color: var(--text-secondary);">
+                    <i class="fas fa-lock" style="color: #a855f7;"></i>
+                    Move MOLT from your transparent balance into the shielded pool.
+                    A ZK proof is generated client-side to protect your privacy.
+                </div>
+                <div class="form-group">
+                    <label>Amount (MOLT)</label>
+                    <div class="amount-input">
+                        <input type="number" id="shieldAmount" class="form-input" placeholder="0.00" step="0.0001" min="0">
+                        <span class="amount-max" onclick="document.getElementById('shieldAmount').value = (window.walletBalance || 0).toFixed(4)">MAX</span>
+                    </div>
+                </div>
+                <div class="fee-estimate">
+                    <span>Network Fee</span>
+                    <span>0.005 MOLT (ZK compute)</span>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('shieldModal')">Cancel</button>
+                <button class="btn btn-primary" onclick="confirmShield()" style="background: linear-gradient(135deg, #a855f7, #6366f1);">
+                    <i class="fas fa-shield-alt"></i> Shield
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Unshield Modal -->
+    <div id="unshieldModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3><i class="fas fa-arrow-up" style="color: #06d6a0;"></i> Unshield MOLT</h3>
+                <button class="modal-close" onclick="closeModal('unshieldModal')">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div style="background: rgba(6, 214, 160, 0.08); padding: 0.75rem 1rem; border-radius: 8px; margin-bottom: 1rem; font-size: 0.85rem; color: var(--text-secondary);">
+                    <i class="fas fa-unlock" style="color: #06d6a0;"></i>
+                    Withdraw MOLT from the shielded pool to a transparent address.
+                    Requires a ZK proof verifying note ownership.
+                </div>
+                <div class="form-group">
+                    <label>Amount (MOLT)</label>
+                    <div class="amount-input">
+                        <input type="number" id="unshieldAmount" class="form-input" placeholder="0.00" step="0.0001" min="0">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Recipient Address</label>
+                    <input type="text" id="unshieldRecipient" class="form-input" placeholder="Enter Base58 address (e.g. 5Qd7x...)">
+                </div>
+                <div class="fee-estimate">
+                    <span>Network Fee</span>
+                    <span>0.005 MOLT (ZK compute)</span>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('unshieldModal')">Cancel</button>
+                <button class="btn btn-primary" onclick="confirmUnshield()" style="background: linear-gradient(135deg, #06d6a0, #34d399);">
+                    <i class="fas fa-unlock"></i> Unshield
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Shielded Transfer Modal -->
+    <div id="shieldedTransferModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3><i class="fas fa-paper-plane" style="color: #a855f7;"></i> Private Transfer</h3>
+                <button class="modal-close" onclick="closeModal('shieldedTransferModal')">
+                    <i class="fas fa-times"></i>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div style="background: rgba(168, 85, 247, 0.08); padding: 0.75rem 1rem; border-radius: 8px; margin-bottom: 1rem; font-size: 0.85rem; color: var(--text-secondary);">
+                    <i class="fas fa-user-shield" style="color: #a855f7;"></i>
+                    Send MOLT privately. Neither the amount, sender, nor recipient is revealed on-chain.
+                    Both parties maintain full privacy.
+                </div>
+                <div class="form-group">
+                    <label>Amount (MOLT)</label>
+                    <div class="amount-input">
+                        <input type="number" id="shieldedTransferAmount" class="form-input" placeholder="0.00" step="0.0001" min="0">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Recipient Viewing Key (hex)</label>
+                    <input type="text" id="shieldedTransferRecipientVK" class="form-input" placeholder="64-character hex viewing key" maxlength="64" style="font-family: 'JetBrains Mono', monospace; font-size: 0.85rem;">
+                    <div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">
+                        <i class="fas fa-info-circle"></i> Ask the recipient for their viewing key (not their spending key)
+                    </div>
+                </div>
+                <div class="fee-estimate">
+                    <span>Network Fee</span>
+                    <span>0.01 MOLT (ZK compute, 2-in 2-out)</span>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-secondary" onclick="closeModal('shieldedTransferModal')">Cancel</button>
+                <button class="btn btn-primary" onclick="confirmShieldedTransfer()" style="background: linear-gradient(135deg, #a855f7, #6366f1);">
+                    <i class="fas fa-paper-plane"></i> Send Privately
+                </button>
+            </div>
+        </div>
+    </div>
+
     <script src="shared-config.js"></script>
     <script src="js/wallet.js"></script>
     <script src="js/identity.js"></script>
     <script src="js/crypto.js"></script>
+    <script src="js/shielded.js"></script>
     <script>
     /* Welcome carousel */
     (function() {
