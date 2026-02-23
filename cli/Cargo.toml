@@ -17,6 +17,10 @@ path = "src/marketplace_demo.rs"
 name = "zk-prove"
 path = "src/zk_prove.rs"
 
+[[bin]]
+name = "zk-setup"
+path = "src/zk_setup.rs"
+
 [dependencies]
 moltchain-core = { path = "../core" }
 clap = { version = "4.5", features = ["derive"] }

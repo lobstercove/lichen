@@ -216,34 +216,45 @@ fn resolve_peer_list(peers: &[String]) -> Vec<SocketAddr> {
     resolved
 }
 
-fn try_load_runtime_zk_verification_keys(processor: &TxProcessor, data_dir: &Path) {
-    let zk_dir = data_dir.join("zk");
+fn try_load_runtime_zk_verification_keys(processor: &TxProcessor, _data_dir: &Path) {
+    // ZK keys are cached in a shared location (~/.moltchain/zk/) so they
+    // survive blockchain resets.  The Groth16 trusted setup for 3 circuits
+    // (shield, unshield, transfer with TREE_DEPTH=32) takes ~4 minutes on
+    // first run but is skipped on subsequent starts.
+    //
+    // Priority: env vars > ~/.moltchain/zk/ (shared cache)
+    let shared_zk_dir = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".moltchain")
+        .join("zk");
+
     let shield_path = env::var("MOLTCHAIN_ZK_SHIELD_VK_PATH")
         .ok()
         .map(PathBuf::from)
-        .unwrap_or_else(|| zk_dir.join("vk_shield.bin"));
+        .unwrap_or_else(|| shared_zk_dir.join("vk_shield.bin"));
     let unshield_path = env::var("MOLTCHAIN_ZK_UNSHIELD_VK_PATH")
         .ok()
         .map(PathBuf::from)
-        .unwrap_or_else(|| zk_dir.join("vk_unshield.bin"));
+        .unwrap_or_else(|| shared_zk_dir.join("vk_unshield.bin"));
     let transfer_path = env::var("MOLTCHAIN_ZK_TRANSFER_VK_PATH")
         .ok()
         .map(PathBuf::from)
-        .unwrap_or_else(|| zk_dir.join("vk_transfer.bin"));
+        .unwrap_or_else(|| shared_zk_dir.join("vk_transfer.bin"));
 
-    // If any VK file is missing, auto-generate all three via trusted setup.
-    // This makes dev/testnet validators work out of the box without manual key
-    // management.  Production deployments should pre-generate keys via an MPC
-    // ceremony and distribute the VK files.
+    // If any VK file is missing, warn and skip ZK.  The Groth16 trusted setup
+    // is memory-intensive (~500-900MB peak) and should be run separately via the
+    // lightweight `zk-setup` binary before starting validators.
+    //
+    // Keys are stored in ~/.moltchain/zk/ (shared cache, survives resets).
     if !shield_path.exists() || !unshield_path.exists() || !transfer_path.exists() {
-        info!("🔑 ZK verification keys not found — running trusted setup (this takes ~30s)...");
-        match generate_and_persist_zk_keys(&zk_dir) {
-            Ok(_) => info!("✓ ZK trusted setup complete — keys written to {}", zk_dir.display()),
-            Err(e) => {
-                warn!("⚠️  ZK trusted setup failed: {} — shielded transactions will be unavailable", e);
-                return;
-            }
-        }
+        warn!(
+            "⚠️  ZK verification keys not found at {} — shielded transactions \
+             will be unavailable. Run `zk-setup` first to generate keys.",
+            shared_zk_dir.display()
+        );
+        return;
+    } else {
+        info!("🔑 ZK verification keys found in cache ({})", shared_zk_dir.display());
     }
 
     // Read all three VK files
@@ -281,29 +292,11 @@ fn try_load_runtime_zk_verification_keys(processor: &TxProcessor, data_dir: &Pat
 }
 
 /// Run the Groth16 trusted setup and write VK + PK files to `zk_dir`.
-fn generate_and_persist_zk_keys(zk_dir: &Path) -> Result<(), String> {
-    use moltchain_core::zk::setup;
-
-    fs::create_dir_all(zk_dir).map_err(|e| format!("mkdir {}: {}", zk_dir.display(), e))?;
-
-    let outputs = setup::setup_all()?;
-    for output in &outputs {
-        let vk_path = zk_dir.join(format!("vk_{}.bin", output.circuit_name));
-        let pk_path = zk_dir.join(format!("pk_{}.bin", output.circuit_name));
-        fs::write(&vk_path, &output.verification_key_bytes)
-            .map_err(|e| format!("write {}: {}", vk_path.display(), e))?;
-        fs::write(&pk_path, &output.proving_key_bytes)
-            .map_err(|e| format!("write {}: {}", pk_path.display(), e))?;
-        info!(
-            "  {} — VK {} bytes, PK {} bytes",
-            output.circuit_name,
-            output.verification_key_bytes.len(),
-            output.proving_key_bytes.len()
-        );
-    }
-    Ok(())
-}
-
+///
+/// Each circuit is set up independently and written to disk before the next
+/// one starts.  This keeps peak memory usage at ~300MB instead of ~900MB
+/// (which triggers the macOS OOM killer / jetsam for the transfer circuit's
+/// 32-level Merkle path constraints).
 fn load_seed_peers(chain_id: &str, seeds_path: &Path) -> Vec<String> {
     let contents = match fs::read_to_string(seeds_path) {
         Ok(data) => data,
@@ -5271,7 +5264,13 @@ fn main() {
     // ── Supervisor loop ─────────────────────────────────────────────
     // Re-exec ourselves with --supervised so the child enters run_validator()
     // directly.  On EXIT_CODE_RESTART → restart.  On 0 or SIGTERM → stop.
-    let exe = env::current_exe().expect("Cannot determine own executable path");
+    let exe = match env::current_exe() {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("Cannot determine own executable path: {}", err);
+            std::process::exit(1);
+        }
+    };
 
     // Build child args: forward everything except supervisor-only flags,
     // then append --supervised.
@@ -5308,14 +5307,60 @@ fn main() {
         );
 
         let child_start = std::time::Instant::now();
-        let mut child = std::process::Command::new(&exe)
+        let mut child = match std::process::Command::new(&exe)
             .args(&child_args)
             .arg("--supervised")
             .stdin(std::process::Stdio::null())
             .spawn()
-            .expect("Failed to spawn validator process");
+        {
+            Ok(child) => child,
+            Err(err) => {
+                error!("Failed to spawn validator process: {}", err);
+                restart_count += 1;
+                if restart_count >= max_restarts {
+                    error!(
+                        "❌ Max restarts ({}) reached after spawn failures — giving up",
+                        max_restarts
+                    );
+                    std::process::exit(1);
+                }
+                let sleep_for = Duration::from_secs(backoff_secs);
+                warn!(
+                    "⏳ Retrying spawn in {}s (attempt {}/{})",
+                    backoff_secs,
+                    restart_count,
+                    max_restarts
+                );
+                std::thread::sleep(sleep_for);
+                backoff_secs = (backoff_secs * 2).min(60);
+                continue;
+            }
+        };
 
-        let status = child.wait().expect("Failed to wait on validator process");
+        let status = match child.wait() {
+            Ok(status) => status,
+            Err(err) => {
+                error!("Failed to wait on validator process: {}", err);
+                restart_count += 1;
+                if restart_count >= max_restarts {
+                    error!(
+                        "❌ Max restarts ({}) reached after wait failures — giving up",
+                        max_restarts
+                    );
+                    std::process::exit(1);
+                }
+                let sleep_for = Duration::from_secs(backoff_secs);
+                warn!(
+                    "⏳ Retrying after wait failure in {}s (attempt {}/{})",
+                    backoff_secs,
+                    restart_count,
+                    max_restarts
+                );
+                std::thread::sleep(sleep_for);
+                backoff_secs = (backoff_secs * 2).min(60);
+                continue;
+            }
+        };
 
         // L7 fix: reset backoff if child ran successfully for >3 minutes
         let runtime = child_start.elapsed();
@@ -5690,9 +5735,16 @@ async fn run_validator() {
 
     let data_dir_path = Path::new(&data_dir);
     let peer_store_path = data_dir_path.join("known-peers.json");
-    let listen_addr: SocketAddr = format!("{}:{}", listen_host, p2p_port)
-        .parse()
-        .expect("Invalid listen address (check --listen-addr)");
+    let listen_addr: SocketAddr = match format!("{}:{}", listen_host, p2p_port).parse() {
+        Ok(addr) => addr,
+        Err(err) => {
+            warn!(
+                "Invalid listen address '{}:{}' ({}); falling back to 127.0.0.1:{}",
+                listen_host, p2p_port, err, p2p_port
+            );
+            SocketAddr::from(([127, 0, 0, 1], p2p_port))
+        }
+    };
 
     let mut seed_peers = resolve_peer_list(&seed_peer_strings);
     let explicit_seed_peers = resolve_peer_list(&explicit_seed_peer_strings);

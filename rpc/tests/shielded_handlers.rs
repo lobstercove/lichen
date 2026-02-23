@@ -256,15 +256,15 @@ async fn test_rpc_get_shielded_merkle_path_valid() {
     let result = &resp["result"];
 
     assert_eq!(result["index"], 2);
-    // Siblings should be an array of 32 hex strings (TREE_DEPTH=32)
+    // Siblings should be an array of TREE_DEPTH hex strings
     let siblings = result["siblings"].as_array().unwrap();
-    assert_eq!(siblings.len(), 32);
+    assert_eq!(siblings.len(), moltchain_core::zk::TREE_DEPTH);
     for s in siblings {
         assert_eq!(s.as_str().unwrap().len(), 64);
     }
-    // pathBits should be an array of 32 booleans
+    // pathBits should be an array of TREE_DEPTH booleans
     let bits = result["pathBits"].as_array().unwrap();
-    assert_eq!(bits.len(), 32);
+    assert_eq!(bits.len(), moltchain_core::zk::TREE_DEPTH);
     // Root should be present
     assert_eq!(result["root"].as_str().unwrap().len(), 64);
 }
@@ -467,8 +467,8 @@ async fn test_rest_get_merkle_path_valid() {
     assert_eq!(resp["success"], true);
     let data = &resp["data"];
     assert_eq!(data["index"], 1);
-    assert_eq!(data["siblings"].as_array().unwrap().len(), 32);
-    assert_eq!(data["pathBits"].as_array().unwrap().len(), 32);
+    assert_eq!(data["siblings"].as_array().unwrap().len(), moltchain_core::zk::TREE_DEPTH);
+    assert_eq!(data["pathBits"].as_array().unwrap().len(), moltchain_core::zk::TREE_DEPTH);
 }
 
 #[tokio::test]

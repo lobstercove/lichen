@@ -14,8 +14,14 @@ use ark_ff::{BigInteger, Field, PrimeField};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// Tree depth: supports 2^32 = ~4 billion commitments
-pub const TREE_DEPTH: usize = 32;
+/// Tree depth: supports 2^20 = ~1 million commitments.
+///
+/// Depth 20 is the sweet spot for Groth16/BN254: the trusted setup completes
+/// in seconds (vs. minutes for depth 32) and stays within memory limits on
+/// standard developer hardware (16 GB).  Production can increase this if
+/// needed — the on-chain transaction format (proof, nullifier, root) is
+/// independent of tree depth.
+pub const TREE_DEPTH: usize = 20;
 
 /// A Merkle path (authentication path) for proving leaf membership
 #[derive(Clone, Debug, Serialize, Deserialize)]
