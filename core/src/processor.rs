@@ -169,9 +169,9 @@ impl TxProcessor {
 
     /// Calculate total fees for a transaction (base + program-specific)
     /// Applies reputation-based fee discount per whitepaper:
-    ///   500+ reputation → 10% discount
-    ///   750+ reputation → 20% discount
-    ///   1000+ reputation → 30% discount
+    ///   500+ reputation → 5% discount
+    ///   750+ reputation → 7.5% discount
+    ///   1000+ reputation → 10% discount
     pub fn compute_transaction_fee(tx: &Transaction, fee_config: &FeeConfig) -> u64 {
         // Internal system transaction types 2-5, 19 are fee-free:
         //   2 = Reward distribution (validator block rewards from treasury)
@@ -240,20 +240,20 @@ impl TxProcessor {
     }
 
     /// Apply reputation-based fee discount per whitepaper:
-    ///   reputation 500-749  → 10% discount
-    ///   reputation 750-999  → 20% discount
-    ///   reputation 1000+    → 30% discount
+    ///   reputation 500-749  → 5% discount
+    ///   reputation 750-999  → 7.5% discount
+    ///   reputation 1000+    → 10% discount
     pub fn apply_reputation_fee_discount(base_fee: u64, reputation: u64) -> u64 {
-        let discount_percent = if reputation >= 1000 {
-            30
+        let discount_bps = if reputation >= 1000 {
+            1000
         } else if reputation >= 750 {
-            20
+            750
         } else if reputation >= 500 {
-            10
+            500
         } else {
             0
         };
-        base_fee.saturating_sub(base_fee * discount_percent / 100)
+        base_fee.saturating_sub(base_fee.saturating_mul(discount_bps) / 10_000)
     }
 
     // ========================================================================
@@ -5410,17 +5410,17 @@ mod tests {
         assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 0), 1000);
         assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 499), 1000);
 
-        // 500-749: 10% discount
-        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 500), 900);
-        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 749), 900);
+        // 500-749: 5% discount
+        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 500), 950);
+        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 749), 950);
 
-        // 750-999: 20% discount
-        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 750), 800);
-        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 999), 800);
+        // 750-999: 7.5% discount
+        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 750), 925);
+        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 999), 925);
 
-        // 1000+: 30% discount
-        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 1000), 700);
-        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 5000), 700);
+        // 1000+: 10% discount
+        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 1000), 900);
+        assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 5000), 900);
 
         // Edge: 0 base fee stays 0
         assert_eq!(TxProcessor::apply_reputation_fee_discount(0, 9999), 0);

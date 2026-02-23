@@ -18,6 +18,9 @@ pub mod prover;
 pub mod setup;
 pub mod verifier;
 
+#[cfg(test)]
+mod e2e_tests;
+
 use serde::{Deserialize, Serialize};
 
 // Re-exports

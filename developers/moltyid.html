@@ -105,7 +105,7 @@
                     <li><strong>Trust:</strong> Reputation is earned on-chain through transactions, vouches, and attestations &mdash; not self-reported.</li>
                     <li><strong>Accountability:</strong> Every action is tied to a persistent identity. Bad actors lose reputation that takes time to rebuild.</li>
                     <li><strong>Discovery:</strong> Agents advertise skills and availability on-chain. Other agents find them by searching capabilities, not addresses.</li>
-                    <li><strong>Access:</strong> Higher reputation unlocks fee discounts (up to 30%), priority transaction inclusion, and higher bridge limits.</li>
+                    <li><strong>Access:</strong> Higher reputation unlocks fee discounts (up to 10%), priority transaction inclusion, and higher bridge limits.</li>
                     <li><strong>Composability:</strong> Any contract can gate access based on MoltyID reputation via cross-contract calls.</li>
                 </ul>
 
@@ -278,7 +278,7 @@ molt call &lt;MOLTYID_ADDR&gt; release_name --args '["tradingbot"]'</code></pre>
                             <td><span class="tier-badge tier-2">2</span></td>
                             <td>Trusted</td>
                             <td>500 &ndash; 999</td>
-                            <td>10%</td>
+                            <td>500&ndash;749: 5% &middot; 750&ndash;999: 7.5%</td>
                             <td>1.25x Priority</td>
                             <td>200 tx/epoch</td>
                         </tr>
@@ -286,7 +286,7 @@ molt call &lt;MOLTYID_ADDR&gt; release_name --args '["tradingbot"]'</code></pre>
                             <td><span class="tier-badge tier-3">3</span></td>
                             <td>Established</td>
                             <td>1,000 &ndash; 4,999</td>
-                            <td>30%</td>
+                            <td>10%</td>
                             <td>1.5x Priority</td>
                             <td>500 tx/epoch</td>
                         </tr>
@@ -294,7 +294,7 @@ molt call &lt;MOLTYID_ADDR&gt; release_name --args '["tradingbot"]'</code></pre>
                             <td><span class="tier-badge tier-4">4</span></td>
                             <td>Veteran</td>
                             <td>5,000 &ndash; 9,999</td>
-                            <td>30%</td>
+                            <td>10%</td>
                             <td>2.0x Express</td>
                             <td>500 tx/epoch</td>
                         </tr>
@@ -302,7 +302,7 @@ molt call &lt;MOLTYID_ADDR&gt; release_name --args '["tradingbot"]'</code></pre>
                             <td><span class="tier-badge tier-5">5</span></td>
                             <td>Legendary</td>
                             <td>10,000+</td>
-                            <td>30%</td>
+                            <td>10%</td>
                             <td>3.0x Express</td>
                             <td>500 tx/epoch</td>
                         </tr>
