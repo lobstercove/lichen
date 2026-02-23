@@ -31,37 +31,21 @@ const fullSrc = fs.readFileSync(path.join(extRoot, 'pages', 'full.js'), 'utf8');
 const popupSrc = fs.readFileSync(path.join(extRoot, 'popup', 'popup.js'), 'utf8');
 const settingsSrc = fs.readFileSync(path.join(extRoot, 'pages', 'settings.js'), 'utf8');
 const identitySrc = fs.readFileSync(path.join(extRoot, 'pages', 'identity.js'), 'utf8');
+const homeSrc = fs.readFileSync(path.join(extRoot, 'pages', 'home.js'), 'utf8');
+const homeHtmlSrc = fs.readFileSync(path.join(extRoot, 'pages', 'home.html'), 'utf8');
 const txServiceSrc = fs.readFileSync(path.join(extRoot, 'core', 'tx-service.js'), 'utf8');
+const bridgeServiceSrc = fs.readFileSync(path.join(extRoot, 'core', 'bridge-service.js'), 'utf8');
 const providerRouterSrc = fs.readFileSync(path.join(extRoot, 'core', 'provider-router.js'), 'utf8');
 
 // ── Extract escapeHtml / escapeHtmlExt from source files ──
 function extractEscapeHtml(src, fnName) {
-  const regex = new RegExp(`function ${fnName}\\(str\\)\\s*\\{`);
-  const match = src.match(regex);
-  if (!match) return null;
-  let depth = 0;
-  const start = match.index;
-  for (let i = start; i < src.length; i++) {
-    const ch = src[i];
-    if (ch === '"' || ch === "'" || ch === '`') {
-      const q = ch;
-      i++;
-      while (i < src.length && src[i] !== q) {
-        if (src[i] === '\\') i++;
-        i++;
-      }
-      continue;
-    }
-    if (ch === '{') depth++;
-    if (ch === '}') {
-      depth--;
-      if (depth === 0) {
-        const body = src.slice(start, i + 1).replace(`function ${fnName}(str)`, '').replace(/^\s*\{/, '').replace(/\}\s*$/, '');
-        return new Function('str', body);
-      }
-    }
-  }
-  return null;
+  const fnBlock = src.match(new RegExp(`function ${fnName}\\(str\\)\\s*\\{[\\s\\S]*?\\n\\}`));
+  if (!fnBlock) return null;
+  const body = fnBlock[0]
+    .replace(new RegExp(`function ${fnName}\\(str\\)`), '')
+    .replace(/^\s*\{/, '')
+    .replace(/\}\s*$/, '');
+  return new Function('str', body);
 }
 
 // Build escapeHtml from nfts.js source
@@ -414,8 +398,24 @@ test('CC-3 approve.js uses escapeHtml for all rendered fields', () => {
 });
 
 test('CC-4 home.js has escapeHtml function', () => {
-  const homeSrc = fs.readFileSync(path.join(extRoot, 'pages', 'home.js'), 'utf8');
   assert.ok(homeSrc.includes('function escapeHtml('), 'home.js missing escapeHtml');
+});
+
+test('CC-4b bridge-service supports BNB/BSC chains', () => {
+  assert.ok(bridgeServiceSrc.includes("'bsc'"), 'bridge-service missing bsc support');
+  assert.ok(bridgeServiceSrc.includes("'bnb'"), 'bridge-service missing bnb alias support');
+  assert.ok(bridgeServiceSrc.includes("normalizedChain === 'bnb' ? 'bsc' : normalizedChain"), 'bridge-service missing bnb->bsc canonicalization');
+});
+
+test('CC-4c home bridge selector exposes BNB chain', () => {
+  assert.ok(homeSrc.includes("'bsc'"), 'home.js bridge chain allowlist missing bsc');
+  assert.ok(homeHtmlSrc.includes('option value="bsc"'), 'home.html bridge chain dropdown missing bsc option');
+});
+
+test('CC-4d full page bridge modal exposes and wires BNB chain', () => {
+  assert.ok(fullSrc.includes("Bridge from BNB Chain"), 'full.js missing BNB bridge card label');
+  assert.ok(fullSrc.includes("startExtensionDeposit('bsc')"), 'full.js missing BSC click handler wiring');
+  assert.ok(fullSrc.includes("bsc: 'BNB Chain'"), 'full.js missing bsc chain label mapping');
 });
 
 test('CC-5 no other inline onclick handlers in extension JS files', () => {

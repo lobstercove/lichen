@@ -8,7 +8,7 @@ import { isValidAddress } from '../core/crypto-service.js';
 let latestState = null;
 let activeDepositId = null;
 let depositPollTimer = null;
-const BRIDGE_CHAINS = ['solana', 'ethereum'];
+const BRIDGE_CHAINS = ['solana', 'ethereum', 'bsc'];
 const BRIDGE_ASSETS = ['usdc', 'usdt'];
 const BRIDGE_STATUS_MAP = {
   issued: 'Waiting for deposit...',
