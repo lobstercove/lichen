@@ -35,6 +35,7 @@ pub mod dex;
 pub mod dex_ws;
 pub mod launchpad;
 pub mod prediction;
+pub mod shielded;
 pub mod ws;
 
 use alloy_primitives::{Address, Bytes, U256};
@@ -1162,6 +1163,8 @@ pub fn build_rpc_router(
         )
         // ClawPump Launchpad REST API — /api/v1/launchpad/*
         .nest("/api/v1/launchpad", launchpad::build_launchpad_router())
+        // Shielded Pool REST API — /api/v1/shielded/*
+        .nest("/api/v1/shielded", shielded::build_shielded_router())
         .layer(cors)
         // DDoS protection: limit request bodies to 2MB
         .layer(axum::extract::DefaultBodyLimit::max(2 * 1024 * 1024))
@@ -1370,6 +1373,13 @@ async fn handle_rpc(
         "getMoltBridgeStats" => handle_get_moltbridge_stats(&state).await,
         "getMoltDaoStats" => handle_get_moltdao_stats(&state).await,
         "getMoltOracleStats" => handle_get_moltoracle_stats(&state).await,
+
+        // ── Shielded Pool (ZK Privacy) ──────────────────────────────
+        "getShieldedPoolState" => shielded::handle_get_shielded_pool_state(&state, req.params).await,
+        "getShieldedMerkleRoot" => shielded::handle_get_shielded_merkle_root(&state, req.params).await,
+        "getShieldedMerklePath" => shielded::handle_get_shielded_merkle_path(&state, req.params).await,
+        "isNullifierSpent" => shielded::handle_is_nullifier_spent(&state, req.params).await,
+        "getShieldedCommitments" => shielded::handle_get_shielded_commitments(&state, req.params).await,
 
         _ => Err(RpcError {
             code: -32601,

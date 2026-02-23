@@ -6,7 +6,7 @@ authors = ["Trading Lobster <trading.lobster@moltchain.io>"]
 description = "MoltChain JSON-RPC server"
 
 [dependencies]
-moltchain-core = { path = "../core" }
+moltchain-core = { path = "../core", features = ["zk"] }
 tokio = { version = "1.35", features = ["full"] }
 axum = { version = "0.7", features = ["ws"] }
 serde = { version = "1.0", features = ["derive"] }
