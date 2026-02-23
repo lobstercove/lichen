@@ -47,7 +47,6 @@ ark-std = { version = "0.4", features = ["getrandom"], optional = true }
 
 [features]
 default = ["zk"]
-privacy = []  # A14-01/A14-02: Legacy placeholder — disabled by default
 zk = ["ark-ff", "ark-ec", "ark-bn254", "ark-groth16", "ark-relations", "ark-r1cs-std", "ark-crypto-primitives", "ark-serialize", "ark-snark", "ark-std"]  # Production ZK privacy layer
 
 [dev-dependencies]

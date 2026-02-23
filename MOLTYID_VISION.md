@@ -96,10 +96,10 @@ name_count                → total registered names (u64)
 
 | Reputation | Fee Discount |
 |-----------|-------------|
-| 0-99      | 0%          |
-| 100-499   | 0%          |
-| 500-749   | 5%          |
-| 750-999   | 7.5%        |
+| 0–99      | 0%          |
+| 100–499   | 0%          |
+| 500–749   | 5%          |
+| 750–999   | 7.5%        |
 | 1,000-4,999 | 10%      |
 | 5,000-9,999 | 10%      |
 | 10,000+   | 10%         |
@@ -169,9 +169,9 @@ Vouching creates edges in a directed trust graph. The graph enables:
 ### Trust Tiers
 | Tier | Reputation | Name | Perks |
 |------|-----------|------|-------|
-| 0 | 0-99 | Newcomer | Basic access, full fees |
-| 1 | 100-499 | Verified | No fee discount, can vouch |
-| 2 | 500-999 | Trusted | 5% to 7.5% discount, priority lane |
+| 0 | 0–99 | Newcomer | Basic access, full fees |
+| 1 | 100–499 | Verified | No fee discount, can vouch |
+| 2 | 500–999 | Trusted | 500–749: 5% · 750–999: 7.5% discount, priority lane |
 | 3 | 1,000-4,999 | Established | 10% discount, can attest skills |
 | 4 | 5,000-9,999 | Elite | 10% discount, express lane |
 | 5 | 10,000+ | Legendary | 10% discount, governance weight bonus |

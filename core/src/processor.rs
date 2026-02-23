@@ -240,8 +240,8 @@ impl TxProcessor {
     }
 
     /// Apply reputation-based fee discount per whitepaper:
-    ///   reputation 500-749  → 5% discount
-    ///   reputation 750-999  → 7.5% discount
+    ///   reputation 500–749  → 5% discount
+    ///   reputation 750–999  → 7.5% discount
     ///   reputation 1000+    → 10% discount
     pub fn apply_reputation_fee_discount(base_fee: u64, reputation: u64) -> u64 {
         let discount_bps = if reputation >= 1000 {
@@ -5410,11 +5410,11 @@ mod tests {
         assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 0), 1000);
         assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 499), 1000);
 
-        // 500-749: 5% discount
+        // 500–749: 5% discount
         assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 500), 950);
         assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 749), 950);
 
-        // 750-999: 7.5% discount
+        // 750–999: 7.5% discount
         assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 750), 925);
         assert_eq!(TxProcessor::apply_reputation_fee_discount(1000, 999), 925);
 

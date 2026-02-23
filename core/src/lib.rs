@@ -17,8 +17,6 @@ pub mod mempool;
 pub mod multisig; // Multi-signature wallet support
 pub mod network;
 pub mod nft;
-#[cfg(feature = "privacy")]
-pub mod privacy;
 #[cfg(feature = "zk")]
 pub mod zk;
 pub mod processor;
