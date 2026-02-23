@@ -37,6 +37,9 @@ import {
   releaseMoltName
 } from '../core/identity-service.js';
 import { stakeMolt, unstakeStMolt, claimReefStake, loadStakingSnapshot } from '../core/staking-service.js';
+import { loadNftDetails } from '../core/nft-service.js';
+
+const NFT_MARKETPLACE_URL = 'https://moltchain.network/nft-marketplace';
 
 /* ──────────────────────────────────────────
    State
@@ -471,6 +474,7 @@ async function showDashboard() {
   await refreshBalance();
   await loadAssets();
   await loadActivity();
+  await loadNftsTab();
 }
 
 function setupDashboardTabs() {
@@ -484,10 +488,70 @@ function setupDashboardTabs() {
       });
       if (name === 'activity') loadActivity();
       if (name === 'assets') loadAssets();
+      if (name === 'nfts') loadNftsTab();
       if (name === 'identity') loadIdentityTab();
       if (name === 'staking') loadStakingTab();
     });
   });
+}
+
+function safeImageUrlExt(url) {
+  if (!url) return '';
+  try {
+    const parsed = new URL(String(url));
+    if (parsed.protocol === 'https:' || parsed.protocol === 'http:' || parsed.protocol === 'ipfs:') return parsed.href;
+    return '';
+  } catch {
+    return '';
+  }
+}
+
+async function loadNftsTab() {
+  const wallet = getActiveWallet();
+  const nftCount = $('nftCount');
+  const nftsGrid = $('nftsGrid');
+  const nftsEmpty = $('nftsEmpty');
+  if (!wallet || !nftCount || !nftsGrid || !nftsEmpty) return;
+
+  nftCount.textContent = 'Loading…';
+  nftsGrid.innerHTML = '';
+
+  try {
+    const network = state?.network?.selected || 'local-testnet';
+    const items = await loadNftDetails(wallet.address, network, 50);
+    nftCount.textContent = `${items.length} NFT${items.length === 1 ? '' : 's'}`;
+
+    if (!items.length) {
+      nftsEmpty.style.display = 'block';
+      nftsGrid.innerHTML = '';
+      return;
+    }
+
+    nftsEmpty.style.display = 'none';
+    nftsGrid.innerHTML = items.map((item) => {
+      const safeName = escapeHtmlExt(item.name || 'Unnamed NFT');
+      const safeMint = escapeHtmlExt(item.mint || 'unknown');
+      const safeStandard = escapeHtmlExt(item.standard || 'Unknown');
+      const safeImage = safeImageUrlExt(item.image || '');
+      const safeAmount = escapeHtmlExt(String(item.amount || 1));
+
+      return `
+        <article class="nft-card" data-mint="${safeMint}">
+          <div class="nft-card-image">${safeImage ? `<img src="${safeImage}" alt="${safeName}" style="width:100%;height:100%;object-fit:cover;" />` : '<span style="color:var(--text-muted);font-size:0.85rem;">No image</span>'}</div>
+          <div class="nft-card-content">
+            <div class="nft-card-title">${safeName}</div>
+            <div class="nft-card-subtitle">${safeStandard} • ${safeAmount}</div>
+            <div class="nft-card-mint">${safeMint}</div>
+          </div>
+        </article>
+      `;
+    }).join('');
+  } catch (error) {
+    nftCount.textContent = '0 NFTs';
+    nftsGrid.innerHTML = '';
+    nftsEmpty.style.display = 'block';
+    showToast(`Failed to load NFTs: ${error?.message || error}`, 'error');
+  }
 }
 
 async function refreshBalance() {
@@ -1595,7 +1659,7 @@ async function startExtensionDeposit(chain) {
   if (!wallet) { showToast('No active wallet', 'error'); return; }
   if (!isValidAddress(wallet.address)) { showToast('Invalid wallet address', 'error'); return; }
 
-  const chainLabels = { solana: 'Solana', ethereum: 'Ethereum' };
+  const chainLabels = { solana: 'Solana', ethereum: 'Ethereum', bsc: 'BNB Chain' };
   const chainLabel = chainLabels[chain] || chain;
 
   // Show asset picker inline in depositTabContent
@@ -1723,6 +1787,11 @@ function restoreDepositTab(container) {
         <div class="deposit-card-info"><strong>Bridge from Ethereum</strong><span>USDC, USDT</span></div>
         <i class="fas fa-chevron-right" style="color:var(--text-muted);"></i>
       </div>
+      <div class="deposit-card" id="depositBNB">
+        <div class="deposit-card-icon" style="background:rgba(243,186,47,0.12);color:#F3BA2F;"><i class="fas fa-coins"></i></div>
+        <div class="deposit-card-info"><strong>Bridge from BNB Chain</strong><span>USDC, USDT</span></div>
+        <i class="fas fa-chevron-right" style="color:var(--text-muted);"></i>
+      </div>
       <div class="deposit-card disabled">
         <div class="deposit-card-icon" style="background:rgba(255,107,53,0.12);color:var(--primary);"><i class="fas fa-credit-card"></i></div>
         <div class="deposit-card-info"><strong>Buy with Fiat</strong><span>Coming with mainnet launch</span></div>
@@ -1736,6 +1805,7 @@ function restoreDepositTab(container) {
   // Re-wire click handlers
   container.querySelector('#depositSOL')?.addEventListener('click', () => startExtensionDeposit('solana'));
   container.querySelector('#depositETH')?.addEventListener('click', () => startExtensionDeposit('ethereum'));
+  container.querySelector('#depositBNB')?.addEventListener('click', () => startExtensionDeposit('bsc'));
 }
 
 function deriveEvmAddress(pubKeyHex) {
@@ -1916,7 +1986,14 @@ function wireEvents() {
 
   // Dashboard
   $('refreshBalanceBtn')?.addEventListener('click', async () => { await refreshBalance(); await loadAssets(); });
-  $('refreshNftsBtn')?.addEventListener('click', () => showToast('NFT refresh coming soon'));
+  $('refreshNftsBtn')?.addEventListener('click', async () => {
+    await loadNftsTab();
+    showToast('NFTs refreshed', 'success');
+  });
+  $('browseMarketplaceBtn')?.addEventListener('click', (e) => {
+    e.preventDefault();
+    chrome.tabs.create({ url: NFT_MARKETPLACE_URL });
+  });
 
   // Send modal
   $('showSendBtn')?.addEventListener('click', () => { openModal('sendModal'); updateSendAvailableBalance(); });
@@ -1949,6 +2026,7 @@ function wireEvents() {
   });
   $('depositSOL')?.addEventListener('click', () => startExtensionDeposit('solana'));
   $('depositETH')?.addEventListener('click', () => startExtensionDeposit('ethereum'));
+  $('depositBNB')?.addEventListener('click', () => startExtensionDeposit('bsc'));
 
   // Settings modal
   $('navSettingsBtn')?.addEventListener('click', () => { loadSettingsValues(); openModal('settingsModal'); });

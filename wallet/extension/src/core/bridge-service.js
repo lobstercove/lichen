@@ -9,7 +9,7 @@ const CUSTODY_ENDPOINTS = {
   'local-mainnet': 'http://localhost:9105'
 };
 
-const SUPPORTED_CHAINS = ['solana', 'ethereum'];
+const SUPPORTED_CHAINS = ['solana', 'ethereum', 'bsc', 'bnb'];
 const SUPPORTED_ASSETS = ['usdc', 'usdt'];
 
 function getCustodyEndpoint(network = 'local-testnet') {
@@ -59,6 +59,7 @@ export async function requestBridgeDepositAddress({ userAddress, chain, asset, n
 
   const normalizedChain = String(chain || '').trim().toLowerCase();
   const normalizedAsset = String(asset || '').trim().toLowerCase();
+  const canonicalChain = normalizedChain === 'bnb' ? 'bsc' : normalizedChain;
   if (!SUPPORTED_CHAINS.includes(normalizedChain)) {
     throw new Error('Unsupported bridge chain');
   }
@@ -72,7 +73,7 @@ export async function requestBridgeDepositAddress({ userAddress, chain, asset, n
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       user_id: userAddress,
-      chain: normalizedChain,
+      chain: canonicalChain,
       asset: normalizedAsset
     })
   });
