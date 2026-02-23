@@ -16,7 +16,7 @@ use moltchain_core::zk::{
     circuits::unshield::UnshieldCircuit,
     fr_to_bytes, poseidon_hash_fr,
     setup::load_verification_key,
-    Prover, Verifier,
+    Prover, Verifier, TREE_DEPTH,
 };
 
 use ark_bn254::Fr;
@@ -191,7 +191,7 @@ fn cmd_unshield(args: &[String], pk_dir: &str) {
         Fr::rand(&mut OsRng)
     };
 
-    // Accept --merkle-path-json (file with JSON array of 32 hex siblings)
+    // Accept --merkle-path-json (file with JSON array of TREE_DEPTH hex siblings)
     // and --path-bits-json (file with JSON array of booleans).
     // For a single-leaf tree (index 0 after one shield), both are all-zeros / all-false.
     let merkle_path_hex: Vec<String> = if let Some(mp_file) = find_arg(args, "--merkle-path-json") {
@@ -204,8 +204,8 @@ fn cmd_unshield(args: &[String], pk_dir: &str) {
             process::exit(1);
         })
     } else {
-        // Default: 32 zero siblings (the leaf is at index 0, all siblings are empty)
-        vec!["00".repeat(32); 32]
+        // Default: TREE_DEPTH zero siblings (leaf at index 0, all siblings are empty)
+        vec!["00".repeat(32); TREE_DEPTH]
     };
     let path_bits: Vec<bool> = if let Some(pb_file) = find_arg(args, "--path-bits-json") {
         let data = fs::read_to_string(&pb_file).unwrap_or_else(|e| {
@@ -217,7 +217,7 @@ fn cmd_unshield(args: &[String], pk_dir: &str) {
             process::exit(1);
         })
     } else {
-        vec![false; 32]
+        vec![false; TREE_DEPTH]
     };
 
     let merkle_path: Vec<Fr> = merkle_path_hex
