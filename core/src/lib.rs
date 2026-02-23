@@ -19,6 +19,8 @@ pub mod network;
 pub mod nft;
 #[cfg(feature = "privacy")]
 pub mod privacy;
+#[cfg(feature = "zk")]
+pub mod zk;
 pub mod processor;
 pub mod reefstake; // Liquid staking protocol
 pub mod state;

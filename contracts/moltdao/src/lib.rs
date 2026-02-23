@@ -96,6 +96,31 @@ const MAX_PROPOSAL_TITLE_BYTES: usize = 256;
 const MAX_PROPOSAL_DESCRIPTION_BYTES: usize = 8 * 1024;
 const MAX_PROPOSAL_ACTION_BYTES: usize = 16 * 1024;
 
+fn read_address32(ptr: *const u8) -> Option<[u8; 32]> {
+    if ptr.is_null() {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    unsafe { core::ptr::copy_nonoverlapping(ptr, out.as_mut_ptr(), 32); }
+    Some(out)
+}
+
+fn read_bounded_bytes(ptr: *const u8, len: u32, max_len: usize) -> Option<Vec<u8>> {
+    let len_usize = len as usize;
+    if len_usize > max_len {
+        return None;
+    }
+    if len_usize == 0 {
+        return Some(Vec::new());
+    }
+    if ptr.is_null() {
+        return None;
+    }
+    let mut out = alloc::vec![0u8; len_usize];
+    unsafe { core::ptr::copy_nonoverlapping(ptr, out.as_mut_ptr(), len_usize); }
+    Some(out)
+}
+
 /// Veto threshold: 20% of total voting power active "NO" cancels during time-lock
 const VETO_THRESHOLD_PERCENT: u64 = 20;
 
@@ -113,10 +138,20 @@ pub extern "C" fn initialize_dao(
 
     log_info(" Initializing MoltDAO...");
     
-    let mut gov_token = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(governance_token_ptr, gov_token.as_mut_ptr(), 32); }
-    let mut treasury = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(treasury_address_ptr, treasury.as_mut_ptr(), 32); }
+    let gov_token = match read_address32(governance_token_ptr) {
+        Some(v) => v,
+        None => {
+            log_info("initialize_dao rejected: null governance_token_ptr");
+            return 0;
+        }
+    };
+    let treasury = match read_address32(treasury_address_ptr) {
+        Some(v) => v,
+        None => {
+            log_info("initialize_dao rejected: null treasury_address_ptr");
+            return 0;
+        }
+    };
     
     storage_set(b"governance_token", &gov_token);
     storage_set(b"treasury", &treasury);
@@ -318,8 +353,13 @@ pub extern "C" fn create_proposal_typed(
         return 0;
     }
     
-    let mut proposer = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(proposer_ptr, proposer.as_mut_ptr(), 32); }
+    let proposer = match read_address32(proposer_ptr) {
+        Some(v) => v,
+        None => {
+            log_info("create_proposal rejected: null proposer_ptr");
+            return 0;
+        }
+    };
     
     // AUDIT-FIX P2: Verify caller matches proposer
     let real_caller = get_caller();
@@ -351,16 +391,38 @@ pub extern "C" fn create_proposal_typed(
         return 0;
     }
 
-    let mut title = alloc::vec![0u8; title_len_usize];
-    unsafe { core::ptr::copy_nonoverlapping(title_ptr, title.as_mut_ptr(), title_len_usize); }
-    let mut description = alloc::vec![0u8; description_len_usize];
-    unsafe {
-        core::ptr::copy_nonoverlapping(description_ptr, description.as_mut_ptr(), description_len_usize);
-    }
-    let mut target_contract = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(target_contract_ptr, target_contract.as_mut_ptr(), 32); }
-    let mut action = alloc::vec![0u8; action_len_usize];
-    unsafe { core::ptr::copy_nonoverlapping(action_ptr, action.as_mut_ptr(), action_len_usize); }
+    let title = match read_bounded_bytes(title_ptr, title_len, MAX_PROPOSAL_TITLE_BYTES) {
+        Some(v) if !v.is_empty() => v,
+        _ => {
+            log_info("Invalid title pointer/length");
+            return 0;
+        }
+    };
+    let description = match read_bounded_bytes(
+        description_ptr,
+        description_len,
+        MAX_PROPOSAL_DESCRIPTION_BYTES,
+    ) {
+        Some(v) => v,
+        None => {
+            log_info("Invalid description pointer/length");
+            return 0;
+        }
+    };
+    let target_contract = match read_address32(target_contract_ptr) {
+        Some(v) => v,
+        None => {
+            log_info("create_proposal rejected: null target_contract_ptr");
+            return 0;
+        }
+    };
+    let action = match read_bounded_bytes(action_ptr, action_len, MAX_PROPOSAL_ACTION_BYTES) {
+        Some(v) => v,
+        None => {
+            log_info("Invalid action pointer/length");
+            return 0;
+        }
+    };
     
     // Check proposer has enough tokens for proposal stake (1000 MOLT)
     let min_threshold = storage_get(b"min_proposal_threshold")
@@ -604,17 +666,22 @@ pub extern "C" fn execute_proposal(
     action_len: u32,
 ) -> u32 {
     log_info("Executing proposal...");
-    
-    let mut _executor = [0u8; 32];
-    unsafe { core::ptr::copy_nonoverlapping(executor_ptr, _executor.as_mut_ptr(), 32); }
+    if read_address32(executor_ptr).is_none() {
+        log_info("execute_proposal rejected: null executor_ptr");
+        return 0;
+    }
+    if action_len as usize > MAX_PROPOSAL_ACTION_BYTES {
+        log_info("execute_proposal rejected: action payload too large");
+        return 0;
+    }
     
     // Read raw action data provided by executor
-    let action_data = if action_len > 0 && !action_ptr.is_null() {
-        let mut buf = alloc::vec![0u8; action_len as usize];
-        unsafe { core::ptr::copy_nonoverlapping(action_ptr, buf.as_mut_ptr(), action_len as usize); }
-        buf
-    } else {
-        Vec::new()
+    let action_data = match read_bounded_bytes(action_ptr, action_len, MAX_PROPOSAL_ACTION_BYTES) {
+        Some(v) => v,
+        None => {
+            log_info("execute_proposal rejected: invalid action pointer/length");
+            return 0;
+        }
     };
     
     // Load proposal

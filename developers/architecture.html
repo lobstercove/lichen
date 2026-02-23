@@ -68,6 +68,8 @@
                 <a href="#state" class="sidebar-link">State Model</a>
                 <a href="#wasm" class="sidebar-link">WASM Execution</a>
                 <a href="#moltyid-integration" class="sidebar-link">MoltyID Integration</a>
+                <a href="#privacy" class="sidebar-link">Privacy &amp; Security</a>
+                <a href="#benchmarks" class="sidebar-link">Benchmarks</a>
                 <a href="#network" class="sidebar-link">Network Topology</a>
             </div>
             <div class="sidebar-divider"></div>
@@ -507,24 +509,52 @@ contribution_score = (
             <!-- ========== 7. PRIVACY & SECURITY ========== -->
             <h2 id="privacy">Privacy &amp; Security</h2>
 
-            <p>MoltChain includes a privacy layer for shielded transactions and confidential on-chain operations.</p>
+            <p>MoltChain's privacy architecture is centered on shielded transactions, nullifier-based double-spend prevention, and ZK proofs for note validity. The implementation is in active transition from legacy scaffolding to full Groth16-based verification.</p>
 
-            <h3>Zero-Knowledge Proof Verification</h3>
-            <p>The <code>core/src/privacy.rs</code> module implements a shielded transaction pool with ZK proof verification. Proofs are validated using <strong>HMAC-SHA256</strong> signatures tied to the pool's commitment root. The minimum proof structure (81 bytes) consists of:</p>
-
+            <h3>Implementation Status (Current)</h3>
             <table class="arch-table">
                 <thead>
-                    <tr><th>Field</th><th>Size</th><th>Purpose</th></tr>
+                    <tr><th>Area</th><th>Status</th><th>Notes</th></tr>
                 </thead>
                 <tbody>
-                    <tr><td>Type tag</td><td>1 byte</td><td>Proof type identifier</td></tr>
-                    <tr><td>Commitment hash</td><td>32 bytes</td><td>SHA-256 of committed value</td></tr>
-                    <tr><td>Nonce</td><td>16 bytes</td><td>Randomness for unlinkability</td></tr>
-                    <tr><td>HMAC signature</td><td>32 bytes</td><td>HMAC-SHA256 over (tag ‖ hash ‖ nonce) with commitment_root as key</td></tr>
+                    <tr><td>Core ZK modules (<code>core/src/zk/*</code>)</td><td>Scaffolded</td><td>Pedersen, Merkle, note/key types, circuits, prover/verifier plumbing</td></tr>
+                    <tr><td>Shielded pool contract (<code>contracts/shielded_pool</code>)</td><td>Prototype</td><td>State and flows exist; production-grade proof verification still being finalized</td></tr>
+                    <tr><td>Runtime/RPC wiring</td><td>Partial</td><td>Explorer/Wallet-facing methods are expected, with staged backend integration in progress</td></tr>
+                    <tr><td>Deployment/boot scripts</td><td>In progress</td><td>First-boot and deploy manifest integration for shielded pool is being completed</td></tr>
                 </tbody>
             </table>
 
-            <p>Verification uses constant-time comparison to prevent timing side-channel leaks. The shielded pool supports <code>shield</code>, <code>unshield</code>, and <code>transfer</code> operations.</p>
+            <div class="callout callout-warning">
+                <div class="callout-title"><i class="fas fa-exclamation-triangle"></i> Accuracy Note</div>
+                Earlier docs described an HMAC-based proof format as if it were the final system. The production target is Groth16 over BN254 with circuit-based verification; this page now reflects that roadmap and current maturity.
+            </div>
+
+            <h3>Target ZK Architecture</h3>
+            <ul>
+                <li><strong>Proving system:</strong> Groth16 with trusted setup and succinct on-chain verification</li>
+                <li><strong>Curve:</strong> BN254 for broad tooling compatibility and efficient pairing checks</li>
+                <li><strong>Commitments:</strong> Pedersen commitments for note value hiding + binding</li>
+                <li><strong>Merkle tree:</strong> Poseidon-based tree and inclusion paths for shielded notes</li>
+                <li><strong>Nullifiers:</strong> Deterministic nullifier derivation to prevent double spends without revealing note contents</li>
+            </ul>
+
+            <h3>Shielded Transaction Flows</h3>
+            <ul>
+                <li><strong>Shield (transparent → shielded):</strong> Creates a new note commitment from public funds</li>
+                <li><strong>Unshield (shielded → transparent):</strong> Spends a note and reveals only the necessary public outputs</li>
+                <li><strong>Transfer (shielded → shielded):</strong> Consumes note inputs, emits new commitments, preserves value in-circuit</li>
+            </ul>
+
+            <h3>Security Properties</h3>
+            <ul>
+                <li><strong>Zero-knowledge:</strong> Proofs validate correctness without exposing note secrets</li>
+                <li><strong>Soundness:</strong> Invalid witness data cannot satisfy circuit constraints</li>
+                <li><strong>Double-spend resistance:</strong> One-time nullifier publication prevents note replay</li>
+                <li><strong>Value conservation:</strong> Circuit constraints enforce that spent and created value balances</li>
+            </ul>
+
+            <h3>Explorer and Docs Separation</h3>
+            <p>Explorer pages are being kept telemetry-first (stats, transactions, nullifier checks). Architecture education and implementation details live in the Website and Developer Portal so chain observability stays cleanly separated from protocol documentation.</p>
 
             <h3>Keypair Encryption at Rest</h3>
             <p>CLI-managed keypairs are encrypted with <strong>AES-256-GCM</strong> (authenticated encryption with 12-byte random nonce). An <code>encryption_version</code> field in the keypair JSON enables backwards compatibility: <code>v1</code> = legacy XOR cipher, <code>v2</code> = AES-GCM. Legacy keypairs are auto-upgraded on next use.</p>
