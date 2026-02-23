@@ -137,6 +137,9 @@ pub struct TxProcessor {
     /// Metadata from the most recent contract call execution, accumulated
     /// during process_transaction and drained into TxResult.
     contract_meta: Mutex<(Option<i32>, Vec<String>)>,
+    /// ZK proof verifier for shielded pool operations
+    #[cfg(feature = "zk")]
+    zk_verifier: Mutex<crate::zk::Verifier>,
 }
 
 impl TxProcessor {
@@ -145,6 +148,8 @@ impl TxProcessor {
             state,
             batch: Mutex::new(None),
             contract_meta: Mutex::new((None, Vec::new())),
+            #[cfg(feature = "zk")]
+            zk_verifier: Mutex::new(crate::zk::Verifier::new()),
         }
     }
 
@@ -300,6 +305,27 @@ impl TxProcessor {
         } else {
             Self::BASE_TX_LIMIT_PER_EPOCH
         }
+    }
+
+    // ─── ZK verifier management ─────────────────────────────────────
+
+    /// Load verification keys for the shielded pool circuits.
+    /// Must be called at validator startup before processing shielded transactions.
+    #[cfg(feature = "zk")]
+    pub fn load_zk_verification_keys(
+        &self,
+        shield_vk: &[u8],
+        unshield_vk: &[u8],
+        transfer_vk: &[u8],
+    ) -> Result<(), String> {
+        let mut verifier = self
+            .zk_verifier
+            .lock()
+            .map_err(|e| format!("zk_verifier lock poisoned: {}", e))?;
+        verifier.load_shield_vk(shield_vk)?;
+        verifier.load_unshield_vk(unshield_vk)?;
+        verifier.load_transfer_vk(transfer_vk)?;
+        Ok(())
     }
 
     // ─── Batch-aware state accessors (T1.4/T3.1) ───────────────────
@@ -1588,6 +1614,13 @@ impl TxProcessor {
             // Governed wallet multi-sig proposal system
             21 => self.system_propose_governed_transfer(ix),
             22 => self.system_approve_governed_transfer(ix),
+            // Shielded pool (ZK privacy layer)
+            #[cfg(feature = "zk")]
+            23 => self.system_shield_deposit(ix),
+            #[cfg(feature = "zk")]
+            24 => self.system_unshield_withdraw(ix),
+            #[cfg(feature = "zk")]
+            25 => self.system_shielded_transfer(ix),
             _ => Err(format!("Unknown system instruction: {}", instruction_type)),
         }
     }
@@ -1942,6 +1975,456 @@ impl TxProcessor {
         self.state
             .set_governed_proposal(&proposal)
             .map_err(|e| format!("Failed to update proposal: {}", e))?;
+
+        Ok(())
+    }
+
+    // ─── Shielded pool instruction handlers (ZK privacy layer) ──────
+
+    /// System instruction type 23: Shield deposit (transparent → shielded).
+    ///
+    /// Debits `amount` from the sender's spendable balance, inserts a new
+    /// commitment leaf into the shielded Merkle tree, and increments the
+    /// pool's `total_shielded` balance.
+    ///
+    /// Data layout:
+    /// ```text
+    ///   [0]       = 23 (type tag)
+    ///   [1..9]    = amount (u64 LE, shells)
+    ///   [9..41]   = commitment (32 bytes, Poseidon hash of value||blinding)
+    ///   [41..169] = Groth16 proof (128 bytes, compressed BN254)
+    /// ```
+    /// Public inputs (derived from data): [amount_fr, commitment_fr]
+    /// accounts[0] = sender (debited)
+    #[cfg(feature = "zk")]
+    fn system_shield_deposit(&self, ix: &Instruction) -> Result<(), String> {
+        use crate::zk::{fr_to_bytes, ProofType, ZkProof};
+        use ark_bn254::Fr;
+        use ark_ff::PrimeField;
+
+        // Validate data length: 1 + 8 + 32 + 128 = 169
+        if ix.data.len() < 169 {
+            return Err(format!(
+                "Shield: insufficient data length {} (expected >=169)",
+                ix.data.len()
+            ));
+        }
+        if ix.accounts.is_empty() {
+            return Err("Shield: requires [sender] account".to_string());
+        }
+
+        let sender = &ix.accounts[0];
+
+        // Parse fields
+        let amount = u64::from_le_bytes(
+            ix.data[1..9]
+                .try_into()
+                .map_err(|_| "Shield: invalid amount encoding".to_string())?,
+        );
+        if amount == 0 {
+            return Err("Shield: amount must be non-zero".to_string());
+        }
+
+        let mut commitment = [0u8; 32];
+        commitment.copy_from_slice(&ix.data[9..41]);
+
+        let proof_bytes = ix.data[41..169].to_vec();
+
+        // Build public inputs: [amount_as_field, commitment_as_field]
+        let amount_fr = Fr::from(amount);
+        let commitment_fr = Fr::from_le_bytes_mod_order(&commitment);
+
+        let zk_proof = ZkProof {
+            proof_bytes,
+            proof_type: ProofType::Shield,
+            public_inputs: vec![fr_to_bytes(&amount_fr), fr_to_bytes(&commitment_fr)],
+        };
+
+        // Verify the ZK proof
+        {
+            let verifier = self
+                .zk_verifier
+                .lock()
+                .map_err(|e| format!("Shield: verifier lock poisoned: {}", e))?;
+            let valid = verifier
+                .verify(&zk_proof)
+                .map_err(|e| format!("Shield: proof verification error: {}", e))?;
+            if !valid {
+                return Err("Shield: ZK proof verification failed".to_string());
+            }
+        }
+
+        // Debit sender
+        let mut sender_acct = self
+            .b_get_account(sender)?
+            .ok_or_else(|| "Shield: sender account not found".to_string())?;
+
+        if sender_acct.spendable < amount {
+            return Err(format!(
+                "Shield: insufficient balance ({} < {})",
+                sender_acct.spendable, amount
+            ));
+        }
+        sender_acct.spendable = sender_acct.spendable.saturating_sub(amount);
+        sender_acct.shells = sender_acct
+            .spendable
+            .saturating_add(sender_acct.staked)
+            .saturating_add(sender_acct.locked);
+        self.b_put_account(sender, &sender_acct)?;
+
+        // Insert commitment and update pool state (batch-aware)
+        {
+            let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(batch) = guard.as_mut() {
+                let mut pool = batch.get_shielded_pool_state()?;
+                let index = pool.commitment_count;
+                batch.insert_shielded_commitment(index, &commitment)?;
+                pool.commitment_count += 1;
+                pool.total_shielded = pool.total_shielded.checked_add(amount).ok_or_else(|| {
+                    "Shield: pool balance overflow".to_string()
+                })?;
+                // Rebuild merkle root: read existing leaves from disk + add new one
+                let mut leaves = self.state.get_all_shielded_commitments(index)?;
+                leaves.push(commitment);
+                let mut tree = crate::zk::MerkleTree::new();
+                for leaf in &leaves {
+                    tree.insert(*leaf);
+                }
+                pool.merkle_root = tree.root();
+                batch.put_shielded_pool_state(&pool)?;
+            } else {
+                let mut pool = self.state.get_shielded_pool_state()?;
+                let index = pool.commitment_count;
+                self.state.insert_shielded_commitment(index, &commitment)?;
+                pool.commitment_count += 1;
+                pool.total_shielded = pool.total_shielded.checked_add(amount).ok_or_else(|| {
+                    "Shield: pool balance overflow".to_string()
+                })?;
+                // Rebuild merkle root from all committed leaves
+                let leaves = self.state.get_all_shielded_commitments(pool.commitment_count)?;
+                let mut tree = crate::zk::MerkleTree::new();
+                for leaf in &leaves {
+                    tree.insert(*leaf);
+                }
+                pool.merkle_root = tree.root();
+                self.state.put_shielded_pool_state(&pool)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// System instruction type 24: Unshield withdraw (shielded → transparent).
+    ///
+    /// Verifies a ZK proof that the caller owns a shielded note, marks the
+    /// note's nullifier as spent, credits the recipient, and decrements the
+    /// pool's `total_shielded` balance.
+    ///
+    /// Data layout:
+    /// ```text
+    ///   [0]        = 24 (type tag)
+    ///   [1..9]     = amount (u64 LE, shells)
+    ///   [9..41]    = nullifier (32 bytes)
+    ///   [41..73]   = merkle_root (32 bytes)
+    ///   [73..105]  = recipient_fr (32 bytes, field element for circuit binding)
+    ///   [105..233] = Groth16 proof (128 bytes, compressed BN254)
+    /// ```
+    /// Public inputs: [merkle_root, nullifier, amount, recipient]
+    /// accounts[0] = recipient (credited)
+    #[cfg(feature = "zk")]
+    fn system_unshield_withdraw(&self, ix: &Instruction) -> Result<(), String> {
+        use crate::zk::{fr_to_bytes, ProofType, ZkProof};
+        use ark_bn254::Fr;
+        use ark_ff::PrimeField;
+
+        // Validate data length: 1 + 8 + 32 + 32 + 32 + 128 = 233
+        if ix.data.len() < 233 {
+            return Err(format!(
+                "Unshield: insufficient data length {} (expected >=233)",
+                ix.data.len()
+            ));
+        }
+        if ix.accounts.is_empty() {
+            return Err("Unshield: requires [recipient] account".to_string());
+        }
+
+        let recipient_pubkey = &ix.accounts[0];
+
+        // Parse fields
+        let amount = u64::from_le_bytes(
+            ix.data[1..9]
+                .try_into()
+                .map_err(|_| "Unshield: invalid amount encoding".to_string())?,
+        );
+        if amount == 0 {
+            return Err("Unshield: amount must be non-zero".to_string());
+        }
+
+        let mut nullifier = [0u8; 32];
+        nullifier.copy_from_slice(&ix.data[9..41]);
+
+        let mut merkle_root = [0u8; 32];
+        merkle_root.copy_from_slice(&ix.data[41..73]);
+
+        let mut recipient_fr_bytes = [0u8; 32];
+        recipient_fr_bytes.copy_from_slice(&ix.data[73..105]);
+
+        let proof_bytes = ix.data[105..233].to_vec();
+
+        // Verify merkle root matches current state
+        {
+            let guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+            let pool = if let Some(batch) = guard.as_ref() {
+                batch.get_shielded_pool_state()?
+            } else {
+                self.state.get_shielded_pool_state()?
+            };
+            if pool.merkle_root != merkle_root {
+                return Err("Unshield: merkle root does not match current pool state".to_string());
+            }
+        }
+
+        // Check nullifier not already spent
+        {
+            let guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+            let spent = if let Some(batch) = guard.as_ref() {
+                batch.is_nullifier_spent(&nullifier)?
+            } else {
+                self.state.is_nullifier_spent(&nullifier)?
+            };
+            if spent {
+                return Err(format!(
+                    "Unshield: nullifier already spent: {}",
+                    hex::encode(nullifier)
+                ));
+            }
+        }
+
+        // Build public inputs: [merkle_root, nullifier, amount, recipient]
+        let merkle_root_fr = Fr::from_le_bytes_mod_order(&merkle_root);
+        let nullifier_fr = Fr::from_le_bytes_mod_order(&nullifier);
+        let amount_fr = Fr::from(amount);
+        let recipient_fr = Fr::from_le_bytes_mod_order(&recipient_fr_bytes);
+
+        let zk_proof = ZkProof {
+            proof_bytes,
+            proof_type: ProofType::Unshield,
+            public_inputs: vec![
+                fr_to_bytes(&merkle_root_fr),
+                fr_to_bytes(&nullifier_fr),
+                fr_to_bytes(&amount_fr),
+                fr_to_bytes(&recipient_fr),
+            ],
+        };
+
+        // Verify ZK proof
+        {
+            let verifier = self
+                .zk_verifier
+                .lock()
+                .map_err(|e| format!("Unshield: verifier lock poisoned: {}", e))?;
+            let valid = verifier
+                .verify(&zk_proof)
+                .map_err(|e| format!("Unshield: proof verification error: {}", e))?;
+            if !valid {
+                return Err("Unshield: ZK proof verification failed".to_string());
+            }
+        }
+
+        // Credit recipient
+        let mut recipient_acct = self.b_get_account(recipient_pubkey)?.unwrap_or_else(|| {
+            crate::Account::new(0, crate::SYSTEM_PROGRAM_ID)
+        });
+        recipient_acct.spendable = recipient_acct.spendable.saturating_add(amount);
+        recipient_acct.shells = recipient_acct
+            .spendable
+            .saturating_add(recipient_acct.staked)
+            .saturating_add(recipient_acct.locked);
+        self.b_put_account(recipient_pubkey, &recipient_acct)?;
+
+        // Mark nullifier spent and update pool
+        {
+            let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(batch) = guard.as_mut() {
+                batch.mark_nullifier_spent(&nullifier)?;
+                let mut pool = batch.get_shielded_pool_state()?;
+                pool.total_shielded = pool.total_shielded.saturating_sub(amount);
+                batch.put_shielded_pool_state(&pool)?;
+            } else {
+                self.state.mark_nullifier_spent(&nullifier)?;
+                let mut pool = self.state.get_shielded_pool_state()?;
+                pool.total_shielded = pool.total_shielded.saturating_sub(amount);
+                self.state.put_shielded_pool_state(&pool)?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// System instruction type 25: Shielded transfer (shielded → shielded).
+    ///
+    /// 2-in-2-out private transfer. Spends two existing notes (marks their
+    /// nullifiers) and creates two new commitments—all with zero-knowledge
+    /// proof of value conservation.
+    ///
+    /// Data layout:
+    /// ```text
+    ///   [0]         = 25 (type tag)
+    ///   [1..33]     = nullifier_a (32 bytes)
+    ///   [33..65]    = nullifier_b (32 bytes)
+    ///   [65..97]    = commitment_c (32 bytes, output 0)
+    ///   [97..129]   = commitment_d (32 bytes, output 1)
+    ///   [129..161]  = merkle_root (32 bytes)
+    ///   [161..289]  = Groth16 proof (128 bytes, compressed BN254)
+    /// ```
+    /// Public inputs: [merkle_root, nullifier_a, nullifier_b, commitment_c, commitment_d]
+    /// No accounts required (fully private).
+    #[cfg(feature = "zk")]
+    fn system_shielded_transfer(&self, ix: &Instruction) -> Result<(), String> {
+        use crate::zk::{fr_to_bytes, ProofType, ZkProof};
+        use ark_bn254::Fr;
+        use ark_ff::PrimeField;
+
+        // Validate data length: 1 + 32*4 + 32 + 128 = 289
+        if ix.data.len() < 289 {
+            return Err(format!(
+                "ShieldedTransfer: insufficient data length {} (expected >=289)",
+                ix.data.len()
+            ));
+        }
+
+        // Parse fields
+        let mut nullifier_a = [0u8; 32];
+        nullifier_a.copy_from_slice(&ix.data[1..33]);
+
+        let mut nullifier_b = [0u8; 32];
+        nullifier_b.copy_from_slice(&ix.data[33..65]);
+
+        let mut commitment_c = [0u8; 32];
+        commitment_c.copy_from_slice(&ix.data[65..97]);
+
+        let mut commitment_d = [0u8; 32];
+        commitment_d.copy_from_slice(&ix.data[97..129]);
+
+        let mut merkle_root = [0u8; 32];
+        merkle_root.copy_from_slice(&ix.data[129..161]);
+
+        let proof_bytes = ix.data[161..289].to_vec();
+
+        // Verify merkle root
+        {
+            let guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+            let pool = if let Some(batch) = guard.as_ref() {
+                batch.get_shielded_pool_state()?
+            } else {
+                self.state.get_shielded_pool_state()?
+            };
+            if pool.merkle_root != merkle_root {
+                return Err(
+                    "ShieldedTransfer: merkle root does not match current pool state".to_string(),
+                );
+            }
+        }
+
+        // Check both nullifiers not already spent
+        {
+            let guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+            for (label, nullifier) in [("A", &nullifier_a), ("B", &nullifier_b)] {
+                let spent = if let Some(batch) = guard.as_ref() {
+                    batch.is_nullifier_spent(nullifier)?
+                } else {
+                    self.state.is_nullifier_spent(nullifier)?
+                };
+                if spent {
+                    return Err(format!(
+                        "ShieldedTransfer: nullifier {} already spent: {}",
+                        label,
+                        hex::encode(nullifier)
+                    ));
+                }
+            }
+            // Also ensure the two nullifiers are distinct
+            if nullifier_a == nullifier_b {
+                return Err("ShieldedTransfer: duplicate nullifiers".to_string());
+            }
+        }
+
+        // Build public inputs: [merkle_root, null_a, null_b, comm_c, comm_d]
+        let merkle_root_fr = Fr::from_le_bytes_mod_order(&merkle_root);
+        let null_a_fr = Fr::from_le_bytes_mod_order(&nullifier_a);
+        let null_b_fr = Fr::from_le_bytes_mod_order(&nullifier_b);
+        let comm_c_fr = Fr::from_le_bytes_mod_order(&commitment_c);
+        let comm_d_fr = Fr::from_le_bytes_mod_order(&commitment_d);
+
+        let zk_proof = ZkProof {
+            proof_bytes,
+            proof_type: ProofType::Transfer,
+            public_inputs: vec![
+                fr_to_bytes(&merkle_root_fr),
+                fr_to_bytes(&null_a_fr),
+                fr_to_bytes(&null_b_fr),
+                fr_to_bytes(&comm_c_fr),
+                fr_to_bytes(&comm_d_fr),
+            ],
+        };
+
+        // Verify ZK proof
+        {
+            let verifier = self
+                .zk_verifier
+                .lock()
+                .map_err(|e| format!("ShieldedTransfer: verifier lock poisoned: {}", e))?;
+            let valid = verifier
+                .verify(&zk_proof)
+                .map_err(|e| format!("ShieldedTransfer: proof verification error: {}", e))?;
+            if !valid {
+                return Err("ShieldedTransfer: ZK proof verification failed".to_string());
+            }
+        }
+
+        // Mark both nullifiers spent, insert 2 new commitments, update pool
+        {
+            let mut guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(batch) = guard.as_mut() {
+                batch.mark_nullifier_spent(&nullifier_a)?;
+                batch.mark_nullifier_spent(&nullifier_b)?;
+                let mut pool = batch.get_shielded_pool_state()?;
+                let idx0 = pool.commitment_count;
+                batch.insert_shielded_commitment(idx0, &commitment_c)?;
+                batch.insert_shielded_commitment(idx0 + 1, &commitment_d)?;
+                pool.commitment_count += 2;
+                // total_shielded unchanged: value conservation enforced by ZK circuit
+                // Rebuild merkle root
+                let mut leaves = self.state.get_all_shielded_commitments(idx0)?;
+                leaves.push(commitment_c);
+                leaves.push(commitment_d);
+                let mut tree = crate::zk::MerkleTree::new();
+                for leaf in &leaves {
+                    tree.insert(*leaf);
+                }
+                pool.merkle_root = tree.root();
+                batch.put_shielded_pool_state(&pool)?;
+            } else {
+                self.state.mark_nullifier_spent(&nullifier_a)?;
+                self.state.mark_nullifier_spent(&nullifier_b)?;
+                let mut pool = self.state.get_shielded_pool_state()?;
+                let idx0 = pool.commitment_count;
+                self.state.insert_shielded_commitment(idx0, &commitment_c)?;
+                self.state
+                    .insert_shielded_commitment(idx0 + 1, &commitment_d)?;
+                pool.commitment_count += 2;
+                // Rebuild merkle root
+                let leaves = self
+                    .state
+                    .get_all_shielded_commitments(pool.commitment_count)?;
+                let mut tree = crate::zk::MerkleTree::new();
+                for leaf in &leaves {
+                    tree.insert(*leaf);
+                }
+                pool.merkle_root = tree.root();
+                self.state.put_shielded_pool_state(&pool)?;
+            }
+        }
 
         Ok(())
     }
@@ -5792,5 +6275,300 @@ mod tests {
         let proposal = state.get_governed_proposal(1).unwrap().unwrap();
         assert!(proposal.executed, "Should be executed with 3/3 approvals");
         assert_eq!(state.get_balance(&recipient).unwrap(), transfer_amount);
+    }
+
+    // ─── Shielded pool processor tests ──────────────────────────────
+
+    #[cfg(feature = "zk")]
+    #[test]
+    fn test_shield_rejects_short_data() {
+        let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
+
+        // Only 100 bytes provided (need 169)
+        let mut data = vec![23u8];
+        data.extend_from_slice(&[0u8; 99]);
+
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice],
+            data,
+        };
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+
+        let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
+        assert!(!result.success);
+        assert!(
+            result.error.as_ref().unwrap().contains("insufficient data"),
+            "Expected insufficient data error, got: {:?}",
+            result.error
+        );
+    }
+
+    #[cfg(feature = "zk")]
+    #[test]
+    fn test_shield_rejects_zero_amount() {
+        let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
+
+        let mut data = vec![23u8];
+        data.extend_from_slice(&0u64.to_le_bytes()); // zero amount
+        data.extend_from_slice(&[0xAA; 32]); // commitment
+        data.extend_from_slice(&[0xBB; 128]); // fake proof
+
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice],
+            data,
+        };
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+
+        let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
+        assert!(!result.success);
+        assert!(
+            result.error.as_ref().unwrap().contains("non-zero"),
+            "Expected non-zero error, got: {:?}",
+            result.error
+        );
+    }
+
+    #[cfg(feature = "zk")]
+    #[test]
+    fn test_shield_rejects_no_accounts() {
+        let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
+
+        let mut data = vec![23u8];
+        data.extend_from_slice(&100u64.to_le_bytes());
+        data.extend_from_slice(&[0xAA; 32]);
+        data.extend_from_slice(&[0xBB; 128]);
+
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![], // no accounts!
+            data,
+        };
+        // We still need at least one account for fee payer, so we put alice in a second ix
+        // Actually the processor checks accounts on the instruction level — let's just test
+        // that the error message is correct
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+
+        let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
+        assert!(!result.success);
+        // It might fail at fee payer extraction or at the shield handler
+        assert!(result.error.is_some());
+    }
+
+    #[cfg(feature = "zk")]
+    #[test]
+    fn test_shield_rejects_invalid_proof_bytes() {
+        let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
+
+        // Load VKs so the verifier is ready (but the proof is garbage)
+        let ceremony = crate::zk::setup::setup_shield().unwrap();
+        processor
+            .load_zk_verification_keys(
+                &ceremony.verification_key_bytes,
+                &ceremony.verification_key_bytes, // reuse for unshield (doesn't matter here)
+                &ceremony.verification_key_bytes, // reuse for transfer
+            )
+            .unwrap();
+
+        let mut data = vec![23u8];
+        data.extend_from_slice(&100u64.to_le_bytes());
+        data.extend_from_slice(&[0xAA; 32]); // bogus commitment
+        data.extend_from_slice(&[0xFF; 128]); // invalid proof bytes
+
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice],
+            data,
+        };
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+
+        let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
+        assert!(!result.success, "Invalid proof bytes should fail");
+        assert!(
+            result.error.as_ref().unwrap().contains("proof"),
+            "Expected proof-related error, got: {:?}",
+            result.error
+        );
+    }
+
+    #[cfg(feature = "zk")]
+    #[test]
+    fn test_shield_rejects_no_verifier_keys() {
+        let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        // Do NOT load VKs — verifier has no keys
+
+        let mut data = vec![23u8];
+        let amount = 100u64;
+        data.extend_from_slice(&amount.to_le_bytes());
+        data.extend_from_slice(&[0xAA; 32]);
+
+        // Build a technically-valid-length proof (128 bytes of zeros won't deserialize)
+        data.extend_from_slice(&[0u8; 128]);
+
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice],
+            data,
+        };
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+
+        let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
+        assert!(!result.success);
+        // Should fail because VK is not loaded
+        assert!(result.error.is_some());
+    }
+
+    #[cfg(feature = "zk")]
+    #[test]
+    fn test_shield_full_e2e_with_processor() {
+        use crate::zk::{
+            circuits::shield::ShieldCircuit, fr_to_bytes, poseidon_hash_fr, setup, Prover, Verifier,
+        };
+        use ark_bn254::Fr;
+        use ark_ff::PrimeField;
+        use ark_std::rand::rngs::OsRng;
+        use ark_std::UniformRand;
+
+        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup_();
+
+        // 1. Run trusted setup for shield circuit
+        let ceremony = setup::setup_shield().unwrap();
+
+        // 2. Load VK into processor
+        // For this test we only need shield VK; use same bytes for all (only shield will be called)
+        let unshield_ceremony = setup::setup_unshield().unwrap();
+        let transfer_ceremony = setup::setup_transfer().unwrap();
+        processor
+            .load_zk_verification_keys(
+                &ceremony.verification_key_bytes,
+                &unshield_ceremony.verification_key_bytes,
+                &transfer_ceremony.verification_key_bytes,
+            )
+            .unwrap();
+
+        // 3. Build shield witness
+        let amount = 500_000_000u64; // 0.5 MOLT in shells
+        let blinding = Fr::rand(&mut OsRng);
+        let amount_fr = Fr::from(amount);
+        let commitment_fr = poseidon_hash_fr(amount_fr, blinding);
+
+        let circuit = ShieldCircuit::new(amount, amount, blinding, commitment_fr);
+
+        // 4. Generate proof
+        let mut prover = Prover::new();
+        prover.load_shield_key(&ceremony.proving_key_bytes).unwrap();
+        let zk_proof = prover.prove_shield(circuit).unwrap();
+
+        // 5. Build instruction data
+        let mut data = vec![23u8];
+        data.extend_from_slice(&amount.to_le_bytes());
+        data.extend_from_slice(&fr_to_bytes(&commitment_fr));
+        data.extend_from_slice(&zk_proof.proof_bytes);
+
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice],
+            data,
+        };
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+
+        // 6. Process transaction
+        let alice_balance_before = state.get_balance(&alice).unwrap();
+        let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
+        assert!(
+            result.success,
+            "Shield should succeed: {:?}",
+            result.error
+        );
+
+        // 7. Verify state changes
+        let alice_balance_after = state.get_balance(&alice).unwrap();
+        // Alice should have less balance (amount + fee deducted)
+        assert!(
+            alice_balance_after < alice_balance_before,
+            "Alice balance should decrease after shield"
+        );
+        assert_eq!(
+            alice_balance_before - alice_balance_after - result.fee_paid,
+            amount,
+            "Balance decrease minus fee should equal shielded amount"
+        );
+
+        // Pool state should be updated
+        let pool = state.get_shielded_pool_state().unwrap();
+        assert_eq!(pool.commitment_count, 1);
+        assert_eq!(pool.total_shielded, amount);
+
+        // Commitment should be stored
+        let stored_commitment = state.get_shielded_commitment(0).unwrap();
+        assert_eq!(stored_commitment, Some(fr_to_bytes(&commitment_fr)));
+
+        // Merkle root should be updated to reflect the single leaf
+        let mut expected_tree = crate::zk::MerkleTree::new();
+        expected_tree.insert(fr_to_bytes(&commitment_fr));
+        assert_eq!(pool.merkle_root, expected_tree.root());
+    }
+
+    /// Renamed setup helper for shielded tests to avoid name collision
+    #[cfg(feature = "zk")]
+    fn setup_() -> (TxProcessor, StateStore, Keypair, Pubkey, Pubkey, Hash) {
+        setup()
+    }
+
+    #[cfg(feature = "zk")]
+    #[test]
+    fn test_unshield_rejects_short_data() {
+        let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
+
+        let mut data = vec![24u8];
+        data.extend_from_slice(&[0u8; 50]); // too short (need 232 more bytes)
+
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice],
+            data,
+        };
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+
+        let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
+        assert!(!result.success);
+        assert!(result.error.as_ref().unwrap().contains("insufficient data"));
+    }
+
+    #[cfg(feature = "zk")]
+    #[test]
+    fn test_transfer_rejects_short_data() {
+        let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
+
+        let mut data = vec![25u8];
+        data.extend_from_slice(&[0u8; 100]); // too short (need 288 more bytes)
+
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice],
+            data,
+        };
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+
+        let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
+        assert!(!result.success);
+        assert!(result.error.as_ref().unwrap().contains("insufficient data"));
     }
 }

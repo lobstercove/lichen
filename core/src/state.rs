@@ -71,6 +71,10 @@ const CF_SYMBOL_BY_PROGRAM: &str = "symbol_by_program"; // Program pubkey -> sym
 const CF_EVENTS_BY_SLOT: &str = "events_by_slot"; // slot(8,BE) + seq(8,BE) -> event_key (secondary index)
 const CF_CONTRACT_STORAGE: &str = "contract_storage"; // Contract storage (MoltyID reputation etc.)
 const CF_MERKLE_LEAVES: &str = "merkle_leaves"; // pubkey(32) -> leaf_hash(32) (incremental Merkle cache)
+// Shielded pool (ZK privacy layer)
+const CF_SHIELDED_COMMITMENTS: &str = "shielded_commitments"; // index(8,LE) -> commitment_leaf(32)
+const CF_SHIELDED_NULLIFIERS: &str = "shielded_nullifiers"; // nullifier(32) -> 0x01 (spent flag)
+const CF_SHIELDED_POOL: &str = "shielded_pool"; // singleton key "state" -> ShieldedPoolState (JSON)
 
 // ─── PERF-OPT 3: In-process blockhash cache ─────────────────────────────────
 
@@ -811,6 +815,10 @@ impl StateStore {
             ColumnFamilyDescriptor::new(CF_CONTRACT_STORAGE, prefix_scan_opts(32)),
             // Incremental Merkle leaf cache
             ColumnFamilyDescriptor::new(CF_MERKLE_LEAVES, point_lookup_opts(32)), // key=pubkey(32)->leaf_hash(32)
+            // Shielded pool (ZK privacy layer)
+            ColumnFamilyDescriptor::new(CF_SHIELDED_COMMITMENTS, point_lookup_opts(8)), // key=index(8,LE)->commitment(32)
+            ColumnFamilyDescriptor::new(CF_SHIELDED_NULLIFIERS, point_lookup_opts(32)), // key=nullifier(32)->0x01
+            ColumnFamilyDescriptor::new(CF_SHIELDED_POOL, small_cf_opts()),             // singleton pool state
         ];
 
         let db = DB::open_cf_descriptors(&db_opts, path, cfs)
@@ -1622,6 +1630,130 @@ impl StateStore {
                 .db
                 .put_cf(&cf, b"dirty_account_count", 1u64.to_le_bytes());
         }
+    }
+
+    // ─── Shielded pool (ZK privacy layer) ───────────────────────────────
+
+    /// Insert a note commitment into the shielded commitments column family.
+    /// Key = index as u64 LE (8 bytes), value = commitment leaf (32 bytes).
+    pub fn insert_shielded_commitment(
+        &self,
+        index: u64,
+        commitment: &[u8; 32],
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_SHIELDED_COMMITMENTS)
+            .ok_or_else(|| "Shielded commitments CF not found".to_string())?;
+
+        self.db
+            .put_cf(&cf, index.to_le_bytes(), commitment)
+            .map_err(|e| format!("Failed to insert shielded commitment: {}", e))
+    }
+
+    /// Retrieve a commitment leaf by its insertion index.
+    pub fn get_shielded_commitment(&self, index: u64) -> Result<Option<[u8; 32]>, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_SHIELDED_COMMITMENTS)
+            .ok_or_else(|| "Shielded commitments CF not found".to_string())?;
+
+        match self.db.get_cf(&cf, index.to_le_bytes()) {
+            Ok(Some(data)) => {
+                if data.len() != 32 {
+                    return Err(format!(
+                        "Invalid commitment length {} at index {}",
+                        data.len(),
+                        index
+                    ));
+                }
+                let mut out = [0u8; 32];
+                out.copy_from_slice(&data);
+                Ok(Some(out))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(format!("Database error reading commitment: {}", e)),
+        }
+    }
+
+    /// Check whether a nullifier has been spent (exists in CF_SHIELDED_NULLIFIERS).
+    pub fn is_nullifier_spent(&self, nullifier: &[u8; 32]) -> Result<bool, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_SHIELDED_NULLIFIERS)
+            .ok_or_else(|| "Shielded nullifiers CF not found".to_string())?;
+
+        match self.db.get_cf(&cf, nullifier) {
+            Ok(Some(_)) => Ok(true),
+            Ok(None) => Ok(false),
+            Err(e) => Err(format!("Database error checking nullifier: {}", e)),
+        }
+    }
+
+    /// Mark a nullifier as spent.  Value is a single 0x01 byte (tombstone).
+    pub fn mark_nullifier_spent(&self, nullifier: &[u8; 32]) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_SHIELDED_NULLIFIERS)
+            .ok_or_else(|| "Shielded nullifiers CF not found".to_string())?;
+
+        self.db
+            .put_cf(&cf, nullifier, [0x01])
+            .map_err(|e| format!("Failed to mark nullifier spent: {}", e))
+    }
+
+    /// Load the singleton `ShieldedPoolState` from CF_SHIELDED_POOL.
+    /// Returns `Default` (empty tree, zero balance) if not yet initialised.
+    #[cfg(feature = "zk")]
+    pub fn get_shielded_pool_state(&self) -> Result<crate::zk::ShieldedPoolState, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_SHIELDED_POOL)
+            .ok_or_else(|| "Shielded pool CF not found".to_string())?;
+
+        match self.db.get_cf(&cf, b"state") {
+            Ok(Some(data)) => serde_json::from_slice(&data)
+                .map_err(|e| format!("Failed to deserialize ShieldedPoolState: {}", e)),
+            Ok(None) => Ok(crate::zk::ShieldedPoolState::default()),
+            Err(e) => Err(format!("Database error reading shielded pool state: {}", e)),
+        }
+    }
+
+    /// Persist the singleton `ShieldedPoolState` to CF_SHIELDED_POOL.
+    #[cfg(feature = "zk")]
+    pub fn put_shielded_pool_state(
+        &self,
+        state: &crate::zk::ShieldedPoolState,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_SHIELDED_POOL)
+            .ok_or_else(|| "Shielded pool CF not found".to_string())?;
+
+        let data = serde_json::to_vec(state)
+            .map_err(|e| format!("Failed to serialize ShieldedPoolState: {}", e))?;
+
+        self.db
+            .put_cf(&cf, b"state", &data)
+            .map_err(|e| format!("Failed to store ShieldedPoolState: {}", e))
+    }
+
+    /// Collect all commitment leaves [0..count) from CF_SHIELDED_COMMITMENTS.
+    /// Used to rebuild the in-memory Merkle tree for proof verification.
+    pub fn get_all_shielded_commitments(&self, count: u64) -> Result<Vec<[u8; 32]>, String> {
+        let mut leaves = Vec::with_capacity(count as usize);
+        for i in 0..count {
+            match self.get_shielded_commitment(i)? {
+                Some(c) => leaves.push(c),
+                None => {
+                    return Err(format!(
+                        "Missing shielded commitment at index {} (expected {})",
+                        i, count
+                    ))
+                }
+            }
+        }
+        Ok(leaves)
     }
 
     /// Get current blockchain metrics
@@ -3638,6 +3770,77 @@ impl StateBatch {
             Ok(_) => Ok(0),
             Err(e) => Err(format!("Database error: {}", e)),
         }
+    }
+
+    // ─── Shielded pool (ZK privacy layer) ───────────────────────────────
+
+    /// Insert a shielded commitment into the WriteBatch.
+    pub fn insert_shielded_commitment(
+        &mut self,
+        index: u64,
+        commitment: &[u8; 32],
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_SHIELDED_COMMITMENTS)
+            .ok_or_else(|| "Shielded commitments CF not found".to_string())?;
+        self.batch.put_cf(&cf, index.to_le_bytes(), commitment);
+        Ok(())
+    }
+
+    /// Check whether a nullifier has been spent (checks disk only — batch
+    /// nullifiers are not readable until committed).
+    pub fn is_nullifier_spent(&self, nullifier: &[u8; 32]) -> Result<bool, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_SHIELDED_NULLIFIERS)
+            .ok_or_else(|| "Shielded nullifiers CF not found".to_string())?;
+        match self.db.get_cf(&cf, nullifier) {
+            Ok(Some(_)) => Ok(true),
+            Ok(None) => Ok(false),
+            Err(e) => Err(format!("Database error checking nullifier: {}", e)),
+        }
+    }
+
+    /// Mark a nullifier as spent in the WriteBatch.
+    pub fn mark_nullifier_spent(&mut self, nullifier: &[u8; 32]) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_SHIELDED_NULLIFIERS)
+            .ok_or_else(|| "Shielded nullifiers CF not found".to_string())?;
+        self.batch.put_cf(&cf, nullifier, [0x01]);
+        Ok(())
+    }
+
+    /// Load the singleton `ShieldedPoolState` from disk.
+    #[cfg(feature = "zk")]
+    pub fn get_shielded_pool_state(&self) -> Result<crate::zk::ShieldedPoolState, String> {
+        let cf = self
+            .db
+            .cf_handle(CF_SHIELDED_POOL)
+            .ok_or_else(|| "Shielded pool CF not found".to_string())?;
+        match self.db.get_cf(&cf, b"state") {
+            Ok(Some(data)) => serde_json::from_slice(&data)
+                .map_err(|e| format!("Failed to deserialize ShieldedPoolState: {}", e)),
+            Ok(None) => Ok(crate::zk::ShieldedPoolState::default()),
+            Err(e) => Err(format!("Database error reading shielded pool state: {}", e)),
+        }
+    }
+
+    /// Write the singleton `ShieldedPoolState` to the WriteBatch.
+    #[cfg(feature = "zk")]
+    pub fn put_shielded_pool_state(
+        &mut self,
+        state: &crate::zk::ShieldedPoolState,
+    ) -> Result<(), String> {
+        let cf = self
+            .db
+            .cf_handle(CF_SHIELDED_POOL)
+            .ok_or_else(|| "Shielded pool CF not found".to_string())?;
+        let data = serde_json::to_vec(state)
+            .map_err(|e| format!("Failed to serialize ShieldedPoolState: {}", e))?;
+        self.batch.put_cf(&cf, b"state", &data);
+        Ok(())
     }
 }
 
@@ -6449,5 +6652,134 @@ mod tests {
             .expect("community_treasury must be set");
         assert_eq!(dao_treasury, community_pk, "DAO treasury must be community_treasury wallet");
         assert_ne!(dao_treasury, validator_rewards_pk, "DAO treasury must NOT be validator_rewards");
+    }
+
+    // ─── Shielded pool state tests ──────────────────────────────────
+
+    #[test]
+    fn test_shielded_commitment_insert_and_get() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let commitment = [0xABu8; 32];
+        state.insert_shielded_commitment(0, &commitment).unwrap();
+
+        let retrieved = state.get_shielded_commitment(0).unwrap();
+        assert_eq!(retrieved, Some(commitment));
+
+        // Non-existent index
+        assert_eq!(state.get_shielded_commitment(1).unwrap(), None);
+    }
+
+    #[test]
+    fn test_shielded_commitment_multiple() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        for i in 0u64..5 {
+            let mut c = [0u8; 32];
+            c[0] = i as u8;
+            state.insert_shielded_commitment(i, &c).unwrap();
+        }
+
+        let all = state.get_all_shielded_commitments(5).unwrap();
+        assert_eq!(all.len(), 5);
+        for i in 0..5 {
+            assert_eq!(all[i][0], i as u8);
+        }
+    }
+
+    #[test]
+    fn test_nullifier_spent_tracking() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let nullifier = [0xFFu8; 32];
+
+        assert!(!state.is_nullifier_spent(&nullifier).unwrap());
+        state.mark_nullifier_spent(&nullifier).unwrap();
+        assert!(state.is_nullifier_spent(&nullifier).unwrap());
+
+        // Different nullifier is not spent
+        let other = [0x01u8; 32];
+        assert!(!state.is_nullifier_spent(&other).unwrap());
+    }
+
+    #[cfg(feature = "zk")]
+    #[test]
+    fn test_shielded_pool_state_default() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let pool = state.get_shielded_pool_state().unwrap();
+        assert_eq!(pool.commitment_count, 0);
+        assert_eq!(pool.total_shielded, 0);
+    }
+
+    #[cfg(feature = "zk")]
+    #[test]
+    fn test_shielded_pool_state_roundtrip() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let mut pool = crate::zk::ShieldedPoolState::new();
+        pool.commitment_count = 42;
+        pool.total_shielded = 1_000_000;
+        pool.merkle_root = [0xEE; 32];
+
+        state.put_shielded_pool_state(&pool).unwrap();
+        let loaded = state.get_shielded_pool_state().unwrap();
+
+        assert_eq!(loaded.commitment_count, 42);
+        assert_eq!(loaded.total_shielded, 1_000_000);
+        assert_eq!(loaded.merkle_root, [0xEE; 32]);
+    }
+
+    #[test]
+    fn test_shielded_batch_commitment_and_nullifier() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let mut batch = state.begin_batch();
+
+        // Insert commitment via batch
+        let commitment = [0xBBu8; 32];
+        batch.insert_shielded_commitment(0, &commitment).unwrap();
+
+        // Mark nullifier via batch
+        let nullifier = [0xCCu8; 32];
+        batch.mark_nullifier_spent(&nullifier).unwrap();
+
+        // Before commit, disk has nothing
+        assert_eq!(state.get_shielded_commitment(0).unwrap(), None);
+        assert!(!state.is_nullifier_spent(&nullifier).unwrap());
+
+        // Commit the batch
+        state.commit_batch(batch).unwrap();
+
+        // Now disk has the data
+        assert_eq!(state.get_shielded_commitment(0).unwrap(), Some(commitment));
+        assert!(state.is_nullifier_spent(&nullifier).unwrap());
+    }
+
+    #[cfg(feature = "zk")]
+    #[test]
+    fn test_shielded_batch_pool_state() {
+        let temp = tempdir().unwrap();
+        let state = StateStore::open(temp.path()).unwrap();
+
+        let mut batch = state.begin_batch();
+
+        let mut pool = batch.get_shielded_pool_state().unwrap();
+        pool.commitment_count = 10;
+        pool.total_shielded = 5_000;
+        batch.put_shielded_pool_state(&pool).unwrap();
+
+        // Commit
+        state.commit_batch(batch).unwrap();
+
+        let loaded = state.get_shielded_pool_state().unwrap();
+        assert_eq!(loaded.commitment_count, 10);
+        assert_eq!(loaded.total_shielded, 5_000);
     }
 }
