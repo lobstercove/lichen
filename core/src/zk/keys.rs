@@ -8,9 +8,10 @@
 //! The spending key is the master secret. The viewing key can be shared
 //! with auditors for compliance (selective disclosure).
 
+use super::merkle::fr_to_bytes;
 use ark_bn254::{Fr, G1Affine, G1Projective};
 use ark_ec::{AffineRepr, CurveGroup};
-use ark_ff::{BigInteger, PrimeField, UniformRand};
+use ark_ff::{PrimeField, UniformRand};
 use ark_serialize::CanonicalSerialize;
 use ark_std::rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
@@ -66,12 +67,7 @@ impl ShieldedKeypair {
 
     /// Get the spending key as 32 bytes
     pub fn spending_key_bytes(&self) -> [u8; 32] {
-        let mut output = [0u8; 32];
-        let bigint = self.spending_key.0.into_bigint();
-        let bytes = bigint.to_bytes_le();
-        let len = std::cmp::min(bytes.len(), 32);
-        output[..len].copy_from_slice(&bytes[..len]);
-        output
+        fr_to_bytes(&self.spending_key.0)
     }
 }
 
