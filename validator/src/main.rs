@@ -219,8 +219,9 @@ fn resolve_peer_list(peers: &[String]) -> Vec<SocketAddr> {
 fn try_load_runtime_zk_verification_keys(processor: &TxProcessor, _data_dir: &Path) {
     // ZK keys are cached in a shared location (~/.moltchain/zk/) so they
     // survive blockchain resets.  The Groth16 trusted setup for 3 circuits
-    // (shield, unshield, transfer with TREE_DEPTH=32) takes ~4 minutes on
-    // first run but is skipped on subsequent starts.
+    // (shield, unshield, transfer with TREE_DEPTH=20) completes in ~10s on
+    // first run via the standalone `zk-setup` binary, then is skipped on
+    // all subsequent starts.
     //
     // Priority: env vars > ~/.moltchain/zk/ (shared cache)
     let shared_zk_dir = dirs::home_dir()
@@ -281,12 +282,20 @@ fn try_load_runtime_zk_verification_keys(processor: &TxProcessor, _data_dir: &Pa
     };
 
     match processor.load_zk_verification_keys(&shield_vk, &unshield_vk, &transfer_vk) {
-        Ok(_) => info!(
-            "✓ Loaded ZK verification keys (shield={}, unshield={}, transfer={})",
-            shield_path.display(),
-            unshield_path.display(),
-            transfer_path.display()
-        ),
+        Ok(_) => {
+            info!(
+                "✓ Loaded ZK verification keys (shield={}, unshield={}, transfer={})",
+                shield_path.display(),
+                unshield_path.display(),
+                transfer_path.display()
+            );
+            // Persist VK hashes to pool state so the explorer / RPC
+            // can confirm the verifier is initialised (vkShieldHash ≠ 0x00…).
+            match processor.persist_vk_hashes_to_pool_state(&shield_vk, &unshield_vk, &transfer_vk) {
+                Ok(_) => info!("✓ VK hashes persisted to shielded pool state"),
+                Err(e) => warn!("⚠️  Failed persisting VK hashes: {}", e),
+            }
+        }
         Err(e) => warn!("⚠️  Failed loading ZK verification keys: {}", e),
     }
 }
@@ -5451,8 +5460,14 @@ fn run_validator_sync() {
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .worker_threads(worker_threads)
-        .build()
-        .expect("Failed to build tokio runtime");
+        .build();
+    let rt = match rt {
+        Ok(runtime) => runtime,
+        Err(err) => {
+            eprintln!("Failed to build tokio runtime: {}", err);
+            return;
+        }
+    };
     eprintln!("Tokio runtime: {} worker threads", worker_threads);
     rt.block_on(run_validator());
 }
@@ -5838,8 +5853,13 @@ async fn run_validator() {
 
         // Generate genesis wallet with multi-sig
         let (wallet, keypairs, distribution_keypairs) =
-            GenesisWallet::generate(&genesis_config.chain_id, is_mainnet, signer_count)
-                .expect("Failed to generate genesis wallet");
+            match GenesisWallet::generate(&genesis_config.chain_id, is_mainnet, signer_count) {
+                Ok(result) => result,
+                Err(err) => {
+                    error!("Failed to generate genesis wallet: {}", err);
+                    return;
+                }
+            };
 
         genesis_signer = keypairs
             .first()
@@ -5880,36 +5900,59 @@ async fn run_validator() {
         }
 
         // Save wallet info
-        wallet
-            .save(&genesis_wallet_path)
-            .expect("Failed to save genesis wallet");
+        if let Err(err) = wallet.save(&genesis_wallet_path) {
+            error!("Failed to save genesis wallet: {}", err);
+            return;
+        }
         info!("  ✓ Wallet info saved: {}", genesis_wallet_path.display());
 
         // Save all signer keypairs
-        let keypair_paths = GenesisWallet::save_keypairs(
+        let keypair_paths = match GenesisWallet::save_keypairs(
             &keypairs,
             &genesis_keypairs_dir,
             &genesis_config.chain_id,
-        )
-        .expect("Failed to save keypairs");
+        ) {
+            Ok(paths) => paths,
+            Err(err) => {
+                error!("Failed to save keypairs: {}", err);
+                return;
+            }
+        };
 
         // Save all distribution keypairs (one per whitepaper wallet)
-        let dist_keypair_paths = GenesisWallet::save_distribution_keypairs(
+        let dist_keypair_paths = match GenesisWallet::save_distribution_keypairs(
             wallet.distribution_wallets.as_deref().unwrap_or(&[]),
             &distribution_keypairs,
             &genesis_keypairs_dir,
             &genesis_config.chain_id,
-        )
-        .expect("Failed to save distribution keypairs");
+        ) {
+            Ok(paths) => paths,
+            Err(err) => {
+                error!("Failed to save distribution keypairs: {}", err);
+                return;
+            }
+        };
 
         // Save treasury keypair separately for backward compat (start-local-stack.sh)
         // Treasury = validator_rewards = first distribution keypair
-        let treasury_keypair_path = GenesisWallet::save_treasury_keypair(
-            &distribution_keypairs[0],
+        let treasury_seed_keypair = match distribution_keypairs.first() {
+            Some(keypair) => keypair,
+            None => {
+                error!("Failed to save treasury keypair: missing distribution keypair");
+                return;
+            }
+        };
+        let treasury_keypair_path = match GenesisWallet::save_treasury_keypair(
+            treasury_seed_keypair,
             &genesis_keypairs_dir,
             &genesis_config.chain_id,
-        )
-        .expect("Failed to save treasury keypair");
+        ) {
+            Ok(path) => path,
+            Err(err) => {
+                error!("Failed to save treasury keypair: {}", err);
+                return;
+            }
+        };
 
         info!("  ✓ Saved {} signer keypair(s):", keypair_paths.len());
         for path in &keypair_paths {
@@ -6063,10 +6106,20 @@ async fn run_validator() {
     }
 
     if !genesis_exists && !is_joining_network {
-        let genesis_pubkey = genesis_pubkey.expect("Missing genesis pubkey for creation");
-        let genesis_wallet = genesis_wallet
-            .as_ref()
-            .expect("Missing genesis wallet for creation");
+        let genesis_pubkey = match genesis_pubkey {
+            Some(pubkey) => pubkey,
+            None => {
+                error!("Missing genesis pubkey for creation");
+                return;
+            }
+        };
+        let genesis_wallet = match genesis_wallet.as_ref() {
+            Some(wallet) => wallet,
+            None => {
+                error!("Missing genesis wallet for creation");
+                return;
+            }
+        };
         info!("📦 Creating genesis state from auto-generated wallet");
 
         if let Err(e) = state.set_rent_params(
@@ -6417,9 +6470,13 @@ async fn run_validator() {
         // Record distribution transfers in genesis block
         // (validator_rewards FIRST for backward-compatible treasury extraction)
         if let Some(ref dist_wallets) = genesis_wallet.distribution_wallets {
-            let signer = genesis_signer
-                .as_ref()
-                .expect("Missing genesis signer for distribution funding");
+            let signer = match genesis_signer.as_ref() {
+                Some(signer) => signer,
+                None => {
+                    error!("Missing genesis signer for distribution funding");
+                    return;
+                }
+            };
 
             for dw in dist_wallets {
                 let mut data = Vec::with_capacity(9);
@@ -6454,9 +6511,13 @@ async fn run_validator() {
 
             let message = Message::new(vec![instruction], Hash::default());
             let mut treasury_tx = Transaction::new(message.clone());
-            let signer = genesis_signer
-                .as_ref()
-                .expect("Missing genesis signer for treasury funding");
+            let signer = match genesis_signer.as_ref() {
+                Some(signer) => signer,
+                None => {
+                    error!("Missing genesis signer for treasury funding");
+                    return;
+                }
+            };
             let signature = signer.sign(&message.serialize());
             treasury_tx.signatures.push(signature);
             genesis_txs.push(treasury_tx);
@@ -6753,7 +6814,10 @@ async fn run_validator() {
             if let Some(parent) = dest.parent() {
                 fs::create_dir_all(parent).ok();
             }
-            fs::copy(source, &dest).expect("Failed to copy keypair file for --import-key");
+            if let Err(e) = fs::copy(source, &dest) {
+                error!("❌ Failed to copy keypair file for --import-key: {}", e);
+                std::process::exit(1);
+            }
             // Set restrictive permissions
             #[cfg(unix)]
             {
@@ -6780,8 +6844,14 @@ async fn run_validator() {
         .and_then(|pos| args.get(pos + 1))
         .map(|s| s.as_str());
 
-    let validator_keypair = keypair_loader::load_or_generate_keypair(keypair_path, p2p_port)
-        .expect("Failed to load or generate validator keypair");
+    let validator_keypair = match keypair_loader::load_or_generate_keypair(keypair_path, p2p_port)
+    {
+        Ok(keypair) => keypair,
+        Err(err) => {
+            error!("Failed to load or generate validator keypair: {}", err);
+            std::process::exit(1);
+        }
+    };
 
     let validator_pubkey = validator_keypair.pubkey();
     info!("🦞 Validator identity: {}", validator_pubkey.to_base58());

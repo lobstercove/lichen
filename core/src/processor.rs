@@ -337,6 +337,25 @@ impl TxProcessor {
         Ok(())
     }
 
+    /// Persist VK hashes (SHA-256 of each VK file) into the shielded pool
+    /// state so the explorer and RPC can confirm keys are initialised.
+    /// Safe to call at startup after `load_zk_verification_keys`.
+    #[cfg(feature = "zk")]
+    pub fn persist_vk_hashes_to_pool_state(
+        &self,
+        shield_vk: &[u8],
+        unshield_vk: &[u8],
+        transfer_vk: &[u8],
+    ) -> Result<(), String> {
+        use crate::zk::verifier::hash_verification_key;
+        let mut pool = self.state.get_shielded_pool_state()?;
+        pool.vk_shield_hash = hash_verification_key(shield_vk);
+        pool.vk_unshield_hash = hash_verification_key(unshield_vk);
+        pool.vk_transfer_hash = hash_verification_key(transfer_vk);
+        self.state.put_shielded_pool_state(&pool)?;
+        Ok(())
+    }
+
     // ─── Batch-aware state accessors (T1.4/T3.1) ───────────────────
 
     fn b_get_account(&self, pubkey: &Pubkey) -> Result<Option<Account>, String> {
@@ -991,13 +1010,15 @@ impl TxProcessor {
                 );
                 group_results.push((idx, result));
             }
-            let mut r = results_mu.lock().unwrap();
+            let mut r = results_mu.lock().unwrap_or_else(|e| e.into_inner());
             for (idx, result) in group_results {
                 r[idx] = result;
             }
         });
 
-        results_mu.into_inner().unwrap()
+        results_mu
+            .into_inner()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     /// Simulate a transaction (dry run) — validates everything without persisting.
@@ -1359,7 +1380,16 @@ impl TxProcessor {
         // This prevents free-compute DoS via intentionally-failing EVM transactions.
         let fee_paid = u256_to_shells(&(evm_tx.gas_price * U256::from(result.gas_used)));
         if fee_paid > 0 {
-            let native_payer = mapping.unwrap(); // guaranteed Some from earlier check
+            let native_payer = match mapping {
+                Some(payer) => payer,
+                None => {
+                    return self.make_result(
+                        false,
+                        0,
+                        Some("EVM fee charge error: missing native payer mapping".to_string()),
+                    )
+                }
+            };
             if let Err(e) = self.charge_fee_direct(&native_payer, fee_paid) {
                 return self.make_result(false, 0, Some(format!("EVM fee charge error: {}", e)));
             }
@@ -1755,7 +1785,7 @@ impl TxProcessor {
         // AUDIT-FIX B-4 + B-7: Check if a DIFFERENT program already owns this symbol
         // Use batch-aware lookup to catch intra-batch duplicates
         {
-            let batch_lock = self.batch.lock().unwrap();
+            let batch_lock = self.batch.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(ref batch) = *batch_lock {
                 // Check batch overlay first (handles intra-batch duplicates)
                 if batch.symbol_exists(symbol).unwrap_or(false) {
