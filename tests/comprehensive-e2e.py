@@ -1482,10 +1482,12 @@ async def main() -> int:
         except Exception as e:
             report("SKIP", f"zk.rest.commitments skip ({e})")
 
-        # ── 3.9  Query Merkle path for leaf 0 (JSON-RPC) ──
+        # ── 3.9  Query Merkle path for the just-shielded commitment ──
         merkle_path_data = None
+        # The new commitment is at index `initial_count` (pool was at initial_count before shield)
+        shielded_leaf_index = initial_count
         try:
-            mp_resp = await conn._rpc("getShieldedMerklePath", [0])
+            mp_resp = await conn._rpc("getShieldedMerklePath", [shielded_leaf_index])
             siblings = mp_resp.get("siblings", [])
             path_bits = mp_resp.get("pathBits", [])
             report("PASS", f"zk.rpc.getShieldedMerklePath siblings={len(siblings)}")
@@ -1495,7 +1497,7 @@ async def main() -> int:
 
         # ── 3.10  Query Merkle path (REST) ──
         try:
-            rest_url = RPC_URL.replace("/rpc", "").rstrip("/") + "/api/v1/shielded/merkle-path/0"
+            rest_url = RPC_URL.replace("/rpc", "").rstrip("/") + f"/api/v1/shielded/merkle-path/{shielded_leaf_index}"
             req = urllib_req.Request(rest_url, headers={"Accept": "application/json"})
             with urllib_req.urlopen(req, timeout=5) as resp:
                 mp_rest = json.loads(resp.read())
