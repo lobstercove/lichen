@@ -9,10 +9,10 @@
 //! encrypted_note = ChaCha20-Poly1305(note, shared_secret)
 
 use super::keys::SpendingKey;
-use super::merkle::poseidon_hash_pair;
+use super::merkle::{fr_to_bytes, poseidon_hash_fr, poseidon_hash_pair};
 use super::pedersen::PedersenCommitment;
 use ark_bn254::Fr;
-use ark_ff::{BigInteger, PrimeField};
+use ark_ff::PrimeField;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -62,16 +62,36 @@ impl Note {
     }
 
     /// Compute the commitment hash (32 bytes, for Merkle tree leaf)
+    ///
+    /// Uses SHA-256 of the compressed Pedersen point. For the SNARK-friendly
+    /// version used in circuits and the Merkle tree, use `commitment_leaf()`.
     pub fn commitment_hash(&self) -> [u8; 32] {
         self.commitment().to_hash()
+    }
+
+    /// Compute the SNARK-friendly commitment leaf: Poseidon(value, blinding)
+    ///
+    /// This is the canonical leaf value inserted into the Merkle tree and
+    /// verified inside ZK circuits. Returns the Fr element directly.
+    pub fn commitment_leaf_fr(&self) -> Fr {
+        poseidon_hash_fr(Fr::from(self.value), self.blinding)
+    }
+
+    /// Compute the SNARK-friendly commitment as 32 bytes (for Merkle tree leaf)
+    pub fn commitment_leaf(&self) -> [u8; 32] {
+        fr_to_bytes(&self.commitment_leaf_fr())
+    }
+
+    /// Compute the nullifier as Fr (for in-circuit use)
+    /// nullifier = Poseidon(serial, spending_key)
+    pub fn nullifier_fr(&self, spending_key: &SpendingKey) -> Fr {
+        poseidon_hash_fr(self.serial, spending_key.0)
     }
 
     /// Compute the nullifier for this note using the spending key
     /// nullifier = Poseidon(serial, spending_key)
     pub fn nullifier(&self, spending_key: &SpendingKey) -> Nullifier {
-        let serial_bytes = fr_to_bytes(&self.serial);
-        let sk_bytes = fr_to_bytes(&spending_key.0);
-        Nullifier(poseidon_hash_pair(&serial_bytes, &sk_bytes))
+        Nullifier(fr_to_bytes(&self.nullifier_fr(spending_key)))
     }
 
     /// Serialize note to bytes for encryption
@@ -198,16 +218,6 @@ impl Nullifier {
     }
 }
 
-/// Convert a field element to 32 bytes (little-endian)
-pub fn fr_to_bytes(fr: &Fr) -> [u8; 32] {
-    let mut output = [0u8; 32];
-    let bigint = fr.into_bigint();
-    let bytes = bigint.to_bytes_le();
-    let len = std::cmp::min(bytes.len(), 32);
-    output[..len].copy_from_slice(&bytes[..len]);
-    output
-}
-
 /// Convert 32 bytes to a field element
 pub fn bytes_to_fr(bytes: &[u8; 32]) -> Fr {
     Fr::from_le_bytes_mod_order(bytes)
@@ -290,5 +300,37 @@ mod tests {
         let hex = nullifier.to_hex();
         let restored = Nullifier::from_hex(&hex).unwrap();
         assert_eq!(nullifier, restored);
+    }
+
+    #[test]
+    fn test_poseidon_commitment_deterministic() {
+        let note = test_note();
+        let c1 = note.commitment_leaf();
+        let c2 = note.commitment_leaf();
+        assert_eq!(c1, c2);
+        assert_ne!(c1, [0u8; 32]);
+    }
+
+    #[test]
+    fn test_poseidon_commitment_different_values() {
+        let note1 = Note::new([1u8; 32], 100, Fr::from(42u64), Fr::from(99u64));
+        let note2 = Note::new([1u8; 32], 200, Fr::from(42u64), Fr::from(99u64));
+        assert_ne!(note1.commitment_leaf(), note2.commitment_leaf());
+    }
+
+    #[test]
+    fn test_poseidon_commitment_different_blindings() {
+        let note1 = Note::new([1u8; 32], 100, Fr::from(42u64), Fr::from(99u64));
+        let note2 = Note::new([1u8; 32], 100, Fr::from(43u64), Fr::from(99u64));
+        assert_ne!(note1.commitment_leaf(), note2.commitment_leaf());
+    }
+
+    #[test]
+    fn test_nullifier_fr_matches_bytes() {
+        let note = test_note();
+        let sk = SpendingKey(Fr::rand(&mut OsRng));
+        let nullifier_bytes = note.nullifier(&sk);
+        let nullifier_fr = note.nullifier_fr(&sk);
+        assert_eq!(nullifier_bytes.0, fr_to_bytes(&nullifier_fr));
     }
 }

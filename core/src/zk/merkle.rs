@@ -222,23 +222,10 @@ impl Default for MerkleTree {
 /// Uses Poseidon sponge construction over BN254 scalar field.
 /// In-circuit, this is ~8x cheaper than SHA-256.
 pub fn poseidon_hash_pair(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-    // Convert bytes to field elements
     let left_fr = Fr::from_le_bytes_mod_order(left);
     let right_fr = Fr::from_le_bytes_mod_order(right);
-
-    // Use Poseidon sponge
-    let config = poseidon_config();
-    let mut sponge = PoseidonSponge::<Fr>::new(&config);
-    sponge.absorb(&left_fr);
-    sponge.absorb(&right_fr);
-    let result: Vec<Fr> = sponge.squeeze_field_elements(1);
-
-    // Convert back to bytes
-    let mut output = [0u8; 32];
-    let bytes = result[0].into_bigint().to_bytes_le();
-    let len = std::cmp::min(bytes.len(), 32);
-    output[..len].copy_from_slice(&bytes[..len]);
-    output
+    let result = poseidon_hash_fr(left_fr, right_fr);
+    fr_to_bytes(&result)
 }
 
 /// Poseidon hash of a single 32-byte input
@@ -248,16 +235,39 @@ pub fn poseidon_hash_single(input: &[u8; 32]) -> [u8; 32] {
     let mut sponge = PoseidonSponge::<Fr>::new(&config);
     sponge.absorb(&fr);
     let result: Vec<Fr> = sponge.squeeze_field_elements(1);
+    fr_to_bytes(&result[0])
+}
 
+/// Poseidon hash of two Fr elements, returning Fr (for use in circuits)
+///
+/// This is the canonical Poseidon computation shared by both native
+/// code and in-circuit gadgets. Circuits must use the same `poseidon_config()`
+/// to produce matching hashes.
+pub fn poseidon_hash_fr(left: Fr, right: Fr) -> Fr {
+    let config = poseidon_config();
+    let mut sponge = PoseidonSponge::<Fr>::new(&config);
+    sponge.absorb(&left);
+    sponge.absorb(&right);
+    let result: Vec<Fr> = sponge.squeeze_field_elements(1);
+    result[0]
+}
+
+/// Convert Fr to its canonical 32-byte little-endian representation
+pub fn fr_to_bytes(fr: &Fr) -> [u8; 32] {
     let mut output = [0u8; 32];
-    let bytes = result[0].into_bigint().to_bytes_le();
+    let bytes = fr.into_bigint().to_bytes_le();
     let len = std::cmp::min(bytes.len(), 32);
     output[..len].copy_from_slice(&bytes[..len]);
     output
 }
 
 /// Standard Poseidon config for BN254 (rate=2, capacity=1, width=3)
-fn poseidon_config() -> PoseidonConfig<Fr> {
+///
+/// This config MUST be used by all code that computes or verifies Poseidon
+/// hashes: the native Merkle tree, the circuit gadgets, commitment hashes,
+/// and nullifier derivation. Using a different config will produce different
+/// hashes and break proof verification.
+pub fn poseidon_config() -> PoseidonConfig<Fr> {
     // Use standard Poseidon parameters for BN254
     // Full rounds = 8, partial rounds = 57 (for 128-bit security)
     let full_rounds = 8;
