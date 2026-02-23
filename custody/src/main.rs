@@ -168,6 +168,7 @@ struct CustodyConfig {
     musd_contract_addr: Option<String>,
     wsol_contract_addr: Option<String>,
     weth_contract_addr: Option<String>,
+    wbnb_contract_addr: Option<String>,
     // Reserve rebalance settings
     rebalance_threshold_bps: u64, // trigger when one side exceeds this (e.g. 7000 = 70%)
     rebalance_target_bps: u64,    // swap to reach this ratio (e.g. 5000 = 50/50)
@@ -1399,6 +1400,7 @@ fn load_config() -> CustodyConfig {
     let musd_contract_addr = std::env::var("CUSTODY_MUSD_TOKEN_ADDR").ok();
     let wsol_contract_addr = std::env::var("CUSTODY_WSOL_TOKEN_ADDR").ok();
     let weth_contract_addr = std::env::var("CUSTODY_WETH_TOKEN_ADDR").ok();
+    let wbnb_contract_addr = std::env::var("CUSTODY_WBNB_TOKEN_ADDR").ok();
     let rebalance_threshold_bps = std::env::var("CUSTODY_REBALANCE_THRESHOLD_BPS")
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
@@ -1465,6 +1467,7 @@ fn load_config() -> CustodyConfig {
         musd_contract_addr,
         wsol_contract_addr,
         weth_contract_addr,
+        wbnb_contract_addr,
         rebalance_threshold_bps,
         rebalance_target_bps,
         rebalance_max_slippage_bps,
@@ -3630,6 +3633,7 @@ async fn submit_wrapped_credit(state: &CustodyState, job: &CreditJob) -> Result<
         "usdt" | "usdc" => "mUSD",
         "sol" => "wSOL",
         "eth" => "wETH",
+        "bnb" => "wBNB",
         _ => "UNKNOWN",
     };
     info!(
@@ -3645,11 +3649,13 @@ async fn submit_wrapped_credit(state: &CustodyState, job: &CreditJob) -> Result<
 /// Mapping:
 ///   sol (any chain)          → wSOL contract
 ///   eth (any chain)          → wETH contract
+///   bnb (any chain)          → wBNB contract
 ///   usdt, usdc (any chain)   → mUSD contract (unified stablecoin)
 fn resolve_token_contract(config: &CustodyConfig, _chain: &str, asset: &str) -> Option<String> {
     match asset {
         "sol" => config.wsol_contract_addr.clone(),
         "eth" => config.weth_contract_addr.clone(),
+        "bnb" => config.wbnb_contract_addr.clone(),
         "usdt" | "usdc" => config.musd_contract_addr.clone(),
         _ => None,
     }
@@ -4688,11 +4694,11 @@ async fn create_withdrawal(
                 }));
             }
         }
-        "ethereum" => {
+        "ethereum" | "eth" | "bsc" | "bnb" => {
             let trimmed = req.dest_address.trim_start_matches("0x");
             if trimmed.len() != 40 || hex::decode(trimmed).is_err() {
                 return Json(json!({
-                    "error": format!("invalid Ethereum destination address: {}", req.dest_address)
+                    "error": format!("invalid EVM destination address: {}", req.dest_address)
                 }));
             }
         }
@@ -4707,6 +4713,7 @@ async fn create_withdrawal(
         "musd" => ("stablecoin", "stablecoin"),
         "wsol" => ("sol", "native"),
         "weth" => ("eth", "native"),
+        "wbnb" => ("bnb", "native"),
         _ => {
             return Json(json!({
                 "error": format!("unsupported withdrawal asset: {}", req.asset)
@@ -4717,8 +4724,15 @@ async fn create_withdrawal(
     // Validate destination chain makes sense for the asset
     let valid_chain = match dest_asset {
         "sol" => req.dest_chain == "solana",
-        "eth" => req.dest_chain == "ethereum",
-        "stablecoin" => req.dest_chain == "solana" || req.dest_chain == "ethereum",
+        "eth" => req.dest_chain == "ethereum" || req.dest_chain == "eth",
+        "bnb" => req.dest_chain == "bsc" || req.dest_chain == "bnb",
+        "stablecoin" => {
+            req.dest_chain == "solana"
+                || req.dest_chain == "ethereum"
+                || req.dest_chain == "eth"
+                || req.dest_chain == "bsc"
+                || req.dest_chain == "bnb"
+        }
         _ => false,
     };
     if !valid_chain {
@@ -6239,6 +6253,7 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                             let expected_contract = match job.asset.to_lowercase().as_str() {
                                 "wsol" => state.config.wsol_contract_addr.as_deref(),
                                 "weth" => state.config.weth_contract_addr.as_deref(),
+                                "wbnb" => state.config.wbnb_contract_addr.as_deref(),
                                 "musd" => state.config.musd_contract_addr.as_deref(),
                                 _ => None,
                             };
@@ -6343,6 +6358,7 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
             "musd" => job.preferred_stablecoin.as_str(),
             "wsol" => "sol",
             "weth" => "eth",
+            "wbnb" => "bnb",
             _ => continue,
         };
 
@@ -6357,7 +6373,7 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                     .treasury_solana_address
                     .clone()
                     .unwrap_or_default(),
-                "ethereum" => state
+                "ethereum" | "eth" | "bsc" | "bnb" => state
                     .config
                     .treasury_evm_address
                     .clone()
@@ -6533,6 +6549,22 @@ async fn process_withdrawal_jobs(state: &CustodyState) -> Result<(), String> {
                     false
                 }
             }
+            "eth" | "bsc" | "bnb" => {
+                if let (Some(url), Some(ref tx_hash)) =
+                    (state.config.evm_rpc_url.as_ref(), &job.outbound_tx_hash)
+                {
+                    check_evm_tx_confirmed(
+                        &state.http,
+                        url,
+                        tx_hash,
+                        state.config.evm_confirmations,
+                    )
+                    .await
+                    .unwrap_or(false)
+                } else {
+                    false
+                }
+            }
             _ => false,
         };
 
@@ -6627,12 +6659,35 @@ async fn broadcast_outbound_withdrawal(
                 .ok_or_else(|| "missing EVM RPC".to_string())?;
             let outbound_asset = match job.asset.to_lowercase().as_str() {
                 "weth" => "eth".to_string(),
+                "wbnb" => "bnb".to_string(),
                 "musd" => job.preferred_stablecoin.clone(),
                 _ => return Err(format!("unsupported ethereum withdrawal: {}", job.asset)),
             };
 
             // For ETH: raw value transfer from treasury → dest_address
             // For USDT/USDC: ERC-20 transfer from treasury → dest_address
+            let signed_tx = assemble_signed_evm_tx(state, job, &outbound_asset)?;
+            let tx_hex = format!("0x{}", hex::encode(&signed_tx));
+            let result =
+                evm_rpc_call(&state.http, url, "eth_sendRawTransaction", json!([tx_hex])).await?;
+            result
+                .as_str()
+                .map(|s| s.to_string())
+                .ok_or_else(|| "no tx hash returned".to_string())
+        }
+        "eth" | "bsc" | "bnb" => {
+            let url = state
+                .config
+                .evm_rpc_url
+                .as_ref()
+                .ok_or_else(|| "missing EVM RPC".to_string())?;
+            let outbound_asset = match job.asset.to_lowercase().as_str() {
+                "weth" => "eth".to_string(),
+                "wbnb" => "bnb".to_string(),
+                "musd" => job.preferred_stablecoin.clone(),
+                _ => return Err(format!("unsupported EVM withdrawal: {}", job.asset)),
+            };
+
             let signed_tx = assemble_signed_evm_tx(state, job, &outbound_asset)?;
             let tx_hex = format!("0x{}", hex::encode(&signed_tx));
             let result =
@@ -7759,6 +7814,7 @@ mod tests {
             musd_contract_addr: None,
             wsol_contract_addr: None,
             weth_contract_addr: None,
+            wbnb_contract_addr: None,
             rebalance_threshold_bps: 7000,
             rebalance_target_bps: 5000,
             rebalance_max_slippage_bps: 50,
@@ -7947,6 +8003,16 @@ mod tests {
         assert_eq!(
             resolve_token_contract(&config, "ethereum", "eth"),
             Some("WETH_CONTRACT_789".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_token_contract_bnb() {
+        let mut config = test_config();
+        config.wbnb_contract_addr = Some("WBNB_CONTRACT_321".to_string());
+        assert_eq!(
+            resolve_token_contract(&config, "bsc", "bnb"),
+            Some("WBNB_CONTRACT_321".to_string())
         );
     }
 
