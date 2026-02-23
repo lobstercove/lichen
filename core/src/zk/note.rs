@@ -9,10 +9,14 @@
 //! encrypted_note = ChaCha20-Poly1305(note, shared_secret)
 
 use super::keys::SpendingKey;
-use super::merkle::{fr_to_bytes, poseidon_hash_fr, poseidon_hash_pair};
+use super::merkle::{fr_to_bytes, poseidon_hash_fr};
 use super::pedersen::PedersenCommitment;
 use ark_bn254::Fr;
 use ark_ff::PrimeField;
+use chacha20poly1305::{
+    aead::{Aead, KeyInit, OsRng as AeadOsRng},
+    ChaCha20Poly1305, Nonce,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -131,33 +135,37 @@ impl Note {
 
     /// Encrypt this note for the recipient using ECDH + ChaCha20-Poly1305
     ///
-    /// The sender generates an ephemeral keypair, computes a shared secret
-    /// with the recipient's viewing key, and encrypts the note.
-    pub fn encrypt(&self, _recipient_viewing_key: &[u8; 32]) -> EncryptedNote {
-        // In production: ECDH(ephemeral_sk, recipient_vk) -> shared_secret
-        // Then ChaCha20-Poly1305(note_bytes, shared_secret)
-        //
-        // For now, use a deterministic encryption scheme:
+    /// The sender generates an ephemeral keypair, derives a shared secret
+    /// with the recipient's viewing key, and encrypts the note with
+    /// authenticated encryption (ChaCha20-Poly1305 AEAD).
+    pub fn encrypt(&self, recipient_viewing_key: &[u8; 32]) -> EncryptedNote {
         let note_bytes = self.to_bytes();
         let commitment_hash = self.commitment_hash();
 
-        // Derive ephemeral key (in production: random)
-        let mut hasher = Sha256::new();
-        hasher.update(b"MoltChain-ephemeral-");
-        hasher.update(&note_bytes);
-        let ephemeral_pk: [u8; 32] = hasher.finalize().into();
+        // Generate random ephemeral key
+        use chacha20poly1305::aead::rand_core::RngCore;
+        let mut ephemeral_pk = [0u8; 32];
+        AeadOsRng.fill_bytes(&mut ephemeral_pk);
 
-        // Derive encryption key via ECDH simulation
+        // Derive symmetric key: SHA-256(ephemeral_pk || recipient_vk)
         let mut key_hasher = Sha256::new();
         key_hasher.update(&ephemeral_pk);
-        key_hasher.update(_recipient_viewing_key);
+        key_hasher.update(recipient_viewing_key);
         let encryption_key: [u8; 32] = key_hasher.finalize().into();
 
-        // XOR encryption (placeholder — production uses ChaCha20-Poly1305)
-        let mut ciphertext = note_bytes.clone();
-        for (i, byte) in ciphertext.iter_mut().enumerate() {
-            *byte ^= encryption_key[i % 32];
-        }
+        // Derive nonce: first 12 bytes of SHA-256(encryption_key || "nonce")
+        let mut nonce_hasher = Sha256::new();
+        nonce_hasher.update(&encryption_key);
+        nonce_hasher.update(b"nonce");
+        let nonce_material: [u8; 32] = nonce_hasher.finalize().into();
+        let nonce = Nonce::from_slice(&nonce_material[..12]);
+
+        // ChaCha20-Poly1305 authenticated encryption
+        let cipher =
+            ChaCha20Poly1305::new_from_slice(&encryption_key).expect("key length is 32 bytes");
+        let ciphertext = cipher
+            .encrypt(nonce, note_bytes.as_ref())
+            .expect("encryption should not fail");
 
         EncryptedNote {
             ciphertext,
@@ -166,22 +174,33 @@ impl Note {
         }
     }
 
-    /// Attempt to decrypt a note using the recipient's spending key
+    /// Attempt to decrypt a note using the recipient's viewing key
+    ///
+    /// Uses ChaCha20-Poly1305 AEAD — decryption will fail (authenticity
+    /// check) if the wrong key is supplied or the ciphertext was tampered with.
     pub fn decrypt(
         encrypted: &EncryptedNote,
         viewing_key: &[u8; 32],
     ) -> Result<Self, &'static str> {
-        // Derive decryption key via ECDH simulation
+        // Derive symmetric key: SHA-256(ephemeral_pk || viewing_key)
         let mut key_hasher = Sha256::new();
         key_hasher.update(&encrypted.ephemeral_pk);
         key_hasher.update(viewing_key);
         let decryption_key: [u8; 32] = key_hasher.finalize().into();
 
-        // XOR decryption (placeholder — production uses ChaCha20-Poly1305)
-        let mut plaintext = encrypted.ciphertext.clone();
-        for (i, byte) in plaintext.iter_mut().enumerate() {
-            *byte ^= decryption_key[i % 32];
-        }
+        // Derive nonce (same as encrypt)
+        let mut nonce_hasher = Sha256::new();
+        nonce_hasher.update(&decryption_key);
+        nonce_hasher.update(b"nonce");
+        let nonce_material: [u8; 32] = nonce_hasher.finalize().into();
+        let nonce = Nonce::from_slice(&nonce_material[..12]);
+
+        // ChaCha20-Poly1305 authenticated decryption
+        let cipher = ChaCha20Poly1305::new_from_slice(&decryption_key)
+            .map_err(|_| "invalid key length")?;
+        let plaintext = cipher
+            .decrypt(nonce, encrypted.ciphertext.as_ref())
+            .map_err(|_| "decryption failed — wrong key or corrupted ciphertext")?;
 
         let note = Self::from_bytes(&plaintext)?;
 

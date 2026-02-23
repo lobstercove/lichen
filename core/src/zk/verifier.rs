@@ -9,7 +9,7 @@ use super::{ProofType, ShieldedError, ZkProof};
 use ark_bn254::{Bn254, Fr};
 use ark_ff::PrimeField;
 use ark_groth16::{Groth16, PreparedVerifyingKey, VerifyingKey};
-use ark_serialize::{CanonicalDeserialize, CanonicalSerialize};
+use ark_serialize::CanonicalDeserialize;
 use ark_snark::SNARK;
 
 /// Validator-side proof verifier
@@ -29,6 +29,33 @@ impl Verifier {
             pvk_shield: None,
             pvk_unshield: None,
             pvk_transfer: None,
+        }
+    }
+
+    /// Create a verifier pre-loaded with the shield verification key
+    pub fn from_vk_shield(vk: VerifyingKey<Bn254>) -> Self {
+        Self {
+            pvk_shield: Some(Groth16::<Bn254>::process_vk(&vk).unwrap()),
+            pvk_unshield: None,
+            pvk_transfer: None,
+        }
+    }
+
+    /// Create a verifier pre-loaded with the unshield verification key
+    pub fn from_vk_unshield(vk: VerifyingKey<Bn254>) -> Self {
+        Self {
+            pvk_shield: None,
+            pvk_unshield: Some(Groth16::<Bn254>::process_vk(&vk).unwrap()),
+            pvk_transfer: None,
+        }
+    }
+
+    /// Create a verifier pre-loaded with the transfer verification key
+    pub fn from_vk_transfer(vk: VerifyingKey<Bn254>) -> Self {
+        Self {
+            pvk_shield: None,
+            pvk_unshield: None,
+            pvk_transfer: Some(Groth16::<Bn254>::process_vk(&vk).unwrap()),
         }
     }
 

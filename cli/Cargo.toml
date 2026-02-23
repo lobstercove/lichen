@@ -13,6 +13,10 @@ path = "src/main.rs"
 name = "marketplace-demo"
 path = "src/marketplace_demo.rs"
 
+[[bin]]
+name = "zk-prove"
+path = "src/zk_prove.rs"
+
 [dependencies]
 moltchain-core = { path = "../core" }
 clap = { version = "4.5", features = ["derive"] }
@@ -34,6 +38,9 @@ sha2 = "0.10"
 getrandom = "0.4.1"
 aes-gcm = "0.10"
 argon2 = "0.5"
+ark-bn254 = "0.4"
+ark-ff = "0.4"
+ark-std = { version = "0.4", features = ["getrandom"] }
 
 [dev-dependencies]
 tempfile = "3"

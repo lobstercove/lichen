@@ -10,6 +10,7 @@ from .publickey import PublicKey
 from .keypair import Keypair
 from .connection import Connection
 from .transaction import Transaction, TransactionBuilder, Instruction
+from .shielded import shield_instruction, unshield_instruction, transfer_instruction
 
 __all__ = [
     "PublicKey",
@@ -18,6 +19,9 @@ __all__ = [
     "Transaction",
     "TransactionBuilder",
     "Instruction",
+    "shield_instruction",
+    "unshield_instruction",
+    "transfer_instruction",
 ]
 
 # Default URLs

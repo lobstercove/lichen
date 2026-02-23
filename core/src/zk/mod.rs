@@ -68,6 +68,18 @@ pub struct ShieldedPoolState {
     pub vk_unshield_hash: [u8; 32],
     /// Transfer verification key hash
     pub vk_transfer_hash: [u8; 32],
+    /// Number of nullifiers marked spent
+    #[serde(default)]
+    pub nullifier_count: u64,
+    /// Number of shield (transparent -> shielded) operations
+    #[serde(default)]
+    pub shield_count: u64,
+    /// Number of unshield (shielded -> transparent) operations
+    #[serde(default)]
+    pub unshield_count: u64,
+    /// Number of shielded transfer operations
+    #[serde(default)]
+    pub transfer_count: u64,
 }
 
 impl ShieldedPoolState {
@@ -79,6 +91,10 @@ impl ShieldedPoolState {
             vk_shield_hash: [0u8; 32],
             vk_unshield_hash: [0u8; 32],
             vk_transfer_hash: [0u8; 32],
+            nullifier_count: 0,
+            shield_count: 0,
+            unshield_count: 0,
+            transfer_count: 0,
         }
     }
 }

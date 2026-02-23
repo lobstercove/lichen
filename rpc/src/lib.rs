@@ -476,9 +476,9 @@ fn parse_transfer_amount(ix: &Instruction) -> Option<u64> {
     // Parse amount from data[1..9] for instruction types that carry an amount:
     // 0=Transfer, 2=Reward, 3=GrantRepay, 4=GenesisTransfer, 5=GenesisMint,
     // 9=Stake, 10=Unstake, 13=ReefStakeDeposit, 14=ReefStakeUnstake,
-    // 16=ReefStakeTransfer, 19=FaucetAirdrop
+    // 16=ReefStakeTransfer, 19=FaucetAirdrop, 23=Shield, 24=Unshield
     match ix.data[0] {
-        0 | 2 | 3 | 4 | 5 | 9 | 10 | 13 | 14 | 16 | 19 => {
+        0 | 2 | 3 | 4 | 5 | 9 | 10 | 13 | 14 | 16 | 19 | 23 | 24 => {
             let amount_bytes: [u8; 8] = ix.data[1..9].try_into().ok()?;
             Some(u64::from_le_bytes(amount_bytes))
         }
@@ -550,6 +550,15 @@ fn instruction_type(ix: &Instruction) -> &'static str {
         }
         if ix.data.first() == Some(&20) {
             return "RegisterSymbol";
+        }
+        if ix.data.first() == Some(&23) {
+            return "Shield";
+        }
+        if ix.data.first() == Some(&24) {
+            return "Unshield";
+        }
+        if ix.data.first() == Some(&25) {
+            return "ShieldedTransfer";
         }
         return "System";
     }

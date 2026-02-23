@@ -1848,9 +1848,6 @@ function displayTransactions(transactions) {
         const txFrom = tx.from || tx.sender || tx.signer || null;
         const txTo = tx.to || tx.recipient || tx.receiver || null;
         const isOutgoing = txFrom === currentAddress || txFrom?.toLowerCase?.() === currentAddress?.toLowerCase?.();
-        const direction = isOutgoing ? 'OUT' : 'IN';
-        const directionClass = isOutgoing ? 'negative' : 'positive';
-        const otherAddress = isOutgoing ? txTo : txFrom;
         const slotRaw = tx.slot !== undefined && tx.slot !== null ? tx.slot : tx.block;
         const slot = Number(slotRaw);
         const txHash = tx.hash || tx.signature || tx.txid || tx.id || '-';
@@ -1861,6 +1858,9 @@ function displayTransactions(transactions) {
             'ReefStakeUnstake': 'ReefStake Unstake',
             'ReefStakeClaim': 'ReefStake Claim',
             'ReefStakeTransfer': 'stMOLT Transfer',
+            'Shield': 'Shield',
+            'Unshield': 'Unshield',
+            'ShieldedTransfer': 'Shielded Transfer',
             'DeployContract': 'Deploy',
             'SetContractABI': 'Set ABI',
             'FaucetAirdrop': 'Airdrop',
@@ -1878,6 +1878,27 @@ function displayTransactions(transactions) {
         const txTypeDisplay = txTypeDisplayMap[txType] || txType;
         const rawAmount = tx.amount ?? tx.value ?? (tx.amount_shells !== undefined ? Number(tx.amount_shells) / 1_000_000_000 : 0);
         const txAmount = Number(rawAmount || 0);
+        let effectiveOutgoing = isOutgoing;
+        if (txType === 'Unshield') {
+            effectiveOutgoing = false;
+        } else if (txType === 'Shield') {
+            effectiveOutgoing = true;
+        }
+        const otherAddress = txType === 'ShieldedTransfer'
+            ? null
+            : (effectiveOutgoing ? txTo : txFrom);
+        const direction = txType === 'ShieldedTransfer'
+            ? 'PRIVATE'
+            : (effectiveOutgoing ? 'OUT' : 'IN');
+        const directionClass = txType === 'ShieldedTransfer'
+            ? ''
+            : (effectiveOutgoing ? 'negative' : 'positive');
+        const signedPrefix = txType === 'ShieldedTransfer'
+            ? ''
+            : (effectiveOutgoing ? '-' : '+');
+        const amountDisplay = txType === 'ShieldedTransfer'
+            ? 'Hidden'
+            : `${signedPrefix}${formatNumber(txAmount)} MOLT`;
         const success = tx.success !== undefined
             ? !!tx.success
             : String(tx.status || '').toLowerCase() !== 'failed';
@@ -1898,7 +1919,7 @@ function displayTransactions(transactions) {
                 ${counterpartyCell}
             </td>
             <td><span class="badge">${txTypeDisplay}</span></td>
-            <td class="${directionClass}">${isOutgoing ? '-' : '+'}${formatNumber(txAmount)} MOLT</td>
+            <td class="${directionClass}">${amountDisplay}</td>
             <td>${success
                 ? '<span class="badge success"><i class="fas fa-check"></i></span>'
                 : '<span class="badge failed"><i class="fas fa-times"></i></span>'}</td>

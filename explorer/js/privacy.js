@@ -29,20 +29,33 @@ async function loadPrivacyData() {
 async function loadPoolStats() {
     if (!rpc) return;
 
-    // Try the shielded pool stats RPC endpoint
-    const stats = await rpc.call('getShieldedPoolStats');
+    // Current shielded RPC endpoint
+    const stats = await rpc.call('getShieldedPoolState');
 
     if (stats) {
-        poolStats = stats;
-        updatePoolStatsUI(stats);
+        const vkInitialized = Boolean(
+            (stats.vkShieldHash && !/^0+$/.test(stats.vkShieldHash)) &&
+            (stats.vkUnshieldHash && !/^0+$/.test(stats.vkUnshieldHash)) &&
+            (stats.vkTransferHash && !/^0+$/.test(stats.vkTransferHash))
+        );
+
+        poolStats = {
+            ...stats,
+            vk_initialized: vkInitialized,
+        };
+        updatePoolStatsUI(poolStats);
     } else {
         // Endpoint not available yet — show defaults
         updatePoolStatsUI({
-            merkle_root: '0'.repeat(64),
-            commitment_count: 0,
-            pool_balance: 0,
+            merkleRoot: '0'.repeat(64),
+            commitmentCount: 0,
+            totalShielded: 0,
             pool_balance_molt: 0,
+            nullifierCount: 0,
             nullifier_count: 0,
+            shieldCount: 0,
+            unshieldCount: 0,
+            transferCount: 0,
             vk_initialized: false,
             shield_count: 0,
             unshield_count: 0,
@@ -54,9 +67,18 @@ async function loadPoolStats() {
 async function loadShieldedTransactions() {
     if (!rpc) return;
 
-    const txs = await rpc.call('getShieldedTransactions', [{ limit: 50 }]);
+    const resp = await rpc.call('getShieldedCommitments', [{ from: 0, limit: 50 }]);
 
-    if (txs && Array.isArray(txs)) {
+    const txs = (resp && Array.isArray(resp.commitments) ? resp.commitments : []).map((entry) => ({
+        type: 'shield',
+        commitment: entry.commitment,
+        amount: null,
+        slot: '-',
+        timestamp: null,
+        proof_valid: true,
+    }));
+
+    if (txs.length > 0) {
         shieldedTxs = txs;
         renderShieldedTxs(txs);
     } else {
@@ -67,38 +89,64 @@ async function loadShieldedTransactions() {
 // ===== UI Updates =====
 
 function updatePoolStatsUI(stats) {
+    const pick = (...vals) => vals.find(v => v !== undefined && v !== null);
+
     // Shielded balance
-    const balanceMolt = stats.pool_balance_molt || (stats.pool_balance / 1_000_000_000);
+    const totalShielded = pick(stats.totalShielded, stats.pool_balance, 0);
+    const balanceMolt = pick(
+        stats.totalShieldedMolt,
+        stats.pool_balance_molt,
+        (totalShielded / 1_000_000_000)
+    );
     const el = (id) => document.getElementById(id);
 
-    el('shieldedBalance').textContent = formatMoltValue(balanceMolt) + ' MOLT';
-    el('shieldedBalanceShells').textContent = formatNumber(stats.pool_balance) + ' shells';
+    const shieldedBalanceEl = el('shieldedBalance');
+    const shieldedShellsEl = el('shieldedBalanceShells');
+    if (shieldedBalanceEl) shieldedBalanceEl.textContent = formatMoltValue(Number(balanceMolt)) + ' MOLT';
+    if (shieldedShellsEl) shieldedShellsEl.textContent = formatNumber(totalShielded) + ' shells';
 
     // Commitment count
-    el('commitmentCount').textContent = formatNumber(stats.commitment_count);
+    const commitmentCount = pick(stats.commitmentCount, stats.commitment_count, 0);
+    const commitmentCountEl = el('commitmentCount');
+    if (commitmentCountEl) commitmentCountEl.textContent = formatNumber(commitmentCount);
 
     // Nullifier count
-    el('nullifierCount').textContent = formatNumber(stats.nullifier_count);
+    const nullifierCountEl = el('nullifierCount');
+    if (nullifierCountEl) {
+        nullifierCountEl.textContent = formatNumber(
+            pick(stats.nullifierCount, stats.nullifier_count, 0)
+        );
+    }
 
     // Shielded tx count
-    const totalTxs = (stats.shield_count || 0) + (stats.unshield_count || 0) + (stats.transfer_count || 0);
-    el('shieldedTxCount').textContent = formatNumber(totalTxs);
-    el('shieldedTxBreakdown').textContent =
-        `Shield: ${formatNumber(stats.shield_count || 0)} | ` +
-        `Unshield: ${formatNumber(stats.unshield_count || 0)} | ` +
-        `Transfer: ${formatNumber(stats.transfer_count || 0)}`;
+    const shieldCount = pick(stats.shieldCount, stats.shield_count, 0);
+    const unshieldCount = pick(stats.unshieldCount, stats.unshield_count, 0);
+    const transferCount = pick(stats.transferCount, stats.transfer_count, 0);
+    const totalTxs = shieldCount + unshieldCount + transferCount || commitmentCount;
+    const txCountEl = el('shieldedTxCount');
+    const txBreakdownEl = el('shieldedTxBreakdown');
+    if (txCountEl) txCountEl.textContent = formatNumber(totalTxs);
+    if (txBreakdownEl) txBreakdownEl.textContent =
+        `Shield: ${formatNumber(shieldCount)} | ` +
+        `Unshield: ${formatNumber(unshieldCount)} | ` +
+        `Transfer: ${formatNumber(transferCount)}`;
 
     // Merkle root
-    el('merkleRoot').textContent = '0x' + stats.merkle_root;
+    const merkleRoot = pick(stats.merkleRoot, stats.merkle_root, '0'.repeat(64));
+    const merkleRootEl = el('merkleRoot');
+    if (merkleRootEl) merkleRootEl.textContent = '0x' + merkleRoot;
 
     // Tree utilization
     const maxCapacity = 4_294_967_296; // 2^32
-    const utilPct = (stats.commitment_count / maxCapacity) * 100;
-    el('treeUtilizationBar').style.width = Math.max(utilPct, 0.1) + '%';
-    el('treeUtilizationPct').textContent = utilPct < 0.01 ? '<0.01%' : utilPct.toFixed(4) + '%';
+    const utilPct = (commitmentCount / maxCapacity) * 100;
+    const utilizationBarEl = el('treeUtilizationBar');
+    const utilizationPctEl = el('treeUtilizationPct');
+    if (utilizationBarEl) utilizationBarEl.style.width = Math.max(utilPct, 0.1) + '%';
+    if (utilizationPctEl) utilizationPctEl.textContent = utilPct < 0.01 ? '<0.01%' : utilPct.toFixed(4) + '%';
 
     // VK status
     const vkText = el('vkStatusText');
+    if (!vkText) return;
     if (stats.vk_initialized) {
         vkText.textContent = 'Initialized';
         vkText.style.background = 'rgba(6, 214, 160, 0.2)';
@@ -234,7 +282,7 @@ async function lookupNullifier() {
         return;
     }
 
-    const result = await rpc.call('checkNullifier', [hash]);
+    const result = await rpc.call('isNullifierSpent', [hash]);
 
     if (result && result.spent) {
         resultDiv.innerHTML = `

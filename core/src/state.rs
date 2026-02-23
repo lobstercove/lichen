@@ -646,6 +646,8 @@ pub struct StateBatch {
     nft_token_id_overlay: std::collections::HashSet<Vec<u8>>,
     /// AUDIT-FIX CP-7: Track symbols registered within this batch to catch duplicates
     symbol_overlay: std::collections::HashSet<String>,
+    /// Track nullifiers marked spent inside this batch so reads are batch-consistent.
+    spent_nullifier_overlay: std::collections::HashSet<[u8; 32]>,
     /// Auto-incrementing sequence counter for event key uniqueness (T2.13)
     event_seq: u64,
     /// Reference to the DB (needed for cf_handle lookups during put)
@@ -3059,6 +3061,7 @@ impl StateStore {
             burned_delta: 0,
             nft_token_id_overlay: std::collections::HashSet::new(),
             symbol_overlay: std::collections::HashSet::new(),
+            spent_nullifier_overlay: std::collections::HashSet::new(),
             event_seq: 0,
             db: Arc::clone(&self.db),
         }
@@ -3789,8 +3792,12 @@ impl StateBatch {
     }
 
     /// Check whether a nullifier has been spent (checks disk only — batch
-    /// nullifiers are not readable until committed).
+    /// nullifiers are tracked in-memory until committed).
     pub fn is_nullifier_spent(&self, nullifier: &[u8; 32]) -> Result<bool, String> {
+        if self.spent_nullifier_overlay.contains(nullifier) {
+            return Ok(true);
+        }
+
         let cf = self
             .db
             .cf_handle(CF_SHIELDED_NULLIFIERS)
@@ -3809,6 +3816,7 @@ impl StateBatch {
             .cf_handle(CF_SHIELDED_NULLIFIERS)
             .ok_or_else(|| "Shielded nullifiers CF not found".to_string())?;
         self.batch.put_cf(&cf, nullifier, [0x01]);
+        self.spent_nullifier_overlay.insert(*nullifier);
         Ok(())
     }
 
@@ -6749,6 +6757,9 @@ mod tests {
         // Mark nullifier via batch
         let nullifier = [0xCCu8; 32];
         batch.mark_nullifier_spent(&nullifier).unwrap();
+
+        // Batch view must see in-flight nullifier spend immediately
+        assert!(batch.is_nullifier_spent(&nullifier).unwrap());
 
         // Before commit, disk has nothing
         assert_eq!(state.get_shielded_commitment(0).unwrap(), None);

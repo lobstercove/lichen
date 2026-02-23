@@ -59,6 +59,8 @@ pub struct UnshieldCircuit {
     pub note_serial: Option<Fr>,
     /// Spending key (proves ownership)
     pub spending_key: Option<Fr>,
+    /// Private preimage of recipient hash; public recipient = Poseidon(preimage, 0)
+    pub recipient_preimage: Option<Fr>,
     /// Merkle path siblings (TREE_DEPTH elements)
     pub merkle_path: Option<Vec<Fr>>,
     /// Merkle path direction bits (true = leaf is right child at that level)
@@ -77,6 +79,7 @@ impl UnshieldCircuit {
         note_blinding: Fr,
         note_serial: Fr,
         spending_key: Fr,
+        recipient_preimage: Fr,
         merkle_path: Vec<Fr>,
         path_bits: Vec<bool>,
     ) -> Self {
@@ -92,6 +95,7 @@ impl UnshieldCircuit {
             note_blinding: Some(note_blinding),
             note_serial: Some(note_serial),
             spending_key: Some(spending_key),
+            recipient_preimage: Some(recipient_preimage),
             merkle_path: Some(merkle_path),
             path_bits: Some(path_bits),
         }
@@ -109,6 +113,7 @@ impl UnshieldCircuit {
             note_blinding: None,
             note_serial: None,
             spending_key: None,
+            recipient_preimage: None,
             merkle_path: None,
             path_bits: None,
         }
@@ -132,7 +137,7 @@ impl ConstraintSynthesizer<Fr> for UnshieldCircuit {
             self.amount.ok_or(SynthesisError::AssignmentMissing)
         })?;
 
-        let _recipient_var = FpVar::new_input(cs.clone(), || {
+        let recipient_var = FpVar::new_input(cs.clone(), || {
             self.recipient.ok_or(SynthesisError::AssignmentMissing)
         })?;
 
@@ -151,6 +156,11 @@ impl ConstraintSynthesizer<Fr> for UnshieldCircuit {
 
         let sk_var = FpVar::new_witness(cs.clone(), || {
             self.spending_key.ok_or(SynthesisError::AssignmentMissing)
+        })?;
+
+        let recipient_preimage_var = FpVar::new_witness(cs.clone(), || {
+            self.recipient_preimage
+                .ok_or(SynthesisError::AssignmentMissing)
         })?;
 
         // Merkle path siblings
@@ -173,6 +183,12 @@ impl ConstraintSynthesizer<Fr> for UnshieldCircuit {
         // ── Constraint 2: nullifier == Poseidon(serial, spending_key) ──
         let computed_nullifier = poseidon_hash_var(cs.clone(), config, &serial_var, &sk_var)?;
         computed_nullifier.enforce_equal(&nullifier_var)?;
+
+        // ── Constraint 2b: recipient == Poseidon(recipient_preimage, 0) ──
+        let zero = FpVar::constant(Fr::from(0u64));
+        let computed_recipient =
+            poseidon_hash_var(cs.clone(), config, &recipient_preimage_var, &zero)?;
+        computed_recipient.enforce_equal(&recipient_var)?;
 
         // ── Constraint 3: commitment == Poseidon(value, blinding) ──────
         let commitment_var = poseidon_hash_var(cs.clone(), config, &value_var, &blinding_var)?;
@@ -241,15 +257,19 @@ mod tests {
             .map(|s| Fr::from_le_bytes_mod_order(s))
             .collect();
 
+        let recipient_preimage = Fr::from(999u64);
+        let recipient = poseidon_hash_fr(recipient_preimage, Fr::from(0u64));
+
         UnshieldCircuit::new(
             merkle_root_fr,
             nullifier_fr,
             amount,
-            Fr::from(999u64), // recipient hash
+            recipient,
             amount,
             blinding,
             serial,
             spending_key,
+            recipient_preimage,
             merkle_path,
             proof.path_bits,
         )
@@ -286,16 +306,20 @@ mod tests {
         let proof = tree.proof(0).unwrap();
         let merkle_path: Vec<Fr> = proof.siblings.iter().map(|s| Fr::from_le_bytes_mod_order(s)).collect();
 
+        let recipient_preimage = Fr::from(999u64);
+        let recipient = poseidon_hash_fr(recipient_preimage, Fr::from(0u64));
+
         // Claim amount=2000 but note value=1000 → fails value==amount
         let circuit = UnshieldCircuit::new(
             merkle_root_fr,
             nullifier_fr,
             2000, // wrong amount
-            Fr::from(999u64),
+            recipient,
             real_value,
             blinding,
             serial,
             spending_key,
+            recipient_preimage,
             merkle_path,
             proof.path_bits,
         );
@@ -320,15 +344,19 @@ mod tests {
         let proof = tree.proof(0).unwrap();
         let merkle_path: Vec<Fr> = proof.siblings.iter().map(|s| Fr::from_le_bytes_mod_order(s)).collect();
 
+        let recipient_preimage = Fr::from(999u64);
+        let recipient = poseidon_hash_fr(recipient_preimage, Fr::from(0u64));
+
         let circuit = UnshieldCircuit::new(
             merkle_root_fr,
             wrong_nullifier,
             amount,
-            Fr::from(999u64),
+            recipient,
             amount,
             blinding,
             serial,
             spending_key,
+            recipient_preimage,
             merkle_path,
             proof.path_bits,
         );
@@ -354,15 +382,19 @@ mod tests {
 
         let wrong_root = Fr::from(99999u64); // wrong root
 
+        let recipient_preimage = Fr::from(999u64);
+        let recipient = poseidon_hash_fr(recipient_preimage, Fr::from(0u64));
+
         let circuit = UnshieldCircuit::new(
             wrong_root,
             nullifier_fr,
             amount,
-            Fr::from(999u64),
+            recipient,
             amount,
             blinding,
             serial,
             spending_key,
+            recipient_preimage,
             merkle_path,
             proof.path_bits,
         );
@@ -389,16 +421,20 @@ mod tests {
         let proof = tree.proof(0).unwrap();
         let merkle_path: Vec<Fr> = proof.siblings.iter().map(|s| Fr::from_le_bytes_mod_order(s)).collect();
 
+        let recipient_preimage = Fr::from(999u64);
+        let recipient = poseidon_hash_fr(recipient_preimage, Fr::from(0u64));
+
         // Use wrong_sk as witness → nullifier constraint will fail
         let circuit = UnshieldCircuit::new(
             merkle_root_fr,
             nullifier_fr,
             amount,
-            Fr::from(999u64),
+            recipient,
             amount,
             blinding,
             serial,
             wrong_sk,
+            recipient_preimage,
             merkle_path,
             proof.path_bits,
         );
@@ -440,20 +476,66 @@ mod tests {
         let proof = tree.proof(2).unwrap();
         let merkle_path: Vec<Fr> = proof.siblings.iter().map(|s| Fr::from_le_bytes_mod_order(s)).collect();
 
+        let recipient_preimage = Fr::from(999u64);
+        let recipient = poseidon_hash_fr(recipient_preimage, Fr::from(0u64));
+
         let circuit = UnshieldCircuit::new(
             merkle_root_fr,
             nullifier_fr,
             amount,
-            Fr::from(999u64),
+            recipient,
             amount,
             blinding,
             serial,
             spending_key,
+            recipient_preimage,
             merkle_path,
             proof.path_bits,
         );
         circuit.generate_constraints(cs.clone()).unwrap();
         assert!(cs.is_satisfied().unwrap(), "unshield with multiple leaves failed");
+    }
+
+    #[test]
+    fn test_unshield_wrong_recipient_binding_fails() {
+        let cs = ConstraintSystem::<Fr>::new_ref();
+        let blinding = Fr::rand(&mut OsRng);
+        let serial = Fr::rand(&mut OsRng);
+        let spending_key = Fr::rand(&mut OsRng);
+        let amount = 1000u64;
+
+        let commitment_fr = poseidon_hash_fr(Fr::from(amount), blinding);
+        let nullifier_fr = poseidon_hash_fr(serial, spending_key);
+
+        let mut tree = MerkleTree::new();
+        tree.insert(fr_to_bytes(&commitment_fr));
+        let merkle_root_fr = Fr::from_le_bytes_mod_order(&tree.root());
+        let proof = tree.proof(0).unwrap();
+        let merkle_path: Vec<Fr> = proof
+            .siblings
+            .iter()
+            .map(|s| Fr::from_le_bytes_mod_order(s))
+            .collect();
+
+        let recipient_preimage = Fr::from(1u64);
+        let wrong_recipient = poseidon_hash_fr(Fr::from(2u64), Fr::from(0u64));
+
+        let circuit = UnshieldCircuit::new(
+            merkle_root_fr,
+            nullifier_fr,
+            amount,
+            wrong_recipient,
+            amount,
+            blinding,
+            serial,
+            spending_key,
+            recipient_preimage,
+            merkle_path,
+            proof.path_bits,
+        );
+
+        circuit.generate_constraints(cs.clone()).unwrap();
+        assert!(!cs.is_satisfied().unwrap());
     }
 
     #[test]

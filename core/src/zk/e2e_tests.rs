@@ -16,7 +16,7 @@ mod tests {
     use crate::zk::prover::Prover;
     use crate::zk::setup;
     use crate::zk::verifier::Verifier;
-    use crate::zk::{ProofType, ZkProof};
+    use crate::zk::ProofType;
     use ark_bn254::Fr;
     use ark_ff::{PrimeField, UniformRand};
     use ark_std::rand::rngs::OsRng;
@@ -114,7 +114,8 @@ mod tests {
         let blinding = Fr::rand(&mut OsRng);
         let serial = Fr::rand(&mut OsRng);
         let spending_key = Fr::rand(&mut OsRng);
-        let recipient = Fr::from(42u64);
+        let recipient_preimage = Fr::from(42u64);
+        let recipient = poseidon_hash_fr(recipient_preimage, Fr::from(0u64));
 
         let commitment_fr = poseidon_hash_fr(Fr::from(amount), blinding);
         let nullifier_fr = poseidon_hash_fr(serial, spending_key);
@@ -139,6 +140,7 @@ mod tests {
             blinding,
             serial,
             spending_key,
+            recipient_preimage,
             merkle_path,
             proof_path.path_bits,
         );
@@ -173,7 +175,8 @@ mod tests {
         let blinding = Fr::rand(&mut OsRng);
         let serial = Fr::rand(&mut OsRng);
         let spending_key = Fr::rand(&mut OsRng);
-        let recipient = Fr::from(42u64);
+        let recipient_preimage = Fr::from(42u64);
+        let recipient = poseidon_hash_fr(recipient_preimage, Fr::from(0u64));
 
         let commitment_fr = poseidon_hash_fr(Fr::from(amount), blinding);
         let nullifier_fr = poseidon_hash_fr(serial, spending_key);
@@ -187,6 +190,7 @@ mod tests {
         let circuit = UnshieldCircuit::new(
             merkle_root_fr, nullifier_fr, amount, recipient,
             amount, blinding, serial, spending_key,
+            recipient_preimage,
             merkle_path, proof_path.path_bits,
         );
 

@@ -221,27 +221,28 @@ ul {
 
 /* ===== Hero Section ===== */
 .hero {
-    min-height: 100vh;
+    min-height: calc(100svh - 70px);
     display: flex;
     align-items: center;
     justify-content: center;
     position: relative;
-    padding-top: 10px;
-    padding-bottom: 10px;
+    padding-top: 1rem;
+    padding-bottom: 4rem;
     overflow: hidden;
 }
 
 .hero-background {
     position: absolute;
-    top: 0;
-    left: 0;
-    right: 0;
-    bottom: 0;
+    top: -64px;
+    left: -64px;
+    right: -64px;
+    bottom: -64px;
     background: 
         radial-gradient(circle at 20% 50%, rgba(255, 107, 53, 0.15) 0%, transparent 50%),
         radial-gradient(circle at 80% 80%, rgba(247, 127, 0, 0.12) 0%, transparent 50%),
         radial-gradient(circle at 40% 80%, rgba(17, 138, 178, 0.12) 0%, transparent 50%),
-        radial-gradient(circle at 60% 20%, rgba(6, 214, 160, 0.08) 0%, transparent 50%);
+        radial-gradient(circle at 60% 20%, rgba(6, 214, 160, 0.08) 0%, transparent 50%),
+        linear-gradient(180deg, var(--bg-dark) 0%, var(--bg-dark) 100%);
     animation: pulse 15s ease-in-out infinite, float 20s ease-in-out infinite;
 }
 
@@ -375,7 +376,7 @@ ul {
 
 .scroll-indicator {
     position: absolute;
-    bottom: 2rem;
+    bottom: 1rem;
     left: 50%;
     transform: translateX(-50%);
     z-index: 2;
@@ -394,6 +395,45 @@ ul {
     border-left: 2px solid var(--primary);
     border-bottom: 2px solid var(--primary);
     transform: rotate(-45deg);
+}
+
+@media (min-width: 1920px) {
+    .hero {
+        min-height: calc(100svh - 70px);
+        padding-top: 2rem;
+        padding-bottom: 5rem;
+    }
+
+    .hero-content {
+        max-width: 1100px;
+    }
+
+    .hero-title {
+        font-size: 4.25rem;
+        line-height: 1.08;
+        margin-bottom: 1.25rem;
+    }
+
+    .hero-subtitle {
+        max-width: 980px;
+        margin-left: auto;
+        margin-right: auto;
+        margin-bottom: 2.25rem;
+        font-size: 1.45rem;
+    }
+
+    .hero-stats {
+        max-width: 980px;
+        margin: 2.25rem auto;
+    }
+
+    .hero-cta {
+        margin-top: 0.5rem;
+    }
+
+    .scroll-indicator {
+        bottom: 1.5rem;
+    }
 }
 
 /* ===== Problem/Solution Section ===== */
@@ -1078,7 +1118,8 @@ ul {
 .cta-content > p {
     font-size: 1.25rem;
     margin-bottom: 2.5rem;
-    opacity: 0.95;
+    color: #FFFFFF;
+    opacity: 1;
 }
 
 .cta-buttons {

@@ -164,8 +164,8 @@ The built-in **supervisor** auto-restarts on crash and the **watchdog** alerts o
 
 **Guides:**
 - [Validator Skill Guide](skills/validator/SKILL.md)
-- [Production Deployment](PRODUCTION_DEPLOYMENT.md)
-- [Custody Deployment](CUSTODY_DEPLOYMENT.md)
+- [Production Deployment](docs/deployment/PRODUCTION_DEPLOYMENT.md)
+- [Custody Deployment](docs/deployment/CUSTODY_DEPLOYMENT.md)
 
 ---
 

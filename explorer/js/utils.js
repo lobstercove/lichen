@@ -34,6 +34,9 @@ function resolveTxType(tx, instruction) {
         if (opcode === 3) return 'GrantRepay';
         if (opcode === 4) return 'GenesisTransfer';
         if (opcode === 5) return 'GenesisMint';
+        if (opcode === 23) return 'Shield';
+        if (opcode === 24) return 'Unshield';
+        if (opcode === 25) return 'ShieldedTransfer';
         return 'Transfer';
     }
     if (instruction) return 'Contract';

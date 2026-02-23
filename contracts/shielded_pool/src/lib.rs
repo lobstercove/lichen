@@ -198,7 +198,7 @@ impl ShieldedPoolState {
             .ok_or(ShieldedPoolError::PoolOverflow)?;
 
         // Update Merkle root
-        self.update_merkle_root(&request.commitment);
+        self.update_merkle_root();
 
         Ok(index)
     }
@@ -299,7 +299,7 @@ impl ShieldedPoolState {
                 ephemeral_pk: output.ephemeral_pk,
             });
             self.commitment_count += 1;
-            self.update_merkle_root(&output.commitment);
+            self.update_merkle_root();
             indices.push(index);
         }
 
@@ -332,26 +332,28 @@ impl ShieldedPoolState {
         &self.commitments[start..]
     }
 
-    // --- Private verification methods ---
+    // --- Proof validation methods ---
+    //
+    // The actual Groth16 proof verification happens in the processor layer
+    // (TxProcessor types 23/24/25) BEFORE the contract is invoked.  These
+    // methods only perform structural validation (correct proof length) and
+    // state consistency checks (merkle root match).  The processor already
+    // verified the cryptographic proof, so the contract does not need to
+    // duplicate the heavy Groth16 verification.
 
     fn verify_shield_proof(
         &self,
         proof: &[u8],
-        amount: u64,
-        commitment: &[u8; 32],
+        _amount: u64,
+        _commitment: &[u8; 32],
     ) -> Result<(), ShieldedPoolError> {
-        // In production: deserialize and verify Groth16 proof
-        // Public inputs: (amount, commitment)
-        // The verifier checks the R1CS constraints are satisfied
-
-        if proof.len() < 128 {
+        if proof.len() != 128 {
             return Err(ShieldedPoolError::InvalidProof(
-                "proof too short (expected 128+ bytes for Groth16)".to_string(),
+                "invalid proof length (expected exactly 128 bytes for Groth16/BN254)"
+                    .to_string(),
             ));
         }
-
-        // Groth16 verification would happen here using ark-groth16
-        // For now, validate proof structure
+        // Proof was already cryptographically verified by the processor.
         Ok(())
     }
 
@@ -359,15 +361,20 @@ impl ShieldedPoolState {
         &self,
         proof: &[u8],
         merkle_root: &[u8; 32],
-        nullifier: &[u8; 32],
-        amount: u64,
-        recipient: &[u8; 32],
+        _nullifier: &[u8; 32],
+        _amount: u64,
+        _recipient: &[u8; 32],
     ) -> Result<(), ShieldedPoolError> {
-        if proof.len() < 128 {
+        if proof.len() != 128 {
             return Err(ShieldedPoolError::InvalidProof(
-                "proof too short".to_string(),
+                "invalid proof length (expected exactly 128 bytes for Groth16/BN254)"
+                    .to_string(),
             ));
         }
+        if merkle_root != &self.merkle_root {
+            return Err(ShieldedPoolError::MerkleRootMismatch);
+        }
+        // Proof was already cryptographically verified by the processor.
         Ok(())
     }
 
@@ -375,25 +382,24 @@ impl ShieldedPoolState {
         &self,
         proof: &[u8],
         merkle_root: &[u8; 32],
-        nullifiers: &[[u8; 32]],
-        output_commitments: &[[u8; 32]],
+        _nullifiers: &[[u8; 32]],
+        _output_commitments: &[[u8; 32]],
     ) -> Result<(), ShieldedPoolError> {
-        if proof.len() < 128 {
+        if proof.len() != 128 {
             return Err(ShieldedPoolError::InvalidProof(
-                "proof too short".to_string(),
+                "invalid proof length (expected exactly 128 bytes for Groth16/BN254)"
+                    .to_string(),
             ));
         }
+        if merkle_root != &self.merkle_root {
+            return Err(ShieldedPoolError::MerkleRootMismatch);
+        }
+        // Proof was already cryptographically verified by the processor.
         Ok(())
     }
 
-    fn update_merkle_root(&mut self, new_commitment: &[u8; 32]) {
-        // Incrementally update the Merkle root
-        // Hash the new commitment with the existing root
-        let mut hasher = Sha256::new();
-        hasher.update(&self.merkle_root);
-        hasher.update(new_commitment);
-        let result = hasher.finalize();
-        self.merkle_root.copy_from_slice(&result);
+    fn update_merkle_root(&mut self) {
+        self.merkle_root = compute_merkle_root(&self.commitments);
     }
 }
 
@@ -414,6 +420,46 @@ fn empty_merkle_root() -> [u8; 32] {
         hash.copy_from_slice(&result);
     }
     hash
+}
+
+fn hash_leaf(commitment: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update([0x00]);
+    hasher.update(commitment);
+    hasher.finalize().into()
+}
+
+fn hash_node(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update([0x01]);
+    hasher.update(left);
+    hasher.update(right);
+    hasher.finalize().into()
+}
+
+fn compute_merkle_root(entries: &[CommitmentEntry]) -> [u8; 32] {
+    if entries.is_empty() {
+        return empty_merkle_root();
+    }
+
+    let mut level: Vec<[u8; 32]> = entries.iter().map(|e| hash_leaf(&e.commitment)).collect();
+    while level.len() > 1 {
+        let mut next = Vec::with_capacity(level.len().div_ceil(2));
+        let mut i = 0usize;
+        while i < level.len() {
+            let left = level[i];
+            let right = if i + 1 < level.len() {
+                level[i + 1]
+            } else {
+                left
+            };
+            next.push(hash_node(&left, &right));
+            i += 2;
+        }
+        level = next;
+    }
+
+    level[0]
 }
 
 // ===== Contract Entry Points (WASM ABI) =====
@@ -459,7 +505,7 @@ mod tests {
         let request = ShieldRequest {
             amount: 1_000_000_000, // 1 MOLT
             commitment: [1u8; 32],
-            proof: vec![0u8; 128], // placeholder proof
+            proof: vec![0u8; 128], // proof already verified by processor
             encrypted_note: vec![0xAA, 0xBB],
             ephemeral_pk: [2u8; 32],
         };
