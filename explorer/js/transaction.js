@@ -115,7 +115,15 @@ async function loadTransaction() {
     await displayTransaction(tx);
 }
 
-function upsertParticipants(from, to, nameMap = {}) {
+function upsertParticipants(from, to, nameMap = {}, opts = {}) {
+    const {
+        fromTitle = 'From',
+        toTitle = 'To',
+        fromOverride = null,
+        toOverride = null,
+        feePayer = null,
+    } = opts;
+
     const grid = document.querySelector('.detail-card .detail-card-body .detail-grid');
     const amountEl = document.getElementById('detailAmount');
     const amountRow = amountEl ? amountEl.closest('.detail-row') : null;
@@ -146,14 +154,36 @@ function upsertParticipants(from, to, nameMap = {}) {
     const fromIsAddress = typeof isLikelyMoltAddress === 'function' ? isLikelyMoltAddress(from) : false;
     const toIsAddress = typeof isLikelyMoltAddress === 'function' ? isLikelyMoltAddress(to) : false;
 
+    const fromValue = fromOverride ?? (from ? (fromIsAddress ? `<a href="address.html?address=${from}" class="detail-link">${fromLabel}</a>` : fromLabel) : 'N/A');
+    const toValue = toOverride ?? (to ? (toIsAddress ? `<a href="address.html?address=${to}" class="detail-link">${toLabel}</a>` : toLabel) : 'N/A');
+
     fromRow.innerHTML = `
-        <div class="detail-label">From</div>
-        <div class="detail-value">${from ? (fromIsAddress ? `<a href="address.html?address=${from}" class="detail-link">${fromLabel}</a>` : fromLabel) : 'N/A'}</div>
+        <div class="detail-label">${fromTitle}</div>
+        <div class="detail-value">${fromValue}</div>
     `;
     toRow.innerHTML = `
-        <div class="detail-label">To</div>
-        <div class="detail-value">${to ? (toIsAddress ? `<a href="address.html?address=${to}" class="detail-link">${toLabel}</a>` : toLabel) : 'N/A'}</div>
+        <div class="detail-label">${toTitle}</div>
+        <div class="detail-value">${toValue}</div>
     `;
+
+    let feePayerRow = document.getElementById('detailFeePayerRow');
+    if (feePayer) {
+        if (!feePayerRow) {
+            feePayerRow = document.createElement('div');
+            feePayerRow.className = 'detail-row';
+            feePayerRow.id = 'detailFeePayerRow';
+            toRow.insertAdjacentElement('afterend', feePayerRow);
+        }
+        const feePayerLabel = (typeof formatAddressWithMoltName === 'function')
+            ? formatAddressWithMoltName(feePayer, nameMap[feePayer], { includeAddressInLabel: true })
+            : feePayer;
+        feePayerRow.innerHTML = `
+            <div class="detail-label">Fee Payer</div>
+            <div class="detail-value"><a href="address.html?address=${feePayer}" class="detail-link">${feePayerLabel}</a></div>
+        `;
+    } else if (feePayerRow) {
+        feePayerRow.remove();
+    }
 }
 
 // Display airdrop details (airdrops are off-chain treasury operations, not indexed transactions)
@@ -226,7 +256,7 @@ async function displayAirdrop(txHash) {
     document.getElementById('feeBurned').textContent = '0 MOLT';
     document.getElementById('feeProducer').textContent = '0 MOLT';
     document.getElementById('feeVoters').textContent = '0 MOLT';
-    document.getElementById('feeTreasury').textContent = '0 MOLT';
+    document.getElementById('feeCommunity').textContent = '0 MOLT';
 
     // Recent blockhash
     document.getElementById('recentBlockhash').textContent = 'N/A';
@@ -330,8 +360,20 @@ async function displayTransaction(tx) {
     const instructions = tx.message.instructions || [];
     const signatures = tx.signatures || [];
     const isFeeFree = fee === 0;
-    const fromAddress = tx.from || instructions[0]?.accounts?.[0] || null;
-    const toAddress = tx.to || instructions[0]?.accounts?.[1] || null;
+    const firstInstructionAccounts = instructions[0]?.accounts || [];
+    let fromAddress = tx.from || firstInstructionAccounts[0] || null;
+    let toAddress = tx.to || firstInstructionAccounts[1] || null;
+
+    if (typeRaw === 'Shield') {
+        toAddress = null;
+    } else if (typeRaw === 'Unshield') {
+        fromAddress = null;
+        toAddress = tx.to || firstInstructionAccounts[0] || null;
+    } else if (typeRaw === 'ShieldedTransfer') {
+        fromAddress = null;
+        toAddress = null;
+    }
+
     const instructionAccounts = instructions.flatMap(inst => inst.accounts || []);
     const nameMap = typeof batchResolveMoltNames === 'function'
         ? await batchResolveMoltNames([fromAddress, toAddress, ...instructionAccounts].filter(Boolean))
@@ -368,7 +410,23 @@ async function displayTransaction(tx) {
     document.getElementById('detailType').textContent = type;
     document.getElementById('txAmount').textContent = amountDisplay;
     document.getElementById('detailAmount').textContent = amountDisplay;
-    upsertParticipants(fromAddress, toAddress, nameMap);
+    if (typeRaw === 'Shield') {
+        upsertParticipants(fromAddress, toAddress, nameMap, {
+            toOverride: 'Shielded Pool (private)',
+        });
+    } else if (typeRaw === 'Unshield') {
+        upsertParticipants(fromAddress, toAddress, nameMap, {
+            fromOverride: 'Shielded Pool (private)',
+        });
+    } else if (typeRaw === 'ShieldedTransfer') {
+        upsertParticipants(fromAddress, toAddress, nameMap, {
+            fromOverride: 'Shielded Note(s) (private)',
+            toOverride: 'Shielded Note(s) (private)',
+            feePayer: firstInstructionAccounts[0] || null,
+        });
+    } else {
+        upsertParticipants(fromAddress, toAddress, nameMap);
+    }
     
     // Fee details
     document.getElementById('txFee').textContent = formatMolt(fee);
@@ -376,9 +434,17 @@ async function displayTransaction(tx) {
     document.getElementById('baseFee').textContent = isFeeFree
         ? '0.000000000 MOLT (fee-free system tx)'
         : '0.001 MOLT (1,000,000 shells)';
+    const zkComputeFeeByType = {
+        Shield: 100_000,
+        Unshield: 150_000,
+        ShieldedTransfer: 200_000,
+    };
+    const zkComputeFee = zkComputeFeeByType[typeRaw] || 0;
     document.getElementById('feeNote').textContent = isFeeFree
         ? 'System reward/repay transactions are fee-free'
-        : 'Fee split is applied to this transaction';
+        : zkComputeFee > 0
+            ? `Fee includes base fee (1,000,000 shells) + shielded verification compute (${formatShells(zkComputeFee)}). Reputation discounts may reduce total.`
+            : 'Fee split is applied to this transaction';
     const feeBurned = Math.floor(fee * 0.4);
     const feeProducer = Math.floor(fee * 0.3);
     const feeVoters = Math.floor(fee * 0.1);
