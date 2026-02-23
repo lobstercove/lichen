@@ -33,9 +33,22 @@ alloy-primitives = "0.8.26"
 alloy-rlp = "0.3.13"
 derive_more = { version = "1.0.0", features = ["display"] }
 
+# ZK proof dependencies (Groth16 over BN254 via arkworks)
+ark-ff = { version = "0.4", optional = true }
+ark-ec = { version = "0.4", optional = true }
+ark-bn254 = { version = "0.4", optional = true }
+ark-groth16 = { version = "0.4", optional = true }
+ark-relations = { version = "0.4", optional = true }
+ark-r1cs-std = { version = "0.4", optional = true }
+ark-crypto-primitives = { version = "0.4", features = ["sponge", "r1cs"], optional = true }
+ark-serialize = { version = "0.4", optional = true }
+ark-snark = { version = "0.4", optional = true }
+ark-std = { version = "0.4", features = ["getrandom"], optional = true }
+
 [features]
-default = []
-privacy = []  # A14-01/A14-02: Privacy module is disabled by default until real ZK implementation is ready
+default = ["zk"]
+privacy = []  # A14-01/A14-02: Legacy placeholder — disabled by default
+zk = ["ark-ff", "ark-ec", "ark-bn254", "ark-groth16", "ark-relations", "ark-r1cs-std", "ark-crypto-primitives", "ark-serialize", "ark-snark", "ark-std"]  # Production ZK privacy layer
 
 [dev-dependencies]
 criterion = "0.5"
