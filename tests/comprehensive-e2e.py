@@ -1341,6 +1341,333 @@ async def main() -> int:
         except Exception as e:
             report("SKIP", f"evm_compat.{method} skip ({e})")
 
+    # ─── Phase 3: ZK Shielded Privacy Layer ───────────────────────────────
+    print(f"\n{'=' * 70}")
+    print("  Phase 3: ZK Shielded Privacy Layer")
+    print(f"{'=' * 70}")
+
+    import subprocess
+    import urllib.request as urllib_req
+
+    ZK_PROVE_BIN = str(ROOT / "target" / "release" / "zk-prove")
+    # Validator stores ZK keys in its data dir.  The first validator's
+    # P2P port is 8001, so state lives in data/state-8001/zk/.
+    ZK_KEY_DIR = str(ROOT / "data" / "state-8001" / "zk")
+
+    # ── 3.0  Check zk-prove binary exists ──
+    zk_prove_exists = Path(ZK_PROVE_BIN).is_file()
+    if not zk_prove_exists:
+        report("SKIP", "zk.binary zk-prove not found — skipping ZK phase")
+    else:
+        report("PASS", "zk.binary zk-prove found")
+
+    zk_key_dir_exists = Path(ZK_KEY_DIR).is_dir()
+    if not zk_key_dir_exists:
+        # Fallback: try data/state-30333/zk (common validator port)
+        for port in [30333, 8001, 8002, 8003]:
+            alt = str(ROOT / "data" / f"state-{port}" / "zk")
+            if Path(alt).is_dir():
+                ZK_KEY_DIR = alt
+                zk_key_dir_exists = True
+                break
+    if not zk_key_dir_exists:
+        report("SKIP", "zk.keys ZK key directory not found — skipping ZK phase")
+    else:
+        report("PASS", f"zk.keys found at {ZK_KEY_DIR}")
+
+    if zk_prove_exists and zk_key_dir_exists:
+        from moltchain import shield_instruction, unshield_instruction
+
+        # ── 3.1  Query initial shielded pool state (JSON-RPC) ──
+        try:
+            pool_state = await conn._rpc("getShieldedPoolState")
+            initial_shielded = int(pool_state.get("totalShielded", 0))
+            initial_count = int(pool_state.get("commitmentCount", 0))
+            report("PASS", f"zk.rpc.getShieldedPoolState total={initial_shielded} count={initial_count}")
+        except Exception as e:
+            report("FAIL", f"zk.rpc.getShieldedPoolState error={e}")
+            initial_shielded = 0
+            initial_count = 0
+
+        # ── 3.2  Query Merkle root (JSON-RPC) ──
+        try:
+            mr_resp = await conn._rpc("getShieldedMerkleRoot")
+            merkle_root_hex = mr_resp.get("merkleRoot", "00" * 32)
+            report("PASS", f"zk.rpc.getShieldedMerkleRoot root={merkle_root_hex[:16]}...")
+        except Exception as e:
+            report("FAIL", f"zk.rpc.getShieldedMerkleRoot error={e}")
+            merkle_root_hex = "00" * 32
+
+        # ── 3.3  Query shielded pool state (REST) ──
+        try:
+            rest_url = RPC_URL.replace("/rpc", "").rstrip("/") + "/api/v1/shielded/pool"
+            req = urllib_req.Request(rest_url, headers={"Accept": "application/json"})
+            with urllib_req.urlopen(req, timeout=5) as resp:
+                pool_rest = json.loads(resp.read())
+            report("PASS", f"zk.rest.pool balance={pool_rest.get('totalShielded', '?')}")
+        except Exception as e:
+            report("SKIP", f"zk.rest.pool skip ({e})")
+
+        # ── 3.4  Generate shield proof via zk-prove CLI ──
+        shield_amount = 500_000_000  # 0.5 MOLT
+        shield_json = None
+        try:
+            result = subprocess.run(
+                [ZK_PROVE_BIN, "shield", "--amount", str(shield_amount), "--pk-dir", ZK_KEY_DIR],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode != 0:
+                report("FAIL", f"zk.prove.shield exit={result.returncode} stderr={result.stderr[:200]}")
+            else:
+                shield_json = json.loads(result.stdout)
+                report("PASS", f"zk.prove.shield commitment={shield_json['commitment'][:16]}...")
+        except Exception as e:
+            report("FAIL", f"zk.prove.shield error={e}")
+
+        # ── 3.5  Submit shield transaction ──
+        shield_sig = None
+        if shield_json:
+            try:
+                commitment = bytes.fromhex(shield_json["commitment"])
+                proof = bytes.fromhex(shield_json["proof"])
+                ix = shield_instruction(deployer.public_key(), shield_amount, commitment, proof)
+                blockhash = await conn.get_recent_blockhash()
+                tx = TransactionBuilder().add(ix).set_recent_blockhash(blockhash).build_and_sign(deployer)
+                shield_sig = await conn.send_transaction(tx)
+                tx_result = await wait_tx(conn, shield_sig)
+                if tx_result:
+                    report("PASS", f"zk.tx.shield confirmed sig={shield_sig[:16]}...")
+                else:
+                    report("FAIL", f"zk.tx.shield not confirmed in {TX_CONFIRM_TIMEOUT}s")
+                    shield_sig = None
+            except Exception as e:
+                report("FAIL", f"zk.tx.shield error={e}")
+
+        # ── 3.6  Verify pool state updated after shield ──
+        if shield_sig:
+            await asyncio.sleep(1)  # let state settle
+            try:
+                pool_after = await conn._rpc("getShieldedPoolState")
+                new_count = int(pool_after.get("commitmentCount", 0))
+                new_shielded = int(pool_after.get("totalShielded", 0))
+                if new_count == initial_count + 1:
+                    report("PASS", f"zk.verify.commitment_count {initial_count} -> {new_count}")
+                else:
+                    report("FAIL", f"zk.verify.commitment_count expected={initial_count + 1} got={new_count}")
+                if new_shielded == initial_shielded + shield_amount:
+                    report("PASS", f"zk.verify.total_shielded {initial_shielded} -> {new_shielded}")
+                else:
+                    report("FAIL", f"zk.verify.total_shielded expected={initial_shielded + shield_amount} got={new_shielded}")
+            except Exception as e:
+                report("FAIL", f"zk.verify.pool_state error={e}")
+
+        # ── 3.7  Query commitments (JSON-RPC) ──
+        try:
+            commits_resp = await conn._rpc("getShieldedCommitments", [{"from": 0, "limit": 10}])
+            commitments = commits_resp if isinstance(commits_resp, list) else commits_resp.get("commitments", [])
+            if len(commitments) >= 1:
+                report("PASS", f"zk.rpc.getShieldedCommitments count={len(commitments)}")
+            else:
+                report("FAIL", f"zk.rpc.getShieldedCommitments expected >=1 got={len(commitments)}")
+        except Exception as e:
+            report("SKIP", f"zk.rpc.getShieldedCommitments skip ({e})")
+
+        # ── 3.8  Query commitments (REST) ──
+        try:
+            rest_url = RPC_URL.replace("/rpc", "").rstrip("/") + "/api/v1/shielded/commitments?from=0&limit=10"
+            req = urllib_req.Request(rest_url, headers={"Accept": "application/json"})
+            with urllib_req.urlopen(req, timeout=5) as resp:
+                commits_rest = json.loads(resp.read())
+            report("PASS", f"zk.rest.commitments count={len(commits_rest) if isinstance(commits_rest, list) else '?'}")
+        except Exception as e:
+            report("SKIP", f"zk.rest.commitments skip ({e})")
+
+        # ── 3.9  Query Merkle path for leaf 0 (JSON-RPC) ──
+        merkle_path_data = None
+        try:
+            mp_resp = await conn._rpc("getShieldedMerklePath", [0])
+            siblings = mp_resp.get("siblings", [])
+            path_bits = mp_resp.get("pathBits", [])
+            report("PASS", f"zk.rpc.getShieldedMerklePath siblings={len(siblings)}")
+            merkle_path_data = mp_resp
+        except Exception as e:
+            report("SKIP", f"zk.rpc.getShieldedMerklePath skip ({e})")
+
+        # ── 3.10  Query Merkle path (REST) ──
+        try:
+            rest_url = RPC_URL.replace("/rpc", "").rstrip("/") + "/api/v1/shielded/merkle-path/0"
+            req = urllib_req.Request(rest_url, headers={"Accept": "application/json"})
+            with urllib_req.urlopen(req, timeout=5) as resp:
+                mp_rest = json.loads(resp.read())
+            report("PASS", f"zk.rest.merkle-path siblings={len(mp_rest.get('siblings', []))}")
+        except Exception as e:
+            report("SKIP", f"zk.rest.merkle-path skip ({e})")
+
+        # ── 3.11  Query updated Merkle root for unshield ──
+        unshield_merkle_root = None
+        if shield_sig:
+            try:
+                mr2 = await conn._rpc("getShieldedMerkleRoot")
+                unshield_merkle_root = mr2.get("merkleRoot", None)
+                report("PASS", f"zk.rpc.merkle_root_post_shield root={unshield_merkle_root[:16]}...")
+            except Exception as e:
+                report("FAIL", f"zk.rpc.merkle_root_post_shield error={e}")
+
+        # ── 3.12  Generate unshield proof via zk-prove CLI ──
+        unshield_json = None
+        if shield_json and unshield_merkle_root:
+            try:
+                recipient_hex = deployer.public_key().to_bytes().hex()
+                result = subprocess.run(
+                    [
+                        ZK_PROVE_BIN, "unshield",
+                        "--amount", str(shield_amount),
+                        "--pk-dir", ZK_KEY_DIR,
+                        "--merkle-root", unshield_merkle_root,
+                        "--recipient", recipient_hex,
+                        "--blinding", shield_json["blinding"],
+                        "--serial", shield_json["serial"],
+                    ],
+                    capture_output=True, text=True, timeout=120,
+                )
+                if result.returncode != 0:
+                    report("FAIL", f"zk.prove.unshield exit={result.returncode} stderr={result.stderr[:200]}")
+                else:
+                    unshield_json = json.loads(result.stdout)
+                    report("PASS", f"zk.prove.unshield nullifier={unshield_json['nullifier'][:16]}...")
+            except Exception as e:
+                report("FAIL", f"zk.prove.unshield error={e}")
+
+        # ── 3.13  Check nullifier NOT yet spent ──
+        if unshield_json:
+            try:
+                ns_resp = await conn._rpc("isNullifierSpent", [unshield_json["nullifier"]])
+                if not ns_resp.get("spent", True):
+                    report("PASS", "zk.rpc.isNullifierSpent pre-unshield=false")
+                else:
+                    report("FAIL", "zk.rpc.isNullifierSpent expected false before unshield")
+            except Exception as e:
+                report("SKIP", f"zk.rpc.isNullifierSpent skip ({e})")
+
+        # ── 3.14  Check nullifier NOT spent (REST) ──
+        if unshield_json:
+            try:
+                rest_url = (
+                    RPC_URL.replace("/rpc", "").rstrip("/")
+                    + f"/api/v1/shielded/nullifier/{unshield_json['nullifier']}"
+                )
+                req = urllib_req.Request(rest_url, headers={"Accept": "application/json"})
+                with urllib_req.urlopen(req, timeout=5) as resp:
+                    ns_rest = json.loads(resp.read())
+                if not ns_rest.get("spent", True):
+                    report("PASS", "zk.rest.nullifier pre-unshield=false")
+                else:
+                    report("FAIL", "zk.rest.nullifier expected false before unshield")
+            except Exception as e:
+                report("SKIP", f"zk.rest.nullifier skip ({e})")
+
+        # ── 3.15  Submit unshield transaction ──
+        unshield_sig = None
+        if unshield_json:
+            try:
+                nullifier = bytes.fromhex(unshield_json["nullifier"])
+                merkle_root_b = bytes.fromhex(unshield_json["merkle_root"])
+                recipient_hash_b = bytes.fromhex(unshield_json["recipient_hash"])
+                proof = bytes.fromhex(unshield_json["proof"])
+                ix = unshield_instruction(
+                    deployer.public_key(), shield_amount,
+                    nullifier, merkle_root_b, recipient_hash_b, proof,
+                )
+                blockhash = await conn.get_recent_blockhash()
+                tx = TransactionBuilder().add(ix).set_recent_blockhash(blockhash).build_and_sign(deployer)
+                unshield_sig = await conn.send_transaction(tx)
+                tx_result = await wait_tx(conn, unshield_sig)
+                if tx_result:
+                    report("PASS", f"zk.tx.unshield confirmed sig={unshield_sig[:16]}...")
+                else:
+                    report("FAIL", f"zk.tx.unshield not confirmed in {TX_CONFIRM_TIMEOUT}s")
+                    unshield_sig = None
+            except Exception as e:
+                report("FAIL", f"zk.tx.unshield error={e}")
+
+        # ── 3.16  Verify pool state after unshield ──
+        if unshield_sig:
+            await asyncio.sleep(1)
+            try:
+                pool_final = await conn._rpc("getShieldedPoolState")
+                final_shielded = int(pool_final.get("totalShielded", 0))
+                # After shield + unshield of same amount, total should be back to initial
+                if final_shielded == initial_shielded:
+                    report("PASS", f"zk.verify.total_after_unshield back to {initial_shielded}")
+                else:
+                    report("FAIL", f"zk.verify.total_after_unshield expected={initial_shielded} got={final_shielded}")
+            except Exception as e:
+                report("FAIL", f"zk.verify.total_after_unshield error={e}")
+
+        # ── 3.17  Verify nullifier IS now spent ──
+        if unshield_sig and unshield_json:
+            try:
+                ns_resp2 = await conn._rpc("isNullifierSpent", [unshield_json["nullifier"]])
+                if ns_resp2.get("spent", False):
+                    report("PASS", "zk.verify.nullifier_spent post-unshield=true")
+                else:
+                    report("FAIL", "zk.verify.nullifier_spent expected true after unshield")
+            except Exception as e:
+                report("FAIL", f"zk.verify.nullifier_spent error={e}")
+
+        # ── 3.18  Double-spend rejection: re-submit same unshield ──
+        if unshield_sig and unshield_json:
+            try:
+                nullifier = bytes.fromhex(unshield_json["nullifier"])
+                merkle_root_b = bytes.fromhex(unshield_json["merkle_root"])
+                recipient_hash_b = bytes.fromhex(unshield_json["recipient_hash"])
+                proof = bytes.fromhex(unshield_json["proof"])
+                ix = unshield_instruction(
+                    deployer.public_key(), shield_amount,
+                    nullifier, merkle_root_b, recipient_hash_b, proof,
+                )
+                blockhash = await conn.get_recent_blockhash()
+                tx = TransactionBuilder().add(ix).set_recent_blockhash(blockhash).build_and_sign(deployer)
+                dbl_sig = await conn.send_transaction(tx)
+                # Should either fail to send or not confirm
+                tx_result = await wait_tx(conn, dbl_sig, timeout=5)
+                if tx_result is None:
+                    report("PASS", "zk.verify.double_spend rejected (not confirmed)")
+                else:
+                    report("FAIL", "zk.verify.double_spend SHOULD have been rejected")
+            except Exception as e:
+                # Expected: RPC rejects duplicate nullifier
+                report("PASS", f"zk.verify.double_spend rejected ({type(e).__name__})")
+
+        # ── 3.19  Shield with zero amount rejection ──
+        try:
+            zero_commitment = bytes(32)
+            zero_proof = bytes(128)
+            ix = shield_instruction(deployer.public_key(), 0, zero_commitment, zero_proof)
+            blockhash = await conn.get_recent_blockhash()
+            tx = TransactionBuilder().add(ix).set_recent_blockhash(blockhash).build_and_sign(deployer)
+            sig = await conn.send_transaction(tx)
+            tx_result = await wait_tx(conn, sig, timeout=5)
+            if tx_result is None:
+                report("PASS", "zk.verify.zero_amount_shield rejected")
+            else:
+                report("FAIL", "zk.verify.zero_amount_shield should have been rejected")
+        except Exception as e:
+            report("PASS", f"zk.verify.zero_amount_shield rejected ({type(e).__name__})")
+
+        # ── 3.20  REST shielded Merkle root endpoint ──
+        try:
+            rest_url = RPC_URL.replace("/rpc", "").rstrip("/") + "/api/v1/shielded/merkle-root"
+            req = urllib_req.Request(rest_url, headers={"Accept": "application/json"})
+            with urllib_req.urlopen(req, timeout=5) as resp:
+                mr_rest = json.loads(resp.read())
+            if "merkleRoot" in mr_rest or "root" in mr_rest:
+                report("PASS", f"zk.rest.merkle-root ok")
+            else:
+                report("FAIL", f"zk.rest.merkle-root missing merkleRoot field")
+        except Exception as e:
+            report("SKIP", f"zk.rest.merkle-root skip ({e})")
+
     # ─── Summary ───
     elapsed = time.time() - t_start
     total_named = sum(len(s) for s in named_scenarios.values())
@@ -1350,12 +1677,14 @@ async def main() -> int:
     n_ws = len(ws_sub_types)
     n_sol = len(sol_rpc_methods)
     n_evm = len(evm_rpc_methods)
-    extras = 1 + 16 + 8 + n_ext_rpc + n_ext_rest + n_ws + n_sol + n_evm
+    n_zk = 20  # Phase 3: up to 20 ZK sub-tests
+    extras = 1 + 16 + 8 + n_ext_rpc + n_ext_rest + n_ws + n_sol + n_evm + n_zk
     print(f"\n{'=' * 70}")
     print(f"  SUMMARY: PASS={PASS}  FAIL={FAIL}  SKIP={SKIP}")
     print(f"  Scenarios: {total_named} named + {total_opcode} opcode = {total_named + total_opcode} contract tests")
     print(f"  + 1 REST price-history + 16 RPC stats + 8 REST stats")
     print(f"  + {n_ext_rpc} extended RPC + {n_ext_rest} extended REST + {n_ws} WebSocket + {n_sol} Solana-compat + {n_evm} EVM-compat")
+    print(f"  + {n_zk} ZK shielded privacy tests")
     print(f"  Total: {total_named + total_opcode + extras} scenarios")
     print(f"  Elapsed: {elapsed:.1f}s ({elapsed/60:.1f}min)")
     print(f"{'=' * 70}")

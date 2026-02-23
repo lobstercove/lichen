@@ -6,6 +6,76 @@
 
 const BASE_FEE = 1000000; // shells (from core/src/processor.rs — 0.001 MOLT)
 
+function bytesToHex(bytes) {
+    if (!Array.isArray(bytes)) return '';
+    return bytes.map(b => Number(b).toString(16).padStart(2, '0')).join('');
+}
+
+function readU64LE(bytes, offset) {
+    if (!Array.isArray(bytes) || bytes.length < offset + 8) return null;
+    let out = 0n;
+    for (let i = 0; i < 8; i++) {
+        out |= BigInt(bytes[offset + i]) << BigInt(i * 8);
+    }
+    if (out > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    return Number(out);
+}
+
+function decodeShieldedInstruction(inst) {
+    const SYSTEM_ID = typeof SYSTEM_PROGRAM_ID !== 'undefined'
+        ? SYSTEM_PROGRAM_ID
+        : '11111111111111111111111111111111';
+    if (!inst || inst.program_id !== SYSTEM_ID || !Array.isArray(inst.data) || inst.data.length === 0) {
+        return null;
+    }
+
+    const opcode = inst.data[0];
+    if (opcode === 23 && inst.data.length >= 169) {
+        const amountShells = readU64LE(inst.data, 1);
+        return {
+            label: 'Shield',
+            rows: [
+                ['Opcode', '23 (Shield)'],
+                ['Amount', amountShells != null ? `${formatMolt(amountShells)} (${formatShells(amountShells)})` : 'Unknown'],
+                ['Commitment', `<code>0x${bytesToHex(inst.data.slice(9, 41))}</code>`],
+                ['Proof', `${inst.data.length - 41} bytes`],
+            ],
+        };
+    }
+
+    if (opcode === 24 && inst.data.length >= 233) {
+        const amountShells = readU64LE(inst.data, 1);
+        return {
+            label: 'Unshield',
+            rows: [
+                ['Opcode', '24 (Unshield)'],
+                ['Amount', amountShells != null ? `${formatMolt(amountShells)} (${formatShells(amountShells)})` : 'Unknown'],
+                ['Nullifier', `<code>0x${bytesToHex(inst.data.slice(9, 41))}</code>`],
+                ['Merkle Root', `<code>0x${bytesToHex(inst.data.slice(41, 73))}</code>`],
+                ['Recipient Input (Fr)', `<code>0x${bytesToHex(inst.data.slice(73, 105))}</code>`],
+                ['Proof', `${inst.data.length - 105} bytes`],
+            ],
+        };
+    }
+
+    if (opcode === 25 && inst.data.length >= 289) {
+        return {
+            label: 'ShieldedTransfer',
+            rows: [
+                ['Opcode', '25 (ShieldedTransfer)'],
+                ['Nullifier A', `<code>0x${bytesToHex(inst.data.slice(1, 33))}</code>`],
+                ['Nullifier B', `<code>0x${bytesToHex(inst.data.slice(33, 65))}</code>`],
+                ['Output Commitment C', `<code>0x${bytesToHex(inst.data.slice(65, 97))}</code>`],
+                ['Output Commitment D', `<code>0x${bytesToHex(inst.data.slice(97, 129))}</code>`],
+                ['Merkle Root', `<code>0x${bytesToHex(inst.data.slice(129, 161))}</code>`],
+                ['Proof', `${inst.data.length - 161} bytes`],
+            ],
+        };
+    }
+
+    return null;
+}
+
 // Get transaction hash from URL
 function getTxHash() {
     const params = new URLSearchParams(window.location.search);
@@ -227,6 +297,9 @@ async function displayTransaction(tx) {
         'ReefStakeUnstake': 'ReefStake Unstake',
         'ReefStakeClaim':   'ReefStake Claim',
         'ReefStakeTransfer': 'ReefStake Transfer',
+        'Shield':           'Shield',
+        'Unshield':         'Unshield',
+        'ShieldedTransfer': 'Shielded Transfer',
         'DeployContract':   'Deploy Contract',
         'SetContractABI':   'Set Contract ABI',
         'FaucetAirdrop':    'Faucet Airdrop',
@@ -248,7 +321,9 @@ async function displayTransaction(tx) {
     const amountShells = tx.amount_shells !== undefined
         ? tx.amount_shells
         : Math.round((tx.amount || 0) * 1_000_000_000);
-    const amountDisplay = amountShells > 0
+    const amountDisplay = typeRaw === 'ShieldedTransfer'
+        ? 'Hidden'
+        : amountShells > 0
         ? formatMolt(amountShells)
         : '-';
     const recentBlockhash = tx.message.recent_blockhash;
@@ -326,10 +401,21 @@ async function displayTransaction(tx) {
     if (instructions.length === 0) {
         instructionsList.innerHTML = '<div class="empty-state"><i class="fas fa-inbox"></i> No instructions</div>';
     } else {
-        instructionsList.innerHTML = instructions.map((inst, idx) => `
+        instructionsList.innerHTML = instructions.map((inst, idx) => {
+            const shielded = decodeShieldedInstruction(inst);
+            const shieldedRows = shielded
+                ? shielded.rows.map(([k, v]) => `
+                    <div class="detail-row">
+                        <div class="detail-label">${k}</div>
+                        <div class="detail-value">${v}</div>
+                    </div>
+                `).join('')
+                : '';
+
+            return `
             <div class="instruction-item">
                 <div class="instruction-header">
-                    <strong>Instruction #${idx + 1}</strong>
+                    <strong>Instruction #${idx + 1}${shielded ? ` · ${shielded.label}` : ''}</strong>
                 </div>
                 <div class="detail-grid">
                     <div class="detail-row">
@@ -365,9 +451,11 @@ async function displayTransaction(tx) {
                             <code>${inst.data.length} bytes: [${inst.data.slice(0, 20).join(', ')}${inst.data.length > 20 ? '...' : ''}]</code>
                         </div>
                     </div>
+                    ${shieldedRows}
                 </div>
             </div>
-        `).join('');
+        `;
+        }).join('');
     }
     
     // Signatures

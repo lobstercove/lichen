@@ -222,6 +222,15 @@ impl TxProcessor {
                         // AUDIT-FIX B-2: Type 17 (SystemDeploy) must charge the same
                         // contract_deploy_fee as CONTRACT_PROGRAM_ID Deploy.
                         17 => total = total.saturating_add(fee_config.contract_deploy_fee),
+                        // ZK shielded instructions carry heavier verification cost.
+                        // Charge proportionally to their compute unit weight.
+                        // 1 CU = 1 shell (same as EVM gas pricing).
+                        #[cfg(feature = "zk")]
+                        23 => total = total.saturating_add(crate::zk::SHIELD_COMPUTE_UNITS),
+                        #[cfg(feature = "zk")]
+                        24 => total = total.saturating_add(crate::zk::UNSHIELD_COMPUTE_UNITS),
+                        #[cfg(feature = "zk")]
+                        25 => total = total.saturating_add(crate::zk::TRANSFER_COMPUTE_UNITS),
                         _ => {}
                     }
                 }
@@ -2080,6 +2089,7 @@ impl TxProcessor {
                 let index = pool.commitment_count;
                 batch.insert_shielded_commitment(index, &commitment)?;
                 pool.commitment_count += 1;
+                pool.shield_count = pool.shield_count.saturating_add(1);
                 pool.total_shielded = pool.total_shielded.checked_add(amount).ok_or_else(|| {
                     "Shield: pool balance overflow".to_string()
                 })?;
@@ -2097,6 +2107,7 @@ impl TxProcessor {
                 let index = pool.commitment_count;
                 self.state.insert_shielded_commitment(index, &commitment)?;
                 pool.commitment_count += 1;
+                pool.shield_count = pool.shield_count.saturating_add(1);
                 pool.total_shielded = pool.total_shielded.checked_add(amount).ok_or_else(|| {
                     "Shield: pool balance overflow".to_string()
                 })?;
@@ -2133,7 +2144,7 @@ impl TxProcessor {
     /// accounts[0] = recipient (credited)
     #[cfg(feature = "zk")]
     fn system_unshield_withdraw(&self, ix: &Instruction) -> Result<(), String> {
-        use crate::zk::{fr_to_bytes, ProofType, ZkProof};
+        use crate::zk::{fr_to_bytes, poseidon_hash_fr, ProofType, ZkProof};
         use ark_bn254::Fr;
         use ark_ff::PrimeField;
 
@@ -2171,6 +2182,16 @@ impl TxProcessor {
 
         let proof_bytes = ix.data[105..233].to_vec();
 
+        // Bind public recipient input to the credited account.
+        // recipient_public must be Poseidon(Fr(recipient_pubkey), 0).
+        let recipient_preimage = Fr::from_le_bytes_mod_order(&recipient_pubkey.0);
+        let expected_recipient = poseidon_hash_fr(recipient_preimage, Fr::from(0u64));
+        let expected_recipient_bytes = fr_to_bytes(&expected_recipient);
+        if recipient_fr_bytes != expected_recipient_bytes {
+            return Err("Unshield: recipient public input does not match recipient account"
+                .to_string());
+        }
+
         // Verify merkle root matches current state
         {
             let guard = self.batch.lock().unwrap_or_else(|e| e.into_inner());
@@ -2181,6 +2202,12 @@ impl TxProcessor {
             };
             if pool.merkle_root != merkle_root {
                 return Err("Unshield: merkle root does not match current pool state".to_string());
+            }
+            if amount > pool.total_shielded {
+                return Err(format!(
+                    "Unshield: insufficient shielded pool balance ({} < {})",
+                    pool.total_shielded, amount
+                ));
             }
         }
 
@@ -2248,12 +2275,22 @@ impl TxProcessor {
             if let Some(batch) = guard.as_mut() {
                 batch.mark_nullifier_spent(&nullifier)?;
                 let mut pool = batch.get_shielded_pool_state()?;
-                pool.total_shielded = pool.total_shielded.saturating_sub(amount);
+                pool.unshield_count = pool.unshield_count.saturating_add(1);
+                pool.nullifier_count = pool.nullifier_count.saturating_add(1);
+                pool.total_shielded = pool
+                    .total_shielded
+                    .checked_sub(amount)
+                    .ok_or_else(|| "Unshield: shielded pool underflow".to_string())?;
                 batch.put_shielded_pool_state(&pool)?;
             } else {
                 self.state.mark_nullifier_spent(&nullifier)?;
                 let mut pool = self.state.get_shielded_pool_state()?;
-                pool.total_shielded = pool.total_shielded.saturating_sub(amount);
+                pool.unshield_count = pool.unshield_count.saturating_add(1);
+                pool.nullifier_count = pool.nullifier_count.saturating_add(1);
+                pool.total_shielded = pool
+                    .total_shielded
+                    .checked_sub(amount)
+                    .ok_or_else(|| "Unshield: shielded pool underflow".to_string())?;
                 self.state.put_shielded_pool_state(&pool)?;
             }
         }
@@ -2389,6 +2426,8 @@ impl TxProcessor {
                 batch.mark_nullifier_spent(&nullifier_a)?;
                 batch.mark_nullifier_spent(&nullifier_b)?;
                 let mut pool = batch.get_shielded_pool_state()?;
+                pool.transfer_count = pool.transfer_count.saturating_add(1);
+                pool.nullifier_count = pool.nullifier_count.saturating_add(2);
                 let idx0 = pool.commitment_count;
                 batch.insert_shielded_commitment(idx0, &commitment_c)?;
                 batch.insert_shielded_commitment(idx0 + 1, &commitment_d)?;
@@ -2408,6 +2447,8 @@ impl TxProcessor {
                 self.state.mark_nullifier_spent(&nullifier_a)?;
                 self.state.mark_nullifier_spent(&nullifier_b)?;
                 let mut pool = self.state.get_shielded_pool_state()?;
+                pool.transfer_count = pool.transfer_count.saturating_add(1);
+                pool.nullifier_count = pool.nullifier_count.saturating_add(2);
                 let idx0 = pool.commitment_count;
                 self.state.insert_shielded_commitment(idx0, &commitment_c)?;
                 self.state
@@ -4883,6 +4924,7 @@ mod tests {
     // ====================================================================
 
     /// Helper: build a system instruction with the given type byte and data
+    #[allow(dead_code)]
     fn make_system_ix(ix_type: u8, accounts: Vec<Pubkey>, extra_data: &[u8]) -> Instruction {
         let mut data = vec![ix_type];
         data.extend_from_slice(extra_data);
@@ -6100,7 +6142,7 @@ mod tests {
     #[test]
     fn test_ecosystem_grant_requires_multisig() {
         // Standard transfer from a governed wallet must be rejected.
-        let (processor, state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let (processor, state, _alice_kp, alice, _treasury, genesis_hash) = setup();
         let eco_kp = Keypair::generate();
         let eco = eco_kp.pubkey();
         let recipient = Pubkey([99u8; 32]);
@@ -6337,7 +6379,7 @@ mod tests {
     #[cfg(feature = "zk")]
     #[test]
     fn test_shield_rejects_no_accounts() {
-        let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
+        let (processor, _state, alice_kp, _alice, _treasury, genesis_hash) = setup();
 
         let mut data = vec![23u8];
         data.extend_from_slice(&100u64.to_le_bytes());
@@ -6433,10 +6475,9 @@ mod tests {
     #[test]
     fn test_shield_full_e2e_with_processor() {
         use crate::zk::{
-            circuits::shield::ShieldCircuit, fr_to_bytes, poseidon_hash_fr, setup, Prover, Verifier,
+            circuits::shield::ShieldCircuit, fr_to_bytes, poseidon_hash_fr, setup, Prover,
         };
         use ark_bn254::Fr;
-        use ark_ff::PrimeField;
         use ark_std::rand::rngs::OsRng;
         use ark_std::UniformRand;
 
@@ -6548,6 +6589,54 @@ mod tests {
         let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
         assert!(!result.success);
         assert!(result.error.as_ref().unwrap().contains("insufficient data"));
+    }
+
+    #[cfg(feature = "zk")]
+    #[test]
+    fn test_unshield_rejects_recipient_mismatch() {
+        use crate::zk::{fr_to_bytes, poseidon_hash_fr};
+        use ark_bn254::Fr;
+        use ark_ff::PrimeField;
+
+        let (processor, _state, alice_kp, alice, _treasury, genesis_hash) = setup();
+
+        // Build valid-length unshield payload but with recipient input bound to a different account.
+        let amount = 100u64;
+        let nullifier = [0x11u8; 32];
+        let merkle_root = [0u8; 32];
+
+        // Deliberately mismatch by hashing a different pubkey than `alice`.
+        let other_pubkey = Pubkey([0x22u8; 32]);
+        let other_preimage = Fr::from_le_bytes_mod_order(&other_pubkey.0);
+        let other_recipient = poseidon_hash_fr(other_preimage, Fr::from(0u64));
+
+        let mut data = vec![24u8];
+        data.extend_from_slice(&amount.to_le_bytes());
+        data.extend_from_slice(&nullifier);
+        data.extend_from_slice(&merkle_root);
+        data.extend_from_slice(&fr_to_bytes(&other_recipient));
+        data.extend_from_slice(&[0u8; 128]);
+
+        let ix = Instruction {
+            program_id: SYSTEM_PROGRAM_ID,
+            accounts: vec![alice],
+            data,
+        };
+        let msg = crate::transaction::Message::new(vec![ix], genesis_hash);
+        let mut tx = Transaction::new(msg);
+        tx.signatures.push(alice_kp.sign(&tx.message.serialize()));
+
+        let result = processor.process_transaction(&tx, &Pubkey([42u8; 32]));
+        assert!(!result.success);
+        assert!(
+            result
+                .error
+                .as_ref()
+                .unwrap()
+                .contains("recipient public input does not match recipient account"),
+            "unexpected error: {:?}",
+            result.error
+        );
     }
 
     #[cfg(feature = "zk")]

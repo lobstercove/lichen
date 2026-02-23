@@ -200,9 +200,6 @@ struct SeedNetwork {
 #[derive(Debug, Deserialize)]
 struct SeedEntry {
     address: String,
-    /// Optional role field: "seed", "relay", or "validator"
-    #[serde(default)]
-    role: Option<String>,
 }
 
 fn resolve_peer_list(peers: &[String]) -> Vec<SocketAddr> {
@@ -217,6 +214,94 @@ fn resolve_peer_list(peers: &[String]) -> Vec<SocketAddr> {
         }
     }
     resolved
+}
+
+fn try_load_runtime_zk_verification_keys(processor: &TxProcessor, data_dir: &Path) {
+    let zk_dir = data_dir.join("zk");
+    let shield_path = env::var("MOLTCHAIN_ZK_SHIELD_VK_PATH")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| zk_dir.join("vk_shield.bin"));
+    let unshield_path = env::var("MOLTCHAIN_ZK_UNSHIELD_VK_PATH")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| zk_dir.join("vk_unshield.bin"));
+    let transfer_path = env::var("MOLTCHAIN_ZK_TRANSFER_VK_PATH")
+        .ok()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| zk_dir.join("vk_transfer.bin"));
+
+    // If any VK file is missing, auto-generate all three via trusted setup.
+    // This makes dev/testnet validators work out of the box without manual key
+    // management.  Production deployments should pre-generate keys via an MPC
+    // ceremony and distribute the VK files.
+    if !shield_path.exists() || !unshield_path.exists() || !transfer_path.exists() {
+        info!("🔑 ZK verification keys not found — running trusted setup (this takes ~30s)...");
+        match generate_and_persist_zk_keys(&zk_dir) {
+            Ok(_) => info!("✓ ZK trusted setup complete — keys written to {}", zk_dir.display()),
+            Err(e) => {
+                warn!("⚠️  ZK trusted setup failed: {} — shielded transactions will be unavailable", e);
+                return;
+            }
+        }
+    }
+
+    // Read all three VK files
+    let shield_vk = match fs::read(&shield_path) {
+        Ok(b) => b,
+        Err(e) => {
+            warn!("⚠️  Failed reading shield VK at {}: {}", shield_path.display(), e);
+            return;
+        }
+    };
+    let unshield_vk = match fs::read(&unshield_path) {
+        Ok(b) => b,
+        Err(e) => {
+            warn!("⚠️  Failed reading unshield VK at {}: {}", unshield_path.display(), e);
+            return;
+        }
+    };
+    let transfer_vk = match fs::read(&transfer_path) {
+        Ok(b) => b,
+        Err(e) => {
+            warn!("⚠️  Failed reading transfer VK at {}: {}", transfer_path.display(), e);
+            return;
+        }
+    };
+
+    match processor.load_zk_verification_keys(&shield_vk, &unshield_vk, &transfer_vk) {
+        Ok(_) => info!(
+            "✓ Loaded ZK verification keys (shield={}, unshield={}, transfer={})",
+            shield_path.display(),
+            unshield_path.display(),
+            transfer_path.display()
+        ),
+        Err(e) => warn!("⚠️  Failed loading ZK verification keys: {}", e),
+    }
+}
+
+/// Run the Groth16 trusted setup and write VK + PK files to `zk_dir`.
+fn generate_and_persist_zk_keys(zk_dir: &Path) -> Result<(), String> {
+    use moltchain_core::zk::setup;
+
+    fs::create_dir_all(zk_dir).map_err(|e| format!("mkdir {}: {}", zk_dir.display(), e))?;
+
+    let outputs = setup::setup_all()?;
+    for output in &outputs {
+        let vk_path = zk_dir.join(format!("vk_{}.bin", output.circuit_name));
+        let pk_path = zk_dir.join(format!("pk_{}.bin", output.circuit_name));
+        fs::write(&vk_path, &output.verification_key_bytes)
+            .map_err(|e| format!("write {}: {}", vk_path.display(), e))?;
+        fs::write(&pk_path, &output.proving_key_bytes)
+            .map_err(|e| format!("write {}: {}", pk_path.display(), e))?;
+        info!(
+            "  {} — VK {} bytes, PK {} bytes",
+            output.circuit_name,
+            output.verification_key_bytes.len(),
+            output.proving_key_bytes.len()
+        );
+    }
+    Ok(())
 }
 
 fn load_seed_peers(chain_id: &str, seeds_path: &Path) -> Vec<String> {
@@ -5448,6 +5533,10 @@ async fn run_validator() {
 
     // Create transaction processor
     let processor = Arc::new(TxProcessor::new(state.clone()));
+
+    // Load ZK verification keys at runtime (if present) so shielded tx
+    // verification is available outside tests.
+    try_load_runtime_zk_verification_keys(&processor, &data_dir_path);
 
     // ========================================================================
     // GENESIS CONFIGURATION

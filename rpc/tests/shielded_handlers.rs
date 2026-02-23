@@ -140,6 +140,10 @@ fn create_populated_app(
         vk_shield_hash: [0xAA; 32],
         vk_unshield_hash: [0xBB; 32],
         vk_transfer_hash: [0xCC; 32],
+        nullifier_count: 0,
+        shield_count: 0,
+        unshield_count: 0,
+        transfer_count: 0,
     };
     state
         .put_shielded_pool_state(&pool_state)
@@ -797,6 +801,10 @@ async fn test_rpc_reflects_processor_shielded_state() {
         vk_shield_hash: [0x11; 32],
         vk_unshield_hash: [0x22; 32],
         vk_transfer_hash: [0x33; 32],
+        nullifier_count: 1,
+        shield_count: 3,
+        unshield_count: 1,
+        transfer_count: 0,
     };
     state.put_shielded_pool_state(&pool).unwrap();
 

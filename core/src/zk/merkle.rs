@@ -33,9 +33,6 @@ pub struct MerklePath {
 pub struct MerkleTree {
     /// All leaf nodes (note commitment hashes)
     leaves: Vec<[u8; 32]>,
-    /// Internal node cache: layer -> index -> hash
-    /// Layer 0 = leaves, Layer TREE_DEPTH = root
-    nodes: Vec<Vec<[u8; 32]>>,
     /// Precomputed empty subtree hashes for each level
     empty_hashes: Vec<[u8; 32]>,
 }
@@ -46,7 +43,6 @@ impl MerkleTree {
         let empty_hashes = Self::compute_empty_hashes();
         Self {
             leaves: Vec::new(),
-            nodes: vec![Vec::new(); TREE_DEPTH + 1],
             empty_hashes,
         }
     }
@@ -300,7 +296,6 @@ pub fn poseidon_config() -> PoseidonConfig<Fr> {
     for i in 0..width {
         let mut row = Vec::new();
         for j in 0..width {
-            let val = Fr::from((i + j + 1) as u64);
             // Use 1/(x_i + y_j) for Cauchy matrix
             let x = Fr::from((i + 1) as u64);
             let y = Fr::from((width + j + 1) as u64);

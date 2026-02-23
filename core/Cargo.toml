@@ -44,10 +44,11 @@ ark-crypto-primitives = { version = "0.4", features = ["sponge", "r1cs"], option
 ark-serialize = { version = "0.4", optional = true }
 ark-snark = { version = "0.4", optional = true }
 ark-std = { version = "0.4", features = ["getrandom"], optional = true }
+chacha20poly1305 = { version = "0.10", optional = true }
 
 [features]
 default = ["zk"]
-zk = ["ark-ff", "ark-ec", "ark-bn254", "ark-groth16", "ark-relations", "ark-r1cs-std", "ark-crypto-primitives", "ark-serialize", "ark-snark", "ark-std"]  # Production ZK privacy layer
+zk = ["ark-ff", "ark-ec", "ark-bn254", "ark-groth16", "ark-relations", "ark-r1cs-std", "ark-crypto-primitives", "ark-serialize", "ark-snark", "ark-std", "chacha20poly1305"]  # Production ZK privacy layer
 
 [dev-dependencies]
 criterion = "0.5"
