@@ -743,3 +743,116 @@ async fn test_merkle_proof_roundtrip_verification() {
         );
     }
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// Processor → RPC state consistency test
+//
+// Simulates what would happen after a processor processes shielded transactions:
+// the RPC endpoints should reflect the updated state.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Helper: create a test app from an existing StateStore (for processor→RPC tests).
+fn create_app_from_state(state: StateStore) -> axum::Router {
+    build_rpc_router(
+        state,
+        None, None, None,
+        "moltchain-test".to_string(),
+        "molt-test".to_string(),
+        None, None, None, None,
+    )
+}
+
+#[tokio::test]
+async fn test_rpc_reflects_processor_shielded_state() {
+    use moltchain_core::zk::ShieldedPoolState;
+
+    // Simulate processor state after processing:
+    //   - 3 shield transactions
+    //   - 1 nullifier spent (from an unshield)
+    let dir = tempfile::tempdir().expect("tempdir");
+    let state = StateStore::open(dir.path()).expect("state");
+
+    let mut tree = MerkleTree::new();
+    let commitments = [
+        test_commitment(100),
+        test_commitment(200),
+        test_commitment(300),
+    ];
+
+    for (i, comm) in commitments.iter().enumerate() {
+        state
+            .insert_shielded_commitment(i as u64, comm)
+            .unwrap();
+        tree.insert(*comm);
+    }
+
+    let nullifier = test_nullifier(100);
+    state.mark_nullifier_spent(&nullifier).unwrap();
+
+    // Pool state: 3 commitments, 1.5 MOLT remaining (after 0.5 MOLT unshielded)
+    let pool = ShieldedPoolState {
+        merkle_root: tree.root(),
+        commitment_count: 3,
+        total_shielded: 1_500_000_000,
+        vk_shield_hash: [0x11; 32],
+        vk_unshield_hash: [0x22; 32],
+        vk_transfer_hash: [0x33; 32],
+    };
+    state.put_shielded_pool_state(&pool).unwrap();
+
+    let _ = Box::leak(Box::new(dir));
+    let app = create_app_from_state(state);
+
+    // ── Verify JSON-RPC getShieldedPoolState ──────────────────────────────
+    let resp = rpc_call(&app, "getShieldedPoolState").await.unwrap();
+    let result = &resp["result"];
+    assert_eq!(result["commitmentCount"], 3);
+    assert_eq!(result["totalShielded"], 1_500_000_000u64);
+    assert_eq!(
+        result["merkleRoot"].as_str().unwrap(),
+        hex::encode(tree.root())
+    );
+
+    // ── Verify nullifier is spent via JSON-RPC ───────────────────────────
+    let null_hex = hex::encode(nullifier);
+    let resp = rpc_call_with_params(&app, "isNullifierSpent", json!([&null_hex]))
+        .await
+        .unwrap();
+    assert_eq!(resp["result"]["spent"], true);
+
+    // ── Verify non-spent nullifier ───────────────────────────────────────
+    let fresh_null = hex::encode(test_nullifier(999));
+    let resp = rpc_call_with_params(&app, "isNullifierSpent", json!([&fresh_null]))
+        .await
+        .unwrap();
+    assert_eq!(resp["result"]["spent"], false);
+
+    // ── Verify commitments via REST ──────────────────────────────────────
+    let resp = rest_get(&app, "/api/v1/shielded/commitments?from=0&limit=10")
+        .await
+        .unwrap();
+    assert_eq!(resp["success"], true);
+    let comms = resp["data"]["commitments"].as_array().unwrap();
+    assert_eq!(comms.len(), 3);
+    assert_eq!(
+        comms[0]["commitment"].as_str().unwrap(),
+        hex::encode(commitments[0])
+    );
+    assert_eq!(
+        comms[2]["commitment"].as_str().unwrap(),
+        hex::encode(commitments[2])
+    );
+
+    // ── Verify Merkle path via REST ──────────────────────────────────────
+    let resp = rest_get(&app, "/api/v1/shielded/merkle-path/1")
+        .await
+        .unwrap();
+    assert_eq!(resp["success"], true);
+    let path_root = resp["data"]["root"].as_str().unwrap();
+    assert_eq!(path_root, hex::encode(tree.root()));
+
+    // ── Verify pool via REST ─────────────────────────────────────────────
+    let resp = rest_get(&app, "/api/v1/shielded/pool").await.unwrap();
+    assert_eq!(resp["data"]["totalShielded"], 1_500_000_000u64);
+    assert_eq!(resp["data"]["totalShieldedMolt"], "1.500000000");
+}
