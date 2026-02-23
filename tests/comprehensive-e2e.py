@@ -1404,7 +1404,8 @@ async def main() -> int:
             req = urllib_req.Request(rest_url, headers={"Accept": "application/json"})
             with urllib_req.urlopen(req, timeout=5) as resp:
                 pool_rest = json.loads(resp.read())
-            report("PASS", f"zk.rest.pool balance={pool_rest.get('totalShielded', '?')}")
+            pool_data = pool_rest.get("data", pool_rest)
+            report("PASS", f"zk.rest.pool balance={pool_data.get('totalShielded', '?')}")
         except Exception as e:
             report("SKIP", f"zk.rest.pool skip ({e})")
 
@@ -1478,7 +1479,9 @@ async def main() -> int:
             req = urllib_req.Request(rest_url, headers={"Accept": "application/json"})
             with urllib_req.urlopen(req, timeout=5) as resp:
                 commits_rest = json.loads(resp.read())
-            report("PASS", f"zk.rest.commitments count={len(commits_rest) if isinstance(commits_rest, list) else '?'}")
+            commits_data = commits_rest.get("data", commits_rest)
+            commits_list = commits_data if isinstance(commits_data, list) else commits_data.get("commitments", [])
+            report("PASS", f"zk.rest.commitments count={len(commits_list) if isinstance(commits_list, list) else '?'}")
         except Exception as e:
             report("SKIP", f"zk.rest.commitments skip ({e})")
 
@@ -1501,7 +1504,8 @@ async def main() -> int:
             req = urllib_req.Request(rest_url, headers={"Accept": "application/json"})
             with urllib_req.urlopen(req, timeout=5) as resp:
                 mp_rest = json.loads(resp.read())
-            report("PASS", f"zk.rest.merkle-path siblings={len(mp_rest.get('siblings', []))}")
+            mp_data = mp_rest.get("data", mp_rest)
+            report("PASS", f"zk.rest.merkle-path siblings={len(mp_data.get('siblings', []))}")
         except Exception as e:
             report("SKIP", f"zk.rest.merkle-path skip ({e})")
 
@@ -1580,7 +1584,9 @@ async def main() -> int:
                 req = urllib_req.Request(rest_url, headers={"Accept": "application/json"})
                 with urllib_req.urlopen(req, timeout=5) as resp:
                     ns_rest = json.loads(resp.read())
-                if not ns_rest.get("spent", True):
+                # Response is wrapped: {"success":true,"data":{"spent":false,...}}
+                ns_data = ns_rest.get("data", ns_rest)
+                if not ns_data.get("spent", True):
                     report("PASS", "zk.rest.nullifier pre-unshield=false")
                 else:
                     report("FAIL", "zk.rest.nullifier expected false before unshield")
