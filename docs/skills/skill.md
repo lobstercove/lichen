@@ -1110,6 +1110,150 @@ The following list comes from contract source (`contracts/*/src/lib.rs`, exporte
 
 ---
 
+## 7A) ZK Shielded Privacy Layer (Groth16/BN254)
+
+MoltChain includes a **zero-knowledge privacy layer** based on Groth16 proofs over the BN254 curve with Poseidon hashing. Three system-level operations let agents move value into, within, and out of a shielded UTXO pool.
+
+### Architecture summary
+
+| Component | Detail |
+|-----------|--------|
+| Curve | BN254 (alt_bn128) |
+| Proof system | Groth16 (ark-groth16) |
+| Hash | Poseidon (2-input, BN254-Fr) |
+| Merkle tree | Binary, depth 20 (1 048 576 leaf capacity) |
+| Note model | UTXO: `commitment = Poseidon(value, blinding)` |
+| Nullifier | `Poseidon(serial, spending_key)` |
+| Key cache | `~/.moltchain/zk/` — pk/vk for shield, unshield, transfer |
+
+### System opcodes
+
+| Opcode | Name | Data length | Accounts |
+|--------|------|-------------|----------|
+| 23 | Shield | 169 bytes | `[sender]` |
+| 24 | Unshield | 233 bytes | `[recipient]` |
+| 25 | Transfer | 289 bytes | `[fee_payer]` |
+
+- **Shield** — deposits shells from a transparent account into the shielded pool, inserting a new commitment into the Merkle tree.
+- **Unshield** — withdraws shells from the pool to a transparent account by revealing a nullifier (proving possession of a note without revealing which one).
+- **Transfer** — fully private 2-in-2-out spend within the pool: consumes 2 input notes (via nullifiers), creates 2 new output commitments. Value conservation is enforced by the ZK circuit.
+
+### 7A.1 CLI proof generation (`zk-prove`)
+
+```bash
+# Shield — deposit into the pool
+./target/release/zk-prove shield --amount 500000000 --pk-dir ~/.moltchain/zk
+# → JSON: { commitment, blinding, serial, spending_key, proof }
+
+# Unshield — withdraw from the pool
+./target/release/zk-prove unshield \
+  --amount 500000000 \
+  --blinding <hex> --serial <hex> --spending-key <hex> \
+  --recipient <base58_pubkey> \
+  --merkle-root <hex> --merkle-path <hex,hex,...> --path-bits 0,1,0,... \
+  --pk-dir ~/.moltchain/zk
+# → JSON: { nullifier, recipient_hash, proof }
+
+# Transfer — private 2-in-2-out spend
+./target/release/zk-prove transfer --transfer-json witness.json --pk-dir ~/.moltchain/zk
+# → JSON: { nullifier_a, nullifier_b, commitment_c, commitment_d, merkle_root, proof, outputs: [...] }
+```
+
+**Transfer witness JSON format** (`witness.json`):
+```json
+{
+  "merkle_root": "<hex 32-byte>",
+  "inputs": [
+    {
+      "amount": 300000000,
+      "blinding": "<hex>",
+      "serial": "<hex>",
+      "spending_key": "<hex>",
+      "merkle_path": ["<hex>", ...],   // 20 siblings
+      "path_bits": [false, true, ...]  // 20 bits
+    },
+    { "amount": 200000000, "blinding": "...", "serial": "...", "spending_key": "...", "merkle_path": [...], "path_bits": [...] }
+  ],
+  "outputs": [
+    { "amount": 350000000 },
+    { "amount": 150000000 }
+  ]
+}
+```
+Output amounts must sum to input amounts (value conservation). Blindings for new outputs are generated randomly if not provided.
+
+### 7A.2 Python SDK (`moltchain.shielded`)
+
+```python
+from moltchain import (
+    Connection, Keypair, TransactionBuilder,
+    shield_instruction, unshield_instruction, transfer_instruction,
+)
+
+# Shield
+ix = shield_instruction(sender_pubkey, amount_shells, commitment_bytes, proof_bytes)
+
+# Unshield
+ix = unshield_instruction(recipient_pubkey, amount_shells,
+                          nullifier, merkle_root, recipient_hash, proof)
+
+# Transfer (2-in-2-out, fully private)
+ix = transfer_instruction(fee_payer_pubkey,
+                          [null_a, null_b],
+                          [comm_c, comm_d],
+                          merkle_root, proof)
+
+# Submit
+bh = await conn.get_recent_blockhash()
+tx = TransactionBuilder().add(ix).set_recent_blockhash(bh).build_and_sign(keypair)
+sig = await conn.send_transaction(tx)
+```
+
+### 7A.3 RPC methods (JSON-RPC on port 8899)
+
+| Method | Params | Returns |
+|--------|--------|---------|
+| `getShieldedPoolState` | none | `{ merkleRoot, commitmentCount, totalShielded, nullifierCount, shieldCount, unshieldCount, transferCount, vkShieldHash, vkUnshieldHash, vkTransferHash }` |
+| `getShieldedMerkleRoot` | none | `{ merkleRoot }` |
+| `getShieldedMerklePath` | `[leafIndex]` | `{ siblings: [hex...], pathBits: [bool...] }` |
+| `isNullifierSpent` | `[hex]` | `{ spent: bool }` |
+| `getShieldedCommitments` | `[from?, limit?]` | `{ commitments: [hex...], total, from, limit }` |
+
+### 7A.4 REST endpoints (`/api/v1/shielded/`)
+
+| Method | Path | Body / Params | Description |
+|--------|------|--------------|-------------|
+| GET | `/pool` | — | Pool state |
+| GET | `/merkle-root` | — | Current Merkle root |
+| GET | `/merkle-path/:index` | — | Siblings + path bits |
+| GET | `/nullifier/:hex` | — | `{ spent: bool }` |
+| GET | `/commitments?from=&limit=` | — | Paginated commitments |
+| POST | `/shield` | `{ transaction: base64 }` | Submit signed shield TX |
+| POST | `/unshield` | `{ transaction: base64 }` | Submit signed unshield TX |
+| POST | `/transfer` | `{ transaction: base64 }` | Submit signed transfer TX |
+
+All REST responses wrapped in `{ success: true, data: {...} }`.
+
+### 7A.5 Agent privacy workflow (end-to-end)
+
+1. **Shield**: Generate shield proof → build `shield_instruction` → sign and send → wait for confirmation → **save** `blinding`, `serial`, `spending_key` securely.
+2. **Wait**: The note is now in the shielded pool, invisible to observers. The pool state shows `totalShielded` increased but no individual amounts or owners are visible.
+3. **Transfer** (optional): Build a witness with 2 input notes + 2 output notes → generate transfer proof → submit → both input nullifiers become spent, 2 new commitments appear. Output note secrets (blinding, serial) are output by `zk-prove`.
+4. **Unshield**: Get the Merkle path for your note's leaf index → generate unshield proof → build `unshield_instruction` → submit → shells appear in the transparent recipient account.
+
+**Critical**: Always persist note secrets (`blinding`, `serial`, `spending_key`) after shielding. Without them, the note is unspendable.
+
+### 7A.6 Fee handling
+
+All ZK transactions require a fee payer with sufficient transparent balance:
+- Shield: 100,000 compute units → ~0.0001 MOLT fee
+- Unshield: 150,000 compute units → ~0.00015 MOLT fee
+- Transfer: 200,000 compute units → ~0.0002 MOLT fee
+
+The fee payer is always `instruction.accounts[0]`.
+
+---
+
 ## 8) REST Data Planes + Custody/Cross-Chain
 
 RPC REST services:
