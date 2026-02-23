@@ -136,8 +136,8 @@ function updatePoolStatsUI(stats) {
     const merkleRootEl = el('merkleRoot');
     if (merkleRootEl) merkleRootEl.textContent = '0x' + merkleRoot;
 
-    // Tree utilization
-    const maxCapacity = 4_294_967_296; // 2^32
+    // Tree utilization — TREE_DEPTH=20 → 2^20 = 1,048,576 max commitments
+    const maxCapacity = 1_048_576; // 2^20
     const utilPct = (commitmentCount / maxCapacity) * 100;
     const utilizationBarEl = el('treeUtilizationBar');
     const utilizationPctEl = el('treeUtilizationPct');

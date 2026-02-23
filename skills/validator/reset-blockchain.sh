@@ -43,6 +43,7 @@ for arg in "$@"; do
         --restart)  RESTART=true ;;
         --no-keys)  KEEP_KEYS=true ;;
         --dev-mode) EXTRA_FLAGS="$EXTRA_FLAGS --dev-mode" ;;
+        --zk-reset) EXTRA_FLAGS="$EXTRA_FLAGS --zk-reset" ;;
         testnet|mainnet|all) NETWORK="$arg" ;;
     esac
 done
@@ -115,6 +116,15 @@ if [ "$NETWORK" = "all" ]; then
 
     # Home directory state
     rm -rf ~/.moltchain/data-* ~/.moltchain/state-* 2>/dev/null || true
+
+    # NOTE: ~/.moltchain/zk/ is intentionally NOT wiped.
+    # ZK verification/proving keys are deterministic Groth16 parameters — they
+    # contain no blockchain state.  Regenerating them takes ~10s (standalone
+    # zk-setup binary) but gains nothing security-wise.  Add --zk-reset to
+    # explicitly force regeneration (useful after changing circuit parameters).
+    if [[ "${EXTRA_FLAGS:-}" == *"--zk-reset"* ]]; then
+        rm -rf ~/.moltchain/zk 2>/dev/null && echo "  removed ZK key cache (--zk-reset)"
+    fi
 
     # Custody state
     rm -rf data/custody* 2>/dev/null || true
@@ -319,15 +329,26 @@ if [ "$RESTART" = true ]; then
     V1_PID=$!
     echo "   V1 PID: $V1_PID"
 
-    echo "   Waiting for V1 genesis (20s)..."
-    sleep 20
+    echo "   Waiting for V1 genesis (25s)..."
+    sleep 25
 
-    # Auto-copy genesis keypair to keypairs/deployer.json for E2E tests
-    GENESIS_KEY=$(find "$REPO_ROOT/data/state-8000/genesis-keys" -name "genesis-primary-*.json" -type f 2>/dev/null | head -1)
+    # Auto-copy genesis keypair to keypairs/deployer.json for E2E tests.
+    # Retry up to 3 times in case genesis initialization is still in progress.
+    GENESIS_KEY=""
+    for _attempt in 1 2 3; do
+        GENESIS_KEY=$(find "$REPO_ROOT/data/state-8000/genesis-keys" -name "genesis-primary-*.json" -type f 2>/dev/null | head -1)
+        [ -n "$GENESIS_KEY" ] && break
+        echo "   ⏳ Genesis keys not ready yet, waiting 5s more..."
+        sleep 5
+    done
     if [ -n "$GENESIS_KEY" ]; then
         mkdir -p "$REPO_ROOT/keypairs"
         cp "$GENESIS_KEY" "$REPO_ROOT/keypairs/deployer.json"
-        echo "   ✓ Copied genesis keypair to keypairs/deployer.json"
+        DEPLOYER_PUBKEY=$(python3 -c "import json; d=json.load(open('$GENESIS_KEY')); print(d.get('pubkey','?'))" 2>/dev/null || echo '?')
+        echo "   ✓ Copied genesis keypair to keypairs/deployer.json (pubkey=$DEPLOYER_PUBKEY)"
+    else
+        echo -e "   ${RED}⚠  Could not find genesis-primary-*.json after 40s — deployer.json NOT updated${NC}"
+        echo -e "   ${YELLOW}   E2E tests may fail. Check: data/state-8000/genesis-keys/${NC}"
     fi
 
     echo "   Starting V2 (secondary)..."

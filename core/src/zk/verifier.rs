@@ -35,7 +35,7 @@ impl Verifier {
     /// Create a verifier pre-loaded with the shield verification key
     pub fn from_vk_shield(vk: VerifyingKey<Bn254>) -> Self {
         Self {
-            pvk_shield: Some(Groth16::<Bn254>::process_vk(&vk).unwrap()),
+            pvk_shield: Groth16::<Bn254>::process_vk(&vk).ok(),
             pvk_unshield: None,
             pvk_transfer: None,
         }
@@ -45,7 +45,7 @@ impl Verifier {
     pub fn from_vk_unshield(vk: VerifyingKey<Bn254>) -> Self {
         Self {
             pvk_shield: None,
-            pvk_unshield: Some(Groth16::<Bn254>::process_vk(&vk).unwrap()),
+            pvk_unshield: Groth16::<Bn254>::process_vk(&vk).ok(),
             pvk_transfer: None,
         }
     }
@@ -55,7 +55,7 @@ impl Verifier {
         Self {
             pvk_shield: None,
             pvk_unshield: None,
-            pvk_transfer: Some(Groth16::<Bn254>::process_vk(&vk).unwrap()),
+            pvk_transfer: Groth16::<Bn254>::process_vk(&vk).ok(),
         }
     }
 
@@ -63,7 +63,10 @@ impl Verifier {
     pub fn load_shield_vk(&mut self, bytes: &[u8]) -> Result<(), String> {
         let vk = VerifyingKey::<Bn254>::deserialize_compressed(bytes)
             .map_err(|e| format!("failed to load shield VK: {}", e))?;
-        self.pvk_shield = Some(Groth16::<Bn254>::process_vk(&vk).unwrap());
+        self.pvk_shield = Some(
+            Groth16::<Bn254>::process_vk(&vk)
+                .map_err(|e| format!("failed to process shield VK: {}", e))?,
+        );
         Ok(())
     }
 
@@ -71,7 +74,10 @@ impl Verifier {
     pub fn load_unshield_vk(&mut self, bytes: &[u8]) -> Result<(), String> {
         let vk = VerifyingKey::<Bn254>::deserialize_compressed(bytes)
             .map_err(|e| format!("failed to load unshield VK: {}", e))?;
-        self.pvk_unshield = Some(Groth16::<Bn254>::process_vk(&vk).unwrap());
+        self.pvk_unshield = Some(
+            Groth16::<Bn254>::process_vk(&vk)
+                .map_err(|e| format!("failed to process unshield VK: {}", e))?,
+        );
         Ok(())
     }
 
@@ -79,7 +85,10 @@ impl Verifier {
     pub fn load_transfer_vk(&mut self, bytes: &[u8]) -> Result<(), String> {
         let vk = VerifyingKey::<Bn254>::deserialize_compressed(bytes)
             .map_err(|e| format!("failed to load transfer VK: {}", e))?;
-        self.pvk_transfer = Some(Groth16::<Bn254>::process_vk(&vk).unwrap());
+        self.pvk_transfer = Some(
+            Groth16::<Bn254>::process_vk(&vk)
+                .map_err(|e| format!("failed to process transfer VK: {}", e))?,
+        );
         Ok(())
     }
 
