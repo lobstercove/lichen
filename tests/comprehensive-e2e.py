@@ -1517,19 +1517,38 @@ async def main() -> int:
         unshield_json = None
         if shield_json and unshield_merkle_root:
             try:
+                import tempfile, os as _os
                 recipient_hex = deployer.public_key().to_bytes().hex()
+                cmd = [
+                    ZK_PROVE_BIN, "unshield",
+                    "--amount", str(shield_amount),
+                    "--pk-dir", ZK_KEY_DIR,
+                    "--merkle-root", unshield_merkle_root,
+                    "--recipient", recipient_hex,
+                    "--blinding", shield_json["blinding"],
+                    "--serial", shield_json["serial"],
+                ]
+                # Pass actual Merkle path from on-chain tree (siblings are
+                # Poseidon hashes of empty subtrees — NOT all zeros)
+                tmp_path_file = tmp_bits_file = None
+                if merkle_path_data:
+                    siblings = merkle_path_data.get("siblings", [])
+                    path_bits = merkle_path_data.get("pathBits", [])
+                    if siblings and path_bits:
+                        tmp_path_fd, tmp_path_file = tempfile.mkstemp(suffix=".json")
+                        tmp_bits_fd, tmp_bits_file = tempfile.mkstemp(suffix=".json")
+                        with _os.fdopen(tmp_path_fd, "w") as f:
+                            json.dump(siblings, f)
+                        with _os.fdopen(tmp_bits_fd, "w") as f:
+                            json.dump(path_bits, f)
+                        cmd += ["--merkle-path-json", tmp_path_file,
+                                "--path-bits-json", tmp_bits_file]
                 result = subprocess.run(
-                    [
-                        ZK_PROVE_BIN, "unshield",
-                        "--amount", str(shield_amount),
-                        "--pk-dir", ZK_KEY_DIR,
-                        "--merkle-root", unshield_merkle_root,
-                        "--recipient", recipient_hex,
-                        "--blinding", shield_json["blinding"],
-                        "--serial", shield_json["serial"],
-                    ],
+                    cmd,
                     capture_output=True, text=True, timeout=120,
                 )
+                if tmp_path_file: _os.unlink(tmp_path_file)
+                if tmp_bits_file: _os.unlink(tmp_bits_file)
                 if result.returncode != 0:
                     report("FAIL", f"zk.prove.unshield exit={result.returncode} stderr={result.stderr[:200]}")
                 else:
