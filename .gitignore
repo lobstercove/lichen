@@ -137,3 +137,16 @@ docs/archive/
 browser/
 moltchain/
 faucet-keypair.json
+
+# ── Local-only frontend workspace (keep on disk, ignore in git) ──
+developers/
+dex/
+explorer/
+marketplace/
+programs/
+wallet/
+website/
+shared/
+shared-base-styles.css
+shared-config.js
+shared-theme.css
