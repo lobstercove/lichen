@@ -178,8 +178,15 @@ Update:
 Status:
 - Existing coverage: `tests/test_website_audit.js`, `tests/test_developers_audit.js`, `tests/test_marketplace_audit.js`, cross-cutting audits.
 - Gap tasks:
-  - [ ] Add websocket-live assertions for explorer realtime updates.
-  - [ ] Add developers page endpoint parity assertions tied to `RPC_API_REFERENCE`.
+  - [x] Add websocket-live assertions for explorer realtime updates.
+  - [x] Add developers page endpoint parity assertions tied to `RPC_API_REFERENCE`.
+
+Update:
+- Added explicit explorer realtime websocket assertions to `tests/test_website_audit.js` (`F-8`) covering websocket subscription wiring (`subscribeBlocks`), live refresh callbacks (`updateLatestBlocks`/`updateLatestTransactions`/`updateDashboardStats`), and stale-connection watchdog reconnect behavior.
+- Added `D13` parity checks in `tests/test_developers_audit.js` that validate a canonical RPC method set is present both in `docs/guides/RPC_API_REFERENCE.md` and in `developers/rpc-reference.html`.
+- Validation evidence (targeted, scope-only):
+  - `node -e '...explorer websocket checks...'` → `Explorer WS live assertions: PASS`
+  - `node -e '...RPC parity checks...'` → `Developers RPC parity assertions: PASS`
 
 ## 3.6 Custody / Multisig / validator-key operations
 

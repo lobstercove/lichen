@@ -59,6 +59,7 @@ const scriptJs = fs.readFileSync(path.join(__dirname, '..', 'website', 'script.j
 const indexHtml = fs.readFileSync(path.join(__dirname, '..', 'website', 'index.html'), 'utf8');
 const websiteCss = fs.readFileSync(path.join(__dirname, '..', 'website', 'website.css'), 'utf8');
 const sharedConfig = fs.readFileSync(path.join(__dirname, '..', 'website', 'shared-config.js'), 'utf8');
+const explorerJs = fs.readFileSync(path.join(__dirname, '..', 'explorer', 'js', 'explorer.js'), 'utf8');
 
 // ════════════════════════════════════════════════════════════
 // F-1: copyCode catch handler — originalHTML scoping fix
@@ -244,6 +245,24 @@ const disconnectFn = extractFunction(scriptJs, 'disconnectWebsiteWS');
 assert(disconnectFn !== null, 'disconnectWebsiteWS function exists');
 assert(disconnectFn !== null && /clearTimeout/.test(disconnectFn),
     'disconnectWebsiteWS clears reconnect timer');
+
+// ════════════════════════════════════════════════════════════
+// F-8: Explorer WebSocket live update assertions
+// ════════════════════════════════════════════════════════════
+console.log('\n── F-8: Explorer WebSocket live updates ──');
+
+assert(/class MoltChainWS/.test(explorerJs), 'explorer.js defines MoltChainWS');
+assert(/resubscribeAll\(\)/.test(explorerJs), 'WebSocket client supports resubscribeAll() on reconnect');
+assert(/ws\.subscribe\('subscribeBlocks'/.test(explorerJs), 'Explorer subscribes to subscribeBlocks websocket channel');
+assert(/ws\.subscribe\('subscribeBlocks'[\s\S]*?updateLatestBlocks\(\)/.test(explorerJs),
+    'Block subscription triggers latest blocks refresh');
+assert(/ws\.subscribe\('subscribeBlocks'[\s\S]*?updateLatestTransactions\(\)/.test(explorerJs),
+    'Block subscription triggers latest transactions refresh');
+assert(/ws\.subscribe\('subscribeBlocks'[\s\S]*?updateDashboardStats\(\)/.test(explorerJs),
+    'Block subscription triggers dashboard stats refresh');
+assert(/WS_STALE_THRESHOLD/.test(explorerJs), 'Explorer defines websocket stale-threshold watchdog');
+assert(/ws\.isConnected\(\)/.test(explorerJs), 'Explorer checks websocket connected status in watchdog');
+assert(/ws\.ws\.close\(\)/.test(explorerJs), 'Explorer forces websocket reconnect when stale');
 
 // ════════════════════════════════════════════════════════════
 // STRUCTURAL INTEGRITY CHECKS

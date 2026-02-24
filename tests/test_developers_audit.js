@@ -9,6 +9,7 @@ const path = require('path');
 const DEV = path.join(__dirname, '..', 'developers');
 const JS  = path.join(DEV, 'js', 'developers.js');
 const CSS = path.join(DEV, 'css', 'developers.css');
+const RPC_REFERENCE_MD = path.join(__dirname, '..', 'docs', 'guides', 'RPC_API_REFERENCE.md');
 
 // All 15 HTML pages
 const ALL_PAGES = fs.readdirSync(DEV).filter(f => f.endsWith('.html')).sort();
@@ -82,6 +83,7 @@ CLEANED_INLINE.forEach(file => {
 console.log('[D12] initCodeCopy uses innerHTML');
 
 const jsContent = fs.readFileSync(JS, 'utf8');
+const rpcReferenceMd = fs.readFileSync(RPC_REFERENCE_MD, 'utf8');
 // Extract the initCodeCopy function body
 const copyFnStart = jsContent.indexOf('function initCodeCopy()');
 const copyFnEnd   = jsContent.indexOf('\n}\n', copyFnStart) + 3;
@@ -292,6 +294,31 @@ ALL_PAGES.forEach(file => {
 // ------------------------------------------------------------------
 // Summary
 // ------------------------------------------------------------------
+
+// ------------------------------------------------------------------
+// D13: RPC endpoint parity with docs/guides/RPC_API_REFERENCE.md
+// ------------------------------------------------------------------
+console.log('[D13] RPC endpoint parity with RPC_API_REFERENCE');
+
+const rpcReferenceHtml = read('rpc-reference.html');
+const canonicalRpcMethods = [
+    'getBalance', 'getAccount', 'getBlock', 'getLatestBlock', 'getSlot',
+    'getTransaction', 'sendTransaction', 'getTotalBurned', 'getValidators',
+    'getMetrics', 'health', 'getPeers', 'getNetworkInfo',
+    'getValidatorInfo', 'getValidatorPerformance', 'getChainStatus',
+    'stake', 'unstake'
+];
+
+canonicalRpcMethods.forEach(method => {
+    ok(rpcReferenceMd.includes(`\`${method}\``), `RPC_API_REFERENCE documents ${method}`);
+    ok(
+        rpcReferenceHtml.includes(`id="${method}"`) ||
+        rpcReferenceHtml.includes(`>${method}<`) ||
+        rpcReferenceHtml.includes(`"method":"${method}"`),
+        `developers/rpc-reference.html documents ${method}`
+    );
+});
+
 console.log(`\n========================================`);
 console.log(`Phase 19 Results: ${pass} passed, ${fail} failed out of ${pass + fail}`);
 console.log(`========================================`);
