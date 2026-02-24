@@ -1236,6 +1236,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const pair = pairs.find(p => p.pairId === pairId);
                 if (pair) { pair.price = displayPrice; pair.change = d.change24h ?? pair.change; }
                 updateTickerDisplay();
+                streamBarUpdate(displayPrice, 0);
                 renderPairList(); // F1 fix: refresh dropdown prices on every ticker update
             }
         }).then(id => state._wsSubs.push(id)).catch(() => {});
@@ -5461,7 +5462,11 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 await loadOrderBook();
                 const t = await loadTicker(state.activePairId);
-                if (t?.lastPrice) { state.lastPrice = t.lastPrice; const p = pairs.find(x => x.pairId === state.activePairId); if (p) { p.price = t.lastPrice; p.change = t.change24h ?? p.change; } updateTickerDisplay(); updatePairStats(state.activePair); streamBarUpdate(t.lastPrice, 0); }
+                if (t?.lastPrice) {
+                    // Invert on-chain price for display-inverted pairs (wBNB/MOLT → MOLT/wBNB)
+                    const dp = isDisplayInvertedPair(state.activePair) ? invertPrice(t.lastPrice) : t.lastPrice;
+                    state.lastPrice = dp; const p = pairs.find(x => x.pairId === state.activePairId); if (p) { p.price = dp; p.change = t.change24h ?? p.change; } updateTickerDisplay(); updatePairStats(state.activePair); streamBarUpdate(dp, 0);
+                }
             } catch { /* API unavailable */ }
         }
         if (state.currentView === 'predict') {
