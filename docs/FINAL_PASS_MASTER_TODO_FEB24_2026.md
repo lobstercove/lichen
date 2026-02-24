@@ -319,6 +319,7 @@ Update:
 - Validation evidence: docs parity script now returns `missing_rpc []` and `missing_dev []` for required method set.
 - Updated `skills/validator/SKILL.md` with canonical autonomous startup sequence (`run-validator.sh testnet 1/2/3`), validated RPC/WS endpoints, and release-verified method baseline.
 - Open-source boundary update: `developers/` documentation frontend was removed from tracked OSS scope; canonical RPC/WS reference for OSS is `docs/guides/RPC_API_REFERENCE.md`.
+- Final consistency sync completed: added canonical developer API references (`developers/rpc-reference.html`, `developers/ws-reference.html`) and added a `Release-Verified Operator Baseline` block to `docs/guides/RPC_API_REFERENCE.md` so RPC/WS method sets match `skills/validator/SKILL.md`.
 
 ---
 

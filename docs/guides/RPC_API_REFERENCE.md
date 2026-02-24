@@ -27,6 +27,26 @@ compatibility adapters on dedicated routes for external tooling.
 - Solana compatibility: `http://localhost:8899/solana`
 - EVM compatibility: `http://localhost:8899/evm`
 
+## ✅ Release-Verified Operator Baseline (Feb 24, 2026)
+
+This baseline is kept consistent with `skills/validator/SKILL.md`,
+`developers/rpc-reference.html`, and `developers/ws-reference.html`.
+
+- Canonical JSON-RPC endpoint: `http://localhost:8899`
+- Canonical WebSocket endpoint: `ws://localhost:8900`
+
+### Core RPC baseline
+
+`health`, `getSlot`, `getValidators`, `getChainStatus`, `getNetworkInfo`
+
+### Staking/economics RPC baseline
+
+`getStakingStatus`, `getStakingRewards`, `getTreasuryInfo`, `getGenesisAccounts`, `getTotalBurned`, `getReefStakePoolInfo`
+
+### Core WebSocket baseline
+
+`subscribeSlots`, `subscribeBlocks`, `subscribeTransactions`, `subscribeAccount`, `subscribeLogs`, `subscribeValidators`, `subscribeDex`, `subscribePrediction`
+
 ---
 
 ## 🧰 Custody Service (REST)
