@@ -45,22 +45,22 @@ if [ ! -x "./target/release/moltchain-validator" ]; then
   cargo build --release
 fi
 
-./skills/validator/run-validator.sh "$NETWORK" 1 >"${LOG_DIR}/validator-1.log" 2>&1 &
+./run-validator.sh "$NETWORK" 1 >"${LOG_DIR}/validator-1.log" 2>&1 &
 V1_PID=$!
 
 sleep 2
 
-./skills/validator/run-validator.sh "$NETWORK" 2 >"${LOG_DIR}/validator-2.log" 2>&1 &
+./run-validator.sh "$NETWORK" 2 >"${LOG_DIR}/validator-2.log" 2>&1 &
 V2_PID=$!
 
 sleep 2
 
-./skills/validator/run-validator.sh "$NETWORK" 3 >"${LOG_DIR}/validator-3.log" 2>&1 &
+./run-validator.sh "$NETWORK" 3 >"${LOG_DIR}/validator-3.log" 2>&1 &
 V3_PID=$!
 
 sleep 2
 
-./skills/custody/run-custody.sh "$NETWORK" >"${LOG_DIR}/custody.log" 2>&1 &
+./scripts/run-custody.sh "$NETWORK" >"${LOG_DIR}/custody.log" 2>&1 &
 CUSTODY_PID=$!
 
 # ── Faucet ──

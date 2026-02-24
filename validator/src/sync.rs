@@ -674,7 +674,7 @@ mod tests {
         assert!(!sm.has_pending_child(&parent_hash).await);
 
         // Add a block whose parent_hash matches → has child
-        let mut child = Block::new(11, parent_hash, Hash::default(), [0u8; 32], vec![]);
+        let child = Block::new(11, parent_hash, Hash::default(), [0u8; 32], vec![]);
         sm.add_pending_block(child).await;
         assert!(sm.has_pending_child(&parent_hash).await);
 
