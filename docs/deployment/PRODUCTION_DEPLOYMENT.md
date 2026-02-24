@@ -2,6 +2,8 @@
 
 > Full step-by-step guide for deploying MoltChain across seed + relay infrastructure with 3 to 6 validators using the `moltchain.network` domain. Covers genesis bootstrapping, DNS, seed discovery, RPC/WS rotation, custody bridge, faucet, and how agent-run validators connect.
 
+**Release-ready status (Feb 24, 2026):** main validated and published at commit `4059403`.
+
 ---
 
 ## Table of Contents
