@@ -67,15 +67,16 @@ echo "📝 Backup this file immediately!"
 
 **Option A: Single validator (local testing)**
 ```bash
-cd skills/validator/
-./run-validator.sh 1
+cd /path/to/moltchain
+./run-validator.sh testnet 1
 ```
 
 **Option B: Join local network (development)**
 ```bash
-# The script auto-connects to primary validator at 127.0.0.1:7001
-cd skills/validator/
-./run-validator.sh 2
+# Start additional validators after V1 with staggered delay
+cd /path/to/moltchain
+sleep 15 && ./run-validator.sh testnet 2
+sleep 30 && ./run-validator.sh testnet 3
 ```
 
 **Option C: Join production network (real network)**
@@ -88,8 +89,8 @@ cd skills/validator/
 #   - seed3.moltchain.network:7001 (Asia-Pacific)
 
 # Start your validator (will sync from network)
-cd skills/validator/
-nohup ./run-validator.sh 1 > validator.log 2>&1 &
+cd /path/to/moltchain
+nohup ./run-validator.sh mainnet 1 > validator.log 2>&1 &
 echo $! > validator.pid
 
 # Monitor sync progress:
@@ -99,8 +100,8 @@ tail -f validator.log | grep "sync\|READY"
 **Option D: One-command setup (easiest)**
 ```bash
 # Zero-config setup with all checks
-cd skills/validator/
-./setup-and-run.sh
+cd /path/to/moltchain
+./skills/validator/setup-and-run.sh
 ```
 
 **Network Modes:**
@@ -168,6 +169,33 @@ MoltChain uses **Proof of Contribution** - you're rewarded for REAL WORK, not wa
 ---
 
 ## Monitoring Your Validator
+
+### Runtime Baseline (Release-Verified)
+
+- Canonical JSON-RPC endpoint: `http://localhost:8899`.
+- Additional validator RPC ports in 3-node local mode: `8901`, `8903`.
+- WebSocket endpoint: `ws://localhost:8900`.
+- Core health methods used in automation: `health`, `getSlot`, `getValidators`, `getChainStatus`, `getNetworkInfo`.
+- Staking/economics methods used in audit gates: `getStakingStatus`, `getStakingRewards`, `getTreasuryInfo`, `getGenesisAccounts`, `getTotalBurned`, `getReefStakePoolInfo`.
+
+### Canonical Startup Sequence (Autonomous)
+
+```bash
+cd /path/to/moltchain
+
+# 1) reset if needed
+./reset-blockchain.sh
+
+# 2) start validators in staggered order
+./run-validator.sh testnet 1
+sleep 15 && ./run-validator.sh testnet 2
+sleep 30 && ./run-validator.sh testnet 3
+
+# 3) verify cluster health
+curl -s -X POST http://localhost:8899 -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":1,"method":"health","params":[]}'
+curl -s -X POST http://localhost:8901 -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":1,"method":"health","params":[]}'
+curl -s -X POST http://localhost:8903 -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","id":1,"method":"health","params":[]}'
+```
 
 ### Check if Running
 

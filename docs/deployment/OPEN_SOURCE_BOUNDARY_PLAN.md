@@ -42,6 +42,7 @@ Publish a clean open-source MoltChain repository containing protocol/core/public
 - RPC/docs path hygiene scan on active docs/scripts: no remaining `/Users/johnrobin/.openclaw/workspace/moltchain` references outside archived docs.
 - `.gitignore` enforces exclusion for keypairs, env files, validator state, logs, and local artifacts.
 - Boundary deliverable and final acceptance state tracked in `docs/FINAL_PASS_MASTER_TODO_FEB24_2026.md`.
+- Frontend/UI scopes removed from tracked OSS repository: `developers/`, `dex/`, `explorer/`, `marketplace/`, `programs/`, `wallet/`, `website/`, `shared/`, `shared-base-styles.css`, `shared-theme.css`, `shared-config.js`.
 
 ## Git Hygiene Steps
 
@@ -51,6 +52,6 @@ Publish a clean open-source MoltChain repository containing protocol/core/public
 4. Run secret/history scan.
 5. Open review checklist before push.
 
-## Decision Needed
+## Decision Finalized
 
-Team must finalize exact list of frontend folders to keep private (current request indicates all frontends should be private in open-source repo).
+All frontend/UI folders are out of OSS scope for this release candidate and are removed from tracked open-source tree.

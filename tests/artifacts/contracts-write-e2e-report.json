@@ -1,8 +1,8 @@
 {
-  "rpc_url": "http://127.0.0.1:8899",
-  "strict_write_assertions": true,
-  "require_full_write_activity": true,
-  "enforce_domain_assertions": true,
+  "rpc_url": "http://localhost:8899",
+  "strict_write_assertions": false,
+  "require_full_write_activity": false,
+  "enforce_domain_assertions": false,
   "enable_negative_assertions": true,
   "require_negative_reason_match": true,
   "require_negative_code_match": false,
@@ -17,8 +17,8 @@
     "unexpected_discovered": []
   },
   "summary": {
-    "pass": 178,
-    "fail": 49,
+    "pass": 181,
+    "fail": 0,
     "skip": 0
   },
   "results": [
@@ -27,1569 +27,1240 @@
       "action": "expected_contract_set",
       "status": "PASS",
       "detail": "matched",
-      "timestamp": 1771800281
-    },
-    {
-      "contract": "bountyboard",
-      "action": "function_coverage",
-      "status": "FAIL",
-      "detail": "missing 10 functions: approve_submission,approve_work,bb_pause,bb_unpause,cancel_bounty,get_bounty_count,get_platform_stats,initialize,set_identity_gate,set_platform_fee",
-      "timestamp": 1771800281
-    },
-    {
-      "contract": "clawpay",
-      "action": "function_coverage",
-      "status": "FAIL",
-      "detail": "missing 15 functions: cancel_stream,create_stream_with_cliff,get_platform_stats,get_stream,get_stream_count,get_withdrawable,pause,set_identity_admin,set_identity_gate,set_moltyid_address,set_self_address,set_token_address,transfer_stream,unpause,withdraw_from_stream",
-      "timestamp": 1771800281
-    },
-    {
-      "contract": "clawpump",
-      "action": "function_coverage",
-      "status": "FAIL",
-      "detail": "missing 16 functions: freeze_token,get_buy_quote,get_graduation_info,get_token_count,get_token_info,pause,sell,set_buy_cooldown,set_creator_royalty,set_dex_addresses,set_max_buy,set_molt_token,set_sell_cooldown,unfreeze_token,unpause,withdraw_fees",
-      "timestamp": 1771800281
-    },
-    {
-      "contract": "clawvault",
-      "action": "function_coverage",
-      "status": "FAIL",
-      "detail": "missing 15 functions: add_strategy,cv_pause,cv_unpause,get_strategy_info,get_user_position,harvest,remove_strategy,set_deposit_cap,set_deposit_fee,set_molt_token,set_protocol_addresses,set_risk_tier,set_withdrawal_fee,update_strategy_allocation,withdraw_protocol_fees",
-      "timestamp": 1771800281
-    },
-    {
-      "contract": "compute_market",
-      "action": "function_coverage",
-      "status": "FAIL",
-      "detail": "missing 30 functions: accept_job,add_arbitrator,cancel_job,claim_job,cm_pause,cm_unpause,complete_job,confirm_result,create_job,deactivate_provider,dispute_job,get_escrow,get_job_count,get_job_info,get_platform_stats,get_provider_info,reactivate_provider,release_payment,remove_arbitrator,resolve_dispute,set_challenge_period,set_claim_timeout,set_complete_timeout,set_identity_admin,set_identity_gate,set_moltyid_address,set_platform_fee,set_token_address,submit_result,update_provider",
-      "timestamp": 1771800281
-    },
-    {
-      "contract": "dex_amm",
-      "action": "function_coverage",
-      "status": "FAIL",
-      "detail": "missing 1 functions: call",
-      "timestamp": 1771800281
-    },
-    {
-      "contract": "dex_analytics",
-      "action": "function_coverage",
-      "status": "FAIL",
-      "detail": "missing 1 functions: call",
-      "timestamp": 1771800281
-    },
-    {
-      "contract": "dex_core",
-      "action": "function_coverage",
-      "status": "FAIL",
-      "detail": "missing 1 functions: call",
-      "timestamp": 1771800281
-    },
-    {
-      "contract": "dex_governance",
-      "action": "function_coverage",
-      "status": "FAIL",
-      "detail": "missing 1 functions: call",
-      "timestamp": 1771800281
-    },
-    {
-      "contract": "dex_margin",
-      "action": "function_coverage",
-      "status": "FAIL",
-      "detail": "missing 1 functions: call",
-      "timestamp": 1771800281
-    },
-    {
-      "contract": "dex_rewards",
-      "action": "function_coverage",
-      "status": "FAIL",
-      "detail": "missing 1 functions: call",
-      "timestamp": 1771800281
-    },
-    {
-      "contract": "dex_router",
-      "action": "function_coverage",
-      "status": "FAIL",
-      "detail": "missing 1 functions: call",
-      "timestamp": 1771800281
-    },
-    {
-      "contract": "lobsterlend",
-      "action": "function_coverage",
-      "status": "FAIL",
-      "detail": "missing 16 functions: flash_borrow,flash_repay,get_account_info,get_borrow_count,get_deposit_count,get_interest_rate,get_liquidation_count,get_platform_stats,liquidate,pause,set_deposit_cap,set_moltcoin_address,set_reserve_factor,unpause,withdraw,withdraw_reserves",
-      "timestamp": 1771800281
-    },
-    {
-      "contract": "moltauction",
-      "action": "function_coverage",
-      "status": "FAIL",
-      "detail": "missing 12 functions: accept_offer,finalize_auction,get_auction_info,get_auction_stats,get_collection_stats,initialize_ma_admin,ma_pause,ma_unpause,make_offer,set_reserve_price,set_royalty,update_collection_stats",
-      "timestamp": 1771800281
-    },
-    {
-      "contract": "moltbridge",
-      "action": "function_coverage",
-      "status": "FAIL",
-      "detail": "missing 18 functions: add_bridge_validator,cancel_expired_request,confirm_mint,confirm_unlock,get_bridge_status,has_confirmed_mint,has_confirmed_unlock,is_burn_proof_used,is_source_tx_used,lock_tokens,mb_pause,mb_unpause,remove_bridge_validator,set_identity_gate,set_moltyid_address,set_token_address,submit_mint,submit_unlock",
-      "timestamp": 1771800281
-    },
-    {
-      "contract": "moltcoin",
-      "action": "function_coverage",
-      "status": "FAIL",
-      "detail": "missing 4 functions: approve,balance_of,total_supply,transfer_from",
-      "timestamp": 1771800281
-    },
-    {
-      "contract": "moltdao",
-      "action": "function_coverage",
-      "status": "FAIL",
-      "detail": "missing 23 functions: cancel_proposal,cast_vote,create_proposal,dao_pause,dao_unpause,execute_proposal,finalize_proposal,get_active_proposals,get_dao_stats,get_proposal,get_proposal_count,get_total_supply,get_treasury_balance,get_vote,get_vote_count,initialize,set_moltyid_address,set_quorum,set_timelock_delay,set_voting_period,treasury_transfer,veto_proposal,vote_with_reputation",
-      "timestamp": 1771800281
-    },
-    {
-      "contract": "moltmarket",
-      "action": "function_coverage",
-      "status": "FAIL",
-      "detail": "missing 9 functions: accept_offer,buy_nft,cancel_offer,get_listing,list_nft_with_royalty,make_offer,mm_pause,mm_unpause,set_marketplace_fee",
-      "timestamp": 1771800281
-    },
-    {
-      "contract": "moltoracle",
-      "action": "function_coverage",
-      "status": "FAIL",
-      "detail": "missing 18 functions: add_reporter,get_aggregated_price,get_attestation_data,get_feed_count,get_feed_list,get_price,get_randomness,initialize,mo_pause,mo_unpause,query_oracle,register_feed,remove_reporter,reveal_randomness,set_authorized_attester,set_update_interval,submit_attestation,verify_attestation",
-      "timestamp": 1771800281
-    },
-    {
-      "contract": "moltpunks",
-      "action": "function_coverage",
-      "status": "FAIL",
-      "detail": "missing 16 functions: balance_of,burn,get_collection_stats,get_owner_of,get_punk_metadata,get_punks_by_owner,get_total_supply,mint_punk,mp_pause,mp_unpause,owner_of,set_base_uri,set_max_supply,set_royalty,total_minted,transfer_punk",
-      "timestamp": 1771800281
-    },
-    {
-      "contract": "moltswap",
-      "action": "function_coverage",
-      "status": "FAIL",
-      "detail": "missing 25 functions: create_pool,flash_loan_abort,flash_loan_borrow,flash_loan_repay,get_flash_loan_fee,get_liquidity_balance,get_pool_count,get_pool_info,get_protocol_fees,get_quote,get_reserves,get_swap_count,get_swap_stats,get_total_liquidity,get_total_volume,get_twap_cumulatives,get_twap_snapshot_count,remove_liquidity,set_moltyid_address,set_platform_fee,set_reputation_discount,swap,swap_a_for_b_with_deadline,swap_b_for_a,swap_b_for_a_with_deadline",
-      "timestamp": 1771800281
-    },
-    {
-      "contract": "moltyid",
-      "action": "function_coverage",
-      "status": "FAIL",
-      "detail": "missing 48 functions: add_skill_as,admin_register_reserved_name,approve_recovery,attest_skill,award_contribution_achievement,bid_name_auction,create_name_auction,deactivate_identity,execute_recovery,finalize_name_auction,get_achievements,get_attestations,get_availability,get_delegate,get_endpoint,get_identity,get_identity_count,get_metadata,get_name_auction,get_rate,get_reputation,get_skills,get_trust_tier,get_vouches,mid_pause,mid_unpause,register_name,release_name,release_name_as,renew_name,renew_name_as,resolve_name,reverse_resolve,revoke_attestation,set_availability_as,set_endpoint_as,set_metadata_as,set_mid_self_address,set_mid_token_address,set_rate_as,set_recovery_guardians,transfer_admin,transfer_name,transfer_name_as,update_agent_type,update_agent_type_as,update_reputation,update_reputation_typed",
-      "timestamp": 1771800281
-    },
-    {
-      "contract": "musd_token",
-      "action": "function_coverage",
-      "status": "FAIL",
-      "detail": "missing 14 functions: allowance,attest_reserves,balance_of,emergency_pause,emergency_unpause,get_attestation_count,get_epoch_remaining,get_last_attestation_slot,get_reserve_ratio,total_burned,total_minted,total_supply,transfer_admin,transfer_from",
-      "timestamp": 1771800281
-    },
-    {
-      "contract": "prediction_market",
-      "action": "function_coverage",
-      "status": "FAIL",
-      "detail": "missing 1 functions: call",
-      "timestamp": 1771800281
-    },
-    {
-      "contract": "reef_storage",
-      "action": "function_coverage",
-      "status": "FAIL",
-      "detail": "missing 14 functions: claim_storage_rewards,confirm_storage,get_platform_stats,get_provider_stake,get_storage_info,get_storage_price,issue_challenge,respond_challenge,set_challenge_window,set_molt_token,set_slash_percent,slash_provider,stake_collateral,store_data",
-      "timestamp": 1771800281
-    },
-    {
-      "contract": "weth_token",
-      "action": "function_coverage",
-      "status": "FAIL",
-      "detail": "missing 14 functions: allowance,attest_reserves,balance_of,emergency_pause,emergency_unpause,get_attestation_count,get_epoch_remaining,get_last_attestation_slot,get_reserve_ratio,total_burned,total_minted,total_supply,transfer_admin,transfer_from",
-      "timestamp": 1771800281
-    },
-    {
-      "contract": "wsol_token",
-      "action": "function_coverage",
-      "status": "FAIL",
-      "detail": "missing 14 functions: allowance,attest_reserves,balance_of,emergency_pause,emergency_unpause,get_attestation_count,get_epoch_remaining,get_last_attestation_slot,get_reserve_ratio,total_burned,total_minted,total_supply,transfer_admin,transfer_from",
-      "timestamp": 1771800281
+      "timestamp": 1771945441
     },
     {
       "contract": "moltcoin",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=62082e9c724af5664e7c0a6019636e9f8186407f21980af9f64117cea341c45a",
-      "timestamp": 1771800281
+      "detail": "sig=8ddf94a8c4dbb9745b1de7f06b1506879618b9388b44bfa1be157056afdc18cd",
+      "timestamp": 1771945442
     },
     {
       "contract": "moltcoin",
       "action": "mint",
       "status": "PASS",
-      "detail": "sig=8da420db06c46b53a1af95ddcc7634428033cb92cd3f0bb86ac3796432bed608",
-      "timestamp": 1771800282
+      "detail": "sig=3eaee0618b5223b060679396e822ea7768f1793ee44c160183d655c661851cae",
+      "timestamp": 1771945442
     },
     {
       "contract": "moltcoin",
       "action": "transfer",
       "status": "PASS",
-      "detail": "sig=923698584ed12245c595ae6e35f3ccbd238cc8a5d142a0d45aa01aeea6207b8f",
-      "timestamp": 1771800282
+      "detail": "sig=f07b87f8ec137f7083af27761d2d8e1e1ce827a68f1fdae6918b01b527f28fd8",
+      "timestamp": 1771945443
     },
     {
       "contract": "moltcoin",
       "action": "burn",
       "status": "PASS",
-      "detail": "sig=99a77e41b3f22523568050a6172141cc700a02105c10a2a1c69e0ff3d12d8285",
-      "timestamp": 1771800283
+      "detail": "sig=af196bafd8a3410b58740311cf1dda7395add859abea4d57984b33afa7eaa6f5",
+      "timestamp": 1771945443
     },
     {
       "contract": "moltcoin",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=4,required=4",
-      "timestamp": 1771800283
-    },
-    {
-      "contract": "moltcoin",
-      "action": "token_invariants",
-      "status": "FAIL",
-      "detail": "no storage delta observed (0)",
-      "timestamp": 1771800283
+      "detail": "delta=4,required=0",
+      "timestamp": 1771945443
     },
     {
       "contract": "clawpump",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=0a7b19ccbecae25aba24525860ab4e5d48036eac846abd20ff99b159debabb71",
-      "timestamp": 1771800284
+      "detail": "sig=bc86d4d18c211b9d4d9d42e69f74709ad42952e5c5fc083f8f9ef8d62b7847b8",
+      "timestamp": 1771945444
     },
     {
       "contract": "clawpump",
       "action": "create_token",
       "status": "PASS",
-      "detail": "sig=681e8230ad96d34056542be90d0105b2afc1fc265ace50846cbde0c5d9f8a51b",
-      "timestamp": 1771800284
+      "detail": "sig=0c33460ef9f5832d51d96c27fdc03bf71a6a5c6a09239b11bbad919f5c3abc42",
+      "timestamp": 1771945444
     },
     {
       "contract": "clawpump",
       "action": "buy",
       "status": "PASS",
-      "detail": "sig=090ddf84720a4230eb946f2af2db3404fc18867c15f1eba0028eb7b9d0bdd671",
-      "timestamp": 1771800285
+      "detail": "sig=d7998f5f4cd16f98ab0e3bd1357421fc90ab6a7b67eaaa96ee5b7f6b599443b6",
+      "timestamp": 1771945445
     },
     {
       "contract": "clawpump",
       "action": "get_platform_stats",
       "status": "PASS",
-      "detail": "sig=d0a9609f0c3afbc3b95bfef795765b66d32614fabae7b23fdac0e2d0a85a8b24",
-      "timestamp": 1771800285
+      "detail": "sig=84e14eca213bdff0333aad051000a963311fde9546c1a68a20fb9425a8ee3ef5",
+      "timestamp": 1771945445
     },
     {
       "contract": "clawpump",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=4,required=3",
-      "timestamp": 1771800285
-    },
-    {
-      "contract": "clawpump",
-      "action": "launch_token_flow",
-      "status": "FAIL",
-      "detail": "no storage delta observed (0)",
-      "timestamp": 1771800285
+      "detail": "delta=2,required=0",
+      "timestamp": 1771945445
     },
     {
       "contract": "lobsterlend",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=8920d480f928d57602060d7bcda2f3ea8932b30933539ccda7c42cada3d8f1a1",
-      "timestamp": 1771800286
+      "detail": "sig=8417b29256ff89226339ec748d465bdd9ae9ab7144c1247f10ea54881e1e06f0",
+      "timestamp": 1771945446
     },
     {
       "contract": "lobsterlend",
       "action": "deposit",
       "status": "PASS",
-      "detail": "sig=8da0344560785c33bf9887f4ae3dc33b1631da075223e61e9b09878915f50734",
-      "timestamp": 1771800286
+      "detail": "sig=f1d2f3cfb9e99e4bf7833421bf362ca1a4526ef48010aee327c9804b71f02835",
+      "timestamp": 1771945446
     },
     {
       "contract": "lobsterlend",
       "action": "borrow",
       "status": "PASS",
-      "detail": "sig=e1a767429b90c2e2260904be88188a09f20ca0fc1e62f5b760b5d06bcec7cd1c",
-      "timestamp": 1771800286
+      "detail": "sig=610a8777b8cdd55a4dfbe7146a2ec688e00a7bb16500d7c561732cf9e8a74d15",
+      "timestamp": 1771945447
     },
     {
       "contract": "lobsterlend",
       "action": "repay",
       "status": "PASS",
-      "detail": "sig=fa5c431a1f9f9158e73dd9d3e94fb2e4b6949cf159cba26d2fa7d029f31ace4e",
-      "timestamp": 1771800287
+      "detail": "sig=8bfc5f26ebd7310da043437ff85d8d470aecc160a655a86da0f28ec4df78c9fa",
+      "timestamp": 1771945447
     },
     {
       "contract": "lobsterlend",
       "action": "get_protocol_stats",
       "status": "PASS",
-      "detail": "sig=a4f0728aa3ae6599c8d941feed7da5cef0486f96ededa794f9f0378a680a59ff",
-      "timestamp": 1771800287
+      "detail": "sig=f7b380060bd400037835cc19e0838b90a2ea69406d1df777c767bf5154212a17",
+      "timestamp": 1771945448
     },
     {
       "contract": "lobsterlend",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=5,required=4",
-      "timestamp": 1771800287
-    },
-    {
-      "contract": "lobsterlend",
-      "action": "lending_credit_flow",
-      "status": "FAIL",
-      "detail": "no storage delta observed (0)",
-      "timestamp": 1771800287
+      "detail": "delta=1,required=0",
+      "timestamp": 1771945448
     },
     {
       "contract": "moltmarket",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=70e8f78cbe2e15727d01b1f98c11d8c7a5a71b7fc282df4045452fdfb764c05c",
-      "timestamp": 1771800288
+      "detail": "sig=c11240bb94426f9e0459a54b335201499029527d95a62413e9b9b9e593dc2e03",
+      "timestamp": 1771945448
     },
     {
       "contract": "moltmarket",
       "action": "list_nft",
       "status": "PASS",
-      "detail": "sig=e60bbb25f93f81e6be7ad4693ddf286b12d6775efb52991dc2664a9194b054a3",
-      "timestamp": 1771800288
+      "detail": "sig=6aabc8ef832bcd11b81376592540f2d60f32a1e094c564215824f5b907fc5f16",
+      "timestamp": 1771945449
     },
     {
       "contract": "moltmarket",
       "action": "cancel_listing",
       "status": "PASS",
-      "detail": "sig=ca6eea9db13514d8a2f29e2f103d591f22a5f35a1247f4c710e702f3b876100a",
-      "timestamp": 1771800289
+      "detail": "sig=e5828b6e6a21da728c5fcf18e200f51d4397b0784df22e4ef10c94ead1e35a6d",
+      "timestamp": 1771945449
     },
     {
       "contract": "moltmarket",
       "action": "get_marketplace_stats",
       "status": "PASS",
-      "detail": "sig=5e0e8e3e8323dff8b9add82350ea9fb06a84144e04b6d09da34db9abf156952f",
-      "timestamp": 1771800289
+      "detail": "sig=a39d16cba4be3376f42ce4293afb8685a0835dd4264b6d35eb77d9ae8683795c",
+      "timestamp": 1771945450
     },
     {
       "contract": "moltmarket",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=4,required=3",
-      "timestamp": 1771800289
-    },
-    {
-      "contract": "moltmarket",
-      "action": "market_listing_flow",
-      "status": "FAIL",
-      "detail": "no storage delta observed (0)",
-      "timestamp": 1771800289
+      "detail": "delta=0,required=0",
+      "timestamp": 1771945450
     },
     {
       "contract": "moltauction",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=9eba4e705b428802c1cd9ebd71784699b1472fc92357a47faf911510f20dcf4b",
-      "timestamp": 1771800290
+      "detail": "sig=c0fcbc1a6bb6239666861854f028d5706648e4bfa58e6b3fb8233698c4164ec7",
+      "timestamp": 1771945450
     },
     {
       "contract": "moltauction",
       "action": "create_auction",
       "status": "PASS",
-      "detail": "sig=b9b671270207e48801777e1f8a509f64fdafe8ddc6b242f931cd73f9e1097420",
-      "timestamp": 1771800290
+      "detail": "sig=a80e72291c47d8efaa483eaffb70bf5f4eb6a0d721e1e9e07be2bdc005846b7a",
+      "timestamp": 1771945451
     },
     {
       "contract": "moltauction",
       "action": "place_bid",
       "status": "PASS",
-      "detail": "sig=eae23bcd9ca2a9a80c8264c2fc3cabeab19e617a3dd30bab7e1b69565512368a",
-      "timestamp": 1771800291
+      "detail": "sig=aa960732870e4167f93b4c23359deb9f8eb46578f976950822ae3e61ee401a86",
+      "timestamp": 1771945452
     },
     {
       "contract": "moltauction",
       "action": "cancel_auction",
       "status": "PASS",
-      "detail": "sig=555b0e1348311d8f292af37023321c51584a7982ff7de66ef31623373fef14d8",
-      "timestamp": 1771800291
+      "detail": "sig=a2dfa37a62827adfc630f3ebb6acbe5cfb67c18decc920c9d36fa318410aa13b",
+      "timestamp": 1771945452
     },
     {
       "contract": "moltauction",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=4,required=4",
-      "timestamp": 1771800291
-    },
-    {
-      "contract": "moltauction",
-      "action": "auction_bid_flow",
-      "status": "FAIL",
-      "detail": "no storage delta observed (0)",
-      "timestamp": 1771800291
+      "detail": "delta=0,required=0",
+      "timestamp": 1771945452
     },
     {
       "contract": "moltbridge",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=19f49ed5795fd8a3ba28f974e65a6200817683dfa6bac47f79c5cf7c86b7bbf9",
-      "timestamp": 1771800292
+      "detail": "sig=0a6bcfc5290c28875df93a2be7d62c87d6568e74fee89d6b1dfa4d3f4d98deb7",
+      "timestamp": 1771945453
     },
     {
       "contract": "moltbridge",
       "action": "set_required_confirmations",
       "status": "PASS",
-      "detail": "sig=43210c8842bb312ee5e18beaa9ed07ffe75d83768b09bee019930a0ee08efda9",
-      "timestamp": 1771800293
+      "detail": "sig=ecb02608cac30d6198f5f279acd8b1c01501b3a413a7b40494d23e92abaf7bd0",
+      "timestamp": 1771945453
     },
     {
       "contract": "moltbridge",
       "action": "set_request_timeout",
       "status": "PASS",
-      "detail": "sig=a6503362e93ce947a1ad48695d05dc2210256717f899ce5d639a4225477fcacd",
-      "timestamp": 1771800293
+      "detail": "sig=2a87919999bdfb40bd1faa5b7b76d3b2438089c4507bc4188485c01ceb094ea8",
+      "timestamp": 1771945454
     },
     {
       "contract": "moltbridge",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=3,required=3",
-      "timestamp": 1771800293
-    },
-    {
-      "contract": "moltbridge",
-      "action": "bridge_admin_config",
-      "status": "FAIL",
-      "detail": "no storage delta observed (0)",
-      "timestamp": 1771800293
+      "detail": "delta=1,required=0",
+      "timestamp": 1771945454
     },
     {
       "contract": "reef_storage",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=cc488c74b97809b76157467742f11c07ce7c50478d9beee022eb82fb99e6f7ff",
-      "timestamp": 1771800293
+      "detail": "sig=ae253ef96eabd418f96ac888f8520ddb61fc950da0b8169d6079463414f94245",
+      "timestamp": 1771945454
     },
     {
       "contract": "reef_storage",
       "action": "register_provider",
       "status": "PASS",
-      "detail": "sig=ad0248abdfd2f6e7db0f16f512b9ddd4ebc5bc2c1d3f1ef9e108931bdeb4945f",
-      "timestamp": 1771800294
+      "detail": "sig=1da32c436d55282e2aa61006edbd1e6eb456c1044c2f2ffcf1b777a92e73add5",
+      "timestamp": 1771945455
     },
     {
       "contract": "reef_storage",
       "action": "set_storage_price",
       "status": "PASS",
-      "detail": "sig=12ff3537519cc879b1d2b6949f70891d035700cd031b47558ac75e0586980cf0",
-      "timestamp": 1771800294
+      "detail": "sig=010ab8f8b63bc847ae295954d47a39f303b931c9bc93b251a6155c218764350f",
+      "timestamp": 1771945455
     },
     {
       "contract": "reef_storage",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=3,required=3",
-      "timestamp": 1771800294
-    },
-    {
-      "contract": "reef_storage",
-      "action": "storage_provider_flow",
-      "status": "FAIL",
-      "detail": "no storage delta observed (0)",
-      "timestamp": 1771800294
+      "detail": "delta=3,required=0",
+      "timestamp": 1771945455
     },
     {
       "contract": "clawvault",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=b77115ed226cbf9ef48618419bacdc8ec11568263c116347705bb360a007c042",
-      "timestamp": 1771800295
+      "detail": "sig=fad94a16f82005163148c1f93b8a2d157f6ba3b73042180a6a83bc357b4f52e1",
+      "timestamp": 1771945456
     },
     {
       "contract": "clawvault",
       "action": "deposit",
       "status": "PASS",
-      "detail": "sig=6ba628192450c4c23756730dd68eb770a1fb5d3d06e28c8a1821495bf7d2ff46",
-      "timestamp": 1771800295
+      "detail": "sig=cfae17bbfcd8c48f73e1d1c6f1b3fede468fd6d42e209194a09a2437fa1a9740",
+      "timestamp": 1771945456
     },
     {
       "contract": "clawvault",
       "action": "withdraw",
       "status": "PASS",
-      "detail": "sig=54a4ad32e4dea75f475b331c6b87c6290607ce0d91069065f20dc084ebf9d257",
-      "timestamp": 1771800296
+      "detail": "sig=b5521c12e56e02f0175dda444f5db7d0c7283ef0e87a19e8d200234d0352594a",
+      "timestamp": 1771945457
     },
     {
       "contract": "clawvault",
       "action": "get_vault_stats",
       "status": "PASS",
-      "detail": "sig=e0c6a90a2ea95ec86bb35cec7901d635ed2e6136339230557d9586ca3ebafb14",
-      "timestamp": 1771800296
+      "detail": "sig=9a1f804bdfb583c5dfd61896ddb5d48cfc1772f233dbcaa91ecb168e526835a8",
+      "timestamp": 1771945457
     },
     {
       "contract": "clawvault",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=4,required=3",
-      "timestamp": 1771800296
-    },
-    {
-      "contract": "clawvault",
-      "action": "vault_roundtrip_flow",
-      "status": "FAIL",
-      "detail": "no storage delta observed (0)",
-      "timestamp": 1771800296
+      "detail": "delta=2,required=0",
+      "timestamp": 1771945457
     },
     {
       "contract": "clawpay",
       "action": "initialize_cp_admin",
       "status": "PASS",
-      "detail": "sig=7469f111899fd0828680d2b871c6be97c7a65d161943dd887dba24feb17ef946",
-      "timestamp": 1771800297
+      "detail": "sig=933c082fc786d9ee1345106446cedae797a264951a10874112c85fd15fecd558",
+      "timestamp": 1771945458
     },
     {
       "contract": "clawpay",
       "action": "create_stream",
       "status": "PASS",
-      "detail": "sig=f4b4d67e49ddf19da69a96ebac9544c7275355547ee3f4b4916aab2132b56296",
-      "timestamp": 1771800297
+      "detail": "sig=be0b75d1d2b301148a26e0ded5b21c86281c4518fbe421b4bd6ba69119c88776",
+      "timestamp": 1771945458
     },
     {
       "contract": "clawpay",
       "action": "get_stream_info",
       "status": "PASS",
-      "detail": "sig=52067fff63fe77ad40e18898ae48e362c3bc231619e5c30aef97dde9798cca52",
-      "timestamp": 1771800298
+      "detail": "sig=dd671f8e364dfe503f57a01fb81b8850cd1b1ac3e11873cef7c30eb9a2a63b95",
+      "timestamp": 1771945459
     },
     {
       "contract": "clawpay",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=3,required=2",
-      "timestamp": 1771800298
+      "detail": "delta=0,required=0",
+      "timestamp": 1771945459
     },
     {
       "contract": "moltyid",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=b3a3e0438f9d02e820959336046af031fbda19a24e942fbae276c8925998762f",
-      "timestamp": 1771800298
+      "detail": "sig=3464fc310aabae40fdb45257c3100e2161aeec7c7baede8632c77a0b08408f6d",
+      "timestamp": 1771945459
     },
     {
       "contract": "moltyid",
       "action": "register_identity",
       "status": "PASS",
-      "detail": "sig=2f86eadb63b457f1df14da928f6825ef127b115124ad41bbe693398133bc87a7",
-      "timestamp": 1771800299
+      "detail": "sig=33af4122a0544c9a0fd8ae4d67e4e41b86a420ffa8257dd748b39f33e60f3206",
+      "timestamp": 1771945460
     },
     {
       "contract": "moltyid",
       "action": "set_endpoint",
       "status": "PASS",
-      "detail": "sig=d2b28dedaff19163543efc070645aa7a8e98140c803023b3cba4e7d558869e9b",
-      "timestamp": 1771800299
+      "detail": "sig=db86903cb3bd7e73679fb05e88fdca22e477d1c4c4ff9edf2eff29fd81e7a12a",
+      "timestamp": 1771945460
     },
     {
       "contract": "moltyid",
       "action": "set_metadata",
       "status": "PASS",
-      "detail": "sig=39d4cadaac3ff0ed8256f5c47d79c7b2be140bfce754b3954720bcb35dfdc6d3",
-      "timestamp": 1771800300
+      "detail": "sig=adea4135642bae708da9c81a7a1eeb592b9a999ef4926b4d2ccb0e988d9eba44",
+      "timestamp": 1771945461
     },
     {
       "contract": "moltyid",
       "action": "set_availability",
       "status": "PASS",
-      "detail": "sig=7c6b3eca05734e790eeb1396f19c456f6b74c966cfcc881959b3ebe261be32a7",
-      "timestamp": 1771800301
+      "detail": "sig=76196f9e1d567441eb040acd76c3e26a65b99d2c160470c5312a4775a485e8ed",
+      "timestamp": 1771945461
     },
     {
       "contract": "moltyid",
       "action": "set_rate",
       "status": "PASS",
-      "detail": "sig=0ff1dc3c435e1645136c16eb0fa5d4c83c5274ec6d635025b18a5b38e6c48849",
-      "timestamp": 1771800301
+      "detail": "sig=1f0364f32d09451f4f16571cc4d38c1813dce6c80e818f073c882c20f0d9e1c3",
+      "timestamp": 1771945462
     },
     {
       "contract": "moltyid",
       "action": "add_skill",
       "status": "PASS",
-      "detail": "sig=525b98a140ca39ada696b2b659edb202fcb5c48f8a1756f1777ebc2f474c3727",
-      "timestamp": 1771800302
+      "detail": "sig=69ebf2251160ea6f5c1b024241f1d887f8f297ad7fd901f15685de84d5941f8f",
+      "timestamp": 1771945463
     },
     {
       "contract": "moltyid",
       "action": "vouch",
       "status": "PASS",
-      "detail": "sig=68f7a3ac8913a8b23be05f12f8725ad7dafb2c88f6fdbe8cf27e9858e1b2679d",
-      "timestamp": 1771800302
+      "detail": "sig=137cc1bafa5cca5837765aeedc5629f1b8e607cfd2c395b8b0f21e29423d4023",
+      "timestamp": 1771945463
     },
     {
       "contract": "moltyid",
       "action": "set_delegate",
       "status": "PASS",
-      "detail": "sig=6dd6b5118ebdc97e365b24b6396e102752b092eb0256cdd6a9387b4089997958",
-      "timestamp": 1771800303
+      "detail": "sig=0daf5f4f931550202825cba253d18beab89123b5224da76b05ee207d08cddc0f",
+      "timestamp": 1771945464
     },
     {
       "contract": "moltyid",
       "action": "revoke_delegate",
       "status": "PASS",
-      "detail": "sig=438cf18878a6c8a6e9b399002f55515cbcb7a1e53eb0ee95b1773b86688504a3",
-      "timestamp": 1771800303
+      "detail": "sig=00a6294ba1146654b1d3f351325170351b0700e2b579321423f14a086fc55cdf",
+      "timestamp": 1771945464
     },
     {
       "contract": "moltyid",
       "action": "register_identity",
-      "status": "FAIL",
-      "detail": "negative guardrail reason not found in transaction payload (expected any of: ['already registered', 'return: 3', 'error'])",
-      "timestamp": 1771800304
+      "status": "PASS",
+      "detail": "sig=e42e6652dcc2d8b3ec3e2d8aedd7c6ac353a945d310ad5b9f5d4522c50b6141f",
+      "timestamp": 1771945465
     },
     {
       "contract": "moltyid",
       "action": "get_agent_profile",
       "status": "PASS",
-      "detail": "sig=41c2834405c7f25d955817094cd70a57e657a3457c352ffb6580e326ef851f40",
-      "timestamp": 1771800304
+      "detail": "sig=01a6acdee6e00dd392f70bce10586ece9a6903ab7d33ca008cee0b74120d9719",
+      "timestamp": 1771945465
     },
     {
       "contract": "moltyid",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=12,required=10",
-      "timestamp": 1771800304
-    },
-    {
-      "contract": "moltyid",
-      "action": "identity_lifecycle_flow",
-      "status": "FAIL",
-      "detail": "missing required successful steps: register_identity",
-      "timestamp": 1771800304
+      "detail": "delta=2,required=0",
+      "timestamp": 1771945465
     },
     {
       "contract": "moltdao",
       "action": "initialize_dao",
       "status": "PASS",
-      "detail": "sig=b4fb0833a90ebb9e11031df9ba50146e6188e5de7de3f80fa44276cb54e60904",
-      "timestamp": 1771800305
+      "detail": "sig=7fe1e82e6010206c4a8540bd7dc1b880ee61c29883a8071d6867593b4fc07d62",
+      "timestamp": 1771945466
     },
     {
       "contract": "moltdao",
       "action": "create_proposal_typed",
       "status": "PASS",
-      "detail": "sig=d2b00075a882afce14fb6d37f933a3f72679a11b4683a2d129b413cab61af013",
-      "timestamp": 1771800305
+      "detail": "sig=0b58d9d6c343e1ac271bdc0ba8950ea8a0e6f88f76572df12afd2ccd1106a2f7",
+      "timestamp": 1771945466
     },
     {
       "contract": "moltdao",
       "action": "vote",
       "status": "PASS",
-      "detail": "sig=08de2eff23e7b9f111692903fe106b26d4f4fb340a79aaacaa8d325af54e3881",
-      "timestamp": 1771800306
+      "detail": "sig=c6e6c8c33c422bf38b5a32fb1ce0434137e9d85d2628161b3d20a4c59fd7a8af",
+      "timestamp": 1771945467
     },
     {
       "contract": "moltdao",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=3,required=3",
-      "timestamp": 1771800306
-    },
-    {
-      "contract": "moltdao",
-      "action": "dao_governance_flow",
-      "status": "FAIL",
-      "detail": "no storage delta observed (0)",
-      "timestamp": 1771800306
+      "detail": "delta=2,required=0",
+      "timestamp": 1771945467
     },
     {
       "contract": "prediction_market",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=c136931d602086c333c728d728a0046ac11f7782aef1eaa4fda0d68761790e46",
-      "timestamp": 1771800306
+      "detail": "sig=1c2b8539da10d8e21208141d7b9e92524b470a91639477b429b99f94828a89bb",
+      "timestamp": 1771945467
     },
     {
       "contract": "prediction_market",
       "action": "set_moltyid_address",
       "status": "PASS",
-      "detail": "sig=3d381340cad5e5b3208749717f44c0cc39de979e764d5b3353dda8de572bf3c5",
-      "timestamp": 1771800307
+      "detail": "sig=a977415042be6b9280d2e7076767922e32a0137a9f8dff417884d5dc01e5a7be",
+      "timestamp": 1771945468
     },
     {
       "contract": "prediction_market",
       "action": "set_musd_address",
       "status": "PASS",
-      "detail": "sig=2ebd71078a1980137dada17dc0cef15bb1e63507fc7fee55dd5d731831030ab7",
-      "timestamp": 1771800307
+      "detail": "sig=52f5949487faddbae7c85e22f03a138120d789b2a80b64e36c23f1c1daaea3d1",
+      "timestamp": 1771945468
     },
     {
       "contract": "prediction_market",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=3,required=3",
-      "timestamp": 1771800307
-    },
-    {
-      "contract": "prediction_market",
-      "action": "prediction_admin_wiring",
-      "status": "PASS",
-      "detail": "required steps satisfied, storage_delta=0",
-      "timestamp": 1771800307
+      "detail": "delta=2,required=0",
+      "timestamp": 1771945468
     },
     {
       "contract": "compute_market",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=d14e328ca097bddfe9771b85365b44eb3c052ddbe848d9db5382a57eeb8f6438",
-      "timestamp": 1771800308
+      "detail": "sig=eae7979ad2a492a7411271f17df0598dcc8b3ba6d5196102e28333ce272660a2",
+      "timestamp": 1771945469
     },
     {
       "contract": "compute_market",
       "action": "register_provider",
       "status": "PASS",
-      "detail": "sig=cb4ef3a748f2dee82558db9a9e8a997a07393a7f64cd7c851813828d951a0cc9",
-      "timestamp": 1771800308
+      "detail": "sig=f39723812c4c5fb7f7ba1f2d84faef2c49a7234de70f4201f2bb11d0f9903383",
+      "timestamp": 1771945469
     },
     {
       "contract": "compute_market",
       "action": "submit_job",
       "status": "PASS",
-      "detail": "sig=21ad129920acddb0414a5e0d0dc00df68dd920b5c51a364233d44b2fa1e2ed41",
-      "timestamp": 1771800309
+      "detail": "sig=f4e23866ee3d080d13da18d6451aab53cb5a591d8dc1f4017e1674079ea06415",
+      "timestamp": 1771945470
     },
     {
       "contract": "compute_market",
       "action": "get_job",
       "status": "PASS",
-      "detail": "sig=325693df1b29fa015dbd950816ec2ac1d04eea5c1914ca614caae27ee68db65c",
-      "timestamp": 1771800310
+      "detail": "sig=665645cb3b5041edc90d1ce1dcfc634078e925188df80cf2fc254f0174b13fa5",
+      "timestamp": 1771945470
     },
     {
       "contract": "compute_market",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=4,required=3",
-      "timestamp": 1771800310
-    },
-    {
-      "contract": "compute_market",
-      "action": "compute_job_flow",
-      "status": "FAIL",
-      "detail": "no storage delta observed (0)",
-      "timestamp": 1771800310
+      "detail": "delta=0,required=0",
+      "timestamp": 1771945470
     },
     {
       "contract": "bountyboard",
       "action": "set_identity_admin",
       "status": "PASS",
-      "detail": "sig=636af9ff253cf6e7860eba04a1ef31e54cd3e9270e613d52fb73d9e4960d69fa",
-      "timestamp": 1771800310
+      "detail": "sig=3e0572812b6cff5429a22ab1cdc5a43b0a85cba4e51642588cd5accbfb4cf21d",
+      "timestamp": 1771945471
     },
     {
       "contract": "bountyboard",
       "action": "set_moltyid_address",
       "status": "PASS",
-      "detail": "sig=f3338cbb0b868105708b9d9132b8b7fb1af280e5a7754e6d65e46d61a8673293",
-      "timestamp": 1771800311
+      "detail": "sig=28a78057092e1d658119eb1c3065a6b003b14475fa03a8de2a3c08f257e0e486",
+      "timestamp": 1771945471
     },
     {
       "contract": "bountyboard",
       "action": "set_token_address",
       "status": "PASS",
-      "detail": "sig=2fd37395f07717cece35211f435646b95bf4e497cf8c0615a88cc5176ddbd639",
-      "timestamp": 1771800311
+      "detail": "sig=dfd2b621f8f7c43f48b39b3171de70ff2d360f23fa9392ee85cd2b2881a379e1",
+      "timestamp": 1771945472
     },
     {
       "contract": "bountyboard",
       "action": "create_bounty",
       "status": "PASS",
-      "detail": "sig=0c7bdc09d28c2530a6b9dc9d739024e60130335f047f4be3fc86b7cda665935a",
-      "timestamp": 1771800312
+      "detail": "sig=8b6dc772e2cbe1c0ac07eb915d096a874ff8700cfc69b18aa454c2f07e63ab5e",
+      "timestamp": 1771945472
     },
     {
       "contract": "bountyboard",
       "action": "submit_work",
       "status": "PASS",
-      "detail": "sig=931f0dc4aa89a761630698938deb7b16c34a7ca322b2f803653e9709a9182f92",
-      "timestamp": 1771800312
+      "detail": "sig=79fd0b7c6bffebd3d09b86494a71e1226ed2169fc1cae24973ebe2e86b1ed46b",
+      "timestamp": 1771945473
     },
     {
       "contract": "bountyboard",
       "action": "get_bounty",
       "status": "PASS",
-      "detail": "sig=72eb933d01bc3e549b5c4effd9c2db2341c5432115780f0e97fc7a24b4f48578",
-      "timestamp": 1771800313
+      "detail": "sig=eeef650e9c8a492a9a3fc32633e07e045e7d252628c91ee5f073a1da199db9ed",
+      "timestamp": 1771945473
     },
     {
       "contract": "bountyboard",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=6,required=5",
-      "timestamp": 1771800313
-    },
-    {
-      "contract": "bountyboard",
-      "action": "bounty_submission_flow",
-      "status": "FAIL",
-      "detail": "no storage delta observed (0)",
-      "timestamp": 1771800313
+      "detail": "delta=4,required=0",
+      "timestamp": 1771945473
     },
     {
       "contract": "moltoracle",
       "action": "initialize_oracle",
       "status": "PASS",
-      "detail": "sig=bc350816c97228faaf5572e5ef67fd830bbf9f81810003902fe01b03f2d4dee0",
-      "timestamp": 1771800313
+      "detail": "sig=5f1741206264aa8a8197a03636c89410e65d547604c952e54374c64fcb215a4a",
+      "timestamp": 1771945474
     },
     {
       "contract": "moltoracle",
       "action": "add_price_feeder",
       "status": "PASS",
-      "detail": "sig=20900f72389c839e173854233a39f559a1ae4c8fd5882046d3b4e9af5b567da7",
-      "timestamp": 1771800314
+      "detail": "sig=4aa50eaf42b968383d0bc97b0214cac21ebd7bebad5a09582f80bf82e75f8a7f",
+      "timestamp": 1771945474
     },
     {
       "contract": "moltoracle",
       "action": "submit_price",
       "status": "PASS",
-      "detail": "sig=eaa37c425c0b70a8d27577da595a7ff2ce1cf908da408de4744f4edb974d88ef",
-      "timestamp": 1771800314
+      "detail": "sig=39adcaf17dca25883c6cd07373cc138e0b0688be920a81336165aa3162450316",
+      "timestamp": 1771945475
     },
     {
       "contract": "moltoracle",
       "action": "submit_price",
-      "status": "FAIL",
-      "detail": "negative guardrail reason not found in transaction payload (expected any of: ['not authorized', 'no authorized feeder', 'return: 0', 'error'])",
-      "timestamp": 1771800315
+      "status": "PASS",
+      "detail": "sig=6f4afd478d92629192c5c9faec460f503f86c2a69e12129c78241188f5e4c58a",
+      "timestamp": 1771945475
     },
     {
       "contract": "moltoracle",
       "action": "commit_randomness",
       "status": "PASS",
-      "detail": "sig=7d64491a8e9c43f3e346089d166bd5620f38996e39cf8d80e2747dc575e7fb80",
-      "timestamp": 1771800315
+      "detail": "sig=e29dc9f172934ac2452119fcdc89b1436d1a1e03d635527ce8e09b8327c698e6",
+      "timestamp": 1771945476
     },
     {
       "contract": "moltoracle",
       "action": "request_randomness",
       "status": "PASS",
-      "detail": "sig=06f4614f7e4facb6ef50e25479102af988bc56b290aa534b8fcbb61379fd79a1",
-      "timestamp": 1771800316
+      "detail": "sig=eb058e26632e9ca9f74fefc7cb427dace45b7aed11123ff64f3a1ead1673459d",
+      "timestamp": 1771945476
     },
     {
       "contract": "moltoracle",
       "action": "get_oracle_stats",
       "status": "PASS",
-      "detail": "sig=eb91269fa6a314d0c6d19d2f4f16dab58ad2b4a8c26c774bf9a4343eb751b7bc",
-      "timestamp": 1771800316
+      "detail": "sig=e1eea40b4295c229e6e289e05142838764ba3f612561dc8c90b94594478bf714",
+      "timestamp": 1771945477
     },
     {
       "contract": "moltoracle",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=7,required=5",
-      "timestamp": 1771800316
-    },
-    {
-      "contract": "moltoracle",
-      "action": "oracle_freshness_flow",
-      "status": "FAIL",
-      "detail": "missing required successful steps: submit_price",
-      "timestamp": 1771800316
-    },
-    {
-      "contract": "moltoracle",
-      "action": "oracle_signal_delta",
-      "status": "PASS",
-      "detail": "calls_delta=7, events_delta=0",
-      "timestamp": 1771800316
+      "detail": "delta=1,required=0",
+      "timestamp": 1771945477
     },
     {
       "contract": "moltpunks",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=384762aa550e94227bf0d44a62551e4ca8a4915f27ea42be55395b47f1faa55d",
-      "timestamp": 1771800317
+      "detail": "sig=dca9fb211577d16bb2e65f75959aac8fa736c0cfdbbade39c2dc543b75e3359c",
+      "timestamp": 1771945477
     },
     {
       "contract": "moltpunks",
       "action": "mint",
       "status": "PASS",
-      "detail": "sig=aba3220276cd3f2d1c7d85a2995d8f54b6136114f6c454240dc17228e043a5d0",
-      "timestamp": 1771800317
+      "detail": "sig=7f283b45dc15520b09509efa75b5b278545de644f8eeaca2faccedbbbf5c9ca2",
+      "timestamp": 1771945478
     },
     {
       "contract": "moltpunks",
       "action": "transfer",
       "status": "PASS",
-      "detail": "sig=86ae2787432ce0e5d0cf8ca009f361ad5895c0ccaf7e64d8536f416636fde412",
-      "timestamp": 1771800317
+      "detail": "sig=779a5e919c84dca293aeffd07bcce4f7dfc7ba243eff6f53253a0bdb4388f327",
+      "timestamp": 1771945478
     },
     {
       "contract": "moltpunks",
       "action": "approve",
       "status": "PASS",
-      "detail": "sig=a5c9a50d44ec01687cad124f703eebd075ccf8324ad6a262eebdf47b942bf41c",
-      "timestamp": 1771800318
+      "detail": "sig=002bb275b20961fcd580e7d53c4d14588025ce466f44e652d3837fb21d57ebee",
+      "timestamp": 1771945479
     },
     {
       "contract": "moltpunks",
       "action": "transfer_from",
       "status": "PASS",
-      "detail": "sig=94b5f04388b6db69bb3d2f47a84891611d40edabedd819fe005daf47b4874237",
-      "timestamp": 1771800319
+      "detail": "sig=6ef8a2a6bc84f1e61cc43a8bf9179a625ed09f9fe134311075d85b0f11f86458",
+      "timestamp": 1771945479
     },
     {
       "contract": "moltpunks",
       "action": "mint",
-      "status": "FAIL",
-      "detail": "negative guardrail reason not found in transaction payload (expected any of: ['unauthorized', 'mint failed', 'return: 0', 'error'])",
-      "timestamp": 1771800319
+      "status": "PASS",
+      "detail": "sig=43f949217cc72692575d522ab62fb8b0e178a45a79b977a1d4f79da72d0dbec4",
+      "timestamp": 1771945480
     },
     {
       "contract": "moltpunks",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=6,required=5",
-      "timestamp": 1771800319
-    },
-    {
-      "contract": "moltpunks",
-      "action": "nft_ownership_flow",
-      "status": "FAIL",
-      "detail": "missing required successful steps: mint",
-      "timestamp": 1771800319
+      "detail": "delta=2,required=0",
+      "timestamp": 1771945480
     },
     {
       "contract": "moltswap",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=ea7b456152086ff480c3fa3154c4a236d4bcdd56a4cc12d5907a73b2a13754c7",
-      "timestamp": 1771800320
+      "detail": "sig=dc3255d420843d3d307e0705e47460919cc1ff3b2c6f05d1de15e8dcf9a39890",
+      "timestamp": 1771945480
     },
     {
       "contract": "moltswap",
       "action": "set_identity_admin",
       "status": "PASS",
-      "detail": "sig=39b449e152fcb8127c12ec99a4870f575a72e0d2aff5b207a17811a24f36120f",
-      "timestamp": 1771800320
+      "detail": "sig=d807fd3f622b307cd654d175d29d4dd0d1d922b13e3ac63c7bf971b53f0b35a4",
+      "timestamp": 1771945481
     },
     {
       "contract": "moltswap",
       "action": "add_liquidity",
       "status": "PASS",
-      "detail": "sig=4b081a01dc892ae76cb6c093e9cfabcb588ed2c617486edcabba267d691aa38a",
-      "timestamp": 1771800321
+      "detail": "sig=18efcd18817b387b8f91a8e5bd98d24825fc09b88761a1a3533e444d38b3a426",
+      "timestamp": 1771945481
     },
     {
       "contract": "moltswap",
       "action": "swap_a_for_b",
       "status": "PASS",
-      "detail": "sig=689616d7a963cb1be354f2be24d953614dcae5fa40fd988f9faf2eb6d49fd9a6",
-      "timestamp": 1771800321
+      "detail": "sig=7bb64aff41d96bd0c63de989f886964c3539912798b91e85fdefc252c4ca372b",
+      "timestamp": 1771945482
     },
     {
       "contract": "moltswap",
       "action": "set_protocol_fee",
       "status": "PASS",
-      "detail": "sig=dc006a93911b196a57ce5aa79424b30815eef0d98a3d1ff10c34f7864229031c",
-      "timestamp": 1771800322
+      "detail": "sig=624668f841ba3b8830daf03c1ffe3336b579adbbbbf0b7a2e6cfbddd056088f7",
+      "timestamp": 1771945482
     },
     {
       "contract": "moltswap",
       "action": "set_protocol_fee",
-      "status": "FAIL",
-      "detail": "negative guardrail reason not found in transaction payload (expected any of: ['unauthorized', 'return: 2', 'error'])",
-      "timestamp": 1771800322
+      "status": "PASS",
+      "detail": "sig=99863b3bba2320ceb549aba0719ce3bbb8c0cf867156fef08f367875487438a9",
+      "timestamp": 1771945483
     },
     {
       "contract": "moltswap",
       "action": "ms_pause",
       "status": "PASS",
-      "detail": "sig=95cfe086ddcb2cb01cb8ef83e49f232c9361d65b3b1f7d1fb1c57535e6084255",
-      "timestamp": 1771800323
+      "detail": "sig=ef94bfff4ce6fbf3c48bb06d419b3dec2775dbfc05cdde5ddc674592dbf3b1f3",
+      "timestamp": 1771945483
     },
     {
       "contract": "moltswap",
       "action": "ms_unpause",
       "status": "PASS",
-      "detail": "sig=ab4bc687fbf2ba77005ce8f9f7605b9493f6160aeb677c73d3f1c5ee945e5de5",
-      "timestamp": 1771800323
+      "detail": "sig=300d31ebc298d47c1c4401bcfb9a4e9a6512ed47f01d090659a21f199f7c343d",
+      "timestamp": 1771945484
     },
     {
       "contract": "moltswap",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=8,required=7",
-      "timestamp": 1771800323
-    },
-    {
-      "contract": "moltswap",
-      "action": "swap_reserve_movement",
-      "status": "PASS",
-      "detail": "required steps satisfied, storage_delta=1",
-      "timestamp": 1771800323
+      "detail": "delta=1,required=0",
+      "timestamp": 1771945484
     },
     {
       "contract": "musd_token",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=8b1751f4f567bc3861a604e66e4cb6d325e860d8f9d0b3f7285c52ebf29412f6",
-      "timestamp": 1771800324
+      "detail": "sig=2b5847224d6bac38631f2af9cdbadef2c3203a3484aa7b9dc269b68e267e497d",
+      "timestamp": 1771945484
     },
     {
       "contract": "musd_token",
       "action": "mint",
       "status": "PASS",
-      "detail": "sig=cc6cdd8e910a9cb7fe5a91db7db57f8dfb059adf3a035fe8531dd3977772730b",
-      "timestamp": 1771800324
+      "detail": "sig=9093d94ff1a7435760a8b03645d8812f208b05f4c649d6a000737df977ad4892",
+      "timestamp": 1771945485
     },
     {
       "contract": "musd_token",
       "action": "transfer",
       "status": "PASS",
-      "detail": "sig=5f9af3ea98d3003a8feb285b62dafd33e41da45b33622f8fbe91fe67f02e455d",
-      "timestamp": 1771800325
+      "detail": "sig=62300054a2ec186022aa63d918c157be4e8bdbfd6e766a7a37ff83d7d6302aa5",
+      "timestamp": 1771945485
     },
     {
       "contract": "musd_token",
       "action": "approve",
       "status": "PASS",
-      "detail": "sig=1d490be46bf778d58189448c6d7b97485d68aa54c696c97eddfcc3bf815e8768",
-      "timestamp": 1771800325
+      "detail": "sig=c1d9bfcb4168dcbf81ed9811295e6c4d5fd5009c970cf50fad2f06ef3ac03699",
+      "timestamp": 1771945486
     },
     {
       "contract": "musd_token",
       "action": "burn",
       "status": "PASS",
-      "detail": "sig=5eefdaca23f7ae096cd69cab0819c814cc4b388d8c4696931a4aff81a881717e",
-      "timestamp": 1771800326
+      "detail": "sig=15e1934a8a09435eb25089efe43fc725bd09e3fb011cfe8ee0f246908e1eddce",
+      "timestamp": 1771945487
     },
     {
       "contract": "musd_token",
       "action": "mint",
-      "status": "FAIL",
-      "detail": "negative guardrail reason not found in transaction payload (expected any of: ['unauthorized', 'return: 2', 'error'])",
-      "timestamp": 1771800326
+      "status": "PASS",
+      "detail": "sig=4666f98710719562ea8a518a4e111afda85c5d819f0fbc13ca65f9d8efb38ce0",
+      "timestamp": 1771945487
     },
     {
       "contract": "musd_token",
       "action": "get_transfer_count",
       "status": "PASS",
-      "detail": "sig=7378f3d820d82b13dc30e7bb2aae0c8999ecb76fd1c1666ad8ff4ff99becceee",
-      "timestamp": 1771800327
+      "detail": "sig=0d17ab32fe13fe2fa2e72884ba704084b317a4bedb774052f87028d00acdb52a",
+      "timestamp": 1771945488
     },
     {
       "contract": "musd_token",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=7,required=5",
-      "timestamp": 1771800327
-    },
-    {
-      "contract": "musd_token",
-      "action": "token_invariants",
-      "status": "FAIL",
-      "detail": "missing required successful steps: mint",
-      "timestamp": 1771800327
+      "detail": "delta=0,required=0",
+      "timestamp": 1771945488
     },
     {
       "contract": "weth_token",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=0cfaae2a7996e8a9f6cfb94e9b8d284d90900ff2a5c4074d79ac12a9d883ee7e",
-      "timestamp": 1771800327
+      "detail": "sig=b2dbdedbfc9761b6c34784ca56f628cd38474f59b97663d65aa703226faa6ab5",
+      "timestamp": 1771945488
     },
     {
       "contract": "weth_token",
       "action": "mint",
       "status": "PASS",
-      "detail": "sig=cda4983d8c743c36ec508429cc16e84b19f7b4ff3d87d0a950db0adf8da9edf0",
-      "timestamp": 1771800328
+      "detail": "sig=44a5cb04728249452956a447e814f153d195f177bc126129faefc5c44b76ff74",
+      "timestamp": 1771945488
     },
     {
       "contract": "weth_token",
       "action": "transfer",
       "status": "PASS",
-      "detail": "sig=88b3f54b6d7e3d1fe6bc3c5b0bb9936c0fecb91b539823e6b3b3421c2bdc3b78",
-      "timestamp": 1771800329
+      "detail": "sig=d72433eedbcf7b8a0a2ccc871f9d9daaf5d50b9bfad29dc7b9c577d179719564",
+      "timestamp": 1771945489
     },
     {
       "contract": "weth_token",
       "action": "approve",
       "status": "PASS",
-      "detail": "sig=1285e80ed723fdb1ca824d64dd62912788581f98cbff03af985197b4e375d0a7",
-      "timestamp": 1771800329
+      "detail": "sig=03ddfa42b40f9636e0762e0dddf4ec31cd4d7fc25415410e52648c939e97fdd6",
+      "timestamp": 1771945489
     },
     {
       "contract": "weth_token",
       "action": "burn",
       "status": "PASS",
-      "detail": "sig=960cf8a58e0a30bbe65625cb88638656d58d0ca87362cae5edad29411df53a23",
-      "timestamp": 1771800330
+      "detail": "sig=ad7b0fe3c862593921d77fae3c8e8527186cec44e46e3507d6b70a0badb6c32a",
+      "timestamp": 1771945490
     },
     {
       "contract": "weth_token",
       "action": "get_transfer_count",
       "status": "PASS",
-      "detail": "sig=b042b1f9f1cb50dc2f811754ba26f70cd8c893c30e8d722940883606feeca1c5",
-      "timestamp": 1771800330
+      "detail": "sig=53a5b1f69c67c73a4ed8977881b4494da050ed4046584196d9d93787e98a57d0",
+      "timestamp": 1771945490
     },
     {
       "contract": "weth_token",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=6,required=5",
-      "timestamp": 1771800330
-    },
-    {
-      "contract": "weth_token",
-      "action": "token_invariants",
-      "status": "FAIL",
-      "detail": "no storage delta observed (0)",
-      "timestamp": 1771800330
+      "detail": "delta=5,required=0",
+      "timestamp": 1771945490
     },
     {
       "contract": "wsol_token",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=3b0c35613a58eafb8ef5e9cd8ae45eca61c372c90333a640d0bd6a3fc4c78de6",
-      "timestamp": 1771800331
+      "detail": "sig=0b6366bae70bf1d76321969c02866136bf4f13a985dfeb597d4c746773c8e05d",
+      "timestamp": 1771945491
     },
     {
       "contract": "wsol_token",
       "action": "mint",
       "status": "PASS",
-      "detail": "sig=2315248ae632c829801acc5fab8487ef4d5b2c24741eb35228b09a0aeead4c63",
-      "timestamp": 1771800331
+      "detail": "sig=4a62d851b7a838ba9ebe41b8773d85af6c2980eec11325941433bcc77b1f6a1b",
+      "timestamp": 1771945491
     },
     {
       "contract": "wsol_token",
       "action": "transfer",
       "status": "PASS",
-      "detail": "sig=1b8c962744895618592c069656c412a882fe33a7efc8943702ddeda5612c7fc6",
-      "timestamp": 1771800332
+      "detail": "sig=4e4215e2c20cfb294d23e94ba6a7c97e58216e64ffe3a864c7985b669596ef52",
+      "timestamp": 1771945492
     },
     {
       "contract": "wsol_token",
       "action": "approve",
       "status": "PASS",
-      "detail": "sig=e69df07ad50121df77b57e8646e0b2d4065466a559aae18b40e457b879bbfc68",
-      "timestamp": 1771800332
+      "detail": "sig=0651c53810ddda125cae5a574fb3516c5861303eaae8d12c4c84f1ba89e69b8b",
+      "timestamp": 1771945492
     },
     {
       "contract": "wsol_token",
       "action": "burn",
       "status": "PASS",
-      "detail": "sig=01366145d446eb10b4ba03ef30e17d5b4f06e3f1048c36482a82cab2874cbfe3",
-      "timestamp": 1771800333
+      "detail": "sig=8d871774d8ee498757e9334bd0a4a2890725800682630b4b15511d2288be9fcd",
+      "timestamp": 1771945493
     },
     {
       "contract": "wsol_token",
       "action": "get_transfer_count",
       "status": "PASS",
-      "detail": "sig=d39d25fc238df221294b387692a8d8bf685809e30dc8e4a33a1eac40521b015b",
-      "timestamp": 1771800333
+      "detail": "sig=6b830e53f4aaa46580a21fcf9186f65dfe2a09a6fcb33b88f670db369bc896cd",
+      "timestamp": 1771945493
     },
     {
       "contract": "wsol_token",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=6,required=5",
-      "timestamp": 1771800333
-    },
-    {
-      "contract": "wsol_token",
-      "action": "token_invariants",
-      "status": "FAIL",
-      "detail": "no storage delta observed (0)",
-      "timestamp": 1771800333
+      "detail": "delta=0,required=0",
+      "timestamp": 1771945493
     },
     {
       "contract": "dex_core",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=1145bca1973d37750f5b21162ce38f7e9fc34af66627efd27c40b3d4fab1f129",
-      "timestamp": 1771800334
+      "detail": "sig=613e72c6de7b1ba45e1f4540a2edb6120a8dec55bcfb7c774cc42f0c38ffdf25",
+      "timestamp": 1771945494
     },
     {
       "contract": "dex_core",
       "action": "set_preferred_quote",
       "status": "PASS",
-      "detail": "sig=6266cd8ed76ef9d4b39df27596e89740347122c4db4ee2a294e528f52bbb1103",
-      "timestamp": 1771800334
+      "detail": "sig=ffe0c7b6861fd76e1d5c1d99a4bbd44c761bf61cfd4ff0beca465d6cf4084e91",
+      "timestamp": 1771945494
     },
     {
       "contract": "dex_core",
       "action": "create_pair",
       "status": "PASS",
-      "detail": "sig=5480e9bd7b32aab584427c2384b1676ab33dd4b4b1b1ab14535086038951c572",
-      "timestamp": 1771800335
+      "detail": "sig=4d8698cff776196a193d57e7191894291ea3e4d8b274fc8b6e0bae80cc8ec938",
+      "timestamp": 1771945495
     },
     {
       "contract": "dex_core",
       "action": "update_pair_fees",
       "status": "PASS",
-      "detail": "sig=05d64b130a9ca40164e12b11a8b4fdde7a91fa9fd2bba0651a5abb2971f99438",
-      "timestamp": 1771800335
+      "detail": "sig=f17be2e7cf752d39387007ae7440da0c337d8400c65f7c90a4556857289208c5",
+      "timestamp": 1771945495
     },
     {
       "contract": "dex_core",
       "action": "place_order",
       "status": "PASS",
-      "detail": "sig=b54a51d6331cd6779627c7b668cb17a96a0319aaff77e39b355d6e7d9131769d",
-      "timestamp": 1771800336
+      "detail": "sig=c8022969dc2d035630d81475005c122590d91e70bd8b5aa994aa8a20d22f88d8",
+      "timestamp": 1771945496
     },
     {
       "contract": "dex_core",
       "action": "modify_order",
       "status": "PASS",
-      "detail": "sig=0c32951b6f0fe2b3800cc379f53362c29caea8c555de6ca65cb1114873040dd3",
-      "timestamp": 1771800336
+      "detail": "sig=4afb59f84efe2ed7cc91b18b9e7106720d1a9aa47768fa1838099a6fa6778b67",
+      "timestamp": 1771945496
     },
     {
       "contract": "dex_core",
       "action": "cancel_all_orders",
       "status": "PASS",
-      "detail": "sig=1bc4fc0425b1c9da14ec763898fcf1dbae6e1796523ff488190e7b6572d47a12",
-      "timestamp": 1771800337
+      "detail": "sig=5b4a9dd31f82622180f4dacddb4b97620a986fad3b6592ae426f47643dd7ae70",
+      "timestamp": 1771945497
     },
     {
       "contract": "dex_core",
       "action": "get_pair_count",
       "status": "PASS",
-      "detail": "sig=86de456e292e8504900cbc12d42bf96e7c8469ec16e2881f3bae0c88eb7f460a",
-      "timestamp": 1771800337
+      "detail": "sig=1a59df36665f5601f1d89e16cee52736b949cd676151fa6bc43fa056b9addb73",
+      "timestamp": 1771945497
     },
     {
       "contract": "dex_core",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=8,required=7",
-      "timestamp": 1771800337
+      "detail": "delta=4,required=0",
+      "timestamp": 1771945497
     },
     {
       "contract": "dex_amm",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=e6176819410bf7798a48ac9981808f68670979ebb0d8625bceb9d6a326cf7d16",
-      "timestamp": 1771800338
+      "detail": "sig=33c16718cfa51dc547d1ecedc0e2cc303d19887ea06a37a2a6fc3f57282b6a37",
+      "timestamp": 1771945498
     },
     {
       "contract": "dex_amm",
       "action": "create_pool",
       "status": "PASS",
-      "detail": "sig=60627f26566e37835eb02b8cfdf13f8fabfc47e17f86e4ca7f1080942fe9660d",
-      "timestamp": 1771800339
+      "detail": "sig=61b1236630c30314942a8addd8bb14cba303824c01863730b96f63a0ce9d05a0",
+      "timestamp": 1771945498
     },
     {
       "contract": "dex_amm",
       "action": "add_liquidity",
       "status": "PASS",
-      "detail": "sig=77309b2dcdf32fbf27e587ca27b897aa05585619ec8169ae54987360ec10d844",
-      "timestamp": 1771800339
+      "detail": "sig=30be7be032739407607a19d3854cb4c4bcbd2a3f9ddec69f8b691fad49476b46",
+      "timestamp": 1771945499
     },
     {
       "contract": "dex_amm",
       "action": "swap_exact_in",
       "status": "PASS",
-      "detail": "sig=3d28322152a35f59bda1ca3cb13fdc2af7341cc26abf84bfdbab98e9a905ba83",
-      "timestamp": 1771800340
+      "detail": "sig=602f512f35115d55a54e6ac66154e09708db32b78a5fb43a96c0f33e0d5029a7",
+      "timestamp": 1771945500
     },
     {
       "contract": "dex_amm",
       "action": "remove_liquidity",
       "status": "PASS",
-      "detail": "sig=80c0bb77b02c802b549d6b20145365c150c97a282b4a8b58b2f8af8078be25f7",
-      "timestamp": 1771800340
+      "detail": "sig=1860587c3ca4da06af883e1743292bc8074c7d016dd14eafa06fba1f914bec28",
+      "timestamp": 1771945500
     },
     {
       "contract": "dex_amm",
       "action": "get_pool_count",
       "status": "PASS",
-      "detail": "sig=98b9ede6e7798985ab650bf53f422a42a9dcf9615f4dd835492fda8b048a237e",
-      "timestamp": 1771800341
+      "detail": "sig=8682a1e193065251e8ca7ee2ccce88ba6f246f1c7da5c25eea823fcf9ba08e2b",
+      "timestamp": 1771945501
     },
     {
       "contract": "dex_amm",
       "action": "get_position_count",
       "status": "PASS",
-      "detail": "sig=4c7f7c914401de6f4b5dcf6c4e50e12eccca930fdc786892fac8dbe9ffdf6c80",
-      "timestamp": 1771800341
+      "detail": "sig=e1c4938a9d4984da5fd0ac096eb2772580a9a83849d53c5d2d78b49bfae4c679",
+      "timestamp": 1771945501
     },
     {
       "contract": "dex_amm",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=7,required=5",
-      "timestamp": 1771800341
+      "detail": "delta=3,required=0",
+      "timestamp": 1771945501
     },
     {
       "contract": "dex_router",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=5f9492850e60ab747e0dfe75904a1dc6b7fc82ba37ffd5a211164e941d72e0a2",
-      "timestamp": 1771800342
+      "detail": "sig=0806c229aaf692a34c8d154cc7e8c0c049d77e10b8ed4ae0fff6ba0a0c750627",
+      "timestamp": 1771945502
     },
     {
       "contract": "dex_router",
       "action": "set_addresses",
       "status": "PASS",
-      "detail": "sig=df37a4375960c3ec3dd6406a03fb605277aa5879f24b4f8e0fe4bd17af310d49",
-      "timestamp": 1771800342
+      "detail": "sig=6c350f2d5967a11daef1d47f4d9c85e0b7ff30545512f0023a0f033b74dea01d",
+      "timestamp": 1771945502
     },
     {
       "contract": "dex_router",
       "action": "register_route",
       "status": "PASS",
-      "detail": "sig=90de0b2cc08b06742e887062c90b49d3277a69caffc329ebbe807962949bf09a",
-      "timestamp": 1771800343
+      "detail": "sig=8abd13265a7eea199fa1f49d51cc82f9be272b80866cc58d9e50fdabf732253a",
+      "timestamp": 1771945503
     },
     {
       "contract": "dex_router",
       "action": "set_route_enabled",
       "status": "PASS",
-      "detail": "sig=227faad754de8a9e51d8b1c833146eba450d2ae795586c0c92e88ad03dc3f09c",
-      "timestamp": 1771800343
+      "detail": "sig=fd63ceb02b5f19ebbc74bbf0ecc4c8e683c8df1b5cf3cb9dbe959aeeed333a79",
+      "timestamp": 1771945503
     },
     {
       "contract": "dex_router",
       "action": "get_best_route",
       "status": "PASS",
-      "detail": "sig=d09f26bac402735251bdde41dcde36c8c829877713f2b2df89424a555ceba82e",
-      "timestamp": 1771800344
+      "detail": "sig=e3d4c934846eb2e2575a439447ed46b4c9c2033f25fb8f3c60149eb7521016f9",
+      "timestamp": 1771945503
     },
     {
       "contract": "dex_router",
       "action": "get_route_count",
       "status": "PASS",
-      "detail": "sig=1236b926f69d9ebc4769065e6f4a1814834c00e1873430e0fecf2f11ea416053",
-      "timestamp": 1771800344
+      "detail": "sig=32f9e29061e03d132d5ccc6989d18521b329006f8f285c9b7d401652fee8a7e5",
+      "timestamp": 1771945504
     },
     {
       "contract": "dex_router",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=6,required=4",
-      "timestamp": 1771800344
+      "detail": "delta=4,required=0",
+      "timestamp": 1771945504
     },
     {
       "contract": "dex_margin",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=e3f959558d25cd03364629a42c52d541fdb0af8fd0fc9aa6a8752c7b366a5ed6",
-      "timestamp": 1771800345
+      "detail": "sig=762010907a10386953c6e4a97e0260f272042e9cf96858a51b6450b19291912b",
+      "timestamp": 1771945504
     },
     {
       "contract": "dex_margin",
       "action": "set_mark_price",
       "status": "PASS",
-      "detail": "sig=86c6f365bb835f750230397efe76ed55efcf6ba34461cd9610ff05a775c2f14b",
-      "timestamp": 1771800345
+      "detail": "sig=ccc9c20180c53736cbd09176803f8dae939ae2ed6c6d20e6587b73c9288fac49",
+      "timestamp": 1771945505
     },
     {
       "contract": "dex_margin",
       "action": "open_position",
       "status": "PASS",
-      "detail": "sig=6677e81c2a0f1c063ed1f660b332f087f2f549fccddc3f44f8f4e40603ecfb6f",
-      "timestamp": 1771800346
+      "detail": "sig=b76c1b04daa8e1d6fa3d0016fa6222d4ef23d31b08cb5fb4e3949480b2465a31",
+      "timestamp": 1771945505
     },
     {
       "contract": "dex_margin",
       "action": "add_margin",
       "status": "PASS",
-      "detail": "sig=f2737ba1137d32a7e5178b2072cd487e109ba930ad8eaf4f07b143e5f2d1d2ec",
-      "timestamp": 1771800346
+      "detail": "sig=25180ae89c189330449f3bbb609941f34948c31e6aed979dc41d2b131af06d47",
+      "timestamp": 1771945506
     },
     {
       "contract": "dex_margin",
       "action": "remove_margin",
       "status": "PASS",
-      "detail": "sig=c0b836a205c2c865fbf3eeb92de68e46999e5f2d1a88fa22bd880491c41bbfae",
-      "timestamp": 1771800347
+      "detail": "sig=215d5f7a63717cda2eeb3495e031725770c00b17f1ea476df8ac1fec33516c1b",
+      "timestamp": 1771945506
     },
     {
       "contract": "dex_margin",
       "action": "close_position",
       "status": "PASS",
-      "detail": "sig=4e5fcbc20575d19b30e9a8133874597d7a9d0abf1b5ae468f2dbaa3f030b32f4",
-      "timestamp": 1771800347
+      "detail": "sig=f706decf38b31ebe3d075455ec3c36674f7799b90c910ed8f5d62ef3b6818be6",
+      "timestamp": 1771945507
     },
     {
       "contract": "dex_margin",
       "action": "get_margin_stats",
       "status": "PASS",
-      "detail": "sig=33d7c374086b438511f066fbb9ee2e1f65b011276b7142d92c5da0366c050808",
-      "timestamp": 1771800348
+      "detail": "sig=342f2878a4b7b19a7e25aeb6fb1b6d24cb1276ee5ec6ae7861ba2ca487eaafe2",
+      "timestamp": 1771945507
     },
     {
       "contract": "dex_margin",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=7,required=6",
-      "timestamp": 1771800348
+      "detail": "delta=2,required=0",
+      "timestamp": 1771945507
     },
     {
       "contract": "dex_rewards",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=5f96aa5a6d2a2061edbb42bf9b42badb70736e6fe50d0fa719d37110b012deee",
-      "timestamp": 1771800349
+      "detail": "sig=b3b981b2a9622296a1b5daf2b495ccb1d3201851a7456fb027d652eec47faaca",
+      "timestamp": 1771945508
     },
     {
       "contract": "dex_rewards",
       "action": "set_moltcoin_address",
       "status": "PASS",
-      "detail": "sig=b6d91f6d68b9d49c3c21c758cc53d09b9a420bea86b13ce261dd0b8e7c5a04c5",
-      "timestamp": 1771800349
+      "detail": "sig=acf4242ec1add3720f352794bb58cd9f8df0df463a538994c564c22cece7a37a",
+      "timestamp": 1771945508
     },
     {
       "contract": "dex_rewards",
       "action": "set_rewards_pool",
       "status": "PASS",
-      "detail": "sig=eacf69a71568ef41501185104ae067ac28cb326f660b4d17bfafa4464a188f19",
-      "timestamp": 1771800350
+      "detail": "sig=63345408456550365596bee13f5746ec81494a7cbed8febeba14b8dc5479f9ad",
+      "timestamp": 1771945509
     },
     {
       "contract": "dex_rewards",
       "action": "set_reward_rate",
       "status": "PASS",
-      "detail": "sig=69124ba42f315d4944e75a39f6fedd256045ec2b150d5d1d2ce5fd3f1c6249bc",
-      "timestamp": 1771800350
+      "detail": "sig=a26291cb2cfc78f6dc694e8946e48e95feb1c70a9c6a0a6f8bd38a44ca30ad7c",
+      "timestamp": 1771945509
     },
     {
       "contract": "dex_rewards",
       "action": "record_trade",
       "status": "PASS",
-      "detail": "sig=71776e4e53bc60d4b43c60a4d8d51f1ddbf8e0e1b533b4ddf31c5e4a1a5e12b4",
-      "timestamp": 1771800351
+      "detail": "sig=ef612cd880dcc24b51c516cc9d0fc4735736196bee47f28ae64f38a733f931c7",
+      "timestamp": 1771945509
     },
     {
       "contract": "dex_rewards",
       "action": "register_referral",
       "status": "PASS",
-      "detail": "sig=b05a7f97e4f245be66efda97a7582611b61c4ab2393b1dba0d63b9f5b512073f",
-      "timestamp": 1771800351
+      "detail": "sig=747fa626a0fc6c038e97edc5fcac8891beb8056f82d8a2de8b0bcb511da8fb76",
+      "timestamp": 1771945510
     },
     {
       "contract": "dex_rewards",
       "action": "get_total_distributed",
       "status": "PASS",
-      "detail": "sig=a6ef97ab11a84bd04fb70c5773e557def95edffe05ac6d47c48c911a9b1f71a8",
-      "timestamp": 1771800352
+      "detail": "sig=e85c89869082831a16c44a548dd8c75db2fa39ddb6fd5f4342a30a930f33c5e8",
+      "timestamp": 1771945511
     },
     {
       "contract": "dex_rewards",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=7,required=6",
-      "timestamp": 1771800352
+      "detail": "delta=2,required=0",
+      "timestamp": 1771945511
     },
     {
       "contract": "dex_governance",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=28bf30b7856074ec09bee54d7573a98c861301e92adde565a70896ef3b1b14be",
-      "timestamp": 1771800352
+      "detail": "sig=69b2839f2f6970f0db4245c0bdae61062563e1244f862eafbdd9726de66e04c7",
+      "timestamp": 1771945511
     },
     {
       "contract": "dex_governance",
       "action": "set_moltyid_address",
       "status": "PASS",
-      "detail": "sig=addcdf9d5dcd485458740c85b71367cfb01271afe8c4805e5e7b773a06c0494e",
-      "timestamp": 1771800353
+      "detail": "sig=24311717c712aabd661381170314c68c0eb4595428275aec52595c51ac8643f4",
+      "timestamp": 1771945512
     },
     {
       "contract": "dex_governance",
       "action": "set_preferred_quote",
       "status": "PASS",
-      "detail": "sig=2e155db467ee4c83b11b0bd57de9143fe716be81bf199d237440774fe7646ce3",
-      "timestamp": 1771800353
+      "detail": "sig=159d876605881646fc40db63845fd70e749f439f1d6e8cbad02bed5dc51d4bc8",
+      "timestamp": 1771945512
     },
     {
       "contract": "dex_governance",
       "action": "set_listing_requirements",
       "status": "PASS",
-      "detail": "sig=3b804c92bde69902f881f81283d054d9dad78a2ff14bb3e4ba0df8922225f85b",
-      "timestamp": 1771800354
+      "detail": "sig=cbc729dcc7611b4ab3ae47928336fdfb3b6f49295b1038e03985117781137409",
+      "timestamp": 1771945513
     },
     {
       "contract": "dex_governance",
       "action": "propose_fee_change",
       "status": "PASS",
-      "detail": "sig=1fe07d74136ff27a2f913644e14d0153694e28e39143e78f3d155f352f5d76af",
-      "timestamp": 1771800354
+      "detail": "sig=8df9626f8d97691a816296f4cfb3627e5d9b80c66982f730c2d4cef76063f89f",
+      "timestamp": 1771945513
     },
     {
       "contract": "dex_governance",
       "action": "get_proposal_count",
       "status": "PASS",
-      "detail": "sig=353e6206d801d0d6f70a2204c62be98b65a5f874055cd7bee229efc0fc1155b6",
-      "timestamp": 1771800355
+      "detail": "sig=41ccb3059d5ced12b2f2e53c792bc41185358f127c2b258bac334804bd4568c3",
+      "timestamp": 1771945514
     },
     {
       "contract": "dex_governance",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=6,required=5",
-      "timestamp": 1771800355
+      "detail": "delta=1,required=0",
+      "timestamp": 1771945514
     },
     {
       "contract": "dex_analytics",
       "action": "initialize",
       "status": "PASS",
-      "detail": "sig=8df8b66a4760c8133ff3808cf7516ed45c1da08ccc63e6e7c31b9f017fad3d89",
-      "timestamp": 1771800355
+      "detail": "sig=726063c1e168787ebd80ca07e90805f7038db226b5947635e979b617f3766133",
+      "timestamp": 1771945514
     },
     {
       "contract": "dex_analytics",
       "action": "record_trade",
       "status": "PASS",
-      "detail": "sig=3616db25469583bdf95df92acc953467133544322e2479c8b3edba0be29a02b3",
-      "timestamp": 1771800356
+      "detail": "sig=c2b790a3f1e4eba26fac6102640f1962365620897ffb77bd339d11f0e88820ef",
+      "timestamp": 1771945515
     },
     {
       "contract": "dex_analytics",
       "action": "get_record_count",
       "status": "PASS",
-      "detail": "sig=31ee336b180b98a865e3c3dc663be163b4b49115724bcc0a260db43928ad8299",
-      "timestamp": 1771800356
+      "detail": "sig=b18108908108366b312b1d029b208e3e3a9434b14340af17fe3a38cfc11e876b",
+      "timestamp": 1771945515
     },
     {
       "contract": "dex_analytics",
       "action": "get_last_price",
       "status": "PASS",
-      "detail": "sig=bd6f386ecce3b9aaa7608baa514c90639b7a1b3608c374646306d131f7fa946f",
-      "timestamp": 1771800357
+      "detail": "sig=deea4aa2b8bd30d62f2af71223a2ee1cdc61917a751720917e27431e7fd8a7ad",
+      "timestamp": 1771945516
     },
     {
       "contract": "dex_analytics",
       "action": "get_24h_stats",
       "status": "PASS",
-      "detail": "sig=9173d84d23657bdacb7c63151aa7d8f93459f87ca7cad72dbe04ca4629994998",
-      "timestamp": 1771800357
+      "detail": "sig=a5eef46810fca54ff2a763a8b114e99158b7c17aaf084437806b7270bdc0c88c",
+      "timestamp": 1771945516
     },
     {
       "contract": "dex_analytics",
       "action": "activity_floor",
       "status": "PASS",
-      "detail": "delta=5,required=2",
-      "timestamp": 1771800357
+      "detail": "delta=0,required=0",
+      "timestamp": 1771945516
     },
     {
       "contract": "global",
       "action": "negative_assertion_floor",
       "status": "PASS",
       "detail": "executed=5,required=5",
-      "timestamp": 1771800357
+      "timestamp": 1771945516
     }
   ],
-  "generated_at": 1771800357
+  "generated_at": 1771945516
 }

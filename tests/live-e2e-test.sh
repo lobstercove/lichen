@@ -36,8 +36,9 @@ assert_result() {
     fi
 }
 
-# Like assert_result but tolerates airdrop rate-limit errors (code -32005).
-# On a repeated gate run, addresses may still be within the 60s cooldown.
+# Like assert_result but tolerates expected airdrop limitations:
+# - rate-limit errors (code -32005)
+# - multi-validator mode where requestAirdrop is intentionally disabled (code -32003)
 assert_result_or_ratelimit() {
     local name="$1" response="$2"
     if echo "$response" | python3 -c "import sys,json; json.load(sys.stdin)['result']" 2>/dev/null; then
@@ -45,6 +46,9 @@ assert_result_or_ratelimit() {
         ((PASS++))
     elif echo "$response" | grep -q '"code":-32005'; then
         echo "  PASS  $name (rate-limited — address already funded)"
+        ((PASS++))
+    elif echo "$response" | grep -q '"code":-32003' && echo "$response" | grep -qi 'requestAirdrop is disabled in multi-validator mode'; then
+        echo "  PASS  $name (airdrop disabled in 3-validator mode)"
         ((PASS++))
     else
         echo "  FAIL  $name"

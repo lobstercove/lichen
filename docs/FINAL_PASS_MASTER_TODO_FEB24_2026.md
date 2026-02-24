@@ -317,7 +317,8 @@ Update:
 - Aligned comprehensive RPC test coverage with current runtime methods (`getStakingStatus`, `getTreasuryInfo`, `getGenesisAccounts`, `getReefStakePoolInfo`) in `test-rpc-comprehensive.sh`.
 - Updated `docs/guides/RPC_API_REFERENCE.md` and `developers/rpc-reference.html` to include all required methods used by strict gate and parity checks.
 - Validation evidence: docs parity script now returns `missing_rpc []` and `missing_dev []` for required method set.
-- `skills/validator/SKILL.md` reviewed; no validator workflow/API command changes were required in this closeout.
+- Updated `skills/validator/SKILL.md` with canonical autonomous startup sequence (`run-validator.sh testnet 1/2/3`), validated RPC/WS endpoints, and release-verified method baseline.
+- Open-source boundary update: `developers/` documentation frontend was removed from tracked OSS scope; canonical RPC/WS reference for OSS is `docs/guides/RPC_API_REFERENCE.md`.
 
 ---
 
@@ -337,7 +338,15 @@ Deliverable:
 Update:
 - Finalized boundary policy and completion checklist in `docs/deployment/OPEN_SOURCE_BOUNDARY_PLAN.md`.
 - Removed hardcoded local workspace paths from active docs/scripts (`docs/guides/QUICK_START_GUIDE.md`, `docs/consensus/ADAPTIVE_HEARTBEAT.md`, `docs/architecture/DOCS_REORGANIZATION_PLAN.md`, `scripts/check_warnings.sh`).
+- Removed frontend/UI directories from tracked open-source scope: `developers/`, `dex/`, `explorer/`, `marketplace/`, `programs/`, `wallet/`, `website/`, `shared/` and shared frontend theme assets.
 - Verification evidence: active docs/scripts path scan returns no `/Users/johnrobin/.openclaw/workspace/moltchain` matches outside archived docs.
+
+Global audit rerun evidence (post-hardening):
+- `cargo check --workspace` → pass.
+- `cargo audit -q` with `.cargo/audit.toml` policy + `docs/security/RUSTSEC_TRIAGE_FEB24_2026.md` justification set applied (informational yanked warning remains allowed and documented).
+- `npm audit --audit-level=high --omit=dev` → `0 vulnerabilities`.
+- `STRICT_NO_SKIPS=1 bash tests/production-e2e-gate.sh` → `PASS:26 FAIL:0 SKIP:0`.
+- `/opt/homebrew/bin/python3 tests/comprehensive-e2e.py` → `PASS=698 FAIL=0 SKIP=2`.
 
 ---
 
