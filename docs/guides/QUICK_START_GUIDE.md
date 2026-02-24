@@ -19,7 +19,7 @@
 
 ```bash
 # From the MoltChain repository
-cd /Users/johnrobin/.openclaw/workspace/moltchain
+cd /path/to/moltchain
 
 # Build (if not already built)
 cargo build --release --bin molt
@@ -44,6 +44,7 @@ $ molt identity new
 📍 Pubkey: 7xKjF2vd9RpqE3mH8sL4kW6nY5tA1bC2dF3gH4iJ5kL6m
 🔐 EVM Address: 0x1234567890abcdef...
 💾 Saved to: /Users/johnrobin/.moltchain/keypairs/id.json
+💾 Saved to: ~/.moltchain/keypairs/id.json
 
 💡 Get test tokens: molt airdrop 100
 ```

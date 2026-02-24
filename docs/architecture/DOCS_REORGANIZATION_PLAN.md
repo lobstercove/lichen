@@ -168,7 +168,7 @@ moltchain/
 ### Phase 1: Create Directory Structure (30 minutes)
 
 ```bash
-cd /Users/johnrobin/.openclaw/workspace/moltchain
+cd /path/to/moltchain
 
 # Create main documentation directories
 mkdir -p docs/{foundation,consensus,contracts,api,wallet,explorer,defi,architecture,operations,skills,archive}
@@ -601,7 +601,7 @@ Apache 2.0
 
 ```bash
 # 1. Run migration script (automated)
-cd /Users/johnrobin/.openclaw/workspace/moltchain
+cd /path/to/moltchain
 ./scripts/docs-migration.sh
 
 # 2. Verify structure

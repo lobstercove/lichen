@@ -85,7 +85,7 @@ if mempool.has_transactions() {
 ### 1. Reset Everything
 
 ```bash
-cd /Users/johnrobin/.openclaw/workspace/moltchain
+cd /path/to/moltchain
 chmod +x reset-blockchain.sh run-validator.sh
 ./reset-blockchain.sh
 ```

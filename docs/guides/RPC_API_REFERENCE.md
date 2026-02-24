@@ -365,6 +365,51 @@ Get staking rewards.
 }
 ```
 
+#### `getReefStakePoolInfo`
+Get ReefStake pool-level metrics.
+
+**Params**: `[]`  
+**Returns**:
+```json
+{
+  "total_supply_st_molt": 0,
+  "total_molt_staked": 0,
+  "exchange_rate": 1.0,
+  "total_validators": 3,
+  "average_apr": 0.0
+}
+```
+
+#### `getTreasuryInfo`
+Get treasury address and treasury balances.
+
+**Params**: `[]`  
+**Returns**:
+```json
+{
+  "treasury_pubkey": "...",
+  "treasury_balance": 0,
+  "treasury_balance_molt": 0.0
+}
+```
+
+#### `getGenesisAccounts`
+List genesis accounts and allocation metadata.
+
+**Params**: `[]`  
+**Returns**:
+```json
+{
+  "accounts": [
+    {
+      "role": "genesis",
+      "pubkey": "...",
+      "amount_molt": 0
+    }
+  ]
+}
+```
+
 ---
 
 ### Account Endpoints (2 endpoints)

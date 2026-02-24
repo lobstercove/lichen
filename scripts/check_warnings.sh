@@ -9,7 +9,9 @@ contracts=("moltcoin" "moltpunks" "moltswap" "moltmarket" "moltauction" "moltora
 
 for contract in "${contracts[@]}"; do
     echo "Checking $contract..."
-    cd "/Users/johnrobin/.openclaw/workspace/moltchain/contracts/$contract"
+    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+    cd "$ROOT_DIR/contracts/$contract"
     
     # Build and capture warnings
     warnings=$(cargo build --target wasm32-unknown-unknown --release 2>&1 | grep "warning:" | grep -v "profiles for the non root" | wc -l | tr -d ' ')
@@ -35,6 +37,6 @@ echo ""
 
 # Show final contract sizes
 echo "📦 PRODUCTION CONTRACT SIZES:"
-ls -lh /Users/johnrobin/.openclaw/workspace/moltchain/contracts/*/target/wasm32-unknown-unknown/release/*.wasm 2>/dev/null | awk '{printf "  %-30s %6s\n", $9, $5}' | sed 's|.*/||' | sort
+ls -lh "$ROOT_DIR"/contracts/*/target/wasm32-unknown-unknown/release/*.wasm 2>/dev/null | awk '{printf "  %-30s %6s\n", $9, $5}' | sed 's|.*/||' | sort
 
 exit $total_warnings

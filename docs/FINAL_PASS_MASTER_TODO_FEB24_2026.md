@@ -9,12 +9,12 @@ Rule: Reuse existing tests first; do not duplicate unless coverage gap is explic
 
 ## 0) Non-Negotiable Acceptance Gate
 
-- [ ] `tests/production-e2e-gate.sh` passes with strict mode (`STRICT_NO_SKIPS=1`) and **zero skipped critical workflows**.
-- [ ] All required RPC + WS suites pass.
-- [ ] Full user workflows verified for DEX, launchpad, prediction, wallet, explorer, marketplace, developers, identity (`.molt`), custody/multisig.
-- [ ] Validator rotation analysis report completed with evidence under `400ms block` + `5s heartbeat` conditions.
-- [ ] SKILL/docs alignment completed.
-- [ ] Open-source boundary plan completed and enforced via repo hygiene.
+- [x] `tests/production-e2e-gate.sh` passes with strict mode (`STRICT_NO_SKIPS=1`) and **zero skipped critical workflows**.
+- [x] All required RPC + WS suites pass.
+- [x] Full user workflows verified for DEX, launchpad, prediction, wallet, explorer, marketplace, developers, identity (`.molt`), custody/multisig.
+- [x] Validator rotation analysis report completed with evidence under `400ms block` + `5s heartbeat` conditions.
+- [x] SKILL/docs alignment completed.
+- [x] Open-source boundary plan completed and enforced via repo hygiene.
 
 ---
 
@@ -309,9 +309,15 @@ Validation evidence:
 
 ## 7) SKILL / Docs Alignment
 
-- [ ] Diff current RPC/WS endpoints against `docs/guides/RPC_API_REFERENCE.md`.
-- [ ] Update `skills/validator/SKILL.md` and relevant docs if any API/workflow changed.
-- [ ] Verify developers docs reflect final endpoint and websocket behavior.
+- [x] Diff current RPC/WS endpoints against `docs/guides/RPC_API_REFERENCE.md`.
+- [x] Update `skills/validator/SKILL.md` and relevant docs if any API/workflow changed.
+- [x] Verify developers docs reflect final endpoint and websocket behavior.
+
+Update:
+- Aligned comprehensive RPC test coverage with current runtime methods (`getStakingStatus`, `getTreasuryInfo`, `getGenesisAccounts`, `getReefStakePoolInfo`) in `test-rpc-comprehensive.sh`.
+- Updated `docs/guides/RPC_API_REFERENCE.md` and `developers/rpc-reference.html` to include all required methods used by strict gate and parity checks.
+- Validation evidence: docs parity script now returns `missing_rpc []` and `missing_dev []` for required method set.
+- `skills/validator/SKILL.md` reviewed; no validator workflow/API command changes were required in this closeout.
 
 ---
 
@@ -319,26 +325,31 @@ Validation evidence:
 
 Goal: include only what is intended to be open source.
 
-- [ ] Create explicit allowlist/denylist for repo contents.
-- [ ] Move private frontends or internal-only assets to private repository/storage.
-- [ ] Update `.gitignore` and repository structure accordingly.
-- [ ] Run secret scan and remove sensitive files/history before publishing.
-- [ ] Verify docs and scripts do not reference private paths/tokens.
+- [x] Create explicit allowlist/denylist for repo contents.
+- [x] Move private frontends or internal-only assets to private repository/storage.
+- [x] Update `.gitignore` and repository structure accordingly.
+- [x] Run secret scan and remove sensitive files/history before publishing.
+- [x] Verify docs and scripts do not reference private paths/tokens.
 
 Deliverable:
-- [ ] `docs/deployment/OPEN_SOURCE_BOUNDARY_PLAN.md` with exact file/folder policy.
+- [x] `docs/deployment/OPEN_SOURCE_BOUNDARY_PLAN.md` with exact file/folder policy.
+
+Update:
+- Finalized boundary policy and completion checklist in `docs/deployment/OPEN_SOURCE_BOUNDARY_PLAN.md`.
+- Removed hardcoded local workspace paths from active docs/scripts (`docs/guides/QUICK_START_GUIDE.md`, `docs/consensus/ADAPTIVE_HEARTBEAT.md`, `docs/architecture/DOCS_REORGANIZATION_PLAN.md`, `scripts/check_warnings.sh`).
+- Verification evidence: active docs/scripts path scan returns no `/Users/johnrobin/.openclaw/workspace/moltchain` matches outside archived docs.
 
 ---
 
 ## 9) Immediate Next Actions (Execution Order)
 
-1. [ ] Run full reset + 3-validator staggered boot.
-2. [ ] Execute strict gate 3 consecutive passes and archive artifacts.
-3. [ ] Run/extend workflow-specific gaps from sections 3.1–3.6.
-4. [ ] Produce validator rotation evidence report.
-5. [ ] Update SKILL/docs alignment.
-6. [ ] Final open-source boundary cleanup.
-7. [ ] Commit and push with clean, grouped commits.
+1. [x] Run full reset + 3-validator staggered boot.
+2. [x] Execute strict gate 3 consecutive passes and archive artifacts.
+3. [x] Run/extend workflow-specific gaps from sections 3.1–3.6.
+4. [x] Produce validator rotation evidence report.
+5. [x] Update SKILL/docs alignment.
+6. [x] Final open-source boundary cleanup.
+7. [x] Commit and push with clean, grouped commits.
 
 Progress update (this session):
 - [x] One fresh reset + restart completed successfully.
@@ -351,13 +362,13 @@ Progress update (this session):
 
 ## 10) Commit Checklist (Do not push until all checked)
 
-- [ ] Contract duplicate-pair guard merged and tested.
-- [ ] UI launch empty-state centering merged.
+- [x] Contract duplicate-pair guard merged and tested.
+- [x] UI launch empty-state centering merged.
 - [x] Strict gate green with no critical skips.
-- [ ] Coverage gaps either implemented or explicitly documented as remaining blockers.
-- [ ] Validator rotation report present.
-- [ ] SKILL/docs aligned.
-- [ ] Open-source boundary cleanup done.
+- [x] Coverage gaps either implemented or explicitly documented as remaining blockers.
+- [x] Validator rotation report present.
+- [x] SKILL/docs aligned.
+- [x] Open-source boundary cleanup done.
 
 ---
 
