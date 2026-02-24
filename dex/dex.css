@@ -1733,6 +1733,11 @@
     max-height: 700px;
     overflow-y: auto;
 }
+.launch-token-grid .launch-empty-state {
+    grid-column: 1 / -1;
+    justify-self: center;
+    width: 100%;
+}
 .launch-token-card {
     background: var(--bg-card);
     border: 1px solid var(--border);

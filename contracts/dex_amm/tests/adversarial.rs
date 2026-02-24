@@ -73,11 +73,11 @@ fn test_create_pool_duplicate_pair() {
     let price = 1u64 << 32;
 
     assert_eq!(create_pool(admin.as_ptr(), ta.as_ptr(), tb.as_ptr(), 2, price), 0);
-    // Creating same pair again should succeed (no duplicate check — known issue)
-    let result = create_pool(admin.as_ptr(), ta.as_ptr(), tb.as_ptr(), 2, price);
-    // Document: this creates fragmented liquidity
-    assert!(result == 0 || result != 0,
-        "duplicate pool creation behavior documented: result={}", result);
+    let same_order = create_pool(admin.as_ptr(), ta.as_ptr(), tb.as_ptr(), 2, price);
+    assert_eq!(same_order, 6, "duplicate pair (same order) must be rejected");
+
+    let reversed_order = create_pool(admin.as_ptr(), tb.as_ptr(), ta.as_ptr(), 2, price);
+    assert_eq!(reversed_order, 6, "duplicate pair (reversed order) must be rejected");
 }
 
 #[test]

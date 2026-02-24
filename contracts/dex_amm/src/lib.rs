@@ -57,6 +57,7 @@ const PROTOCOL_FEE_KEY: &[u8] = b"amm_protocol_fee";
 const SWAP_COUNT_KEY: &[u8] = b"amm_swap_count";
 const TOTAL_VOLUME_KEY: &[u8] = b"amm_total_volume";
 const TOTAL_FEES_KEY: &[u8] = b"amm_total_fees";
+const POOL_PAIR_INDEX_PREFIX: &[u8] = b"amm_pair_idx_";
 
 // ============================================================================
 // HELPERS
@@ -119,6 +120,14 @@ fn tick_data_key(pool_id: u64, tick: i32) -> Vec<u8> {
     } else {
         k.extend_from_slice(&u64_to_decimal(tick as u64));
     }
+    k
+}
+
+fn pool_pair_index_key(token_a: &[u8; 32], token_b: &[u8; 32]) -> Vec<u8> {
+    let (left, right) = if token_a <= token_b { (token_a, token_b) } else { (token_b, token_a) };
+    let mut k = Vec::from(POOL_PAIR_INDEX_PREFIX);
+    k.extend_from_slice(left);
+    k.extend_from_slice(right);
     k
 }
 
@@ -544,7 +553,7 @@ pub extern "C" fn initialize(admin: *const u8) -> u32 {
 }
 
 /// Create a new liquidity pool
-/// Returns: 0=success, 1=not admin, 2=paused, 3=max pools, 4=invalid params, 5=reentrancy
+/// Returns: 0=success, 1=not admin, 2=paused, 3=max pools, 4=invalid params, 5=reentrancy, 6=duplicate pair
 pub fn create_pool(
     caller: *const u8, token_a: *const u8, token_b: *const u8,
     fee_tier: u8, initial_sqrt_price: u64,
@@ -573,10 +582,17 @@ pub fn create_pool(
     if initial_sqrt_price == 0 { reentrancy_exit(); return 4; }
     if ta == tb { reentrancy_exit(); return 4; }
 
+    let pair_key = pool_pair_index_key(&ta, &tb);
+    if storage_get(&pair_key).is_some() {
+        reentrancy_exit();
+        return 6;
+    }
+
     let pool_id = count + 1;
     let tick = sqrt_price_to_tick(initial_sqrt_price);
     let data = encode_pool(&ta, &tb, pool_id, initial_sqrt_price, tick, 0, fee_tier, 0);
     storage_set(&pool_key(pool_id), &data);
+    storage_set(&pair_key, &u64_to_bytes(pool_id));
     save_u64(POOL_COUNT_KEY, pool_id);
     log_info("AMM pool created");
     reentrancy_exit();
