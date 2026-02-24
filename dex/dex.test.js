@@ -1125,7 +1125,7 @@ assert(
 
 // P5.2: loadCandles maps OHLCV fields from response
 {
-    const lcMatch = dexSource.match(/data\.map\(c\s*=>\s*\(\{[\s\S]*?\}\)\)/);
+    const lcMatch = dexSource.match(/data\.map\(c\s*=>\s*[\s\S]*?c\.volume[\s\S]*?\}\)/);
     assert(lcMatch, 'P5.2a: loadCandles maps candle data array');
     const body = lcMatch[0];
     assert(body.includes('c.timestamp') && body.includes('c.open') && body.includes('c.high') && body.includes('c.low') && body.includes('c.close') && body.includes('c.volume'),
