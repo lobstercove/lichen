@@ -552,8 +552,8 @@ assert(validatorSrc.includes('ana_c_') && validatorSrc.includes('put_contract_st
 assert(validatorSrc.includes('ana_cc_') && validatorSrc.includes('put_contract_storage'), 'ORACLE: Candle counts seeded (ana_cc_)');
 
 // Genesis pair price mapping
-assert(validatorSrc.includes('wsol_usd / molt_usd'), 'ORACLE: wSOL/MOLT computed from wsol/molt ratio');
-assert(validatorSrc.includes('weth_usd / molt_usd'), 'ORACLE: wETH/MOLT computed from weth/molt ratio');
+assert(validatorSrc.includes('molt_usd / wsol_usd'), 'ORACLE: MOLT/wSOL computed from molt/wsol ratio');
+assert(validatorSrc.includes('molt_usd / weth_usd'), 'ORACLE: MOLT/wETH computed from molt/weth ratio');
 
 // Background price feeder service (WebSocket-based)
 assert(validatorSrc.includes('BINANCE_WS_URL'), 'ORACLE: Binance WebSocket URL constant');
@@ -628,16 +628,16 @@ console.log('\n── Genesis Pair Creation ──');
 
 assert(validatorSrc.includes('wSOL/mUSD') && validatorSrc.includes('wsol_addr') && validatorSrc.includes('musd_addr'), 'GENESIS: wSOL/mUSD pair created');
 assert(validatorSrc.includes('wETH/mUSD') && validatorSrc.includes('weth_addr') && validatorSrc.includes('musd_addr'), 'GENESIS: wETH/mUSD pair created');
-assert(validatorSrc.includes('wSOL/MOLT') && validatorSrc.includes('wsol_addr') && validatorSrc.includes('molt_addr'), 'GENESIS: wSOL/MOLT pair created');
-assert(validatorSrc.includes('wETH/MOLT') && validatorSrc.includes('weth_addr') && validatorSrc.includes('molt_addr'), 'GENESIS: wETH/MOLT pair created');
+assert(validatorSrc.includes('MOLT/wSOL') && validatorSrc.includes('molt_addr') && validatorSrc.includes('wsol_addr'), 'GENESIS: MOLT/wSOL pair created');
+assert(validatorSrc.includes('MOLT/wETH') && validatorSrc.includes('molt_addr') && validatorSrc.includes('weth_addr'), 'GENESIS: MOLT/wETH pair created');
 assert(validatorSrc.includes('MOLT/mUSD') && validatorSrc.includes('molt_addr') && validatorSrc.includes('musd_addr'), 'GENESIS: MOLT/mUSD pair created');
 
 // AMM pools with corrected initial sqrt_price (Q32: (1<<32)*sqrt(price))
 // Updated to match genesis oracle prices: MOLT=$0.10, wSOL=$82, wETH=$1,979
 assert(validatorSrc.includes('38_892_583_020'), 'GENESIS: wSOL/mUSD pool sqrt_price configured ($82)');
 assert(validatorSrc.includes('191_065_712_575'), 'GENESIS: wETH/mUSD pool sqrt_price configured ($1,979)');
-assert(validatorSrc.includes('122_989_146_433'), 'GENESIS: wSOL/MOLT pool sqrt_price configured (820 MOLT)');
-assert(validatorSrc.includes('604_202_834_500'), 'GENESIS: wETH/MOLT pool sqrt_price configured (19,790 MOLT)');
+assert(validatorSrc.includes('150_422_660'), 'GENESIS: MOLT/wSOL pool sqrt_price configured');
+assert(validatorSrc.includes('30_561_507'), 'GENESIS: MOLT/wETH pool sqrt_price configured');
 
 // ── moltoracle contract tests ──
 console.log('\n── MoltOracle Contract ──');
@@ -713,18 +713,15 @@ console.log('\n── DEX P1: Contract Address Resolution ──');
 assert(dexSource.includes('dex_analytics: null'), 'P1.1: contracts object includes dex_analytics');
 assert(dexSource.includes("map['ANALYTICS']"), 'P1.2: ANALYTICS symbol mapped from registry');
 
-// P1.3: Fallback addresses match current genesis (not stale deploy-manifest)
-assert(dexSource.includes('7QvQ1dxFTdSk9aSzbBe2gHCJH1bSRBDwVdPTn9M5iCds'), 'P1.3: dex_core fallback = genesis address');
-assert(dexSource.includes('72AvbSmnkv82Bsci9BHAufeAGMTycKQX5Y6DL9ghTHay'), 'P1.3: dex_amm fallback = genesis address');
-assert(dexSource.includes('FwAxYo2bKmCe1c5gZZjvuyopJMDgm1T9CAWr2svB1GPf'), 'P1.3: dex_router fallback = genesis address');
-assert(dexSource.includes('J8sMvYFXW4ZCHc488KJ1zmZq1sQMTWyWfr8qnzUwwEyD'), 'P1.3: prediction_market fallback = genesis address');
-// Stale addresses from old deploy_dex.py must NOT be present
-assert(!dexSource.includes('216MacD82KfB2hAeKR17M63ZXfURJQZnzDq2ho7SeJR7'), 'P1.3: stale dex_core address removed');
-assert(!dexSource.includes('AANMpDkSnvSKa6PuaLQuRDU4SMzao7Yx3nLKzC2iatBn'), 'P1.3: stale dex_amm address removed');
+// P1.3: No hardcoded contract addresses in frontend runtime (registry-only)
+assert(!dexSource.includes('7QvQ1dxFTdSk9aSzbBe2gHCJH1bSRBDwVdPTn9M5iCds'), 'P1.3: dex_core hardcoded fallback removed');
+assert(!dexSource.includes('72AvbSmnkv82Bsci9BHAufeAGMTycKQX5Y6DL9ghTHay'), 'P1.3: dex_amm hardcoded fallback removed');
+assert(!dexSource.includes('FwAxYo2bKmCe1c5gZZjvuyopJMDgm1T9CAWr2svB1GPf'), 'P1.3: dex_router hardcoded fallback removed');
+assert(!dexSource.includes('J8sMvYFXW4ZCHc488KJ1zmZq1sQMTWyWfr8qnzUwwEyD'), 'P1.3: prediction_market hardcoded fallback removed');
 
-// P1.5: Fallback warning when registry unavailable
-assert(dexSource.includes('Using fallback contract addresses'), 'P1.5: Fallback warning logged');
-assert(dexSource.includes('needsFallback'), 'P1.5: needsFallback flag tracks registry miss');
+// P1.5: Registry-miss handling logs missing required contracts (no fallback)
+assert(dexSource.includes('Missing required contracts from symbol registry'), 'P1.5: Registry miss is explicitly logged');
+assert(!dexSource.includes('needsFallback'), 'P1.5: needsFallback flag removed');
 
 // P1.6: loadContractAddresses called BEFORE loadPairs (init order)
 {
@@ -776,12 +773,12 @@ assert(
 
 // P2.5: Cross-pair AMM prices derived from base oracle prices
 assert(
-    validatorSource.includes('122_989_146_433'),
-    'P2.5: wSOL/MOLT sqrt_price for 820 MOLT present'
+    validatorSource.includes('150_422_660'),
+    'P2.5: MOLT/wSOL sqrt_price present'
 );
 assert(
-    validatorSource.includes('604_202_834_500'),
-    'P2.5: wETH/MOLT sqrt_price for 19,790 MOLT present'
+    validatorSource.includes('30_561_507'),
+    'P2.5: MOLT/wETH sqrt_price present'
 );
 
 // P2.6: Genesis creates exactly 5 pairs (not 7, no REEF)
@@ -793,8 +790,8 @@ assert(
     const pairsStart = pairBlock.indexOf('let pairs:');
     const pairsEnd = pairBlock.indexOf('];', pairsStart);
     const pairsArray = pairBlock.slice(pairsStart, pairsEnd);
-    const pairDefs = (pairsArray.match(/\("(MOLT|wSOL|wETH)\/(mUSD|MOLT)"/g) || []);
-    assert(pairDefs.length === 5, `P2.6: Genesis creates 5 CLOB pairs (got ${pairDefs.length})`);
+    const pairDefs = (pairsArray.match(/\("(MOLT|wSOL|wETH|wBNB)\/(mUSD|wSOL|wETH|wBNB)"/g) || []);
+    assert(pairDefs.length === 7, `P2.6: Genesis creates 7 CLOB pairs (got ${pairDefs.length})`);
     assert(!pairBlock.includes('REEF'), 'P2.6: No REEF pairs in genesis');
 }
 
@@ -4597,6 +4594,13 @@ console.log('\n── Phase 5: Settings & Preferences ──');
     assert(dexJs.includes('marginRatioPct < 120'), 'P5.2p: Margin ratio threshold at 120%');
     // saveNotifPrefs function
     assert(dexJs.includes('function saveNotifPrefs'), 'P5.2q: saveNotifPrefs function defined');
+
+    // 5.2r–v: Explicit event notification messaging coverage
+    assert(dexJs.includes('Order partially filled:'), 'P5.2r: Partial-fill notification message present');
+    assert(dexJs.includes('Order ${d.status}: #${d.orderId}') || dexJs.includes('Order filled:'), 'P5.2s: Fill/cancel status notification message present');
+    assert(dexJs.includes('SL/TP set:'), 'P5.2t: SL/TP set notification message present');
+    assert(dexJs.includes('SL/TP updated'), 'P5.2u: SL/TP updated notification message present');
+    assert(dexJs.includes('near liquidation — margin ratio < 120%'), 'P5.2v: Liquidation warning notification message present');
 
     // 5.3: Chart interval memory
     assert(dexJs.includes("localStorage.getItem('dexChartInterval')"), 'P5.3a: Chart interval loaded from localStorage');
