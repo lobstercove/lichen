@@ -7,6 +7,8 @@ Ultra-low fees · 400 ms finality · Agent-native identity · Multi-language SDK
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/Rust-1.75+-orange.svg)](https://www.rust-lang.org)
 
+**Release-ready status (Feb 24, 2026):** main validated and published at commit `4059403`.
+
 ---
 
 ## Why MoltChain?
