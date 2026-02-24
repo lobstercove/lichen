@@ -1386,7 +1386,8 @@
             </div>
             <div class="wallet-modal-tabs">
                 <button class="wm-tab active" data-wm-tab="wallets">Wallets</button>
-                <button class="wm-tab" data-wm-tab="import">Connect</button>
+                <button class="wm-tab" data-wm-tab="import">Import</button>
+                <button class="wm-tab" data-wm-tab="extension">Extension</button>
                 <button class="wm-tab" data-wm-tab="create">Create New</button>
             </div>
             <!-- Wallets Tab -->
@@ -1395,27 +1396,66 @@
                     <div class="wm-empty">
                         <i class="fas fa-wallet"></i>
                         <p>No wallets connected</p>
-                        <button class="btn btn-primary btn-small" onclick="document.querySelector('[data-wm-tab=import]').click()">Connect Wallet</button>
+                        <button class="btn btn-primary btn-small" onclick="document.querySelector('[data-wm-tab=import]').click()">Import Wallet</button>
                     </div>
                 </div>
             </div>
-            <!-- Connect Tab (AUDIT-FIX I4-01: Private key import removed — use wallet extension) -->
+            <!-- Import Tab — private key or mnemonic -->
             <div class="wm-tab-content hidden" id="wmTabImport">
+                <div class="wm-import-toggle">
+                    <button class="wm-import-type active" data-import="key">Private Key</button>
+                    <button class="wm-import-type" data-import="mnemonic">Mnemonic</button>
+                </div>
+                <div class="wm-import-key" id="wmImportKey">
+                    <div class="form-group">
+                        <label>Private Key</label>
+                        <input type="password" id="wmPrivateKey" placeholder="Enter your private key (hex or base58)" class="form-input">
+                    </div>
+                </div>
+                <div class="wm-import-mnemonic hidden" id="wmImportMnemonic">
+                    <div class="form-group">
+                        <label>Recovery Phrase (12 or 24 words)</label>
+                        <div class="mnemonic-grid" id="mnemonicGrid"></div>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Password <span style="font-size:0.75rem;color:var(--text-muted);">(optional — encrypts local storage)</span></label>
+                    <input type="password" id="wmPassword" placeholder="Set a password to encrypt" class="form-input">
+                </div>
+                <button class="btn btn-primary btn-full" id="wmConnectBtn"><i class="fas fa-key"></i> Connect Wallet</button>
+            </div>
+            <!-- Extension Tab — wallet extension -->
+            <div class="wm-tab-content hidden" id="wmTabExtension">
                 <div class="wm-create-info">
                     <i class="fas fa-plug"></i>
                     <h4>Connect Wallet Extension</h4>
                     <p>Connect your MoltChain Wallet browser extension to trade securely. Your private keys never leave the extension.</p>
                 </div>
-                <button class="btn btn-primary btn-full" id="wmConnectBtn"><i class="fas fa-plug"></i> Connect Extension</button>
+                <button class="btn btn-primary btn-full" id="wmExtensionBtn"><i class="fas fa-plug"></i> Connect Extension</button>
             </div>
-            <!-- Create Tab (AUDIT-FIX I4-01: Key generation removed — redirect to wallet app) -->
+            <!-- Create Tab — generate new keypair -->
             <div class="wm-tab-content hidden" id="wmTabCreate">
                 <div class="wm-create-info">
                     <i class="fas fa-shield-alt"></i>
-                    <h4>Create New Wallet</h4>
-                    <p>For security, wallets are created in the MoltChain Wallet app. Create a wallet there, then connect it here via the extension.</p>
+                    <h4>Generate New Wallet</h4>
+                    <p>Create a fresh MoltChain wallet. Save the private key securely — it will not be shown again.</p>
                 </div>
-                <button class="btn btn-primary btn-full" id="wmCreateBtn"><i class="fas fa-external-link-alt"></i> Open Wallet App</button>
+                <button class="btn btn-primary btn-full" id="wmCreateBtn"><i class="fas fa-plus-circle"></i> Create Wallet</button>
+                <div class="wm-created-wallet hidden" id="wmCreatedWallet">
+                    <div class="wm-generated-row">
+                        <span class="wm-label">Address</span>
+                        <span class="wm-value" id="wmNewAddress"></span>
+                    </div>
+                    <div class="wm-generated-row">
+                        <span class="wm-label">Private Key</span>
+                        <span class="wm-value wm-secret" id="wmNewKey"></span>
+                        <button class="btn btn-small btn-secondary wm-copy-btn" data-copy="wmNewKey"><i class="fas fa-copy"></i></button>
+                    </div>
+                    <div class="wm-warning">
+                        <i class="fas fa-exclamation-triangle"></i>
+                        <span>Save your private key! It will not be shown again.</span>
+                    </div>
+                </div>
             </div>
         </div>
     </div>

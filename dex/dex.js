@@ -195,6 +195,72 @@ document.addEventListener('DOMContentLoaded', () => {
             this.keypair = { connected: true };
             return this;
         },
+        /** Import wallet from hex or base58 private key */
+        async fromSecretKey(keyStr) {
+            // Try nacl first — real Ed25519 keypair from secret key bytes
+            const bytes = hexToBytes(keyStr);
+            if (window.nacl && window.nacl.sign) {
+                let kp;
+                if (bytes.length === 64) {
+                    kp = nacl.sign.keyPair.fromSecretKey(new Uint8Array(bytes));
+                } else if (bytes.length === 32) {
+                    kp = nacl.sign.keyPair.fromSeed(new Uint8Array(bytes));
+                } else {
+                    throw new Error('Invalid key length — expected 32 or 64 bytes (hex)');
+                }
+                this.keypair = kp;
+                this.address = (window.bs58 && bs58.encode)
+                    ? bs58.encode(kp.publicKey)
+                    : bytesToHex(kp.publicKey);
+                this.shortAddr = this.address.slice(0, 8) + '...' + this.address.slice(-6);
+                return this;
+            }
+            // Fallback — try RPC importWallet
+            try {
+                const result = await api.rpc('importWallet', [keyStr]);
+                if (result && (result.address || result.pubkey)) {
+                    this.address = result.address || result.pubkey;
+                    this.shortAddr = this.address.slice(0, 8) + '...' + this.address.slice(-6);
+                    this.keypair = { connected: true, imported: true };
+                    return this;
+                }
+            } catch (e) { /* fall through */ }
+            throw new Error('Cannot import key — no crypto library available');
+        },
+        /** Generate a fresh Ed25519 keypair */
+        async generate() {
+            if (window.nacl && window.nacl.sign) {
+                const kp = nacl.sign.keyPair();
+                this.keypair = kp;
+                this.address = (window.bs58 && bs58.encode)
+                    ? bs58.encode(kp.publicKey)
+                    : bytesToHex(kp.publicKey);
+                this.shortAddr = this.address.slice(0, 8) + '...' + this.address.slice(-6);
+                return this;
+            }
+            // Fallback: ask RPC to create a wallet
+            const w = await this._ensureWallet();
+            if (w) {
+                const result = await w.connect();
+                if (result && result.address) {
+                    this.address = result.address;
+                    this.shortAddr = this.address.slice(0, 8) + '...' + this.address.slice(-6);
+                    this.keypair = { connected: true, generated: true };
+                    return this;
+                }
+            }
+            // Last resort: createWallet RPC
+            try {
+                const result = await api.rpc('createWallet', []);
+                if (result && (result.address || result.pubkey)) {
+                    this.address = result.address || result.pubkey;
+                    this.shortAddr = this.address.slice(0, 8) + '...' + this.address.slice(-6);
+                    this.keypair = { connected: true, generated: true };
+                    return this;
+                }
+            } catch (e) { /* fall through */ }
+            throw new Error('Cannot generate wallet — no crypto library available');
+        },
         sign(message) {
             throw new Error('Direct signing removed — use wallet extension');
         },
@@ -1978,7 +2044,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Wallet UI
     // ═══════════════════════════════════════════════════════════════════════
     const connectBtn = document.getElementById('connectWallet'), walletModal = document.getElementById('walletModal'), closeModalBtn = document.getElementById('closeWalletModal');
-    const wmTabs = document.querySelectorAll('.wm-tab'), wmTC = { wallets: document.getElementById('wmTabWallets'), import: document.getElementById('wmTabImport'), create: document.getElementById('wmTabCreate') };
+    const wmTabs = document.querySelectorAll('.wm-tab'), wmTC = { wallets: document.getElementById('wmTabWallets'), import: document.getElementById('wmTabImport'), extension: document.getElementById('wmTabExtension'), create: document.getElementById('wmTabCreate') };
     let savedWallets = JSON.parse(localStorage.getItem('dexWallets') || '[]');
 
     function openWalletModal() { if (walletModal) { walletModal.classList.remove('hidden'); renderWalletList(); switchWmTab(savedWallets.length ? 'wallets' : 'import'); } }
@@ -1991,11 +2057,90 @@ document.addEventListener('DOMContentLoaded', () => {
     document.addEventListener('keydown', e => { if (e.key === 'Escape' && walletModal && !walletModal.classList.contains('hidden')) closeWalletModalFn(); });
     wmTabs.forEach(t => t.addEventListener('click', () => switchWmTab(t.dataset.wmTab)));
 
-    // AUDIT-FIX I4-01: Import-type toggle and mnemonic grid removed (no private key input)
+    // Import-type toggle (Private Key / Mnemonic)
+    document.querySelectorAll('.wm-import-type').forEach(btn => btn.addEventListener('click', () => {
+        document.querySelectorAll('.wm-import-type').forEach(b => b.classList.remove('active')); btn.classList.add('active');
+        const k = document.getElementById('wmImportKey'), m = document.getElementById('wmImportMnemonic');
+        if (btn.dataset.import === 'key') { if (k) k.classList.remove('hidden'); if (m) m.classList.add('hidden'); } else { if (k) k.classList.add('hidden'); if (m) m.classList.remove('hidden'); }
+    }));
 
-    // AUDIT-FIX I4-01: wmConnectBtn now connects via wallet extension, not by private key import
+    // Build mnemonic word grid (supports 12 or 24 words — show 12 by default, expand on paste)
+    const mnGrid = document.getElementById('mnemonicGrid');
+    if (mnGrid) {
+        for (let i = 0; i < 24; i++) {
+            const inp = document.createElement('input'); inp.type = 'text'; inp.placeholder = `Word ${i + 1}`; inp.className = 'form-input'; inp.dataset.wordIdx = i;
+            if (i >= 12) inp.style.display = 'none'; // hide 13-24 by default
+            mnGrid.appendChild(inp);
+        }
+        // Handle paste of full mnemonic phrase into any word input
+        mnGrid.addEventListener('paste', (e) => {
+            const text = (e.clipboardData || window.clipboardData).getData('text').trim();
+            const words = text.split(/\s+/);
+            if (words.length >= 2) {
+                e.preventDefault();
+                const inputs = mnGrid.querySelectorAll('input');
+                // Show all 24 fields if >12 words
+                if (words.length > 12) inputs.forEach(inp => inp.style.display = '');
+                words.forEach((w, i) => { if (inputs[i]) inputs[i].value = w; });
+            }
+        });
+    }
+
+    // Import tab — connect from private key or mnemonic
     const wmConnectBtn = document.getElementById('wmConnectBtn');
     if (wmConnectBtn) wmConnectBtn.addEventListener('click', async () => {
+        const activeImport = document.querySelector('.wm-import-type.active');
+        const importType = activeImport?.dataset?.import || 'key';
+
+        if (importType === 'key') {
+            const ki = document.getElementById('wmPrivateKey'), key = ki?.value?.trim();
+            if (!key) { showNotification('Enter private key (hex or base58)', 'warning'); return; }
+            try {
+                await wallet.fromSecretKey(key);
+                savedWallets.push({ address: wallet.address, short: wallet.shortAddr, added: Date.now() });
+                localStorage.setItem('dexWallets', JSON.stringify(savedWallets));
+                connectWalletTo(wallet.address, wallet.shortAddr);
+                closeWalletModalFn();
+                if (ki) ki.value = '';
+                showNotification('Wallet connected: ' + wallet.shortAddr, 'success');
+            } catch (e) { showNotification(`Import failed: ${e.message}`, 'error'); }
+        } else {
+            // Mnemonic import
+            const inputs = document.querySelectorAll('#mnemonicGrid input');
+            const words = Array.from(inputs).map(i => i.value.trim()).filter(Boolean);
+            if (words.length < 12) { showNotification('Enter at least 12 mnemonic words', 'warning'); return; }
+            const mnemonic = words.join(' ');
+            try {
+                // Try MoltChain SDK mnemonic import
+                if (window.MoltChain && window.MoltChain.Wallet && window.MoltChain.Wallet.fromMnemonic) {
+                    const w = MoltChain.Wallet.fromMnemonic(mnemonic);
+                    wallet.address = w.address || w.publicKey;
+                    wallet.shortAddr = wallet.address.slice(0, 8) + '...' + wallet.address.slice(-6);
+                    wallet.keypair = w.keypair || { connected: true, imported: true };
+                } else {
+                    // Fallback: try RPC importWallet with mnemonic
+                    const result = await api.rpc('importWallet', [mnemonic]);
+                    if (result && (result.address || result.pubkey)) {
+                        wallet.address = result.address || result.pubkey;
+                        wallet.shortAddr = wallet.address.slice(0, 8) + '...' + wallet.address.slice(-6);
+                        wallet.keypair = { connected: true, imported: true };
+                    } else {
+                        throw new Error('Mnemonic import not supported by this node');
+                    }
+                }
+                savedWallets.push({ address: wallet.address, short: wallet.shortAddr, added: Date.now() });
+                localStorage.setItem('dexWallets', JSON.stringify(savedWallets));
+                connectWalletTo(wallet.address, wallet.shortAddr);
+                closeWalletModalFn();
+                inputs.forEach(i => i.value = '');
+                showNotification('Wallet imported: ' + wallet.shortAddr, 'success');
+            } catch (e) { showNotification(`Mnemonic import failed: ${e.message}`, 'error'); }
+        }
+    });
+
+    // Extension tab — connect via wallet extension
+    const wmExtensionBtn = document.getElementById('wmExtensionBtn');
+    if (wmExtensionBtn) wmExtensionBtn.addEventListener('click', async () => {
         try {
             await wallet.connect();
             savedWallets.push({ address: wallet.address, short: wallet.shortAddr, added: Date.now() });
@@ -2003,14 +2148,23 @@ document.addEventListener('DOMContentLoaded', () => {
             connectWalletTo(wallet.address, wallet.shortAddr);
             closeWalletModalFn();
             showNotification('Wallet connected: ' + wallet.shortAddr, 'success');
-        } catch (e) { showNotification(`Connection failed: ${e.message}`, 'error'); }
+        } catch (e) { showNotification(`Extension connection failed: ${e.message}`, 'error'); }
     });
 
-    // AUDIT-FIX I4-01: wmCreateBtn removed — key generation in browser is a security risk.
-    // Users should create wallets in the dedicated wallet app/extension.
+    // Create tab — generate a new Ed25519 keypair
     const wmCreateBtn = document.getElementById('wmCreateBtn');
-    if (wmCreateBtn) wmCreateBtn.addEventListener('click', () => {
-        showNotification('Create wallets in the MoltChain Wallet app — the DEX does not generate keys for security reasons.', 'info');
+    if (wmCreateBtn) wmCreateBtn.addEventListener('click', async () => {
+        try {
+            await wallet.generate();
+            const ae = document.getElementById('wmNewAddress'), ke = document.getElementById('wmNewKey'), cd = document.getElementById('wmCreatedWallet');
+            if (ae) ae.textContent = wallet.address;
+            if (ke) ke.textContent = wallet.keypair && wallet.keypair.secretKey ? bytesToHex(wallet.keypair.secretKey) : '(key held by extension)';
+            if (cd) cd.classList.remove('hidden');
+            savedWallets.push({ address: wallet.address, short: wallet.shortAddr, added: Date.now() });
+            localStorage.setItem('dexWallets', JSON.stringify(savedWallets));
+            connectWalletTo(wallet.address, wallet.shortAddr);
+            showNotification('New wallet created: ' + wallet.shortAddr, 'success');
+        } catch (e) { showNotification(`Wallet creation failed: ${e.message}`, 'error'); }
     });
 
     document.querySelectorAll('.wm-copy-btn').forEach(btn => btn.addEventListener('click', () => { const el = document.getElementById(btn.dataset.copy); if (el) navigator.clipboard.writeText(el.textContent).then(() => showNotification('Copied!', 'success')); }));
