@@ -6288,6 +6288,14 @@ async fn run_validator() {
             );
         }
 
+        // Persist slot_duration_ms from genesis config so RPC can serve it
+        let slot_ms = genesis_config.consensus.slot_duration_ms.max(1);
+        if let Err(e) = state.set_slot_duration_ms(slot_ms) {
+            warn!("⚠️  Failed to store slot_duration_ms: {}", e);
+        } else {
+            info!("  ✓ slot_duration_ms persisted: {}ms", slot_ms);
+        }
+
         // Create genesis treasury account with full supply
         let total_supply_molt = 1_000_000_000u64;
         let mut genesis_account = Account::new(total_supply_molt, genesis_pubkey);

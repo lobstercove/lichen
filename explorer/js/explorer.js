@@ -472,7 +472,6 @@ window.navigateExplorerSearch = navigateExplorerSearch;
 async function updateDashboardStats() {
     // Only run on dashboard page (index.html)
     if (!document.getElementById('latestBlock')) return;
-    const chainStatusEl = document.getElementById('chainStatus');
     const chainStatusTopEl = document.getElementById('chainStatusTop');
     
     try {
@@ -485,10 +484,6 @@ async function updateDashboardStats() {
             }
             
             // Chain is online if we got a response
-            if (chainStatusEl) {
-                chainStatusEl.className = 'stat-box-value status-online';
-                chainStatusEl.innerHTML = '<span class="status-dot"></span> Online';
-            }
             if (chainStatusTopEl) {
                 chainStatusTopEl.textContent = 'Online';
             }
@@ -525,6 +520,15 @@ async function updateDashboardStats() {
                 if (activeAccountsEl) activeAccountsEl.textContent = formatNumber(totalAll);
                 const breakdownEl = document.getElementById('accountBreakdown');
                 if (breakdownEl) breakdownEl.textContent = `${formatNumber(metrics.active_accounts || 0)} funded · ${formatNumber(totalContracts)} contracts`;
+            }
+            // Wire burn percentage and slot duration from API (no hardcoding)
+            if (metrics.fee_burn_percent !== undefined) {
+                const burnEl = document.getElementById('burnPctLabel');
+                if (burnEl) burnEl.textContent = metrics.fee_burn_percent;
+            }
+            if (metrics.slot_duration_ms !== undefined) {
+                const slotEl = document.getElementById('slotTimeLabel');
+                if (slotEl) slotEl.textContent = metrics.slot_duration_ms;
             }
         }
         
@@ -574,10 +578,6 @@ async function updateDashboardStats() {
         console.error('Dashboard update failed:', error);
         
         // Chain is offline — reset all metrics so stale data doesn't persist
-        if (chainStatusEl) {
-            chainStatusEl.className = 'stat-box-value status-offline';
-            chainStatusEl.innerHTML = '<span class="status-dot"></span> Offline';
-        }
         if (chainStatusTopEl) {
             chainStatusTopEl.textContent = 'Offline';
         }
@@ -587,7 +587,8 @@ async function updateDashboardStats() {
             validatorCount: '0', activeValidators: '0', totalStake: '—',
             shieldedBalance: '0 MOLT', shieldedBalanceShells: '0 shells', commitmentCount: '0',
             nullifierCount: '0', shieldedTxCount: '0',
-            shieldedTxBreakdown: 'Shield: 0 | Unshield: 0 | Transfer: 0', merkleRoot: '0x0'
+            shieldedTxBreakdown: 'Shield: 0 | Unshield: 0 | Transfer: 0', merkleRoot: '0x0',
+            burnPctLabel: '—', slotTimeLabel: '—'
         };
         for (const [id, val] of Object.entries(resetMap)) {
             const el = document.getElementById(id);
