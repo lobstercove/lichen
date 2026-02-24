@@ -3020,10 +3020,13 @@ fn genesis_auto_deploy(state: &StateStore, deployer_pubkey: &Pubkey, label: &str
                 meta["is_native"] = serde_json::json!(true);
                 // Cosmetic profile metadata — shown in explorer contract page
                 meta["description"] = serde_json::json!(
-                    "The native utility token of MoltChain — used for gas fees, staking, governance, and DEX trading. Deflationary via 50% fee burn."
+                    "The Native Home of Agents. Portable identity + rep tiers \u{2022} Agents run validators & earn \u{2022} DeFi \u{2022} DAO \u{2022} DApps \u{2022} DEX \u{2022} Oracles \u{2022} Storage \u{2022} Vault \u{2022} Pools \u{2022} Bounty"
                 );
-                meta["website"] = serde_json::json!("https://moltchain.io");
-                meta["logo_url"] = serde_json::json!("/assets/molt-logo.png");
+                meta["website"] = serde_json::json!("https://moltchain.network");
+                meta["logo_url"] = serde_json::json!("https://moltchain.network/assets/MoltChain_Logo_256.png");
+                meta["twitter"] = serde_json::json!("https://x.com/MoltChainHQ");
+                meta["telegram"] = serde_json::json!("https://t.me/moltchainhq");
+                meta["discord"] = serde_json::json!("https://discord.gg/gkQmsHXRXp");
             }
             "wrapped" => {
                 // Wrapped tokens start at 0 supply, 9 decimals
