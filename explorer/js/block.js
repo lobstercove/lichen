@@ -168,7 +168,7 @@ async function displayBlock(block) {
                         ${toDisplay}
                     </a>
                 </td>
-                <td><span class="badge badge-info">${safeType}</span></td>
+                <td><span class="pill pill-${safeType.toLowerCase()}">${safeType}</span></td>
                 <td>
                     <span class="badge ${tx.status === 'Success' ? 'badge-success' : 'badge-error'}">
                         ${safeStatus}
