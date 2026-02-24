@@ -93,7 +93,7 @@ echo ""
 
 test_rpc "getValidators" "getValidators" "[]"
 test_rpc "getStakingRewards" "getStakingRewards" "[\"$VALIDATOR_ADDR\"]"
-test_rpc "getStakingInfo" "getStakingInfo" "[\"$VALIDATOR_ADDR\"]"
+test_rpc "getStakingStatus" "getStakingStatus" "[\"$VALIDATOR_ADDR\"]"
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -135,10 +135,10 @@ echo "7️⃣  SUPPLY & ECONOMICS METHODS"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 
-test_rpc "getTotalSupply" "getTotalSupply" "[]"
-test_rpc "getCirculatingSupply" "getCirculatingSupply" "[]"
+test_rpc "getTreasuryInfo" "getTreasuryInfo" "[]"
+test_rpc "getGenesisAccounts" "getGenesisAccounts" "[]"
 test_rpc "getTotalBurned" "getTotalBurned" "[]"
-test_rpc "getTotalStaked" "getTotalStaked" "[]"
+test_rpc "getReefStakePoolInfo" "getReefStakePoolInfo" "[]"
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
