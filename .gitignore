@@ -139,7 +139,6 @@ moltchain/
 faucet-keypair.json
 
 # ── Local-only frontend workspace (keep on disk, ignore in git) ──
-developers/
 dex/
 explorer/
 marketplace/

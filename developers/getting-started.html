@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Getting Started - MoltChain Developer Portal</title>
+    <link rel="stylesheet" href="../shared-base-styles.css">
+    <link rel="stylesheet" href="../shared-theme.css">
+    <link rel="stylesheet" href="css/developers.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+</head>
+<body>
+    <nav class="nav">
+        <div class="nav-container">
+            <div class="nav-logo">
+                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="MoltChain Dev">
+                <span class="logo-text">MoltChain Dev</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="index.html">Hub</a></li>
+                <li><a href="getting-started.html" class="active">Get Started</a></li>
+                <li><a href="rpc-reference.html">API</a></li>
+                <li><a href="sdk-js.html">SDK</a></li>
+                <li><a href="contracts.html">Contracts</a></li>
+                <li><a href="cli-reference.html">CLI</a></li>
+                <li><a href="moltyid.html">MoltyID</a></li>
+                <li><a href="zk-privacy.html">Privacy</a></li>
+            </ul>
+            <div class="nav-actions">
+                <div class="search-container">
+                    <input type="text" id="searchInput" class="search-input" placeholder="Search docs... (⌘K)">
+                    <i class="fas fa-search search-icon"></i>
+                </div>
+                <select id="devNetworkSelect" class="network-select">
+                    <option value="mainnet">Mainnet</option>
+                    <option value="testnet">Testnet</option>
+                    <option value="local-testnet" selected>Local Testnet</option>
+                    <option value="local-mainnet">Local Mainnet</option>
+                </select>
+            </div>
+            <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu">
+                <span></span><span></span><span></span>
+            </button>
+        </div>
+    </nav>
+
+    <!-- SEARCH OVERLAY -->
+    <div class="search-overlay" id="searchOverlay">
+        <div class="search-modal">
+            <input type="text" class="search-modal-input" id="searchModalInput" placeholder="Search documentation...">
+            <div class="search-results" id="searchResults"></div>
+        </div>
+    </div>
+
+    <!-- SIDEBAR TOGGLE (mobile) -->
+    <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar"><i class="fas fa-bars"></i></button>
+    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+
+    <div class="docs-layout">
+        <aside class="docs-sidebar">
+            <div class="sidebar-section">
+                <div class="sidebar-heading">Getting Started</div>
+                <a href="#prerequisites" class="sidebar-link">Prerequisites</a>
+                <a href="#install-cli" class="sidebar-link">Install CLI</a>
+                <a href="#create-wallet" class="sidebar-link">Create Wallet</a>
+                <a href="#get-tokens" class="sidebar-link">Get Testnet Tokens</a>
+                <a href="#first-transfer" class="sidebar-link">First Transfer</a>
+                <a href="#deploy-contract" class="sidebar-link">Deploy a Contract</a>
+                <a href="#next-steps" class="sidebar-link">Next Steps</a>
+            </div>
+            <div class="sidebar-divider"></div>
+            <div class="sidebar-section">
+                <div class="sidebar-heading">More Guides</div>
+                <a href="architecture.html" class="sidebar-link">Architecture</a>
+                <a href="validator.html" class="sidebar-link">Validator Setup</a>
+                <a href="moltyid.html" class="sidebar-link">MoltyID</a>
+            </div>
+        </aside>
+
+        <main class="docs-main">
+            <!-- BREADCRUMBS -->
+            <div class="breadcrumbs">
+                <a href="index.html">Dev Hub</a>
+                <span class="separator">›</span>
+                <span class="current">Getting Started</span>
+            </div>
+
+            <h1>Getting Started with MoltChain</h1>
+            <p>This guide walks you through everything needed to go from zero to your first on-chain transaction. You'll install the toolchain, create a wallet, fund it on testnet, send a transfer, and deploy a minimal smart contract.</p>
+
+            <!-- ========== 1. PREREQUISITES ========== -->
+            <h2 id="prerequisites">Prerequisites</h2>
+
+            <div class="step">
+                <div class="step-number">1</div>
+                <div class="step-content">
+                    <div class="step-title">Rust Toolchain</div>
+                    <div class="step-desc">MoltChain contracts compile to WASM via Rust. Install the latest stable Rust toolchain.</div>
+                </div>
+            </div>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+rustup default stable
+rustup update</code></pre>
+            </div>
+
+            <div class="step">
+                <div class="step-number">2</div>
+                <div class="step-content">
+                    <div class="step-title">WASM Target</div>
+                    <div class="step-desc">Add the <code>wasm32-unknown-unknown</code> compilation target for smart contract builds.</div>
+                </div>
+            </div>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>rustup target add wasm32-unknown-unknown</code></pre>
+            </div>
+
+            <div class="step">
+                <div class="step-number">3</div>
+                <div class="step-content">
+                    <div class="step-title">Node.js (Optional)</div>
+                    <div class="step-desc">Required only if you plan to use the JavaScript SDK. Node.js 18+ recommended.</div>
+                </div>
+            </div>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code># Using nvm (recommended)
+nvm install 20
+nvm use 20
+
+# Verify
+node --version  # v20.x.x
+npm --version   # 10.x.x</code></pre>
+            </div>
+
+            <div class="callout callout-tip">
+                <div class="callout-title"><i class="fas fa-lightbulb"></i> Tip</div>
+                You can skip Node.js if you only plan to write Rust contracts and use the CLI. The JavaScript SDK is optional.
+            </div>
+
+            <!-- ========== 2. INSTALL CLI ========== -->
+            <h2 id="install-cli">Install the CLI</h2>
+
+            <p>The <code>molt</code> CLI is your primary interface for interacting with the MoltChain network. Install it from crates.io or build from source.</p>
+
+            <h3>Option A: Install from crates.io</h3>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>cargo install moltchain-cli</code></pre>
+            </div>
+
+            <h3>Option B: Build from source</h3>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>git clone https://github.com/moltchain/moltchain.git
+cd moltchain
+cargo build --release
+# Binary is at ./target/release/molt
+cp target/release/molt ~/.cargo/bin/</code></pre>
+            </div>
+
+            <p>Verify the installation:</p>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>$ molt --version
+molt-cli 0.9.2 (moltchain)</code></pre>
+            </div>
+
+            <h3>Make <code>molt</code> discoverable in new shells</h3>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>echo 'export PATH="$HOME/.cargo/bin:$HOME/.moltchain/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+command -v molt</code></pre>
+            </div>
+
+            <p>If <code>command -v molt</code> is empty, run the binary directly until your shell profile is fixed:</p>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>./target/release/molt --version</code></pre>
+            </div>
+
+            <!-- ========== 3. CREATE WALLET ========== -->
+            <h2 id="create-wallet">Create a Wallet</h2>
+
+            <p>Generate a new keypair. This creates an Ed25519 private key and derives your MoltChain address.</p>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>$ molt wallet new
+
+<i class="fa-solid fa-shrimp"></i> Generating new MoltChain keypair...
+
+  Address:  Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab
+  Mnemonic: lobster dawn harbor quiet oven maple drift ocean signal bright collect badge
+
+  Keypair saved to: ~/.moltchain/wallet.json
+
+<i class="fa-solid fa-check"></i> Done! Fund your wallet with testnet tokens to get started.</code></pre>
+            </div>
+
+            <div class="callout callout-warning">
+                <div class="callout-title"><i class="fas fa-exclamation-triangle"></i> Warning — Secure Your Mnemonic</div>
+                Your mnemonic phrase is the <strong>only way</strong> to recover your wallet. Write it down on paper and store it securely offline. Never share it, commit it to version control, or paste it into websites. Anyone with your mnemonic has full control of your funds.
+            </div>
+
+            <p>You can also import an existing mnemonic:</p>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>$ molt wallet import --mnemonic "lobster dawn harbor quiet oven maple drift ocean signal bright collect badge"</code></pre>
+            </div>
+
+            <!-- ========== 4. GET TESTNET TOKENS ========== -->
+            <h2 id="get-tokens">Get Testnet Tokens</h2>
+
+            <p>You need MOLT tokens to pay for transaction fees and contract deployments. On testnet, you can request free tokens from the faucet.</p>
+
+            <h3>Option A: Web Faucet</h3>
+            <p>Visit the <a href="../faucet/index.html">MoltChain Faucet</a> and paste your address. You'll receive 10 MOLT on testnet within seconds.</p>
+
+            <h3>Option B: CLI Faucet</h3>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>$ molt airdrop 10 --url https://testnet-rpc.moltchain.io
+
+<i class="fa-solid fa-shrimp"></i> Requesting 10 MOLT airdrop...
+
+  Transaction: 4xK9...mNpQ
+  New balance: 10.000000000 MOLT
+
+<i class="fa-solid fa-check"></i> Airdrop successful!</code></pre>
+            </div>
+
+            <div class="callout callout-info">
+                <div class="callout-title"><i class="fas fa-info-circle"></i> Note</div>
+                Testnet tokens have no monetary value. The faucet rate-limits to 10 MOLT per address per hour. If you need more for contract testing, use a local validator with <code>molt-test-validator</code>.
+            </div>
+
+            <!-- ========== 5. FIRST TRANSFER ========== -->
+            <h2 id="first-transfer">First Transfer</h2>
+
+            <p>Send MOLT from your wallet to another address. This is the simplest transaction on MoltChain.</p>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>$ molt transfer 1.5 Mo1tRecipientAddress123456789abcdefghijk \
+    --url https://testnet-rpc.moltchain.io
+
+<i class="fa-solid fa-shrimp"></i> Sending 1.5 MOLT...
+
+  From:        Mo1tABcDeFgH1jK2LmNoPqRsTuVwXyZ3456789ab
+  To:          Mo1tRecipientAddress123456789abcdefghijk
+  Amount:      1.500000000 MOLT
+  Fee:         0.000005000 MOLT
+  Transaction: 7zQ3...bRtW
+  Status:      Finalized (slot 482,917)
+
+<i class="fa-solid fa-check"></i> Transfer complete!</code></pre>
+            </div>
+
+            <p>Verify the transaction in the <a href="../explorer/index.html">Block Explorer</a> by searching for the transaction hash.</p>
+
+            <!-- ========== 6. DEPLOY A CONTRACT ========== -->
+            <h2 id="deploy-contract">Deploy a Contract</h2>
+
+            <p>Let's deploy a minimal "Hello World" smart contract. MoltChain contracts are written in Rust and compiled to WASM.</p>
+
+            <div class="step">
+                <div class="step-number">1</div>
+                <div class="step-content">
+                    <div class="step-title">Create the project</div>
+                    <div class="step-desc">Scaffold a new contract project using the CLI.</div>
+                </div>
+            </div>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>$ molt init hello-world --template contract
+$ cd hello-world</code></pre>
+            </div>
+
+            <div class="step">
+                <div class="step-number">2</div>
+                <div class="step-content">
+                    <div class="step-title">Write the contract</div>
+                    <div class="step-desc">Open <code>src/lib.rs</code> and add the contract logic.</div>
+                </div>
+            </div>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Rust</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>use moltchain_sdk::prelude::*;
+
+#[moltchain_contract]
+mod hello_world {
+    use super::*;
+
+    /// Store a greeting message on-chain.
+    pub fn set_greeting(ctx: Context, message: String) -> Result&lt;()&gt; {
+        let greeting_account = &amp;mut ctx.accounts.greeting;
+        greeting_account.message = message.clone();
+        greeting_account.author = ctx.caller();
+        emit_event("GreetingSet", &amp;message);
+        Ok(())
+    }
+
+    /// Read the current greeting.
+    pub fn get_greeting(ctx: Context) -> Result&lt;String&gt; {
+        Ok(ctx.accounts.greeting.message.clone())
+    }
+}
+
+#[account]
+pub struct GreetingAccount {
+    pub message: String,
+    pub author: Pubkey,
+}</code></pre>
+            </div>
+
+            <div class="step">
+                <div class="step-number">3</div>
+                <div class="step-content">
+                    <div class="step-title">Build to WASM</div>
+                    <div class="step-desc">Compile the contract to a WASM binary.</div>
+                </div>
+            </div>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>$ cargo build --target wasm32-unknown-unknown --release
+
+   Compiling hello-world v0.1.0
+    Finished release [optimized] target(s) in 8.42s</code></pre>
+            </div>
+
+            <div class="step">
+                <div class="step-number">4</div>
+                <div class="step-content">
+                    <div class="step-title">Deploy to testnet</div>
+                    <div class="step-desc">Upload the WASM binary and create the program account on-chain.</div>
+                </div>
+            </div>
+
+            <div class="code-block">
+                <div class="code-block-header">
+                    <span class="code-lang">Shell</span>
+                    <button class="code-copy-btn">Copy</button>
+                </div>
+                <pre><code>$ molt deploy target/wasm32-unknown-unknown/release/hello_world.wasm \
+    --url https://testnet-rpc.moltchain.io
+
+<i class="fa-solid fa-shrimp"></i> Deploying contract...
+
+  Program ID:  Mo1tProg1D...xYz789
+  Size:        14,832 bytes
+  Deploy tx:   9kR7...sWmN
+  Fee:         0.014832000 MOLT
+  Status:      Finalized
+
+<i class="fa-solid fa-check"></i> Contract deployed successfully!
+
+  Interact via:
+    molt call Mo1tProg1D...xYz789 set_greeting '["Hello, MoltChain!"]'</code></pre>
+            </div>
+
+            <div class="callout callout-tip">
+                <div class="callout-title"><i class="fas fa-lightbulb"></i> Tip</div>
+                Deployment cost is a flat fee of 25 MOLT (CONTRACT_DEPLOY_FEE). Optimize your binary with <code>wasm-opt</code> to reduce size: <code>wasm-opt -Oz -o optimized.wasm hello_world.wasm</code>
+            </div>
+
+            <!-- ========== 7. NEXT STEPS ========== -->
+            <h2 id="next-steps">Next Steps</h2>
+
+            <p>You've created a wallet, funded it, sent a transfer, and deployed a contract. Here's where to go next:</p>
+
+            <div class="hub-grid two-col">
+                <a href="contracts.html" class="hub-card">
+                    <div class="hub-card-icon purple"><i class="fas fa-file-code"></i></div>
+                    <div class="hub-card-title">Smart Contracts Deep Dive</div>
+                    <div class="hub-card-desc">Learn advanced patterns: storage, events, cross-contract calls, testing, and gas optimization.</div>
+                </a>
+
+                <a href="sdk-js.html" class="hub-card">
+                    <div class="hub-card-icon primary"><i class="fab fa-js"></i></div>
+                    <div class="hub-card-title">JavaScript SDK</div>
+                    <div class="hub-card-desc">Build front-ends and backend services that interact with your deployed contracts.</div>
+                </a>
+
+                <a href="moltyid.html" class="hub-card">
+                    <div class="hub-card-icon primary"><i class="fas fa-fingerprint"></i></div>
+                    <div class="hub-card-title">MoltyID Identity</div>
+                    <div class="hub-card-desc">Set up on-chain reputation to earn fee discounts and priority transaction processing.</div>
+                </a>
+
+                <a href="architecture.html" class="hub-card">
+                    <div class="hub-card-icon blue"><i class="fas fa-sitemap"></i></div>
+                    <div class="hub-card-title">Architecture Overview</div>
+                    <div class="hub-card-desc">Understand how MoltChain works under the hood — consensus, state model, and WASM execution.</div>
+                </a>
+            </div>
+
+        </main>
+
+        <div class="toc"></div>
+    </div>
+
+    <script src="js/developers.js"></script>
+    <script>
+    (function() {
+        // Wire up nav search input to open ⌘K overlay
+        const navInput = document.getElementById('searchInput');
+        if (navInput) {
+            navInput.addEventListener('focus', () => {
+                if (typeof window.openDevSearch === 'function') window.openDevSearch();
+                navInput.blur();
+            });
+        }
+    })();
+    </script>
+</body>
+</html>
