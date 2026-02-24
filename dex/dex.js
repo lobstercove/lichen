@@ -816,6 +816,69 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // ─── Load contract protocol params and populate dynamic UI text ──────
+    async function loadProtocolParams() {
+        const el = (id, v) => { const e = document.getElementById(id); if (e) e.textContent = v; };
+        const pill = (id, v) => { const e = document.getElementById(id); if (e) e.innerHTML = e.innerHTML.replace(/>([^<]+)$/, '> ' + v); };
+        try {
+            const { data } = await api.get('/stats/governance');
+            if (data) {
+                const votePeriod = data.voting_period_hours ?? 48;
+                const timelock = data.execution_timelock_hours ?? 1;
+                const threshold = data.approval_threshold ?? 66;
+                const minRep = data.min_reputation ?? 500;
+                const minLiq = data.min_listing_liquidity ?? 100000;
+                const minHolders = data.min_token_holders ?? 10;
+                const maxPools = data.max_pools ?? 100;
+                const feeTreasury = data.fee_split_treasury ?? 40;
+                const feeLps = data.fee_split_lps ?? 30;
+                const feeStakers = data.fee_split_stakers ?? 30;
+                const predFee = data.prediction_fee ?? 2;
+
+                el('govReqReputation', `≥ ${formatNumber(minRep)}`);
+                el('govReqMinLiq', `${formatNumber(minLiq)} MOLT`);
+                el('govReqMinHolders', String(minHolders));
+                el('govReqVotePeriod', `${votePeriod} hours`);
+                el('govReqTimelock', `${timelock} hour${timelock !== 1 ? 's' : ''}`);
+                el('pmReqReputation', `≥ ${formatNumber(minRep)}`);
+                el('pmReqDisputePeriod', `${votePeriod} hours`);
+                el('predictFeeLabel', `Fee (${predFee}%)`);
+
+                const feeSplitPill = document.getElementById('poolFeeSplitPill');
+                if (feeSplitPill) feeSplitPill.innerHTML = `<i class="fas fa-chart-pie"></i> Fee Split: ${feeTreasury}% Treasury · ${feeLps}% LPs · ${feeStakers}% Stakers`;
+                const maxPoolsPill = document.getElementById('poolMaxPoolsPill');
+                if (maxPoolsPill) maxPoolsPill.innerHTML = `<i class="fas fa-layer-group"></i> Max ${formatNumber(maxPools)} Pools`;
+            }
+        } catch { /* governance stats unavailable — keep defaults */ }
+
+        try {
+            const { data } = await api.get('/launchpad/config');
+            if (data) {
+                const creationFee = data.creation_fee ?? 10;
+                const gradThreshold = data.graduation_threshold ?? 100000;
+                const platformFee = data.platform_fee_pct ?? 1;
+                const feePill = document.getElementById('launchFeePill');
+                if (feePill) feePill.innerHTML = `<i class="fas fa-coins"></i> ${creationFee} MOLT to launch`;
+                const gradPill = document.getElementById('launchGradPill');
+                if (gradPill) gradPill.innerHTML = `<i class="fas fa-trophy"></i> Graduates at ${formatNumber(gradThreshold)} MOLT mcap`;
+            }
+        } catch { /* launchpad config unavailable — keep defaults */ }
+
+        try {
+            const { data } = await api.get('/prediction-market/config');
+            if (data) {
+                const minRep = data.min_reputation ?? 500;
+                const minLiq = data.min_collateral ?? 100;
+                const feePct = data.trading_fee_bps ? (data.trading_fee_bps / 100) : 2;
+                const repPill = document.getElementById('pmRepPill');
+                if (repPill) repPill.innerHTML = `<i class="fas fa-id-badge"></i> ${formatNumber(minRep)}+ MoltyID rep to create`;
+                el('pmReqMinLiq', `${formatNumber(minLiq)} mUSD`);
+                el('pmReqReputation', `≥ ${formatNumber(minRep)}`);
+                el('predictFeeLabel', `Fee (${feePct}%)`);
+            }
+        } catch { /* prediction config unavailable — keep defaults */ }
+    }
+
     // ═══════════════════════════════════════════════════════════════════════
     // Data Loading
     // ═══════════════════════════════════════════════════════════════════════
@@ -5237,6 +5300,7 @@ document.addEventListener('DOMContentLoaded', () => {
     (async function init() {
         // AUDIT-FIX F10.10: Load contract addresses before any operations
         await loadContractAddresses();
+        loadProtocolParams(); // async, non-blocking — populates dynamic UI text
         await loadPairs();
         loadMarginEnabledPairs(); // async, non-blocking
         renderPairList(); renderBalances(); renderOpenOrders(); updateSubmitBtn();
