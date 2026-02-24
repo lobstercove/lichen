@@ -141,3 +141,33 @@ pub fn load_from_env_or_file(env_var: &str, fallback_path: Option<&Path>) -> Res
         env_var
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_keypair_rotation_changes_loaded_pubkey() {
+        let temp_dir = tempfile::tempdir().expect("create temp dir");
+        let keypair_path = temp_dir.path().join("validator-rotation.json");
+        let keypair_path_string = keypair_path.to_string_lossy().to_string();
+
+        let original_keypair = Keypair::new();
+        save_keypair(&original_keypair, &keypair_path).expect("save original keypair");
+
+        let loaded_original =
+            load_or_generate_keypair(Some(&keypair_path_string), 0).expect("load original");
+        assert_eq!(loaded_original.pubkey(), original_keypair.pubkey());
+
+        let mut rotated_keypair = Keypair::new();
+        while rotated_keypair.pubkey() == original_keypair.pubkey() {
+            rotated_keypair = Keypair::new();
+        }
+        save_keypair(&rotated_keypair, &keypair_path).expect("save rotated keypair");
+
+        let loaded_rotated =
+            load_or_generate_keypair(Some(&keypair_path_string), 0).expect("load rotated");
+        assert_eq!(loaded_rotated.pubkey(), rotated_keypair.pubkey());
+        assert_ne!(loaded_rotated.pubkey(), loaded_original.pubkey());
+    }
+}

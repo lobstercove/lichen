@@ -7901,6 +7901,22 @@ mod tests {
         assert_eq!(address.len(), 42);
     }
 
+    #[test]
+    fn test_master_seed_rotation_changes_derived_addresses() {
+        let derivation_path = "m/44'/501'/0'/0/0";
+        let old_seed = "rotation_seed_old";
+        let new_seed = "rotation_seed_new";
+
+        let sol_old = derive_solana_address(derivation_path, old_seed).expect("derive old sol");
+        let sol_new = derive_solana_address(derivation_path, new_seed).expect("derive new sol");
+        assert_ne!(sol_old, sol_new, "solana derived address must rotate with seed");
+
+        let evm_path = "m/44'/60'/0'/0/0";
+        let evm_old = derive_evm_address(evm_path, old_seed).expect("derive old evm");
+        let evm_new = derive_evm_address(evm_path, new_seed).expect("derive new evm");
+        assert_ne!(evm_old, evm_new, "evm derived address must rotate with seed");
+    }
+
     /// F2-01: BIP-44 coin type mapping test
     #[test]
     fn test_bip44_coin_type() {
