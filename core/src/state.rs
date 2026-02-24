@@ -4572,6 +4572,29 @@ impl StateStore {
         })
     }
 
+    /// Store slot_duration_ms in CF_STATS at genesis boot.
+    pub fn set_slot_duration_ms(&self, ms: u64) -> Result<(), String> {
+        let cf = self.db.cf_handle(CF_STATS)
+            .ok_or_else(|| "Stats CF not found".to_string())?;
+        self.db.put_cf(&cf, b"slot_duration_ms", ms.to_le_bytes())
+            .map_err(|e| format!("Failed to store slot_duration_ms: {}", e))
+    }
+
+    /// Read slot_duration_ms from CF_STATS (defaults to 400 if not set).
+    pub fn get_slot_duration_ms(&self) -> u64 {
+        let cf = match self.db.cf_handle(CF_STATS) {
+            Some(cf) => cf,
+            None => return 400,
+        };
+        match self.db.get_cf(&cf, b"slot_duration_ms") {
+            Ok(Some(data)) if data.len() == 8 => {
+                let bytes: [u8; 8] = data.as_slice().try_into().unwrap_or([0; 8]);
+                u64::from_le_bytes(bytes)
+            }
+            _ => 400,
+        }
+    }
+
     /// AUDIT-FIX M7: Persist slashing tracker to RocksDB for restart-proof evidence.
     pub fn put_slashing_tracker(
         &self,

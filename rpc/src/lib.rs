@@ -2084,6 +2084,11 @@ async fn handle_get_fee_config(state: &RpcState) -> Result<serde_json::Value, Rp
         "contract_upgrade_fee_shells": config.contract_upgrade_fee,
         "nft_mint_fee_shells": config.nft_mint_fee,
         "nft_collection_fee_shells": config.nft_collection_fee,
+        "fee_burn_percent": config.fee_burn_percent,
+        "fee_producer_percent": config.fee_producer_percent,
+        "fee_voters_percent": config.fee_voters_percent,
+        "fee_treasury_percent": config.fee_treasury_percent,
+        "fee_community_percent": config.fee_community_percent,
     }))
 }
 
@@ -4153,6 +4158,11 @@ async fn compute_metrics(state: &RpcState) -> Result<serde_json::Value, RpcError
         serde_json::Value::Object(dw_map)
     };
 
+    // Fee config for burn percentage display
+    let fee_config = state.state.get_fee_config()
+        .unwrap_or_else(|_| moltchain_core::FeeConfig::default_from_constants());
+    let slot_duration_ms = state.state.get_slot_duration_ms();
+
     Ok(serde_json::json!({
         "tps": metrics.tps,
         "peak_tps": metrics.peak_tps,
@@ -4175,6 +4185,8 @@ async fn compute_metrics(state: &RpcState) -> Result<serde_json::Value, RpcError
         "total_contracts": count_executable_accounts(&state.state),
         "validator_count": validators.len(),
         "distribution_wallets": dist_wallets_json,
+        "slot_duration_ms": slot_duration_ms,
+        "fee_burn_percent": fee_config.fee_burn_percent,
     }))
 }
 
