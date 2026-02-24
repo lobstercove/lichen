@@ -177,6 +177,8 @@ MoltChain uses **Proof of Contribution** - you're rewarded for REAL WORK, not wa
 - WebSocket endpoint: `ws://localhost:8900`.
 - Core health methods used in automation: `health`, `getSlot`, `getValidators`, `getChainStatus`, `getNetworkInfo`.
 - Staking/economics methods used in audit gates: `getStakingStatus`, `getStakingRewards`, `getTreasuryInfo`, `getGenesisAccounts`, `getTotalBurned`, `getReefStakePoolInfo`.
+- Canonical WebSocket methods used in automation and app flows: `subscribeSlots`, `subscribeBlocks`, `subscribeTransactions`, `subscribeAccount`, `subscribeLogs`, `subscribeValidators`, `subscribeDex`, `subscribePrediction`.
+- Canonical developer-facing references: `developers/rpc-reference.html`, `developers/ws-reference.html`, and `docs/guides/RPC_API_REFERENCE.md`.
 
 ### Canonical Startup Sequence (Autonomous)
 

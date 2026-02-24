@@ -216,18 +216,12 @@ Micro-unit: **1 MOLT = 1,000,000,000 shells**
 
 ## Developer Portal
 
-The full developer portal lives in [`developers/`](developers/) and covers:
+Canonical developer-facing API docs:
 
-- **[Quick Start](developers/getting-started.html)** — Environment setup, first transaction
-- **[JSON-RPC API](developers/rpc-reference.html)** — All RPC methods
-- **[WebSocket API](developers/ws-reference.html)** — Real-time subscriptions
-- **[JavaScript SDK](developers/sdk-js.html)** — Node.js & browser client
-- **[Python SDK](developers/sdk-python.html)** — Pythonic client
-- **[Rust SDK](developers/sdk-rust.html)** — Native async client
-- **[Smart Contracts](developers/contracts.html)** — Write, test, deploy WASM programs
-- **[MoltyID](developers/moltyid.html)** — Identity & reputation
-- **[CLI Reference](developers/cli-reference.html)** — Full command docs
-- **[Validator Guide](developers/validator.html)** — Run & monitor nodes
+- **[JSON-RPC API](developers/rpc-reference.html)** — Canonical RPC method index
+- **[WebSocket API](developers/ws-reference.html)** — Canonical WS subscriptions index
+- **[Detailed RPC Guide](docs/guides/RPC_API_REFERENCE.md)** — Full request/response examples
+- **[Validator Skill Guide](skills/validator/SKILL.md)** — Runtime RPC/WS baseline for operators
 
 ---
 
