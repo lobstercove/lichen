@@ -12,7 +12,9 @@ const SHELLS_PER_MOLT = 1_000_000_000;
 const MS_PER_SLOT = 400;
 const SLOTS_PER_EPOCH = 432_000;
 const SLOTS_PER_YEAR = 78_840_000;
+const SLOTS_PER_DAY = 86_400_000 / MS_PER_SLOT; // 216000 at 400ms
 const BASE_FEE_SHELLS = 1_000_000; // 0.001 MOLT
+const BASE_FEE_MOLT = BASE_FEE_SHELLS / SHELLS_PER_MOLT; // 0.001
 
 // Fee distribution ratios (must sum to 1.0)
 const FEE_SPLIT = {
