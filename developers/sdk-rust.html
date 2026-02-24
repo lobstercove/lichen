@@ -1,0 +1,692 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rust SDK - MoltChain Developer Portal</title>
+    <link rel="stylesheet" href="../shared-base-styles.css">
+    <link rel="stylesheet" href="../shared-theme.css">
+    <link rel="stylesheet" href="css/developers.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+</head>
+<body>
+    <nav class="nav">
+        <div class="nav-container">
+            <div class="nav-logo">
+                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="MoltChain Dev">
+                <span class="logo-text">MoltChain Dev</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="index.html">Hub</a></li>
+                <li><a href="getting-started.html">Get Started</a></li>
+                <li><a href="rpc-reference.html">API</a></li>
+                <li><a href="sdk-js.html" class="active">SDK</a></li>
+                <li><a href="contracts.html">Contracts</a></li>
+                <li><a href="cli-reference.html">CLI</a></li>
+                <li><a href="moltyid.html">MoltyID</a></li>
+                <li><a href="zk-privacy.html">Privacy</a></li>
+            </ul>
+            <div class="nav-actions">
+                <div class="search-container">
+                    <input type="text" id="searchInput" class="search-input" placeholder="Search docs... (⌘K)">
+                    <i class="fas fa-search search-icon"></i>
+                </div>
+                <select id="devNetworkSelect" class="network-select">
+                    <option value="mainnet">Mainnet</option>
+                    <option value="testnet">Testnet</option>
+                    <option value="local-testnet" selected>Local Testnet</option>
+                    <option value="local-mainnet">Local Mainnet</option>
+                </select>
+            </div>
+            <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu"><span></span><span></span><span></span></button>
+        </div>
+    </nav>
+    <div class="search-overlay" id="searchOverlay">
+        <div class="search-modal">
+            <input type="text" class="search-modal-input" id="searchModalInput" placeholder="Search documentation...">
+            <div class="search-results" id="searchResults"></div>
+        </div>
+    </div>
+
+    <div class="docs-layout">
+        <aside class="docs-sidebar">
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Getting Started</h3>
+                <a href="#installation" class="sidebar-link active">Installation</a>
+                <a href="#quick-start" class="sidebar-link">Quick Start</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">SDK Languages</h3>
+                <a href="sdk-js.html" class="sidebar-link">JavaScript / TypeScript</a>
+                <a href="sdk-python.html" class="sidebar-link">Python</a>
+                <a href="sdk-rust.html" class="sidebar-link active">Rust</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Client</h3>
+                <a href="#client-constructor" class="sidebar-link">Constructor &amp; Builder</a>
+                <a href="#client-chain" class="sidebar-link">Chain Queries</a>
+                <a href="#client-account" class="sidebar-link">Account Methods</a>
+                <a href="#client-tx" class="sidebar-link">Transaction Methods</a>
+                <a href="#client-validator" class="sidebar-link">Validator &amp; Staking</a>
+                <a href="#client-contract" class="sidebar-link">Contract Methods</a>
+                <a href="#client-program" class="sidebar-link">Program Methods</a>
+                <a href="#client-nft" class="sidebar-link">NFT Methods</a>
+                <a href="#client-ws" class="sidebar-link">WebSocket Subscriptions</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Keypair</h3>
+                <a href="#keypair-new" class="sidebar-link">new()</a>
+                <a href="#keypair-from-seed" class="sidebar-link">from_seed()</a>
+                <a href="#keypair-sign" class="sidebar-link">sign()</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Transaction</h3>
+                <a href="#transaction-builder" class="sidebar-link">TransactionBuilder</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Types</h3>
+                <a href="#types-balance" class="sidebar-link">Balance</a>
+                <a href="#types-block" class="sidebar-link">Block</a>
+                <a href="#types-network" class="sidebar-link">NetworkInfo</a>
+            </div>
+            <div class="sidebar-section">
+                <h3 class="sidebar-heading">Patterns</h3>
+                <a href="#error-handling" class="sidebar-link">Error Handling</a>
+            </div>
+        </aside>
+
+        <main class="docs-main">
+            <div class="breadcrumbs">
+                <a href="index.html">Developers</a>
+                <span class="separator">›</span>
+                <a href="sdk-js.html">SDK</a>
+                <span class="separator">›</span>
+                <span>Rust</span>
+            </div>
+
+            <h1>Rust SDK</h1>
+            <p>The official Rust SDK for MoltChain. Built on <code>reqwest</code> and <code>tokio</code> with strong typing and <code>Result&lt;T&gt;</code> error handling.</p>
+
+            <!-- Installation -->
+            <section id="installation">
+                <h2>Installation</h2>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">toml</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <code><pre># Cargo.toml
+[dependencies]
+moltchain-sdk = "0.1"
+tokio = { version = "1", features = ["full"] }
+</pre></code>
+                </div>
+                <p>Or via the command line:</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">bash</span></div>
+                    <code><pre>cargo add moltchain-sdk</pre></code>
+                </div>
+                <div class="callout callout-info">
+                    <p>Re-exports: <code>moltchain_sdk::{Client, ClientBuilder, Keypair, TransactionBuilder, Balance, Block, NetworkInfo}</code></p>
+                </div>
+            </section>
+
+            <!-- Quick Start -->
+            <section id="quick-start">
+                <h2>Quick Start</h2>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <code><pre>use moltchain_sdk::{Client, Keypair, TransactionBuilder, Balance};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Connect to local validator
+    let client = Client::new("http://localhost:8899");
+
+    // Generate a keypair
+    let kp = Keypair::new();
+    println!("Address: {}", kp.pubkey());
+
+    // Check balance
+    let balance = client.get_balance(&kp.pubkey().to_string()).await?;
+    println!("Balance: {} shells", balance.shells());
+
+    // Build and send a transfer
+    let blockhash = client.get_recent_blockhash().await?;
+    let tx = TransactionBuilder::new()
+        .add_instruction(/* transfer instruction */)
+        .recent_blockhash(&blockhash)
+        .build_and_sign(&kp)?;
+
+    let sig = client.send_transaction(&tx).await?;
+    println!("Signature: {sig}");
+
+    Ok(())
+}</pre></code>
+                </div>
+            </section>
+
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <!-- CLIENT -->
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <h2>Client</h2>
+
+            <div class="method-card" id="client-constructor">
+                <h3 class="method-name">Client::new(rpc_url: &amp;str) -&gt; Client</h3>
+                <p class="method-desc">Create a client pointing at the given JSON-RPC endpoint.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Rust</span></div>
+                    <code><pre>let client = Client::new("http://localhost:8899");</pre></code>
+                </div>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">Client::builder() -&gt; ClientBuilder</h3>
+                <p class="method-desc">Create a client with advanced options via the builder pattern.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <code><pre>let client = Client::builder()
+    .rpc_url("http://localhost:8899")
+    .timeout(std::time::Duration::from_secs(30))
+    .build()?;</pre></code>
+                </div>
+                <table class="param-table">
+                    <thead><tr><th>Builder Method</th><th>Type</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td>rpc_url(url)</td><td><span class="param-type">&amp;str</span></td><td>Set RPC endpoint URL (required)</td></tr>
+                        <tr><td>timeout(duration)</td><td><span class="param-type">Duration</span></td><td>Set per-request timeout</td></tr>
+                        <tr><td>build()</td><td><span class="param-type">Result&lt;Client&gt;</span></td><td>Construct the client</td></tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Chain Queries -->
+            <h3 id="client-chain">Chain Queries</h3>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_slot(&amp;self) -&gt; Result&lt;u64&gt;</h3>
+                <p class="method-desc">Get the current slot number.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Rust</span></div>
+                    <code><pre>let slot = client.get_slot().await?;
+println!("Slot: {slot}");</pre></code>
+                </div>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_latest_block(&amp;self) -&gt; Result&lt;Block&gt;</h3>
+                <p class="method-desc">Get the most recently produced block.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_block(&amp;self, slot: u64) -&gt; Result&lt;Block&gt;</h3>
+                <p class="method-desc">Get a block by slot number.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_recent_blockhash(&amp;self) -&gt; Result&lt;String&gt;</h3>
+                <p class="method-desc">Get a recent blockhash for signing transactions.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_metrics(&amp;self) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">Get chain performance metrics (TPS, total transactions/blocks, average block time).</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_chain_status(&amp;self) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">Get comprehensive chain status.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async health(&amp;self) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">Liveness probe. Returns <code>{"status": "ok"}</code>.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_network_info(&amp;self) -&gt; Result&lt;NetworkInfo&gt;</h3>
+                <p class="method-desc">Get network information — chain ID, network ID, version, slot.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Rust</span></div>
+                    <code><pre>let info = client.get_network_info().await?;
+println!("Chain: {} v{}", info.chain_id, info.version);</pre></code>
+                </div>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_peers(&amp;self) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">Get connected P2P peers.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_total_burned(&amp;self) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">Get total burned MOLT — <code>{"shells": ..., "molt": ...}</code>.</p>
+            </div>
+
+            <!-- Account Methods -->
+            <h3 id="client-account">Account Methods</h3>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_balance(&amp;self, pubkey: &amp;str) -&gt; Result&lt;Balance&gt;</h3>
+                <p class="method-desc">Get account balance. Returns a strongly-typed <code>Balance</code>.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <code><pre>let bal = client.get_balance("7xKXtg2CW87d...").await?;
+println!("{} shells  ({} MOLT)", bal.shells(), bal.molt());</pre></code>
+                </div>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_account_info(&amp;self, pubkey: &amp;str) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">Get enhanced account information with metadata.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_transaction_history(&amp;self, pubkey: &amp;str, limit: u64) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">Get paginated transaction history for an account.</p>
+            </div>
+
+            <!-- Transaction Methods -->
+            <h3 id="client-tx">Transaction Methods</h3>
+
+            <div class="method-card">
+                <h3 class="method-name">async send_transaction(&amp;self, tx_json: &amp;Value) -&gt; Result&lt;String&gt;</h3>
+                <p class="method-desc">Submit a signed transaction JSON. Returns the signature string.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <code><pre>let blockhash = client.get_recent_blockhash().await?;
+let tx = TransactionBuilder::new()
+    .add_instruction(serde_json::json!({
+        "type": 0,
+        "from": kp.pubkey(),
+        "to": "RecipientAddress...",
+        "amount": 1_000_000_000_u64
+    }))
+    .recent_blockhash(&blockhash)
+    .build_and_sign(&kp)?;
+
+let sig = client.send_transaction(&tx).await?;</pre></code>
+                </div>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async send_raw_transaction(&amp;self, raw_tx: &amp;str) -&gt; Result&lt;String&gt;</h3>
+                <p class="method-desc">Submit a pre-serialized transaction string.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_transaction(&amp;self, signature: &amp;str) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">Look up a transaction by its signature hash.</p>
+            </div>
+
+            <!-- Validator & Staking -->
+            <h3 id="client-validator">Validator &amp; Staking</h3>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_validators(&amp;self) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">Get all registered validators.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_validator_info(&amp;self, pubkey: &amp;str) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">Get detailed validator information.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_validator_performance(&amp;self, pubkey: &amp;str) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">Get validator performance metrics.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async stake(&amp;self, from: &amp;str, validator: &amp;str, amount: u64) -&gt; Result&lt;String&gt;</h3>
+                <p class="method-desc">Stake MOLT to a validator. Amount in shells.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <code><pre>let sig = client.stake(
+    &kp.pubkey(),
+    "ValidatorPubkey...",
+    10_000_000_000  // 10 MOLT
+).await?;</pre></code>
+                </div>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async unstake(&amp;self, from: &amp;str, validator: &amp;str, amount: u64) -&gt; Result&lt;String&gt;</h3>
+                <p class="method-desc">Unstake MOLT from a validator.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_staking_status(&amp;self, pubkey: &amp;str) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">Get staking status for an account.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_staking_rewards(&amp;self, pubkey: &amp;str) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">Get accumulated staking rewards.</p>
+            </div>
+
+            <!-- Contract Methods -->
+            <h3 id="client-contract">Contract Methods</h3>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_contract_info(&amp;self, contract_id: &amp;str) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">Get information about a deployed smart contract.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_contract_logs(&amp;self, contract_id: &amp;str) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">Get execution logs emitted by a contract.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_all_contracts(&amp;self) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">List all deployed contracts.</p>
+            </div>
+
+            <!-- Program Methods -->
+            <h3 id="client-program">Program Methods</h3>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_program(&amp;self, program_id: &amp;str) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">Get program information.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_programs(&amp;self) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">List all deployed programs.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_program_stats(&amp;self, program_id: &amp;str) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">Get execution statistics for a program.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_program_calls(&amp;self, program_id: &amp;str) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">Get recent call history for a program.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_program_storage(&amp;self, program_id: &amp;str) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">Get on-chain storage summary for a program.</p>
+            </div>
+
+            <!-- NFT Methods -->
+            <h3 id="client-nft">NFT Methods</h3>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_collection(&amp;self, collection_id: &amp;str) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">Get NFT collection metadata.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_nft(&amp;self, collection_id: &amp;str, token_id: u64) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">Get a specific NFT by collection and token ID.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_nfts_by_owner(&amp;self, owner: &amp;str) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">Get all NFTs owned by an address.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_nfts_by_collection(&amp;self, collection_id: &amp;str) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">Get all NFTs in a collection.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">async get_nft_activity(&amp;self, collection_id: &amp;str, token_id: u64) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">Get activity history for a specific NFT.</p>
+            </div>
+
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <!-- KEYPAIR -->
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <h2>Keypair</h2>
+            <p>Ed25519 keypair wrapper around <code>ed25519_dalek</code>. Thread-safe and <code>Clone</code>-able.</p>
+
+            <div class="method-card" id="keypair-new">
+                <h3 class="method-name">Keypair::new() -&gt; Keypair</h3>
+                <p class="method-desc">Generate a new random keypair.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <code><pre>let kp = Keypair::new();
+println!("Pubkey: {}", kp.pubkey());</pre></code>
+                </div>
+            </div>
+
+            <div class="method-card" id="keypair-from-seed">
+                <h3 class="method-name">Keypair::from_seed(seed: &amp;[u8; 32]) -&gt; Keypair</h3>
+                <p class="method-desc">Derive a deterministic keypair from a 32-byte seed.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Rust</span></div>
+                    <code><pre>let seed = [0u8; 32];
+let kp = Keypair::from_seed(&seed);</pre></code>
+                </div>
+            </div>
+
+            <div class="method-card" id="keypair-sign">
+                <h3 class="method-name">keypair.sign(message: &amp;[u8]) -&gt; Vec&lt;u8&gt;</h3>
+                <p class="method-desc">Sign an arbitrary message. Returns the 64-byte detached signature.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">keypair.pubkey() -&gt; String</h3>
+                <p class="method-desc">Get the base58-encoded public key string.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">keypair.to_seed() -&gt; [u8; 32]</h3>
+                <p class="method-desc">Extract the 32-byte seed.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">keypair.inner() -&gt; &amp;ed25519_dalek::SigningKey</h3>
+                <p class="method-desc">Access the underlying <code>ed25519_dalek::SigningKey</code> for advanced use cases.</p>
+            </div>
+
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <!-- TRANSACTION BUILDER -->
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <h2 id="transaction-builder">TransactionBuilder</h2>
+            <p>Builder pattern for constructing and signing transactions. All methods consume and return <code>self</code> for chaining.</p>
+
+            <div class="method-card">
+                <h3 class="method-name">TransactionBuilder::new() -&gt; TransactionBuilder</h3>
+                <p class="method-desc">Create an empty builder.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">.add_instruction(value: Value) -&gt; Self</h3>
+                <p class="method-desc">Append an instruction JSON value. Can be called multiple times.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">.recent_blockhash(hash: &amp;str) -&gt; Self</h3>
+                <p class="method-desc">Set the recent blockhash.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">.build_and_sign(keypair: &amp;Keypair) -&gt; Result&lt;Value&gt;</h3>
+                <p class="method-desc">Sign the instructions and return a transaction JSON object ready to submit.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                    <code><pre>use serde_json::json;
+
+let blockhash = client.get_recent_blockhash().await?;
+let tx = TransactionBuilder::new()
+    .add_instruction(json!({
+        "type": 0,
+        "from": kp.pubkey(),
+        "to": recipient,
+        "amount": 5_000_000_000_u64
+    }))
+    .recent_blockhash(&blockhash)
+    .build_and_sign(&kp)?;
+
+let sig = client.send_transaction(&tx).await?;
+println!("Transfer complete: {sig}");</pre></code>
+                </div>
+            </div>
+
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <!-- TYPES -->
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <h2>Types</h2>
+
+            <div class="method-card" id="types-balance">
+                <h3 class="method-name">Balance</h3>
+                <p class="method-desc">Strongly-typed balance with unit conversions.</p>
+                <table class="param-table">
+                    <thead><tr><th>Method / Constructor</th><th>Returns</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td>Balance::from_shells(n: u64)</td><td><span class="param-type">Balance</span></td><td>Create from raw shell count</td></tr>
+                        <tr><td>Balance::from_molt(n: f64)</td><td><span class="param-type">Balance</span></td><td>Create from MOLT (1 MOLT = 10<sup>9</sup> shells)</td></tr>
+                        <tr><td>balance.shells()</td><td><span class="param-type">u64</span></td><td>Get balance in shells</td></tr>
+                        <tr><td>balance.molt()</td><td><span class="param-type">f64</span></td><td>Get balance in MOLT</td></tr>
+                    </tbody>
+                </table>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Rust</span></div>
+                    <code><pre>let b = Balance::from_molt(25.0);
+assert_eq!(b.shells(), 25_000_000_000);
+assert_eq!(b.molt(), 25.0);</pre></code>
+                </div>
+            </div>
+
+            <div class="method-card" id="types-block">
+                <h3 class="method-name">Block</h3>
+                <p class="method-desc">Deserialized block data.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Rust</span></div>
+                    <code><pre>#[derive(Debug, Deserialize)]
+pub struct Block {
+    pub slot: u64,
+    pub hash: String,
+    pub parent_hash: String,
+    pub timestamp: u64,
+    pub transactions: Vec<Value>,
+}</pre></code>
+                </div>
+            </div>
+
+            <div class="method-card" id="types-network">
+                <h3 class="method-name">NetworkInfo</h3>
+                <p class="method-desc">Deserialized network information.</p>
+                <div class="code-block">
+                    <div class="code-block-header"><span class="code-lang">Rust</span></div>
+                    <code><pre>#[derive(Debug, Deserialize)]
+pub struct NetworkInfo {
+    pub chain_id: String,
+    pub network_id: String,
+    pub version: String,
+    pub slot: u64,
+    pub validator_count: u64,
+    pub peer_count: u64,
+}</pre></code>
+                </div>
+            </div>
+
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <!-- ERROR HANDLING -->
+            <!-- ═══════════════════════════════════════════════════════ -->
+            <h2 id="error-handling">Error Handling</h2>
+            <p>All client methods return <code>Result&lt;T, Box&lt;dyn std::error::Error&gt;&gt;</code>. RPC errors surface with their JSON-RPC error code and message.</p>
+
+            <div class="code-block">
+                <div class="code-block-header"><span class="code-lang">Rust</span><button class="code-copy-btn"><i class="fas fa-copy"></i></button></div>
+                <code><pre>match client.get_balance("7xKXtg2CW87d...").await {
+    Ok(balance) => println!("{} MOLT", balance.molt()),
+    Err(e) => {
+        let msg = e.to_string();
+        if msg.contains("Account not found") {
+            println!("Account does not exist yet");
+        } else {
+            eprintln!("RPC error: {e}");
+        }
+    }
+}</pre></code>
+            </div>
+
+            <div class="callout callout-warning">
+                <p><strong>Common error codes:</strong></p>
+                <ul>
+                    <li><code>-32601</code> — Method not found</li>
+                    <li><code>-32602</code> — Invalid params</li>
+                    <li><code>-32003</code> — Admin auth required</li>
+                    <li><code>-32005</code> — Rate limit exceeded</li>
+                </ul>
+            </div>
+
+            <div class="callout callout-tip">
+                <p><strong>Tip:</strong> For production services, use the <code>ClientBuilder</code> with a custom timeout and wrap calls in a retry loop with exponential backoff for transient network errors.</p>
+            </div>
+
+            <!-- WebSocket Subscriptions -->
+            <h3 id="client-ws">WebSocket Subscriptions</h3>
+            <p>The Rust SDK supports real-time event streaming via WebSocket. Create a <code>WsClient</code> and subscribe to on-chain events with typed callbacks.</p>
+
+            <div class="code-block">
+                <div class="code-header"><span>WebSocket — Subscribe to Slots &amp; Accounts</span><button class="code-copy-btn">Copy</button></div>
+<pre><code>use moltchain_sdk::{WsClient, Pubkey};
+
+#[tokio::main]
+async fn main() -&gt; Result&lt;(), Box&lt;dyn std::error::Error&gt;&gt; {
+    let ws = WsClient::connect("ws://localhost:8900").await?;
+
+    // Subscribe to slot updates
+    let slot_sub = ws.on_slot(|slot| {
+        println!("New slot: {}", slot);
+    }).await?;
+
+    // Subscribe to account changes
+    let acct = Pubkey::from_base58("YourAccountBase58Here")?;
+    let acct_sub = ws.on_account_change(&amp;acct, |account| {
+        println!("Balance changed: {} lamports", account.lamports);
+    }).await?;
+
+    // Unsubscribe when done
+    ws.off_slot(slot_sub).await?;
+    ws.off_account_change(acct_sub).await?;
+
+    // Close all subscriptions
+    ws.close().await;
+    Ok(())
+}</code></pre>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">WsClient::connect(url: &amp;str) -&gt; Result&lt;WsClient&gt;</h3>
+                <p class="method-desc">Open a WebSocket connection to the given endpoint.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">on_slot(callback) / off_slot(sub_id)</h3>
+                <p class="method-desc">Subscribe to slot updates. Returns a subscription ID for unsubscribing.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">on_block(callback) / off_block(sub_id)</h3>
+                <p class="method-desc">Subscribe to new blocks.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">on_account_change(pubkey, callback) / off_account_change(sub_id)</h3>
+                <p class="method-desc">Watch a specific account for balance or data changes.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">on_logs(callback, contract_id?) / off_logs(sub_id)</h3>
+                <p class="method-desc">Stream contract logs. Optionally filter by contract ID.</p>
+            </div>
+
+            <div class="method-card">
+                <h3 class="method-name">close()</h3>
+                <p class="method-desc">Close the WebSocket connection and clear all active subscriptions.</p>
+            </div>
+        </main>
+    </div>
+
+    <script src="js/developers.js"></script>
+</body>
+</html>

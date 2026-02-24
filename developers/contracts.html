@@ -1,0 +1,873 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Contract Development - MoltChain Developer Portal</title>
+    <link rel="stylesheet" href="../shared-base-styles.css">
+    <link rel="stylesheet" href="../shared-theme.css">
+    <link rel="stylesheet" href="css/developers.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+</head>
+<body>
+    <nav class="nav">
+        <div class="nav-container">
+            <div class="nav-logo">
+                <img src="MoltDevelopers_Logo_256.png" class="logo-icon" alt="MoltChain Dev">
+                <span class="logo-text">MoltChain Dev</span>
+            </div>
+            <ul class="nav-menu">
+                <li><a href="index.html">Hub</a></li>
+                <li><a href="getting-started.html">Get Started</a></li>
+                <li><a href="rpc-reference.html">API</a></li>
+                <li><a href="sdk-js.html">SDK</a></li>
+                <li><a href="contracts.html" class="active">Contracts</a></li>
+                <li><a href="cli-reference.html">CLI</a></li>
+                <li><a href="moltyid.html">MoltyID</a></li>
+                <li><a href="zk-privacy.html">Privacy</a></li>
+            </ul>
+            <div class="nav-actions">
+                <div class="search-container">
+                    <input type="text" id="searchInput" class="search-input" placeholder="Search docs... (⌘K)">
+                    <i class="fas fa-search search-icon"></i>
+                </div>
+                <select id="devNetworkSelect" class="network-select">
+                    <option value="mainnet">Mainnet</option>
+                    <option value="testnet">Testnet</option>
+                    <option value="local-testnet" selected>Local Testnet</option>
+                    <option value="local-mainnet">Local Mainnet</option>
+                </select>
+            </div>
+            <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation menu"><span></span><span></span><span></span></button>
+        </div>
+    </nav>
+    <div class="search-overlay" id="searchOverlay">
+        <div class="search-modal">
+            <input type="text" class="search-modal-input" id="searchModalInput" placeholder="Search documentation...">
+            <div class="search-results" id="searchResults"></div>
+        </div>
+    </div>
+
+    <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar"><i class="fas fa-bars"></i></button>
+    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+
+    <div class="docs-layout">
+        <aside class="docs-sidebar">
+            <div class="sidebar-section">
+                <div class="sidebar-heading">Smart Contracts</div>
+                <a href="#overview" class="sidebar-link">Overview</a>
+                <a href="#setup" class="sidebar-link">Project Setup</a>
+                <a href="#sdk-functions" class="sidebar-link">SDK Functions</a>
+                <a href="#storage" class="sidebar-link">Storage Model</a>
+                <a href="#crosscall" class="sidebar-link">Cross-Contract Calls</a>
+                <a href="#token" class="sidebar-link">Token Module</a>
+                <a href="#nft" class="sidebar-link">NFT Module</a>
+                <a href="#dex" class="sidebar-link">DEX Module</a>
+                <a href="#testing" class="sidebar-link">Testing</a>
+                <a href="#deploy" class="sidebar-link">Build &amp; Deploy</a>
+                <a href="#security" class="sidebar-link">Security</a>
+            </div>
+            <div class="sidebar-divider"></div>
+            <div class="sidebar-section">
+                <div class="sidebar-heading">Related</div>
+                <a href="contract-reference.html" class="sidebar-link">Contract Reference</a>
+                <a href="cli-reference.html" class="sidebar-link">CLI Reference</a>
+                <a href="moltyid.html" class="sidebar-link">MoltyID Guide</a>
+            </div>
+        </aside>
+
+        <main class="docs-main">
+            <div class="breadcrumbs">
+                <a href="index.html">Dev Hub</a>
+                <span class="separator">›</span>
+                <span class="current">Smart Contract Development</span>
+            </div>
+
+            <!-- ============================================================ -->
+            <!-- OVERVIEW -->
+            <!-- ============================================================ -->
+            <h1>Smart Contract Development Guide</h1>
+
+            <section id="overview">
+                <h2>Overview</h2>
+                <p>MoltChain smart contracts are compiled to <strong>WebAssembly (WASM)</strong> and executed inside a <strong>Wasmer sandbox</strong>. Contracts are written in Rust using <code>#![no_std]</code> and export <code>extern "C"</code> functions that the runtime invokes. The <code>moltchain-sdk</code> crate provides all host functions for storage, events, logging, cross-contract calls, and more.</p>
+
+                <div class="info-box">
+                    <i class="fas fa-info-circle"></i>
+                    <div>
+                        <strong>Key Facts</strong>
+                        <ul>
+                            <li>Compile target: <code>wasm32-unknown-unknown</code></li>
+                            <li>Runtime: Wasmer sandbox with deterministic execution</li>
+                            <li>Storage: Key-value byte store per contract</li>
+                            <li>Entry points: <code>#[no_mangle] pub extern "C" fn</code></li>
+                            <li>Return codes: <code>0</code> = success, non-zero = error</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ============================================================ -->
+            <!-- PROJECT SETUP -->
+            <!-- ============================================================ -->
+            <section id="setup">
+                <h2>Project Setup</h2>
+                <p>Create a new contract project with the following <code>Cargo.toml</code>:</p>
+
+                <div class="code-block">
+                    <div class="code-header"><span>Cargo.toml</span><button class="code-copy-btn">Copy</button></div>
+<pre><code>[package]
+name = "my-contract"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+moltchain-sdk = { path = "../../sdk" }</code></pre>
+                </div>
+
+                <p>Your <code>src/lib.rs</code> must declare <code>#![no_std]</code> and export entry points as <code>extern "C"</code> functions:</p>
+
+                <div class="code-block">
+                    <div class="code-header"><span>src/lib.rs &mdash; Minimal Contract</span><button class="code-copy-btn">Copy</button></div>
+<pre><code>#![no_std]
+#![cfg_attr(target_arch = "wasm32", no_main)]
+
+extern crate alloc;
+use alloc::vec::Vec;
+
+use moltchain_sdk::{
+    storage, contract, event, log,
+    Address, ContractResult, ContractError,
+};
+
+/// Initialize the contract. Called once after deployment.
+#[no_mangle]
+pub extern "C" fn initialize(admin_ptr: *const u8) -> u32 {
+    let admin = unsafe { core::slice::from_raw_parts(admin_ptr, 32) };
+    storage::set(b"admin", admin);
+    log::info("Contract initialized");
+    0 // success
+}
+
+/// Example: store a value.
+#[no_mangle]
+pub extern "C" fn set_value() -> u32 {
+    let args = contract::args();
+    if args.len() < 8 {
+        return 1; // invalid input
+    }
+    storage::set(b"value", &amp;args[..8]);
+    event::emit(r#"{"name":"ValueSet","data":"..."}"#);
+    0
+}
+
+/// Example: read a value.
+#[no_mangle]
+pub extern "C" fn get_value() -> u32 {
+    match storage::get(b"value") {
+        Some(data) =&gt; {
+            contract::set_return(&amp;data);
+            0
+        }
+        None =&gt; 1,
+    }
+}</code></pre>
+                </div>
+            </section>
+
+            <!-- ============================================================ -->
+            <!-- SDK FUNCTIONS -->
+            <!-- ============================================================ -->
+            <section id="sdk-functions">
+                <h2>SDK Host Functions</h2>
+                <p>The <code>moltchain-sdk</code> crate exposes the following host functions that the WASM runtime provides to your contract.</p>
+
+                <h3>Storage</h3>
+
+                <div class="method-card">
+                    <div class="method-header">
+                        <span class="method-name">storage::get(key: &amp;[u8]) &rarr; Option&lt;Vec&lt;u8&gt;&gt;</span>
+                        <span class="method-badge get">READ</span>
+                    </div>
+                    <div class="method-body">
+                        <p>Read a value from the contract's key-value storage. Returns <code>None</code> if the key does not exist. Buffer size: up to 64 KB.</p>
+                        <table class="params-table">
+                            <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
+                            <tbody>
+                                <tr><td><code>key</code></td><td><code>&amp;[u8]</code></td><td>Storage key bytes</td></tr>
+                            </tbody>
+                        </table>
+                        <p><strong>Returns:</strong> <code>Option&lt;Vec&lt;u8&gt;&gt;</code> &mdash; the stored value or <code>None</code>.</p>
+                    </div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header">
+                        <span class="method-name">storage::set(key: &amp;[u8], value: &amp;[u8]) &rarr; bool</span>
+                        <span class="method-badge post">WRITE</span>
+                    </div>
+                    <div class="method-body">
+                        <p>Write a value to storage. Overwrites any existing value at the key.</p>
+                        <table class="params-table">
+                            <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
+                            <tbody>
+                                <tr><td><code>key</code></td><td><code>&amp;[u8]</code></td><td>Storage key bytes</td></tr>
+                                <tr><td><code>value</code></td><td><code>&amp;[u8]</code></td><td>Value bytes to store</td></tr>
+                            </tbody>
+                        </table>
+                        <p><strong>Returns:</strong> <code>bool</code> &mdash; <code>true</code> on success.</p>
+                    </div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header">
+                        <span class="method-name">storage::remove(key: &amp;[u8]) &rarr; bool</span>
+                        <span class="method-badge delete">DELETE</span>
+                    </div>
+                    <div class="method-body">
+                        <p>Remove a key from storage. Internally writes an empty value.</p>
+                        <table class="params-table">
+                            <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
+                            <tbody>
+                                <tr><td><code>key</code></td><td><code>&amp;[u8]</code></td><td>Storage key to delete</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <h3>Contract Context</h3>
+
+                <div class="method-card">
+                    <div class="method-header">
+                        <span class="method-name">contract::args() &rarr; Vec&lt;u8&gt;</span>
+                        <span class="method-badge get">READ</span>
+                    </div>
+                    <div class="method-body">
+                        <p>Get the arguments passed to this contract call. The raw byte payload from the transaction.</p>
+                        <p><strong>Returns:</strong> <code>Vec&lt;u8&gt;</code> &mdash; argument bytes (empty if none).</p>
+                    </div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header">
+                        <span class="method-name">contract::set_return(data: &amp;[u8]) &rarr; bool</span>
+                        <span class="method-badge post">WRITE</span>
+                    </div>
+                    <div class="method-body">
+                        <p>Set the return data for this contract execution. Callers (including cross-contract callers) will receive this data.</p>
+                        <table class="params-table">
+                            <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
+                            <tbody>
+                                <tr><td><code>data</code></td><td><code>&amp;[u8]</code></td><td>Return data bytes</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <h3>Environment</h3>
+
+                <div class="method-card">
+                    <div class="method-header">
+                        <span class="method-name">get_caller() &rarr; [u8; 32]</span>
+                        <span class="method-badge get">READ</span>
+                    </div>
+                    <div class="method-body">
+                        <p>Get the 32-byte public key of the account that invoked this contract call. Used for authorization checks.</p>
+                    </div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header">
+                        <span class="method-name">get_value() &rarr; u64</span>
+                        <span class="method-badge get">READ</span>
+                    </div>
+                    <div class="method-body">
+                        <p>Get the amount of MOLT (in shells) transferred along with this contract call. Used for payable functions (e.g., .molt name registration).</p>
+                    </div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header">
+                        <span class="method-name">get_timestamp() &rarr; u64</span>
+                        <span class="method-badge get">READ</span>
+                    </div>
+                    <div class="method-body">
+                        <p>Get the current block timestamp (Unix seconds). Useful for time-based logic like expiry checks and vesting schedules.</p>
+                    </div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header">
+                        <span class="method-name">get_slot() &rarr; u64</span>
+                        <span class="method-badge get">READ</span>
+                    </div>
+                    <div class="method-body">
+                        <p>Get the current slot number. MoltChain produces ~2 slots/second. Used for slot-based timing (e.g., name expiry at ~63M slots/year).</p>
+                    </div>
+                </div>
+
+                <h3>Events &amp; Logging</h3>
+
+                <div class="method-card">
+                    <div class="method-header">
+                        <span class="method-name">event::emit(json_data: &amp;str) &rarr; bool</span>
+                        <span class="method-badge post">EMIT</span>
+                    </div>
+                    <div class="method-body">
+                        <p>Emit a structured event as a JSON string. Events are indexed and queryable via RPC. Example:</p>
+                        <pre><code>event::emit(r#"{"name":"Transfer","from":"...","to":"...","amount":1000}"#);</code></pre>
+                    </div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header">
+                        <span class="method-name">log::info(msg: &amp;str)</span>
+                        <span class="method-badge post">LOG</span>
+                    </div>
+                    <div class="method-body">
+                        <p>Log a message for debugging. Logs are visible in contract execution output and via <code>molt contract logs &lt;address&gt;</code>.</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ============================================================ -->
+            <!-- STORAGE MODEL -->
+            <!-- ============================================================ -->
+            <section id="storage">
+                <h2>Storage Model</h2>
+                <p>Each contract has its own isolated key-value byte store. Both keys and values are arbitrary byte arrays. Common conventions used across MoltChain contracts:</p>
+
+                <h3>Key Naming Conventions</h3>
+                <table class="params-table">
+                    <thead><tr><th>Pattern</th><th>Example</th><th>Usage</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>admin</code></td><td><code>b"admin"</code></td><td>32-byte admin/owner address</td></tr>
+                        <tr><td><code>id:{hex}</code></td><td><code>b"id:a1b2c3..."</code></td><td>Identity record keyed by hex-encoded address</td></tr>
+                        <tr><td><code>balance:{addr}</code></td><td><code>b"balance:" + addr_bytes</code></td><td>Token/NFT balance for an address</td></tr>
+                        <tr><td><code>name:{lowercase}</code></td><td><code>b"name:tradingbot"</code></td><td>.molt name forward lookup</td></tr>
+                        <tr><td><code>name_rev:{hex}</code></td><td><code>b"name_rev:a1b2..."</code></td><td>.molt name reverse lookup</td></tr>
+                        <tr><td><code>allowance:{owner}:{spender}</code></td><td><code>b"allowance:" + owner + ":" + spender</code></td><td>Token spending allowance</td></tr>
+                    </tbody>
+                </table>
+
+                <h3>Value Packing</h3>
+                <ul>
+                    <li><strong>Integers:</strong> Stored as <strong>little-endian u64</strong> (8 bytes). Use <code>u64_to_bytes()</code> and <code>bytes_to_u64()</code> helpers from the SDK.</li>
+                    <li><strong>Addresses:</strong> Raw 32-byte public keys.</li>
+                    <li><strong>Fixed records:</strong> Packed structs at known byte offsets (e.g., MoltyID identity = 127 bytes with owner at 0..32, reputation at 99..107).</li>
+                    <li><strong>Strings:</strong> UTF-8 bytes, often with a length prefix.</li>
+                </ul>
+
+                <div class="code-block">
+                    <div class="code-header"><span>Storage Pattern Example</span><button class="code-copy-btn">Copy</button></div>
+<pre><code>use moltchain_sdk::{storage, u64_to_bytes, bytes_to_u64, Address};
+
+// Store a counter
+fn increment_counter() {
+    let current = storage::get(b"counter")
+        .map(|d| bytes_to_u64(&amp;d))
+        .unwrap_or(0);
+    storage::set(b"counter", &amp;u64_to_bytes(current + 1));
+}
+
+// Store per-account data with composite key
+fn set_balance(account: Address, amount: u64) {
+    let mut key = b"balance:".to_vec();
+    key.extend_from_slice(account.to_bytes());
+    storage::set(&amp;key, &amp;u64_to_bytes(amount));
+}</code></pre>
+                </div>
+            </section>
+
+            <!-- ============================================================ -->
+            <!-- CROSS-CONTRACT CALLS -->
+            <!-- ============================================================ -->
+            <section id="crosscall">
+                <h2>Cross-Contract Calls</h2>
+                <p>Contracts can invoke functions on other deployed contracts using the <code>crosscall</code> module. This enables composability &mdash; for example, checking a caller's MoltyID reputation before granting access.</p>
+
+                <div class="method-card">
+                    <div class="method-header">
+                        <span class="method-name">call_contract(call: CrossCall) &rarr; CallResult&lt;Vec&lt;u8&gt;&gt;</span>
+                        <span class="method-badge post">CALL</span>
+                    </div>
+                    <div class="method-body">
+                        <p>Execute a cross-contract call. The <code>CrossCall</code> struct specifies the target address, function name, arguments, and optional value transfer.</p>
+<pre><code>use moltchain_sdk::crosscall::{CrossCall, call_contract};
+use moltchain_sdk::Address;
+
+let target = Address::new(contract_addr_bytes);
+let call = CrossCall::new(target, "get_identity", caller_pubkey.to_vec())
+    .with_value(0); // optional MOLT transfer
+
+match call_contract(call) {
+    Ok(data) =&gt; { /* process return data */ }
+    Err(e) =&gt; { /* handle error */ }
+}</code></pre>
+                    </div>
+                </div>
+
+                <h3>Helper Functions</h3>
+
+                <div class="method-card">
+                    <div class="method-header">
+                        <span class="method-name">call_token_transfer(token, from, to, amount) &rarr; CallResult&lt;bool&gt;</span>
+                    </div>
+                    <div class="method-body">
+                        <p>Transfer tokens on a token contract. Packs from/to addresses and amount into the args automatically.</p>
+                    </div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header">
+                        <span class="method-name">call_token_balance(token, account) &rarr; CallResult&lt;u64&gt;</span>
+                    </div>
+                    <div class="method-body">
+                        <p>Query the token balance of an account. Calls <code>balance_of</code> on the target token contract and decodes the u64 result.</p>
+                    </div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header">
+                        <span class="method-name">call_nft_transfer(nft, from, to, token_id) &rarr; CallResult&lt;bool&gt;</span>
+                    </div>
+                    <div class="method-body">
+                        <p>Transfer an NFT by token ID between addresses.</p>
+                    </div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header">
+                        <span class="method-name">call_nft_owner(nft, token_id) &rarr; CallResult&lt;Address&gt;</span>
+                    </div>
+                    <div class="method-body">
+                        <p>Query the current owner of an NFT by token ID.</p>
+                    </div>
+                </div>
+
+                <h3>MoltyID Integration Pattern</h3>
+                <div class="code-block">
+                    <div class="code-header"><span>Identity Gate Example</span><button class="code-copy-btn">Copy</button></div>
+<pre><code>use moltchain_sdk::crosscall::{CrossCall, call_contract};
+use moltchain_sdk::{Address, bytes_to_u64};
+
+const MOLTYID_ADDRESS: [u8; 32] = [/* well-known address */];
+const MIN_REPUTATION: u64 = 500;
+
+fn require_reputation(caller: &amp;[u8]) -&gt; bool {
+    let moltyid = Address::new(MOLTYID_ADDRESS);
+    let call = CrossCall::new(moltyid, "get_reputation", caller.to_vec());
+    match call_contract(call) {
+        Ok(data) if data.len() &gt;= 8 =&gt; {
+            bytes_to_u64(&amp;data) &gt;= MIN_REPUTATION
+        }
+        _ =&gt; false,
+    }
+}</code></pre>
+                </div>
+            </section>
+
+            <!-- ============================================================ -->
+            <!-- TOKEN MODULE -->
+            <!-- ============================================================ -->
+            <section id="token">
+                <h2>Token Module (MT-20)</h2>
+                <p>The <code>moltchain_sdk::token::Token</code> struct implements the MT-20 token standard (similar to ERC-20). It provides mint, burn, transfer, and allowance functionality backed by contract storage.</p>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">Token::new(name, symbol, decimals) &rarr; Token</span></div>
+                    <div class="method-body"><p>Create a new token definition. Call <code>initialize()</code> afterwards to set initial supply.</p></div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">initialize(&amp;mut self, initial_supply, owner) &rarr; ContractResult&lt;()&gt;</span></div>
+                    <div class="method-body"><p>Set total supply and mint all tokens to the owner address.</p></div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">balance_of(&amp;self, account) &rarr; u64</span></div>
+                    <div class="method-body"><p>Get the token balance for an account. Storage key: <code>balance:{address_bytes}</code>.</p></div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">transfer(&amp;self, from, to, amount) &rarr; ContractResult&lt;()&gt;</span></div>
+                    <div class="method-body"><p>Transfer tokens between addresses. Returns <code>InsufficientFunds</code> if balance is too low.</p></div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">mint(&amp;mut self, to, amount, caller, owner) &rarr; ContractResult&lt;()&gt;</span></div>
+                    <div class="method-body"><p>Mint new tokens. Only the token owner can mint. Increases <code>total_supply</code>.</p></div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">burn(&amp;mut self, from, amount) &rarr; ContractResult&lt;()&gt;</span></div>
+                    <div class="method-body"><p>Burn tokens from an address. Decreases <code>total_supply</code>.</p></div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">approve(&amp;self, owner, spender, amount) &rarr; ContractResult&lt;()&gt;</span></div>
+                    <div class="method-body"><p>Approve a spender to transfer up to <code>amount</code> from the owner's balance. Storage key: <code>allowance:{owner}:{spender}</code>.</p></div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">transfer_from(&amp;self, caller, from, to, amount) &rarr; ContractResult&lt;()&gt;</span></div>
+                    <div class="method-body"><p>Transfer using an approved allowance. Decrements the allowance by <code>amount</code>.</p></div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">allowance(&amp;self, owner, spender) &rarr; u64</span></div>
+                    <div class="method-body"><p>Get the current spending allowance for a spender on an owner's tokens.</p></div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">get_total_supply(&amp;self) &rarr; u64</span></div>
+                    <div class="method-body"><p>Read total supply from persistent storage.</p></div>
+                </div>
+            </section>
+
+            <!-- ============================================================ -->
+            <!-- NFT MODULE -->
+            <!-- ============================================================ -->
+            <section id="nft">
+                <h2>NFT Module (MT-721)</h2>
+                <p>The <code>moltchain_sdk::nft::NFT</code> struct implements the MT-721 NFT standard (similar to ERC-721). Each token has a unique ID, owner, and optional metadata URI.</p>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">NFT::new(name, symbol) &rarr; NFT</span></div>
+                    <div class="method-body"><p>Create a new NFT collection.</p></div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">initialize(&amp;mut self, minter) &rarr; NftResult&lt;()&gt;</span></div>
+                    <div class="method-body"><p>Initialize the NFT collection, setting the authorized minter address.</p></div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">mint(&amp;mut self, to, token_id, metadata_uri) &rarr; NftResult&lt;()&gt;</span></div>
+                    <div class="method-body"><p>Mint a new NFT with the given token ID and metadata URI. Fails if the ID already exists.</p></div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">transfer(&amp;self, from, to, token_id) &rarr; NftResult&lt;()&gt;</span></div>
+                    <div class="method-body"><p>Transfer an NFT. Only the current owner can transfer.</p></div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">owner_of(&amp;self, token_id) &rarr; NftResult&lt;Address&gt;</span></div>
+                    <div class="method-body"><p>Get the current owner of a token.</p></div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">balance_of(&amp;self, owner) &rarr; u64</span></div>
+                    <div class="method-body"><p>Get the number of NFTs owned by an address.</p></div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">approve(&amp;self, owner, spender, token_id) &rarr; NftResult&lt;()&gt;</span></div>
+                    <div class="method-body"><p>Approve a specific spender for a single token.</p></div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">set_approval_for_all(&amp;self, owner, operator, approved) &rarr; NftResult&lt;()&gt;</span></div>
+                    <div class="method-body"><p>Approve or revoke an operator for all of the owner's tokens.</p></div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">transfer_from(&amp;self, caller, from, to, token_id) &rarr; NftResult&lt;()&gt;</span></div>
+                    <div class="method-body"><p>Transfer using an approval (single token or operator). Clears the single-token approval after transfer.</p></div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">burn(&amp;mut self, owner, token_id) &rarr; NftResult&lt;()&gt;</span></div>
+                    <div class="method-body"><p>Burn an NFT. Clears owner, metadata, and approval entries.</p></div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">get_total_minted(&amp;self) &rarr; u64</span></div>
+                    <div class="method-body"><p>Get the total number of NFTs ever minted in this collection.</p></div>
+                </div>
+            </section>
+
+            <!-- ============================================================ -->
+            <!-- DEX MODULE -->
+            <!-- ============================================================ -->
+            <section id="dex">
+                <h2>DEX Module (AMM)</h2>
+                <p>The <code>moltchain_sdk::dex::Pool</code> implements a constant-product AMM (x &times; y = k) with a configurable fee (default 0.3%). Used by the MoltSwap contract.</p>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">Pool::new(token_a, token_b) &rarr; Pool</span></div>
+                    <div class="method-body"><p>Create a new liquidity pool for a token pair. Default fee: 3/1000 (0.3%).</p></div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">initialize(&amp;mut self, token_a, token_b) &rarr; DexResult&lt;()&gt;</span></div>
+                    <div class="method-body"><p>Initialize the pool and persist to storage.</p></div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">add_liquidity(&amp;mut self, provider, amount_a, amount_b, min_liquidity) &rarr; DexResult&lt;u64&gt;</span></div>
+                    <div class="method-body">
+                        <p>Add liquidity to the pool. First provider: LP tokens = &radic;(amount_a &times; amount_b). Subsequent: proportional to reserves.</p>
+                        <p><strong>Returns:</strong> Number of LP tokens minted.</p>
+                    </div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">remove_liquidity(&amp;mut self, provider, liquidity, min_a, min_b) &rarr; DexResult&lt;(u64, u64)&gt;</span></div>
+                    <div class="method-body"><p>Remove liquidity by burning LP tokens. Returns (amount_a, amount_b) withdrawn.</p></div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">swap_a_for_b(&amp;mut self, amount_a_in, min_b_out) &rarr; DexResult&lt;u64&gt;</span></div>
+                    <div class="method-body"><p>Swap token A for token B using the constant product formula with fee deduction. Returns the amount of token B received.</p></div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">swap_b_for_a(&amp;mut self, amount_b_in, min_a_out) &rarr; DexResult&lt;u64&gt;</span></div>
+                    <div class="method-body"><p>Swap token B for token A. Symmetric to <code>swap_a_for_b</code>.</p></div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">get_amount_out(&amp;self, amount_in, reserve_in, reserve_out) &rarr; u64</span></div>
+                    <div class="method-body"><p>Calculate the output amount for a given input, accounting for the fee. Pure function (no state change).</p></div>
+                </div>
+
+                <div class="method-card">
+                    <div class="method-header"><span class="method-name">get_liquidity_balance(&amp;self, provider) &rarr; u64</span></div>
+                    <div class="method-body"><p>Get the LP token balance for a liquidity provider.</p></div>
+                </div>
+
+                <div class="info-box">
+                    <i class="fas fa-calculator"></i>
+                    <div>
+                        <strong>Constant Product Formula</strong>
+                        <p>Output = (amount_in &times; (1 &minus; fee) &times; reserve_out) / (reserve_in + amount_in &times; (1 &minus; fee))</p>
+                        <p>With default 0.3% fee: fee_numerator = 3, fee_denominator = 1000.</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ============================================================ -->
+            <!-- TESTING -->
+            <!-- ============================================================ -->
+            <section id="testing">
+                <h2>Testing</h2>
+                <p>The SDK includes a <code>test_mock</code> module that provides thread-local mock storage, allowing you to unit-test contracts on your host machine without compiling to WASM.</p>
+
+                <h3>Mock Functions</h3>
+                <table class="params-table">
+                    <thead><tr><th>Function</th><th>Description</th></tr></thead>
+                    <tbody>
+                        <tr><td><code>test_mock::reset()</code></td><td>Clear all mock state (storage, caller, args, events, logs, timestamp, value, slot)</td></tr>
+                        <tr><td><code>test_mock::set_caller(addr)</code></td><td>Set the mock caller address (32 bytes)</td></tr>
+                        <tr><td><code>test_mock::set_args(data)</code></td><td>Set the mock contract arguments</td></tr>
+                        <tr><td><code>test_mock::set_value(val)</code></td><td>Set the mock MOLT value sent with the call</td></tr>
+                        <tr><td><code>test_mock::set_timestamp(ts)</code></td><td>Set the mock block timestamp</td></tr>
+                        <tr><td><code>test_mock::set_slot(s)</code></td><td>Set the mock slot number</td></tr>
+                        <tr><td><code>test_mock::get_return_data()</code></td><td>Get the data set via <code>contract::set_return()</code></td></tr>
+                        <tr><td><code>test_mock::get_events()</code></td><td>Get all emitted events</td></tr>
+                        <tr><td><code>test_mock::get_storage(key)</code></td><td>Read directly from mock storage</td></tr>
+                        <tr><td><code>test_mock::get_logs()</code></td><td>Get all logged messages</td></tr>
+                    </tbody>
+                </table>
+
+                <div class="code-block">
+                    <div class="code-header"><span>Full Test Example</span><button class="code-copy-btn">Copy</button></div>
+<pre><code>#[cfg(test)]
+mod tests {
+    use super::*;
+    use moltchain_sdk::test_mock;
+
+    #[test]
+    fn test_initialize_and_set_value() {
+        test_mock::reset();
+
+        // Set up mock caller
+        let admin = [1u8; 32];
+        test_mock::set_caller(admin);
+
+        // Initialize contract
+        let result = initialize(admin.as_ptr());
+        assert_eq!(result, 0, "initialize should succeed");
+
+        // Verify admin was stored
+        let stored = test_mock::get_storage(b"admin");
+        assert_eq!(stored, Some(admin.to_vec()));
+
+        // Set a value
+        let value_bytes = 42u64.to_le_bytes();
+        test_mock::set_args(&amp;value_bytes);
+        let result = set_value();
+        assert_eq!(result, 0);
+
+        // Read it back
+        let result = get_value();
+        assert_eq!(result, 0);
+        let returned = test_mock::get_return_data();
+        assert_eq!(returned, value_bytes.to_vec());
+
+        // Check logs
+        let logs = test_mock::get_logs();
+        assert!(logs.iter().any(|l| l.contains("initialized")));
+    }
+}</code></pre>
+                </div>
+            </section>
+
+            <!-- ============================================================ -->
+            <!-- BUILD & DEPLOY -->
+            <!-- ============================================================ -->
+            <section id="deploy">
+                <h2>Build &amp; Deploy</h2>
+
+                <h3>Build</h3>
+                <p>Compile your contract to WASM:</p>
+                <div class="code-block">
+                    <div class="code-header"><span>Terminal</span><button class="code-copy-btn">Copy</button></div>
+<pre><code># Install the WASM target (one-time)
+rustup target add wasm32-unknown-unknown
+
+# Build in release mode
+cargo build --target wasm32-unknown-unknown --release
+
+# Output location:
+# target/wasm32-unknown-unknown/release/my_contract.wasm</code></pre>
+                </div>
+
+                <h3>Optimize (Optional)</h3>
+                <div class="code-block">
+                    <div class="code-header"><span>Terminal</span><button class="code-copy-btn">Copy</button></div>
+<pre><code># Reduce WASM size with wasm-opt
+wasm-opt -Oz -o optimized.wasm \
+  target/wasm32-unknown-unknown/release/my_contract.wasm</code></pre>
+                </div>
+
+                <h3>Deploy</h3>
+                <div class="code-block">
+                    <div class="code-header"><span>Terminal</span><button class="code-copy-btn">Copy</button></div>
+<pre><code># Deploy to the network
+molt deploy target/wasm32-unknown-unknown/release/my_contract.wasm
+
+# Output:
+# <i class="fa-solid fa-shrimp"></i> Deploying contract: my_contract.wasm
+# <i class="fa-solid fa-cube"></i> Size: 45 KB
+# <i class="fa-solid fa-location-dot"></i> Contract address: 7xK9...mN2q
+# <i class="fa-solid fa-circle-check"></i> Contract deployed!
+# <i class="fa-solid fa-file-signature"></i> Signature: 3hF8...pQ7r</code></pre>
+                </div>
+
+                <h3>Call</h3>
+                <div class="code-block">
+                    <div class="code-header"><span>Terminal</span><button class="code-copy-btn">Copy</button></div>
+<pre><code># Call a function on the deployed contract
+molt call 7xK9...mN2q initialize '[]'
+
+# Call with arguments
+molt call 7xK9...mN2q set_value --args '[42]'</code></pre>
+                </div>
+            </section>
+
+            <!-- ============================================================ -->
+            <!-- SECURITY -->
+            <!-- ============================================================ -->
+            <section id="security">
+                <h2>Security Best Practices</h2>
+
+                <h3>1. Reentrancy Guards</h3>
+                <p>Cross-contract calls can be re-entered. Use a storage-based mutex pattern:</p>
+                <div class="code-block">
+                    <div class="code-header"><span>Reentrancy Guard</span><button class="code-copy-btn">Copy</button></div>
+<pre><code>fn enter_guard() -&gt; bool {
+    if storage::get(b"_locked").is_some() {
+        return false; // already locked
+    }
+    storage::set(b"_locked", &amp;[1]);
+    true
+}
+
+fn exit_guard() {
+    storage::remove(b"_locked");
+}
+
+#[no_mangle]
+pub extern "C" fn sensitive_operation() -&gt; u32 {
+    if !enter_guard() { return 99; } // reentrancy blocked
+
+    // ... do work, cross-contract calls, etc.
+
+    exit_guard();
+    0
+}</code></pre>
+                </div>
+
+                <h3>2. Overflow Protection</h3>
+                <p>Always use <code>saturating_add</code> and <code>saturating_sub</code> for arithmetic. MoltChain contracts run in <code>#![no_std]</code> where overflow panics abort the WASM instance.</p>
+                <div class="code-block">
+                    <div class="code-header"><span>Safe Arithmetic</span><button class="code-copy-btn">Copy</button></div>
+<pre><code>// <i class="fa-solid fa-circle-xmark"></i> BAD: can overflow/underflow
+let new_balance = balance + amount;
+let new_balance = balance - amount;
+
+// <i class="fa-solid fa-circle-check"></i> GOOD: saturating arithmetic
+let new_balance = balance.saturating_add(amount);
+let new_balance = balance.saturating_sub(amount);
+
+// <i class="fa-solid fa-circle-check"></i> GOOD: explicit bounds check
+if balance &lt; amount {
+    return Err(ContractError::InsufficientFunds);
+}
+let new_balance = balance - amount;</code></pre>
+                </div>
+
+                <h3>3. Admin Authentication</h3>
+                <p>Always verify the caller is the authorized admin before state-changing operations:</p>
+                <div class="code-block">
+                    <div class="code-header"><span>Auth Pattern</span><button class="code-copy-btn">Copy</button></div>
+<pre><code>fn require_admin(caller: &amp;[u8]) -&gt; bool {
+    match storage::get(b"admin") {
+        Some(admin) =&gt; caller == admin.as_slice(),
+        None =&gt; false,
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn admin_only_function(caller_ptr: *const u8) -&gt; u32 {
+    let caller = unsafe { core::slice::from_raw_parts(caller_ptr, 32) };
+    if !require_admin(caller) {
+        log::info("Unauthorized");
+        return 2;
+    }
+    // ... proceed
+    0
+}</code></pre>
+                </div>
+
+                <h3>4. Input Validation</h3>
+                <ul>
+                    <li>Always check argument lengths before reading from raw pointers.</li>
+                    <li>Validate string lengths against maximums (e.g., name &le; 64 bytes, URL &le; 256 bytes).</li>
+                    <li>Check enum/type values are within valid ranges.</li>
+                    <li>Verify addresses are not zero (<code>[0u8; 32]</code>) when that's meaningful.</li>
+                </ul>
+
+                <h3>5. Storage Key Isolation</h3>
+                <ul>
+                    <li>Use unique prefixes for different data types to avoid collisions (e.g., <code>balance:</code>, <code>allowance:</code>, <code>owner:</code>).</li>
+                    <li>Include separators (<code>:</code>) between key components to prevent ambiguity.</li>
+                    <li>Hex-encode addresses in keys for consistent length and readability.</li>
+                </ul>
+            </section>
+
+        </main>
+    </div>
+
+    <script src="js/developers.js"></script>
+</body>
+</html>
