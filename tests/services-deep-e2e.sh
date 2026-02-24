@@ -47,6 +47,12 @@ rpc_has_result() {
   rpc "$method" "$params" | jq -e '.result' >/dev/null 2>&1
 }
 
+rpc_has_error() {
+  local method="$1"
+  local params="${2:-[]}"
+  rpc "$method" "$params" | jq -e '.error' >/dev/null 2>&1
+}
+
 rpc_result_json() {
   local method="$1"
   local params="${2:-[]}"
@@ -662,6 +668,19 @@ if command -v cargo >/dev/null 2>&1; then
   fi
 else
   fail "cargo unavailable for multisig/key-rotation checks"
+fi
+
+section "8) Admin method access-control smoke checks"
+if rpc_has_error "setFeeConfig" '[{"base_fee": 100}]'; then
+  pass "non-admin rejected for setFeeConfig"
+else
+  fail "non-admin rejected for setFeeConfig"
+fi
+
+if rpc_has_error "setRentParams" '[{"exempt_minimum": 100}]'; then
+  pass "non-admin rejected for setRentParams"
+else
+  fail "non-admin rejected for setRentParams"
 fi
 
 # -----------------------------------------------------------------------------

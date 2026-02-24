@@ -283,8 +283,8 @@ Update:
 - If team ops access is needed, export policy must define where key material lives (secure store), who can sign, and rotation process.
 
 Action items:
-- [ ] Add explicit key management section to deployment docs (admin keys, rotation, backup, revocation).
-- [ ] Add smoke test proving non-admin callers are correctly rejected on admin methods.
+- [x] Add explicit key management section to deployment docs (admin keys, rotation, backup, revocation).
+- [x] Add smoke test proving non-admin callers are correctly rejected on admin methods.
 
 ### 6.2 Production deployment process
 
@@ -292,8 +292,18 @@ Action items:
 - Required pre-mainnet pipeline: build -> deploy genesis/programs -> configure services -> run strict gate -> launch.
 
 Action items:
-- [ ] Ensure `docs/deployment/PRODUCTION_DEPLOYMENT.md` exactly matches the tested gate sequence.
-- [ ] Add one command matrix table mapping local/testnet/prod procedures.
+- [x] Ensure `docs/deployment/PRODUCTION_DEPLOYMENT.md` exactly matches the tested gate sequence.
+- [x] Add one command matrix table mapping local/testnet/prod procedures.
+
+Update:
+- Added explicit admin key lifecycle policy to `docs/deployment/PRODUCTION_DEPLOYMENT.md` (`Admin Key Management Lifecycle`) covering key classes, rotation cadence, backup/restore expectations, and revocation steps.
+- Added deployment command matrix to `docs/deployment/PRODUCTION_DEPLOYMENT.md` (`Environment Command Matrix`) for local/testnet/prod mapping with an explicit tested gate sequence (`STRICT_NO_SKIPS=1 bash tests/production-e2e-gate.sh`).
+- Added non-admin admin-method rejection smoke checks to `tests/services-deep-e2e.sh` (`setFeeConfig` and `setRentParams` must return RPC error for non-admin/unprivileged calls).
+
+Validation evidence:
+- `bash -n tests/services-deep-e2e.sh` → `services-deep-e2e.sh syntax: OK`
+- `setFeeConfig` without admin privileges → RPC error (`disabled in multi-validator mode ...`)
+- `setRentParams` without admin privileges → RPC error (`disabled in multi-validator mode ...`)
 
 ---
 

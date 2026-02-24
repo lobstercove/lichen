@@ -28,6 +28,8 @@
 19. [Creating a Release](#creating-a-release)
 20. [Auto-Update System](#auto-update-system)
 21. [Validator CLI Reference](#validator-cli-reference)
+22. [Admin Key Management Lifecycle](#admin-key-management-lifecycle)
+23. [Environment Command Matrix](#environment-command-matrix)
 
 ---
 
@@ -1749,3 +1751,83 @@ Complete reference for all `moltchain-validator` CLI flags:
 | ASIA (Singapore) | DigitalOcean / Vultr | 4 vCPU, 8GB RAM, 160GB NVMe | ~$24-48 |
 
 RocksDB benefits strongly from NVMe — avoid HDD-based VPS. 4 vCPU is plenty for current throughput. Scale up to 8 vCPU when transaction volume grows.
+
+---
+
+## Admin Key Management Lifecycle
+
+This section is mandatory for production operations and aligns with tested admin/write workflows used by gate suites.
+
+### Key Classes
+
+| Key class | Primary use | Storage location | Human access policy |
+|---|---|---|---|
+| Genesis distribution keys (`genesis-keys/*`) | Treasury/distribution control | Offline encrypted vault only | Dual-control (2 maintainers) |
+| Validator identity keypair | Validator identity + signing | VPS filesystem (`0600`) + encrypted backup | Single operator + break-glass approver |
+| RPC admin token (`--admin-token`) | Privileged RPC methods (`setFeeConfig`, `setRentParams`, `setContractAbi`) | Secret manager / root-readable env file | Operations leads only |
+| Custody treasury keypair | Custody withdrawals/rebalancing | Custody host secure path + encrypted backup | Finance ops + security lead |
+| Release signing keypair | Binary release signatures | Air-gapped device only | Release manager + security approver |
+
+### Rotation Policy
+
+| Secret | Rotation cadence | Triggered rotation events |
+|---|---|---|
+| RPC admin token | Every 30 days | suspected leak, operator offboarding, incident response |
+| Validator keypair | Every 90 days or major incident | node compromise, key exposure, host rebuild |
+| Custody treasury keypair | Every 30 days in testnet, 90 days mainnet | custody host compromise, unauthorized access signal |
+| Release signing keypair | Every 180 days | signing workflow compromise, maintainer change |
+
+### Backup & Recovery Requirements
+
+1. Keep two encrypted backups for each critical key class in separate regions.
+2. Validate restore quarterly on isolated hosts (never in production namespace).
+3. Record recovery drill evidence in internal audit notes (date, operator, success/failure).
+
+### Revocation / Emergency Procedure
+
+1. Freeze privileged operations (disable admin endpoints via token rotation + service restart).
+2. Rotate compromised secrets immediately.
+3. Reissue operational credentials and verify non-admin rejection checks:
+   - `setFeeConfig` without valid token must return RPC error.
+   - `setRentParams` without valid token must return RPC error.
+4. Re-run strict gate before reopening production write paths.
+
+### Minimum Deployment Secrets Checklist
+
+- [ ] Admin token stored in secret manager; not present in shell history.
+- [ ] Validator keypair file permissions set to `0600`.
+- [ ] Custody keypair + seed paths validated and encrypted at rest.
+- [ ] Backup restore test completed within last 90 days.
+- [ ] Revocation runbook reviewed by on-call operators.
+
+---
+
+## Environment Command Matrix
+
+This matrix aligns local/testnet/prod procedures with the tested sequence: build → deploy genesis/programs → configure services → strict gate → launch.
+
+| Stage | Local Dev | Testnet (3 validators) | Production/Mainnet |
+|---|---|---|---|
+| Build | `cargo build --release` | `cargo build --release` | `cargo build --release` |
+| Deploy genesis/programs | `./target/release/moltchain-validator --network testnet --p2p-port 8000` (first run) | same + state distribution to seed nodes | mainnet genesis generation + signed distribution artifacts |
+| Configure services | local env defaults | systemd + `/etc/moltchain/env-testnet` + Caddy | systemd + secrets manager + hardened Caddy/firewall |
+| Strict gate | `STRICT_NO_SKIPS=1 bash tests/production-e2e-gate.sh` | `STRICT_NO_SKIPS=1 bash tests/production-e2e-gate.sh` | pre-launch requirement: same strict gate against prod-like env |
+| Launch / operate | `./moltchain-validator ...` | `systemctl start moltchain-validator` (+ custody/faucet where needed) | staged rollout across seeds/relays with monitored restart windows |
+
+### Tested Gate Sequence (Reference)
+
+Run this exact sequence before declaring deployment-ready state:
+
+```bash
+# 1) Build
+cargo build --release
+
+# 2) Ensure validators/services are up and healthy
+curl -s http://localhost:8899 -H 'content-type: application/json' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"health","params":[]}'
+
+# 3) Strict production gate (no critical skips)
+STRICT_NO_SKIPS=1 bash tests/production-e2e-gate.sh
+```
+
+For testnet and production readiness sign-off, require 3 consecutive strict gate passes plus artifact archival.
