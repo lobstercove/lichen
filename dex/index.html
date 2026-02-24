@@ -377,7 +377,7 @@
                         <span class="page-subtitle">Trade outcomes · mUSD collateral · MoltOracle resolution · 24h dispute period</span>
                     </div>
                     <div class="page-header-pills">
-                        <span class="info-pill"><i class="fas fa-id-badge"></i> 500+ MoltyID rep to create</span>
+                        <span class="info-pill" id="pmRepPill"><i class="fas fa-id-badge"></i> 500+ MoltyID rep to create</span>
                         <span class="info-pill"><i class="fas fa-shield-alt"></i> Full mUSD collateralization</span>
                         <span class="info-pill"><i class="fas fa-robot"></i> Agent-first API</span>
                     </div>
@@ -497,10 +497,10 @@
                                 <div class="summary-row"><span>Shares received</span><span class="mono-value" id="predictShares">0.00</span></div>
                                 <div class="summary-row"><span>Avg price</span><span class="mono-value" id="predictAvgPrice">—</span></div>
                                 <div class="summary-row"><span>Max payout</span><span class="mono-value accent-text" id="predictPayout">$0.00</span></div>
-                                <div class="summary-row"><span>Fee (2%)</span><span class="mono-value" id="predictFee">$0.00</span></div>
+                                <div class="summary-row"><span id="predictFeeLabel">Fee (2%)</span><span class="mono-value" id="predictFee">$0.00</span></div>
                             </div>
 
-                            <button class="btn-full btn-buy" id="predictSubmitBtn"><i class="fas fa-bolt"></i> Buy YES Shares</button>
+                            <button class="btn btn-full btn-buy" id="predictSubmitBtn"><i class="fas fa-bolt"></i> Buy YES Shares</button>
                         </div>
                     </div>
 
@@ -562,10 +562,10 @@
 
                             <div class="predict-create-requirements">
                                 <h4><i class="fas fa-exclamation-circle"></i> Requirements</h4>
-                                <div class="req-row"><span>MoltyID Reputation</span><span class="mono-value">&ge; 500</span></div>
-                                <div class="req-row"><span>Min Initial Liquidity</span><span class="mono-value">100 mUSD</span></div>
+                                <div class="req-row"><span>MoltyID Reputation</span><span class="mono-value" id="pmReqReputation">&ge; 500</span></div>
+                                <div class="req-row"><span>Min Initial Liquidity</span><span class="mono-value" id="pmReqMinLiq">100 mUSD</span></div>
                                 <div class="req-row"><span>Resolution Oracle</span><span class="mono-value">MoltOracle</span></div>
-                                <div class="req-row"><span>Dispute Period</span><span class="mono-value">48 hours</span></div>
+                                <div class="req-row"><span>Dispute Period</span><span class="mono-value" id="pmReqDisputePeriod">48 hours</span></div>
                             </div>
 
                             <button class="btn btn-full btn-primary" id="predictCreateBtn"><i class="fas fa-rocket"></i> Create Market</button>
@@ -624,8 +624,8 @@
                         <span class="page-subtitle">Concentrated liquidity · 4 fee tiers · Earn trading fees + MOLT rewards</span>
                     </div>
                     <div class="page-header-pills">
-                        <span class="info-pill"><i class="fas fa-chart-pie"></i> Fee Split: 40% Treasury · 30% LPs · 30% Stakers</span>
-                        <span class="info-pill"><i class="fas fa-layer-group"></i> Max 100 Pools</span>
+                        <span class="info-pill" id="poolFeeSplitPill"><i class="fas fa-chart-pie"></i> Fee Split: 40% Treasury · 30% LPs · 30% Stakers</span>
+                        <span class="info-pill" id="poolMaxPoolsPill"><i class="fas fa-layer-group"></i> Max 100 Pools</span>
                     </div>
                 </div>
             </div>
@@ -633,24 +633,28 @@
             <!-- Stats Row -->
             <div class="pool-stats-row">
                 <div class="pool-stat-card">
-                    <div class="stat-icon-wrap"><i class="fas fa-lock"></i></div>
+                    <div class="stat-icon-wrap accent-icon"><i class="fas fa-lock"></i></div>
                     <div class="pool-stat-label">Total Value Locked</div>
-                    <div class="pool-stat-value" id="poolTvl">—</div>
+                    <div class="pool-stat-value accent-text" id="poolTvl">—</div>
+                    <div class="stat-sub">All pools</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-exchange-alt"></i></div>
                     <div class="pool-stat-label">24h Volume</div>
                     <div class="pool-stat-value" id="poolVolume24h">—</div>
+                    <div class="stat-sub">Swap volume</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-coins"></i></div>
                     <div class="pool-stat-label">24h Fees</div>
                     <div class="pool-stat-value" id="poolFees24h">—</div>
+                    <div class="stat-sub">LP earnings</div>
                 </div>
                 <div class="pool-stat-card">
                     <div class="stat-icon-wrap"><i class="fas fa-cubes"></i></div>
                     <div class="pool-stat-label">Active Pools</div>
                     <div class="pool-stat-value" id="poolCount">0</div>
+                    <div class="stat-sub">Live</div>
                 </div>
             </div>
 
@@ -1166,14 +1170,14 @@
 
                         <div class="proposal-requirements">
                             <h4><i class="fas fa-exclamation-circle"></i> Requirements</h4>
-                            <div class="req-row"><span>MoltyID Reputation</span><span class="mono-value">≥ 500</span></div>
-                            <div class="req-row"><span>Min Listing Liquidity</span><span class="mono-value">100,000 MOLT</span></div>
-                            <div class="req-row"><span>Min Token Holders</span><span class="mono-value">10</span></div>
-                            <div class="req-row"><span>Voting Period</span><span class="mono-value">48 hours</span></div>
-                            <div class="req-row"><span>Execution Timelock</span><span class="mono-value">1 hour</span></div>
+                            <div class="req-row"><span>MoltyID Reputation</span><span class="mono-value" id="govReqReputation">≥ 500</span></div>
+                            <div class="req-row"><span>Min Listing Liquidity</span><span class="mono-value" id="govReqMinLiq">100,000 MOLT</span></div>
+                            <div class="req-row"><span>Min Token Holders</span><span class="mono-value" id="govReqMinHolders">10</span></div>
+                            <div class="req-row"><span>Voting Period</span><span class="mono-value" id="govReqVotePeriod">48 hours</span></div>
+                            <div class="req-row"><span>Execution Timelock</span><span class="mono-value" id="govReqTimelock">1 hour</span></div>
                         </div>
 
-                        <button class="btn btn-full btn-buy" id="submitProposalBtn"><i class="fas fa-paper-plane"></i> Submit Proposal</button>
+                        <button class="btn btn-full btn-primary" id="submitProposalBtn"><i class="fas fa-paper-plane"></i> Submit Proposal</button>
                     </div>
                 </div>
             </div>
@@ -1191,9 +1195,9 @@
                         <span class="page-subtitle">Bonding curve token launches · Auto-graduation to DEX · 1% platform fee</span>
                     </div>
                     <div class="page-header-pills">
-                        <span class="info-pill"><i class="fas fa-coins"></i> 10 MOLT to launch</span>
+                        <span class="info-pill" id="launchFeePill"><i class="fas fa-coins"></i> 10 MOLT to launch</span>
                         <span class="info-pill"><i class="fas fa-chart-line"></i> Linear bonding curve</span>
-                        <span class="info-pill"><i class="fas fa-trophy"></i> Graduates at 100K MOLT mcap</span>
+                        <span class="info-pill" id="launchGradPill"><i class="fas fa-trophy"></i> Graduates at 100K MOLT mcap</span>
                     </div>
                 </div>
             </div>
