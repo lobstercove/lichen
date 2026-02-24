@@ -165,7 +165,7 @@ cd scripts/
 The built-in **supervisor** auto-restarts on crash and the **watchdog** alerts on stall — no external process manager needed.
 
 **Guides:**
-- [Validator Skill Guide](skills/validator/SKILL.md)
+- [Validator Setup](docs/consensus/VALIDATOR_SETUP.md)
 - [Production Deployment](docs/deployment/PRODUCTION_DEPLOYMENT.md)
 - [Custody Deployment](docs/deployment/CUSTODY_DEPLOYMENT.md)
 
@@ -221,7 +221,7 @@ Canonical developer-facing API docs:
 - **[JSON-RPC API](developers/rpc-reference.html)** — Canonical RPC method index
 - **[WebSocket API](developers/ws-reference.html)** — Canonical WS subscriptions index
 - **[Detailed RPC Guide](docs/guides/RPC_API_REFERENCE.md)** — Full request/response examples
-- **[Validator Skill Guide](skills/validator/SKILL.md)** — Runtime RPC/WS baseline for operators
+- **[Validator Setup](docs/consensus/VALIDATOR_SETUP.md)** — Runtime validator operations baseline
 
 ---
 

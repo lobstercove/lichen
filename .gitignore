@@ -149,3 +149,6 @@ shared/
 shared-base-styles.css
 shared-config.js
 shared-theme.css
+
+# ── Local-only operator skills (keep on disk, ignore in git) ──
+skills/
