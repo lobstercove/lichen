@@ -107,7 +107,7 @@ if [ -z "$NETWORK" ]; then
     exit 1
 fi
 
-# ── Port assignments (matches skills/validator/run-validator.sh V1) ──
+# ── Port assignments (matches root run-validator.sh V1) ──
 case $NETWORK in
     testnet)
         RPC_PORT=8899
@@ -257,7 +257,7 @@ if $START_CUSTODY; then
     echo -e "${CYAN}[4/4]${NC} Starting custody service..."
     export CUSTODY_MOLT_RPC_URL="http://127.0.0.1:${RPC_PORT}"
     export CUSTODY_TREASURY_KEYPAIR="$TREASURY_KEYPAIR"
-    "${REPO_ROOT}/skills/custody/run-custody.sh" "$NETWORK" \
+    "${REPO_ROOT}/scripts/run-custody.sh" "$NETWORK" \
         >"${LOG_DIR}/custody.log" 2>&1 &
     CUSTODY_PID=$!
     echo -e "  ${GREEN}✅ Custody started (PID: $CUSTODY_PID)${NC}"

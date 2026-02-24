@@ -11,21 +11,21 @@ log() {
 }
 
 log "Resetting blockchain state..."
-./skills/validator/reset-blockchain.sh
+./reset-blockchain.sh
 
 log "Building release binaries..."
 cargo build --release
 
 log "Starting validators (1/2/3)..."
-./skills/validator/run-validator.sh 1 > /tmp/moltchain-v1.log 2>&1 &
+./run-validator.sh 1 > /tmp/moltchain-v1.log 2>&1 &
 V1_PID=$!
 
 sleep 2
-./skills/validator/run-validator.sh 2 > /tmp/moltchain-v2.log 2>&1 &
+./run-validator.sh 2 > /tmp/moltchain-v2.log 2>&1 &
 V2_PID=$!
 
 sleep 2
-./skills/validator/run-validator.sh 3 > /tmp/moltchain-v3.log 2>&1 &
+./run-validator.sh 3 > /tmp/moltchain-v3.log 2>&1 &
 V3_PID=$!
 
 log "Waiting for RPC..."
