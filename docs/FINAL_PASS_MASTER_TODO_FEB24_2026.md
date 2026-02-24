@@ -348,6 +348,12 @@ Global audit rerun evidence (post-hardening):
 - `STRICT_NO_SKIPS=1 bash tests/production-e2e-gate.sh` → `PASS:26 FAIL:0 SKIP:0`.
 - `/opt/homebrew/bin/python3 tests/comprehensive-e2e.py` → `PASS=698 FAIL=0 SKIP=2`.
 
+Post-push audit snapshot (`main@70659c2`, Feb 24, 2026):
+- `STRICT_NO_SKIPS=1 ./tests/production-e2e-gate.sh` → `PASS:26 FAIL:0 SKIP:0`.
+- `cargo audit` → no active vulnerability advisories; one policy-allowed yanked warning remains (`keccak 0.1.5`) and is covered by `.cargo/audit.toml` + `docs/security/RUSTSEC_TRIAGE_FEB24_2026.md`.
+- `npm audit --audit-level=high --omit=dev` → `found 0 vulnerabilities`.
+- Working tree note during snapshot: only runtime-generated artifact delta (`tests/artifacts/contracts-write-e2e-report.json`) from gate execution.
+
 ---
 
 ## 9) Immediate Next Actions (Execution Order)
@@ -367,6 +373,7 @@ Progress update (this session):
 - [x] Validator rotation evidence report created: `docs/audits/VALIDATOR_ROTATION_EVIDENCE_FEB24_2026.md`.
 - [x] Open-source boundary plan created: `docs/deployment/OPEN_SOURCE_BOUNDARY_PLAN.md`.
 - [x] Post-push fresh strict gate confirmation completed with faucet healthy and strict mode green: `STRICT_NO_SKIPS=1 bash tests/production-e2e-gate.sh` → `PASS:26 FAIL:0 SKIP:0`.
+- [x] Post-push security snapshot captured and recorded (`cargo audit`, `npm audit --audit-level=high --omit=dev`, strict gate all green on `70659c2`).
 
 ---
 
