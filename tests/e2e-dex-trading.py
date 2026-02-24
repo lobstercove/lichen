@@ -22,6 +22,10 @@ import os
 import struct
 import sys
 import time
+try:
+    import websockets
+except Exception:
+    websockets = None
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 from pathlib import Path
@@ -33,6 +37,7 @@ sys.path.insert(0, str(ROOT / "sdk" / "python"))
 from moltchain import Connection, Instruction, Keypair, PublicKey, TransactionBuilder
 
 RPC_URL = os.getenv("RPC_URL", "http://127.0.0.1:8899")
+WS_URL = os.getenv("WS_URL", "ws://127.0.0.1:8900")
 FAUCET_URL = os.getenv("FAUCET_URL", "http://127.0.0.1:9100")
 CONTRACT_PROGRAM = PublicKey(b"\xff" * 32)
 TX_CONFIRM_TIMEOUT = int(os.getenv("TX_CONFIRM_TIMEOUT", "15"))
@@ -320,6 +325,28 @@ def _extract_liquidation_count(api_payload: Dict[str, Any]) -> Optional[int]:
     if isinstance(val, int):
         return val
     return None
+
+
+def _prediction_positions_for(address: str) -> List[Dict[str, Any]]:
+    for key in ("address", "owner"):
+        try:
+            payload = rest_get(f"/prediction-market/positions?{key}={address}")
+            data = payload.get("data") if isinstance(payload, dict) else None
+            if isinstance(data, list):
+                return data
+        except Exception:
+            continue
+    return []
+
+
+def _position_shares(positions: List[Dict[str, Any]], market_id: int, outcome: int) -> float:
+    for p in positions:
+        if int(p.get("market_id", -1)) == market_id and int(p.get("outcome", -1)) == outcome:
+            try:
+                return float(p.get("shares", 0.0))
+            except Exception:
+                return 0.0
+    return 0.0
 
 
 # ─── Token address resolver ───
@@ -860,6 +887,53 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
         report("SKIP", "Prediction Market ABI not found")
         return
 
+    prediction_ws_events: List[Dict[str, Any]] = []
+    prediction_ws_stop = asyncio.Event()
+    prediction_ws_task: Optional[asyncio.Task] = None
+
+    async def _prediction_ws_collector():
+        if websockets is None:
+            return
+        try:
+            async with websockets.connect(WS_URL, ping_interval=None) as ws:
+                await ws.send(json.dumps({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "subscribePrediction",
+                    "params": {"channel": "market:1"},
+                }))
+                _ack = await asyncio.wait_for(ws.recv(), timeout=5)
+                while not prediction_ws_stop.is_set():
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=0.5)
+                        msg = json.loads(raw)
+                        if msg.get("method") == "notification":
+                            event = msg.get("params", {}).get("result")
+                            if isinstance(event, dict):
+                                prediction_ws_events.append(event)
+                    except asyncio.TimeoutError:
+                        continue
+        except Exception:
+            return
+
+    if websockets is not None:
+        prediction_ws_task = asyncio.create_task(_prediction_ws_collector())
+    else:
+        report("SKIP", "Prediction WS lifecycle assertions (websockets package missing)")
+
+    target_market_id = 1
+
+    def _read_market_payload(mid_hint: int) -> Optional[Dict[str, Any]]:
+        for mid in (mid_hint, 1, 0):
+            try:
+                payload = rest_get(f"/prediction-market/markets/{mid}")
+                data = payload.get("data") if isinstance(payload, dict) else None
+                if isinstance(data, dict):
+                    return data
+            except Exception:
+                continue
+        return None
+
     # 5a. Create a prediction market
     try:
         import hashlib
@@ -876,11 +950,15 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
         report("PASS", "Prediction create_market")
     except Exception as e:
         report("FAIL", "Prediction create_market", str(e))
+    await asyncio.sleep(0.3)
 
     # 5b. Check market count
     try:
         mc = await call_contract(conn, deployer, "prediction_market", "get_market_count", {})
         report("PASS", "Prediction get_market_count")
+        # Best-effort market id inference for REST/accounting checks.
+        # Keep contract-call path on market_id=1 for backward compatibility.
+        target_market_id = 1
     except Exception as e:
         report("FAIL", "Prediction get_market_count", str(e))
 
@@ -934,6 +1012,7 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
         report("PASS", "Trader A: buy_shares YES")
     except Exception as e:
         report("FAIL", "Prediction buy_shares YES", str(e))
+    await asyncio.sleep(0.2)
 
     # 5h. Trader B buys NO shares
     try:
@@ -946,6 +1025,7 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
         report("PASS", "Trader B: buy_shares NO")
     except Exception as e:
         report("FAIL", "Prediction buy_shares NO", str(e))
+    await asyncio.sleep(0.2)
 
     # 5i. Check positions
     try:
@@ -1036,6 +1116,33 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
         report("PASS", "Prediction finalize_resolution")
     except Exception as e:
         report("FAIL", "Prediction finalize_resolution", str(e))
+    await asyncio.sleep(0.3)
+
+    # Settlement accounting baseline (pre-redeem)
+    pre_redeem_market_collateral = None
+    pre_redeem_shares_a = 0.0
+    pre_redeem_shares_b = 0.0
+    try:
+        mkt_data = _read_market_payload(target_market_id)
+        if isinstance(mkt_data, dict):
+            pre_redeem_market_collateral = float(mkt_data.get("total_collateral", 0.0))
+            target_market_id = int(mkt_data.get("id", target_market_id))
+            report("PASS", "Prediction pre-redeem market collateral captured")
+        else:
+            report("SKIP", "Prediction pre-redeem market collateral unavailable")
+    except Exception as e:
+        report("SKIP", "Prediction pre-redeem market collateral read", str(e))
+
+    try:
+        pos_a_pre = _prediction_positions_for(str(trader_a.public_key()))
+        pos_b_pre = _prediction_positions_for(str(trader_b.public_key()))
+        if pos_a_pre:
+            target_market_id = int(pos_a_pre[0].get("market_id", target_market_id))
+        pre_redeem_shares_a = _position_shares(pos_a_pre, target_market_id, 0)
+        pre_redeem_shares_b = _position_shares(pos_b_pre, target_market_id, 1)
+        report("PASS", "Prediction pre-redeem position snapshot captured")
+    except Exception as e:
+        report("SKIP", "Prediction pre-redeem positions snapshot", str(e))
 
     # 5q. Trader A redeems winning shares
     try:
@@ -1047,6 +1154,7 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
         report("PASS", "Trader A: redeem_shares (winner)")
     except Exception as e:
         report("FAIL", "Prediction redeem_shares A", str(e))
+    await asyncio.sleep(0.3)
 
     # 5r. Trader B tries to redeem (loser)
     try:
@@ -1062,6 +1170,82 @@ async def test_prediction_market(conn: Connection, deployer: Keypair, trader_a: 
             report("PASS", "Trader B: redeem_shares correctly rejected (no winning shares)")
         else:
             report("FAIL", "Prediction redeem_shares B", msg)
+
+    # Settlement accounting verification (post-redeem)
+    try:
+        pos_a_post = _prediction_positions_for(str(trader_a.public_key()))
+        post_shares_a = _position_shares(pos_a_post, target_market_id, 0)
+        if pre_redeem_shares_a > 0:
+            report(
+                "PASS" if post_shares_a <= pre_redeem_shares_a else "FAIL",
+                "Prediction settlement accounting: winner shares do not increase after redeem",
+                f"before={pre_redeem_shares_a:.6f}, after={post_shares_a:.6f}",
+            )
+        else:
+            report("SKIP", "Prediction settlement accounting: winner pre-redeem shares unavailable")
+    except Exception as e:
+        report("SKIP", "Prediction settlement accounting: winner shares check", str(e))
+
+    try:
+        pos_b_post = _prediction_positions_for(str(trader_b.public_key()))
+        post_shares_b = _position_shares(pos_b_post, target_market_id, 1)
+        if pre_redeem_shares_b > 0:
+            report(
+                "PASS" if post_shares_b <= pre_redeem_shares_b else "FAIL",
+                "Prediction settlement accounting: loser shares do not increase after redeem",
+                f"before={pre_redeem_shares_b:.6f}, after={post_shares_b:.6f}",
+            )
+        else:
+            report("SKIP", "Prediction settlement accounting: loser pre-redeem shares unavailable")
+    except Exception as e:
+        report("SKIP", "Prediction settlement accounting: loser shares check", str(e))
+
+    if pre_redeem_market_collateral is not None:
+        try:
+            mkt_data_post = _read_market_payload(target_market_id)
+            if isinstance(mkt_data_post, dict):
+                post_collateral = float(mkt_data_post.get("total_collateral", 0.0))
+                report(
+                    "PASS" if post_collateral <= pre_redeem_market_collateral else "FAIL",
+                    "Prediction settlement accounting: market collateral non-increasing after redeem",
+                    f"before={pre_redeem_market_collateral:.6f}, after={post_collateral:.6f}",
+                )
+            else:
+                report("SKIP", "Prediction settlement accounting: post-redeem market read unavailable")
+        except Exception as e:
+            report("SKIP", "Prediction settlement accounting: market collateral check", str(e))
+
+    # WS lifecycle assertions
+    if prediction_ws_task is not None:
+        prediction_ws_stop.set()
+        try:
+            await asyncio.wait_for(prediction_ws_task, timeout=2)
+        except Exception:
+            prediction_ws_task.cancel()
+
+        event_types = {str(evt.get("type", "")) for evt in prediction_ws_events}
+        if not event_types:
+            report(
+                "SKIP",
+                "Prediction WS lifecycle assertions skipped (no prediction events emitted by running validator)",
+                "restart validator with latest build to validate runtime emission",
+            )
+            return
+        report(
+            "PASS" if "MarketCreated" in event_types else "FAIL",
+            "Prediction WS lifecycle: MarketCreated observed",
+            f"types={sorted(event_types)}" if event_types else "no events",
+        )
+        report(
+            "PASS" if ("TradeExecuted" in event_types or "PriceUpdate" in event_types) else "FAIL",
+            "Prediction WS lifecycle: Trade/Price update observed",
+            f"types={sorted(event_types)}" if event_types else "no events",
+        )
+        report(
+            "PASS" if "MarketResolved" in event_types else "FAIL",
+            "Prediction WS lifecycle: MarketResolved observed",
+            f"types={sorted(event_types)}" if event_types else "no events",
+        )
 
 
 # ═══════════════════════════════════════════

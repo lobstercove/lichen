@@ -767,6 +767,9 @@ async def test_section_4_upgrade_contract():
             else:
                 report("SKIP", "Contract exists but could not extract address")
                 return
+        elif "disabled in multi-validator mode" in msg.lower():
+            report("SKIP", "deployContract disabled in multi-validator mode")
+            return
         else:
             report("FAIL", "deployContract", msg[:80])
             return
